@@ -31,12 +31,12 @@ pub(crate) struct EndpointConnection {
     detach_sent: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub(crate) struct EndpointTransportFailure {
     pub(crate) endpoint_id: ClientEndpointId,
     pub(crate) generation: u64,
     pub(crate) kind: io::ErrorKind,
-    pub(crate) message: String,
+    pub(crate) failure: shepr_remote::EndpointFailure,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -376,7 +376,7 @@ impl EndpointRegistry {
             endpoint_id: endpoint_id.clone(),
             generation: connection.generation.get(),
             kind: error.kind(),
-            message: error.to_string(),
+            failure: shepr_remote::EndpointFailure::from_error(error),
         };
         if let Some(existing) = self
             .failures
@@ -469,6 +469,39 @@ mod tests {
 
     fn profile() -> crate::endpoint::MachineLabel {
         crate::endpoint::MachineLabel::parse("build").expect("test precondition")
+    }
+
+    #[test]
+    fn live_failures_keep_their_operator_action_and_local_cause() {
+        for (failure, status, notice) in [
+            (
+                shepr_remote::EndpointFailure::incompatible("patch baseline rejected"),
+                super::super::ClientEndpointStatus::Attention,
+                "connection failed; needs attention",
+            ),
+            (
+                shepr_remote::EndpointFailure::backpressure("endpoint output queue is full"),
+                super::super::ClientEndpointStatus::Reconnecting,
+                "local output queue filled; reconnecting",
+            ),
+        ] {
+            let mut registry = EndpointRegistry::new(
+                FakeTransport {
+                    sent: Arc::new(Mutex::new(Vec::new())),
+                    error: None,
+                },
+                1,
+            );
+            registry.fail(&ClientEndpointId::Local, &io::Error::other(failure));
+            let failures = registry.take_failures();
+            assert_eq!(failures.len(), 1);
+            assert_eq!(
+                super::super::ClientEndpointStatus::after_failure(&failures[0].failure),
+                status
+            );
+            assert_eq!(failures[0].failure.disconnect_notice(), notice);
+            assert!(registry.take_failures().is_empty());
+        }
     }
 
     #[test]

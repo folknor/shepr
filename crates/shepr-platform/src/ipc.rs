@@ -41,7 +41,7 @@ pub fn socket_is_live(path: &Path) -> io::Result<bool> {
 /// the call was interrupted), so the listener retries at once. Every other
 /// failure, descriptor and memory exhaustion included, is the listener's own
 /// and calls for a backoff before the next attempt.
-pub fn accept_failed_for_one_connection(error: &io::Error) -> bool {
+fn accept_failed_for_one_connection(error: &io::Error) -> bool {
     error.kind() == io::ErrorKind::Interrupted
         || matches!(
             error.raw_os_error(),
@@ -291,27 +291,19 @@ pub fn acquire_flock_lock(lock_path: &Path, blocking: bool) -> io::Result<FlockL
         .write(true)
         .create(true)
         .truncate(false)
-        .mode(0o600)
+        .mode(super::limits::PRIVATE_FILE_MODE)
         .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW)
-        .open(lock_path)?;
+        .open(lock_path)
+        .map_err(|error| {
+            super::private_file::PrivateFile::normalize_open_error(lock_path, error)
+        })?;
     let metadata = file.metadata()?;
-    let expected_uid = super::effective_uid();
-    if !metadata.is_file() || metadata.uid() != expected_uid {
-        return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            format!(
-                "lock file {} must be a regular file owned by uid {expected_uid}; found a {} owned by uid {}",
-                lock_path.display(),
-                if metadata.is_file() {
-                    "regular file"
-                } else {
-                    "non-regular file"
-                },
-                metadata.uid(),
-            ),
-        ));
-    }
-    file.set_permissions(fs::Permissions::from_mode(0o600))?;
+    super::private_file::PrivateFile::require_owned_regular(
+        lock_path,
+        &metadata,
+        super::effective_uid(),
+    )?;
+    file.set_permissions(fs::Permissions::from_mode(super::limits::PRIVATE_FILE_MODE))?;
     flock_exclusive(&file, blocking)?;
     Ok(FlockLock { _file: file })
 }
@@ -690,8 +682,7 @@ fn prepare_socket_path(path: &Path) -> io::Result<()> {
 }
 
 /// Mode applied by [`bind_private_local_listener`]: owner read/write only.
-// limits-exempt: this is the private socket's POSIX file mode, kept beside its application.
-const PRIVATE_SOCKET_MODE: u32 = 0o600;
+const PRIVATE_SOCKET_MODE: u32 = super::limits::PRIVATE_FILE_MODE;
 
 /// Binds a listener at an absolute `path` so the socket is never reachable with anything
 /// looser than owner-only permissions.
@@ -709,7 +700,8 @@ const PRIVATE_SOCKET_MODE: u32 = 0o600;
 /// limit, or a filesystem without hard links), this falls back to
 /// bind-then-chmod at `path`, which still ends owner-only. Callers may tighten
 /// or re-apply the mode afterwards. Access is also checked per connection by
-/// [`peer_is_same_user`]; the file mode is not the only control.
+/// [`accept_peer`] with [`PeerAdmission::OwnerOrRoot`]; the file mode is not
+/// the only control.
 pub fn bind_private_local_listener(path: &Path) -> io::Result<LocalListener> {
     let parent = socket_parent(path)?;
     match bind_via_private_staging(path, parent) {
@@ -808,7 +800,7 @@ fn bind_via_private_staging(path: &Path, parent: &Path) -> Result<LocalListener,
                 RuntimeCreateError::Io(error) => StagedBindError::Unavailable(error),
             }
         })?;
-    let staged = entry.path().join("s");
+    let staged = DirectoryKind::Staging.content_path(entry.path());
     let result = bind_staged_and_link(&staged, path);
     entry.release();
     result
@@ -823,25 +815,6 @@ fn bind_staged_and_link(staged: &Path, path: &Path) -> Result<LocalListener, Sta
         Err(err) if err.kind() == io::ErrorKind::AlreadyExists => Err(StagedBindError::Busy),
         Err(err) => Err(StagedBindError::Unavailable(err)),
     }
-}
-
-/// Reports whether a local peer runs as the same user as this process (its
-/// effective uid), or as root. This is for accept-side admission: root can
-/// connect through the owner-only socket mode anyway, so this preserves
-/// `sudo` clients. Clients trusting a server must use
-/// [`peer_is_same_effective_user`] instead, because root must not be treated as
-/// the owner of the server-side socket.
-///
-/// Every shepr socket is owner-only, so in normal operation this always
-/// holds; it is a second check that does not depend on the socket file's
-/// mode, which can be loosened after the fact or, on the in-place bind
-/// fallback, briefly be umask-derived. The credentials are the ones the peer
-/// had when it connected (`SO_PEERCRED`), so a later privilege drop by the
-/// peer does not change the answer.
-pub fn peer_is_same_user(stream: &LocalStream) -> io::Result<bool> {
-    let peer_uid = peer_uid(stream)?;
-    let own_uid = super::effective_uid();
-    Ok(peer_uid_is_allowed_client(peer_uid, own_uid))
 }
 
 /// Reports whether a local peer has exactly this process's effective uid.
@@ -1058,7 +1031,7 @@ mod tests {
             .permissions()
             .mode()
             & 0o777;
-        assert_eq!(mode, 0o600);
+        assert_eq!(mode, super::PRIVATE_SOCKET_MODE);
         // The staging directory is gone; only the socket and persistent lock remain.
         let entries = fs::read_dir(&dir)
             .expect("test precondition")
@@ -1345,8 +1318,11 @@ mod tests {
     fn abandoned_single_use_sockets_of_dead_owners_are_swept() {
         let exists = |path: &Path| path.try_exists().expect("stat");
         let runtime = shepr_test_support::ScratchDir::new("single-use-sweep");
-        fs::set_permissions(runtime.path(), fs::Permissions::from_mode(0o700))
-            .expect("test precondition");
+        fs::set_permissions(
+            runtime.path(),
+            fs::Permissions::from_mode(crate::limits::PRIVATE_DIRECTORY_MODE),
+        )
+        .expect("test precondition");
         let live_tag = super::super::process_identity::ProcessIdentity::current()
             .expect("current process identity")
             .tag(0);
@@ -1359,7 +1335,7 @@ mod tests {
             fs::write(socket_startup_lock_path(&socket), marker).expect("test precondition");
             fs::set_permissions(
                 socket_startup_lock_path(&socket),
-                fs::Permissions::from_mode(0o600),
+                fs::Permissions::from_mode(crate::limits::PRIVATE_FILE_MODE),
             )
             .expect("private marker");
             socket
@@ -1373,7 +1349,7 @@ mod tests {
         .expect("test precondition");
         fs::set_permissions(
             socket_startup_lock_path(&dead_no_socket),
-            fs::Permissions::from_mode(0o600),
+            fs::Permissions::from_mode(crate::limits::PRIVATE_FILE_MODE),
         )
         .expect("private marker");
         let live_without_lock = stale_socket("live-unlocked.sock", live_tag.as_bytes());
@@ -1465,7 +1441,10 @@ mod tests {
         let lock = acquire_flock_lock(&lock_path, true).expect("acquire blocking lock");
         let metadata = fs::metadata(&lock_path).expect("lock file exists");
         assert!(metadata.is_file());
-        assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
+        assert_eq!(
+            metadata.permissions().mode() & crate::limits::PERMISSION_BITS,
+            crate::limits::PRIVATE_FILE_MODE
+        );
         assert_eq!(
             metadata.uid(),
             fs::metadata(dir.path())
@@ -1560,8 +1539,8 @@ mod tests {
     #[test]
     fn peer_credentials_admit_this_user() {
         let (client, server) = connected_pair("peercred");
-        assert!(peer_is_same_user(&server).expect("SO_PEERCRED"));
-        assert!(peer_is_same_user(&client).expect("SO_PEERCRED"));
+        assert!(peer_is_same_effective_user(&server).expect("SO_PEERCRED"));
+        assert!(peer_is_same_effective_user(&client).expect("SO_PEERCRED"));
     }
 
     #[test]

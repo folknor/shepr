@@ -111,25 +111,8 @@ impl ClientShellState {
             action,
             KeybindAction::PreviousWorkspace | KeybindAction::NextWorkspace
         ) {
-            let workspaces = self
-                .endpoints
-                .iter()
-                .filter(|endpoint| endpoint.status == ClientEndpointStatus::Online)
-                .flat_map(|endpoint| {
-                    endpoint
-                        .snapshot
-                        .as_deref()
-                        .map_or_else(Vec::new, |snapshot| {
-                            snapshot
-                                .workspaces
-                                .iter()
-                                .map(|workspace| {
-                                    (endpoint.endpoint_id.clone(), workspace.workspace_id.clone())
-                                })
-                                .collect()
-                        })
-                })
-                .collect::<Vec<_>>();
+            let workspaces =
+                super::workspace_navigation::workspace_navigation_targets(&self.endpoints);
             if workspaces.is_empty() {
                 return true;
             }
@@ -137,22 +120,24 @@ impl ClientShellState {
                 .snapshot
                 .as_deref()
                 .and_then(|snapshot| snapshot.focused_workspace_id.as_ref());
-            let current = workspaces.iter().position(|(endpoint_id, workspace_id)| {
-                endpoint_id == &self.active_endpoint_id && Some(workspace_id) == focused
+            let current = workspaces.iter().position(|target| {
+                target.endpoint_id == self.active_endpoint_id
+                    && Some(&target.workspace_id) == focused
             });
-            let next = match (current, action) {
-                (Some(index), KeybindAction::PreviousWorkspace) => {
-                    (index + workspaces.len() - 1) % workspaces.len()
-                }
-                (Some(index), KeybindAction::NextWorkspace) => (index + 1) % workspaces.len(),
-                (None, KeybindAction::PreviousWorkspace) => workspaces.len() - 1,
-                (None, KeybindAction::NextWorkspace) => 0,
-                _ => unreachable!("endpoint workspace navigation"),
+            let delta = if action == KeybindAction::PreviousWorkspace {
+                -1
+            } else {
+                1
             };
-            let (endpoint_id, workspace_id) = workspaces[next].clone();
+            let Some(next) =
+                super::aggregate_navigation::cycle_index(workspaces.len(), current, delta)
+            else {
+                return true;
+            };
+            let target = &workspaces[next];
             self.focus_or_activate(
-                endpoint_id,
-                ClientEndpointFocusTarget::Workspace(workspace_id),
+                target.endpoint_id.clone(),
+                ClientEndpointFocusTarget::Workspace(target.workspace_id.clone()),
                 outcome,
             );
             return true;

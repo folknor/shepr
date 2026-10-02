@@ -1,5 +1,4 @@
 use super::random::unpredictable_token;
-use super::*;
 use shepr_core::socket_path::{UNIX_SOCKET_PATH_MAX, fits_unix_socket_path};
 use std::path::{Path, PathBuf};
 
@@ -32,6 +31,13 @@ pub fn create_remote_ssh_config_dir(runtime_dir: &Path) -> std::io::Result<PathB
     )
     .map(super::owned_runtime::OwnedRuntimeEntry::into_path)
     .map_err(super::owned_runtime::RuntimeCreateError::into_io)
+}
+
+/// Resolves the config file owned by a directory from
+/// [`create_remote_ssh_config_dir`]. The directory kind owns this filename so
+/// creation, cleanup, and dead-owner sweeping use one layout rule.
+pub fn remote_ssh_config_file_path(directory: &Path) -> PathBuf {
+    super::owned_runtime::DirectoryKind::SshConfig.content_path(directory)
 }
 
 /// Choose an endpoint socket path in shepr's private runtime directory. The
@@ -207,21 +213,19 @@ pub fn validate_ssh_runtime_dir(runtime_dir: &Path) -> std::io::Result<()> {
 }
 
 pub(super) fn validate_shared_ssh_dir(dir: &Path) -> std::io::Result<()> {
-    use std::os::unix::fs::MetadataExt;
-    let metadata = std::fs::symlink_metadata(dir)?;
-    if !metadata.is_dir()
-        || metadata.uid() != effective_uid()
-        || metadata.mode() & 0o7777 != super::limits::PRIVATE_DIRECTORY_MODE
-    {
-        // Keep this typed error as io::Error's direct payload: shepr-remote
-        // downcasts it to classify launch failures. Carry the rejected path so
-        // the operator can identify which runtime directory failed validation.
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::PermissionDenied,
-            UnsafeSshRuntimeDirectory::new(dir),
-        ));
+    match super::private_file::PrivateDir::require(dir) {
+        Ok(()) => Ok(()),
+        Err(error) if super::private_file::PrivateDir::is_policy_refusal(&error) => {
+            // Keep this typed error as io::Error's direct payload: shepr-remote
+            // downcasts it to classify launch failures. Carry the rejected path
+            // so the operator can identify which runtime directory failed.
+            Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                UnsafeSshRuntimeDirectory::new(dir),
+            ))
+        }
+        Err(error) => Err(error),
     }
-    Ok(())
 }
 
 /// A deterministic policy failure, distinct from filesystem permission errors.

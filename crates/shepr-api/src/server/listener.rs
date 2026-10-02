@@ -13,14 +13,14 @@
 //! spoken in the kind's language and name the limit that was reached.
 
 use std::io;
+use std::os::fd::AsRawFd;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{SyncSender, TrySendError};
 use std::time::{Duration, Instant};
 
 use shepr_platform::ipc::{
-    FirstByte, LocalListener, LocalStream, accept_failed_for_one_connection, peek_first_byte,
-    peer_is_same_user,
+    Accepted, FirstByte, LocalListener, LocalStream, PeerAdmission, accept_peer, peek_first_byte,
 };
 use tracing::{debug, error, info, warn};
 
@@ -223,34 +223,27 @@ fn start_listener_with_dispatch(
         .name("shepr-listener".into())
         .spawn(move || {
             let mut backoff = AcceptBackoff::default();
-            for result in listener.incoming() {
+            loop {
                 if !running.load(Ordering::Acquire) {
                     break;
                 }
-                let stream = match result {
-                    Ok(stream) => stream,
-                    Err(error) if accept_failed_for_one_connection(&error) => {
-                        debug!(%error, "pending connection failed before accept");
+                let peer = match accept_peer(listener.as_raw_fd(), PeerAdmission::OwnerOrRoot) {
+                    Accepted::Peer(peer) => peer,
+                    Accepted::RetryNow => {
                         continue;
                     }
-                    Err(error) => {
+                    Accepted::Backoff(error) => {
                         backoff.failed("server accept failed", &error);
                         continue;
                     }
+                    Accepted::Fatal(error) => {
+                        error!(%error, "server listener cannot accept connections");
+                        break;
+                    }
                 };
+                let stream = LocalStream::from(peer.fd);
                 // clock-io-ok: starts both kinds' real socket-read deadlines.
                 let accepted = Instant::now();
-                match peer_is_same_user(&stream) {
-                    Ok(true) => {}
-                    Ok(false) => {
-                        warn!("server connection from another user refused");
-                        continue;
-                    }
-                    Err(error) => {
-                        warn!(%error, "server peer credentials unavailable; connection refused");
-                        continue;
-                    }
-                }
                 let result = match peek_first_byte(&stream, accepted) {
                     Ok(FirstByte::Closed) => continue,
                     Ok(FirstByte::Byte(byte)) => {

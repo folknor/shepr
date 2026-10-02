@@ -132,28 +132,10 @@ Reported by edges; contracts also notes the doubled compatibility derivation.
 
 ## CLN-011 - Dead pieces in the contracts crates
 
-- `CodecError::Invalid(&'static str)` has no producer.
-- `theme_config::resolve_palette`'s "theme has no built-in palette" branch is
-  unreachable.
-- In `surface_reuse::Decoder::decode`, the `Some(SurfaceMeta::Projection(_))`
-  arm inside the compact branch is unreachable (the enclosing `if` excludes
-  it) and, unlike every other error, returns `MetadataMismatch` without a
-  subject.
-- `RuntimeStatus::version: Option<String>` is always `Some`.
-- `Pong::version` is `"<pkg>+<BUILD_ID>"`, so a pong sends the build id twice.
-- `PaneSurfacePatch` derives `Serialize`/`Deserialize` though it never crosses
-  the wire.
-- `command.rs` enums (`SplitDirection`, `PaneRightClickTarget`,
-  `PaneDirection`, `PaneCopySearchDirection`) carry
-  `#[serde(rename_all = "snake_case")]`, which the positional codec ignores;
-  they read as JSON types.
-- `format_key_combo` falls back to `format!("{code:?}").to_lowercase()` for key
-  codes `parse_key_combo` cannot read back, so "a printed combo reads back as
-  the same binding" holds only for the parsed set.
-- `limits.rs`'s `INDEXED_BINDING_RANGE_SYNTAX = "1..9"` is derivable from the
-  first and last indexed keys, kept in step by hand.
-
-(contracts)
+`RuntimeStatus::version: Option<String>` is always `Some` (ping decoding
+supplies it). Its consumers in `crates/shepr-remote/src/remote/local_server.rs`
+and its tests still format absence as `"unknown"`; make the field plain and
+drop those branches together. (contracts)
 
 ## CLN-013 - Dead pieces in the pane runtime
 

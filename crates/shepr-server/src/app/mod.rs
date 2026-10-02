@@ -175,8 +175,8 @@ impl App {
             .map_or_default(|snapshot| snapshot.host_theme.to_theme());
         // Whether the first save must copy the on-disk session into
         // `session-backups` before replacing it: the file either could not be
-        // loaded, or restore discarded saved workspace or pane data still only
-        // present in it.
+        // loaded, or restore discarded saved workspace or pane data, or
+        // replaced a saved workspace ID still present in it.
         let mut protect_unloaded = policy.persists_session() && snapshot.is_none();
         let (workspaces, active) = if let Some(snap) = snapshot {
             let history = config

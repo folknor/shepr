@@ -16,21 +16,21 @@
 //!
 //! The lease is released only when the persister is retired, after every
 //! submitted job has finished or been abandoned.
-//! If a job panics, on either kind of worker, it fails closed: it reports that job and later
-//! submissions as abandoned, keeps the writer (and lease) alive, and releases
-//! the lease only after the persister is retired.
+//! If a job panics, on either kind of worker, it fails closed: it reports a
+//! refusal for that job and later submissions, keeps the writer (and lease)
+//! alive, and releases the lease only after the persister is retired.
 //!
 //! Every job that ends, whether it finished, failed or was abandoned, fires
 //! the completion signal the persister was built with, after its result is
 //! in place, so an event loop waiting on that signal wakes to reap it rather
 //! than polling for it.
 
-use std::io;
 use std::sync::{Arc, mpsc};
 use std::time::SystemTime;
 
 use tokio::sync::Notify;
 
+use super::error::{SaveError, SaveRefusal};
 use super::lock::DataDirLease;
 use super::snapshot::{
     HistoryCarry, PendingCwds, PendingHistory, ResolvedHistory, SessionSnapshot,
@@ -57,7 +57,7 @@ pub enum PersistJob {
 }
 
 /// Where a submitted job's result arrives.
-pub struct PendingSave(mpsc::Receiver<io::Result<()>>);
+pub struct PendingSave(mpsc::Receiver<Result<(), SaveError>>);
 
 /// The sending half of a [`PendingSave`]: whoever runs the job reports its
 /// result through it. Dropping it unreported reports a failure. Either way,
@@ -65,7 +65,7 @@ pub struct PendingSave(mpsc::Receiver<io::Result<()>>);
 pub struct SaveCompletion {
     /// Taken when the result is sent, or dropped before the signal fires, so
     /// a woken waiter always finds the result or the disconnect.
-    result: Option<mpsc::Sender<io::Result<()>>>,
+    result: Option<mpsc::Sender<Result<(), SaveError>>>,
     signal: Option<Arc<Notify>>,
 }
 
@@ -88,7 +88,7 @@ impl PendingSave {
     }
 
     /// The job's result once it has finished, without waiting.
-    pub fn try_finish(&self) -> Option<io::Result<()>> {
+    pub fn try_finish(&self) -> Option<Result<(), SaveError>> {
         match self.0.try_recv() {
             Ok(result) => Some(result),
             Err(mpsc::TryRecvError::Empty) => None,
@@ -97,7 +97,7 @@ impl PendingSave {
     }
 
     /// Blocks until the job has finished.
-    pub fn wait(self) -> io::Result<()> {
+    pub fn wait(self) -> Result<(), SaveError> {
         self.0.recv().unwrap_or_else(|_| Err(abandoned()))
     }
 }
@@ -105,7 +105,7 @@ impl PendingSave {
 impl SaveCompletion {
     /// Reports the job's result; the signal fires when `self` drops here,
     /// after the result is readable.
-    pub fn complete(mut self, result: io::Result<()>) {
+    pub fn complete(mut self, result: Result<(), SaveError>) {
         if let Some(sender) = self.result.take() {
             // The submitter may have stopped waiting (a shutdown that gave up
             // on the result); nobody is left to tell.
@@ -128,18 +128,18 @@ impl Drop for SaveCompletion {
     }
 }
 
-fn abandoned() -> io::Error {
-    io::Error::other("session persister ended before finishing the save")
+fn abandoned() -> SaveError {
+    SaveError::Abandoned
 }
 
-fn lease_only() -> io::Error {
-    io::Error::other("this session persister only holds the data directory lease; it runs no saves")
+fn lease_only() -> SaveError {
+    SaveError::Refused(SaveRefusal::LeaseOnly)
 }
 
 /// The result of a job that panicked, and of every job after it: the
 /// persister is still alive and holds the lease, but runs no more saves.
-fn stopped_after_panic() -> io::Error {
-    io::Error::other("session persister stopped after a save panicked; no further saves run")
+fn stopped_after_panic() -> SaveError {
+    SaveError::Refused(SaveRefusal::StoppedAfterPanic)
 }
 
 /// The state the persister's thread owns.
@@ -165,13 +165,13 @@ impl PersistState {
     /// state is kept so the lease stays held until retirement. For an inline
     /// persister this means a panicking save no longer ends the server: it
     /// keeps running with saves off, which the error log says once.
-    fn run_guarded(&mut self, work: Work) -> io::Result<()> {
+    fn run_guarded(&mut self, work: Work) -> Result<(), SaveError> {
         if !self.accepting_jobs {
             return Err(stopped_after_panic());
         }
         #[expect(
             clippy::disallowed_methods,
-            reason = "the persister owns its job panics: a caught panic abandons that job and every later one, while the lease stays held until retirement"
+            reason = "the persister owns its job panics: a caught panic fails that job and refuses every later one, while the lease stays held until retirement"
         )]
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| work(self)));
         outcome.unwrap_or_else(|_| {
@@ -189,7 +189,7 @@ impl PersistState {
         })
     }
 
-    fn run(&mut self, job: PersistJob, now: SystemTime) -> io::Result<()> {
+    fn run(&mut self, job: PersistJob, now: SystemTime) -> Result<(), SaveError> {
         match job {
             PersistJob::Clear => {
                 self.history.clear();
@@ -246,7 +246,7 @@ impl PersistState {
 
 /// One unit the worker runs against its state: a submitted job, bound to its
 /// time stamp, or in tests whatever the test needs to run there.
-type Work = Box<dyn FnOnce(&mut PersistState) -> io::Result<()> + Send>;
+type Work = Box<dyn FnOnce(&mut PersistState) -> Result<(), SaveError> + Send>;
 
 struct Command {
     work: Work,
@@ -336,9 +336,9 @@ impl SessionPersister {
 
     /// Queues `job`, stamped `now` (the time used for recovery-copy naming
     /// and cadence). Jobs run in submission order. After retirement a job is
-    /// accepted and does nothing, like a retired writer's. A lease-only
-    /// persister fails every job. After a worker job panics, this and later
-    /// jobs fail while the worker keeps the lease until retirement. Every job
+    /// refused without touching the files. A lease-only persister refuses
+    /// every job. After a worker job panics, this and later jobs fail while
+    /// the worker keeps the lease until retirement. Every job
     /// fires the completion signal when it ends, including one that was
     /// refused.
     pub fn submit(&mut self, job: PersistJob, now: SystemTime) -> PendingSave {
@@ -355,13 +355,13 @@ impl SessionPersister {
             }
             Worker::Inline(state) => done.complete(state.run_guarded(work)),
             Worker::LeaseOnly(_) => done.complete(Err(lease_only())),
-            Worker::Retired => done.complete(Ok(())),
+            Worker::Retired => done.complete(Err(SaveError::Refused(SaveRefusal::Retired))),
         }
         pending
     }
 
     /// Finishes or abandons every queued job, then releases the data directory
-    /// lease. Later jobs are ignored.
+    /// lease. Later jobs are refused.
     pub fn retire(&mut self) {
         match std::mem::replace(&mut self.worker, Worker::Retired) {
             Worker::Thread { commands, thread } => {
@@ -399,6 +399,7 @@ impl Drop for SessionPersister {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io;
 
     /// The inline fallback, built directly: jobs run on the submitting
     /// thread, and `finished` fires before `submit` returns.
@@ -482,10 +483,10 @@ mod tests {
             "retiring finishes the queued save first"
         );
         DataDirLease::acquire(&directory).expect("the lease is free after retiring");
-        persister
-            .submit(PersistJob::Clear, now)
-            .wait()
-            .expect("a retired persister ignores jobs");
+        assert!(matches!(
+            persister.submit(PersistJob::Clear, now).wait(),
+            Err(SaveError::Refused(SaveRefusal::Retired))
+        ));
         assert!(
             directory
                 .join(super::super::io::SESSION_FILE_NAME)

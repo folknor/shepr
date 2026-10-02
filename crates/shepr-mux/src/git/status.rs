@@ -33,13 +33,25 @@ type RepoContext = (GitWorktreeInfo, bool, Vec<FileDep>, Option<ConfigCtx>);
 
 fn repo_context(cwd: &Path, read_errors: &mut Vec<GitReadError>) -> Option<RepoContext> {
     let info = git_worktree_info_with_errors(cwd, read_errors)?;
+    repo_context_for_info(info, read_errors)
+}
+
+fn repo_context_for_discovery(
+    discovery: GitStatusDiscovery,
+    read_errors: &mut Vec<GitReadError>,
+) -> Option<RepoContext> {
+    read_errors.extend(discovery.read_errors);
+    repo_context_for_info(discovery.info?, read_errors)
+}
+
+fn repo_context_for_info(
+    info: GitWorktreeInfo,
+    read_errors: &mut Vec<GitReadError>,
+) -> Option<RepoContext> {
     let (reftable, config_deps) = match git_ref_storage_is_reftable(&info) {
         Ok(result) => result,
         Err(error) => {
-            read_errors.push(GitReadError::FileRead {
-                path: info.git_common_dir.join("config"),
-                message: error.to_string(),
-            });
+            read_errors.push(error);
             return None;
         }
     };
@@ -49,9 +61,43 @@ fn repo_context(cwd: &Path, read_errors: &mut Vec<GitReadError>) -> Option<RepoC
     paths.extend((info.git_dir != info.git_common_dir).then(|| info.git_dir.join("config")));
     let mut deps: Vec<_> = paths.into_iter().map(|path| stamp(path, None)).collect();
     deps.extend(config_deps);
-    let current_info = git_worktree_info_with_errors(cwd, read_errors);
-    deps[0].2 &= current_info.as_ref() == Some(&info) && deps_current(&deps);
+    deps[0].2 &= deps_current(&deps);
     Some((info, reftable, deps, None))
+}
+
+/// Repository discovery captured with the cache key, so a refresh can group
+/// workspaces by checkout and pass the same discovery result into status
+/// computation instead of walking the checkout again.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitStatusDiscovery {
+    cwd: PathBuf,
+    cache_key: PathBuf,
+    info: Option<GitWorktreeInfo>,
+    read_errors: Vec<GitReadError>,
+}
+
+impl GitStatusDiscovery {
+    pub fn cache_key(&self) -> &Path {
+        &self.cache_key
+    }
+}
+
+pub fn git_status_discovery(cwd: &Path) -> GitStatusDiscovery {
+    let mut read_errors = Vec::new();
+    let mut info = git_worktree_info_with_errors(cwd, &mut read_errors);
+    let cache_key = info.as_ref().map_or_else(
+        || cwd.to_path_buf(),
+        |info| canonicalize_best_effort_path(&info.repo_root),
+    );
+    if let Some(info) = &mut info {
+        info.repo_root = cache_key.clone();
+    }
+    GitStatusDiscovery {
+        cwd: cwd.to_path_buf(),
+        cache_key,
+        info,
+        read_errors,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -82,6 +128,21 @@ pub fn git_status_snapshot_for_cwd(
     cwd: &Path,
     cached: Option<&GitStatusCacheEntry>,
 ) -> (WorkspaceGitStatusSnapshot, Option<GitStatusCacheEntry>) {
+    git_status_snapshot(cwd, cached, None)
+}
+
+pub fn git_status_snapshot_for_discovery(
+    discovery: GitStatusDiscovery,
+) -> (WorkspaceGitStatusSnapshot, Option<GitStatusCacheEntry>) {
+    let cwd = discovery.cwd.clone();
+    git_status_snapshot(&cwd, None, Some(discovery))
+}
+
+fn git_status_snapshot(
+    cwd: &Path,
+    cached: Option<&GitStatusCacheEntry>,
+    discovery: Option<GitStatusDiscovery>,
+) -> (WorkspaceGitStatusSnapshot, Option<GitStatusCacheEntry>) {
     // One sample anchors both retry comparisons and deadlines recorded below;
     // a subprocess must not move the cache decision partway through a snapshot.
     let now = Instant::now();
@@ -95,11 +156,14 @@ pub fn git_status_snapshot_for_cwd(
         return (cached.snapshot.clone(), Some(cached.clone()));
     }
 
-    let repository_context = cached
+    let cached_context = cached
         .and_then(|entry| entry.fingerprint.as_ref())
         .map(|fingerprint| fingerprint.repository_context.clone())
-        .filter(|context| deps_current(&context.2))
-        .or_else(|| repo_context(cwd, &mut read_errors));
+        .filter(|context| deps_current(&context.2));
+    let repository_context = match discovery {
+        Some(discovery) => repo_context_for_discovery(discovery, &mut read_errors),
+        None => cached_context.or_else(|| repo_context(cwd, &mut read_errors)),
+    };
     let Some(repository_context) = repository_context else {
         let snapshot = WorkspaceGitStatusSnapshot {
             repo_root: None,

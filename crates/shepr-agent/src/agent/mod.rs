@@ -1,7 +1,10 @@
 //! Agent identity and facts that must agree across detection, integrations,
 //! resume and presentation.
 
+mod report;
 pub mod resume;
+
+pub use report::{HookAuthorityClass, ReportOrigin, ReportOriginError, ReportedAgent};
 
 use std::collections::HashMap;
 use std::fmt;
@@ -376,7 +379,7 @@ pub const AGENTS: [AgentDescriptor; 23] = [
         aliases: &[],
         executable: "pi",
         integration_target: Some(IntegrationTarget::Pi),
-        integration_source: Some("shepr:pi"),
+        integration_source: Some(IntegrationTarget::Pi.source()),
         reserves_native_state: false,
         full_lifecycle_hook_authority: true,
         session_identity_only_integration: false,
@@ -395,7 +398,7 @@ pub const AGENTS: [AgentDescriptor; 23] = [
         aliases: &["claude-code"],
         executable: "claude",
         integration_target: Some(IntegrationTarget::Claude),
-        integration_source: Some("shepr:claude"),
+        integration_source: Some(IntegrationTarget::Claude.source()),
         reserves_native_state: true,
         full_lifecycle_hook_authority: false,
         session_identity_only_integration: false,
@@ -415,7 +418,7 @@ pub const AGENTS: [AgentDescriptor; 23] = [
         aliases: &[],
         executable: "codex",
         integration_target: Some(IntegrationTarget::Codex),
-        integration_source: Some("shepr:codex"),
+        integration_source: Some(IntegrationTarget::Codex.source()),
         reserves_native_state: false,
         full_lifecycle_hook_authority: false,
         session_identity_only_integration: false,
@@ -451,7 +454,7 @@ pub const AGENTS: [AgentDescriptor; 23] = [
         aliases: &["cursor-agent"],
         executable: "cursor-agent",
         integration_target: Some(IntegrationTarget::Cursor),
-        integration_source: Some("shepr:cursor"),
+        integration_source: Some(IntegrationTarget::Cursor.source()),
         reserves_native_state: true,
         full_lifecycle_hook_authority: false,
         session_identity_only_integration: false,
@@ -471,7 +474,7 @@ pub const AGENTS: [AgentDescriptor; 23] = [
         aliases: &["devin-cli", "devin cli"],
         executable: "devin",
         integration_target: Some(IntegrationTarget::Devin),
-        integration_source: Some("shepr:devin"),
+        integration_source: Some(IntegrationTarget::Devin.source()),
         reserves_native_state: true,
         full_lifecycle_hook_authority: false,
         session_identity_only_integration: false,
@@ -491,7 +494,7 @@ pub const AGENTS: [AgentDescriptor; 23] = [
         aliases: &["antigravity", "antigravity-cli"],
         executable: "agy",
         integration_target: Some(IntegrationTarget::AntigravityCli),
-        integration_source: Some("shepr:agy"),
+        integration_source: Some(IntegrationTarget::AntigravityCli.source()),
         reserves_native_state: false,
         full_lifecycle_hook_authority: false,
         session_identity_only_integration: true,
@@ -527,7 +530,7 @@ pub const AGENTS: [AgentDescriptor; 23] = [
         aliases: &[],
         executable: "omp",
         integration_target: Some(IntegrationTarget::Omp),
-        integration_source: Some("shepr:omp"),
+        integration_source: Some(IntegrationTarget::Omp.source()),
         reserves_native_state: false,
         full_lifecycle_hook_authority: true,
         session_identity_only_integration: false,
@@ -546,7 +549,7 @@ pub const AGENTS: [AgentDescriptor; 23] = [
         aliases: &["mastra-code", "mastra code"],
         executable: "mastracode",
         integration_target: Some(IntegrationTarget::Mastracode),
-        integration_source: Some("shepr:mastracode"),
+        integration_source: Some(IntegrationTarget::Mastracode.source()),
         reserves_native_state: false,
         full_lifecycle_hook_authority: true,
         session_identity_only_integration: false,
@@ -566,7 +569,7 @@ pub const AGENTS: [AgentDescriptor; 23] = [
         aliases: &["opencode2", "open-code"],
         executable: "opencode",
         integration_target: Some(IntegrationTarget::Opencode),
-        integration_source: Some("shepr:opencode"),
+        integration_source: Some(IntegrationTarget::Opencode.source()),
         reserves_native_state: false,
         full_lifecycle_hook_authority: true,
         session_identity_only_integration: false,
@@ -585,7 +588,7 @@ pub const AGENTS: [AgentDescriptor; 23] = [
         aliases: &["github-copilot", "ghcs"],
         executable: "copilot",
         integration_target: Some(IntegrationTarget::Copilot),
-        integration_source: Some("shepr:copilot"),
+        integration_source: Some(IntegrationTarget::Copilot.source()),
         reserves_native_state: true,
         full_lifecycle_hook_authority: false,
         session_identity_only_integration: false,
@@ -605,7 +608,7 @@ pub const AGENTS: [AgentDescriptor; 23] = [
         aliases: &["kimi-code", "kimi code"],
         executable: "kimi",
         integration_target: Some(IntegrationTarget::Kimi),
-        integration_source: Some("shepr:kimi"),
+        integration_source: Some(IntegrationTarget::Kimi.source()),
         reserves_native_state: false,
         full_lifecycle_hook_authority: true,
         session_identity_only_integration: false,
@@ -641,7 +644,7 @@ pub const AGENTS: [AgentDescriptor; 23] = [
         aliases: &[],
         executable: "droid",
         integration_target: Some(IntegrationTarget::Droid),
-        integration_source: Some("shepr:droid"),
+        integration_source: Some(IntegrationTarget::Droid.source()),
         reserves_native_state: true,
         full_lifecycle_hook_authority: false,
         session_identity_only_integration: false,
@@ -677,7 +680,7 @@ pub const AGENTS: [AgentDescriptor; 23] = [
         aliases: &["grok-build"],
         executable: "grok",
         integration_target: Some(IntegrationTarget::Grok),
-        integration_source: Some("shepr:grok"),
+        integration_source: Some(IntegrationTarget::Grok.source()),
         reserves_native_state: true,
         full_lifecycle_hook_authority: false,
         session_identity_only_integration: false,
@@ -697,7 +700,7 @@ pub const AGENTS: [AgentDescriptor; 23] = [
         aliases: &["kilo-code", "kilo code"],
         executable: "kilo",
         integration_target: Some(IntegrationTarget::Kilo),
-        integration_source: Some("shepr:kilo"),
+        integration_source: Some(IntegrationTarget::Kilo.source()),
         reserves_native_state: false,
         full_lifecycle_hook_authority: true,
         session_identity_only_integration: false,
@@ -978,63 +981,55 @@ impl IntegrationTarget {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum AgentSource {
-    Official(Agent),
+    Official(IntegrationTarget),
     Custom(String),
 }
 
 impl AgentSource {
     pub fn parse(value: &str) -> Self {
-        Agent::parse_source(value).map_or_else(|| Self::Custom(value.to_owned()), Self::Official)
+        Agent::parse_source(value)
+            .and_then(Agent::integration_target)
+            .map_or_else(|| Self::Custom(value.to_owned()), Self::Official)
     }
 
     pub fn from_pair(source: &str, agent_label: &str) -> Option<Self> {
-        let agent = Agent::parse_canonical_label(agent_label)?;
-        (agent.integration_source() == Some(source)).then_some(Self::Official(agent))
-    }
-
-    /// Returns an owned projection for state records that take ownership of the source.
-    pub fn to_source_string(&self) -> String {
-        self.as_str().to_owned()
+        let target = Agent::parse_canonical_label(agent_label)?.integration_target()?;
+        (target.source() == source).then_some(Self::Official(target))
     }
 
     pub fn as_str(&self) -> &str {
         match self {
-            Self::Official(agent) => agent.integration_source().unwrap_or_default(),
+            Self::Official(target) => target.source(),
             Self::Custom(source) => source,
         }
     }
 
     pub const fn agent(&self) -> Option<Agent> {
         match self {
-            Self::Official(agent) => Some(*agent),
+            Self::Official(target) => Some(target.agent()),
             Self::Custom(_) => None,
         }
     }
 }
 
-impl From<String> for AgentSource {
-    fn from(value: String) -> Self {
-        Self::parse(&value)
-    }
-}
-
-impl From<&str> for AgentSource {
-    fn from(value: &str) -> Self {
-        Self::parse(value)
-    }
-}
-
-// Formatting and string comparisons let callers use the borrowed projection
-// without allocating the owned value needed by state records.
-impl PartialEq<&str> for AgentSource {
-    fn eq(&self, other: &&str) -> bool {
-        self.as_str() == *other
-    }
-}
-
-impl PartialEq<&str> for Agent {
-    fn eq(&self, other: &&str) -> bool {
-        self.label() == *other
+impl IntegrationTarget {
+    pub const fn source(self) -> &'static str {
+        match self {
+            Self::Pi => "shepr:pi",
+            Self::Omp => "shepr:omp",
+            Self::Claude => "shepr:claude",
+            Self::Codex => "shepr:codex",
+            Self::Copilot => "shepr:copilot",
+            Self::Devin => "shepr:devin",
+            Self::Droid => "shepr:droid",
+            Self::Kimi => "shepr:kimi",
+            Self::Opencode => "shepr:opencode",
+            Self::Kilo => "shepr:kilo",
+            Self::Cursor => "shepr:cursor",
+            Self::Mastracode => "shepr:mastracode",
+            Self::AntigravityCli => "shepr:agy",
+            Self::Grok => "shepr:grok",
+        }
     }
 }
 
@@ -1118,6 +1113,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn official_sources_round_trip_with_nonempty_names() {
+        for target in IntegrationTarget::all() {
+            let source = AgentSource::Official(target);
+            assert!(!source.as_str().is_empty());
+            assert_eq!(target.agent().integration_source(), Some(target.source()));
+            let json = serde_json::to_string(&source).expect("serialize source");
+            assert_eq!(
+                serde_json::from_str::<AgentSource>(&json).expect("deserialize source"),
+                source
+            );
+        }
+    }
+
+    #[test]
     fn descriptors_are_the_domain_source_for_agent_views() {
         let agents = Agent::all().collect::<Vec<_>>();
         assert_eq!(AGENTS.len(), agents.len());
@@ -1135,12 +1144,11 @@ mod tests {
             } else {
                 assert!(descriptor.integration_hook_events.is_empty());
             }
-            // A source need not have an installable integration; when it is
-            // present it must still resolve back to this agent.
+            // Official sources identify installable integration targets.
             if let Some(source) = descriptor.integration_source {
                 assert_eq!(
                     AgentSource::from_pair(source, descriptor.label),
-                    Some(AgentSource::Official(agent))
+                    agent.integration_target().map(AgentSource::Official)
                 );
             }
         }

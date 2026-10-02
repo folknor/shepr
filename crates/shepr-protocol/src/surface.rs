@@ -260,23 +260,16 @@ pub fn sort_patch_rows(rows: &mut [PaneSurfacePatchRow]) {
     rows.sort_unstable_by_key(|row| (row.y, row.x));
 }
 
-/// Incremental terminal-cell update against one committed complete pane surface.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// Client-local incremental update decoded from a wire `SurfaceUpdate` against
+/// one committed complete pane surface.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PaneSurfacePatch {
     pub boot_id: BootId,
     pub projection_revision: ProjectionRevision,
     pub base_surface_revision: SurfaceRevision,
     pub surface_revision: SurfaceRevision,
-    #[serde(
-        serialize_with = "codec::serialize_bounded_vec::<MAX_SURFACE_PATCH_SPANS, _, _>",
-        deserialize_with = "codec::deserialize_bounded_vec::<MAX_SURFACE_PATCH_SPANS, _, _>"
-    )]
     pub rows: Vec<PaneSurfacePatchRow>,
     /// Updated metadata for panes whose terminal content changed.
-    #[serde(
-        serialize_with = "codec::serialize_bounded_vec::<MAX_SURFACE_PANES, _, _>",
-        deserialize_with = "codec::deserialize_bounded_vec::<MAX_SURFACE_PANES, _, _>"
-    )]
     pub panes: Vec<PaneSurfacePane>,
     /// Final cursor relative to the pane surface.
     pub cursor: Option<CursorState>,

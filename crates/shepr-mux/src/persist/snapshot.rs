@@ -1158,8 +1158,8 @@ mod tests {
                 .expect("test session ref");
             let mut terminal = TerminalState::new(terminal_id.clone(), PathBuf::from("/"));
             terminal.seed_hook_authority_for_test(Some(crate::terminal::state::HookAuthority {
-                source: source.into(),
-                agent_label: label.into(),
+                origin: shepr_agent::agent::ReportOrigin::parse(source, label)
+                    .expect("test origin"),
                 state: shepr_agent::detect::AgentState::Working,
                 reported_at: std::time::Instant::now(),
                 session_ref: Some(live_ref),
@@ -1167,7 +1167,7 @@ mod tests {
             terminal.set_persisted_agent_session(
                 shepr_agent::agent::resume::PersistedAgentSession {
                     source: shepr_agent::agent::AgentSource::Official(
-                        shepr_agent::agent::Agent::Claude,
+                        shepr_agent::agent::IntegrationTarget::Claude,
                     ),
                     agent: shepr_agent::agent::Agent::Claude,
                     session_ref: saved_ref.clone(),
@@ -1195,7 +1195,7 @@ mod tests {
                 saved,
                 Some(&super::PaneAgentSessionSnapshot {
                     source: shepr_agent::agent::AgentSource::Official(
-                        shepr_agent::agent::Agent::Claude,
+                        shepr_agent::agent::IntegrationTarget::Claude,
                     ),
                     agent: shepr_agent::agent::Agent::Claude,
                     session_ref: saved_ref,

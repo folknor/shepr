@@ -24,8 +24,7 @@ pub(crate) enum StateEvent {
     HookStateReported {
         pane_id: PaneId,
         sample: shepr_mux::terminal::state::HookClockSample,
-        source: shepr_agent::agent::AgentSource,
-        agent_label: String,
+        origin: shepr_agent::agent::ReportOrigin,
         state: AgentState,
         seq: Option<u64>,
         session_ref: Option<shepr_agent::agent::resume::AgentSessionRef>,
@@ -33,8 +32,7 @@ pub(crate) enum StateEvent {
     AgentSessionReported {
         pane_id: PaneId,
         sample: shepr_mux::terminal::state::HookClockSample,
-        source: shepr_agent::agent::AgentSource,
-        agent_label: String,
+        origin: shepr_agent::agent::ReportOrigin,
         seq: Option<u64>,
         session_ref: Option<shepr_agent::agent::resume::AgentSessionRef>,
         session_start_source: Option<shepr_agent::agent::resume::AgentSessionStartSource>,

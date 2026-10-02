@@ -35,9 +35,10 @@ pub(super) enum PaneExitCheckpoint {
         generation: u64,
         layout: Box<PreservedLayout>,
     },
-    /// Checkpoints failed `CHECKPOINT_MAX_FAILURES` times in a row. Every
-    /// generation ever issued is released (`through`), and no new exit is
-    /// held until any save succeeds.
+    /// Checkpoints failed `CHECKPOINT_MAX_FAILURES` times in a row, or the
+    /// persister stopped accepting saves for this boot. Every generation ever
+    /// issued is released (`through`), and no new exit is held until any save
+    /// succeeds.
     Abandoned { through: u64 },
 }
 
@@ -227,6 +228,13 @@ impl PaneExitCheckpoint {
                 through: *generation,
             };
         }
+    }
+
+    /// Releases every held exit when the persister cannot accept another
+    /// checkpoint during this boot.
+    pub(super) fn abandon(&mut self) {
+        let through = self.issued();
+        *self = Self::Abandoned { through };
     }
 
     #[cfg(test)]

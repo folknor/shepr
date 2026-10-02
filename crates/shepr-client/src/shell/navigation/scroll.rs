@@ -84,21 +84,15 @@ pub(super) fn render_list_scrollbar(
     metrics: shepr_termio::ScrollMetrics,
     palette: &Palette,
 ) {
-    let Some(thumb) = shepr_termio::scroll::scrollbar_thumb(metrics, track) else {
-        return;
-    };
-    for row in track.y..track.bottom() {
-        if let Some(cell) = buffer.cell_mut((track.x, row)) {
-            cell.set_symbol("▕")
-                .set_style(Style::default().fg(palette.surface_dim));
-        }
-    }
-    for row in thumb.top..thumb.top.saturating_add(thumb.len) {
-        if let Some(cell) = buffer.cell_mut((track.x, row)) {
-            cell.set_symbol("▕")
-                .set_style(Style::default().fg(palette.overlay0));
-        }
-    }
+    shepr_termio::scroll::render_scrollbar_buffer(
+        buffer,
+        metrics,
+        track,
+        "▕",
+        Style::default().fg(palette.surface_dim),
+        "▕",
+        Style::default().fg(palette.overlay0),
+    );
 }
 
 #[cfg(test)]

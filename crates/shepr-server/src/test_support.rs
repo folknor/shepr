@@ -301,8 +301,8 @@ pub(crate) trait TerminalStateFixture {
     /// A hook report arriving now, without a session reference.
     fn set_hook_authority(
         &mut self,
-        source: String,
-        agent_label: String,
+        source: &str,
+        agent_label: &str,
         state: AgentState,
         seq: Option<u64>,
     ) -> Option<EffectiveStateChange>;
@@ -326,8 +326,8 @@ impl TerminalStateFixture for TerminalState {
 
     fn set_hook_authority(
         &mut self,
-        source: String,
-        agent_label: String,
+        source: &str,
+        agent_label: &str,
         state: AgentState,
         seq: Option<u64>,
     ) -> Option<EffectiveStateChange> {
@@ -366,11 +366,11 @@ pub(crate) fn test_codex_plan(
     identity: &str,
     argv: Vec<String>,
 ) -> shepr_agent::agent::resume::AgentResumePlan {
-    use shepr_agent::agent::AgentSource;
     use shepr_agent::agent::resume::{AgentSessionRef, PersistedAgentSession};
+    use shepr_agent::agent::{AgentSource, IntegrationTarget};
     let session_id = identity.rsplit('\0').next().unwrap_or(identity);
     let session = PersistedAgentSession::new(
-        AgentSource::Official(Agent::Codex),
+        AgentSource::Official(IntegrationTarget::Codex),
         Agent::Codex,
         AgentSessionRef::id(session_id).expect("test session id is valid"),
     )

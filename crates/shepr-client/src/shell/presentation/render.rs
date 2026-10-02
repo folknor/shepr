@@ -69,10 +69,7 @@ pub(super) fn render_mode_bar(
         .bg(palette.panel_bg)
         .add_modifier(Modifier::BOLD);
     let mode_style = Style::default()
-        .fg(match palette.panel_bg {
-            ratatui::style::Color::Reset => palette.surface_dim,
-            color => color,
-        })
+        .fg(panel_contrast_fg(palette))
         .bg(if mode == ClientShellMode::Resize {
             palette.mauve
         } else {

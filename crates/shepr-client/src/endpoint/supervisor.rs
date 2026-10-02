@@ -26,7 +26,7 @@ pub(crate) enum EndpointSupervisorEvent {
         endpoint_id: ClientEndpointId,
         generation: u64,
         status: ClientEndpointStatus,
-        message: shepr_remote::SshFailureDiagnostic,
+        message: shepr_remote::EndpointFailure,
         connector: Option<OwnedConnector>,
     },
     Connected {
@@ -262,7 +262,7 @@ impl EndpointSupervisors {
                 let event = match result {
                     Ok((connector, Ok(event))) => event.with_connector(connector),
                     Ok((connector, Err(error))) => {
-                        let failure = shepr_remote::SshFailureDiagnostic::from_error(&error);
+                        let failure = shepr_remote::EndpointFailure::from_error(&error);
                         EndpointSupervisorEvent::Status {
                             endpoint_id: task_endpoint_id,
                             generation,
@@ -271,15 +271,18 @@ impl EndpointSupervisors {
                             connector,
                         }
                     }
-                    Err(error) => EndpointSupervisorEvent::Status {
-                        endpoint_id: task_endpoint_id,
-                        generation,
-                        status: ClientEndpointStatus::Reconnecting,
-                        message: shepr_remote::SshFailureDiagnostic::from_message(format!(
+                    Err(error) => {
+                        let failure = shepr_remote::EndpointFailure::local_setup(format!(
                             "endpoint connection task stopped unexpectedly: {error}"
-                        )),
-                        connector: None,
-                    },
+                        ));
+                        EndpointSupervisorEvent::Status {
+                            endpoint_id: task_endpoint_id,
+                            generation,
+                            status: ClientEndpointStatus::after_failure(&failure),
+                            message: failure,
+                            connector: None,
+                        }
+                    }
                 };
                 if !shutdown.load(Ordering::Acquire) {
                     // The send fails only once the client loop has exited and dropped its
@@ -397,20 +400,6 @@ impl EndpointSupervisors {
         }
         true
     }
-
-    pub(crate) fn disconnected(
-        &mut self,
-        endpoint_id: &ClientEndpointId,
-        generation: u64,
-        now: Instant,
-    ) -> bool {
-        self.record_status(
-            endpoint_id,
-            generation,
-            ClientEndpointStatus::Reconnecting,
-            now,
-        )
-    }
 }
 
 impl Drop for EndpointSupervisors {
@@ -434,11 +423,13 @@ fn connect_once(
             let remaining = attempt_time_remaining(deadline)?;
             let stream = shepr_platform::ipc::connect_trusted_local_stream_within(path, remaining)
                 .map_err(|error| {
-                    // An absent Local socket is transient, unlike a missing SSH install.
+                    // This boundary knows that an absent socket is a local server outage.
                     if error.kind() == std::io::ErrorKind::NotFound {
                         std::io::Error::new(
-                            std::io::ErrorKind::ConnectionRefused,
-                            "Local is unavailable; start its server to reconnect",
+                            error.kind(),
+                            shepr_remote::EndpointFailure::retry(
+                                "Local is unavailable; start its server to reconnect",
+                            ),
                         )
                     } else {
                         error
@@ -526,7 +517,7 @@ fn establish(
                 .and_then(shepr_remote::MachineSshBridge::reported_failure)
                 .map(|failure| {
                     let kind = failure.kind();
-                    let diagnostic = shepr_remote::SshFailureDiagnostic::from_error(&failure)
+                    let diagnostic = shepr_remote::EndpointFailure::from_error(&failure)
                         .with_context(HANDSHAKE_CONTEXT);
                     std::io::Error::new(kind, diagnostic)
                 })
@@ -543,8 +534,14 @@ fn establish(
     // No encoding or capability checks: the handshake's build-identity
     // preamble already proved the endpoint is this same build, so it speaks
     // the semantic client shell and has every capability this build has.
-    let reader = stream.try_clone()?;
-    let writer = NativeEndpointTransport::with_lifetime(stream, lifetime)?;
+    let setup_error = |error: std::io::Error| {
+        std::io::Error::new(
+            error.kind(),
+            shepr_remote::EndpointFailure::local_setup(error.to_string()),
+        )
+    };
+    let reader = stream.try_clone().map_err(setup_error)?;
+    let writer = NativeEndpointTransport::with_lifetime(stream, lifetime).map_err(setup_error)?;
     Ok(EndpointSupervisorEvent::Connected {
         endpoint_id,
         generation,
@@ -564,65 +561,74 @@ pub(crate) fn handshake_error(
 ) -> std::io::Error {
     use crate::ClientError;
     use shepr_protocol::FramingError;
-    let error = match error {
-        ClientError::EndpointSetup(error)
-        | ClientError::ConnectionFailed(error)
-        | ClientError::ConnectionLost(error)
-        | ClientError::HostTerminal(error)
-        | ClientError::Protocol(FramingError::Io(error)) => error,
-        // A full server frees a slot when another client disconnects, and a
-        // starting server accepts clients once its panes are restored, so
-        // both refusals are retried like a server shutting down while
-        // connecting, never parked as an incompatibility.
-        ClientError::HandshakeRejected {
-            error:
-                error @ (shepr_protocol::HandshakeRefusal::ConnectionLimit(_)
-                | shepr_protocol::HandshakeRefusal::ServerStarting),
-        } => std::io::Error::new(std::io::ErrorKind::ConnectionAborted, error),
-        ClientError::HandshakeRejected { error, .. } => {
-            std::io::Error::new(std::io::ErrorKind::Unsupported, error)
-        }
-        ClientError::Preamble(shepr_protocol::preamble::PreambleError::DifferentBuild(peer))
-            if mismatch_guidance.is_some() =>
-        {
-            std::io::Error::new(
-                std::io::ErrorKind::Unsupported,
-                local_build_mismatch(&peer.build_id, mismatch_guidance.unwrap_or_default()),
-            )
-        }
-        ClientError::Preamble(
-            error @ shepr_protocol::preamble::PreambleError::DifferentBuild(_),
-        ) => std::io::Error::new(std::io::ErrorKind::Unsupported, error),
-        ClientError::Preamble(error) => std::io::Error::new(std::io::ErrorKind::InvalidData, error),
-        ClientError::UnexpectedWelcome => std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            crate::ClientError::UnexpectedWelcome,
-        ),
-        // A peer that closes before Welcome is a server restarting, a dropped SSH link or a
-        // remote launch that failed: all transient, so this must stay out of InvalidData,
-        // which the attention classifier treats as a compatibility problem.
-        ClientError::Protocol(FramingError::UnexpectedEof) => std::io::Error::new(
-            std::io::ErrorKind::UnexpectedEof,
-            "connection closed before the endpoint finished connecting",
-        ),
-        ClientError::Protocol(error) => {
-            std::io::Error::new(std::io::ErrorKind::InvalidData, error.to_string())
-        }
-        ClientError::ServerShutdown { reason } => std::io::Error::new(
-            std::io::ErrorKind::ConnectionAborted,
-            reason.map_or_else(
-                || "server shut down while connecting".into(),
-                |reason| reason.to_string(),
+    use shepr_remote::EndpointFailure;
+    let (kind, failure) =
+        match error {
+            ClientError::EndpointSetup(error) | ClientError::HostTerminal(error) => (
+                error.kind(),
+                EndpointFailure::local_setup(error.to_string()),
             ),
-        ),
-        // A handshake never panics into an error value; this only keeps the
-        // match exhaustive, and the panic latch ends the client regardless.
-        ClientError::Panicked => std::io::Error::other(ClientError::Panicked),
-    };
-    let kind = error.kind();
-    let diagnostic =
-        shepr_remote::SshFailureDiagnostic::from_error(&error).with_context(HANDSHAKE_CONTEXT);
-    std::io::Error::new(kind, diagnostic)
+            ClientError::ConnectionFailed(error)
+            | ClientError::ConnectionLost(error)
+            | ClientError::Protocol(FramingError::Io(error))
+            | ClientError::Preamble(shepr_protocol::preamble::PreambleError::Io(error)) => {
+                (error.kind(), EndpointFailure::from_error(&error))
+            }
+            ClientError::HandshakeRejected {
+                error:
+                    error @ (shepr_protocol::HandshakeRefusal::ConnectionLimit(_)
+                    | shepr_protocol::HandshakeRefusal::ServerStarting),
+            } => (
+                std::io::ErrorKind::ConnectionAborted,
+                EndpointFailure::retry(error.to_string()),
+            ),
+            ClientError::HandshakeRejected { error } => (
+                std::io::ErrorKind::Unsupported,
+                EndpointFailure::incompatible(error.to_string()),
+            ),
+            ClientError::Preamble(shepr_protocol::preamble::PreambleError::DifferentBuild(
+                peer,
+            )) if mismatch_guidance.is_some() => (
+                std::io::ErrorKind::Unsupported,
+                EndpointFailure::incompatible(local_build_mismatch(
+                    &peer.build_id,
+                    mismatch_guidance.unwrap_or_default(),
+                )),
+            ),
+            ClientError::Preamble(
+                error @ shepr_protocol::preamble::PreambleError::DifferentBuild(_),
+            ) => (
+                std::io::ErrorKind::Unsupported,
+                EndpointFailure::incompatible(error.to_string()),
+            ),
+            ClientError::Preamble(shepr_protocol::preamble::PreambleError::UnexpectedEof)
+            | ClientError::Protocol(FramingError::UnexpectedEof) => (
+                std::io::ErrorKind::UnexpectedEof,
+                EndpointFailure::retry("connection closed before the endpoint finished connecting"),
+            ),
+            ClientError::Preamble(error) => (
+                std::io::ErrorKind::InvalidData,
+                EndpointFailure::incompatible(error.to_string()),
+            ),
+            ClientError::UnexpectedWelcome => (
+                std::io::ErrorKind::InvalidData,
+                EndpointFailure::incompatible(ClientError::UnexpectedWelcome.to_string()),
+            ),
+            ClientError::Protocol(error) => (
+                std::io::ErrorKind::InvalidData,
+                EndpointFailure::incompatible(error.to_string()),
+            ),
+            ClientError::ServerShutdown { reason } => (
+                std::io::ErrorKind::ConnectionAborted,
+                EndpointFailure::server_shutdown(reason),
+            ),
+            // The panic latch ends the client; this arm only keeps the match exhaustive.
+            ClientError::Panicked => (
+                std::io::ErrorKind::Other,
+                EndpointFailure::local_setup(ClientError::Panicked.to_string()),
+            ),
+        };
+    std::io::Error::new(kind, failure.with_context(HANDSHAKE_CONTEXT))
 }
 
 /// The shell status line and machine notice title supply the endpoint label;
@@ -659,6 +665,20 @@ fn retry_delay(attempt: u32) -> Duration {
 impl EndpointSupervisors {
     fn supervises(&self, endpoint_id: &ClientEndpointId) -> bool {
         self.endpoints.contains_key(endpoint_id)
+    }
+
+    pub(crate) fn disconnected(
+        &mut self,
+        endpoint_id: &ClientEndpointId,
+        generation: u64,
+        now: Instant,
+    ) -> bool {
+        self.record_status(
+            endpoint_id,
+            generation,
+            ClientEndpointStatus::Reconnecting,
+            now,
+        )
     }
 }
 

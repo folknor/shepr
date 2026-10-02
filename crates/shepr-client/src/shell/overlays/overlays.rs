@@ -262,12 +262,6 @@ fn row(i: Rect, ws: &[u16], gap: u16, off: u16) -> Vec<Rect> {
         })
         .collect()
 }
-fn contrast(p: &Palette) -> ratatui::style::Color {
-    match p.panel_bg {
-        ratatui::style::Color::Reset => p.surface_dim,
-        c => c,
-    }
-}
 fn render_rename_overlay(
     b: &mut Buffer,
     v: &ClientRenameOverlay,
@@ -303,7 +297,7 @@ fn render_rename_overlay(
         *save,
         " ↵ save ",
         Style::default()
-            .fg(contrast(p))
+            .fg(panel_contrast_fg(p))
             .bg(p.accent)
             .add_modifier(Modifier::BOLD),
     );
@@ -476,7 +470,7 @@ fn render_navigator_overlay(
                 .add_modifier(Modifier::DIM)
         } else if ix == selected {
             Style::default()
-                .fg(contrast(p))
+                .fg(panel_contrast_fg(p))
                 .bg(p.accent)
                 .add_modifier(Modifier::BOLD)
         } else {
@@ -639,7 +633,13 @@ fn render_navigator_overlay(
     }
     if let Some(track) = scrollbar {
         shepr_termio::scroll::render_scrollbar_buffer(
-            b, metrics, track, p.overlay0, p.overlay1, "▐",
+            b,
+            metrics,
+            track,
+            "▕",
+            Style::default().fg(p.overlay0),
+            "▐",
+            Style::default().fg(p.overlay1),
         );
     }
     if let Some(r) = rows.get(selected) {
@@ -777,7 +777,7 @@ fn render_help_overlay(
             " esc close "
         },
         Style::default()
-            .fg(contrast(p))
+            .fg(panel_contrast_fg(p))
             .bg(p.accent)
             .add_modifier(Modifier::BOLD),
     );
@@ -837,27 +837,16 @@ fn render_help_overlay(
         text_area,
         b,
     );
-    if let Some(track) = scrollbar
-        && let Some(thumb) = shepr_termio::scroll::scrollbar_thumb(metrics, track)
-    {
-        for y in track.y..track.bottom() {
-            set_cell(
-                b,
-                track.x,
-                y,
-                "▐",
-                Style::default().fg(p.overlay0).bg(p.panel_bg),
-            );
-        }
-        for y in thumb.top..thumb.top.saturating_add(thumb.len) {
-            set_cell(
-                b,
-                track.x,
-                y,
-                "▐",
-                Style::default().fg(p.overlay1).bg(p.panel_bg),
-            );
-        }
+    if let Some(track) = scrollbar {
+        shepr_termio::scroll::render_scrollbar_buffer(
+            b,
+            metrics,
+            track,
+            "▐",
+            Style::default().fg(p.overlay0).bg(p.panel_bg),
+            "▐",
+            Style::default().fg(p.overlay1).bg(p.panel_bg),
+        );
     }
 
     // Help search and scrolling controls are fixed by `route_overlay_key`; they are not
@@ -920,7 +909,7 @@ fn render_confirm_close_overlay(
         *ok,
         " ↵ confirm ",
         Style::default()
-            .fg(contrast(p))
+            .fg(panel_contrast_fg(p))
             .bg(p.red)
             .add_modifier(Modifier::BOLD),
     );

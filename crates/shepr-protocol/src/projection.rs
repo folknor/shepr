@@ -10,6 +10,10 @@ pub struct ClientShellSnapshot {
     pub revision: ProjectionRevision,
     /// Incomplete saved-session restore for this boot, repeated on every projection.
     pub restore_notice: Option<SessionRestoreNotice>,
+    /// The server stopped saving its session for the rest of this boot (its
+    /// persister refused a save it can never run): layout changes from then
+    /// on are not restored when it next starts. Repeated on every projection.
+    pub session_saves_stopped: bool,
     pub focused_workspace_id: Option<WorkspaceId>,
     pub focused_pane_id: Option<PublicPaneId>,
     pub workspaces: Vec<ClientShellWorkspace>,

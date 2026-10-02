@@ -5,9 +5,12 @@ use super::common::PaneAgentState;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaneReportAgentParams {
     pub pane_id: String,
-    /// A built-in source must match the normalized agent label. Other source
-    /// names are custom state reporters and cannot own a resume identity.
+    /// The shepr: namespace is reserved for bundled integrations, whose source
+    /// must match the resolved agent. Other names are custom state reporters
+    /// and cannot own a resume identity.
     pub source: String,
+    /// Resolved and validated with source before internal dispatch. The JSON
+    /// boundary retains strings so custom reporter names remain an open set.
     pub agent: String,
     pub state: PaneAgentState,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -17,19 +20,24 @@ pub struct PaneReportAgentParams {
     /// supplied invalid official reference fails validation before dispatch.
     pub agent_session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Mutually exclusive with agent_session_id; both supplied is a bad request.
     pub agent_session_path: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaneReportAgentSessionParams {
     pub pane_id: String,
+    /// The same reserved namespace and source/agent validation as a state report.
     pub source: String,
+    /// Resolved and validated with source before internal dispatch. The JSON
+    /// boundary retains strings so custom reporter names remain an open set.
     pub agent: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seq: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Mutually exclusive with agent_session_id; both supplied is a bad request.
     pub agent_session_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_start_source: Option<String>,

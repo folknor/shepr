@@ -61,6 +61,10 @@ pub(super) fn display_width(text: &str) -> usize {
     super::render::rendered_text_width(text)
 }
 
+fn sidebar_sections_can_split(height: u16) -> bool {
+    height >= 6
+}
+
 fn truncate_end(text: &str, max_width: usize) -> String {
     if display_width(text) <= max_width {
         return text.to_string();
@@ -89,7 +93,7 @@ fn sidebar_section_heights(total_height: u16, split_ratio: SectionSplit) -> (u16
     if total_height == 0 {
         return (0, 0);
     }
-    if total_height < 6 {
+    if !sidebar_sections_can_split(total_height) {
         let workspace_height = total_height.div_ceil(2);
         return (
             workspace_height,
@@ -133,7 +137,7 @@ pub(super) fn expanded_sidebar_sections(area: Rect, split_ratio: SectionSplit) -
 
 pub(super) fn sidebar_section_divider_rect(area: Rect, split_ratio: SectionSplit) -> Rect {
     let content = Rect::new(area.x, area.y, area.width.saturating_sub(1), area.height);
-    if content.width == 0 || content.height < 6 {
+    if content.width == 0 || !sidebar_sections_can_split(content.height) {
         return Rect::default();
     }
 

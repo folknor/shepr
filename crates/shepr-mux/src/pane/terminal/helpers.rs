@@ -27,7 +27,7 @@ pub(super) fn collect_core_effects(core: &mut PaneTerminalCore) -> CoreEffects {
         .terminal
         .take_pwd_changes()
         .into_iter()
-        .filter_map(|value| parse_reported_cwd(&value.0))
+        .filter_map(|report| parse_reported_cwd(&report))
         .next_back();
     let default_color_owner_pending = note_default_color_change(core);
     CoreEffects {

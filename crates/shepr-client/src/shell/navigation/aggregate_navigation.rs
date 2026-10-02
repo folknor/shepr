@@ -46,6 +46,26 @@ pub(super) struct AggregateAgentTarget {
     pub(super) pane_id: shepr_protocol::PublicPaneId,
 }
 
+pub(super) fn cycle_index(length: usize, current: Option<usize>, delta: isize) -> Option<usize> {
+    let length = isize::try_from(length).ok().filter(|length| *length > 0)?;
+    let length_usize = usize::try_from(length).ok()?;
+    let next = match current.filter(|index| *index < length_usize) {
+        Some(index) => {
+            let index = isize::try_from(index).ok()?;
+            let step = delta.rem_euclid(length);
+            let wrap_at = length - step;
+            if index >= wrap_at {
+                index - wrap_at
+            } else {
+                index + step
+            }
+        }
+        None if delta < 0 => length - 1,
+        None => 0,
+    };
+    usize::try_from(next).ok()
+}
+
 pub(super) fn agent_target_index(
     targets: &[AggregateAgentTarget],
     active_endpoint_id: &ClientEndpointId,
@@ -56,20 +76,17 @@ pub(super) fn agent_target_index(
 
     match action {
         KeybindAction::FocusAgent(index) => (index < targets.len()).then_some(index),
-        KeybindAction::PreviousAgent | KeybindAction::NextAgent if !targets.is_empty() => {
+        KeybindAction::PreviousAgent | KeybindAction::NextAgent => {
             let current = targets.iter().position(|target| {
                 &target.endpoint_id == active_endpoint_id
                     && Some(target.pane_id.as_str()) == focused_pane_id
             });
-            match (current, action) {
-                (Some(index), KeybindAction::PreviousAgent) => {
-                    Some((index + targets.len() - 1) % targets.len())
-                }
-                (Some(index), KeybindAction::NextAgent) => Some((index + 1) % targets.len()),
-                (None, KeybindAction::PreviousAgent) => Some(targets.len() - 1),
-                (None, KeybindAction::NextAgent) => Some(0),
-                _ => None,
-            }
+            let delta = if action == KeybindAction::PreviousAgent {
+                -1
+            } else {
+                1
+            };
+            cycle_index(targets.len(), current, delta)
         }
         _ => None,
     }

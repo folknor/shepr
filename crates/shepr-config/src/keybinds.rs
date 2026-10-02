@@ -3,8 +3,8 @@ use serde::Deserialize;
 
 use super::ClientConfig;
 use crate::limits::{
-    FIRST_INDEXED_BINDING_KEY, INDEXED_BINDING_RANGE_SYNTAX, LAST_INDEXED_BINDING_KEY,
-    MAX_FUNCTION_KEY_NUMBER, MIN_FUNCTION_KEY_NUMBER,
+    FIRST_INDEXED_BINDING_KEY, LAST_INDEXED_BINDING_KEY, MAX_FUNCTION_KEY_NUMBER,
+    MIN_FUNCTION_KEY_NUMBER,
 };
 
 pub(crate) type KeyCombo = (KeyCode, KeyModifiers);
@@ -685,7 +685,8 @@ fn push_indexed_binding(
         KeyCode::Char(FIRST_INDEXED_BINDING_KEY..=LAST_INDEXED_BINDING_KEY)
     ) {
         let diag = format!(
-            "indexed keybinding must use {INDEXED_BINDING_RANGE_SYNTAX}: {field} = {:?}",
+            "indexed keybinding must use {}: {field} = {:?}",
+            indexed_binding_range_syntax(),
             binding.label
         );
         diagnostics.push(diag);
@@ -714,7 +715,8 @@ fn push_navigate_indexed_binding(
         KeyCode::Char(FIRST_INDEXED_BINDING_KEY..=LAST_INDEXED_BINDING_KEY)
     ) {
         diagnostics.push(format!(
-            "indexed keybinding must use {INDEXED_BINDING_RANGE_SYNTAX}: {field} = {:?}",
+            "indexed keybinding must use {}: {field} = {:?}",
+            indexed_binding_range_syntax(),
             binding.label
         ));
         return;
@@ -874,8 +876,8 @@ pub fn format_key_combo(binding: KeyCombo) -> String {
     }
     // "meta" is a config alias for Alt (the terminal convention: Meta sends an
     // ESC prefix, and SGR mouse reports carry it in the Alt bit), so no config
-    // token parses to crossterm's separate META flag. Label META as "alt" so a
-    // printed combo reads back as the same binding.
+    // token parses to crossterm's separate META flag. Label META as "alt" so
+    // config-parseable codes read back as the same binding.
     if modifiers.intersects(KeyModifiers::ALT | KeyModifiers::META) {
         parts.push("alt".to_string());
     }
@@ -903,6 +905,8 @@ pub fn format_key_combo(binding: KeyCombo) -> String {
         KeyCode::Up => "up".to_string(),
         KeyCode::Down => "down".to_string(),
         KeyCode::F(n) => format!("f{n}"),
+        // Config cannot create bindings for every Crossterm KeyCode. Keep a
+        // readable label for arbitrary codes passed to this public formatter.
         _ => format!("{code:?}").to_lowercase(),
     };
 
@@ -922,6 +926,10 @@ fn super_modifier_label() -> &'static str {
     "super"
 }
 
+fn indexed_binding_range_syntax() -> String {
+    format!("{FIRST_INDEXED_BINDING_KEY}..{LAST_INDEXED_BINDING_KEY}")
+}
+
 fn parse_modifier_token(token: &str) -> Option<KeyModifiers> {
     match token.to_lowercase().as_str() {
         "ctrl" | "control" => Some(KeyModifiers::CONTROL),
@@ -938,7 +946,7 @@ fn parse_range_modifiers(s: &str) -> Option<KeyModifiers> {
     let mut saw_range = false;
     for part in s.split('+') {
         let trimmed = part.trim();
-        if trimmed == INDEXED_BINDING_RANGE_SYNTAX {
+        if trimmed == indexed_binding_range_syntax().as_str() {
             if saw_range {
                 return None;
             }

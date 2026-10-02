@@ -395,8 +395,17 @@ impl Decoder {
                             cursor: previous.frame.cursor.clone(),
                             panes: Vec::new(),
                         },
-                        Some(super::SurfaceMeta::Projection(_)) => {
-                            return Err(SurfaceDecodeError::MetadataMismatch);
+                        // The compact branch excludes projection metadata. Keep
+                        // the exhaustive fallback attributable if that guard changes.
+                        Some(super::SurfaceMeta::Projection(meta)) => {
+                            return Err(SurfaceDecodeError::MetadataMismatch.with_subject(
+                                SurfaceDecodeSubject::from_update_header(
+                                    &update.boot_id,
+                                    update.projection_revision,
+                                    update.surface_revision,
+                                    &meta.panes,
+                                ),
+                            ));
                         }
                     };
                     let patch = PaneSurfacePatch {

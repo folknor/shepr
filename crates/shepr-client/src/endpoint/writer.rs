@@ -183,8 +183,14 @@ impl EndpointTransport for NativeEndpointTransport {
         // connection without a word. Pastes are checked against the server's
         // input limit even earlier, in the shell's input handling, and never
         // get this far.
-        let frame = shepr_protocol::encode_frame(message)
-            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        let frame = shepr_protocol::encode_frame(message).map_err(|error| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                shepr_remote::EndpointFailure::local_setup(format!(
+                    "could not encode endpoint message: {error}"
+                )),
+            )
+        })?;
         let len = frame.len();
         if self
             .queued_bytes
@@ -247,7 +253,7 @@ fn queue_full() -> io::Error {
     // lose input ordering; revoke the connection and recover through the normal lifecycle.
     io::Error::new(
         io::ErrorKind::ConnectionAborted,
-        "endpoint output queue is full",
+        shepr_remote::EndpointFailure::backpressure("endpoint output queue is full"),
     )
 }
 

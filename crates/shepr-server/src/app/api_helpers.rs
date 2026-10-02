@@ -51,17 +51,6 @@ pub(super) fn normalized_user_label(label: Option<String>) -> Option<String> {
     }
 }
 
-pub(super) fn normalize_reported_agent_label(agent: &str) -> Option<String> {
-    let trimmed = agent.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    if let Some(agent) = shepr_agent::detect::parse_agent_label(trimmed) {
-        return Some(shepr_agent::detect::agent_label(agent).to_string());
-    }
-    Some(trimmed.to_string())
-}
-
 #[cfg(test)]
 mod agent_status_tests {
     use super::pane_agent_status;

@@ -46,12 +46,16 @@ pub(super) fn render_collapsed(
     let height = usize::from(workspace_area.height);
     let max_scroll = total_rows.saturating_sub(height);
     *state.workspace_scroll = (*state.workspace_scroll).min(max_scroll);
-    if let Some(row) = selected_row {
-        if row < *state.workspace_scroll {
-            *state.workspace_scroll = row;
-        } else if row >= state.workspace_scroll.saturating_add(height) {
-            *state.workspace_scroll = row.saturating_add(1).saturating_sub(height).min(max_scroll);
-        }
+    if let Some(row) = selected_row.filter(|_| height > 0) {
+        let row_heights = vec![1; total_rows];
+        let gaps = vec![0; total_rows];
+        *state.workspace_scroll = super::scroll::list_scroll_start_to_reveal(
+            &row_heights,
+            &gaps,
+            workspace_area.height,
+            *state.workspace_scroll,
+            row,
+        );
     }
     hits.workspace_max_scroll = max_scroll;
     let mut skip = *state.workspace_scroll;
@@ -135,11 +139,7 @@ pub(super) fn render_collapsed(
             let selected = state.selected_workspace_id.is_some_and(|target| {
                 target.matches(&endpoint.endpoint_id, &workspace.workspace_id)
             });
-            let selection_background = if palette.selection_bg == ratatui::style::Color::Reset {
-                palette.active_row_bg
-            } else {
-                palette.selection_bg
-            };
+            let selection_background = super::sidebar::workspace_selection_background(palette);
             if selected {
                 buffer.set_style(rect, Style::default().bg(selection_background));
             } else if focused {

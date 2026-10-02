@@ -101,8 +101,7 @@ pub(super) fn absolute_process_cwd(pid: u32) -> Option<std::path::PathBuf> {
 /// unusable paths are left to whoever launches in them (the launch falls back
 /// by chdir).
 pub(super) fn readlink_process_cwd(pid: u32) -> Option<std::path::PathBuf> {
-    absolute_process_cwd(pid)
-        .filter(|cwd| !cwd.as_os_str().as_encoded_bytes().ends_with(b" (deleted)"))
+    absolute_process_cwd(pid).filter(|cwd| !crate::workspace::process_cwd_is_deleted(cwd))
 }
 
 pub(super) fn usable_process_cwd(pid: u32) -> Option<std::path::PathBuf> {

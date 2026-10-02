@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use super::super::teardown::ChildLiveness;
 use super::*;
+use crate::workspace::SurfaceChange;
 use shepr_protocol::MAX_SURFACE_HYPERLINKS;
 
 impl PaneTerminal {
@@ -462,36 +463,46 @@ impl PaneTerminal {
         terminal_responses
     }
 
-    pub(crate) fn scroll_up(&self, lines: usize) {
+    fn update_scroll_position(
+        &self,
+        operation: &'static str,
+        update: impl FnOnce(&mut shepr_vt::Terminal),
+    ) -> SurfaceChange {
         let Ok(mut core) = shepr_vt::lock_terminal_core(&self.core) else {
-            self.report_terminal_mutation_failure("scroll up");
-            return;
+            self.report_terminal_mutation_failure(operation);
+            return SurfaceChange::Unchanged;
         };
+        let offset_before = terminal_scroll_metrics(&core.terminal).offset_from_bottom;
+        update(&mut core.terminal);
+        let offset_after = terminal_scroll_metrics(&core.terminal).offset_from_bottom;
+        if offset_before == offset_after {
+            return SurfaceChange::Unchanged;
+        }
+        core.content_revision = core.content_revision.wrapping_add(2);
+        SurfaceChange::Changed
+    }
+
+    pub(crate) fn scroll_up(&self, lines: usize) -> SurfaceChange {
         let lines = isize::try_from(lines).unwrap_or(isize::MAX);
-        core.content_revision = core.content_revision.wrapping_add(2);
-        core.terminal.scroll_viewport_delta(-lines);
+        self.update_scroll_position("scroll up", |terminal| {
+            terminal.scroll_viewport_delta(-lines);
+        })
     }
 
-    pub(crate) fn scroll_down(&self, lines: usize) {
-        let Ok(mut core) = shepr_vt::lock_terminal_core(&self.core) else {
-            self.report_terminal_mutation_failure("scroll down");
-            return;
-        };
+    pub(crate) fn scroll_down(&self, lines: usize) -> SurfaceChange {
         let lines = isize::try_from(lines).unwrap_or(isize::MAX);
-        core.content_revision = core.content_revision.wrapping_add(2);
-        core.terminal.scroll_viewport_delta(lines);
+        self.update_scroll_position("scroll down", |terminal| {
+            terminal.scroll_viewport_delta(lines);
+        })
     }
 
-    pub(crate) fn scroll_reset(&self) {
-        let Ok(mut core) = shepr_vt::lock_terminal_core(&self.core) else {
-            self.report_terminal_mutation_failure("scroll reset");
-            return;
-        };
-        core.content_revision = core.content_revision.wrapping_add(2);
-        core.terminal.scroll_viewport_bottom();
+    pub(crate) fn scroll_reset(&self) -> SurfaceChange {
+        self.update_scroll_position("scroll reset", |terminal| {
+            terminal.scroll_viewport_bottom();
+        })
     }
 
-    pub(crate) fn clear_screen(&self) -> Result<(), PaneClearError> {
+    pub(crate) fn clear_screen(&self) -> Result<SurfaceChange, PaneClearError> {
         let mut core = shepr_vt::lock_terminal_core(&self.core)
             .map_err(|_| PaneClearError::TerminalLockPoisoned)?;
         match core.terminal.clear_screen() {
@@ -500,7 +511,7 @@ impl PaneTerminal {
                     &mut core.detection_content_seq,
                 );
                 core.content_revision = core.content_revision.wrapping_add(2);
-                Ok(())
+                Ok(SurfaceChange::Changed)
             }
             shepr_vt::ClearScreenOutcome::AlternateScreenActive => {
                 Err(PaneClearError::AlternateScreenActive)
@@ -508,13 +519,10 @@ impl PaneTerminal {
         }
     }
 
-    pub(crate) fn set_scroll_offset_from_bottom(&self, lines: usize) {
-        let Ok(mut core) = shepr_vt::lock_terminal_core(&self.core) else {
-            self.report_terminal_mutation_failure("set scroll offset");
-            return;
-        };
-        core.content_revision = core.content_revision.wrapping_add(2);
-        terminal_set_scroll_offset_from_bottom(&mut core.terminal, lines);
+    pub(crate) fn set_scroll_offset_from_bottom(&self, lines: usize) -> SurfaceChange {
+        self.update_scroll_position("set scroll offset", |terminal| {
+            terminal_set_scroll_offset_from_bottom(terminal, lines);
+        })
     }
 
     pub(crate) fn scroll_metrics(&self) -> Option<ScrollMetrics> {

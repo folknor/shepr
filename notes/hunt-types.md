@@ -318,52 +318,14 @@ notice key. Reported by client-core and client-shell.
 
 ## Agent identity and state
 
-## TYP-013 - The hook report origin travels as a `(source, label)` string pair
+## TYP-013 - Agent identity still travels as text at two sites
 
-The API carries `source: String` and `agent: String`
-(`PaneReportAgentParams`, `PaneReportAgentSessionParams`; also
-`agent_session_id` and `agent_session_path` as two independent options where
-both may be set). `App::parse_agent_report_identity` parses an `AgentSource`
-and a label, then `normalize_reported_agent_label` parses the label to an
-`Agent` and formats it back to a `String` (a closed-or-open set returned as
-`Option<String>`), and `parse_report_session_ref` compares `agent.label() !=
-agent_label` as strings. `AppEvent::HookStateReported`, `AgentSessionReported`
-and `StateEvent` carry `agent_label: String` beside a typed source.
-`TerminalState::transition_report` and `transition_start` receive a typed
-`AgentSource` and immediately call `to_source_string()`; from there
-`HookAuthority { source: String, agent_label: String }`,
-`SuppressedFullLifecycleHookReport.agent_label`,
-`StaleFullLifecycleHookSession.agent_label`, `hook_sources: HashMap<String, _>`,
-about twenty `fn ..(source: &str, agent_label: &str)` helpers in
-`terminal/state/source.rs`, at least eight comparisons of typed values projected
-to strings (`session.source.as_str() == source && session.agent.label() ==
-agent_label`), and re-parses through `AgentSource::from_pair`,
-`Agent::parse_canonical_label` (at every read of `authority.agent_label`) and
-`full_lifecycle_hook_authority(&str, &str)`. `TerminalState::effective_agent`
-re-parses on every call, and it runs per pane on sidebar and border projection.
-`handle_detect_explain` and the server's reserved-native routing re-parse too.
-`SnapshotAgent::agent: Option<String>`.
-
-`AgentSource` itself escapes: `as_str()`, `to_source_string()`, `From<String>`,
-`From<&str>`, `PartialEq<&str>`, `Display`; `AgentSource::parse` accepts
-anything (an unknown string such as `"shepr:claud"` becomes a custom reporter);
-`Official` is public, so `Official(Agent::Gemini)` is constructible, its
-`as_str()` is `""` through `unwrap_or_default()`, it serializes as `""` and
-deserializes back as `Custom("")`. `Agent` has `PartialEq<&str>` and
-`Agent::label()` is formatted and re-parsed throughout `detect/mod.rs`;
-`surface_cursor` compares `configured.label() == agent.label()` where
-`ConfigAgent` is the same enum.
-
-Proposal: one parse at the API boundary (in shepr-agent) into
-`ReportOrigin::{Official(Agent or IntegrationTarget), Custom { source, label
-}}` (mux-panes calls the resolved form `HookOwner` with a kind; server-app
-calls the whole report `AgentReport { source, agent: ReportedAgent::{Known,
-Custom}, session: Option<AgentSessionRef>, seq }`), stored in `HookAuthority`,
-the suppressed and stale records and the `hook_sources` key, with predicates as
-methods (`is_full_lifecycle()`, `allows_session_replacement(start)`,
-`owns(&PersistedAgentSession)`). Drop `From<&str>`, `PartialEq<&str>` on both
-`AgentSource` and `Agent`. The agent hunter calls this the highest-value single
-change. Reported by agents, mux-panes, server-app and contracts.
+Hook reports are parsed once at the API boundary into `ReportOrigin` and
+`ReportedAgent`, which mux ownership, arbitration and the server handlers now
+carry. Two sites still use the label text: the saved snapshot's
+`SnapshotAgent::agent: Option<String>`, and `surface_cursor`, which compares
+`configured.label() == agent.label()` although `ConfigAgent` is the same enum.
+(agents, server-app)
 
 ## TYP-014 - Agent capability on the descriptor is three bools and correlated options
 
@@ -385,7 +347,10 @@ HookAuthorityClass::{SessionOnly, PartialState, FullLifecycle}, hook_events,
 session_policy }>`, `screen: Option<ScreenManifest>`, `resume:
 Option<ResumeSupport>`. `IntegrationHookEvent`'s Claude editor enforces "exactly
 one SessionStart" at runtime (`claude_hook_event`), so the descriptor permits a
-Claude list the editor cannot install. (agents)
+Claude list the editor cannot install. A `HookAuthorityClass` now exists for
+state-report admission, but it is derived from the flags, which remain, and
+`source/start.rs` still reads `session_identity_only_integration` directly.
+(agents)
 
 ## TYP-015 - The screen verdict is a state plus four bools
 
@@ -727,12 +692,11 @@ resume" is filed among the consolidations. (mux-panes)
 
 ## TYP-036 - Mutation results are recovered by diffing revisions
 
-`PaneRuntime::clear_screen`, `scroll_up`, `scroll_down`, `scroll_reset` and
-`set_scroll_offset_from_bottom` return nothing; callers decide whether the
-surface changed by reading `content_seq()` before and after (`copy.rs`) or
-comparing `scroll_metrics()` snapshots. Proposal: a `SurfaceChange::{Changed,
-Unchanged}` return decided where the mutation happens; this also fixes the
-no-op scroll bug. The app-level form of the same pattern is filed among the
+The pane scroll and clear methods return `SurfaceChange` and the API handlers
+use it, but the server's headless input path still compares scroll metrics
+around each input batch, and its input helper discards the individual
+results. Aggregating `SurfaceChange` through the batch helper removes the
+comparison. The app-level form of the same pattern is filed among the
 consolidations. (mux-panes)
 
 ## TYP-037 - History cache edges

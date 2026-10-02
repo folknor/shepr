@@ -188,8 +188,8 @@ fn remote_ssh_config_dir_is_private_and_under_the_runtime_directory() {
             .expect("test precondition")
             .permissions()
             .mode()
-            & 0o7777,
-        0o700
+            & crate::limits::PERMISSION_BITS,
+        crate::limits::PRIVATE_DIRECTORY_MODE
     );
 }
 
@@ -199,39 +199,51 @@ fn startup_sweeps_only_owned_paths_with_a_proven_dead_process() {
     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
     let runtime = shepr_test_support::ScratchDir::new("platform-stale-sweep");
-    std::fs::set_permissions(runtime.path(), std::fs::Permissions::from_mode(0o700))
-        .expect("test precondition");
+    std::fs::set_permissions(
+        runtime.path(),
+        std::fs::Permissions::from_mode(crate::limits::PRIVATE_DIRECTORY_MODE),
+    )
+    .expect("test precondition");
     let dead_tag = dead_process_tag(0);
     let live_tag = process_identity::ProcessIdentity::current()
         .expect("current process identity")
         .tag(0);
 
-    let stale_config = runtime.join("shepr-ssh-0000000000000001");
+    let ssh_config_kind = crate::owned_runtime::DirectoryKind::SshConfig;
+    let staging_kind = crate::owned_runtime::DirectoryKind::Staging;
+    let stale_config = runtime.join(ssh_config_kind.directory_name(1));
     std::fs::create_dir(&stale_config).expect("test precondition");
-    std::fs::set_permissions(&stale_config, std::fs::Permissions::from_mode(0o700))
+    std::fs::set_permissions(
+        &stale_config,
+        std::fs::Permissions::from_mode(crate::limits::PRIVATE_DIRECTORY_MODE),
+    )
+    .expect("test precondition");
+    std::fs::write(ssh_config_kind.content_path(&stale_config), b"Host *\n")
         .expect("test precondition");
-    std::fs::write(stale_config.join("config"), b"Host *\n").expect("test precondition");
-    let untagged_config = runtime.join("shepr-ssh-0123456789abcdef");
+    let untagged_config = runtime.join(ssh_config_kind.directory_name(0x0123_4567_89ab_cdef));
     std::fs::create_dir(&untagged_config).expect("test precondition");
-    let live_config = runtime.join("shepr-ssh-0000000000000002");
+    let live_config = runtime.join(ssh_config_kind.directory_name(2));
     std::fs::create_dir(&live_config).expect("test precondition");
 
-    for (name, tag) in [
-        ("shepr-ssh-0000000000000001", dead_tag.as_str()),
-        ("shepr-ssh-0000000000000002", live_tag.as_str()),
-        (".s0000000000000001", dead_tag.as_str()),
-        (".s0000000000000002", live_tag.as_str()),
+    for (kind, token, tag) in [
+        (ssh_config_kind, 1, dead_tag.as_str()),
+        (ssh_config_kind, 2, live_tag.as_str()),
+        (staging_kind, 1, dead_tag.as_str()),
+        (staging_kind, 2, live_tag.as_str()),
     ] {
-        let staging = runtime.join(name);
+        let staging = runtime.join(kind.directory_name(token));
         if !staging.try_exists().expect("stat test fixture") {
             std::fs::create_dir(&staging).expect("test precondition");
         }
-        std::fs::set_permissions(&staging, std::fs::Permissions::from_mode(0o700))
-            .expect("test precondition");
+        std::fs::set_permissions(
+            &staging,
+            std::fs::Permissions::from_mode(crate::limits::PRIVATE_DIRECTORY_MODE),
+        )
+        .expect("test precondition");
         let mut marker = std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
-            .mode(0o600)
+            .mode(crate::limits::RUNTIME_MARKER_MODE)
             .open(staging.join(".owner"))
             .expect("test precondition");
         marker.write_all(tag.as_bytes()).expect("test precondition");
@@ -254,11 +266,11 @@ fn startup_sweeps_only_owned_paths_with_a_proven_dead_process() {
     let socket_path = runtime.join("api.sock");
     let listener = ipc::bind_private_local_listener(&socket_path).expect("bind listener");
     assert!(
-        !present(&runtime.join(".s0000000000000001")),
+        !present(&runtime.join(staging_kind.directory_name(1))),
         "dead owner's staging directory is swept"
     );
     assert!(
-        present(&runtime.join(".s0000000000000002")),
+        present(&runtime.join(staging_kind.directory_name(2))),
         "a live owner's staging directory is retained"
     );
     drop(listener);
@@ -348,8 +360,11 @@ fn shared_ssh_control_path_rejects_a_runtime_dir_that_cannot_fit_open_ssh_stagin
     let scratch = shepr_test_support::ScratchDir::new("ssh-control-long-runtime");
     let runtime_dir = scratch.path().join("x".repeat(90));
     std::fs::create_dir(&runtime_dir).expect("test precondition");
-    std::fs::set_permissions(&runtime_dir, std::fs::Permissions::from_mode(0o700))
-        .expect("test precondition");
+    std::fs::set_permissions(
+        &runtime_dir,
+        std::fs::Permissions::from_mode(crate::limits::PRIVATE_DIRECTORY_MODE),
+    )
+    .expect("test precondition");
     let error = shared_ssh_control_path(&runtime_dir, Path::new("/config/one"), "user@host")
         .expect_err("the OpenSSH staging path must fit");
     assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);

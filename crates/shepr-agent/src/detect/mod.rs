@@ -189,18 +189,6 @@ pub fn detect_agent_with_osc(
     )
 }
 
-pub fn full_lifecycle_hook_authority(source: &str, agent_label: &str) -> bool {
-    crate::agent::AgentSource::from_pair(source, agent_label)
-        .and_then(|source| source.agent())
-        .is_some_and(|agent| agent.descriptor().full_lifecycle_hook_authority)
-}
-
-pub fn session_identity_only_integration(source: &str, agent_label: &str) -> bool {
-    crate::agent::AgentSource::from_pair(source, agent_label)
-        .and_then(|source| source.agent())
-        .is_some_and(|agent| agent.descriptor().session_identity_only_integration)
-}
-
 // ---------------------------------------------------------------------------
 // Process identification
 // ---------------------------------------------------------------------------
@@ -859,17 +847,23 @@ mod tests {
 
     #[test]
     fn mastracode_is_hook_authority_without_screen_manifest() {
-        assert!(full_lifecycle_hook_authority(
-            "shepr:mastracode",
-            "mastracode"
-        ));
+        assert!(
+            crate::agent::ReportOrigin::official(Agent::Mastracode)
+                .expect("MastraCode integration")
+                .is_full_lifecycle()
+        );
         assert!(!Agent::Mastracode.screen_manifest());
     }
 
     #[test]
     fn session_identity_integrations_leave_state_to_screen_detection() {
-        assert!(!full_lifecycle_hook_authority("shepr:agy", "agy"));
-        assert!(session_identity_only_integration("shepr:agy", "agy"));
+        let origin = crate::agent::ReportOrigin::official(Agent::Antigravity)
+            .expect("Antigravity integration");
+        assert_eq!(
+            origin.authority_class(),
+            crate::agent::HookAuthorityClass::SessionOnly
+        );
+        assert!(!origin.is_full_lifecycle());
         assert!(Agent::Antigravity.screen_manifest());
     }
 

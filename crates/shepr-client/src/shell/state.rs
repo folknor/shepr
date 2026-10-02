@@ -800,9 +800,44 @@ impl ClientShellState {
                 .iter()
                 .position(|workspace| workspace.workspace_id == *workspace_id)
         });
-        if let Some(target) = target {
-            self.workspace_scroll = target.min(self.hits.workspace_max_scroll);
+        let (Some(target), Some(snapshot)) = (target, self.snapshot.as_deref()) else {
+            return;
+        };
+        let row_heights = if self.sidebar_collapsed {
+            vec![1; snapshot.workspaces.len()]
+        } else {
+            snapshot
+                .workspaces
+                .iter()
+                .map(|workspace| {
+                    u16::try_from(
+                        super::sidebar::workspace_rows(
+                            workspace,
+                            workspace.agent_status,
+                            &self.config.spaces,
+                        )
+                        .len()
+                        .max(1),
+                    )
+                    .unwrap_or(u16::MAX)
+                })
+                .collect()
+        };
+        let mut gaps = if self.sidebar_collapsed {
+            vec![0; row_heights.len()]
+        } else {
+            vec![self.config.spaces.row_gap; row_heights.len()]
+        };
+        if let Some(last) = gaps.last_mut() {
+            *last = 0;
         }
+        self.workspace_scroll = super::scroll::list_scroll_start_to_reveal(
+            &row_heights,
+            &gaps,
+            self.hits.workspace_body.height,
+            self.workspace_scroll,
+            target,
+        );
     }
 
     pub(super) fn layout(&self, cols: u16, rows: u16) -> ClientShellLayout {
@@ -1326,9 +1361,9 @@ impl ClientShellState {
         repaint
     }
 
-    /// Replace the visible card with the next queued restore card, if any. Every
-    /// path that retires the visible card (expiry, dismissal, a seen restore
-    /// card) goes through here so the queue never waits on an unrelated timer.
+    /// Replace the visible card with the next queued boot card (a restore or
+    /// saves-stopped card), if any. Every path that retires the visible card
+    /// (expiry, dismissal, a seen boot card) goes through here so the queue never waits on an unrelated timer.
     pub(super) fn advance_endpoint_notice(&mut self) {
         self.visible_endpoint_notice = self.restore_notice_queue.pop_front();
         self.endpoint_notice_deadline = None;

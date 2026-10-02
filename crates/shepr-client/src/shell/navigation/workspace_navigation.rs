@@ -26,6 +26,29 @@ impl WorkspaceNavigationTarget {
     }
 }
 
+pub(super) fn workspace_navigation_targets(
+    endpoints: &[ClientShellEndpoint],
+) -> Vec<WorkspaceNavigationTarget> {
+    let mut targets = Vec::new();
+    for endpoint in endpoints {
+        if endpoint.status != ClientEndpointStatus::Online {
+            continue;
+        }
+        let Some(snapshot) = endpoint.snapshot.as_deref() else {
+            continue;
+        };
+        for workspace in &snapshot.workspaces {
+            targets.push(WorkspaceNavigationTarget {
+                endpoint_id: endpoint.endpoint_id.clone(),
+                workspace_id: workspace.workspace_id.clone(),
+                boot_id: snapshot.boot_id.clone(),
+                generation: endpoint.snapshot_generation,
+            });
+        }
+    }
+    targets
+}
+
 impl ClientShellState {
     pub(super) fn keep_workspace_highlight_until_snapshot(
         &mut self,
@@ -121,23 +144,7 @@ impl ClientShellState {
     }
 
     pub(super) fn move_navigate_workspace(&mut self, delta: isize) {
-        let mut targets = Vec::new();
-        for endpoint in &self.endpoints {
-            if endpoint.status != ClientEndpointStatus::Online {
-                continue;
-            }
-            let Some(snapshot) = endpoint.snapshot.as_deref() else {
-                continue;
-            };
-            for workspace in &snapshot.workspaces {
-                targets.push(WorkspaceNavigationTarget {
-                    endpoint_id: endpoint.endpoint_id.clone(),
-                    workspace_id: workspace.workspace_id.clone(),
-                    boot_id: snapshot.boot_id.clone(),
-                    generation: endpoint.snapshot_generation,
-                });
-            }
-        }
+        let mut targets = workspace_navigation_targets(&self.endpoints);
         if targets.is_empty() {
             return;
         }
@@ -145,14 +152,9 @@ impl ClientShellState {
             .navigate_workspace_id
             .as_ref()
             .and_then(|selected| targets.iter().position(|target| target == selected));
-        let next = match current {
-            Some(current) => {
-                let current = isize::try_from(current).unwrap_or(isize::MAX);
-                let len = isize::try_from(targets.len()).unwrap_or(isize::MAX);
-                usize::try_from((current + delta).rem_euclid(len)).unwrap_or(0)
-            }
-            None if delta < 0 => targets.len() - 1,
-            None => 0,
+        let Some(next) = super::aggregate_navigation::cycle_index(targets.len(), current, delta)
+        else {
+            return;
         };
         let target = targets.swap_remove(next);
         self.collapsed_endpoints.remove(&target.endpoint_id);

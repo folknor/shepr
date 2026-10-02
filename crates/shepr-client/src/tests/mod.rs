@@ -35,6 +35,8 @@ pub(crate) fn test_boot_id(name: &str) -> shepr_protocol::BootId {
         "restored" => 12,
         "restored-first" => 13,
         "restored-second" => 14,
+        "saves-stopped" => 15,
+        "saves-stopped-next" => 16,
         _ => panic!("{name:?} names no test server"),
     };
     fixed_boot_id(process_id)

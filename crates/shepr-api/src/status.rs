@@ -6,6 +6,8 @@ use crate::client::{ApiClient, ApiClientDeadlineError, ApiClientError};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeStatus {
+    /// Kept optional because remote launch diagnostics render absence as
+    /// "unknown", although the current ping schema always supplies a version.
     pub version: Option<String>,
     pub build_id: String,
     /// The server process's boot identity: what a conditional stop names to

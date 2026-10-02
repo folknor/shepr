@@ -13,6 +13,7 @@ pub(super) fn snapshot() -> ClientShellSnapshot {
     ClientShellSnapshot {
         boot_id: crate::tests::test_boot_id("boot-1"),
         restore_notice: None,
+        session_saves_stopped: false,
         revision: shepr_protocol::ProjectionRevision::new(1),
         focused_workspace_id: Some(test_workspace_id("w1")),
         focused_pane_id: Some(test_pane_id("w1:p1")),

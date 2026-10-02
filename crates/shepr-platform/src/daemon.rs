@@ -4,14 +4,15 @@
 
 use std::fs::{self, File};
 use std::io::{self, Read as _, Seek as _, SeekFrom};
-use std::os::unix::fs::{
-    DirBuilderExt as _, MetadataExt as _, OpenOptionsExt as _, PermissionsExt as _,
-};
+use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _, PermissionsExt as _};
 use std::path::Path;
 use std::process::{Child, ExitStatus};
 
 /// Creates `path` and any missing parents owner-only. An existing directory is
-/// left as it is, whatever its mode.
+/// left as it is, whatever its mode: this is a path-creation convenience, not
+/// a private-directory assertion. Trust-sensitive callers validate the
+/// directory they use; SSH runtime storage requires the exact private mode,
+/// and socket listeners authenticate peers independently.
 pub fn create_private_directory_all(path: &Path) -> io::Result<()> {
     fs::DirBuilder::new()
         .recursive(true)
@@ -35,24 +36,20 @@ pub fn open_boot_log(path: &Path) -> io::Result<File> {
         .append(true)
         .create(true)
         .truncate(false)
-        .mode(0o600)
+        .mode(super::limits::PRIVATE_FILE_MODE)
         // O_NONBLOCK keeps a FIFO planted at the path from stalling the open;
         // it is refused as a non-regular file just below, and the flag does
         // nothing for the regular file the daemon writes.
         .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK)
-        .open(path)?;
+        .open(path)
+        .map_err(|error| super::private_file::PrivateFile::normalize_open_error(path, error))?;
     let metadata = file.metadata()?;
-    let expected_uid = super::effective_uid();
-    if !metadata.is_file() || metadata.uid() != expected_uid {
-        return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            format!(
-                "boot log {} must be a regular file owned by uid {expected_uid}",
-                path.display()
-            ),
-        ));
-    }
-    file.set_permissions(fs::Permissions::from_mode(0o600))?;
+    super::private_file::PrivateFile::require_owned_regular(
+        path,
+        &metadata,
+        super::effective_uid(),
+    )?;
+    file.set_permissions(fs::Permissions::from_mode(super::limits::PRIVATE_FILE_MODE))?;
     file.set_len(0)?;
     Ok(file)
 }
@@ -65,24 +62,14 @@ pub fn read_boot_log_tail(path: &Path) -> io::Result<String> {
     let mut file = fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK)
-        .open(path)?;
+        .open(path)
+        .map_err(|error| super::private_file::PrivateFile::normalize_open_error(path, error))?;
     let metadata = file.metadata()?;
-    if !metadata.is_file() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("boot log {} is not a regular file", path.display()),
-        ));
-    }
-    let expected_uid = super::effective_uid();
-    if metadata.uid() != expected_uid {
-        return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            format!(
-                "boot log {} must be owned by uid {expected_uid}",
-                path.display()
-            ),
-        ));
-    }
+    super::private_file::PrivateFile::require_owned_regular(
+        path,
+        &metadata,
+        super::effective_uid(),
+    )?;
     let start = metadata
         .len()
         .saturating_sub(super::limits::BOOT_LOG_TAIL_BYTES);
@@ -210,6 +197,7 @@ fn kill_process_group(pid: u32) -> io::Result<()> {
 mod tests {
     use super::*;
     use shepr_test_support::fixture::{self, Held, Step};
+    use std::os::unix::fs::MetadataExt as _;
     use std::time::{Duration, Instant};
 
     fn group_is_gone(group: u32) -> bool {
@@ -293,7 +281,10 @@ mod tests {
         drop(file);
         let metadata = fs::metadata(&path).expect("boot log exists");
         assert_eq!(metadata.len(), 0, "a boot log starts empty");
-        assert_eq!(metadata.mode() & 0o777, 0o600);
+        assert_eq!(
+            metadata.mode() & crate::limits::PERMISSION_BITS,
+            crate::limits::PRIVATE_FILE_MODE
+        );
 
         let target = dir.join("target");
         fs::write(&target, b"keep").expect("test precondition");

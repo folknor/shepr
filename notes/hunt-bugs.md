@@ -49,17 +49,6 @@ for every rejected or unauthenticatable peer, so a local process connecting in
 a loop fills the log. The bridge and the launch router logged the same way
 before the helper existed. (wave-1 review)
 
-## BUG-007 - The same unreadable remote status JSON is Attention through one command and a silent retry through the other
-
-`discovery::remote_client_status` reports unparsable `status client` output as
-`io::ErrorKind::InvalidData`, which `SshFailureDiagnostic::from_error` reads as
-`Compatibility` (needs attention, preflight `Incompatible`).
-`server_lifecycle::parse_remote_server_status_json` reports unparsable
-`status server` output as `io::Error::other`, which reads as `Other` (silent
-retry, preflight `Failed` with "the client keeps retrying it"). The decision is
-whichever `ErrorKind` the author picked. The structural cause is filed among
-the consolidations as the endpoint failure disposition. (edges)
-
 ## BUG-010 - The account-shell probe sends POSIX syntax to the account shell
 
 `RemoteSsh::user_shell_output` wraps `command -v shepr` in
@@ -85,25 +74,13 @@ carrying the `DaemonExit` class, so the client can show Attention. (edges)
 `MachineCheck::Failed`. Everywhere else in the client a panic ends the process
 (`fatal_panic`). (edges, as a smell)
 
-## BUG-017 - `foreground_cwd` and the live identity cwd can be a deleted directory
+## BUG-017 - The foreground member cwd scan stops at a deleted directory
 
-`PaneRuntime::foreground_cwd` and `foreground_member_cwd_different_from_shell`
-use `absolute_process_cwd`, which keeps the kernel's ` (deleted)` suffix that
-`readlink_process_cwd` documents as unusable. `PaneRuntime::cwd()` is likewise a
-raw readlink with no usability filter, and it feeds
-`Workspace::resolved_identity_cwd_from*`, so a shell sitting in a deleted
-directory hands Git discovery and the workspace label a `"<path> (deleted)"`
-path, and every refresh retries discovery on a path that cannot exist, while
-the save path writes the last usable one. Reported by mux-panes and mux-state;
-the cwd readers are filed among the consolidations.
-
-## BUG-018 - No-op scrolls bump the content revision
-
-`scroll_up`, `scroll_down`, `scroll_reset` and `set_scroll_offset_from_bottom`
-add 2 to `content_revision` whether or not the viewport moved. Wheel events at
-either end of history and repeated `scroll_reset` invalidate every client's
-baseline for the pane and can trigger re-renders. `resize` already compares
-before and after for the grid. (mux-panes)
+`PaneRuntime::foreground_cwd` and workspace identity resolution now refuse a
+deleted cwd, but the member scan in `crates/shepr-mux/src/pane/process_probe.rs`
+still returns the first member's raw cwd and the caller filters it afterwards,
+so a deleted first member yields no cwd even when a later member has a usable
+one. The scan should skip deleted candidates itself. (mux-panes)
 
 ## BUG-019 - A failed non-required cwd blames only the first candidate
 
@@ -122,45 +99,6 @@ extra environment ever set `SHELL` (it is an allowed variable), the message
 would name the wrong program. A `PtyCommand::program()` accessor removes the
 indirection. (mux-panes; foundation)
 
-## BUG-021 - Persister refusals are retried forever, and a retired persister reports success
-
-`persist/actor.rs` returns three refusals as `io::Error::other(<sentence>)`
-(`abandoned()`, `lease_only()`, `stopped_after_panic()`), and a retired worker
-returns `Ok(())` for a job it never ran. `App::finish_session_save` treats all
-of them as transient: after a persister panic every autosave and checkpoint
-fails, is re-armed with backoff and logged each time, and pane-exit
-checkpoints run their failure budget before releasing exits. A checkpoint
-submitted after retirement would be marked durable. Suggested:
-`SaveError { Io, PublishedNotDurable, Abandoned, Refused(LeaseOnly |
-StoppedAfterPanic | Retired) }`. (mux-state)
-
-## BUG-022 - Saved workspace IDs are replaced without damage accounting
-
-Restore silently gives a fresh ID to a saved `id` that fails to parse or
-repeats an earlier workspace's. Other per-workspace defects set
-`restore_damage` so the first save backs the file up; this one does not, so the
-original IDs are overwritten without a backup. (mux-state)
-
-## BUG-023 - A session path behind 17 to 40 symlinks passes startup and fails every save
-
-`check_session_target` uses `fs::metadata` (kernel resolution, up to 40 hops);
-`resolve_write_target` resolves by hand with `MAX_SESSION_PATH_SYMLINK_HOPS` =
-16 and `ensure_replaceable` then refuses with `InvalidInput`. The startup check
-exists to refuse exactly that case. A directory at the history path also stamps
-as "no file" in `HistoryFileStamp::read`. The four checks are filed among the
-consolidations. (mux-state)
-
-## BUG-024 - Git config read errors are attributed to `.git/config`
-
-`config_output` and `read_repository_format_value` map `run_git_output`'s typed
-`GitReadError` into `io::Error::other`, and `read_config_for_status` maps every
-`config_deps`/`branch_config` error back to `GitReadError::FileRead { path:
-<common_dir>/config, .. }`. A Git spawn failure or timeout while listing config
-origins is logged as "could not read .git/config"; `repo_context` does the same
-with `git_ref_storage_is_reftable`. The error is also the server's dedup key
-(`reported_git_read_errors`), so embedded `io::Error` text makes "the same
-error" depend on wording. (mux-state)
-
 ## BUG-027 - A split host palette reply is replayed partially
 
 `input::send_unix_input_chunks` batches palette replies up to
@@ -172,38 +110,11 @@ flush becomes two partial updates of which only the second is recorded, and
 `view::turn_on` replays that partial palette to every endpoint viewed later.
 Needs a slow host to trigger. (client-core)
 
-## BUG-029 - `endpoint_lost` discards the failure class
-
-`reconcile::endpoint_lost` builds the machine diagnostic with
-`SshFailureDiagnostic::from_message(failure.message)`, so after a live
-connection drops the badge diagnostic is always class `Other`, whatever the
-transport reported (`TimedOut` from the heartbeat, `InvalidData` from a decode
-or patch rejection). The status is always `Reconnecting`. A queue-full
-backpressure failure (`endpoint::writer::queue_full`, a local condition) is
-reported as "connection was lost". (client-core)
-
 ## BUG-031 - Client exit is classified by coincidence
 
 `run_launched_client` treats `ConnectionLost` as a clean exit only when
 terminal restoration also failed (`connection_lost_during_terminal_hangup`):
 two independent failures read as one cause by inference. (client-core)
-
-## BUG-037 - Double-click word bounds may drift on emoji presentation sequences
-
-`word_bounds_at_column` maps pane text to columns with
-`shepr_vt::unicode_codepoint_width` per char, while server grid widths and the
-client's chrome use `shepr_termio::blit::text_width` per grapheme (tests pin
-VS16 emoji at width 2). The double-click column mapping may drift by one cell
-per such sequence. Unverified; the hunter suggests a test with
-`"\u{2764}\u{fe0f}"` before a word. (client-shell)
-
-## BUG-039 - An OSC 7 URI with another scheme is taken as a literal path
-
-`scan.rs` knows whether a working-directory report came from OSC 7 (a URI),
-OSC 9;9 or OSC 1337 CurrentDir (paths), but emits a bare
-`WorkingDirectoryReport(Vec<u8>)`; mux `parse_reported_cwd` then treats any
-non-`file://` payload as a path, so kitty's `kitty-shell-cwd://` becomes a
-literal path. Suggested `WorkingDirectoryReport::{Uri, Path}`. (terminal)
 
 ## BUG-040 - A line selection does not cover columns added by a widening resize
 
@@ -221,13 +132,22 @@ to viewport row 0. The client also uses `AbsRow(0)` as "no scroll metrics" for
 the drag anchor (`mouse.rs`). Suggested `ViewportPosition::{Above,
 At(ViewportRow), Below}`. (terminal)
 
-## BUG-042 - `read_boot_log_tail` and `open_boot_log` refuse the same file differently
-
-They refuse a non-regular file with different `ErrorKind`s (`InvalidInput`
-versus `PermissionDenied`) and in a different order, so a caller branching on
-kind gets different answers for the same planted file. (foundation)
-
 ## Latent defects
+
+## BUG-072 - Git status dependencies can differ between discovery and a cache hit
+
+`git_status_discovery` replaces `info.repo_root` with the canonical cache key
+but keeps `git_dir` and `git_common_dir` as discovered from the workspace's own
+cwd. Discovery used to start from the canonical root, so the cached dependency
+paths can now differ from the ones a cache hit would compute for the same key.
+(wave-2 review)
+
+## BUG-071 - Parked hook starts have no expiry or process attribution
+
+Comments in the hook arbitration (`crates/shepr-mux/src/terminal/state/`)
+already admit that a parked start never expires and is not tied to a process,
+and that a replayed pane exit can consume a parked start. Neither is handled.
+(wave-2 fixer)
 
 ## BUG-070 - A Claude background fork may take over the pane's session
 
@@ -280,12 +200,13 @@ It indexes `self.state.workspaces[ws_idx]` while every other handler uses
 
 ## Hot-path costs
 
-## BUG-053 - A syscall per OSC 7 report in the PTY parse path
+## BUG-053 - Two answers to this machine's name
 
-`shepr-mux/src/pane/osc.rs` calls `shepr_platform::hostname()` (gethostname) on
-every OSC 7 parse, while `shepr-server/src/app/mod.rs` reads the hostname once
-at startup (`unwrap_or_default`, empty meaning unknown). Two answers to "this
-machine's name", taken at different times. (foundation)
+`crates/shepr-mux/src/pane/osc.rs` caches the hostname in its own `OnceLock`
+on the first OSC 7 report, while `crates/shepr-server/src/app/mod.rs` reads it
+once at startup (`unwrap_or_default`, empty meaning unknown). Two answers taken
+at different times. The server's startup value should reach the OSC 7 parser
+through pane runtime construction. (foundation)
 
 ## BUG-054 - The rotating logger stats the log path on every record
 
@@ -334,15 +255,6 @@ by server-app and mux-state.
 `set_split_ratio_at` and `resize_pane` re-prove layout and record agreement (a
 `Vec` and a `HashSet`) per mouse-drag event. It disappears with a pane tree
 that owns both (filed among the structure findings). (mux-state)
-
-## BUG-062 - Git discovery runs three or four times per uncached workspace refresh
-
-The server calls `git_status_cache_key` (a full discovery); `repo_context`
-calls `git_worktree_info_with_errors` twice; the discovery walk finds a
-`LocatedGitDir` and throws it away so `git_worktree_info_with_errors`
-re-locates it (another stat round and possibly another `git config core.bare`
-spawn, with a TOCTOU window). `GitSpaceMetadata` adds two `canonicalize` calls
-and another `locate_git_dir` per refresh for fields nobody reads. (mux-state)
 
 ## BUG-063 - The client composes twice per input and recomputes connect options per turn
 

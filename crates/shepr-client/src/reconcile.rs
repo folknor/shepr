@@ -38,7 +38,7 @@ impl ClientLoop {
             // it. So every queued failure ends its endpoint's lane here.
             warn!(
                 endpoint = %failure.endpoint_id.storage_key(),
-                error = %failure.message,
+                error = %failure.failure,
                 "endpoint transport failed"
             );
             if self
@@ -47,10 +47,10 @@ impl ClientLoop {
             {
                 return Err(ClientError::ConnectionLost(io::Error::new(
                     failure.kind,
-                    failure.message,
+                    failure.failure,
                 )));
             }
-            self.endpoint_lost(failure, now)?;
+            self.endpoint_lost(&failure, now)?;
         }
         if let Some(preparing) = self.state.choice.preparing() {
             if let Some(rejection) = preparing.rejection() {
@@ -136,18 +136,21 @@ impl ClientLoop {
     /// the shell status, then the notice for what the loss meant to the choice.
     fn endpoint_lost(
         &mut self,
-        failure: endpoint::EndpointTransportFailure,
+        failure: &endpoint::EndpointTransportFailure,
         now: std::time::Instant,
     ) -> Result<(), ClientError> {
         let id = &failure.endpoint_id;
-        self.supervisors.disconnected(id, failure.generation, now);
-        let notice = endpoint_disconnect_notice(failure.kind);
-        let diagnostic = shepr_remote::SshFailureDiagnostic::from_message(failure.message);
+        let notice = failure.failure.disconnect_notice();
+        let diagnostic = failure.failure.diagnostic();
+        let status = endpoint::ClientEndpointStatus::after_failure(&failure.failure);
+        self.supervisors
+            .record_status(id, failure.generation, status, now);
         self.state.shell.set_machine_diagnostic(id, &diagnostic);
         let lost = self.state.choice.connection_lost(id);
         let cancelled = self.endpoint_commands.disconnect(id);
         cancel_endpoint_commands(&mut self.state.shell, cancelled);
         self.state.shell.mark_endpoint_disconnected(id);
+        self.state.shell.set_endpoint_status(id, status);
         let label = self.state.shell.endpoint_label(id);
         match lost {
             Lost::Shown => {

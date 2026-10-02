@@ -591,7 +591,7 @@ pub(super) fn write_managed_ssh_config(
 
     let dir =
         ManagedSshConfigDirectory::new(shepr_platform::create_remote_ssh_config_dir(runtime_dir)?);
-    let path = dir.path.join("config");
+    let path = shepr_platform::remote_ssh_config_file_path(&dir.path);
     let mut contents = String::new();
     for include in [
         ssh_config_include(paths.user_config.as_deref())?,

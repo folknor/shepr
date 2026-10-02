@@ -253,16 +253,15 @@ discovery, preflight and the launcher. The CLI grammar constants (`PROGRAM_NAME`
 exported from `remote/args.rs` and the binary's clap spec imports them from the
 SSH crate. Reported by edges and server-app.
 
-## STR-014 - `SshFailureDiagnostic` is the client's endpoint-failure vocabulary, owned by the SSH crate
+## STR-014 - The endpoint failure vocabulary lives in the SSH crate
 
-The client uses it for every endpoint, Local included (`initial_local_failure`,
-`endpoint_setup_failure`, handshake classification,
-`ClientEndpointStatus::after_failure`), so its attention policy depends on
-remote's private `ErrorKind` table. The OpenSSH stderr classifier belongs in
-remote; the failure type and its disposition belong in a crate both sides already
-use (protocol's endpoint module, or the launch crate). The client may not depend
-on `shepr-api` but reaches it transitively through remote. Reported by edges and
-client-core.
+`EndpointFailure` and its single disposition table now exist
+(`crates/shepr-remote/src/failure.rs`), separate from the OpenSSH classifier,
+but the client uses them for every endpoint, Local included, so its attention
+policy still comes from the SSH crate. They belong in a crate both sides
+already use (protocol's endpoint module, or a launch crate). The client may not
+depend on `shepr-api` but reaches it transitively through remote. Reported by
+edges and client-core.
 
 ## STR-015 - Odd edges into the server and client
 

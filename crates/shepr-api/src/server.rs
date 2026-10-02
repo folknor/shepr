@@ -318,6 +318,8 @@ fn route_request(
             let response = SuccessResponse {
                 id: id.clone(),
                 result: ResponseResult::Pong {
+                    // Preserve the executable's display version; build_id is
+                    // the separate machine-comparison field in this response.
                     version: shepr_protocol::build_version(),
                     build_id: shepr_protocol::BUILD_ID.to_owned(),
                     boot_id: shepr_protocol::BootId::for_this_process().to_string(),

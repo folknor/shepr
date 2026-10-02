@@ -51,8 +51,7 @@ pub enum AppEvent {
     /// Hook-authoritative agent state was reported for a pane.
     HookStateReported {
         pane_id: PaneId,
-        source: shepr_agent::agent::AgentSource,
-        agent_label: String,
+        origin: shepr_agent::agent::ReportOrigin,
         state: AgentState,
         seq: Option<u64>,
         session_ref: Option<shepr_agent::agent::resume::AgentSessionRef>,
@@ -60,8 +59,7 @@ pub enum AppEvent {
     /// Agent session identity was reported without state authority.
     AgentSessionReported {
         pane_id: PaneId,
-        source: shepr_agent::agent::AgentSource,
-        agent_label: String,
+        origin: shepr_agent::agent::ReportOrigin,
         seq: Option<u64>,
         session_ref: Option<shepr_agent::agent::resume::AgentSessionRef>,
         session_start_source: Option<shepr_agent::agent::resume::AgentSessionStartSource>,

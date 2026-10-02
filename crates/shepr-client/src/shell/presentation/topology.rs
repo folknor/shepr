@@ -1,30 +1,50 @@
 use super::*;
 
-pub(super) fn pane_surface_topology_signature(surface: &PaneSurfaceFrame) -> u64 {
-    // limits-exempt: fixed FNV-1a parameters stay beside the topology hash they define.
-    const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
-    // limits-exempt: fixed FNV-1a parameters stay beside the topology hash they define.
-    const PRIME: u64 = 0x0000_0100_0000_01b3;
+struct Fnv64(u64);
 
-    fn write(hash: &mut u64, bytes: &[u8]) {
+impl Fnv64 {
+    fn new() -> Self {
+        Self(0xcbf2_9ce4_8422_2325)
+    }
+
+    fn write_byte(&mut self, byte: u8) {
+        self.0 ^= u64::from(byte);
+        self.0 = self.0.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
         for byte in bytes {
-            *hash ^= u64::from(*byte);
-            *hash = hash.wrapping_mul(PRIME);
+            self.write_byte(*byte);
         }
-        *hash ^= 0xff;
-        *hash = hash.wrapping_mul(PRIME);
+    }
+
+    fn finish(self) -> u64 {
+        self.0
+    }
+}
+
+pub(super) fn fnv1a64(bytes: &[u8]) -> u64 {
+    let mut hash = Fnv64::new();
+    hash.write(bytes);
+    hash.finish()
+}
+
+pub(super) fn pane_surface_topology_signature(surface: &PaneSurfaceFrame) -> u64 {
+    fn write_delimited(hash: &mut Fnv64, bytes: &[u8]) {
+        hash.write(bytes);
+        hash.write_byte(0xff);
     }
 
     let mut panes = surface.panes.iter().collect::<Vec<_>>();
     panes.sort_by(|left, right| left.pane_id.as_bytes().cmp(right.pane_id.as_bytes()));
-    let mut hash = OFFSET;
+    let mut hash = Fnv64::new();
     for pane in &panes {
-        write(&mut hash, pane.pane_id.as_bytes());
+        write_delimited(&mut hash, pane.pane_id.as_bytes());
     }
     let mut splits = surface.splits.iter().collect::<Vec<_>>();
     splits.sort_by(|left, right| left.path.cmp(&right.path));
     for split in splits {
-        write(
+        write_delimited(
             &mut hash,
             &[match split.direction {
                 shepr_protocol::PaneSurfaceSplitDirection::Horizontal => 0,
@@ -32,14 +52,14 @@ pub(super) fn pane_surface_topology_signature(surface: &PaneSurfaceFrame) -> u64
             }],
         );
         for branch in &split.path {
-            hash ^= u64::from(*branch == shepr_core::geometry::SplitBranch::Second);
-            hash = hash.wrapping_mul(PRIME);
+            hash.write_byte(u8::from(
+                *branch == shepr_core::geometry::SplitBranch::Second,
+            ));
         }
-        hash ^= 0xff;
-        hash = hash.wrapping_mul(PRIME);
+        hash.write_byte(0xff);
         // Ratio movement changes pane rectangles but should preserve child membership.
         for pane in &panes {
-            write(&mut hash, pane.pane_id.as_bytes());
+            write_delimited(&mut hash, pane.pane_id.as_bytes());
             let rect = pane.rect;
             let area = split.area;
             let inside = rect.x >= area.x
@@ -58,10 +78,10 @@ pub(super) fn pane_surface_topology_signature(surface: &PaneSurfaceFrame) -> u64
                     }
                 }
             };
-            write(&mut hash, &[child]);
+            write_delimited(&mut hash, &[child]);
         }
     }
-    hash
+    hash.finish()
 }
 
 #[cfg(test)]

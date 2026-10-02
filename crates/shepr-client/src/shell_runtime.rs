@@ -234,18 +234,6 @@ pub(super) fn clear_endpoint_host_effects(state: &mut ClientState) -> Result<(),
         .map_err(ClientError::HostTerminal)
 }
 
-pub(super) fn endpoint_disconnect_notice(kind: io::ErrorKind) -> &'static str {
-    match kind {
-        io::ErrorKind::TimedOut => "connection timed out; reconnecting",
-        io::ErrorKind::UnexpectedEof
-        | io::ErrorKind::BrokenPipe
-        | io::ErrorKind::ConnectionAborted
-        | io::ErrorKind::ConnectionReset
-        | io::ErrorKind::NotConnected => "connection was lost; reconnecting",
-        _ => "connection failed; reconnecting",
-    }
-}
-
 pub(super) fn install_client_shell_snapshot(
     state: &mut ClientState,
     endpoint_id: &endpoint::ClientEndpointId,
@@ -378,16 +366,21 @@ mod tests {
     #[test]
     fn transport_failures_map_to_fixed_disconnect_notices() {
         assert_eq!(
-            endpoint_disconnect_notice(io::ErrorKind::UnexpectedEof),
+            shepr_remote::EndpointFailure::from_error(&io::Error::from(
+                io::ErrorKind::UnexpectedEof
+            ))
+            .disconnect_notice(),
             "connection was lost; reconnecting"
         );
         assert_eq!(
-            endpoint_disconnect_notice(io::ErrorKind::TimedOut),
+            shepr_remote::EndpointFailure::from_error(&io::Error::from(io::ErrorKind::TimedOut))
+                .disconnect_notice(),
             "connection timed out; reconnecting"
         );
         assert_eq!(
-            endpoint_disconnect_notice(io::ErrorKind::InvalidData),
-            "connection failed; reconnecting"
+            shepr_remote::EndpointFailure::from_error(&io::Error::from(io::ErrorKind::InvalidData))
+                .disconnect_notice(),
+            "connection failed; needs attention"
         );
     }
 

@@ -62,11 +62,8 @@ impl TerminalState {
         let previous_session = self.current_session_identity_for_persistence();
         let newer_custom_authority = process_exited
             && self.hook_authority.as_ref().is_some_and(|authority| {
-                Agent::parse_canonical_label(&authority.agent_label) == agent
-                    && !shepr_agent::agent::resume::is_official_agent_source(
-                        &authority.source,
-                        &authority.agent_label,
-                    )
+                authority.origin.known_agent() == agent
+                    && authority.origin.official_agent().is_none()
                     && authority.reported_at > now
             });
         let agent_released =
@@ -75,7 +72,7 @@ impl TerminalState {
             if self
                 .hook_authority
                 .as_ref()
-                .and_then(|authority| Agent::parse_canonical_label(&authority.agent_label))
+                .and_then(|authority| authority.origin.known_agent())
                 == agent
             {
                 self.detected_agent = agent;
@@ -128,8 +125,8 @@ impl TerminalState {
             self.process_evidence = AgentProcessEvidence::Available;
         }
         if process_exited {
-            if let Some(source) = agent.and_then(Agent::integration_source)
-                && let Some(record) = self.hook_sources.get_mut(source)
+            if let Some(target) = agent.and_then(Agent::integration_target)
+                && let Some(record) = self.hook_sources.get_mut(&AgentSource::Official(target))
             {
                 record.transition(HookSourceEvent::ProcessExited(now));
             }
@@ -138,56 +135,39 @@ impl TerminalState {
                 .hook_authority
                 .as_ref()
                 .filter(|authority| {
-                    shepr_agent::agent::resume::is_official_agent_source(
-                        &authority.source,
-                        &authority.agent_label,
-                    ) && Agent::parse_canonical_label(&authority.agent_label) == agent
+                    authority.origin.official_agent().is_some()
+                        && authority.origin.known_agent() == agent
                 })
-                .map(|authority| {
-                    (
-                        authority.source.clone(),
-                        authority.agent_label.clone(),
-                        authority.session_ref.clone(),
-                    )
-                })
+                .map(|authority| (authority.origin.clone(), authority.session_ref.clone()))
                 .or_else(|| {
                     self.persisted_agent_session.as_ref().and_then(|session| {
-                        agent
-                            .is_some_and(|agent| {
-                                session.source == shepr_agent::agent::AgentSource::Official(agent)
-                                    && session.agent == agent
-                            })
-                            .then(|| {
-                                (
-                                    session.source.to_source_string(),
-                                    session.agent.label().to_owned(),
-                                    Some(session.session_ref.clone()),
-                                )
-                            })
+                        if session.source.agent() != agent || Some(session.agent) != agent {
+                            return None;
+                        }
+                        Some((
+                            ReportOrigin::official(session.agent)?,
+                            Some(session.session_ref.clone()),
+                        ))
                     })
                 })
                 // Only full-lifecycle integrations need a process-exit
                 // suppression for their later state reports.
-                .filter(|(source, agent_label, _)| {
-                    shepr_agent::detect::full_lifecycle_hook_authority(source, agent_label)
-                });
-            if let Some((source, agent_label, session_ref)) = official_session {
-                self.clear_hook_report_sequence(&source);
+                .filter(|(origin, _)| origin.is_full_lifecycle());
+            if let Some((origin, session_ref)) = official_session {
+                self.clear_hook_source_sequence(origin.source());
                 self.suppress_full_lifecycle_hook_report_with_session_ref(
-                    source,
-                    agent_label,
+                    &origin,
                     session_ref,
                     FullLifecycleHookSuppressionReason::AwaitingProcess,
                     now,
                 );
             }
             let cleared_hook_source = self.hook_authority.as_ref().and_then(|authority| {
-                (Agent::parse_canonical_label(&authority.agent_label) == agent
-                    && !newer_custom_authority)
-                    .then(|| authority.source.clone())
+                (authority.origin.known_agent() == agent && !newer_custom_authority)
+                    .then(|| authority.origin.source().clone())
             });
             if let Some(source) = cleared_hook_source {
-                self.clear_hook_report_sequence(&source);
+                self.clear_hook_source_sequence(&source);
                 self.apply_source_effect(HookSourceEffects::Commit {
                     authority: AuthorityEffect::Clear,
                     persisted: self.persisted_agent_session.clone(),
@@ -212,8 +192,7 @@ impl TerminalState {
                 || (previous_detected_agent.is_some()
                     && agent != previous_detected_agent
                     && self.hook_authority.as_ref().is_some_and(|authority| {
-                        Agent::parse_canonical_label(&authority.agent_label)
-                            == previous_detected_agent
+                        authority.origin.known_agent() == previous_detected_agent
                     })))
         {
             // The authority withdrawn here never belongs to the agent the
@@ -228,19 +207,16 @@ impl TerminalState {
             // carries no process identity).
             let durable_session = match &self.persisted_agent_session {
                 Some(persisted) if agent == Some(persisted.agent) => Some(persisted.clone()),
-                persisted => self
-                    .hook_authority
-                    .as_ref()
-                    .and_then(|authority| {
-                        authority.session_ref.as_ref().and_then(|session_ref| {
-                            shepr_agent::agent::resume::PersistedAgentSession::from_report(
-                                &authority.source,
-                                &authority.agent_label,
-                                session_ref.clone(),
-                            )
+                persisted => {
+                    self.hook_authority
+                        .as_ref()
+                        .and_then(|authority| {
+                            authority.session_ref.as_ref().and_then(|session_ref| {
+                                authority.origin.session(session_ref.clone())
+                            })
                         })
-                    })
-                    .or_else(|| persisted.clone()),
+                        .or_else(|| persisted.clone())
+                }
             };
             self.suppress_current_full_lifecycle_hook_authority(
                 FullLifecycleHookSuppressionReason::HookClear,

@@ -3,16 +3,14 @@ use super::*;
 impl TerminalState {
     pub fn set_hook_report_at(
         &mut self,
-        source: shepr_agent::agent::AgentSource,
-        agent_label: String,
+        origin: ReportOrigin,
         state: AgentState,
         session_ref: Option<shepr_agent::agent::resume::AgentSessionRef>,
         seq: Option<u64>,
         sample: HookClockSample,
     ) -> Option<TerminalStateMutation> {
         self.transition_hook_event(HookEvent::Report {
-            source,
-            agent_label,
+            origin,
             state,
             session_ref,
             seq,
@@ -25,11 +23,7 @@ impl TerminalState {
     ) -> Option<shepr_agent::agent::resume::PersistedAgentSession> {
         if let Some(authority) = self.hook_authority.as_ref()
             && let Some(session_ref) = authority.session_ref.as_ref()
-            && let Some(session) = shepr_agent::agent::resume::PersistedAgentSession::from_report(
-                &authority.source,
-                &authority.agent_label,
-                session_ref.clone(),
-            )
+            && let Some(session) = authority.origin.session(session_ref.clone())
         {
             return Some(session);
         }
@@ -42,16 +36,15 @@ impl TerminalState {
     /// reducer uses the typed report entry point.
     pub fn set_hook_authority_at(
         &mut self,
-        source: String,
-        agent_label: String,
+        source: &str,
+        agent_label: &str,
         state: AgentState,
         session_ref: Option<shepr_agent::agent::resume::AgentSessionRef>,
         seq: Option<u64>,
         sample: impl Into<HookClockSample>,
     ) -> Option<TerminalStateMutation> {
         self.set_hook_report_at(
-            source.into(),
-            agent_label,
+            ReportOrigin::parse(source, agent_label).ok()?,
             state,
             session_ref,
             seq,

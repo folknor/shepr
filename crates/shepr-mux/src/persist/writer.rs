@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::SessionSnapshot;
+use super::error::SaveError;
 use super::snapshot::SessionHistory;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -27,7 +28,7 @@ impl HistoryFileStamp {
             Err(err) => return Err(err),
         };
         if !metadata.is_file() {
-            return Ok(None);
+            return Err(super::io::not_regular(path, metadata.file_type()));
         }
         Ok(Some(Self {
             device: metadata.dev(),
@@ -266,7 +267,7 @@ impl SessionWriter {
         snapshot: &SessionSnapshot,
         history: Option<&SessionHistory>,
         now: SystemTime,
-    ) -> io::Result<Option<String>> {
+    ) -> Result<Option<String>, SaveError> {
         let history = match history {
             None => HistoryIntent::Remove,
             Some(history) => self.prepare_history(history),
@@ -284,7 +285,7 @@ impl SessionWriter {
         snapshot: &SessionSnapshot,
         digest: String,
         now: SystemTime,
-    ) -> io::Result<Option<String>> {
+    ) -> Result<Option<String>, SaveError> {
         self.save_with(snapshot, HistoryIntent::Keep(digest), now)
     }
 
@@ -323,7 +324,7 @@ impl SessionWriter {
         snapshot: &SessionSnapshot,
         history: HistoryIntent,
         now: SystemTime,
-    ) -> io::Result<Option<String>> {
+    ) -> Result<Option<String>, SaveError> {
         if !self.may_write() {
             return Ok(None);
         }
@@ -342,7 +343,7 @@ impl SessionWriter {
         history: HistoryIntent,
         snapshot_history_plan: SnapshotHistoryPlan,
         now: SystemTime,
-    ) -> io::Result<Option<String>> {
+    ) -> Result<Option<String>, SaveError> {
         let digest = history.digest().map(str::to_owned);
         let mut failure = None;
         if result.is_ok() {
@@ -361,11 +362,11 @@ impl SessionWriter {
                     &self.path,
                     &format!("saved, but syncing its directory failed: {err}"),
                 );
-                failure = Some(err);
+                failure = Some(SaveError::PublishedNotDurable(err));
             }
             Err(err) => {
                 crate::logging::session_save_failed(&self.path, &err.to_string());
-                return Err(err);
+                return Err(SaveError::Io(err));
             }
         }
         // Optional history failure must not reclassify our committed layout as unloaded.
@@ -376,7 +377,7 @@ impl SessionWriter {
             self.written_history = None;
             crate::logging::session_save_failed(&history_path, &err.to_string());
             if failure.is_none() {
-                failure = Some(err);
+                failure = Some(SaveError::Io(err));
             }
         } else {
             // After-write snapshots must include the history just committed
@@ -500,7 +501,7 @@ impl SessionWriter {
 
     /// Clears the layout and history, reporting either file's clear failure.
     /// `now` supplies the time used for recovery-copy naming and preservation.
-    pub fn clear(&mut self, now: SystemTime) -> io::Result<()> {
+    pub fn clear(&mut self, now: SystemTime) -> Result<(), SaveError> {
         if !self.may_write() {
             return Ok(());
         }
@@ -511,13 +512,13 @@ impl SessionWriter {
         });
         if let Err(err) = result {
             crate::logging::session_clear_failed(&self.path, &err.to_string());
-            return Err(err);
+            return Err(SaveError::Io(err));
         }
         let history_path =
             super::io::session_history_path(super::io::containing_directory(&self.path));
         if let Err(err) = super::io::clear_path(&history_path) {
             crate::logging::session_clear_failed(&history_path, &err.to_string());
-            return Err(err);
+            return Err(SaveError::Io(err));
         }
         self.snapshot_fingerprints.forget_current();
         crate::logging::session_cleared(&self.path);
@@ -923,7 +924,7 @@ impl SessionWriter {
         result: io::Result<super::io::Published>,
         snapshot: &SessionSnapshot,
         history: Option<&SessionHistory>,
-    ) -> io::Result<()> {
+    ) -> Result<(), SaveError> {
         let history = match history {
             None => HistoryIntent::Remove,
             Some(history) => self.prepare_history(history),
@@ -951,12 +952,12 @@ mod tests {
             &mut self,
             snapshot: &SessionSnapshot,
             history: Option<&SessionHistory>,
-        ) -> io::Result<()> {
+        ) -> Result<(), SaveError> {
             self.save(snapshot, history, SystemTime::now()).map(drop)
         }
 
         /// A clear at the real current time; see [`Self::save_for_test`].
-        fn clear_for_test(&mut self) -> io::Result<()> {
+        fn clear_for_test(&mut self) -> Result<(), SaveError> {
             self.clear(SystemTime::now())
         }
     }

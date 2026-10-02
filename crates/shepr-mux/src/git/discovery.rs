@@ -36,33 +36,13 @@ pub(super) fn git_worktree_info_with_errors(
     cwd: &Path,
     errors: &mut Vec<GitReadError>,
 ) -> Option<GitWorktreeInfo> {
-    let repo_root = git_repo_root_with_errors(cwd, errors)?;
-    let git_dir = match locate_git_dir(&repo_root) {
-        Ok(Some(git_dir)) => match git_head_file_is_readable(&git_dir) {
-            Ok(true) => git_dir.path,
-            Ok(false) => return None,
-            Err(error) => {
-                errors.push(GitReadError::FileRead {
-                    path: git_dir.path.join("HEAD"),
-                    message: error.to_string(),
-                });
-                return None;
-            }
-        },
-        Ok(None) => return None,
-        Err(error) => {
-            errors.push(GitReadError::FileRead {
-                path: repo_root.join(".git"),
-                message: error.to_string(),
-            });
-            return None;
-        }
-    };
-    match git_config_info(&repo_root, &git_dir) {
+    let (repo_root, located) =
+        git_worktree_location_below_with_errors(cwd, &GitCeilings::from_env(), errors)?;
+    match git_config_info(&repo_root, &located.path) {
         Ok(info) => Some(info),
         Err(error) => {
             errors.push(GitReadError::FileRead {
-                path: git_dir.join("commondir"),
+                path: located.path.join("commondir"),
                 message: error.to_string(),
             });
             None
@@ -209,11 +189,11 @@ fn is_file_entry(path: &Path) -> std::io::Result<bool> {
     Ok(matches!(entry_type(path)?, Some(kind) if kind.is_file()))
 }
 
-/// [`locate_git_dir`] with a stat or read error kept apart from "not a checkout
-/// root", so the discovery walk can stop instead of ascending.
-fn locate_git_dir(repo_root: &Path) -> std::io::Result<Option<LocatedGitDir>> {
+/// [`locate_git_dir`] with filesystem and Git probe errors kept apart from
+/// "not a checkout root", so the discovery walk can stop instead of ascending.
+fn locate_git_dir(repo_root: &Path) -> Result<Option<LocatedGitDir>, GitReadError> {
     let git_path = repo_root.join(".git");
-    match entry_type(&git_path)? {
+    match entry_type(&git_path).map_err(|error| file_read_error(&git_path, &error))? {
         Some(kind) if kind.is_dir() => {
             return Ok(Some(LocatedGitDir {
                 path: git_path,
@@ -223,17 +203,18 @@ fn locate_git_dir(repo_root: &Path) -> std::io::Result<Option<LocatedGitDir>> {
         Some(kind) if kind.is_file() => {
             // A regular `.git` file claims to be a gitfile. Any failure to
             // read its target is an invalid marker, not a reason to ascend.
-            let gitdir = std::fs::read_to_string(&git_path)?;
+            let gitdir = std::fs::read_to_string(&git_path)
+                .map_err(|error| file_read_error(&git_path, &error))?;
             let Some(relative) = gitdir
                 .trim()
                 .strip_prefix("gitdir:")
                 .map(str::trim)
                 .filter(|relative| !relative.is_empty())
             else {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    "gitfile has no gitdir target",
-                ));
+                return Err(GitReadError::FileRead {
+                    path: git_path,
+                    message: "gitfile has no gitdir target".into(),
+                });
             };
             let resolved = Path::new(relative);
             return Ok(Some(LocatedGitDir {
@@ -248,8 +229,9 @@ fn locate_git_dir(repo_root: &Path) -> std::io::Result<Option<LocatedGitDir>> {
         Some(_) | None => {}
     }
 
-    if path_is_git_dir_layout(repo_root)? {
-        let info = git_config_info(repo_root, repo_root)?;
+    if path_is_git_dir_layout(repo_root).map_err(|error| file_read_error(repo_root, &error))? {
+        let info = git_config_info(repo_root, repo_root)
+            .map_err(|error| file_read_error(&repo_root.join("commondir"), &error))?;
         if git_dir_is_bare(&info)? {
             return Ok(Some(LocatedGitDir {
                 path: repo_root.to_path_buf(),
@@ -259,6 +241,13 @@ fn locate_git_dir(repo_root: &Path) -> std::io::Result<Option<LocatedGitDir>> {
     }
 
     Ok(None)
+}
+
+fn file_read_error(path: &Path, error: &std::io::Error) -> GitReadError {
+    GitReadError::FileRead {
+        path: path.to_path_buf(),
+        message: error.to_string(),
+    }
 }
 
 fn git_head_file_is_readable(git_dir: &LocatedGitDir) -> std::io::Result<bool> {
@@ -309,7 +298,7 @@ pub(super) fn git_rev_parse_verify_with_errors(
 /// config cannot switch the ref backend, so neither is read here.
 pub(super) fn git_ref_storage_is_reftable(
     info: &GitWorktreeInfo,
-) -> io::Result<(bool, Vec<super::config::FileDep>)> {
+) -> Result<(bool, Vec<super::config::FileDep>), GitReadError> {
     let config_path = info.git_common_dir.join("config");
     let result =
         super::config::read_repository_format_value(&config_path, "extensions", "refstorage");
@@ -323,7 +312,7 @@ pub(super) fn git_ref_storage_is_reftable(
 /// Git resolves effective core.bare, including its own config grammar and
 /// conditional includes. Require explicit true rather than treating an
 /// unconfigured directory with a Git-like layout as a bare repository.
-fn git_dir_is_bare(info: &GitWorktreeInfo) -> io::Result<bool> {
+fn git_dir_is_bare(info: &GitWorktreeInfo) -> Result<bool, GitReadError> {
     super::config::read_bare(info)
 }
 
@@ -393,7 +382,7 @@ pub(super) fn run_git_output(cwd: &Path, args: &[&str]) -> Result<Output, GitRea
     })
 }
 
-fn command_failed(cwd: &Path, args: &[&str], output: &Output) -> GitReadError {
+pub(super) fn command_failed(cwd: &Path, args: &[&str], output: &Output) -> GitReadError {
     GitReadError::CommandFailed {
         cwd: cwd.to_path_buf(),
         arguments: args.join(" "),
@@ -454,21 +443,14 @@ impl GitCeilings {
     }
 }
 
-fn git_repo_root_with_errors(start: &Path, errors: &mut Vec<GitReadError>) -> Option<PathBuf> {
-    git_repo_root_below_with_errors(start, &GitCeilings::from_env(), errors)
-}
-
-/// The checkout root for `start`, with the ceilings handed in: the walk
-/// examines `start` (or its parent, for a file) and each ancestor up to, not
-/// including, the nearest ceiling. A directory whose Git state cannot be read
-/// (a stat or read error other than absence) ends the walk with `None` and an
-/// entry in `errors` rather than being passed over: ascending past it could
-/// attribute `start` to an enclosing checkout it is not part of.
-fn git_repo_root_below_with_errors(
+/// The checkout root and its located Git directory, retained from the walk
+/// so callers that need repository metadata do not locate the final marker a
+/// second time.
+fn git_worktree_location_below_with_errors(
     start: &Path,
     ceilings: &GitCeilings,
     errors: &mut Vec<GitReadError>,
-) -> Option<PathBuf> {
+) -> Option<(PathBuf, LocatedGitDir)> {
     let mut current = match is_dir_entry(start) {
         Ok(true) => start.to_path_buf(),
         Ok(false) => start.parent()?.to_path_buf(),
@@ -484,7 +466,8 @@ fn git_repo_root_below_with_errors(
     loop {
         let found = match locate_git_dir(&current) {
             Ok(Some(git_dir)) => match git_head_file_is_readable(&git_dir) {
-                Ok(found) => found,
+                Ok(true) => Some(git_dir),
+                Ok(false) => None,
                 Err(error) => {
                     errors.push(GitReadError::FileRead {
                         path: git_dir.path.join("HEAD"),
@@ -493,17 +476,14 @@ fn git_repo_root_below_with_errors(
                     return None;
                 }
             },
-            Ok(None) => false,
+            Ok(None) => None,
             Err(error) => {
-                errors.push(GitReadError::FileRead {
-                    path: current.clone(),
-                    message: error.to_string(),
-                });
+                errors.push(error);
                 return None;
             }
         };
-        if found {
-            return Some(current);
+        if let Some(git_dir) = found {
+            return Some((current, git_dir));
         }
         if !current.pop() || ceilings.contains(&current) {
             return None;
@@ -658,6 +638,21 @@ fn git_repo_root_below(start: &Path, ceilings: &GitCeilings) -> Option<PathBuf> 
 #[cfg(test)]
 pub(super) fn read_ref_oid(common_dir: &Path, full_ref: &str) -> Option<String> {
     read_ref_oid_with_errors(common_dir, full_ref, &mut Vec::new())
+}
+
+/// The checkout root for `start`, with the ceilings handed in: the walk
+/// examines `start` (or its parent, for a file) and each ancestor up to, not
+/// including, the nearest ceiling. A directory whose Git state cannot be read
+/// (a stat or read error other than absence) ends the walk with `None` and an
+/// entry in `errors` rather than being passed over: ascending past it could
+/// attribute `start` to an enclosing checkout it is not part of.
+#[cfg(test)]
+fn git_repo_root_below_with_errors(
+    start: &Path,
+    ceilings: &GitCeilings,
+    errors: &mut Vec<GitReadError>,
+) -> Option<PathBuf> {
+    git_worktree_location_below_with_errors(start, ceilings, errors).map(|(repo_root, _)| repo_root)
 }
 
 #[cfg(test)]

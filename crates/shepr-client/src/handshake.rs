@@ -30,20 +30,10 @@ fn read_timeout_for_link(link_kind: HandshakeLinkKind) -> Duration {
     }
 }
 
-/// Maps a failed preamble exchange onto the client's error kinds: an early
-/// close or read failure stays a transient connection problem, while a peer
-/// identifying a different build needs user action.
+/// Retains the preamble cause; the handshake failure classifier decides the
+/// endpoint disposition.
 fn preamble_error(error: shepr_protocol::preamble::PreambleError) -> ClientError {
-    use shepr_protocol::preamble::PreambleError;
-    match error {
-        PreambleError::UnexpectedEof => {
-            ClientError::from(shepr_protocol::FramingError::UnexpectedEof)
-        }
-        PreambleError::Io(error) => ClientError::from(shepr_protocol::FramingError::Io(error)),
-        error @ (PreambleError::NotShepr | PreambleError::DifferentBuild(_)) => {
-            ClientError::Preamble(error)
-        }
-    }
+    ClientError::Preamble(error)
 }
 
 /// Performs the initial Local client→server handshake.
@@ -92,7 +82,7 @@ pub(crate) fn do_handshake_for_link(
         );
     stream
         .set_nonblocking(false)
-        .map_err(ClientError::ConnectionFailed)?;
+        .map_err(ClientError::EndpointSetup)?;
 
     let hello = ClientMessage::EndpointHello(EndpointClientHello {
         geometry: shepr_protocol::TerminalGeometry::new(
@@ -152,14 +142,13 @@ pub(crate) fn do_handshake_for_link(
     }
 }
 
-/// Keeps the socket error itself, kind included: the endpoint supervisor decides
-/// between retrying and asking for attention by that kind, and a broken pipe or a
-/// reset must stay a transient failure.
+/// Keeps the IO cause at the write boundary and identifies hello encoding
+/// failures as local setup.
 fn hello_write_error(error: shepr_protocol::FramingError) -> ClientError {
     match error {
         shepr_protocol::FramingError::Io(error) => ClientError::ConnectionFailed(error),
         // Encoding the hello failed: a local defect, not a connection problem.
-        error => ClientError::Protocol(error),
+        error => ClientError::EndpointSetup(std::io::Error::other(error)),
     }
 }
 
@@ -346,7 +335,7 @@ mod tests {
         let maximum_elapsed = deadline.saturating_duration_since(started) + Duration::from_secs(1);
         assert!(elapsed < maximum_elapsed, "deadline ignored: {elapsed:?}");
         match error {
-            ClientError::ConnectionLost(error) => {
+            ClientError::Preamble(shepr_protocol::preamble::PreambleError::Io(error)) => {
                 assert_eq!(error.kind(), io::ErrorKind::TimedOut);
             }
             other => panic!("expected a timeout, got {other}"),
@@ -407,7 +396,7 @@ mod tests {
         }
         assert!(matches!(
             hello_write_error(shepr_protocol::FramingError::Oversized { claimed: 2, max: 1 }),
-            ClientError::Protocol(_)
+            ClientError::EndpointSetup(_)
         ));
     }
 }

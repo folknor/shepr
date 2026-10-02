@@ -117,7 +117,12 @@ pub(super) fn parse_remote_server_status_json(status: &str) -> io::Result<Remote
     use shepr_api::schema::ServerPresenceJson;
     let parsed: shepr_api::schema::ServerStatusJson =
         serde_json::from_str(status).map_err(|err| {
-            io::Error::other(format!("could not parse remote server status JSON: {err}"))
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                crate::EndpointFailure::incompatible(format!(
+                    "could not parse remote server status JSON: {err}"
+                )),
+            )
         })?;
     match parsed.presence {
         ServerPresenceJson::Gone | ServerPresenceJson::Stopping => {

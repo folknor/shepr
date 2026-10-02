@@ -159,7 +159,7 @@ fn terminal_reports_pty_responses_and_pwd_changes() {
     assert_eq!(output, b"\x1b[1;1R");
     assert_eq!(
         terminal.take_pwd_changes(),
-        [WorkingDirectoryReport(b"file:///tmp/shepr".to_vec())]
+        [WorkingDirectoryReport::Uri(b"file:///tmp/shepr".to_vec())]
     );
 }
 

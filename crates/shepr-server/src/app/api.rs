@@ -395,8 +395,8 @@ mod tests {
         terminal.set_detected_state(Some(Agent::Codex), AgentState::Working);
         terminal
             .set_hook_authority_at(
-                "shepr:codex".into(),
-                "codex".into(),
+                "shepr:codex",
+                "codex",
                 AgentState::Working,
                 None,
                 Some(1),

@@ -232,6 +232,38 @@ fn restore_cards_keep_the_source_boot_and_survive_projection_resets() {
 }
 
 #[test]
+fn a_saves_stopped_card_shows_once_per_boot_beside_the_restore_card() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    let boot = crate::tests::test_boot_id("saves-stopped");
+    let kind = shepr_protocol::SessionRestoreNotice {
+        loss: shepr_protocol::SessionRestoreLoss::Panes,
+        backup_dir: "/state/session-backups".into(),
+    };
+    assert!(state.receive_restore_notice(&ClientEndpointId::Local, &boot, &kind));
+    assert!(state.receive_session_saves_stopped(&ClientEndpointId::Local, &boot));
+    // Every later projection of the same boot repeats the flag.
+    assert!(!state.receive_session_saves_stopped(&ClientEndpointId::Local, &boot));
+    let now = std::time::Instant::now();
+    state.endpoint_notice_drawn(now);
+    assert!(state.tick_transient_banners(now + crate::limits::ENDPOINT_NOTICE_TIMEOUT));
+    let card = state
+        .visible_endpoint_notice
+        .as_ref()
+        .expect("saves stopped card");
+    assert!(
+        card.title.ends_with(": session saves stopped"),
+        "{}",
+        card.title
+    );
+    assert!(card.body.contains("not restored"), "{}", card.body);
+    assert!(state.receive_session_saves_stopped(
+        &ClientEndpointId::Local,
+        &crate::tests::test_boot_id("saves-stopped-next")
+    ));
+}
+
+#[test]
 fn transient_cards_do_not_discard_queued_restore_cards() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     let boot = crate::tests::test_boot_id("restored");

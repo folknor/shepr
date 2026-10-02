@@ -17,8 +17,9 @@ pub(super) enum HostShutdownCheckpoint {
     },
     /// The checkpoint saved. Held until the lifecycle takes the result.
     Saved,
-    /// `CHECKPOINT_MAX_FAILURES` attempts failed. Held until the lifecycle
-    /// takes the result.
+    /// `CHECKPOINT_MAX_FAILURES` attempts failed, or the persister stopped
+    /// accepting saves for this boot. Held until the lifecycle takes the
+    /// result.
     Unsaved,
 }
 
@@ -80,6 +81,13 @@ impl HostShutdownCheckpoint {
         } else {
             *retry_at = Some(now + delay);
             false
+        }
+    }
+
+    /// Finishes a requested checkpoint when no later save can run.
+    pub(super) fn fail_permanently(&mut self) {
+        if self.is_requested() {
+            *self = Self::Unsaved;
         }
     }
 

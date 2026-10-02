@@ -75,6 +75,10 @@ pub(crate) struct SessionSaver {
     /// capture reaches the persister after the one before it finished.
     in_flight: Option<InFlightSave>,
     persister: shepr_mux::persist::SessionPersister,
+    /// Set after the worker refuses a job or abandons its result. Disk errors
+    /// remain retryable, but this persister cannot recover without a restart.
+    /// Clients are told through their shell snapshot.
+    persistence_stopped: bool,
     /// Fired by the persister each time a submitted save ends.
     save_finished: Arc<tokio::sync::Notify>,
 }
@@ -104,6 +108,7 @@ impl SessionSaver {
             host: HostShutdownCheckpoint::new(),
             in_flight: None,
             persister,
+            persistence_stopped: false,
             save_finished,
         }
     }
@@ -117,9 +122,12 @@ impl SessionSaver {
     /// Whether nothing may start now whatever is requested or due: a save is
     /// in flight (its end fires [`Self::save_finished`], which wakes the
     /// loop), or the host checkpoint finished unsaved and no pane exit is
-    /// held (the lifecycle freezes saves once it takes that result).
+    /// held (the lifecycle freezes saves once it takes that result), or this
+    /// boot's persister has stopped.
     fn blocked(&self) -> bool {
-        self.in_flight.is_some() || (self.host.finished_unsaved() && !self.exit.is_requested())
+        self.persistence_stopped
+            || self.in_flight.is_some()
+            || (self.host.finished_unsaved() && !self.exit.is_requested())
     }
 
     /// Whether a checkpoint, rather than an autosave, is the next save.
@@ -130,7 +138,8 @@ impl SessionSaver {
     /// When the loop should next try to start a save. A requested checkpoint
     /// reports the later of the two machines' retries, and none when neither
     /// carries one: it starts at once, from the call that requested it or
-    /// from the reap of the save before it.
+    /// from the reap of the save before it. A persister that refused work
+    /// stops reporting deadlines for this boot.
     pub(crate) fn deadline(&self) -> Option<Instant> {
         if self.blocked() {
             None
@@ -177,6 +186,9 @@ impl SessionSaver {
     /// the layout captured by a checkpoint in flight is voided, so a capture
     /// that predates the mutation is never installed.
     fn note_mutation(&mut self, now: Instant) {
+        if self.persistence_stopped {
+            return;
+        }
         self.autosave.schedule(now);
         self.exit.discard_layout();
         if let Some(InFlightSave {
@@ -195,9 +207,20 @@ impl SessionSaver {
     fn request_host_checkpoint(&mut self) -> bool {
         let requested = self.host.request();
         if requested {
-            self.exit.expedite_retry();
+            if self.persistence_stopped {
+                self.host.fail_permanently();
+            } else {
+                self.exit.expedite_retry();
+            }
         }
         requested
+    }
+
+    fn stop_persistence(&mut self) {
+        self.persistence_stopped = true;
+        self.autosave.clear();
+        self.exit.abandon();
+        self.host.fail_permanently();
     }
 
     /// Drops the host-shutdown request or its unclaimed result, and voids the
@@ -280,9 +303,20 @@ impl App {
         true
     }
 
+    /// Whether session saves have stopped for the rest of this boot: the
+    /// persister refused a save it can never run, so layout changes from now
+    /// on are not restored by the next server start.
+    pub(crate) fn session_saves_stopped(&self) -> bool {
+        self.session_saver.persistence_stopped
+    }
+
     /// The one place a save's outcome is applied to the autosave backoff and
     /// both checkpoint machines.
-    fn finish_session_save(&mut self, kind: SaveKind, result: std::io::Result<()>) {
+    fn finish_session_save(
+        &mut self,
+        kind: SaveKind,
+        result: Result<(), shepr_mux::persist::SaveError>,
+    ) {
         let now = self.clock.now;
         match result {
             Ok(()) => {
@@ -311,9 +345,22 @@ impl App {
                     self.session_saver.autosave.clear();
                 }
             }
+            Err(error) if !error.is_retryable() => {
+                tracing::error!(
+                    error = %error,
+                    "session persister cannot accept further saves; disabling session persistence for this boot"
+                );
+                if !self.session_saver.persistence_stopped {
+                    // Every client's snapshot carries the stop, so the user
+                    // learns that later layout changes will not be restored.
+                    self.state.mark_shell_projection_dirty();
+                }
+                self.session_saver.stop_persistence();
+            }
             Err(error) => {
-                // A failed save of any kind re-arms the normal retry; a
-                // checkpoint's own retry is its machine's, below.
+                // A retryable write failure re-arms the normal retry; a
+                // checkpoint's own retry is its machine's, below. (A refusal
+                // or abandonment took the branch above.)
                 let (failures, delay) = self.session_saver.autosave.record_failure(now);
                 tracing::warn!(error = %error, failures, retry_ms = delay.as_millis(), "session save failed");
                 if let SaveKind::Checkpoint(ticket) = kind {
@@ -435,6 +482,9 @@ impl App {
             return;
         }
         self.reap_finished_session_save();
+        if self.session_saver.persistence_stopped {
+            return;
+        }
         match self.session_saver.next_save(self.clock.now) {
             None => {}
             Some(NextSave::Checkpoint {
@@ -486,7 +536,7 @@ impl App {
     /// the save later finishes, and a later change to the session cannot hold
     /// it again.
     pub(crate) fn request_pane_exit_checkpoint(&mut self) -> Option<u64> {
-        if !self.policy.persists_session() {
+        if !self.policy.persists_session() || self.session_saver.persistence_stopped {
             return None;
         }
         let generation = self.session_saver.exit.request(self.state.session_dirty)?;
@@ -545,7 +595,7 @@ impl App {
             self.finish_session_save(save.kind, result);
         }
 
-        if !self.policy.persists_session() {
+        if !self.policy.persists_session() || self.session_saver.persistence_stopped {
             self.session_saver.autosave.clear();
             return;
         }
@@ -582,12 +632,12 @@ impl App {
 
 /// Waits for a persister result on a blocking thread, so the async runtime
 /// keeps serving while the save finishes.
-async fn wait_off_the_runtime(pending: shepr_mux::persist::PendingSave) -> std::io::Result<()> {
+async fn wait_off_the_runtime(
+    pending: shepr_mux::persist::PendingSave,
+) -> Result<(), shepr_mux::persist::SaveError> {
     match tokio::task::spawn_blocking(move || pending.wait()).await {
         Ok(result) => result,
-        Err(error) => Err(std::io::Error::other(format!(
-            "failed to wait for the session save: {error}"
-        ))),
+        Err(_) => Err(shepr_mux::persist::SaveError::Abandoned),
     }
 }
 
@@ -667,6 +717,7 @@ impl App {
             shepr_mux::persist::HistoryCarry::default(),
             Arc::clone(&self.session_saver.save_finished),
         );
+        self.session_saver.persistence_stopped = false;
         self.policy = super::AppPolicy::Production;
     }
 
@@ -685,6 +736,10 @@ impl App {
         if !self.policy.persists_session() {
             self.session_saver.autosave.clear();
             return true;
+        }
+        if self.session_saver.persistence_stopped {
+            self.session_saver.autosave.clear();
+            return false;
         }
 
         let job = self.capture_session_save_job();
@@ -737,7 +792,7 @@ impl App {
     /// directory claim until their processes have finished tearing down.
     pub(crate) fn save_session_before_teardown(&mut self) {
         self.wait_for_session_save();
-        if !self.policy.persists_session() {
+        if !self.policy.persists_session() || self.session_saver.persistence_stopped {
             self.session_saver.autosave.clear();
             return;
         }
@@ -936,8 +991,10 @@ mod tests {
         })
     }
 
-    fn disk_full() -> std::io::Result<()> {
-        Err(std::io::Error::other("disk full"))
+    fn disk_full() -> Result<(), shepr_mux::persist::SaveError> {
+        Err(shepr_mux::persist::SaveError::Io(std::io::Error::other(
+            "disk full",
+        )))
     }
 
     #[test]
@@ -961,6 +1018,29 @@ mod tests {
         assert!(!app.pane_exit_checkpoint_generation_settled(next));
         assert!(app.pane_exit_checkpoint_generation_settled(generation));
         app.wait_for_session_save();
+        app.policy = super::super::AppPolicy::Test;
+    }
+
+    #[test]
+    fn a_refused_save_stops_persistence_and_tells_every_client() {
+        let mut app = test_app();
+        app.persist_for_test();
+        let generation = app.session_saver.exit.request(true).expect("held");
+        let projection_before = app.state.shell_projection_revision;
+        assert!(!app.session_saves_stopped());
+
+        app.finish_session_save(
+            exit_kind(generation),
+            Err(shepr_mux::persist::SaveError::Refused(
+                shepr_mux::persist::SaveRefusal::StoppedAfterPanic,
+            )),
+        );
+
+        assert!(app.session_saves_stopped());
+        assert_ne!(app.state.shell_projection_revision, projection_before);
+        assert!(app.pane_exit_checkpoint_generation_settled(generation));
+        assert_eq!(app.request_pane_exit_checkpoint(), None);
+        assert_eq!(app.session_saver.deadline(), None);
         app.policy = super::super::AppPolicy::Test;
     }
 

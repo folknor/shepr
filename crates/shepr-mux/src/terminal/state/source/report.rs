@@ -3,47 +3,30 @@ use super::*;
 impl TerminalState {
     pub(super) fn transition_report(
         &mut self,
-        source: shepr_agent::agent::AgentSource,
-        agent_label: String,
+        origin: ReportOrigin,
         state: AgentState,
         session_ref: Option<shepr_agent::agent::resume::AgentSessionRef>,
         seq: Option<u64>,
         sample: HookClockSample,
     ) -> Option<TerminalStateMutation> {
         let now = sample.monotonic;
-        let typed_source = source;
-        let source = typed_source.to_source_string();
-        self.warn_unrecognized_hook_identity(&source, &agent_label);
-        // Built-in source names cannot claim another agent. Custom sources
-        // retain arbitrary labels, but cannot mint official resume identities.
-        if typed_source
-            .agent()
-            .is_some_and(|agent| agent.label() != agent_label)
-        {
-            return None;
-        }
-        if typed_source
-            .agent()
-            .is_some_and(|agent| agent.descriptor().session_identity_only_integration)
-        {
-            return None;
+        self.warn_unrecognized_hook_identity(&origin);
+        // All official session-only integrations use the same admission path.
+        // A state report may contribute its session, but never state authority.
+        if !origin.authority_class().admits_state_report() {
+            return self.transition_start(&origin, session_ref, seq, None, sample);
         }
         if let Some(session_ref) = session_ref.as_ref()
-            && typed_source.agent().is_some_and(|agent| {
-                shepr_agent::agent::resume::PersistedAgentSession::new(
-                    typed_source.clone(),
-                    agent,
-                    session_ref.clone(),
-                )
-                .is_none()
-            })
+            && origin.official_agent().is_some()
+            && origin.session(session_ref.clone()).is_none()
         {
             return None;
         }
+        let source = origin.source().clone();
         // Codex turn reports carry the id of the session they belong to. One
         // for another session than the current one (a late Stop from a session
         // that /new or /resume replaced) must not overwrite this session's state.
-        if typed_source.agent().is_some_and(|agent| {
+        if origin.official_agent().is_some_and(|agent| {
             agent
                 .descriptor()
                 .hook_session_policy
@@ -51,36 +34,27 @@ impl TerminalState {
         }) && let Some(incoming) = session_ref.as_ref()
             && self
                 .current_session_identity_for_persistence()
-                .is_some_and(|current| {
-                    current.source.as_str() == source
-                        && current.agent.label() == agent_label
-                        && &current.session_ref != incoming
-                })
+                .is_some_and(|current| origin.owns(&current) && &current.session_ref != incoming)
         {
             return None;
         }
-        if !shepr_agent::detect::full_lifecycle_hook_authority(&source, &agent_label)
+        if !origin.is_full_lifecycle()
             && self
                 .process_evidence
                 .exit()
-                .is_some_and(|exit| Agent::parse_canonical_label(&agent_label) == Some(exit.agent))
+                .is_some_and(|exit| origin.known_agent() == Some(exit.agent))
         {
             return None;
         }
-        if self.known_agent_label_conflicts_with_detected_agent(&agent_label) {
+        if self.known_agent_label_conflicts_with_detected_agent(&origin) {
             return None;
         }
-        let custom_state_report = session_ref.is_none() && typed_source.agent().is_none();
+        let custom_state_report = session_ref.is_none() && origin.official_agent().is_none();
         // A sessionless custom report updates state but cannot claim the
         // resume identity already stored for this pane.
-        let owner_conflicts =
-            !custom_state_report && self.current_session_owner_conflicts(&source, &agent_label);
+        let owner_conflicts = !custom_state_report && self.current_session_owner_conflicts(&origin);
         let foreground_takeover_allowed = owner_conflicts
-            && self.foreground_agent_confirms_hook_authority_takeover(
-                &source,
-                &agent_label,
-                &session_ref,
-            );
+            && self.foreground_agent_confirms_hook_authority_takeover(&origin, &session_ref);
         if owner_conflicts && !foreground_takeover_allowed {
             return None;
         }
@@ -91,22 +65,19 @@ impl TerminalState {
                 return None;
             }
             self.current_session_identity_for_persistence()
-                .filter(|session| {
-                    session.source.as_str() == source && session.agent.label() == agent_label
-                })
+                .filter(|session| origin.owns(session))
                 .map(|session| session.session_ref)
         });
         let session_ref = session_ref.map(|session_ref| {
-            if shepr_agent::detect::full_lifecycle_hook_authority(&source, &agent_label) {
+            if origin.is_full_lifecycle() {
                 session_ref
             } else {
-                self.conflicting_same_owner_session_ref(&source, &agent_label, &session_ref, None)
+                self.conflicting_same_owner_session_ref(&origin, &session_ref, None)
                     .unwrap_or(session_ref)
             }
         });
         let reanchor_sequence = match self.route_full_lifecycle_hook_report(
-            &source,
-            &agent_label,
+            &origin,
             state,
             &session_ref,
             seq,
@@ -138,8 +109,7 @@ impl TerminalState {
         }
         let event = HookSourceEvent::CommitReport {
             authority: HookAuthority {
-                source: source.clone(),
-                agent_label,
+                origin,
                 state,
                 reported_at: now,
                 session_ref,

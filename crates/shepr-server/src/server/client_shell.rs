@@ -122,6 +122,7 @@ pub(super) fn snapshot_from_session(
         boot_id: boot_id.clone(),
         revision: revision.into(),
         restore_notice: app.restore_notice.clone(),
+        session_saves_stopped: app.session_saves_stopped(),
         focused_workspace_id,
         focused_pane_id,
         workspaces,

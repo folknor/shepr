@@ -19,6 +19,7 @@ use super::*;
 use crate::UsableCwd;
 use crate::events::AppEvent;
 use crate::render_signal::RenderSignal;
+use crate::workspace::SurfaceChange;
 use shepr_core::layout::PaneId;
 use shepr_pty::ChildIo;
 use shepr_pty::actor::{PtyIoActor, PtyIoActorConfig, PtyIoActorHandle, PtyReadResult, ReaderExit};
@@ -1186,27 +1187,27 @@ impl PaneRuntime {
     }
 
     /// Scroll up by N lines (into scrollback history).
-    pub fn scroll_up(&self, lines: usize) {
-        self.terminal.scroll_up(lines);
+    pub fn scroll_up(&self, lines: usize) -> SurfaceChange {
+        self.terminal.scroll_up(lines)
     }
 
     /// Scroll down by N lines (toward live output).
-    pub fn scroll_down(&self, lines: usize) {
-        self.terminal.scroll_down(lines);
+    pub fn scroll_down(&self, lines: usize) -> SurfaceChange {
+        self.terminal.scroll_down(lines)
     }
 
-    pub fn clear_screen(&self) -> Result<(), PaneClearError> {
+    pub fn clear_screen(&self) -> Result<SurfaceChange, PaneClearError> {
         self.terminal.clear_screen()
     }
 
     /// Reset scroll to live view (offset = 0).
-    pub fn scroll_reset(&self) {
-        self.terminal.scroll_reset();
+    pub fn scroll_reset(&self) -> SurfaceChange {
+        self.terminal.scroll_reset()
     }
 
     /// Set scrollback offset measured from the live bottom of the terminal.
-    pub fn set_scroll_offset_from_bottom(&self, lines: usize) {
-        self.terminal.set_scroll_offset_from_bottom(lines);
+    pub fn set_scroll_offset_from_bottom(&self, lines: usize) -> SurfaceChange {
+        self.terminal.set_scroll_offset_from_bottom(lines)
     }
 
     pub fn scroll_metrics(&self) -> Option<ScrollMetrics> {
@@ -1558,15 +1559,16 @@ impl PaneRuntime {
         if self.child_liveness.live_pid() != Some(pid) {
             return None;
         }
-        let leader_cwd = foreground_pgid.and_then(absolute_process_cwd);
+        let leader_cwd = foreground_pgid.and_then(readlink_process_cwd);
 
         // The group leader's cwd is authoritative: a helper
         // process that chdirs elsewhere inside the same foreground group
         // must not override it. Scan other members only when the leader's
-        // cwd cannot be read at all.
+        // cwd cannot be read as a usable path.
         let cwd = leader_cwd.or_else(|| {
-            let shell_cwd = absolute_process_cwd(pid);
+            let shell_cwd = readlink_process_cwd(pid);
             foreground_member_cwd_different_from_shell(pid, shell_cwd.as_ref())
+                .filter(|cwd| !crate::workspace::process_cwd_is_deleted(cwd))
         });
         (self.child_liveness.live_pid() == Some(pid))
             .then_some(cwd)

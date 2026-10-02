@@ -12,9 +12,7 @@ use shepr_protocol::command::{
     PaneTextRange, PaneWordMotion, PaneZoomParams,
 };
 
-use super::super::api_helpers::{
-    detect_state_from_api, normalize_reported_agent_label, normalized_user_label, pane_not_found,
-};
+use super::super::api_helpers::{detect_state_from_api, normalized_user_label, pane_not_found};
 use super::endpoint::{
     EndpointEffects, Handled, HandlerError, HandlerResult, pane_missing, rejected,
     rejected_with_effects,

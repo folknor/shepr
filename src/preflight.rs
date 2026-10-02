@@ -305,24 +305,19 @@ fn result_notices(
             }
             (MachineCheck::HostKey(diagnostic), _) => {
                 let mut notice = format!("shepr: machine {}: {diagnostic}", outcome.label);
-                for hint in
-                    shepr_remote::machine_ssh_error_hint(diagnostic, machine.ssh.as_str())
-                {
+                for hint in shepr_remote::machine_ssh_error_hint(diagnostic, machine.ssh.as_str()) {
                     notice.push('\n');
                     notice.push_str(&hint);
                 }
                 notices.push(notice);
             }
             (MachineCheck::Incompatible(diagnostic), _) => notices.push(format!(
-                "shepr: machine {} cannot be used: {diagnostic}. The client shows it as unavailable and keeps retrying it.",
-                outcome.label
+                "shepr: machine {} cannot be used: {diagnostic}. {}",
+                outcome.label,
+                diagnostic.disposition().client_action()
             )),
             (MachineCheck::Failed(diagnostic), _) => {
-                let client_action = if diagnostic.needs_attention() {
-                    "The client shows it as unavailable and needs attention."
-                } else {
-                    "The client keeps retrying it."
-                };
+                let client_action = diagnostic.disposition().client_action();
                 let mut notice = format!(
                     "shepr: machine {} could not be checked: {diagnostic}. {client_action}",
                     outcome.label

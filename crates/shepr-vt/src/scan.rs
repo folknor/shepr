@@ -33,10 +33,13 @@ use crate::limits::{
 };
 use memchr::memchr;
 
-/// Raw OSC working-directory report. It may be a URI or a path, so parsing
-/// belongs to the pane after the terminal scanner has framed it.
+/// Raw OSC working-directory report. OSC 7 carries a URI; the other supported
+/// reports carry paths. Parsing belongs to the pane after the scanner frames it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WorkingDirectoryReport(pub Vec<u8>);
+pub enum WorkingDirectoryReport {
+    Uri(Vec<u8>),
+    Path(Vec<u8>),
+}
 
 /// Raw ConEmu OSC 9;4 payload, including its `4` command byte.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -55,7 +58,7 @@ pub(super) enum ScanEvent {
     CellSizeQuery,
     /// Complete XTGETTCAP replies, in request order.
     Xtgettcap(Vec<Vec<u8>>),
-    /// Working-directory report payload (URI or path, exactly as sent).
+    /// Working-directory report payload, exactly as sent.
     WorkingDirectory(WorkingDirectoryReport),
     /// ConEmu progress report: the OSC 9 payload after `9;`, starting `4`.
     Progress(ProgressReport),
@@ -325,14 +328,21 @@ impl Scanner {
             return;
         }
         let body = self.buffer.as_slice();
-        let payload = body
+        let report = body
             .strip_prefix(b"7;")
-            .or_else(|| body.strip_prefix(b"9;9;"))
-            .or_else(|| body.strip_prefix(b"1337;CurrentDir="));
-        if let Some(payload) = payload {
+            .map(|value| WorkingDirectoryReport::Uri(value.to_vec()))
+            .or_else(|| {
+                body.strip_prefix(b"9;9;")
+                    .map(|value| WorkingDirectoryReport::Path(value.to_vec()))
+            })
+            .or_else(|| {
+                body.strip_prefix(b"1337;CurrentDir=")
+                    .map(|value| WorkingDirectoryReport::Path(value.to_vec()))
+            });
+        if let Some(payload) = report {
             events.push(ScannedEvent {
                 end: index + 1,
-                event: ScanEvent::WorkingDirectory(WorkingDirectoryReport(payload.to_vec())),
+                event: ScanEvent::WorkingDirectory(payload),
             });
             return;
         }
@@ -680,9 +690,9 @@ mod tests {
         assert_eq!(
             payloads,
             vec![
-                WorkingDirectoryReport(b"file:///tmp/a".to_vec()),
-                WorkingDirectoryReport(b"/tmp/b".to_vec()),
-                WorkingDirectoryReport(b"/tmp/c".to_vec())
+                WorkingDirectoryReport::Uri(b"file:///tmp/a".to_vec()),
+                WorkingDirectoryReport::Path(b"/tmp/b".to_vec()),
+                WorkingDirectoryReport::Path(b"/tmp/c".to_vec())
             ]
         );
         assert_chunk_equivalence(bytes);
@@ -697,7 +707,7 @@ mod tests {
             vec![
                 ScanEvent::Progress(ProgressReport(b"4;3;50".to_vec())),
                 ScanEvent::Progress(ProgressReport(b"4".to_vec())),
-                ScanEvent::WorkingDirectory(WorkingDirectoryReport(b"/tmp".to_vec())),
+                ScanEvent::WorkingDirectory(WorkingDirectoryReport::Path(b"/tmp".to_vec())),
             ]
         );
         assert_chunk_equivalence(bytes);

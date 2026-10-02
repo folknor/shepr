@@ -157,6 +157,7 @@ mod tests {
                 loss: shepr_protocol::SessionRestoreLoss::Panes,
                 backup_dir: "/state/session-backups".into(),
             }),
+            session_saves_stopped: false,
             focused_workspace_id: None,
             focused_pane_id: None,
             workspaces: vec![],

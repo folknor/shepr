@@ -24,11 +24,8 @@ impl TerminalState {
     /// Process exits withdraw detector identity; suspension does not.
     pub(super) fn effective_agent(&self) -> EffectiveAgent<'_> {
         let hook = self.hook_authority.as_ref().and_then(|authority| {
-            let known = Agent::parse_canonical_label(&authority.agent_label);
-            let full = shepr_agent::detect::full_lifecycle_hook_authority(
-                &authority.source,
-                &authority.agent_label,
-            );
+            let known = authority.origin.known_agent();
+            let full = authority.origin.is_full_lifecycle();
             (!full || (known == self.detected_agent && self.process_evidence.exit().is_none()))
                 .then_some((authority, known, full))
         });
@@ -40,7 +37,7 @@ impl TerminalState {
                     && known_agent == self.detected_agent
                     && authority.state != AgentState::Blocked;
                 EffectiveAgent {
-                    label: Some(&authority.agent_label),
+                    label: Some(authority.origin.label()),
                     known_agent,
                     state: if visible_blocker {
                         AgentState::Blocked

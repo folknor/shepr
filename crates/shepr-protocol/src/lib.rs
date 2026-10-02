@@ -45,7 +45,9 @@ pub use status::*;
 pub use style::*;
 pub use surface::*;
 
-/// Version advertised by the JSON API, using the same build ID as the wire preamble.
+/// Human-readable version advertised by the JSON API and executable.
+/// It includes the build ID for display; `ping` also carries `build_id` as its
+/// separate machine-comparison field.
 pub fn build_version() -> String {
     format!("{}+{}", env!("CARGO_PKG_VERSION"), limits::BUILD_ID)
 }

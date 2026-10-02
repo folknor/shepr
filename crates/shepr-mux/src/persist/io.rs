@@ -65,7 +65,7 @@ impl std::fmt::Display for NotRegularFile {
 
 impl std::error::Error for NotRegularFile {}
 
-fn not_regular(path: &Path, file_type: std::fs::FileType) -> std::io::Error {
+pub(super) fn not_regular(path: &Path, file_type: std::fs::FileType) -> std::io::Error {
     use std::os::unix::fs::FileTypeExt;
     let kind = if file_type.is_dir() {
         "a directory"
@@ -921,12 +921,10 @@ impl SessionLoad {
 /// state only costs history and is left to the saves.
 pub fn check_session_target(lease: &DataDirLease) -> std::io::Result<()> {
     let path = session_path(lease.directory());
-    match std::fs::metadata(&path) {
-        Ok(metadata) if !metadata.is_file() => Err(not_regular(&path, metadata.file_type())),
-        Ok(_) => Ok(()),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(err) => Err(err),
-    }
+    // Use the writer's resolver so startup and later saves enforce the same
+    // symlink hop limit, including dangling links.
+    let target = resolve_write_target(&path)?;
+    ensure_replaceable(&target)
 }
 
 /// The directory a session file is backed up to before a save replaces one

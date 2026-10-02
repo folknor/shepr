@@ -89,8 +89,6 @@ pub enum CodecError {
     SizeOverflow,
     /// Writing to the output failed.
     Io(String),
-    /// A protocol-level validation failure reported by a caller.
-    Invalid(&'static str),
     /// A custom error raised by a `Serialize` or `Deserialize` implementation.
     Message(String),
 }
@@ -132,7 +130,6 @@ impl fmt::Display for CodecError {
             ),
             Self::SizeOverflow => f.write_str("encoded size overflow"),
             Self::Io(error) => write!(f, "write failed: {error}"),
-            Self::Invalid(message) => f.write_str(message),
             Self::Message(message) => f.write_str(message),
         }
     }

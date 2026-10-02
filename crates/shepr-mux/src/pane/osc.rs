@@ -4,16 +4,24 @@ use std::path::PathBuf;
 use tracing::info;
 
 use shepr_core::layout::PaneId;
+use shepr_vt::WorkingDirectoryReport;
 
 use super::terminal::PaneTerminalCore;
 
-pub(super) fn parse_reported_cwd(value: &[u8]) -> Option<PathBuf> {
-    let value = std::str::from_utf8(value).ok()?.trim();
-    if value.starts_with("file://") {
-        return parse_file_uri_cwd(value);
+pub(super) fn parse_reported_cwd(report: &WorkingDirectoryReport) -> Option<PathBuf> {
+    let payload = match report {
+        WorkingDirectoryReport::Uri(payload) | WorkingDirectoryReport::Path(payload) => payload,
+    };
+    let value = std::str::from_utf8(payload).ok()?.trim();
+    match report {
+        // A hand-rolled prompt may send a bare absolute path in OSC 7; any
+        // other scheme (kitty's `kitty-shell-cwd://`, say) is not a cwd.
+        WorkingDirectoryReport::Uri(_) if !value.starts_with('/') => parse_file_uri_cwd(value),
+        WorkingDirectoryReport::Uri(_) | WorkingDirectoryReport::Path(_) => {
+            let path = value.trim_matches('"');
+            (!path.is_empty()).then(|| PathBuf::from(path))
+        }
     }
-    let path = value.trim_matches('"');
-    (!path.is_empty()).then(|| PathBuf::from(path))
 }
 
 /// Collects complete OSC bodies from a raw byte stream for the opt-in OSC
@@ -283,11 +291,17 @@ fn sanitized_osc_debug_payload(payload: &[u8]) -> String {
 }
 
 fn parse_file_uri_cwd(uri: &str) -> Option<PathBuf> {
+    if !uri.starts_with("file://") {
+        return None;
+    }
     // Standard shell integrations (vte.sh for bash/zsh, fish) report
     // `file://$HOSTNAME/path`, so the machine's own name must be accepted.
-    // Looked up per report rather than cached: OSC 7 arrives about once per
-    // prompt, and a renamed host keeps matching.
-    parse_file_uri_cwd_for_host(uri, shepr_platform::hostname().as_deref())
+    // Cache the local name because OSC 7 can arrive on every prompt.
+    static LOCAL_HOST: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    parse_file_uri_cwd_for_host(
+        uri,
+        LOCAL_HOST.get_or_init(shepr_platform::hostname).as_deref(),
+    )
 }
 
 /// Parse a `file://` cwd report, accepting an empty host, `localhost`, or
@@ -541,15 +555,41 @@ mod tests {
     #[test]
     fn reported_cwd_parses_file_uri_and_bare_paths() {
         assert_eq!(
-            parse_reported_cwd(b"file:///tmp/shepr%20repo"),
+            parse_reported_cwd(&WorkingDirectoryReport::Uri(
+                b"file:///tmp/shepr%20repo".to_vec()
+            )),
             Some(std::path::PathBuf::from("/tmp/shepr repo"))
+        );
+        assert_eq!(
+            parse_reported_cwd(&WorkingDirectoryReport::Uri(b"/tmp/bare".to_vec())),
+            Some(std::path::PathBuf::from("/tmp/bare"))
+        );
+        assert_eq!(
+            parse_reported_cwd(&WorkingDirectoryReport::Path(b"/tmp/path".to_vec())),
+            Some(std::path::PathBuf::from("/tmp/path"))
+        );
+    }
+
+    #[test]
+    fn reported_cwd_rejects_other_uri_schemes() {
+        assert_eq!(
+            parse_reported_cwd(&WorkingDirectoryReport::Uri(
+                b"kitty-shell-cwd://host/tmp".to_vec()
+            )),
+            None
         );
     }
 
     #[test]
     fn reported_cwd_rejects_invalid_or_empty_values() {
-        assert_eq!(parse_reported_cwd(b""), None);
-        assert_eq!(parse_reported_cwd(b"\xff"), None);
+        assert_eq!(
+            parse_reported_cwd(&WorkingDirectoryReport::Path(Vec::new())),
+            None
+        );
+        assert_eq!(
+            parse_reported_cwd(&WorkingDirectoryReport::Path(vec![0xff])),
+            None
+        );
         assert_eq!(
             parse_file_uri_cwd_for_host("file://remote/tmp", Some("workstation")),
             None
@@ -599,7 +639,7 @@ mod tests {
         };
         let uri = format!("file://{hostname}/tmp/shepr%20repo");
         assert_eq!(
-            parse_reported_cwd(uri.as_bytes()),
+            parse_reported_cwd(&WorkingDirectoryReport::Uri(uri.into_bytes())),
             Some(std::path::PathBuf::from("/tmp/shepr repo"))
         );
     }

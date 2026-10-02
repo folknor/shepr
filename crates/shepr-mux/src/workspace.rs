@@ -14,6 +14,25 @@ use crate::terminal::TerminalState;
 use shepr_core::layout::{Direction, PaneId, TileLayout};
 use shepr_protocol::{PublicPaneId, TerminalId, WorkspaceId};
 
+/// Whether a pane mutation changed the surface its clients render.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SurfaceChange {
+    Changed,
+    Unchanged,
+}
+
+impl SurfaceChange {
+    pub fn is_changed(self) -> bool {
+        matches!(self, Self::Changed)
+    }
+}
+
+pub(crate) fn process_cwd_is_deleted(path: &Path) -> bool {
+    // The kernel adds this marker to a /proc cwd link after its directory is
+    // removed. Reject it without statting the path on the event loop.
+    path.as_os_str().as_encoded_bytes().ends_with(b" (deleted)")
+}
+
 mod aggregate;
 mod geometry;
 mod pane_tree;
@@ -416,7 +435,9 @@ impl Workspace {
     /// by the App. This stays as data-only path selection so state reducers can
     /// compare cwd snapshots without probing a pane runtime.
     pub fn resolved_identity_cwd_from_root_pane(&self, root_pane_cwd: Option<PathBuf>) -> PathBuf {
-        root_pane_cwd.unwrap_or_else(|| self.identity_cwd.clone())
+        root_pane_cwd
+            .filter(|cwd| !process_cwd_is_deleted(cwd))
+            .unwrap_or_else(|| self.identity_cwd.clone())
     }
 
     /// The workspace label: the custom name, else the automatic label cached

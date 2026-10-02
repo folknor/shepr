@@ -97,20 +97,17 @@ pub fn classify_check(result: io::Result<MachineSshCheck>) -> MachineCheck {
         Err(error) => error,
     };
     let diagnostic = SshFailureDiagnostic::from_error(&error);
-    if diagnostic.may_require_interactive_authentication() {
-        MachineCheck::NeedsAuthentication(diagnostic)
-    } else if diagnostic.is_host_key() {
-        MachineCheck::HostKey(diagnostic)
-    } else if diagnostic.is_transient_network_failure() {
-        MachineCheck::Offline(diagnostic)
-    } else if diagnostic.is_ssh_process_failure() || diagnostic.is_local_setup_failure() {
-        // Exit 255 alone cannot establish a transient link failure. Keep the
-        // diagnostic visible when OpenSSH reports an unknown or actionable cause.
-        MachineCheck::Failed(diagnostic)
-    } else if diagnostic.is_remote_compatibility() || diagnostic.needs_attention() {
-        MachineCheck::Incompatible(diagnostic)
-    } else {
-        MachineCheck::Failed(diagnostic)
+    match diagnostic.disposition() {
+        crate::FailureDisposition::Authentication
+        | crate::FailureDisposition::PossibleAuthentication => {
+            MachineCheck::NeedsAuthentication(diagnostic)
+        }
+        crate::FailureDisposition::HostKey => MachineCheck::HostKey(diagnostic),
+        crate::FailureDisposition::Offline => MachineCheck::Offline(diagnostic),
+        crate::FailureDisposition::Incompatible => MachineCheck::Incompatible(diagnostic),
+        crate::FailureDisposition::Repair | crate::FailureDisposition::Retry => {
+            MachineCheck::Failed(diagnostic)
+        }
     }
 }
 

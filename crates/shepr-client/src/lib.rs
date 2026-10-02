@@ -144,8 +144,7 @@ fn run_launched_client(
             {
                 let error = endpoint::handshake_error(error, Some(&mismatch_guidance));
                 warn!(%error, "Local handshake failed; keeping configured machines available");
-                initial_local_failure =
-                    Some(shepr_remote::SshFailureDiagnostic::from_error(&error));
+                initial_local_failure = Some(shepr_remote::EndpointFailure::from_error(&error));
                 None
             }
             Err(error) => {
@@ -279,7 +278,7 @@ fn run_launched_client(
 )]
 async fn run_client_loop(
     initial: Option<LocalStream>,
-    mut initial_local_failure: Option<shepr_remote::SshFailureDiagnostic>,
+    mut initial_local_failure: Option<shepr_remote::EndpointFailure>,
     machines: Vec<shepr_config::MachineConfig>,
     local_failure_policy: endpoint::LocalFailurePolicy,
     initial_geometry: shepr_core::geometry::HostGeometry,
@@ -476,7 +475,7 @@ async fn run_client_loop(
     }
     if local_unavailable {
         if let Some(failure) = initial_local_failure.as_ref() {
-            if failure.needs_attention() {
+            if failure.disposition().needs_attention() {
                 warn!(endpoint = "local", error = %failure, "endpoint needs attention");
             }
             present_notice(&mut state, format!("Local: {failure}"));
@@ -830,7 +829,7 @@ impl ClientLoop {
                 }
                 let shell = &mut state.shell;
                 shell.set_endpoint_status(&endpoint_id, status);
-                shell.set_machine_diagnostic(&endpoint_id, &message);
+                shell.set_machine_diagnostic(&endpoint_id, &message.diagnostic());
                 // Handshake diagnostics carry only the failing phase; the status line supplies
                 // the configured endpoint label once.
                 let unavailable = (status == endpoint::ClientEndpointStatus::Attention
@@ -876,7 +875,9 @@ impl ClientLoop {
                     let status = endpoint::ClientEndpointStatus::after_failure(&failure);
                     supervisors.record_status(&endpoint_id, generation, status, now);
                     state.shell.set_endpoint_status(&endpoint_id, status);
-                    state.shell.set_machine_diagnostic(&endpoint_id, &failure);
+                    state
+                        .shell
+                        .set_machine_diagnostic(&endpoint_id, &failure.diagnostic());
                     if status == endpoint::ClientEndpointStatus::Attention
                         && state.shell.endpoint_is_active(&endpoint_id)
                     {
@@ -1008,7 +1009,9 @@ impl ClientLoop {
                             endpoint_id,
                             &io::Error::new(
                                 io::ErrorKind::InvalidData,
-                                "client shell rejected a pane surface patch",
+                                shepr_remote::EndpointFailure::incompatible(
+                                    "client shell rejected a pane surface patch",
+                                ),
                             ),
                         );
                         false
@@ -1055,7 +1058,7 @@ impl ClientLoop {
                     endpoint_id,
                     &io::Error::new(
                         io::ErrorKind::ConnectionAborted,
-                        reason.map_or_else(|| "server stopped".into(), |reason| reason.to_string()),
+                        shepr_remote::EndpointFailure::server_shutdown(reason),
                     ),
                 );
             }
@@ -1205,6 +1208,11 @@ impl ClientLoop {
                         .shell
                         .receive_restore_notice(endpoint_id, &snapshot.boot_id, kind);
                 }
+                if snapshot.session_saves_stopped {
+                    state
+                        .shell
+                        .receive_session_saves_stopped(endpoint_id, &snapshot.boot_id);
+                }
                 if role == endpoint::ConnectionRole::Target
                     && let Some(pending) = state.choice.preparing_mut()
                 {
@@ -1223,7 +1231,9 @@ impl ClientLoop {
                     endpoint_id,
                     &io::Error::new(
                         io::ErrorKind::InvalidData,
-                        "protocol error: surface update reached presentation before decoding",
+                        shepr_remote::EndpointFailure::incompatible(
+                            "protocol error: surface update reached presentation before decoding",
+                        ),
                     ),
                 );
                 return Ok(ClientLoopAction::NextEvent);

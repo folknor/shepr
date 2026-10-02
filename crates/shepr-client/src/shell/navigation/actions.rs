@@ -248,10 +248,47 @@ impl ClientShellState {
         boot_id: &shepr_protocol::BootId,
         notice: &shepr_protocol::SessionRestoreNotice,
     ) -> bool {
+        self.queue_boot_notice(
+            endpoint_id,
+            boot_id,
+            "session_restore_incomplete",
+            "saved session not fully restored",
+            notice.to_string(),
+        )
+    }
+
+    /// The endpoint's server stopped saving its session for the rest of this
+    /// boot. Shown once per boot like the restore card.
+    pub(crate) fn receive_session_saves_stopped(
+        &mut self,
+        endpoint_id: &ClientEndpointId,
+        boot_id: &shepr_protocol::BootId,
+    ) -> bool {
+        self.queue_boot_notice(
+            endpoint_id,
+            boot_id,
+            "session_saves_stopped",
+            "session saves stopped",
+            "The server stopped saving its session after an internal failure (see the server log). \
+             Layout changes from now on are not restored when the server next starts."
+                .to_owned(),
+        )
+    }
+
+    /// Queues a card an endpoint's snapshot carries for its whole boot, once
+    /// per boot and `code`.
+    fn queue_boot_notice(
+        &mut self,
+        endpoint_id: &ClientEndpointId,
+        boot_id: &shepr_protocol::BootId,
+        code: &str,
+        title: &str,
+        body: String,
+    ) -> bool {
         let key = ClientEndpointNoticeKey {
             boot_id: Some(boot_id.clone()),
             kind: ClientEndpointNoticeKind::Rejected,
-            code: format!("session_restore_incomplete:{}", endpoint_id.storage_key()),
+            code: format!("{code}:{}", endpoint_id.storage_key()),
         };
         if !self.restore_notice_seen.insert(key.clone()) {
             return false;
@@ -260,8 +297,8 @@ impl ClientShellState {
         self.restore_notice_queue
             .push_back(ClientVisibleEndpointNotice {
                 key,
-                title: format!("{label}: saved session not fully restored"),
-                body: notice.to_string(),
+                title: format!("{label}: {title}"),
+                body,
             });
         if self.visible_endpoint_notice.is_none() {
             self.advance_endpoint_notice();
@@ -341,7 +378,7 @@ impl ClientShellState {
         use shepr_termio::input::KeybindAction;
 
         let snapshot = self.snapshot.as_deref()?;
-        let focused_workspace = snapshot.focused_workspace_id.clone()?;
+        let focused_workspace = snapshot.focused_workspace_id.as_ref();
         let focused_pane = snapshot.focused_pane_id.clone();
         let direction = |action| match action {
             KeybindAction::FocusPaneLeft
@@ -389,7 +426,8 @@ impl ClientShellState {
                     .iter()
                     .any(|(_, visible_pane_id)| *visible_pane_id == pane_id)
                 {
-                    self.agent_scroll = index.min(self.hits.agent_max_scroll);
+                    let body_height = self.hits.agent_body.height;
+                    self.reveal_endpoint_agent(&target.endpoint_id, &pane_id, body_height);
                 }
                 Some(EndpointCommand::PaneFocus(PaneTarget { pane_id }))
             }
@@ -407,16 +445,14 @@ impl ClientShellState {
                 }
                 let current = workspaces
                     .iter()
-                    .position(|workspace| workspace.workspace_id == focused_workspace)
-                    .unwrap_or(0);
+                    .position(|workspace| Some(&workspace.workspace_id) == focused_workspace);
                 let delta = if action == KeybindAction::PreviousWorkspace {
                     -1
                 } else {
                     1
                 };
-                let current_isize = isize::try_from(current).unwrap_or(isize::MAX);
-                let len_isize = isize::try_from(workspaces.len()).unwrap_or(isize::MAX);
-                let next = (current_isize + delta).rem_euclid(len_isize) as usize;
+                let next =
+                    super::aggregate_navigation::cycle_index(workspaces.len(), current, delta)?;
                 let workspace_id = workspaces[next].workspace_id.clone();
                 self.reveal_workspace(&workspace_id);
                 Some(EndpointCommand::WorkspaceFocus(WorkspaceTarget {
@@ -458,21 +494,22 @@ impl ClientShellState {
                 let panes = snapshot
                     .panes
                     .iter()
-                    .filter(|pane| pane.workspace_id == focused_workspace)
+                    .filter(|pane| {
+                        focused_workspace
+                            .is_some_and(|workspace_id| &pane.workspace_id == workspace_id)
+                    })
                     .collect::<Vec<_>>();
                 if panes.is_empty() {
                     return None;
                 }
                 let focused_pane = focused_pane?;
-                let current = panes
-                    .iter()
-                    .position(|pane| pane.pane_id == focused_pane)
-                    .unwrap_or(0);
-                let next = if action == KeybindAction::CyclePanePrevious {
-                    (current + panes.len() - 1) % panes.len()
+                let current = panes.iter().position(|pane| pane.pane_id == focused_pane);
+                let delta = if action == KeybindAction::CyclePanePrevious {
+                    -1
                 } else {
-                    (current + 1) % panes.len()
+                    1
                 };
+                let next = super::aggregate_navigation::cycle_index(panes.len(), current, delta)?;
                 Some(EndpointCommand::PaneFocus(PaneTarget {
                     pane_id: panes[next].pane_id.clone(),
                 }))

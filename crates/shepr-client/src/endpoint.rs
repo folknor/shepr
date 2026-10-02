@@ -57,8 +57,8 @@ pub enum ClientEndpointStatus {
 impl ClientEndpointStatus {
     /// The status a failed connection attempt leaves: Attention for a failure that needs a
     /// repair outside this client, Reconnecting for one a later attempt can outlive.
-    pub(crate) fn after_failure(failure: &shepr_remote::SshFailureDiagnostic) -> Self {
-        if failure.needs_attention() {
+    pub(crate) fn after_failure(failure: &shepr_remote::EndpointFailure) -> Self {
+        if failure.disposition().needs_attention() {
             Self::Attention
         } else {
             Self::Reconnecting

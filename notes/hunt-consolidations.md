@@ -39,15 +39,6 @@ in step. Owner: shepr-platform, `classify_stream_error(&io::Error) ->
 StreamFailure::{PeerGone, NoListener, TimedOut, Other}`, each consumer matching
 the arms it cares about. (foundation)
 
-## CON-002 - What does this accept failure mean, and may this peer in?
-
-Platform's `accept_peer` now owns accept-error classification and peer
-admission, and the PTY launch router and the remote bridge use it. The
-`shepr-api` listener (`listener.rs`) still calls the older
-`ipc::accept_failed_for_one_connection` and `ipc::peer_is_same_user`; migrate it
-to `accept_peer` and remove the old helpers if nothing else needs them.
-(foundation)
-
 ## CON-003 - Parsing `/proc/<pid>/stat`, and "is this process dead"
 
 `process.rs` `session_and_tty_from_stat` (skip past the last `)`, then
@@ -105,34 +96,6 @@ agree only because `main` says "not nested" and resolve then fails.
 read once, and the startup cwd is read once into `AppPaths` and passed to
 bootstrap. Reported by foundation and edges.
 
-## CON-007 - Is this file or directory private enough to trust?
-
-Owner and type checks written out in `daemon.rs` `open_boot_log` (regular, uid,
-chmod 0600) and `read_boot_log_tail` (regular then uid, different errors),
-`ipc.rs` `acquire_flock_lock` (regular, uid, chmod 0600), `owned_runtime.rs`
-sweep (regular, uid, mode exactly `RUNTIME_MARKER_MODE`, size cap) and
-`private_directory` (dir, uid, exactly 0700), and `ssh_paths.rs`
-`validate_shared_ssh_dir` (dir, uid, exactly 0700 via the literal `0o7777`
-while `limits::PERMISSION_BITS` exists). Mode `0o600` is a literal in three
-places plus `PRIVATE_SOCKET_MODE`, `LOG_FILE_MODE` and `RUNTIME_MARKER_MODE`.
-The SSH runtime directory must be exactly 0700, but the server socket's
-directory is created through `create_private_directory_all`, which accepts an
-existing directory whatever its mode (the server relies on `SO_PEERCRED`); that
-may be deliberate, but nothing records it in one place. Owner: platform
-`PrivateFile::open_or_create(path, Policy)` and `PrivateDir::require(path)` with
-typed refusals. (foundation)
-
-## CON-008 - The owned runtime artifact layout is restated in six places
-
-Per `DirectoryKind`, `owned_runtime.rs` decides the name prefix in
-`create_directory` (`.s`, `shepr-ssh-` with a 16-hex token) and again in
-`sweep`, the allowed content in `contents_owned` (`s` socket, `config` file) and
-again in `release`; outside the module `ipc.rs` `bind_via_private_staging`
-joins `"s"` and `remote/ssh.rs` joins `"config"`. If remote renamed its file,
-sweeps would refuse to reclaim and `release` would leave the directory, silently.
-Owner: methods on `DirectoryKind` and an entry handing out `content_path()`.
-(foundation)
-
 ## CON-009 - How is a private file published durably and atomically?
 
 `persist/io.rs` `publish_private_file` (private temp, copy, fsync, rename, sync
@@ -159,10 +122,10 @@ a non-regular file; they agree only because install's preflight
 
 ## CON-011 - When is a session path a usable regular file?
 
-`check_session_target` (`fs::metadata`, kernel resolution up to 40 hops),
-`ensure_replaceable` after `resolve_write_target` (manual resolution, 16 hops),
-`open_regular` (platform helper) and `HistoryFileStamp::read` (a non-file stamps
-as absent). They disagree (filed as a bug). Owner: one `SessionPath::resolve(path)
+`check_session_target` (now through the writer's `resolve_write_target` and
+`ensure_replaceable`), `open_regular` (platform helper) and
+`HistoryFileStamp::read` (now refusing a non-file) agree today but are still
+separate answers. Owner: one `SessionPath::resolve(path)
 -> Resolved { target, state: Absent | Regular | NotRegular(kind) }` used by the
 check, saves, clears, reads and stamps. (mux-state)
 
@@ -479,29 +442,6 @@ again before calling `clear_agent_osc_state`. The helper should just clear.
 (mux-panes)
 
 ## Agents and hooks
-
-## CON-040 - What may a state report from a session-only integration do?
-
-Three sites, two flags, and they disagree:
-
-- `shepr-server/src/app/actions/events.rs`: if `is_reserved_native_state_source`
-  (claude, cursor, devin, copilot, droid, grok), a `HookStateReported` becomes
-  `set_agent_session_ref_at`: the state is dropped, the session ref kept.
-- mux `source/report.rs` `transition_report`: if the descriptor says
-  `session_identity_only_integration` (agy), the whole report is dropped,
-  session ref included.
-- `transition_report` again: `full_lifecycle_hook_authority` routes through the
-  full-lifecycle machinery, and `hook_session_policy.state_requires_current_session`
-  (codex only) drops state for another session.
-
-None of the shipped session-only assets sends `pane.report_agent`, so the only
-sender is a custom or forged reporter using the official source, and the two
-classes treat it differently for no stated reason. `source/report.rs` checks
-identity-only through `typed_source.agent().descriptor()` while `source/start.rs`
-checks it through `session_identity_only_integration(&source, &label)`. Owner:
-the `HookAuthorityClass` on the descriptor with one `admit_state_report` method
-called at one place. The agents hunter calls this the one decision in its scope
-that already disagrees. Reported by agents and mux-panes.
 
 ## CON-041 - Who decided this pane's state: hook or screen?
 
@@ -1219,44 +1159,6 @@ client-core.
 
 ## Edges
 
-## CON-090 - What does this endpoint failure mean for the operator?
-
-Attention, retry, prompt or incompatible is answered by:
-`SshFailure::needs_attention`; `SshFailureDiagnostic::from_error`'s `ErrorKind`
-mapping (`TimedOut`/`ConnectionRefused`/`AddrInUse` to `Link`,
-`InvalidData`/`Unsupported` to `Compatibility`, everything else `Other`);
-`remote/preflight.rs` `classify_check` (its own ladder) and
-`check_after_authentication` (downgrades an auth wait to `Failed`); the client's
-`endpoint::supervisor::handshake_error` (picks `ErrorKind`s so `from_error`
-lands right: `ConnectionLimit` and `ServerStarting` become `ConnectionAborted`
-"so it is retried", a rejected handshake `Unsupported` "so it needs attention",
-an early close `UnexpectedEof` to stay out of `InvalidData`);
-`handshake::preamble_error` (rewrites to `FramingError` so it classifies as
-transient); `hello_write_error` (keeps the socket kind because the supervisor
-decides by it); `connect_once` (remaps Local `NotFound` to `ConnectionRefused`);
-`endpoint::writer::queue_full` (`ConnectionAborted`);
-`transport::framing_error_to_io` (`InvalidData`); `errors::endpoint_setup_failure`
-(picks a constructor by variant); `ClientEndpointStatus::after_failure`; the
-supervisor's join-error arm; `reconcile::endpoint_lost` (always `Reconnecting`
-and `from_message`); `shell_runtime::endpoint_disconnect_notice` (a third reading
-of `ErrorKind`, for text); `is_launch_fatal_setup_error` (any `InvalidInput` is
-permanently fatal); `StoredSetupError` (captures kind and message, dropping the
-typed source); and `src/preflight.rs::result_notices`, whose prose predicts what
-the client will do using `needs_attention()` again. `SshFailure::Compatibility`
-can come from an `Io(InvalidData | Unsupported)` origin, so
-`is_remote_compatibility()` (origin based) and `failure == Compatibility` (class
-based) can disagree; `classify_check` checks the first and `needs_attention` the
-second. They already disagree: the same `InvalidData` is Attention during the
-handshake and Reconnecting once live; a shutdown during the handshake becomes a
-retry while one after it loses the typed `ShutdownReason`; the two remote status
-parse failures differ (filed as a bug). Owner: one typed endpoint failure built
-where the fact is known (edges: `EndpointFailure::{NoRemoteResult, RemoteCommand,
-RemoteIncompatible, LocalSetup, Handshake, Message}`; client-core:
-`EndpointFailure { cause, class: Transient | NeedsRepair, phase }`) with a single
-`disposition()`, `hint()` and rendering, `SshFailureDiagnostic` demoted to the
-SSH-process cause, and `from_error` kept only at the raw IO boundary. Reported by
-edges and client-core.
-
 ## CON-091 - What does a failure prove about the remote install?
 
 `DiscoveryProgress::advance` keeps progress only on
@@ -1556,35 +1458,10 @@ versus federated selects between `hits.agents` (PaneFocus directly) and
 per snapshot change, used by both sidebars, keyboard agent navigation and
 `indexed_navigation_target_exists`. (client-shell)
 
-## CON-111 - Cycling and reveal-into-view
+## CON-112 - Is a surface sized for this client?
 
-Previous and next with wraparound are written in `agent_target_index`,
-`handle_endpoint_navigation`, `move_navigate_workspace` and
-`endpoint_command_for_action` (workspaces and `CyclePane*`); they disagree on
-not-found (federated paths pick the first or last entry, the single-endpoint
-workspace path starts from index 0 so Next lands on the second workspace, and
-`CyclePane*` does the same). Reveal: single-endpoint agent navigation jumps
-(`agent_scroll = index`), federated calls `reveal_endpoint_agent` (minimal
-scroll via `list_scroll_start_to_reveal`), `reveal_workspace` jumps for one
-endpoint, and `render_expanded` and `render_collapsed` reveal minimally with two
-different algorithms. The federated workspace cycle list is built twice. Owner: one
-cycle helper and one reveal rule. (client-shell)
-
-## CON-112 - Smaller duplicated answers in the client shell
-
-- Panel contrast colour: `status::panel_contrast_fg`, `overlays::contrast`, and
-  inline copies in `render_mode_bar` and the copy cursor in `compose`.
-- Workspace selection background: `sidebar::workspace_selection_background` and
-  an inline copy in `render_collapsed`.
-- Scrollbar drawing: `scroll::render_list_scrollbar` (one-eighth block),
-  `termio::scroll::render_scrollbar_buffer` (half block) and an inline loop in
-  `render_help_overlay`.
-- The sidebar section threshold `< 6` in `sidebar_section_heights` and
-  `sidebar_section_divider_rect`.
-- `preferences.rs`'s FNV path hashing duplicates the FNV in `topology.rs`.
-- A surface sized for this client is checked in `Preparing::receive_surface` and
-  `ViewEvidence::coherent_surface` by comparing width and height by hand (a
-  deliberate re-check; a `PaneSurfaceFrame::is_sized_for(size)` would make it one
-  answer).
-
-Reported by client-shell and client-core.
+`Preparing::receive_surface` (`crates/shepr-client/src/endpoint/choice/preparing.rs`)
+and `ViewEvidence::coherent_surface` compare a surface's width and height with
+the client's by hand. It is a deliberate re-check; a
+`PaneSurfaceFrame::is_sized_for(size)` beside the protocol type would make it
+one answer. (client-core)

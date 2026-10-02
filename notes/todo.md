@@ -30,6 +30,7 @@ Not defects: paths with no test, and code that works but reads worse than it
 should.
 
 - A delivered `server.stop` cannot make a wedged server loop finish; forcing that would need its own mechanism and a decision about the final save.
+- The owned-runtime tests build fixture names with `DirectoryKind::directory_name` and `content_path`, the helpers under test, so nothing pins the literal directory prefixes and content names.
 - The client launch's own check for a helper-thread panic (`fatal.is_latched()` in `run_client_loop`, after the host helpers start) has no test: reaching it needs a real terminal. The loop's own latch checks are tested.
 
 # Possible capabilities

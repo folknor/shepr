@@ -391,14 +391,20 @@ pub(super) fn remote_client_status(
         let error = remote_client_status_failure(&output);
         return Err(error);
     }
-    parse_client_status_json(&String::from_utf8_lossy(&output.stdout))
-        .map(Some)
-        .ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
+    parse_remote_client_status_json(&String::from_utf8_lossy(&output.stdout)).map(Some)
+}
+
+pub(super) fn parse_remote_client_status_json(
+    status: &str,
+) -> io::Result<shepr_api::schema::ClientStatusJson> {
+    parse_client_status_json(status).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            crate::EndpointFailure::incompatible(
                 "remote status client command returned no valid client status JSON",
-            )
-        })
+            ),
+        )
+    })
 }
 
 fn remote_client_status_failure(output: &Output) -> io::Error {

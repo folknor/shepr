@@ -22,11 +22,7 @@ impl ScrollMetrics {
     }
 }
 
-use ratatui::{
-    buffer::Buffer,
-    layout::Rect,
-    style::{Color, Style},
-};
+use ratatui::{buffer::Buffer, layout::Rect, style::Style};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ScrollbarThumb {
     pub top: u16,
@@ -141,26 +137,25 @@ pub fn render_scrollbar_buffer(
     buffer: &mut Buffer,
     metrics: ScrollMetrics,
     track: Rect,
-    track_color: Color,
-    thumb_color: Color,
+    track_symbol: &str,
+    track_style: Style,
     thumb_symbol: &str,
+    thumb_style: Style,
 ) {
-    if metrics.max_offset_from_bottom == 0 {
-        return;
-    }
-
     let Some(thumb) = scrollbar_thumb(metrics, track) else {
         return;
     };
 
-    for y in track.y..track.y + track.height {
-        let cell = &mut buffer[(track.x, y)];
-        cell.set_symbol("▕");
-        cell.set_style(Style::default().fg(track_color));
+    for y in track.y..track.bottom() {
+        if let Some(cell) = buffer.cell_mut((track.x, y)) {
+            cell.set_symbol(track_symbol);
+            cell.set_style(track_style);
+        }
     }
-    for y in thumb.top..thumb.top + thumb.len {
-        let cell = &mut buffer[(track.x, y)];
-        cell.set_symbol(thumb_symbol);
-        cell.set_style(Style::default().fg(thumb_color));
+    for y in thumb.top..thumb.top.saturating_add(thumb.len) {
+        if let Some(cell) = buffer.cell_mut((track.x, y)) {
+            cell.set_symbol(thumb_symbol);
+            cell.set_style(thumb_style);
+        }
     }
 }

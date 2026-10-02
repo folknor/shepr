@@ -303,10 +303,7 @@ impl ClientShellState {
                         y,
                         StylePatch::from_style(
                             Style::default()
-                                .fg(match self.config.palette.panel_bg {
-                                    ratatui::style::Color::Reset => self.config.palette.surface_dim,
-                                    color => color,
-                                })
+                                .fg(panel_contrast_fg(&self.config.palette))
                                 .bg(self.config.palette.accent)
                                 .add_modifier(Modifier::BOLD),
                         ),

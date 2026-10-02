@@ -1,7 +1,8 @@
 //! Private, single-use runtime artifacts and conservative dead-owner cleanup.
+use std::ffi::OsStr;
 use std::fs::{self, File};
 use std::io::{self, Read, Write};
-use std::os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 
 use crate::process_identity::ProcessIdentity;
@@ -12,6 +13,46 @@ const OWNER_MARKER: &str = ".owner";
 pub(crate) enum DirectoryKind {
     Staging,
     SshConfig,
+}
+
+impl DirectoryKind {
+    pub(crate) fn directory_name(self, token: u64) -> String {
+        format!("{}{token:016x}", self.name_prefix())
+    }
+
+    fn has_valid_name(self, name: &str) -> bool {
+        let Some(token) = name.strip_prefix(self.name_prefix()) else {
+            return false;
+        };
+        token.len() == crate::limits::RUNTIME_TOKEN_HEX_BYTES
+            && token.bytes().all(|byte| byte.is_ascii_hexdigit())
+    }
+
+    const fn name_prefix(self) -> &'static str {
+        match self {
+            Self::Staging => ".s",
+            Self::SshConfig => "shepr-ssh-",
+        }
+    }
+
+    const fn content_name(self) -> &'static str {
+        match self {
+            Self::Staging => "s",
+            Self::SshConfig => "config",
+        }
+    }
+
+    pub(crate) fn content_path(self, directory: &Path) -> PathBuf {
+        directory.join(self.content_name())
+    }
+
+    fn content_is_owned(self, name: &OsStr, metadata: &fs::Metadata) -> bool {
+        name == OsStr::new(self.content_name())
+            && match self {
+                Self::Staging => metadata.file_type().is_socket(),
+                Self::SshConfig => metadata.is_file(),
+            }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -58,11 +99,7 @@ impl OwnedRuntimeEntry {
         Self::sweep_directory(parent, kind);
         for _ in 0..crate::limits::RANDOM_NAME_ATTEMPTS {
             let token = crate::unpredictable_token().map_err(RuntimeCreateError::RandomSource)?;
-            let name = match kind {
-                DirectoryKind::Staging => format!(".s{token:016x}"),
-                DirectoryKind::SshConfig => format!("shepr-ssh-{token:016x}"),
-            };
-            let path = parent.join(name);
+            let path = parent.join(kind.directory_name(token));
             match fs::DirBuilder::new()
                 .mode(crate::limits::PRIVATE_DIRECTORY_MODE)
                 .create(&path)
@@ -173,16 +210,7 @@ impl OwnedRuntimeEntry {
                     parent.join(socket)
                 }
                 RuntimeKind::Directory(directory_kind) => {
-                    let prefix = match directory_kind {
-                        DirectoryKind::Staging => ".s",
-                        DirectoryKind::SshConfig => "shepr-ssh-",
-                    };
-                    let Some(token) = name.strip_prefix(prefix) else {
-                        continue;
-                    };
-                    if token.len() != crate::limits::RUNTIME_TOKEN_HEX_BYTES
-                        || !token.bytes().all(|byte| byte.is_ascii_hexdigit())
-                    {
+                    if !directory_kind.has_valid_name(name) {
                         continue;
                     }
                     entry.path()
@@ -202,11 +230,11 @@ impl OwnedRuntimeEntry {
             let Ok(metadata) = hold.metadata() else {
                 continue;
             };
-            if !metadata.is_file()
-                || metadata.uid() != uid
-                || metadata.permissions().mode() & crate::limits::PERMISSION_BITS
-                    != crate::limits::RUNTIME_MARKER_MODE
-                || metadata.len() > crate::limits::RUNTIME_OWNER_MAX_BYTES
+            if !crate::private_file::PrivateFile::is_owned_regular_with_mode(
+                &metadata,
+                uid,
+                crate::limits::RUNTIME_MARKER_MODE,
+            ) || metadata.len() > crate::limits::RUNTIME_OWNER_MAX_BYTES
             {
                 continue;
             }
@@ -248,12 +276,7 @@ fn marker_path(path: &Path, kind: RuntimeKind) -> PathBuf {
 }
 
 fn private_directory(path: &Path, uid: u32) -> bool {
-    fs::symlink_metadata(path).is_ok_and(|metadata| {
-        metadata.is_dir()
-            && metadata.uid() == uid
-            && metadata.permissions().mode() & crate::limits::PERMISSION_BITS
-                == crate::limits::PRIVATE_DIRECTORY_MODE
-    })
+    crate::private_file::PrivateDir::is_private(path, uid)
 }
 
 fn contents_owned(path: &Path, kind: RuntimeKind, uid: u32) -> bool {
@@ -282,11 +305,7 @@ fn contents_owned(path: &Path, kind: RuntimeKind, uid: u32) -> bool {
         if name == OWNER_MARKER && metadata.is_file() {
             marker_seen = true;
         } else {
-            let allowed = match directory_kind {
-                DirectoryKind::Staging => name == "s" && metadata.file_type().is_socket(),
-                DirectoryKind::SshConfig => name == "config" && metadata.is_file(),
-            };
-            if !allowed {
+            if !directory_kind.content_is_owned(&name, &metadata) {
                 return false;
             }
         }
@@ -315,11 +334,7 @@ fn release(path: &Path, kind: RuntimeKind, owner: Option<ProcessIdentity>) {
         }
         RuntimeKind::Directory(directory_kind) => directory_kind,
     };
-    let content = match directory_kind {
-        DirectoryKind::Staging => "s",
-        DirectoryKind::SshConfig => "config",
-    };
-    if !remove_file(&path.join(content)) {
+    if !remove_file(&directory_kind.content_path(path)) {
         return;
     }
     let marker = marker_path(path, kind);
@@ -367,6 +382,7 @@ pub fn release_single_use_socket_lock(path: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::PermissionsExt as _;
 
     fn private_fixture(parent: &Path, name: &str, marker: Option<&str>) -> PathBuf {
         let path = parent.join(name);
@@ -389,28 +405,28 @@ mod tests {
 
     #[test]
     fn directory_sweeps_share_dead_owner_content_and_lock_checks() {
-        for (kind, prefix, content) in [
-            (DirectoryKind::Staging, ".s", "s"),
-            (DirectoryKind::SshConfig, "shepr-ssh-", "config"),
-        ] {
+        for kind in [DirectoryKind::Staging, DirectoryKind::SshConfig] {
             let scratch = shepr_test_support::ScratchDir::new("owned-runtime-sweep");
-            fs::set_permissions(scratch.path(), fs::Permissions::from_mode(0o700))
-                .expect("private parent");
+            fs::set_permissions(
+                scratch.path(),
+                fs::Permissions::from_mode(crate::limits::PRIVATE_DIRECTORY_MODE),
+            )
+            .expect("private parent");
             let live = ProcessIdentity::current().expect("current identity").tag(0);
             let (_, rest) = live.split_once('-').expect("identity fields");
             let dead = format!("{:08x}-{rest}", u32::MAX);
             let fixture = |token, marker| {
-                private_fixture(scratch.path(), &format!("{prefix}{token:016x}"), marker)
+                private_fixture(scratch.path(), &kind.directory_name(token), marker)
             };
             let abandoned = fixture(1, Some(dead.as_str()));
             match kind {
                 DirectoryKind::Staging => {
                     drop(
-                        std::os::unix::net::UnixListener::bind(abandoned.join(content))
+                        std::os::unix::net::UnixListener::bind(kind.content_path(&abandoned))
                             .expect("fixture socket"),
                     );
                 }
-                _ => fs::write(abandoned.join(content), "Host *\n").expect("fixture config"),
+                _ => fs::write(kind.content_path(&abandoned), "Host *\n").expect("fixture config"),
             }
             let unmarked = fixture(2, None);
             let live_path = fixture(3, Some(live.as_str()));
@@ -426,9 +442,10 @@ mod tests {
             );
             let oversized = fixture(7, Some(oversized_owner.as_str()));
             let symlink = fixture(8, Some(dead.as_str()));
-            std::os::unix::fs::symlink("absent", symlink.join(content)).expect("content symlink");
+            std::os::unix::fs::symlink("absent", kind.content_path(&symlink))
+                .expect("content symlink");
             let wrong_kind = fixture(9, Some(dead.as_str()));
-            fs::create_dir(wrong_kind.join(content)).expect("wrong content kind");
+            fs::create_dir(kind.content_path(&wrong_kind)).expect("wrong content kind");
             let wrong_mode = fixture(10, Some(dead.as_str()));
             fs::set_permissions(
                 wrong_mode.join(OWNER_MARKER),
@@ -443,7 +460,10 @@ mod tests {
             let fifo_path = std::ffi::CString::new(fifo.join(OWNER_MARKER).as_os_str().as_bytes())
                 .expect("fixture path contains no nul");
             // SAFETY: fifo_path is a valid nul-terminated pathname.
-            assert_eq!(unsafe { libc::mkfifo(fifo_path.as_ptr(), 0o600) }, 0);
+            assert_eq!(
+                unsafe { libc::mkfifo(fifo_path.as_ptr(), crate::limits::PRIVATE_FILE_MODE) },
+                0
+            );
             OwnedRuntimeEntry::sweep_directory(scratch.path(), kind);
             assert!(!abandoned.try_exists().expect("stat abandoned entry"));
             for retained in [
@@ -479,7 +499,7 @@ mod tests {
             ProcessIdentity::current().expect("current identity").tag(0)
         );
         assert!(crate::ipc::acquire_flock_lock(&path.join(OWNER_MARKER), false).is_err());
-        fs::write(path.join("config"), "Host *\n").expect("write config");
+        fs::write(DirectoryKind::SshConfig.content_path(&path), "Host *\n").expect("write config");
         entry.release();
         assert!(!path.try_exists().expect("stat released directory"));
 

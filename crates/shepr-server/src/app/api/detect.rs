@@ -63,28 +63,22 @@ impl App {
             return Err(self.detect_terminal_unavailable_error(ws_idx, pane_id, &target.pane_id));
         };
         if let Some(authority) = terminal.hook_authority().filter(|authority| {
-            let full_lifecycle = shepr_agent::detect::full_lifecycle_hook_authority(
-                &authority.source,
-                &authority.agent_label,
-            );
+            let full_lifecycle = authority.origin.is_full_lifecycle();
             (!full_lifecycle || terminal.full_lifecycle_hook_authority_active())
                 // A visible blocker can override a non-blocked hook report.
                 // In that case the screen rules are the explanation we need.
                 && terminal.state == authority.state
         }) {
-            let full_lifecycle = shepr_agent::detect::full_lifecycle_hook_authority(
-                &authority.source,
-                &authority.agent_label,
-            );
+            let full_lifecycle = authority.origin.is_full_lifecycle();
             let skip_reason = if full_lifecycle {
                 "full_lifecycle_hook_authority"
             } else {
                 "hook_authority"
             };
             let explain = shepr_agent::detect::manifest::hook_authority_explain_to_json_value(
-                &authority.agent_label,
+                authority.origin.label(),
                 terminal.state,
-                &authority.source,
+                authority.origin.source().as_str(),
                 skip_reason,
             );
             return success(ResponseResult::DetectExplain { explain });
@@ -386,12 +380,7 @@ mod tests {
             )
             .expect("test precondition"),
         );
-        terminal.set_hook_authority(
-            "shepr:omp".to_string(),
-            "omp".to_string(),
-            AgentState::Working,
-            Some(1),
-        );
+        terminal.set_hook_authority("shepr:omp", "omp", AgentState::Working, Some(1));
         app.terminal_runtimes.insert(
             terminal_id,
             shepr_mux::pane::PaneRuntime::test_with_screen_bytes(80, 24, b""),

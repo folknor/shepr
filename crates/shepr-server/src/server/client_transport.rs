@@ -1028,8 +1028,23 @@ mod tests {
         client_stream
             .write_all(&preamble)
             .expect("test precondition");
-        shepr_protocol::write_message(&mut client_stream, &endpoint_hello(80, 24))
-            .expect("test precondition");
+        // The server may already have hung up on the foreign preamble, which
+        // reaches this write as a broken pipe or reset; the hello is never read.
+        if let Err(error) =
+            shepr_protocol::write_message(&mut client_stream, &endpoint_hello(80, 24))
+        {
+            assert!(
+                matches!(
+                    &error,
+                    shepr_protocol::FramingError::Io(io)
+                        if matches!(
+                            io.kind(),
+                            std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::ConnectionReset
+                        )
+                ),
+                "hello write failed unexpectedly: {error:?}"
+            );
+        }
 
         // The server still announced itself, then hung up without a welcome.
         shepr_protocol::preamble::read_preamble(&mut client_stream).expect("server preamble");

@@ -13,7 +13,7 @@ use std::time::{Duration, Instant, SystemTime};
 use crate::agent_report_test_support::AgentReportHarness;
 use serde_json::Value;
 use shepr_agent::agent::resume::{AgentSessionRef, PersistedAgentSession};
-use shepr_agent::agent::{Agent, AgentSource};
+use shepr_agent::agent::{Agent, AgentSource, ReportOrigin};
 use shepr_agent::detect::AgentState;
 use shepr_api::schema::Request;
 use shepr_mux::terminal::state::HookClockSample;
@@ -357,12 +357,11 @@ fn replay_and_assert_contract(
         ContractSessionRef::Path(path) => AgentSessionRef::path(path),
     }
     .expect("valid contract session reference");
-    let expected_session = PersistedAgentSession::new(
-        AgentSource::Official(contract.agent),
-        contract.agent,
-        session_ref,
-    )
-    .expect("supported agent session identity");
+    let origin =
+        ReportOrigin::official(contract.agent).expect("a bundled asset has an integration");
+    let expected_session =
+        PersistedAgentSession::new(origin.source().clone(), contract.agent, session_ref)
+            .expect("supported agent session identity");
 
     for (index, request) in requests.iter().enumerate() {
         // The App accepts custom sources too; a bundled asset must report
@@ -372,8 +371,8 @@ fn replay_and_assert_contract(
             .and_then(Value::as_str)
             .unwrap_or_else(|| panic!("{} request {index} names no source", contract.asset));
         assert_eq!(
-            AgentSource::parse(source),
-            AgentSource::Official(contract.agent),
+            &AgentSource::parse(source),
+            origin.source(),
             "{} request {index} used another source",
             contract.asset
         );
@@ -405,11 +404,7 @@ fn replay_and_assert_contract(
             let authority = terminal
                 .hook_authority()
                 .unwrap_or_else(|| panic!("{} did not establish hook authority", contract.asset));
-            assert_eq!(
-                authority.source,
-                contract.agent.integration_source().unwrap_or_default()
-            );
-            assert_eq!(authority.agent_label, contract.agent.label());
+            assert_eq!(authority.origin, origin);
             assert_eq!(authority.state, expected_state);
             assert_eq!(authority.session_ref, Some(expected_session.session_ref));
         }

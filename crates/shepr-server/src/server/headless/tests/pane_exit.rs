@@ -173,7 +173,7 @@ async fn a_released_exit_is_replayed_by_the_pass_after_the_autosave_that_followe
             .app
             .session_saver
             .hold_test_checkpoint_in_flight(generation);
-        completion.complete(Err(std::io::Error::other("disk full")));
+        completion.complete(Err(std::io::Error::other("disk full").into()));
         assert!(server.app.reap_finished_session_save());
     }
     assert!(

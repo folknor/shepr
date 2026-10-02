@@ -73,6 +73,7 @@ pub(crate) fn snapshot(id: &ClientEndpointId, revision: u64) -> Box<ClientShellS
         boot_id: boot(id),
         revision: revision.into(),
         restore_notice: None,
+        session_saves_stopped: false,
         focused_workspace_id: Some(test_workspace_id("w1")),
         focused_pane_id: Some(test_pane_id("w1:p1")),
         workspaces: vec![shepr_protocol::ClientShellWorkspace {

@@ -652,7 +652,7 @@ mod tests {
                 *terminal = shepr_mux::terminal::TerminalState::new(terminal.id.clone(), missing);
             }
             let session = shepr_agent::agent::resume::PersistedAgentSession {
-                source: "shepr:codex".into(),
+                source: shepr_agent::agent::AgentSource::parse("shepr:codex"),
                 agent: shepr_agent::agent::Agent::Codex,
                 session_ref: shepr_agent::agent::resume::AgentSessionRef::id("resume-test")
                     .expect("test precondition"),

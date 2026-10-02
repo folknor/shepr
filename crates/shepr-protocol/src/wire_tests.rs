@@ -446,6 +446,7 @@ mod tests {
                 loss: crate::SessionRestoreLoss::partial(2, true).ok_or("a partial loss")?,
                 backup_dir: "/state/session-backups".into(),
             }),
+            session_saves_stopped: true,
             revision: crate::ProjectionRevision::new(1),
             focused_workspace_id: Some("w1".into()),
             focused_pane_id: Some("w1:p1".into()),

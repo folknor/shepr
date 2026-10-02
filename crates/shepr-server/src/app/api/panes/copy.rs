@@ -11,10 +11,9 @@ impl App {
         else {
             return Err(pane_missing(&target.pane_id).into());
         };
-        let content_before = runtime.content_seq();
         match runtime.clear_screen() {
-            Ok(()) => Handled::done_with_effects(EndpointEffects {
-                pane_surface_changed: runtime.content_seq() != content_before,
+            Ok(change) => Handled::done_with_effects(EndpointEffects {
+                pane_surface_changed: change.is_changed(),
                 ..EndpointEffects::default()
             }),
             Err(shepr_mux::pane::PaneClearError::AlternateScreenActive) => {
@@ -32,13 +31,11 @@ impl App {
         else {
             return Err(pane_missing(&params.pane_id).into());
         };
-        let scroll_before = runtime.scroll_metrics();
-        runtime.set_scroll_offset_from_bottom(
-            usize::try_from(params.offset_from_bottom).unwrap_or(usize::MAX),
-        );
-        let scroll_changed = scroll_before
-            .zip(runtime.scroll_metrics())
-            .is_some_and(|(before, after)| before.offset_from_bottom != after.offset_from_bottom);
+        let scroll_changed = runtime
+            .set_scroll_offset_from_bottom(
+                usize::try_from(params.offset_from_bottom).unwrap_or(usize::MAX),
+            )
+            .is_changed();
         let Some(pane) = self.pane_info(ws_idx, pane_id) else {
             return Err(HandlerError {
                 error: pane_missing(&params.pane_id),

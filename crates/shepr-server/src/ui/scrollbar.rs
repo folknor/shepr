@@ -31,9 +31,10 @@ pub(crate) fn render_pane_scrollbar_buffer(
         buffer,
         metrics,
         track,
-        track_color,
-        thumb_color,
+        "▕",
+        ratatui::style::Style::default().fg(track_color),
         thumb_symbol,
+        ratatui::style::Style::default().fg(thumb_color),
     );
 }
 

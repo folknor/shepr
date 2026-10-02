@@ -8,6 +8,9 @@ use std::time::Duration;
 /// format, not a tunable.
 pub(super) const PRIVATE_DIRECTORY_MODE: u32 = 0o700;
 
+/// Permission mode for files shepr creates with owner-only access.
+pub(super) const PRIVATE_FILE_MODE: u32 = 0o600;
+
 /// How long a connect to a local server socket waits for a listener whose
 /// backlog is full before it gives up. A healthy server accepts at once, so
 /// this only bounds a wedged one.
@@ -86,7 +89,7 @@ pub(super) const DEFAULT_MAX_LOG_BYTES: u64 = 5 * 1024 * 1024;
 pub(super) const DEFAULT_RETAINED_LOG_FILES: usize = 1;
 
 /// Private marker file mode.
-pub(super) const RUNTIME_MARKER_MODE: u32 = 0o600;
+pub(super) const RUNTIME_MARKER_MODE: u32 = PRIVATE_FILE_MODE;
 
 /// Permission bits including special bits.
 pub(super) const PERMISSION_BITS: u32 = 0o7777;

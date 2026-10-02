@@ -35,32 +35,28 @@ impl StateEvent {
             }),
             AppEvent::HookStateReported {
                 pane_id,
-                source,
-                agent_label,
+                origin,
                 state,
                 seq,
                 session_ref,
             } => Some(Self::HookStateReported {
                 pane_id,
                 sample,
-                source,
-                agent_label,
+                origin,
                 state,
                 seq,
                 session_ref,
             }),
             AppEvent::AgentSessionReported {
                 pane_id,
-                source,
-                agent_label,
+                origin,
                 seq,
                 session_ref,
                 session_start_source,
             } => Some(Self::AgentSessionReported {
                 pane_id,
                 sample,
-                source,
-                agent_label,
+                origin,
                 seq,
                 session_ref,
                 session_start_source,
@@ -165,50 +161,23 @@ impl AppState {
             StateEvent::HookStateReported {
                 pane_id,
                 sample,
-                source,
-                agent_label,
+                origin,
                 state,
                 seq,
                 session_ref,
-            } => {
-                if shepr_agent::agent::resume::is_reserved_native_state_source(
-                    source.as_str(),
-                    &agent_label,
-                ) {
-                    self.update_terminal_state(pane_id, |terminal| {
-                        terminal.set_agent_session_ref_at(
-                            source,
-                            agent_label,
-                            session_ref,
-                            seq,
-                            sample,
-                        )
-                    })
-                } else {
-                    self.update_terminal_state(pane_id, |terminal| {
-                        terminal.set_hook_report_at(
-                            source,
-                            agent_label,
-                            state,
-                            session_ref,
-                            seq,
-                            sample,
-                        )
-                    })
-                }
-            }
+            } => self.update_terminal_state(pane_id, |terminal| {
+                terminal.set_hook_report_at(origin, state, session_ref, seq, sample)
+            }),
             StateEvent::AgentSessionReported {
                 pane_id,
                 sample,
-                source,
-                agent_label,
+                origin,
                 seq,
                 session_ref,
                 session_start_source,
             } => self.update_terminal_state(pane_id, |terminal| {
                 terminal.set_agent_session_ref_for_typed_start_source_at(
-                    source,
-                    agent_label,
+                    origin,
                     session_ref,
                     seq,
                     session_start_source,

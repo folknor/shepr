@@ -1,6 +1,6 @@
 use serde::Deserialize;
 
-use crate::theme::{DEFAULT_THEME, ParsedThemeColors, THEME_NAMES, canonical_theme_name};
+use crate::theme::{DEFAULT_THEME, ParsedThemeColors, THEME_NAMES};
 
 /// Theme configuration: pick a built-in or override individual tokens.
 ///
@@ -97,19 +97,12 @@ fn parse_configured_color(
 pub(crate) fn resolve_palette(config: &ThemeConfig) -> Result<crate::theme::Palette, Vec<String>> {
     let mut diagnostics = Vec::new();
     let name = config.name.as_deref().unwrap_or(DEFAULT_THEME);
-    let canonical = canonical_theme_name(name).or_else(|| {
+    let base_palette = crate::theme::Palette::from_name(name).or_else(|| {
         diagnostics.push(format!(
             "unknown theme name theme.name = {name:?}; valid themes: {}",
             THEME_NAMES.join(", ")
         ));
         None
-    });
-    let base_palette = canonical.and_then(|canonical| {
-        let palette = crate::theme::Palette::from_name(canonical);
-        if palette.is_none() {
-            diagnostics.push(format!("theme {canonical:?} has no built-in palette"));
-        }
-        palette
     });
     let overrides = config.custom.as_ref().map_or_else(
         || Ok(ParsedThemeColors::default()),
@@ -125,15 +118,12 @@ pub(crate) fn resolve_palette(config: &ThemeConfig) -> Result<crate::theme::Pale
             None
         }
     };
+    let Some(mut palette) = base_palette else {
+        return Err(diagnostics);
+    };
     if !diagnostics.is_empty() {
         return Err(diagnostics);
     }
-
-    let Some(mut palette) = base_palette else {
-        return Err(vec![
-            "the built-in theme palette could not be resolved".into(),
-        ]);
-    };
     if let Ok(overrides) = overrides {
         palette = palette.with_overrides(&overrides);
     }
@@ -250,7 +240,10 @@ name = "catppucin"
     #[test]
     fn theme_name_aliases_are_valid() {
         for name in ["catppuccin-mocha", "tokyonight", "gruvbox-dark", "dawn"] {
-            assert!(canonical_theme_name(name).is_some(), "alias: {name}");
+            assert!(
+                crate::theme::Palette::from_name(name).is_some(),
+                "alias: {name}"
+            );
         }
     }
 

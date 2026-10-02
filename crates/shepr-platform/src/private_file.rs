@@ -1,4 +1,165 @@
-use std::path::Path;
+use std::fmt;
+use std::os::unix::fs::MetadataExt;
+use std::path::{Path, PathBuf};
+
+#[derive(Debug)]
+pub(crate) struct PrivateFilePolicyError {
+    path: PathBuf,
+    reason: PrivateFilePolicyReason,
+}
+
+#[derive(Debug)]
+enum PrivateFilePolicyReason {
+    NotRegular,
+    WrongOwner { expected: u32, found: u32 },
+    WrongMode { expected: u32, found: u32 },
+}
+
+impl fmt::Display for PrivateFilePolicyError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.reason {
+            PrivateFilePolicyReason::NotRegular => {
+                write!(f, "{} is not a regular file", self.path.display())
+            }
+            PrivateFilePolicyReason::WrongOwner { expected, found } => write!(
+                f,
+                "{} must be owned by uid {expected}; found uid {found}",
+                self.path.display()
+            ),
+            PrivateFilePolicyReason::WrongMode { expected, found } => write!(
+                f,
+                "{} must have mode {expected:04o}; found {found:04o}",
+                self.path.display()
+            ),
+        }
+    }
+}
+
+impl std::error::Error for PrivateFilePolicyError {}
+
+/// Shared owner and file-type policy for files shepr trusts or writes.
+pub(crate) struct PrivateFile;
+
+impl PrivateFile {
+    /// Gives open-time rejections the same policy error as post-open checks
+    /// when the path currently names a non-regular object. Directories and
+    /// symlinks can fail inside `open(2)` before callers can inspect the fd.
+    pub(crate) fn normalize_open_error(path: &Path, error: std::io::Error) -> std::io::Error {
+        if std::fs::symlink_metadata(path).is_ok_and(|metadata| !metadata.is_file()) {
+            Self::refusal(path, PrivateFilePolicyReason::NotRegular)
+        } else {
+            error
+        }
+    }
+
+    pub(crate) fn require_owned_regular(
+        path: &Path,
+        metadata: &std::fs::Metadata,
+        expected_uid: u32,
+    ) -> std::io::Result<()> {
+        let reason = Self::policy_reason(metadata, expected_uid, None);
+        match reason {
+            Some(reason) => Err(Self::refusal(path, reason)),
+            None => Ok(()),
+        }
+    }
+
+    pub(crate) fn is_owned_regular_with_mode(
+        metadata: &std::fs::Metadata,
+        expected_uid: u32,
+        expected_mode: u32,
+    ) -> bool {
+        Self::policy_reason(metadata, expected_uid, Some(expected_mode)).is_none()
+    }
+
+    fn policy_reason(
+        metadata: &std::fs::Metadata,
+        expected_uid: u32,
+        expected_mode: Option<u32>,
+    ) -> Option<PrivateFilePolicyReason> {
+        if !metadata.is_file() {
+            Some(PrivateFilePolicyReason::NotRegular)
+        } else if metadata.uid() != expected_uid {
+            Some(PrivateFilePolicyReason::WrongOwner {
+                expected: expected_uid,
+                found: metadata.uid(),
+            })
+        } else if let Some(expected_mode) = expected_mode {
+            let found = metadata.mode() & super::limits::PERMISSION_BITS;
+            (found != expected_mode).then_some(PrivateFilePolicyReason::WrongMode {
+                expected: expected_mode,
+                found,
+            })
+        } else {
+            None
+        }
+    }
+
+    fn refusal(path: &Path, reason: PrivateFilePolicyReason) -> std::io::Error {
+        std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            PrivateFilePolicyError {
+                path: path.to_path_buf(),
+                reason,
+            },
+        )
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct PrivateDirectoryPolicyError {
+    path: PathBuf,
+}
+
+impl fmt::Display for PrivateDirectoryPolicyError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{} must be a directory owned by the current user with mode {:04o}, and not a symlink",
+            self.path.display(),
+            super::limits::PRIVATE_DIRECTORY_MODE,
+        )
+    }
+}
+
+impl std::error::Error for PrivateDirectoryPolicyError {}
+
+/// Shared exact-mode policy for directories that contain private runtime state.
+pub(crate) struct PrivateDir;
+
+impl PrivateDir {
+    pub(crate) fn require(path: &Path) -> std::io::Result<()> {
+        let metadata = std::fs::symlink_metadata(path)?;
+        if Self::is_owned_private(&metadata, super::effective_uid()) {
+            Ok(())
+        } else {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                PrivateDirectoryPolicyError {
+                    path: path.to_path_buf(),
+                },
+            ))
+        }
+    }
+
+    pub(crate) fn is_private(path: &Path, expected_uid: u32) -> bool {
+        std::fs::symlink_metadata(path)
+            .is_ok_and(|metadata| Self::is_owned_private(&metadata, expected_uid))
+    }
+
+    pub(crate) fn is_policy_refusal(error: &std::io::Error) -> bool {
+        error
+            .get_ref()
+            .is_some_and(<dyn std::error::Error + Send + Sync>::is::<PrivateDirectoryPolicyError>)
+    }
+
+    fn is_owned_private(metadata: &std::fs::Metadata, expected_uid: u32) -> bool {
+        metadata.is_dir()
+            && metadata.uid() == expected_uid
+            && metadata.mode() & super::limits::PERMISSION_BITS
+                == super::limits::PRIVATE_DIRECTORY_MODE
+    }
+}
 
 pub fn create_private_file(path: &Path) -> std::io::Result<std::fs::File> {
     use std::os::unix::fs::OpenOptionsExt;
@@ -6,7 +167,7 @@ pub fn create_private_file(path: &Path) -> std::io::Result<std::fs::File> {
     std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
-        .mode(0o600)
+        .mode(super::limits::PRIVATE_FILE_MODE)
         .open(path)
 }
 
@@ -56,7 +217,10 @@ mod tests {
         let fifo = scratch.path().join("fifo");
         let path = std::ffi::CString::new(fifo.as_os_str().as_encoded_bytes()).expect("path");
         // SAFETY: a valid NUL-terminated path; mkfifo writes no memory of ours.
-        assert_eq!(unsafe { libc::mkfifo(path.as_ptr(), 0o600) }, 0);
+        assert_eq!(
+            unsafe { libc::mkfifo(path.as_ptr(), super::super::limits::PRIVATE_FILE_MODE) },
+            0
+        );
         let file_type = open_regular_file(&fifo)
             .expect("the fifo is inspected")
             .expect_err("a fifo is not a regular file");

@@ -8,9 +8,9 @@ pub(super) fn start_endpoint_transport(
     generation: u64,
     surface_decoder: shepr_protocol::surface_reuse::Decoder,
 ) -> Result<endpoint::NativeEndpointTransport, ClientError> {
-    let reader = stream.try_clone().map_err(ClientError::ConnectionFailed)?;
+    let reader = stream.try_clone().map_err(ClientError::EndpointSetup)?;
     let transport = endpoint::NativeEndpointTransport::with_lifetime(stream, ())
-        .map_err(ClientError::ConnectionFailed)?;
+        .map_err(ClientError::EndpointSetup)?;
     spawn_endpoint_reader(
         reader,
         event_tx,
@@ -46,7 +46,7 @@ pub(super) fn spawn_endpoint_reader(
                 surface_decoder,
             );
         })
-        .map_err(ClientError::ConnectionFailed)?;
+        .map_err(ClientError::EndpointSetup)?;
     Ok(())
 }
 
@@ -66,7 +66,10 @@ pub(super) fn server_reader_thread(
             ClientLoopEvent::ServerDisconnected {
                 endpoint_id,
                 generation,
-                error,
+                error: io::Error::new(
+                    error.kind(),
+                    shepr_remote::EndpointFailure::local_setup(error.to_string()),
+                ),
             },
         );
         return;
@@ -165,13 +168,19 @@ fn framing_error_to_io(
         shepr_protocol::FramingError::Io(error) => error.kind(),
         _ => io::ErrorKind::InvalidData,
     };
-    io::Error::new(
-        kind,
-        EndpointFramingError {
-            endpoint_id,
-            source: error,
-        },
-    )
+    let framed = EndpointFramingError {
+        endpoint_id,
+        source: error,
+    };
+    let failure = match &framed.source {
+        shepr_protocol::FramingError::Io(error) => shepr_remote::EndpointFailure::from_error(error)
+            .with_context(&format!("endpoint {}", framed.endpoint_id.storage_key())),
+        shepr_protocol::FramingError::UnexpectedEof => {
+            shepr_remote::EndpointFailure::from_error(&io::Error::new(kind, framed))
+        }
+        _ => shepr_remote::EndpointFailure::incompatible(framed.to_string()),
+    };
+    io::Error::new(kind, failure)
 }
 
 #[derive(Debug)]
@@ -276,24 +285,15 @@ mod tests {
             endpoint_id,
         );
         assert_eq!(surface_error.kind(), io::ErrorKind::InvalidData);
-        assert!(matches!(
-            surface_error.get_ref().and_then(|error| error.downcast_ref::<EndpointFramingError>()),
-            Some(error) if matches!(
-                &error.source,
-                shepr_protocol::FramingError::SurfaceDecode(
-                    shepr_protocol::surface_reuse::SurfaceDecodeError::WithSubject {
-                        subject,
-                        source,
-                    }
-                ) if subject.boot_id == crate::tests::test_boot_id("boot")
-                    && subject.projection_revision == 2
-                    && subject.surface_revision == 3
-                    && matches!(
-                        source.as_ref(),
-                        shepr_protocol::surface_reuse::SurfaceDecodeError::BaselineMismatch
-                    )
-            ) && error.endpoint_id == endpoint::ClientEndpointId::Local
-        ));
+        let failure = surface_error
+            .get_ref()
+            .and_then(|error| error.downcast_ref::<shepr_remote::EndpointFailure>())
+            .expect("the io error carries the typed endpoint failure");
+        assert_eq!(
+            failure.disposition(),
+            shepr_remote::FailureDisposition::Incompatible
+        );
+        assert!(failure.to_string().contains("endpoint local"));
         assert!(
             surface_error
                 .to_string()

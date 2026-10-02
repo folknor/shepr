@@ -8,7 +8,7 @@ impl App {
         let Some((_ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
             return Err(pane_not_found(&params.pane_id));
         };
-        let (source, agent_label, session_ref) = Self::parse_agent_report_identity(
+        let (origin, session_ref) = Self::parse_agent_report_identity(
             &params.source,
             &params.agent,
             params.agent_session_id,
@@ -17,8 +17,7 @@ impl App {
         self.handle_internal_event(shepr_mux::events::AppEvent::HookStateReported {
             pane_id,
             session_ref,
-            source,
-            agent_label,
+            origin,
             state: detect_state_from_api(params.state),
             seq: params.seq,
         });
@@ -33,7 +32,7 @@ impl App {
         let Some((_ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
             return Err(pane_not_found(&params.pane_id));
         };
-        let (source, agent_label, session_ref) = Self::parse_agent_report_identity(
+        let (origin, session_ref) = Self::parse_agent_report_identity(
             &params.source,
             &params.agent,
             params.agent_session_id,
@@ -42,8 +41,7 @@ impl App {
         self.handle_internal_event(shepr_mux::events::AppEvent::AgentSessionReported {
             pane_id,
             session_ref,
-            source,
-            agent_label,
+            origin,
             seq: params.seq,
             session_start_source: shepr_agent::agent::resume::normalize_session_start_source(
                 params.session_start_source.as_deref(),
@@ -53,8 +51,7 @@ impl App {
         success(ResponseResult::Ok {})
     }
 
-    /// Parses the identity shared by both report handlers: source, normalized
-    /// agent label and validated session reference.
+    /// Decode the wire identity once; internal events carry its resolved owner.
     fn parse_agent_report_identity(
         source_text: &str,
         agent_text: &str,
@@ -62,41 +59,45 @@ impl App {
         path: Option<String>,
     ) -> Result<
         (
-            shepr_agent::agent::AgentSource,
-            String,
+            shepr_agent::agent::ReportOrigin,
             Option<shepr_agent::agent::resume::AgentSessionRef>,
         ),
         shepr_api::error::ApiError,
     > {
-        let Some(agent_label) = normalize_reported_agent_label(agent_text) else {
-            return invalid_agent();
+        let origin = match shepr_agent::agent::ReportOrigin::parse(source_text, agent_text) {
+            Ok(origin) => origin,
+            Err(shepr_agent::agent::ReportOriginError::EmptyAgent) => return invalid_agent(),
+            Err(shepr_agent::agent::ReportOriginError::MismatchedAgent) => {
+                return failure(
+                    ApiErrorCode::InvalidAgent,
+                    "report source does not match agent label",
+                );
+            }
+            Err(shepr_agent::agent::ReportOriginError::UnknownOfficialSource) => {
+                return failure(ApiErrorCode::InvalidAgent, "unknown official report source");
+            }
         };
-        let source = shepr_agent::agent::AgentSource::parse(source_text);
-        let session_ref = parse_report_session_ref(&source, &agent_label, id, path)?;
-        Ok((source, agent_label, session_ref))
+        let session_ref = parse_origin_session_ref(&origin, id, path)?;
+        Ok((origin, session_ref))
     }
 }
 
-/// Source parsing and reference validation happen before dispatch. An absent
-/// reference is a state-only report; a supplied invalid official reference is
-/// a bad request and must not be mistaken for that absence. Custom reports do
-/// not own resume identities. The parsed source is carried through internal
-/// events; TerminalState also validates the label for non-API callers.
-fn parse_report_session_ref(
-    source: &shepr_agent::agent::AgentSource,
-    agent_label: &str,
+/// Raw JSON options stop here. A supplied reference must select one kind;
+/// custom reports cannot mint a resumable identity.
+fn parse_origin_session_ref(
+    origin: &shepr_agent::agent::ReportOrigin,
     id: Option<String>,
     path: Option<String>,
 ) -> Result<Option<shepr_agent::agent::resume::AgentSessionRef>, shepr_api::error::ApiError> {
-    let Some(agent) = source.agent() else {
-        return Ok(None);
-    };
-    if agent.label() != agent_label {
+    if id.is_some() && path.is_some() {
         return failure(
-            ApiErrorCode::InvalidAgent,
-            "report source does not match agent label",
+            ApiErrorCode::InvalidRequest,
+            "supply either agent_session_id or agent_session_path, not both",
         );
     }
+    let Some(agent) = origin.official_agent() else {
+        return Ok(None);
+    };
     let supplied = id.is_some() || path.is_some();
     let session_ref = shepr_agent::agent::resume::session_ref_for_agent_report(agent, id, path);
     if supplied && session_ref.is_none() {
@@ -109,6 +110,17 @@ fn parse_report_session_ref(
 }
 
 #[cfg(test)]
+fn parse_report_session_ref(
+    source: &shepr_agent::agent::AgentSource,
+    agent_label: &str,
+    id: Option<String>,
+    path: Option<String>,
+) -> Result<Option<shepr_agent::agent::resume::AgentSessionRef>, shepr_api::error::ApiError> {
+    let (_, session) = App::parse_agent_report_identity(source.as_str(), agent_label, id, path)?;
+    Ok(session)
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::path::Path;
@@ -117,19 +129,50 @@ mod tests {
     use shepr_api::schema::{Method, Request};
 
     #[test]
+    fn a_report_cannot_select_two_session_reference_kinds() {
+        for source in ["shepr:pi", "custom:status"] {
+            let error = App::parse_agent_report_identity(
+                source,
+                "pi",
+                Some("session-id".into()),
+                Some("/sessions/pi.jsonl".into()),
+            )
+            .expect_err("ambiguous reference");
+            assert_eq!(error.code, ApiErrorCode::InvalidRequest);
+        }
+    }
+
+    #[test]
+    fn unknown_official_sources_fail_before_dispatch() {
+        let error = App::parse_agent_report_identity("shepr:claud", "claude", None, None)
+            .expect_err("misspelled reserved source");
+        assert_eq!(error.code, ApiErrorCode::InvalidAgent);
+    }
+
+    #[test]
     fn missing_session_ref_is_distinct_from_invalid_supplied_ref() {
         assert!(
-            parse_report_session_ref(&"shepr:kimi".into(), "kimi", None, None)
-                .expect("state-only report")
-                .is_none()
-        );
-        assert!(
-            parse_report_session_ref(&"shepr:kimi".into(), "kimi", Some(String::new()), None)
-                .is_err()
+            parse_report_session_ref(
+                &shepr_agent::agent::AgentSource::parse("shepr:kimi"),
+                "kimi",
+                None,
+                None
+            )
+            .expect("state-only report")
+            .is_none()
         );
         assert!(
             parse_report_session_ref(
-                &"shepr:kimi".into(),
+                &shepr_agent::agent::AgentSource::parse("shepr:kimi"),
+                "kimi",
+                Some(String::new()),
+                None
+            )
+            .is_err()
+        );
+        assert!(
+            parse_report_session_ref(
+                &shepr_agent::agent::AgentSource::parse("shepr:kimi"),
                 "kimi",
                 None,
                 Some("/session.jsonl".into())
@@ -141,20 +184,30 @@ mod tests {
     #[test]
     fn official_source_cannot_claim_another_agent() {
         assert!(
-            parse_report_session_ref(&"shepr:kimi".into(), "kilo", Some("session".into()), None)
-                .is_err()
+            parse_report_session_ref(
+                &shepr_agent::agent::AgentSource::parse("shepr:kimi"),
+                "kilo",
+                Some("session".into()),
+                None
+            )
+            .is_err()
         );
         assert!(
-            parse_report_session_ref(&"shepr:kimi".into(), "kimi", Some("session".into()), None)
-                .expect("official identity")
-                .is_some()
+            parse_report_session_ref(
+                &shepr_agent::agent::AgentSource::parse("shepr:kimi"),
+                "kimi",
+                Some("session".into()),
+                None
+            )
+            .expect("official identity")
+            .is_some()
         );
     }
 
     #[test]
     fn official_report_accepts_a_supported_path_session() {
         let session_ref = parse_report_session_ref(
-            &"shepr:pi".into(),
+            &shepr_agent::agent::AgentSource::parse("shepr:pi"),
             "pi",
             None,
             Some("/sessions/pi.jsonl".into()),
@@ -172,9 +225,14 @@ mod tests {
     #[test]
     fn custom_state_report_does_not_mint_a_resume_identity() {
         assert!(
-            parse_report_session_ref(&"custom:state".into(), "kimi", Some("session".into()), None)
-                .expect("custom state report")
-                .is_none()
+            parse_report_session_ref(
+                &shepr_agent::agent::AgentSource::parse("custom:state"),
+                "kimi",
+                Some("session".into()),
+                None
+            )
+            .expect("custom state report")
+            .is_none()
         );
     }
 

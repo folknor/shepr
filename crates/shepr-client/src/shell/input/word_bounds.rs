@@ -1,6 +1,8 @@
 //! Double-click word selection: which terminal columns make up the token under
 //! the pointer. Pure text logic over one row of plain text.
 
+use unicode_segmentation::UnicodeSegmentation;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct TextCell {
     ch: char,
@@ -64,24 +66,29 @@ fn token_span_at_column(cells: &[TextCell], clicked_idx: usize) -> Option<CellSp
 
 fn text_cells(row: &str) -> Vec<TextCell> {
     let mut next_col = 0u16;
-    row.chars()
-        .map(|ch| {
-            let width = u16::from(shepr_vt::unicode_codepoint_width(ch as u32));
-            let start_col = if width == 0 {
-                next_col.saturating_sub(1)
-            } else {
-                next_col
-            };
-            if width > 0 {
-                next_col = next_col.saturating_add(width);
-            }
-            TextCell {
-                ch,
-                start_col,
-                end_col: next_col.saturating_sub(1),
-            }
-        })
-        .collect()
+    let mut cells = Vec::new();
+    for grapheme in row.graphemes(true) {
+        let width = u16::try_from(shepr_termio::blit::text_width(grapheme)).unwrap_or(u16::MAX);
+        let start_col = if width == 0 {
+            next_col.saturating_sub(1)
+        } else {
+            next_col
+        };
+        let end_col = if width == 0 {
+            start_col
+        } else {
+            next_col.saturating_add(width).saturating_sub(1)
+        };
+        cells.extend(grapheme.chars().map(|ch| TextCell {
+            ch,
+            start_col,
+            end_col,
+        }));
+        if width > 0 {
+            next_col = next_col.saturating_add(width);
+        }
+    }
+    cells
 }
 
 fn cell_index_at_column(cells: &[TextCell], col: u16) -> Option<usize> {
@@ -275,9 +282,11 @@ mod tests {
             .unwrap_or_else(|| panic!("{needle:?} not found in {row:?}"));
         let prefix = &row[..byte_idx];
         prefix
-            .chars()
-            .map(|ch| u16::from(shepr_vt::unicode_codepoint_width(ch as u32)))
-            .sum()
+            .graphemes(true)
+            .map(|grapheme| {
+                u16::try_from(shepr_termio::blit::text_width(grapheme)).unwrap_or(u16::MAX)
+            })
+            .fold(0u16, u16::saturating_add)
     }
 
     fn assert_selects(row: &str, click: &str, expected: &str) {
@@ -304,6 +313,13 @@ mod tests {
             word_bounds_at_column(row, master_col),
             Some((master_col, master_col + 5))
         );
+    }
+
+    #[test]
+    fn double_click_word_bounds_follow_grapheme_columns() {
+        let row = "\u{2764}\u{fe0f} agent";
+        assert_eq!(word_bounds_at_column(row, 3), Some((3, 7)));
+        assert_selects(row, "agent", "agent");
     }
 
     #[test]

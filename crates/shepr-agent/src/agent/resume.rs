@@ -196,7 +196,7 @@ impl AgentResumePlan {
     fn with_argv(session: &PersistedAgentSession, argv: Vec<String>) -> Option<Self> {
         // A plan with nothing to run cannot be launched; refuse it here so
         // the server never holds one.
-        (session.source == AgentSource::Official(session.agent)
+        (session.source.agent() == Some(session.agent)
             && session.session_ref.accepted_for(session.agent)
             && argv.first().is_some_and(|program| !program.is_empty()))
         .then(|| Self {
@@ -210,16 +210,6 @@ impl AgentResumePlan {
             },
         })
     }
-}
-
-pub fn session_ref_from_report(
-    source: &str,
-    agent_label: &str,
-    agent_session_id: Option<String>,
-    agent_session_path: Option<String>,
-) -> Option<AgentSessionRef> {
-    let source = AgentSource::from_pair(source, agent_label)?;
-    session_ref_for_agent_report(source.agent()?, agent_session_id, agent_session_path)
 }
 
 /// Decode an official report after its source/label pair has been validated.
@@ -252,7 +242,7 @@ pub fn session_ref_from_snapshot(
 pub fn plan(session: &PersistedAgentSession) -> Option<AgentResumePlan> {
     let agent = session.agent;
     let descriptor = agent.descriptor();
-    if session.source != AgentSource::Official(agent) || !session.session_ref.accepted_for(agent) {
+    if session.source.agent() != Some(agent) || !session.session_ref.accepted_for(agent) {
         return None;
     }
 
@@ -309,16 +299,6 @@ pub fn normalize_session_start_source(value: Option<&str>) -> Option<AgentSessio
     value.and_then(AgentSessionStartSource::parse)
 }
 
-pub fn is_reserved_native_state_source(source: &str, agent_label: &str) -> bool {
-    AgentSource::from_pair(source, agent_label)
-        .and_then(|source| source.agent())
-        .is_some_and(|agent| agent.descriptor().reserves_native_state)
-}
-
-pub fn is_official_agent_source(source: &str, agent_label: &str) -> bool {
-    AgentSource::from_pair(source, agent_label).is_some()
-}
-
 // An ID is passed as one argument after a resume flag. Reject leading dashes
 // and control characters at construction and again when deserializing.
 fn valid_session_id(value: &str) -> bool {
@@ -339,6 +319,16 @@ fn valid_session_path(value: &str) -> bool {
 mod tests {
     use super::*;
 
+    fn session_ref_from_report(
+        source: &str,
+        agent_label: &str,
+        agent_session_id: Option<String>,
+        agent_session_path: Option<String>,
+    ) -> Option<AgentSessionRef> {
+        let source = AgentSource::from_pair(source, agent_label)?;
+        session_ref_for_agent_report(source.agent()?, agent_session_id, agent_session_path)
+    }
+
     fn plan_for_labels(
         source: &str,
         agent_label: &str,
@@ -353,7 +343,7 @@ mod tests {
     #[test]
     fn a_plan_with_nothing_to_run_is_refused() {
         let session = PersistedAgentSession::new(
-            AgentSource::Official(Agent::Codex),
+            AgentSource::Official(crate::agent::IntegrationTarget::Codex),
             Agent::Codex,
             AgentSessionRef::id("abc").expect("test precondition"),
         )
@@ -381,18 +371,6 @@ mod tests {
     fn absolute_test_path(name: &str) -> String {
         // Planner tests validate these references but never open the paths.
         format!("/shepr-agent-test/{name}")
-    }
-
-    #[test]
-    fn native_state_reservation_excludes_full_lifecycle_sources() {
-        assert!(is_reserved_native_state_source("shepr:claude", "claude"));
-        assert!(!is_reserved_native_state_source("shepr:codex", "codex"));
-        assert!(is_reserved_native_state_source("shepr:devin", "devin"));
-        assert!(!is_reserved_native_state_source("shepr:kimi", "kimi"));
-        assert!(!is_reserved_native_state_source(
-            "shepr:opencode",
-            "opencode"
-        ));
     }
 
     #[test]

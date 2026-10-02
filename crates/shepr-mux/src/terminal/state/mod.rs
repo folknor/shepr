@@ -9,6 +9,7 @@ use std::time::{Instant, SystemTime};
 // Confirmed process-exit updates clear matching authority before recomputing state.
 
 use shepr_agent::agent::resume::AgentSessionStartSource;
+use shepr_agent::agent::{AgentSource, ReportOrigin, ReportedAgent};
 use shepr_agent::detect::{Agent, AgentState};
 use shepr_protocol::TerminalId;
 
@@ -27,8 +28,7 @@ pub struct HookClockSample {
 /// ordering uses the caller-sampled monotonic and wall-clock pair.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HookAuthority {
-    pub source: String,
-    pub agent_label: String,
+    pub origin: ReportOrigin,
     pub state: AgentState,
     pub reported_at: Instant,
     pub session_ref: Option<shepr_agent::agent::resume::AgentSessionRef>,
@@ -199,7 +199,9 @@ pub struct TerminalState {
     persisted_agent_session: Option<shepr_agent::agent::resume::PersistedAgentSession>,
     pub terminal_title: Option<String>,
     pub manual_label: Option<String>,
-    hook_sources: HashMap<String, HookSourceState>,
+    // Sequence numbers belong to a reporter, even if its custom label changes.
+    // Keying by the complete origin would let a renamed label bypass ordering.
+    hook_sources: HashMap<AgentSource, HookSourceState>,
     pub state: AgentState,
     pub last_agent_state_change_seq: Option<u64>,
     process_evidence: AgentProcessEvidence,

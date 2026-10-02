@@ -245,8 +245,7 @@ struct OpenLogFile {
 
 /// Log files hold pane activity and error details; keep them private to the
 /// user like the rest of the data directory's state.
-// limits-exempt: this is the logger's POSIX file mode, kept beside its open call.
-const LOG_FILE_MODE: u32 = 0o600;
+const LOG_FILE_MODE: u32 = super::limits::PRIVATE_FILE_MODE;
 
 impl RotatingFileState {
     /// Write one chunk. The local state mutex protects the cached descriptor;
@@ -662,7 +661,7 @@ mod tests {
             .mode()
             & 0o777;
 
-        assert_eq!(created_mode, 0o600);
-        assert_eq!(directory_mode, 0o700);
+        assert_eq!(created_mode, crate::limits::PRIVATE_FILE_MODE);
+        assert_eq!(directory_mode, crate::limits::PRIVATE_DIRECTORY_MODE);
     }
 }

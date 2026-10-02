@@ -172,10 +172,12 @@ fn apply_scroll(
             };
             send_input(runtime, Bytes::from(bytes), "alternate scroll input")?;
         }
-        Some(shepr_mux::pane::WheelRouting::HostScroll) | None => match direction {
-            ScrollDirection::Up => runtime.scroll_up(lines.max(1) as usize),
-            ScrollDirection::Down => runtime.scroll_down(lines.max(1) as usize),
-        },
+        Some(shepr_mux::pane::WheelRouting::HostScroll) | None => {
+            match direction {
+                ScrollDirection::Up => runtime.scroll_up(lines.max(1) as usize),
+                ScrollDirection::Down => runtime.scroll_down(lines.max(1) as usize),
+            };
+        }
     }
     Ok(())
 }

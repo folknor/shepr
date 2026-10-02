@@ -27,7 +27,6 @@ pub struct PaneTarget {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
 pub enum SplitDirection {
     Right,
     Down,
@@ -89,7 +88,6 @@ pub struct WorkspaceInfo {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
 pub enum PaneRightClickTarget {
     #[default]
     Shepr,
@@ -109,7 +107,6 @@ pub struct PaneInputSetParams {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
 pub enum PaneDirection {
     Left,
     Right,
@@ -229,7 +226,6 @@ pub struct PaneCopyMotionParams {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
 pub enum PaneCopySearchDirection {
     Forward,
     Backward,

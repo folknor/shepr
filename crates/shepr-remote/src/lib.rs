@@ -1,3 +1,6 @@
+mod failure;
+pub use failure::{EndpointFailure, FailureDisposition};
+
 mod limits;
 
 #[path = "remote/args.rs"]
@@ -44,9 +47,8 @@ pub use preflight::{
 pub use server_lifecycle::{DifferentBuildServer, MachineSshCheck};
 pub use ssh::{release_ssh_resources_before_exit, ssh_authentication_command};
 
-/// What a failed connection attempt established. The class also says who can
-/// fix it: [`Self::needs_attention`] is false only for failures a retry can
-/// clear by itself.
+/// SSH diagnostic classes. Endpoint operator policy lives in
+/// `EndpointFailure::disposition`, including failures outside SSH.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SshFailure {
     /// The remote refused every offered credential.
@@ -73,19 +75,10 @@ enum SshFailure {
     Other,
 }
 
-impl SshFailure {
-    fn needs_attention(self) -> bool {
-        // A round-trip timeout is only a hint that authentication may be
-        // waiting. Startup preflight acts on that hint before this question is
-        // asked; a running client cannot prompt, so it keeps retrying as it
-        // does for a link failure instead of parking the machine in Attention.
-        !matches!(self, Self::Link | Self::AuthenticationPending | Self::Other)
-    }
-}
-
-/// A connection failure with its diagnostic class kept alongside its text.
-/// Text classification is reserved for the SSH process boundary; errors and
-/// endpoint events carry this value after that point.
+/// An SSH diagnostic with its process cause kept alongside its text.
+/// Text classification is reserved for the SSH process boundary. Generic
+/// endpoint failures use `EndpointFailure`; this also adapts their diagnostics
+/// for callers that only display text and SSH hints.
 #[derive(Clone, Debug)]
 pub struct SshFailureDiagnostic {
     failure: SshFailure,
@@ -106,45 +99,7 @@ enum SshFailureOrigin {
 
 impl SshFailureDiagnostic {
     pub fn from_error(error: &std::io::Error) -> Self {
-        if let Some(failure) = error
-            .get_ref()
-            .and_then(|source| source.downcast_ref::<Self>())
-        {
-            return failure.clone();
-        }
-        let message = error.to_string();
-        if error.get_ref().is_some_and(|source| {
-            source
-                .downcast_ref::<shepr_platform::UnsafeSshRuntimeDirectory>()
-                .is_some()
-        }) {
-            return Self {
-                failure: SshFailure::LocalSetup,
-                origin: SshFailureOrigin::LocalSetup,
-                message,
-            };
-        }
-        let failure = if is_ssh_link_error_kind(error.kind()) {
-            SshFailure::Link
-        } else if matches!(
-            error.kind(),
-            std::io::ErrorKind::InvalidData | std::io::ErrorKind::Unsupported
-        ) {
-            // These kinds also carry remote protocol and install refusals from
-            // callers outside this crate. Local sources are wrapped explicitly.
-            SshFailure::Compatibility
-        } else {
-            // NotFound, PermissionDenied and InvalidInput can also come from a
-            // remote command or protocol path. ErrorKind alone cannot prove the
-            // operation was local; known local setup boundaries must use
-            // `from_local_setup_error`.
-            SshFailure::Other
-        };
-        Self {
-            failure,
-            origin: SshFailureOrigin::Io(error.kind()),
-            message,
-        }
+        EndpointFailure::from_error(error).diagnostic()
     }
 
     pub fn from_message(message: impl Into<String>) -> Self {
@@ -179,30 +134,12 @@ impl SshFailureDiagnostic {
         self.failure == SshFailure::Authentication
     }
 
-    fn may_require_interactive_authentication(&self) -> bool {
-        matches!(
-            self.failure,
-            SshFailure::Authentication | SshFailure::AuthenticationPending
-        )
-    }
-
     pub(crate) fn is_authentication_wait_timeout(&self) -> bool {
         self.failure == SshFailure::AuthenticationPending
     }
 
-    pub(crate) fn is_remote_compatibility(&self) -> bool {
-        matches!(
-            self.origin,
-            SshFailureOrigin::RemoteCompatibility | SshFailureOrigin::RemoteCandidateMismatch
-        )
-    }
-
     pub(crate) fn is_remote_candidate_mismatch(&self) -> bool {
         matches!(self.origin, SshFailureOrigin::RemoteCandidateMismatch)
-    }
-
-    pub(crate) fn is_local_setup_failure(&self) -> bool {
-        self.failure == SshFailure::LocalSetup
     }
 
     pub(crate) fn authentication_wait_timeout() -> Self {
@@ -285,8 +222,12 @@ impl SshFailureDiagnostic {
         self.failure == SshFailure::LocalConfiguration
     }
 
+    pub fn disposition(&self) -> FailureDisposition {
+        EndpointFailure::from_ssh(self.clone()).disposition()
+    }
+
     pub fn needs_attention(&self) -> bool {
-        self.failure.needs_attention()
+        self.disposition().needs_attention()
     }
 
     fn message(&self) -> &str {
@@ -401,18 +342,14 @@ pub(crate) fn local_setup_error(context: &str, error: std::io::Error) -> std::io
     }) {
         return error;
     }
-    let diagnostic = SshFailureDiagnostic::from_local_setup_error(&error).with_context(context);
+    let diagnostic = EndpointFailure::local_setup(error.to_string()).with_context(context);
     std::io::Error::new(error.kind(), diagnostic)
 }
 
 pub(crate) fn remote_compatibility_error(message: impl Into<String>) -> std::io::Error {
     std::io::Error::new(
         std::io::ErrorKind::Unsupported,
-        SshFailureDiagnostic {
-            failure: SshFailure::Compatibility,
-            origin: SshFailureOrigin::RemoteCompatibility,
-            message: message.into(),
-        },
+        EndpointFailure::incompatible(message),
     )
 }
 
@@ -463,6 +400,17 @@ fn remote_error_hint_for_failure(failure: &SshFailureDiagnostic, target: &str) -
 
 fn ssh_check_command(target: &str) -> String {
     format!("ssh {}", shell_quote(target))
+}
+
+#[cfg(test)]
+impl SshFailureDiagnostic {
+    pub(crate) fn is_remote_compatibility(&self) -> bool {
+        self.disposition() == FailureDisposition::Incompatible
+    }
+
+    pub(crate) fn is_local_setup_failure(&self) -> bool {
+        self.failure == SshFailure::LocalSetup
+    }
 }
 
 #[cfg(test)]

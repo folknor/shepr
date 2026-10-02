@@ -102,12 +102,6 @@ pub(crate) const FIRST_INDEXED_BINDING_KEY: char = '1';
 /// The upper key keeps indexed shortcuts within the single-digit syntax.
 pub(crate) const LAST_INDEXED_BINDING_KEY: char = '9';
 
-/// Range token parsed by the keybinding config for all indexed digits.
-///
-/// Parser and help share this token so accepted shortcuts match the range they
-/// display.
-pub(crate) const INDEXED_BINDING_RANGE_SYNTAX: &str = "1..9";
-
 /// Lowest supported function-key number in config key names.
 ///
 /// Function-key numbering starts with the first function key, so zero is invalid.

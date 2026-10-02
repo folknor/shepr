@@ -74,11 +74,7 @@ impl ClientChromePreferences {
 }
 
 pub(super) fn path_for_local_endpoint(state_dir: &Path, socket_path: &Path) -> PathBuf {
-    let mut hash = 0xcbf29ce484222325u64;
-    for byte in socket_path.to_string_lossy().as_bytes() {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x100000001b3);
-    }
+    let hash = super::topology::fnv1a64(socket_path.to_string_lossy().as_bytes());
     state_dir
         .join("client-shell")
         .join(format!("local-{hash:016x}.json"))

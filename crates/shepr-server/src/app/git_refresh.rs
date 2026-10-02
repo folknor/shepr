@@ -5,7 +5,7 @@ use std::time::Instant;
 use super::{App, GIT_REPO_DISCOVERY_REFRESH_INTERVAL};
 use crate::limits::GIT_REMOTE_STATUS_REFRESH_INTERVAL;
 use shepr_mux::events::AppEvent;
-use shepr_mux::git::{GitReadError, GitStatusCacheEntry, WorkspaceGitStatus};
+use shepr_mux::git::{GitReadError, GitStatusCacheEntry, GitStatusDiscovery, WorkspaceGitStatus};
 
 pub(crate) struct GitRefreshScheduler {
     pub(crate) next_git_remote_status_refresh: Instant,
@@ -110,6 +110,7 @@ struct WorkspaceGitRefreshTarget {
 struct WorkspaceGitRefreshJob {
     cache_key: PathBuf,
     cached: Option<GitStatusCacheEntry>,
+    discovery: Option<GitStatusDiscovery>,
     targets: Vec<WorkspaceGitRefreshTarget>,
 }
 
@@ -227,16 +228,22 @@ fn deduplicate_git_refresh_items(
 
     for item in items {
         let reconcile = item.cache_key_hint.is_none();
-        let cache_key = item.cache_key_hint.unwrap_or_else(|| {
-            shepr_mux::git::git_status_cache_key(&item.resolved_identity_cwd)
-                .unwrap_or_else(|| item.resolved_identity_cwd.clone())
-        });
+        let (cache_key, discovery) = match item.cache_key_hint {
+            Some(cache_key) => (cache_key, None),
+            None => {
+                let discovery = shepr_mux::git::git_status_discovery(&item.resolved_identity_cwd);
+                (discovery.cache_key().to_path_buf(), Some(discovery))
+            }
+        };
         let target = WorkspaceGitRefreshTarget {
             workspace_id: item.workspace_id,
             resolved_identity_cwd: item.resolved_identity_cwd,
         };
         if let Some(&index) = indexes.get(&cache_key) {
             jobs[index].cached = jobs[index].cached.take().filter(|_| !reconcile);
+            if jobs[index].discovery.is_none() {
+                jobs[index].discovery = discovery;
+            }
             jobs[index].targets.push(target);
             continue;
         }
@@ -246,6 +253,7 @@ fn deduplicate_git_refresh_items(
         jobs.push(WorkspaceGitRefreshJob {
             cache_key,
             cached,
+            discovery,
             targets: vec![target],
         });
     }
@@ -282,8 +290,12 @@ fn refresh_workspace_git_statuses(
     let mut cache_updates = Vec::new();
 
     for job in deduplicate_git_refresh_items(items, cache) {
-        let (snapshot, cache_entry) =
-            shepr_mux::git::git_status_snapshot_for_cwd(&job.cache_key, job.cached.as_ref());
+        let (snapshot, cache_entry) = match job.discovery {
+            Some(discovery) => shepr_mux::git::git_status_snapshot_for_discovery(discovery),
+            None => {
+                shepr_mux::git::git_status_snapshot_for_cwd(&job.cache_key, job.cached.as_ref())
+            }
+        };
         if let Some(cache_entry) = cache_entry {
             cache_updates.push((job.cache_key.clone(), cache_entry));
         }

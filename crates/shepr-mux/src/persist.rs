@@ -13,6 +13,7 @@
 //! stale files while this one still owns live panes.
 
 mod actor;
+mod error;
 mod io;
 pub mod lock;
 mod restore;
@@ -20,6 +21,7 @@ pub mod snapshot;
 mod writer;
 
 pub use self::actor::{PendingSave, PersistJob, SaveCompletion, SessionBundle, SessionPersister};
+pub use self::error::{SaveError, SaveRefusal};
 pub use self::io::{
     SessionLoad, check_session_target, load, load_history, session_backup_directory,
 };

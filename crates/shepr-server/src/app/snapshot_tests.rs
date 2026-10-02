@@ -752,14 +752,14 @@ fn capture_contract_tracks_hook_authority_agent_session() {
         shepr_agent::detect::AgentState::Idle,
     );
     terminal.set_persisted_agent_session(shepr_agent::agent::resume::PersistedAgentSession {
-        source: "shepr:pi".into(),
+        source: shepr_agent::agent::AgentSource::parse("shepr:pi"),
         agent: shepr_agent::agent::Agent::Pi,
         session_ref: shepr_agent::agent::resume::AgentSessionRef::path(session_path.clone())
             .expect("test precondition"),
     });
     terminal.set_hook_authority_at(
-        "shepr:pi".into(),
-        "pi".into(),
+        "shepr:pi",
+        "pi",
         shepr_agent::detect::AgentState::Working,
         shepr_agent::agent::resume::AgentSessionRef::path(session_path.clone()),
         Some(20),
@@ -775,8 +775,8 @@ fn capture_contract_tracks_hook_authority_agent_session() {
         .as_ref()
         .expect("agent session should be captured");
 
-    assert_eq!(agent_session.source, "shepr:pi");
-    assert_eq!(agent_session.agent, "pi");
+    assert_eq!(agent_session.source.as_str(), "shepr:pi");
+    assert_eq!(agent_session.agent.label(), "pi");
     assert_eq!(
         agent_session.session_ref.kind(),
         shepr_agent::agent::resume::AgentSessionRefKind::Path
@@ -797,7 +797,7 @@ fn capture_contract_preserves_restored_agent_session() {
         .get_mut(&terminal_id)
         .expect("test precondition")
         .set_persisted_agent_session(shepr_agent::agent::resume::PersistedAgentSession {
-            source: "shepr:opencode".into(),
+            source: shepr_agent::agent::AgentSource::parse("shepr:opencode"),
             agent: shepr_agent::agent::Agent::OpenCode,
             session_ref: shepr_agent::agent::resume::AgentSessionRef::id("opencode-session")
                 .expect("test precondition"),
@@ -809,8 +809,8 @@ fn capture_contract_preserves_restored_agent_session() {
         .as_ref()
         .expect("persisted agent session should be captured");
 
-    assert_eq!(agent_session.source, "shepr:opencode");
-    assert_eq!(agent_session.agent, "opencode");
+    assert_eq!(agent_session.source.as_str(), "shepr:opencode");
+    assert_eq!(agent_session.agent.label(), "opencode");
     assert_eq!(
         agent_session.session_ref.kind(),
         shepr_agent::agent::resume::AgentSessionRefKind::Id

@@ -293,6 +293,7 @@ mod tests {
             boot_id: lease().boot_id,
             revision: revision.into(),
             restore_notice: None,
+            session_saves_stopped: false,
             focused_workspace_id: None,
             focused_pane_id: None,
             workspaces: vec![],

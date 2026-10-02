@@ -3,8 +3,7 @@ use super::*;
 impl TerminalState {
     pub(super) fn transition_start(
         &mut self,
-        source: shepr_agent::agent::AgentSource,
-        agent_label: String,
+        origin: &ReportOrigin,
         session_ref: Option<shepr_agent::agent::resume::AgentSessionRef>,
         seq: Option<u64>,
         session_start_source: Option<shepr_agent::agent::resume::AgentSessionStartSource>,
@@ -12,58 +11,35 @@ impl TerminalState {
     ) -> Option<TerminalStateMutation> {
         let sample = sample.into();
         let now = sample.monotonic;
-        let typed_source = source;
-        let source = typed_source.to_source_string();
-        self.warn_unrecognized_hook_identity(&source, &agent_label);
-        // Built-in source names cannot claim another agent. Custom sources
-        // retain arbitrary labels, but cannot mint official resume identities.
-        if typed_source
-            .agent()
-            .is_some_and(|agent| agent.label() != agent_label)
-        {
-            return None;
-        }
+        self.warn_unrecognized_hook_identity(origin);
         let session_ref = session_ref?;
-        // Policy validation belongs here too: callers need not have used the
-        // API constructor, and a rejected reference cannot alter authority.
-        let persisted_session = shepr_agent::agent::resume::PersistedAgentSession::new(
-            typed_source.clone(),
-            typed_source
-                .agent()
-                .or_else(|| Agent::parse_canonical_label(&agent_label))?,
-            session_ref.clone(),
-        )?;
-        if self.known_agent_label_conflicts_with_detected_agent(&agent_label) {
+        // The reducer validates references even for non-API callers.
+        let persisted_session = origin.session(session_ref.clone())?;
+        let source = origin.source().clone();
+        let agent_label = origin.agent().clone();
+        if self.known_agent_label_conflicts_with_detected_agent(origin) {
             return None;
         }
-        let owner_conflicts = self.current_session_owner_conflicts(&source, &agent_label);
+        let owner_conflicts = self.current_session_owner_conflicts(origin);
         let foreground_takeover_allowed = owner_conflicts
             && self.foreground_agent_confirms_different_owner_takeover(
-                &source,
-                &agent_label,
+                origin,
                 &session_ref,
                 session_start_source,
             );
         if owner_conflicts && !foreground_takeover_allowed {
             return None;
         }
-        let known_agent = Agent::parse_canonical_label(&agent_label);
+        let known_agent = origin.known_agent();
         let process_present = known_agent.is_some()
             && self.detected_agent == known_agent
             && self.process_evidence.exit().is_none();
-        let full_lifecycle_source =
-            shepr_agent::detect::full_lifecycle_hook_authority(&source, &agent_label);
+        let full_lifecycle_source = origin.is_full_lifecycle();
         let session_anchored = self.hook_authority.as_ref().is_some_and(|authority| {
-            authority.source == source
-                && authority.agent_label == agent_label
-                && authority.session_ref.is_some()
-        }) || self.persisted_agent_session_matches(&source, &agent_label);
-        let unsequenced_selection = Self::is_unsequenced_opencode_selection(
-            &source,
-            &agent_label,
-            session_start_source,
-            seq,
-        );
+            authority.origin == *origin && authority.session_ref.is_some()
+        }) || self.persisted_agent_session_matches(origin);
+        let unsequenced_selection =
+            Self::is_unsequenced_opencode_selection(origin, session_start_source, seq);
         let selection_can_reconcile = unsequenced_selection && process_present;
         let start_route = if full_lifecycle_source {
             let mut empty_source = HookSourceState::default();
@@ -87,17 +63,12 @@ impl TerminalState {
             let previous_session_ref = self
                 .hook_authority
                 .as_ref()
-                .filter(|authority| {
-                    authority.source == source && authority.agent_label == agent_label
-                })
+                .filter(|authority| authority.origin == *origin)
                 .and_then(|authority| authority.session_ref.clone())
                 .or_else(|| {
                     self.persisted_agent_session
                         .as_ref()
-                        .filter(|session| {
-                            session.source.as_str() == source
-                                && session.agent.label() == agent_label
-                        })
+                        .filter(|session| origin.owns(session))
                         .map(|session| session.session_ref.clone())
                 });
             if !self.hook_report_sequence_has_room(&source) || !self.prepare_hook_source(&source) {
@@ -164,46 +135,32 @@ impl TerminalState {
             }
             return Some(TerminalStateMutation::default());
         }
-        let session_replacement_allowed = Self::session_report_allows_session_replacement(
-            &source,
-            &agent_label,
-            session_start_source,
-        );
-        let session_owner = shepr_agent::agent::AgentSource::from_pair(&source, &agent_label)?;
-        let session_agent = session_owner.agent()?;
-        let replacing_identity_only_session =
-            shepr_agent::detect::session_identity_only_integration(&source, &agent_label)
-                && session_replacement_allowed
-                && self
-                    .current_session_identity_for_persistence()
-                    .is_some_and(|current| {
-                        current.source == session_owner
-                            && current.agent == session_agent
-                            && current.session_ref.kind()
-                                == shepr_agent::agent::resume::AgentSessionRefKind::Id
-                            && session_ref.kind()
-                                == shepr_agent::agent::resume::AgentSessionRefKind::Id
-                            && current.session_ref != session_ref
-                    });
+        let session_replacement_allowed = origin.allows_session_replacement(session_start_source);
+        let session_agent = origin.official_agent()?;
+        let replacing_identity_only_session = session_agent
+            .descriptor()
+            .session_identity_only_integration
+            && session_replacement_allowed
+            && self
+                .current_session_identity_for_persistence()
+                .is_some_and(|current| {
+                    origin.owns(&current)
+                        && current.session_ref.kind()
+                            == shepr_agent::agent::resume::AgentSessionRefKind::Id
+                        && session_ref.kind() == shepr_agent::agent::resume::AgentSessionRefKind::Id
+                        && current.session_ref != session_ref
+                });
         if replacing_identity_only_session && !process_present {
             return None;
         }
         if self
-            .conflicting_same_owner_session_ref(
-                &source,
-                &agent_label,
-                &session_ref,
-                session_start_source,
-            )
+            .conflicting_same_owner_session_ref(origin, &session_ref, session_start_source)
             .is_some()
         {
             return None;
         }
-        let replaced_hook_session = self.same_owner_full_lifecycle_hook_authority_session_ref(
-            &source,
-            &agent_label,
-            &session_ref,
-        );
+        let replaced_hook_session =
+            self.same_owner_full_lifecycle_hook_authority_session_ref(origin, &session_ref);
         // A refused replacement preserves the confirmed live authority and
         // identity. A different ref alone can be delayed cross-talk; releasing
         // authority here would let an unrecognized start withdraw a live agent.
@@ -220,19 +177,14 @@ impl TerminalState {
         }
         let selection = selection_can_reconcile.then(|| {
             self.current_session_identity_for_persistence()
-                .is_some_and(|current| {
-                    current.source.as_str() == source
-                        && current.agent.label() == agent_label
-                        && current.session_ref == session_ref
-                })
+                .is_some_and(|current| origin.owns(&current) && current.session_ref == session_ref)
         });
         let previous_agent_label = self.effective_agent_label().map(str::to_string);
         let previous_state = self.state;
         let previous_session = self.current_session_identity_for_persistence();
         let replacement_clears_authority = session_replacement_allowed
             && self.hook_authority.as_ref().is_some_and(|authority| {
-                authority.source == source
-                    && authority.agent_label == agent_label
+                authority.origin == *origin
                     && authority
                         .session_ref
                         .as_ref()

@@ -221,19 +221,19 @@ fn ensure_managed_ssh_config(
 #[derive(Clone)]
 struct StoredSetupError {
     kind: io::ErrorKind,
-    diagnostic: crate::SshFailureDiagnostic,
+    failure: crate::EndpointFailure,
 }
 
 impl StoredSetupError {
     fn capture(error: &io::Error) -> Self {
         Self {
             kind: error.kind(),
-            diagnostic: crate::SshFailureDiagnostic::from_error(error),
+            failure: crate::EndpointFailure::from_error(error),
         }
     }
 
     fn to_io_error(&self) -> io::Error {
-        io::Error::new(self.kind, self.diagnostic.clone())
+        io::Error::new(self.kind, self.failure.clone())
     }
 }
 
@@ -481,8 +481,11 @@ fn machine_bridge_names(label: &MachineLabel) -> (String, &'static str) {
 fn is_launch_fatal_setup_error(error: &io::Error) -> bool {
     // Whether a local setup failure can never succeed on retry. Only the
     // bridge socket path and ssh config setup are classified here; discovery
-    // errors never reach it. Invalid input, such as a runtime directory that can
-    // never hold the bridge socket, is permanent.
+    // errors never reach it. This is launch admission, not the endpoint attention
+    // policy: an actionable filesystem failure may still recover while the client
+    // runs, whereas an impossible path must reject launch before taking the terminal.
+    // Invalid input, such as a runtime directory that can never hold the bridge
+    // socket, is permanent.
     if error.kind() == io::ErrorKind::InvalidInput {
         return true;
     }
