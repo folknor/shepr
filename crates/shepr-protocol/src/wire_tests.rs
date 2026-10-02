@@ -419,9 +419,7 @@ mod tests {
         let msg = ClientShellSnapshot {
             boot_id: "1-1".into(),
             restore_notice: Some(SessionRestoreNotice {
-                unusable: None,
-                dropped_workspaces: 2,
-                panes_pruned: true,
+                loss: crate::SessionRestoreLoss::partial(2, true).ok_or("a partial loss")?,
                 backup_dir: "/state/session-backups".into(),
             }),
             revision: crate::ProjectionRevision::new(1),

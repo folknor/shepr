@@ -46,18 +46,6 @@ apply the bounded-vec adapters with `MAX_INPUT_EVENT_BATCH` and
 `MAX_SURFACE_SPLIT_PATH`. The hunter notes the impact is small because the peer is
 the same user and passes the build preamble.
 
-## REJ-002 - `read_frames` allocates the claimed frame before its bytes arrive
-
-Class: peer hardening. Scope: wire and config.
-
-`crates/shepr-protocol/src/framing.rs`: `read_message` says it "Rejects a frame
-over `MAX_FRAME_SIZE` or a message over the cap without panicking or allocating
-ahead of the bytes that actually arrive." After the length check, the whole
-claimed frame (up to 2 MiB, or 64 KiB for the handshake) is zero-filled
-(`payload.resize(total, 0)`) before `read_exact_or_eof`. Bounded per frame, but
-ahead of the bytes. Reword the doc ("at most one frame ahead") or read with
-`take(claimed).read_to_end` into a growing buffer.
-
 ## REJ-003 - `server.stop` accepts a boot guard placed outside `params` and ignores it
 
 Class: peer hardening. Scope: wire and config.
@@ -143,18 +131,6 @@ generation in `NewPane` and refuse a stale commit, or collapse both phases into
 one `&mut self` call (the spawn already happens synchronously inside
 `split_pane_shell`).
 
-## REJ-008 - `handle_workspace_checkout_root` runs blocking Git on the loop if reached
-
-Class: latent (production never reaches it). Scope: server app.
-
-`dispatch_endpoint_command` routes `WorkspaceCheckoutRoot` to a synchronous
-handler that stats the directory and runs `git rev-parse` inline. Production
-intercepts the command in `endpoint_requests.rs` and runs
-`checkout_root_for_worker` on a worker; the synchronous arm exists only for unit
-tests, and a routing change would put a blocking Git call on the event loop. Make
-the app arm reject it as the `ClientShellSurfaceSet` arm does, and test the worker
-path.
-
 ## REJ-009 - `toggle_pane_zoom` commits a focus change it then reports as failed
 
 Class: latent (only if `set_zoomed` refuses an inconsistent pane tree). Scope:
@@ -196,15 +172,6 @@ For OSC 52 this is covered (the truncated base64 fails to decode or decodes over
 the cap). An OSC 0/2 title gets dispatched at up to `MAX_PARSER_OSC_BYTES` (about
 512 KiB). Whether the title path caps that was not checked.
 
-## REJ-014 - `NoticeKind::SessionRestoreIncomplete` can represent a state that renders broken text
-
-Class: latent (the server never builds it). Scope: wire and config.
-
-`unusable: None`, `dropped_workspaces: 0`, `panes_pruned: false` displays
-"restored in part:  could not be restored." `app/mod.rs` guards with
-`restore_was_partial`. The hunter suggests splitting it into `Unusable { reason }`
-and `Partial { ... }` so the type cannot represent it.
-
 ## REJ-015 - Hard PTY read/write errors are reported as a normal close, so the pane can outlive its reader
 
 Class: failure on failure (a non-EIO PTY error; the hunter calls the trigger rare
@@ -240,17 +207,6 @@ it polls), the log line is wrong and a later real mutation failure is never
 logged. The field doc on `PaneTerminal::core` says "operations without a failure
 return log their skipped operation once per pane". Give reads their own latch, or
 do not log them (the actor already reports the poisoned core).
-
-## REJ-017 - Actor-startup failure blocks the event loop on `child.wait()`
-
-Class: failure on failure (the PTY actor failed to start). Scope: pane runtime.
-
-In `spawn_with_initial_history`'s `PtyIoActor::spawn` error arm, the code calls
-`child.kill()` then a synchronous `child.wait()` on the spawning thread, the
-server event loop. A child in uninterruptible sleep (a cwd on a hung mount, which
-`require_cwd` resumes make likelier) holds the loop until the kernel releases it.
-The normal path reaps off-thread (`UnreapedChild`, pidfd, `spawn_blocking`); hand
-the child to the same detached reaper here.
 
 ## REJ-018 - The inline persister does not keep the module's panic contract
 
@@ -369,30 +325,6 @@ an accepted stop. The server also closes without answering when the connection
 thread fails to spawn, when the peer-credential check refuses, or when the
 request line is oversized. A stop never delivered then waits out the full 15 s and
 reports `TimedOut` with "the socket at <path> is still reachable", which misnames the failure.
-
-## REJ-028 - An unterminated OSC 10/11 reply holds host input with no bound or timeout
-
-Class: failure on failure (a colour reply whose terminator was lost). Scope:
-input and platform.
-
-`crates/shepr-termio/src/input/raw_input.rs`,
-`RawInputByteFramer::flush_timeout`, the
-`starts_with_incomplete_default_color_response` branch. When the buffer starts
-with `ESC ] 1 0 ;` or `ESC ] 1 1 ;` and has no BEL or ST, the idle flush returns
-early ("waiting for host color response terminator") with no check of
-`host_replies.awaiting_reply()`, no count against
-`MAX_DISCARDED_CONTROL_TAIL_BYTES`, and no flush count or deadline. Later pushes
-append; `extract_one_event` sees an incomplete OSC and returns `None`, so
-everything typed afterwards (Enter included) piles into the "OSC body". When a BEL
-(Ctrl+G) or `ESC \` arrives, the sequence fails `parse_default_color_response`
-and is dropped as `Unsupported`, keystrokes and all. Claim broken:
-`MAX_DISCARDED_CONTROL_TAIL_BYTES` exists for "bounding malformed or unterminated
-control input"; other incomplete control strings go through the bounded
-`discard_until` path, and the paste hold has `MAX_PENDING_PASTE_BYTES` and
-`PASTE_STALL_TIMEOUT`. Trigger: a terminal or multiplexer that drops the tail of
-a long reply; the client looks hung until Ctrl+G. Fix: hold only while
-`awaiting_reply()` is true, for one flush (as `held_pending_host_reply_esc`
-does), then fall through to the `ControlString::Incomplete` branch.
 
 ## REJ-029 - A keyboard-protocol write that fails part way leaves the push/pop bookkeeping wrong
 

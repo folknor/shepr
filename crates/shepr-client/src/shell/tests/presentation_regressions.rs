@@ -187,9 +187,7 @@ fn restore_cards_keep_the_source_boot_and_survive_projection_resets() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
     let kind = shepr_protocol::SessionRestoreNotice {
-        unusable: None,
-        dropped_workspaces: 1,
-        panes_pruned: false,
+        loss: shepr_protocol::SessionRestoreLoss::Panes,
         backup_dir: "/state/session-backups".into(),
     };
     let first = crate::tests::test_boot_id("restored-first");
@@ -238,9 +236,7 @@ fn transient_cards_and_dismissal_do_not_discard_queued_restore_cards() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     let boot = crate::tests::test_boot_id("restored");
     let kind = shepr_protocol::SessionRestoreNotice {
-        unusable: None,
-        dropped_workspaces: 1,
-        panes_pruned: false,
+        loss: shepr_protocol::SessionRestoreLoss::Panes,
         backup_dir: "/state/session-backups".into(),
     };
     state.receive_restore_notice(&ClientEndpointId::Local, &boot, &kind);

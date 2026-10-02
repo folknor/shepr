@@ -154,9 +154,7 @@ impl App {
             Some(shepr_mux::persist::SessionLoad::Loaded(snapshot)) => Some(snapshot),
             Some(shepr_mux::persist::SessionLoad::Unusable(reason)) => {
                 restore_notice = Some(shepr_protocol::SessionRestoreNotice {
-                    unusable: Some(reason),
-                    dropped_workspaces: 0,
-                    panes_pruned: false,
+                    loss: shepr_protocol::SessionRestoreLoss::Unusable { reason },
                     backup_dir: backup_dir(),
                 });
                 None
@@ -203,8 +201,12 @@ impl App {
             restored_terminals = restored.terminals;
             restored_terminal_runtimes = restored.terminal_runtimes.into();
             pane_history_carry = restored.history_carry;
-            let restore_was_partial = restored.dropped_workspaces > 0 || restored.restore_damage;
-            if restore_was_partial {
+            let loss = shepr_protocol::SessionRestoreLoss::partial(
+                restored.dropped_workspaces,
+                restored.restore_damage,
+            );
+            let restore_was_partial = loss.is_some();
+            if let Some(loss) = loss {
                 protect_unloaded = true;
                 warn!(
                     dropped_workspaces = restored.dropped_workspaces,
@@ -212,9 +214,7 @@ impl App {
                     "session restore discarded saved data; the saved session is backed up to session-backups before the first save"
                 );
                 restore_notice = Some(shepr_protocol::SessionRestoreNotice {
-                    unusable: None,
-                    dropped_workspaces: restored.dropped_workspaces,
-                    panes_pruned: restored.restore_damage,
+                    loss,
                     backup_dir: backup_dir(),
                 });
             }

@@ -1353,9 +1353,10 @@ mod tests {
         assert_eq!(
             app.restore_notice,
             Some(shepr_protocol::SessionRestoreNotice {
-                unusable: None,
-                dropped_workspaces: 1,
-                panes_pruned: false,
+                loss: shepr_protocol::SessionRestoreLoss::Workspaces {
+                    dropped: std::num::NonZeroUsize::MIN,
+                    panes_pruned: false,
+                },
                 backup_dir: backups.display().to_string(),
             })
         );
@@ -1412,9 +1413,7 @@ mod tests {
         );
         let backups = data_dir.join("session-backups");
         let Some(shepr_protocol::SessionRestoreNotice {
-            unusable: Some(reason),
-            dropped_workspaces: 0,
-            panes_pruned: false,
+            loss: shepr_protocol::SessionRestoreLoss::Unusable { reason },
             backup_dir,
         }) = app.restore_notice.clone()
         else {

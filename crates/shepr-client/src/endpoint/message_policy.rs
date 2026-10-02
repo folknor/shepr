@@ -154,9 +154,7 @@ mod tests {
             boot_id: crate::tests::test_boot_id("restored"),
             revision: 1.into(),
             restore_notice: Some(shepr_protocol::SessionRestoreNotice {
-                unusable: None,
-                dropped_workspaces: 1,
-                panes_pruned: false,
+                loss: shepr_protocol::SessionRestoreLoss::Panes,
                 backup_dir: "/state/session-backups".into(),
             }),
             focused_workspace_id: None,

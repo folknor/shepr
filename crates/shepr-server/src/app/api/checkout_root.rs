@@ -1,34 +1,18 @@
 use std::path::Path;
 
-use shepr_protocol::command::{EndpointReply, WorkspaceCheckoutRootParams};
+use shepr_protocol::command::WorkspaceCheckoutRootParams;
 
 use crate::app::App;
-
-use super::endpoint::{Handled, HandlerResult, rejected};
 
 impl App {
     /// `workspace.checkout_root`: the checkout root Git reports for a directory
     /// on this host, which the client derives a new workspace's default label
     /// from. A directory outside any repository, or one that is not a directory
     /// here, is an ordinary `None`; a failure that kept Git from answering is an
-    /// error, and the client falls back to a path-based label.
+    /// error, and the client falls back to a path-based label. An unusable
+    /// `HOME` just means the `~` label is not offered.
     ///
-    pub(super) fn handle_workspace_checkout_root(
-        &mut self,
-        params: &WorkspaceCheckoutRootParams,
-    ) -> HandlerResult {
-        let (cwd, home) = self.prepare_workspace_checkout_root(params)?;
-        match Self::checkout_root_for_worker(&cwd) {
-            Ok(root) => Handled::reply(EndpointReply::WorkspaceCheckoutRoot {
-                root,
-                // An unusable `HOME` just means the `~` label is not offered.
-                home,
-            }),
-            Err(message) => rejected(message),
-        }
-    }
-
-    /// Resolves the request data on the server loop. The directory stat and
+    /// The server loop resolves the request data here. The directory stat and
     /// Git query run in a worker; their result returns to the loop for its
     /// ordered endpoint reply outbox.
     pub(crate) fn prepare_workspace_checkout_root(
@@ -91,31 +75,29 @@ mod tests {
         )
     }
 
+    /// The prepare and worker halves, as the server loop runs them.
+    fn checkout_root_of(cwd: &Path) -> Result<Option<String>, String> {
+        let (cwd, _home) = app()
+            .prepare_workspace_checkout_root(&WorkspaceCheckoutRootParams {
+                cwd: cwd.display().to_string(),
+            })
+            .map_err(|error| error.to_string())?;
+        App::checkout_root_for_worker(&cwd)
+    }
+
     #[test]
     fn relative_cwd_is_refused() {
         let _env = IsolatedEnv::new();
-        let response = app().handle_workspace_checkout_root(&WorkspaceCheckoutRootParams {
-            cwd: "relative".into(),
-        });
-        let error = response.expect_err("a relative cwd is refused");
-        assert!(error.to_string().contains("must be an absolute path"));
+        let error = checkout_root_of(Path::new("relative")).expect_err("a relative cwd is refused");
+        assert!(error.contains("must be an absolute path"), "{error}");
     }
 
     #[test]
     fn missing_directory_has_no_root() {
         let _env = IsolatedEnv::new();
         let scratch = ScratchDir::new("checkout-root-missing");
-        let missing = scratch.path().join("absent");
-        let response = app().handle_workspace_checkout_root(&WorkspaceCheckoutRootParams {
-            cwd: missing.display().to_string(),
-        });
-        let Ok(Handled {
-            reply: EndpointReply::WorkspaceCheckoutRoot { root, .. },
-            ..
-        }) = response
-        else {
-            panic!("expected a checkout root answer, got {response:?}");
-        };
+        let root =
+            checkout_root_of(&scratch.path().join("absent")).expect("a checkout root answer");
         assert_eq!(root, None);
     }
 
@@ -129,19 +111,9 @@ mod tests {
         let init = shepr_mux::git::run_git(&repo, &["init", "--quiet"]).expect("test precondition");
         assert!(init.status.success(), "git init failed");
 
-        let response = app().handle_workspace_checkout_root(&WorkspaceCheckoutRootParams {
-            cwd: nested.display().to_string(),
-        });
-        let Ok(Handled {
-            reply:
-                EndpointReply::WorkspaceCheckoutRoot {
-                    root: Some(root), ..
-                },
-            ..
-        }) = response
-        else {
-            panic!("expected a checkout root, got {response:?}");
-        };
+        let root = checkout_root_of(&nested)
+            .expect("a checkout root answer")
+            .expect("a checkout root");
         assert_eq!(
             std::fs::canonicalize(root).expect("root exists"),
             std::fs::canonicalize(&repo).expect("repo exists")

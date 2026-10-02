@@ -114,12 +114,15 @@ impl App {
                 tracing::warn!("client_shell.surface.set routed to the app by mistake");
                 rejected("client_shell.surface.set is not handled by the app")
             }
+            // The server loop runs the checkout root's blocking stat and Git
+            // query on a worker; answering it here would block the loop.
+            EndpointCommand::WorkspaceCheckoutRoot(_) => {
+                tracing::warn!("workspace.checkout_root routed to the app by mistake");
+                rejected("workspace.checkout_root is not handled by the app")
+            }
             EndpointCommand::WorkspaceCreate(params) => self.handle_workspace_create(params, ctx),
             EndpointCommand::WorkspaceFocus(target) => self.handle_workspace_focus(&target),
             EndpointCommand::WorkspaceRename(params) => self.handle_workspace_rename(params),
-            EndpointCommand::WorkspaceCheckoutRoot(params) => {
-                self.handle_workspace_checkout_root(&params)
-            }
             EndpointCommand::WorkspaceMove(params) => self.handle_workspace_move(&params),
             EndpointCommand::WorkspaceClose(params) => self.handle_workspace_close(&params),
             EndpointCommand::PaneSplit(params) => self.handle_pane_split(&params, ctx),

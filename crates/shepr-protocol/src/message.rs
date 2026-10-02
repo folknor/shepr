@@ -61,44 +61,72 @@ pub enum NoticeKind {
 /// `NoticeKind`: no direct server notice carries it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionRestoreNotice {
-    /// Why the session file could not be used at all; `None` when it
-    /// loaded and only part of it was discarded.
-    pub unusable: Option<String>,
-    /// Saved workspaces dropped whole.
-    pub dropped_workspaces: usize,
-    /// Panes or layout leaves pruned from workspaces that did restore.
-    pub panes_pruned: bool,
+    pub loss: SessionRestoreLoss,
     /// Where the original session file is kept.
     pub backup_dir: String,
 }
 
+/// What a restore lost. Every variant loses something, so a notice can only
+/// exist for a session that did not come back in full.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SessionRestoreLoss {
+    /// The session file could not be used at all.
+    Unusable { reason: String },
+    /// The session file loaded, and these saved workspaces were dropped whole;
+    /// `panes_pruned` says whether workspaces that did restore lost panes too.
+    Workspaces {
+        dropped: std::num::NonZeroUsize,
+        panes_pruned: bool,
+    },
+    /// The session file loaded and every workspace restored, but panes or
+    /// layout leaves were pruned from some of them.
+    Panes,
+}
+
+impl SessionRestoreLoss {
+    /// The loss of a session file that loaded, or `None` when nothing in it
+    /// was discarded.
+    pub fn partial(dropped_workspaces: usize, panes_pruned: bool) -> Option<Self> {
+        match std::num::NonZeroUsize::new(dropped_workspaces) {
+            Some(dropped) => Some(Self::Workspaces {
+                dropped,
+                panes_pruned,
+            }),
+            None => panes_pruned.then_some(Self::Panes),
+        }
+    }
+}
+
 impl std::fmt::Display for SessionRestoreNotice {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let Self {
-            unusable,
-            dropped_workspaces,
-            panes_pruned,
-            backup_dir,
-        } = self;
-        if let Some(reason) = unusable {
-            write!(f, "The saved session was not restored: {reason}.")?;
-        } else {
-            let mut lost = Vec::new();
-            if *dropped_workspaces > 0 {
-                let unit = if *dropped_workspaces == 1 {
+        let Self { loss, backup_dir } = self;
+        let lost = match loss {
+            SessionRestoreLoss::Unusable { reason } => {
+                write!(f, "The saved session was not restored: {reason}.")?;
+                None
+            }
+            SessionRestoreLoss::Workspaces {
+                dropped,
+                panes_pruned,
+            } => {
+                let unit = if dropped.get() == 1 {
                     "workspace"
                 } else {
                     "workspaces"
                 };
-                lost.push(format!("{dropped_workspaces} saved {unit}"));
+                let workspaces = format!("{dropped} saved {unit}");
+                Some(if *panes_pruned {
+                    format!("{workspaces} and some saved panes")
+                } else {
+                    workspaces
+                })
             }
-            if *panes_pruned {
-                lost.push("some saved panes".to_owned());
-            }
+            SessionRestoreLoss::Panes => Some("some saved panes".to_owned()),
+        };
+        if let Some(lost) = lost {
             write!(
                 f,
-                "The saved session was restored in part: {} could not be restored.",
-                lost.join(" and ")
+                "The saved session was restored in part: {lost} could not be restored."
             )?;
         }
         write!(
@@ -195,4 +223,56 @@ pub enum ServerMessage {
     EndpointSnapshot(Box<ClientShellSnapshot>),
     /// Response to a connection health probe.
     HealthPong,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rendered(loss: SessionRestoreLoss) -> String {
+        SessionRestoreNotice {
+            loss,
+            backup_dir: "/backups".into(),
+        }
+        .to_string()
+    }
+
+    #[test]
+    fn a_restore_that_lost_nothing_has_no_loss() {
+        assert_eq!(SessionRestoreLoss::partial(0, false), None);
+        assert_eq!(
+            SessionRestoreLoss::partial(0, true),
+            Some(SessionRestoreLoss::Panes)
+        );
+    }
+
+    #[test]
+    fn every_loss_names_what_was_lost() {
+        let partial = |dropped, pruned| {
+            rendered(SessionRestoreLoss::partial(dropped, pruned).expect("a partial loss"))
+        };
+        assert!(
+            partial(1, false).contains("restored in part: 1 saved workspace could not"),
+            "{}",
+            partial(1, false)
+        );
+        assert!(
+            partial(2, true).contains(": 2 saved workspaces and some saved panes could not"),
+            "{}",
+            partial(2, true)
+        );
+        assert!(
+            partial(0, true).contains(": some saved panes could not"),
+            "{}",
+            partial(0, true)
+        );
+        let unusable = rendered(SessionRestoreLoss::Unusable {
+            reason: "it could not be parsed".into(),
+        });
+        assert!(
+            unusable.starts_with("The saved session was not restored: it could not be parsed."),
+            "{unusable}"
+        );
+        assert!(unusable.ends_with("copied to /backups before the server first saves over it."));
+    }
 }
