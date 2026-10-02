@@ -171,6 +171,11 @@ pub(crate) const PANE_TEARDOWN_BUDGET: Duration = {
     }
     budget
 };
+/// How long a pane whose terminal closed waits for its child watcher to
+/// report the exit before ending the pane on its own. A child that exits
+/// closes its terminal moments before it is reaped, so this normally runs out
+/// only for a child that closed its terminal and kept running.
+pub(crate) const TERMINAL_CLOSED_EXIT_GRACE: Duration = Duration::from_secs(2);
 /// Escalation sequence for a pane session, using a grace interval after each
 /// signal before the next round.
 pub(crate) const PANE_TEARDOWN_STEPS: [(shepr_platform::Signal, Duration); 3] = [

@@ -85,6 +85,9 @@ pub enum ClientError {
     ConnectionLost(io::Error),
     /// Protocol error (framing, deserialization).
     Protocol(shepr_protocol::FramingError),
+    /// A panic somewhere in the client; the loop stops at once and the run
+    /// reports the panic's own diagnostic instead of this.
+    Panicked,
 }
 
 impl std::fmt::Display for ClientError {
@@ -119,6 +122,7 @@ impl std::fmt::Display for ClientError {
             }
             ClientError::ConnectionLost(err) => write!(f, "lost connection to server: {err}"),
             ClientError::Protocol(err) => write!(f, "protocol error: {err}"),
+            ClientError::Panicked => write!(f, "internal error: the client panicked"),
         }
     }
 }

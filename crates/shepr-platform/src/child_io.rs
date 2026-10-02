@@ -14,20 +14,31 @@ pub enum ChildExitReason {
     /// The child may still be running; the pane is ended so its session is
     /// torn down, and no checkpoint is taken because the core is broken.
     ReaderPanicked,
-    /// The PTY actor hit a hard poll or wake-pipe failure and can no longer
-    /// read the pane. Its terminal core remains usable, so checkpoint the
-    /// current pane state before removing it and tearing down its session.
+    /// The PTY actor hit a hard IO failure and can no longer read the pane.
+    /// Its terminal core remains usable, so checkpoint the current pane state
+    /// before removing it and tearing down its session.
     ReaderIoFailed,
+    /// Every holder closed the pane's terminal, and the child watcher had not
+    /// reported an exit a grace period later: usually the child closed its
+    /// terminal and kept going. Nothing can reach it through the pane any
+    /// more, so the pane ends; the terminal core is intact and is
+    /// checkpointed first.
+    TerminalClosed,
 }
 
 impl ChildExitReason {
-    /// A signal exit or a reader IO failure with an intact terminal core needs
-    /// a final session checkpoint before pane removal. shepr-generated
-    /// teardown signals follow pane removal, or happen during startup failure
-    /// before any pane exit event, so they cannot skip a checkpoint for a pane
-    /// that is still live. A reader panic skips it because the core is broken.
+    /// A signal exit, a reader IO failure or a closed terminal needs a final
+    /// session checkpoint before pane removal. shepr-generated teardown
+    /// signals follow pane removal, or happen during startup failure before
+    /// any pane exit event, so they cannot skip a checkpoint for a pane that
+    /// is still live. A reader panic skips it because the core is broken; the
+    /// server also skips it for any reason when it finds the pane's core
+    /// broken as it decides.
     pub fn requires_session_checkpoint(self) -> bool {
-        matches!(self, Self::Interrupted | Self::ReaderIoFailed)
+        matches!(
+            self,
+            Self::Interrupted | Self::ReaderIoFailed | Self::TerminalClosed
+        )
     }
 }
 

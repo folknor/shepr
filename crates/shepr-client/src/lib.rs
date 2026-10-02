@@ -23,6 +23,7 @@ mod clipboard_forwarding;
 pub mod endpoint;
 mod errors;
 mod events;
+mod fatal_panic;
 mod handshake;
 pub(crate) mod host_replies;
 mod input;
@@ -158,67 +159,99 @@ fn run_launched_client(
         None => None,
     };
 
-    // A shell with configured machines can show connection notices without a server snapshot.
-    let (mut terminal_guard, output_writer) =
-        setup_terminal(mouse_capture, loop_config.settings.modify_other_keys_mode()).map_err(
-            |err| io::Error::new(err.kind(), format!("failed to set up terminal: {err}")),
-        )?;
-    loop_config.host_escape_disambiguation_active =
-        terminal_guard.host_escape_disambiguation_active();
-    loop_config.initial_host_input = terminal_guard.take_buffered_host_input();
-
-    // Install a panic hook so the foreground client always restores its terminal.
-    let panic_restore = terminal_guard.panic_restore();
-    let original_hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(move |info| {
-        panic_restore();
-        original_hook(info);
-    }));
-
-    // Create the tokio runtime.
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(io::Error::other)?;
-
+    // From here on a panic on any thread ends the client through the one
+    // finalization below (see `fatal_panic`). Once built, the guard and the
+    // runtime live outside the caught launch, so an unwinding launch drops
+    // neither: the finalization restores the one and shuts the other down
+    // with its bound. A panic inside terminal setup itself is restored by the
+    // half-built guard's drop, which cannot panic out.
+    let fatal = fatal_panic::FatalPanic::install();
     let should_quit = Arc::new(AtomicBool::new(false));
-    let (event_tx, event_rx) =
-        tokio::sync::mpsc::channel::<ClientLoopEvent>(CLIENT_EVENT_QUEUE_CAPACITY);
+    let mut terminal_slot: Option<TerminalGuard> = None;
+    let mut runtime_slot: Option<tokio::runtime::Runtime> = None;
+    let launched = fatal.guard(|| -> Result<Result<(), ClientError>, ClientRunError> {
+        // A shell with configured machines can show connection notices without a server snapshot.
+        let (terminal_guard, output_writer) =
+            setup_terminal(mouse_capture, loop_config.settings.modify_other_keys_mode()).map_err(
+                |err| io::Error::new(err.kind(), format!("failed to set up terminal: {err}")),
+            )?;
+        let terminal_guard = terminal_slot.insert(terminal_guard);
+        loop_config.host_escape_disambiguation_active =
+            terminal_guard.host_escape_disambiguation_active();
+        loop_config.initial_host_input = terminal_guard.take_buffered_host_input();
 
-    // ctrlc's "termination" feature also catches SIGTERM/SIGHUP so direct
-    // termination signals wake the event loop so it restores the terminal.
-    let quit_flag = Arc::clone(&should_quit);
-    let quit_event_tx = event_tx.clone();
-    if let Err(err) = ctrlc::set_handler(move || {
-        quit_flag.store(true, Ordering::Release);
-        quit_event_tx.try_send(ClientLoopEvent::Quit).ok();
-    }) {
-        warn!(error = %err, "failed to install termination handler; terminal restore relies on TerminalGuard::Drop and the panic hook");
-    }
+        let rt = runtime_slot.insert(
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(io::Error::other)?,
+        );
 
-    let result = rt.block_on(async {
-        run_client_loop(
+        let (event_tx, event_rx) =
+            tokio::sync::mpsc::channel::<ClientLoopEvent>(CLIENT_EVENT_QUEUE_CAPACITY);
+
+        // ctrlc's "termination" feature also catches SIGTERM/SIGHUP so direct
+        // termination signals wake the event loop so it restores the terminal.
+        let quit_flag = Arc::clone(&should_quit);
+        let quit_event_tx = event_tx.clone();
+        if let Err(err) = ctrlc::set_handler(move || {
+            quit_flag.store(true, Ordering::Release);
+            quit_event_tx.try_send(ClientLoopEvent::Quit).ok();
+        }) {
+            warn!(error = %err, "failed to install termination handler; terminal restore relies on TerminalGuard::Drop");
+        }
+
+        Ok(rt.block_on(run_client_loop(
             initial,
             initial_local_failure,
             machines,
             local_failure_policy,
             geometry,
-            should_quit,
+            Arc::clone(&should_quit),
+            Arc::clone(&fatal),
             (event_tx, event_rx),
             loop_config,
             shell_config,
             output_writer,
-            &terminal_guard,
-        )
-        .await
+            terminal_guard,
+        )))
     });
 
-    // Restore the terminal before the binary prints any final status message.
-    let terminal_restore_failed = terminal_guard.restore().is_err();
-    rt.shutdown_timeout(limits::CLIENT_RUNTIME_SHUTDOWN_TIMEOUT);
-    shepr_remote::release_ssh_resources_before_exit(limits::SSH_RESOURCE_RELEASE_TIMEOUT);
-    crate::logging::shutdown("client");
+    // The one finalization, whether the launch returned, failed or panicked.
+    // Each stage runs even if an earlier one panics. The host helpers stop
+    // first; the terminal is restored before the binary prints anything. A
+    // restoration that panics is not retried: the restorer is what failed.
+    should_quit.store(true, Ordering::Release);
+    let terminal_restore_failed = terminal_slot.take().is_some_and(|guard| {
+        fatal
+            .guard(|| guard.restore())
+            .is_none_or(|restored| restored.is_err())
+    });
+    if let Some(rt) = runtime_slot.take() {
+        fatal.guard(|| rt.shutdown_timeout(limits::CLIENT_RUNTIME_SHUTDOWN_TIMEOUT));
+    }
+    fatal.guard(|| {
+        shepr_remote::release_ssh_resources_before_exit(limits::SSH_RESOURCE_RELEASE_TIMEOUT);
+    });
+    if let Some(diagnostic) = fatal.diagnostic() {
+        fatal.guard(|| tracing::error!(diagnostic, "client panicked; exiting"));
+    }
+    fatal.guard(|| crate::logging::shutdown("client"));
 
+    // Read once, after finalization: a panic later than this cannot change
+    // the outcome. The diagnostic reaches the restored screen through the
+    // binary's exit lines.
+    let result = match launched {
+        Some(Ok(result)) if !fatal.is_latched() => result,
+        Some(Err(error)) if !fatal.is_latched() => return Err(error),
+        _ => {
+            let message = fatal
+                .diagnostic()
+                .unwrap_or("internal error: the client panicked")
+                .to_owned();
+            return Err(ClientRunError::Session(ClientExit::new(Some(message))));
+        }
+    };
     let Err(err) = result else {
         return Ok(ClientExit::new(None));
     };
@@ -241,6 +274,10 @@ fn run_launched_client(
 /// - server reader thread → reads ServerMessages and sends to main loop
 /// - one event channel: host input, resize, endpoint readers, connection supervisors, and quit
 /// - main loop: coordinates input, output, and server communication
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the launch hands over every owner it set up: endpoints, policy, geometry, the quit and panic latches, the event channel, config and the terminal"
+)]
 async fn run_client_loop(
     initial: Option<LocalStream>,
     mut initial_local_failure: Option<shepr_remote::SshFailureDiagnostic>,
@@ -248,6 +285,7 @@ async fn run_client_loop(
     local_failure_policy: endpoint::LocalFailurePolicy,
     initial_geometry: shepr_core::geometry::HostGeometry,
     should_quit: Arc<AtomicBool>,
+    fatal: Arc<fatal_panic::FatalPanic>,
     (event_tx, event_rx): (
         tokio::sync::mpsc::Sender<ClientLoopEvent>,
         tokio::sync::mpsc::Receiver<ClientLoopEvent>,
@@ -405,6 +443,11 @@ async fn run_client_loop(
     } else {
         endpoint::EndpointRegistry::empty()
     };
+    // The host helpers are running now and can latch a panic; stop before
+    // setting up the remaining endpoints or drawing.
+    if fatal.is_latched() {
+        return Err(ClientError::Panicked);
+    }
     let mut supervisors = endpoint::EndpointSupervisors::new(&config.paths, &machines, launch_now)
         .map_err(ClientError::EndpointSetup)?;
     if local_failure_policy.reconnects_local() {
@@ -449,6 +492,7 @@ async fn run_client_loop(
         state,
         local_failure_policy,
         should_quit,
+        fatal,
         write_stream,
         supervisors,
         reported_cell_size,
@@ -469,6 +513,10 @@ struct ClientLoop {
     state: ClientState,
     local_failure_policy: endpoint::LocalFailurePolicy,
     should_quit: Arc<AtomicBool>,
+    /// Checked between each step of an iteration and on every way out: once
+    /// a panic is latched the loop starts no further step and returns. A step
+    /// already under way (a synchronous terminal write) finishes first.
+    fatal: Arc<fatal_panic::FatalPanic>,
     write_stream: endpoint::EndpointRegistry,
     supervisors: endpoint::EndpointSupervisors,
     endpoint_commands: endpoint::commands::EndpointCommands,
@@ -503,6 +551,7 @@ impl ClientLoop {
         state: ClientState,
         local_failure_policy: endpoint::LocalFailurePolicy,
         should_quit: Arc<AtomicBool>,
+        fatal: Arc<fatal_panic::FatalPanic>,
         write_stream: endpoint::EndpointRegistry,
         supervisors: endpoint::EndpointSupervisors,
         reported_cell_size: Arc<AtomicCellSize>,
@@ -514,6 +563,7 @@ impl ClientLoop {
             state,
             local_failure_policy,
             should_quit,
+            fatal,
             write_stream,
             supervisors,
             endpoint_commands: endpoint::commands::EndpointCommands::default(),
@@ -552,16 +602,34 @@ impl ClientLoop {
 
         tokio::select! {
             biased;
+            // First, so a ready timer or event cannot postpone it; `run`
+            // checks the latch as soon as the wait returns.
+            () = self.fatal.latched() => ClientLoopEvent::Timer,
             _ = wait_for_client_timer(timer_deadline) => ClientLoopEvent::Timer,
             ev = self.event_rx.recv() => ev.unwrap_or(ClientLoopEvent::Timer),
         }
     }
 
     async fn run(&mut self) -> Result<(), ClientError> {
+        let result = self.run_until_exit().await;
+        // Every way out, an error included, reports a latched panic instead.
+        if self.fatal.is_latched() {
+            return Err(ClientError::Panicked);
+        }
+        result
+    }
+
+    async fn run_until_exit(&mut self) -> Result<(), ClientError> {
         while !self.should_quit.load(Ordering::Acquire) {
+            if self.fatal.is_latched() {
+                return Err(ClientError::Panicked);
+            }
             // client-clock-sample-ok: the pre-wait sample for supervisors and timers.
             let loop_now = std::time::Instant::now();
             self.reconcile(loop_now)?;
+            if self.fatal.is_latched() {
+                return Err(ClientError::Panicked);
+            }
             let cell = shepr_protocol::ProtocolCellSize::from_host(
                 self.state.reported_geometry.cell_width(),
                 self.state.reported_geometry.cell_height(),
@@ -588,6 +656,9 @@ impl ClientLoop {
                 &self.event_tx,
             );
             let event = self.wait_for_next_event(loop_now).await;
+            if self.fatal.is_latched() {
+                return Err(ClientError::Panicked);
+            }
             // client-clock-sample-ok: sample after waiting for the event to arrive.
             let now = std::time::Instant::now();
             if self.handle_event(event, now)? == ClientLoopAction::Exit {
@@ -1302,6 +1373,7 @@ mod client_timer_tests {
                 ClientState::test_new(),
                 endpoint::LocalFailurePolicy::Reconnect,
                 Arc::new(AtomicBool::new(false)),
+                Arc::default(),
                 write_stream,
                 supervisors,
                 Arc::new(AtomicCellSize::new()),
@@ -1311,6 +1383,24 @@ mod client_timer_tests {
             ),
             event_tx,
         )
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_panic_latched_elsewhere_ends_a_waiting_loop() {
+        let now = tokio::time::Instant::now().into_std();
+        let (mut client_loop, _event_tx) =
+            test_client_loop(now, endpoint::EndpointRegistry::empty());
+        let fatal = Arc::clone(&client_loop.fatal);
+        let run = client_loop.run();
+        tokio::pin!(run);
+        assert!(
+            tokio::time::timeout(Duration::from_secs(60), &mut run)
+                .await
+                .is_err(),
+            "an idle loop keeps running"
+        );
+        fatal.latch();
+        assert!(matches!(run.await, Err(ClientError::Panicked)));
     }
 
     #[tokio::test(start_paused = true)]

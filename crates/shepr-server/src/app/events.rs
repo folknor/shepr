@@ -45,6 +45,35 @@ pub(crate) enum StateEvent {
     },
 }
 
+/// The checkpoint decision `App::prepare_pane_exit` made for a pane exit. It
+/// travels with the held event to `App::handle_prepared_pane_exit`, so the
+/// exit is finished as it was decided even if the pane's core breaks between.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PreparedPaneExit {
+    /// Removed without a checkpoint of its own.
+    Unchecked,
+    /// Checkpointed, and the checkpoint is already settled: removal can
+    /// follow at once.
+    Settled,
+    /// Checkpointed, and held until the checkpoint of this generation is
+    /// durable.
+    Held(u64),
+}
+
+impl PreparedPaneExit {
+    /// The checkpoint generation the exit is held for, if it is held.
+    pub(crate) fn held_generation(self) -> Option<u64> {
+        match self {
+            Self::Held(generation) => Some(generation),
+            Self::Unchecked | Self::Settled => None,
+        }
+    }
+
+    fn checkpointed(self) -> bool {
+        !matches!(self, Self::Unchecked)
+    }
+}
+
 impl App {
     fn live_workspace_identity_cwd(&self, workspace_id: &str) -> Option<std::path::PathBuf> {
         let workspace = self
@@ -115,33 +144,65 @@ impl App {
     }
 
     pub(crate) fn handle_internal_event_with_view_change(&mut self, ev: AppEvent) -> bool {
-        self.handle_internal_event_inner(ev, false)
+        self.handle_internal_event_inner(ev, None)
     }
 
     /// Publishes the process exit once, then asks the App's session policy
-    /// whether the event must wait for a checkpoint before removal.
+    /// whether the event must wait for a checkpoint before removal. The
+    /// decision goes back with the event to `handle_prepared_pane_exit`.
     pub(crate) fn prepare_pane_exit(
         &mut self,
         pane_id: shepr_core::layout::PaneId,
         exit_reason: shepr_platform::ChildExitReason,
-    ) -> Option<u64> {
+    ) -> PreparedPaneExit {
         self.publish_pane_process_exit(pane_id, exit_reason);
-        if exit_reason.requires_session_checkpoint()
+        if self.pane_exit_needs_checkpoint(pane_id, exit_reason)
             && self.state.prepare_pane_removal_by_id(pane_id).is_some()
         {
             self.request_pane_exit_checkpoint()
+                .map_or(PreparedPaneExit::Settled, PreparedPaneExit::Held)
         } else {
-            None
+            PreparedPaneExit::Unchecked
         }
     }
 
-    /// Applies an event whose pane-exit publication and checkpoint decision
-    /// have already been made by the App.
-    pub(crate) fn handle_prepared_pane_exit(&mut self, ev: AppEvent) -> bool {
-        self.handle_internal_event_inner(ev, true)
+    /// Whether a pane's exit is checkpointed before the pane is removed: the
+    /// exit reason asks for it, and the pane's terminal core is not broken,
+    /// since a broken core has nothing new to give the checkpoint. A prepared
+    /// exit decides this once and carries the answer to its removal; a core
+    /// that breaks in between is still safe to save, because history capture
+    /// leaves an unreadable terminal's cached history as it was.
+    fn pane_exit_needs_checkpoint(
+        &self,
+        pane_id: shepr_core::layout::PaneId,
+        exit_reason: shepr_platform::ChildExitReason,
+    ) -> bool {
+        exit_reason.requires_session_checkpoint()
+            && !self.state.workspaces.iter().enumerate().any(|(index, _)| {
+                self.state
+                    .runtime_for_pane_in_workspace(&self.terminal_runtimes, index, pane_id)
+                    .is_some_and(shepr_mux::pane::PaneRuntime::terminal_core_broken)
+            })
     }
 
-    fn handle_internal_event_inner(&mut self, ev: AppEvent, pane_exit_prepared: bool) -> bool {
+    /// Applies an event whose pane-exit publication and checkpoint decision
+    /// have already been made by the App, finishing it as `prepared` decided.
+    pub(crate) fn handle_prepared_pane_exit(
+        &mut self,
+        ev: AppEvent,
+        prepared: PreparedPaneExit,
+    ) -> bool {
+        self.handle_internal_event_inner(ev, Some(prepared.checkpointed()))
+    }
+
+    /// `prepared_checkpoint` is a prepared pane exit's recorded checkpoint
+    /// decision, or `None` for an event that was not prepared.
+    fn handle_internal_event_inner(
+        &mut self,
+        ev: AppEvent,
+        prepared_checkpoint: Option<bool>,
+    ) -> bool {
+        let pane_exit_prepared = prepared_checkpoint.is_some();
         let Some(ev) = self.admit_runtime_event(ev) else {
             return false;
         };
@@ -199,12 +260,14 @@ impl App {
         } else {
             None
         };
-        let checkpointed_pane_exit = matches!(
-            &ev,
+        let checkpointed_pane_exit = match &ev {
             AppEvent::PaneDied {
-                exit_reason, ..
-            } if exit_reason.requires_session_checkpoint() && pane_removal_plan.is_some()
-        );
+                pane_id,
+                exit_reason,
+            } if pane_removal_plan.is_some() => prepared_checkpoint
+                .unwrap_or_else(|| self.pane_exit_needs_checkpoint(*pane_id, *exit_reason)),
+            _ => false,
+        };
         // The headless loop prepares and holds checkpointed exits before
         // applying them, so this only reports a direct caller that skipped
         // that step; the pane is still removed.
@@ -512,7 +575,7 @@ mod runtime_generation_tests {
         app.insert_test_runtime(pane_id, replacement);
         // This also covers a checkpointed exit replayed after replacement:
         // its original envelope is checked again before any removal.
-        assert!(!app.handle_prepared_pane_exit(died()));
+        assert!(!app.handle_prepared_pane_exit(died(), crate::app::PreparedPaneExit::Settled));
         assert!(app.state.workspaces[0].contains_pane(pane_id));
         assert!(
             app.admit_runtime_event(AppEvent::Runtime {

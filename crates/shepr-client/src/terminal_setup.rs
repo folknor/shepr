@@ -37,7 +37,6 @@ pub(super) fn setup_terminal(
     let mut terminal_guard = TerminalGuard {
         host_escape_disambiguation_active: false,
         buffered_host_input: Vec::new(),
-        restore_claimed: Arc::new(AtomicBool::new(false)),
         host_modes: host_modes.clone(),
         output_writer: output_writer.clone(),
         restored: false,
@@ -98,7 +97,6 @@ impl io::Write for HostTerminalWriter {
 pub(super) struct TerminalGuard {
     host_escape_disambiguation_active: bool,
     buffered_host_input: Vec<u8>,
-    restore_claimed: Arc<AtomicBool>,
     host_modes: HostModes,
     output_writer: HostTerminalWriter,
     restored: bool,
@@ -601,8 +599,7 @@ impl HostModes {
     }
 
     pub(super) fn restore<W: io::Write>(&self, writer: &mut W) -> io::Result<()> {
-        // These atomics let the panic hook restore without locking state that
-        // may still be on the panicking thread's stack.
+        // Taken, so a second restore writes nothing.
         let restore_state = self.inner.restore_state.swap(0, Ordering::AcqRel);
         let restores: [HostRestoreAction<W>; 9] = [
             (
@@ -714,21 +711,10 @@ fn set_mouse_capture_with_writer(
     }
 }
 
-fn restore_terminal_state_once(
-    restore_claimed: &AtomicBool,
-    host_modes: &HostModes,
-    writer: &mut HostTerminalWriter,
-) -> io::Result<()> {
-    if restore_claimed.swap(true, Ordering::AcqRel) {
-        return Ok(());
-    }
-    restore_terminal_state(host_modes, writer)
-}
-
 /// Restores every host mode, the raw mode and the screen, running each step
-/// even after an earlier one fails. Each failure is logged here because the
-/// panic hook and `Drop` have no caller to hand an error to; the first failure
-/// is also returned.
+/// even after an earlier one fails. Each failure is logged here because
+/// `Drop` has no caller to hand an error to; the first failure is also
+/// returned.
 fn restore_terminal_state(
     host_modes: &HostModes,
     writer: &mut HostTerminalWriter,
@@ -780,38 +766,36 @@ impl TerminalGuard {
         self.host_modes.clone()
     }
 
-    /// Captures the restoration state for use by the process panic hook.
-    pub(super) fn panic_restore(&self) -> impl Fn() + Send + Sync + 'static {
-        let restore_claimed = Arc::clone(&self.restore_claimed);
-        let host_modes = self.host_modes.clone();
-        let output_writer = self.output_writer.clone();
-        move || {
-            // A panic has nowhere to report a restore failure, and
-            // restore_terminal_state already logged each failed step.
-            let mut output_writer = output_writer.clone();
-            restore_terminal_state_once(&restore_claimed, &host_modes, &mut output_writer).ok();
-        }
-    }
-
+    /// Restores the terminal once; `Drop` then does nothing, even if this
+    /// panicked part way.
     pub(super) fn restore(mut self) -> io::Result<()> {
         self.restored = true;
         let mut output_writer = self.output_writer.clone();
-        restore_terminal_state_once(&self.restore_claimed, &self.host_modes, &mut output_writer)
+        restore_terminal_state(&self.host_modes, &mut output_writer)
     }
 }
 
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
-        if !self.restored {
-            // Drop cannot return the error, and restore_terminal_state already
-            // logged each failed step.
-            let mut output_writer = self.output_writer.clone();
-            restore_terminal_state_once(
-                &self.restore_claimed,
-                &self.host_modes,
-                &mut output_writer,
-            )
-            .ok();
+        if self.restored {
+            return;
+        }
+        let mut output_writer = self.output_writer.clone();
+        let host_modes = &self.host_modes;
+        // This drop runs while a panic in terminal setup unwinds; a second
+        // panic escaping it would abort before the client's finalization. A
+        // panicked restore is not retried, and its payload is forgotten
+        // because dropping one can panic too. Drop cannot return the error,
+        // and restore_terminal_state already logged each failed step.
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "a terminal restore during unwinding must not panic out of drop and abort the client's finalization"
+        )]
+        let restored = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            restore_terminal_state(host_modes, &mut output_writer)
+        }));
+        if let Err(payload) = restored {
+            std::mem::forget(payload);
         }
     }
 }
@@ -999,8 +983,8 @@ mod tests {
         );
     }
 
-    /// The bytes a shell client writes on setup and on restore (the panic hook
-    /// and `Drop` both restore through `HostModes::restore`).
+    /// The bytes a shell client writes on setup and on restore (`restore` and
+    /// `Drop` both restore through `HostModes::restore`).
     #[test]
     fn host_modes_setup_and_restore_bytes() {
         for (level, set) in [

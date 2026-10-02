@@ -38,16 +38,21 @@ type ReaderExitCallback = Box<dyn FnOnce(ReaderExit) + Send + 'static>;
 /// Must be cheap (an atomic load): the actor asks on every loop iteration.
 type CoreBrokenCheck = Box<dyn Fn() -> bool + Send + 'static>;
 
-/// Why the actor's IO loop ended.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Why the actor's IO loop ended. Ordered by severity: when the loop sees
+/// more than one ending (a write failure, then EIO while draining the
+/// child's last output), the most severe one is reported.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ReaderExit {
-    /// EOF, a PTY read error or a shutdown request. The
-    /// child has gone or is being torn down; its own exit is reported by
-    /// whoever reaps it.
+    /// The owner asked the actor to stop; the pane is already being torn down.
+    ShutdownRequested,
+    /// EOF or EIO: every holder of the PTY slave closed it. That is how a
+    /// pane normally ends, but it is not proof the child has exited: a child
+    /// can close its terminal and keep running.
     Closed,
-    /// The actor could no longer wait for or drain PTY readiness. The child
-    /// may still be running, so the owner must remove the pane and tear down
-    /// its session rather than waiting for the child watcher.
+    /// A hard PTY read, write, poll or wake-pipe failure, or a PTY error with
+    /// nothing to read. The child may still be running, so the owner must
+    /// remove the pane and tear down its session rather than waiting for the
+    /// child watcher.
     IoFailed,
     /// The read callback panicked, or reported the terminal core broken by a
     /// panic elsewhere (a terminal core bug either way). The loop stops and
@@ -452,7 +457,7 @@ impl PtyIoActor {
             response_order: Arc::clone(&response_order),
         };
 
-        let mut runner = PtyIoActorRunner {
+        let runner = PtyIoActorRunner {
             pane_id: config.pane_id,
             file: std::fs::File::from(config.master_fd),
             inbox,
@@ -463,7 +468,7 @@ impl PtyIoActor {
             on_read: config.on_read,
             on_reader_exit: Some(config.on_reader_exit),
             core_broken: config.core_broken,
-            exit_reason: ReaderExit::Closed,
+            exit_reason: ReaderExit::ShutdownRequested,
             poll_observer,
             resize_pty: Box::new(resize_pty),
             resize_failure_logged: false,
@@ -492,6 +497,9 @@ struct PtyIoActorRunner {
     on_read: ReadCallback,
     on_reader_exit: Option<ReaderExitCallback>,
     core_broken: CoreBrokenCheck,
+    /// Only raised, through `raise_exit`. It starts at `ShutdownRequested`,
+    /// which is what a loop that leaves on the shutdown flag reports; every
+    /// other way out raises it first.
     exit_reason: ReaderExit,
     poll_observer: Option<std_mpsc::Sender<()>>,
     resize_pty: Box<dyn FnMut(RawFd, PtyResize) -> std::io::Result<()> + Send>,
@@ -522,7 +530,7 @@ enum ReadOutcome {
     Data,
     WouldBlock,
     Interrupted,
-    /// EOF or a hard read error: the child side is gone.
+    /// The loop must end; `exit_reason` says why.
     Closed,
 }
 
@@ -531,8 +539,36 @@ fn pty_master_error_means_child_closed(error: &std::io::Error) -> bool {
     error.raw_os_error() == Some(libc::EIO)
 }
 
+/// How a hard PTY read or write error ends the loop.
+fn exit_for_pty_error(error: &std::io::Error) -> ReaderExit {
+    if pty_master_error_means_child_closed(error) {
+        ReaderExit::Closed
+    } else {
+        ReaderExit::IoFailed
+    }
+}
+
 impl PtyIoActorRunner {
-    fn run(&mut self) {
+    fn raise_exit(&mut self, exit: ReaderExit) {
+        self.exit_reason = self.exit_reason.max(exit);
+    }
+
+    /// Runs the IO loop, then closes the master and the wake pipe before
+    /// reporting the exit, so whatever the owner does next (waiting for the
+    /// child to react to the hangup) happens with the PTY already closed.
+    fn run(mut self) {
+        self.run_loop();
+        let exit = self.exit_reason;
+        let on_reader_exit = self.on_reader_exit.take();
+        let pane_id = self.pane_id;
+        drop(self);
+        if let Some(on_reader_exit) = on_reader_exit {
+            on_reader_exit(exit);
+        }
+        debug!(pane = pane_id.raw(), "PTY actor exiting");
+    }
+
+    fn run_loop(&mut self) {
         loop {
             if crate::locks::lock_auxiliary(&self.inbox).shutdown {
                 break;
@@ -542,7 +578,7 @@ impl PtyIoActorRunner {
                     pane = self.pane_id.raw(),
                     "terminal core is broken by a panic elsewhere; closing the pane"
                 );
-                self.exit_reason = ReaderExit::Panicked;
+                self.raise_exit(ReaderExit::Panicked);
                 break;
             }
 
@@ -577,18 +613,27 @@ impl PtyIoActorRunner {
                             error = %err,
                             "PTY actor wake drain failed; closing the pane"
                         );
-                        self.exit_reason = ReaderExit::IoFailed;
+                        self.raise_exit(ReaderExit::IoFailed);
                         break;
                     }
-                    if readiness.pty_error {
-                        self.handle_write_failure(&std::io::Error::new(
-                            std::io::ErrorKind::BrokenPipe,
-                            "poll encountered PTY fd error",
-                        ));
-                        break;
-                    }
-                    if readiness.pty_read_ready && self.read_chunk() == ReadOutcome::Closed {
-                        break;
+                    // POLLERR is part of read readiness: the read classifies
+                    // it like any other ending. An error with nothing to read
+                    // would report again on every poll, so it ends the loop.
+                    if readiness.pty_read_ready {
+                        match self.read_chunk() {
+                            ReadOutcome::Closed => break,
+                            ReadOutcome::WouldBlock if readiness.pty_error => {
+                                error!(
+                                    pane = self.pane_id.raw(),
+                                    "PTY reported an error with nothing to read; closing the pane"
+                                );
+                                self.raise_exit(ReaderExit::IoFailed);
+                                break;
+                            }
+                            ReadOutcome::Data
+                            | ReadOutcome::WouldBlock
+                            | ReadOutcome::Interrupted => {}
+                        }
                     }
                     if readiness.pty_write_ready
                         && let Err(err) = self.pump()
@@ -603,7 +648,7 @@ impl PtyIoActorRunner {
                         error = %err,
                         "PTY actor poll failed; closing the pane"
                     );
-                    self.exit_reason = ReaderExit::IoFailed;
+                    self.raise_exit(ReaderExit::IoFailed);
                     break;
                 }
             }
@@ -612,13 +657,6 @@ impl PtyIoActorRunner {
         if let Some(total_dropped_responses) = self.close_inbox() {
             report_terminal_response_drop_total(self.pane_id, total_dropped_responses);
         }
-        if let Some(on_reader_exit) = self.on_reader_exit.take() {
-            // `Closed` lets the mux defer pane removal to the child watcher.
-            // `IoFailed` makes a live-but-unreadable child's pane removable;
-            // `Panicked` marks a broken terminal core that cannot checkpoint.
-            on_reader_exit(self.exit_reason);
-        }
-        debug!(pane = self.pane_id.raw(), "PTY actor exiting");
     }
 
     /// Write what the PTY takes now, applying any pending resize around each
@@ -701,6 +739,8 @@ impl PtyIoActorRunner {
     /// producing output cannot hold the actor here.
     fn handle_write_failure(&mut self, err: &std::io::Error) {
         debug!(pane = self.pane_id.raw(), error = %err, "PTY actor stopping after a write failure");
+        // Raised first, so the drain's own ending cannot lower it.
+        self.raise_exit(exit_for_pty_error(err));
         for _ in 0..MAX_WRITE_FAILURE_DRAIN_CHUNKS {
             match self.read_chunk() {
                 ReadOutcome::Data | ReadOutcome::Interrupted => {}
@@ -715,11 +755,15 @@ impl PtyIoActorRunner {
     fn read_chunk(&mut self) -> ReadOutcome {
         let mut buf = [0u8; PTY_READ_BUFFER_BYTES];
         match self.file.read(&mut buf) {
-            Ok(0) => ReadOutcome::Closed,
+            Ok(0) => {
+                self.raise_exit(ReaderExit::Closed);
+                ReadOutcome::Closed
+            }
             Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => ReadOutcome::WouldBlock,
             Err(err) if err.kind() == std::io::ErrorKind::Interrupted => ReadOutcome::Interrupted,
             Err(err) => {
-                if pty_master_error_means_child_closed(&err) {
+                let exit = exit_for_pty_error(&err);
+                if exit == ReaderExit::Closed {
                     debug!(
                         pane = self.pane_id.raw(),
                         error = %err,
@@ -732,6 +776,7 @@ impl PtyIoActorRunner {
                         "PTY actor read failed; closing the pane"
                     );
                 }
+                self.raise_exit(exit);
                 ReadOutcome::Closed
             }
             Ok(n) => {
@@ -758,7 +803,7 @@ impl PtyIoActorRunner {
                                 panic = panic_payload_message(&*payload),
                                 "PTY read callback panicked; closing the pane"
                             );
-                            self.exit_reason = ReaderExit::Panicked;
+                            self.raise_exit(ReaderExit::Panicked);
                             return ReadOutcome::Closed;
                         }
                     };
@@ -767,7 +812,7 @@ impl PtyIoActorRunner {
                         pane = self.pane_id.raw(),
                         "terminal core is broken by an earlier panic; closing the pane"
                     );
-                    self.exit_reason = ReaderExit::Panicked;
+                    self.raise_exit(ReaderExit::Panicked);
                     return ReadOutcome::Closed;
                 }
                 let after_response_order = result.after_response_order;
@@ -805,7 +850,7 @@ impl PtyIoActorRunner {
                             panic = panic_payload_message(&*payload),
                             "PTY post-read effects panicked; closing the pane"
                         );
-                        self.exit_reason = ReaderExit::Panicked;
+                        self.raise_exit(ReaderExit::Panicked);
                         return ReadOutcome::Closed;
                     }
                 }
@@ -947,7 +992,7 @@ mod tests {
     };
 
     fn test_pane_id() -> PaneId {
-        PaneId::from_raw(1).expect("1 is not the layout placeholder")
+        PaneId::from_raw(1)
     }
 
     fn test_wake_pair() -> (fd::WakeWriter, OwnedFd) {
@@ -1020,7 +1065,7 @@ mod tests {
             on_read,
             on_reader_exit: None,
             core_broken: Box::new(|| false),
-            exit_reason: ReaderExit::Closed,
+            exit_reason: ReaderExit::ShutdownRequested,
             poll_observer: None,
             resize_pty: Box::new(resize_pty),
             resize_failure_logged: false,
@@ -1038,7 +1083,7 @@ mod tests {
     #[test]
     fn write_failure_still_delivers_the_childs_last_output() {
         let (read_tx, read_rx) = std_mpsc::channel();
-        let (mut runner, _handle, mut peer) = actor_test_parts(Box::new(move |bytes| {
+        let (runner, _handle, mut peer) = actor_test_parts(Box::new(move |bytes| {
             read_tx
                 .send(Bytes::copy_from_slice(bytes))
                 .expect("the test holds the read receiver while the runner runs");
@@ -1343,6 +1388,76 @@ mod tests {
                 .recv_timeout(Duration::from_secs(1))
                 .expect("reader exit is reported after peer closure"),
             ReaderExit::Closed
+        );
+    }
+
+    /// A write failure that is not the PTY's child-closed EIO (EPIPE on this
+    /// socket stand-in) stays an IO failure when the drain then reads EOF.
+    #[test]
+    fn a_hard_write_failure_is_not_lowered_by_the_drain() {
+        let (mut runner, _handle, mut peer) =
+            actor_test_parts(Box::new(|_| PtyReadResult::empty()));
+        let (exit_tx, exit_rx) = std_mpsc::channel();
+        runner.on_reader_exit = Some(Box::new(move |reason| {
+            exit_tx
+                .send(reason)
+                .expect("reader exit receiver stays alive");
+        }));
+        peer.write_all(b"last-output").expect("peer write");
+        drop(peer);
+        crate::locks::lock_auxiliary(&runner.inbox)
+            .push_user_input(Bytes::from_static(b"queued-reply"))
+            .expect("test write fits inbox");
+
+        runner.run();
+
+        assert_eq!(
+            exit_rx.try_recv().expect("reader exit is reported"),
+            ReaderExit::IoFailed
+        );
+    }
+
+    #[test]
+    fn a_pty_error_with_nothing_to_read_reports_io_failed() {
+        let (mut runner, _handle, _peer) = actor_test_parts(Box::new(|_| PtyReadResult::empty()));
+        let (exit_tx, exit_rx) = std_mpsc::channel();
+        runner.on_reader_exit = Some(Box::new(move |reason| {
+            exit_tx
+                .send(reason)
+                .expect("reader exit receiver stays alive");
+        }));
+        runner.poll_pty_and_wake = |_, _, _, _| {
+            Ok(fd::PtyWakeReadiness {
+                pty_read_ready: true,
+                pty_error: true,
+                ..Default::default()
+            })
+        };
+
+        runner.run();
+
+        assert_eq!(
+            exit_rx.try_recv().expect("reader exit is reported"),
+            ReaderExit::IoFailed
+        );
+    }
+
+    #[test]
+    fn a_requested_shutdown_is_reported_as_one() {
+        let (mut runner, handle, _peer) = actor_test_parts(Box::new(|_| PtyReadResult::empty()));
+        let (exit_tx, exit_rx) = std_mpsc::channel();
+        runner.on_reader_exit = Some(Box::new(move |reason| {
+            exit_tx
+                .send(reason)
+                .expect("reader exit receiver stays alive");
+        }));
+        handle.shutdown();
+
+        runner.run();
+
+        assert_eq!(
+            exit_rx.try_recv().expect("reader exit is reported"),
+            ReaderExit::ShutdownRequested
         );
     }
 

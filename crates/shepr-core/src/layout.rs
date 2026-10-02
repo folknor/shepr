@@ -6,7 +6,7 @@ use std::collections::HashSet;
 use crate::geometry::{Rect, SplitBranch};
 use crate::limits::{
     FIRST_PANE_ID, MIN_SPLIT_CHILD_CELLS, MIN_SPLIT_EXTENT_CELLS, MIN_WORKSPACE_PANES,
-    PLACEHOLDER_PANE_ID, SPLIT_EDGE_MATCH_TOLERANCE_CELLS,
+    SPLIT_EDGE_MATCH_TOLERANCE_CELLS,
 };
 
 pub use crate::limits::{EVEN_SPLIT, MAX_SPLIT_RATIO, MIN_SPLIT_RATIO};
@@ -35,11 +35,10 @@ impl SplitRatio {
     }
 }
 
-/// Process-wide pane identity. Never the layout's internal placeholder: a
-/// value comes from [`PaneId::alloc`] or from [`PaneId::from_raw`], which
-/// refuses the placeholder, and deserialization goes through `from_raw`.
+/// Process-wide pane identity: a value comes from [`PaneId::alloc`], or from
+/// [`PaneId::from_raw`] and deserialization, which carry an id minted
+/// elsewhere.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
-#[serde(try_from = "u32")]
 pub struct PaneId(u32);
 
 /// Global atomic counter for unique PaneId generation across all workspaces.
@@ -56,8 +55,7 @@ static NEXT_PANE_ID: std::sync::atomic::AtomicU32 =
 impl PaneId {
     /// Allocate a globally unique PaneId.
     ///
-    /// Never returns the placeholder ID and never hands out an ID twice.
-    /// The counter refuses to advance past `u32::MAX` instead of wrapping, so
+    /// Never hands out an ID twice. The counter refuses to advance past `u32::MAX` instead of wrapping, so
     /// exhausting it (four billion panes in one process) is a loud failure
     /// rather than a silent reuse of live ids.
     pub fn alloc() -> Self {
@@ -82,36 +80,10 @@ impl PaneId {
         self.0
     }
 
-    /// Reconstruct a raw id without advancing the allocator; `None` for the
-    /// layout's placeholder, which is never a pane. Live restore must remap
-    /// saved pane IDs through `alloc` before installing the layout.
-    pub fn from_raw(id: u32) -> Option<Self> {
-        (id != PLACEHOLDER_PANE_ID).then_some(Self(id))
-    }
-
-    /// The stand-in leaf a split or move writes while it rebuilds a subtree.
-    /// It must not outlive the operation, and no value built outside this
-    /// module (`from_raw`, deserialization) can be it.
-    const PLACEHOLDER: Self = Self(PLACEHOLDER_PANE_ID);
-}
-
-/// A raw id that is the layout's placeholder, which is never a pane.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PlaceholderPaneIdError;
-
-impl std::fmt::Display for PlaceholderPaneIdError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("pane id is the layout placeholder")
-    }
-}
-
-impl std::error::Error for PlaceholderPaneIdError {}
-
-impl TryFrom<u32> for PaneId {
-    type Error = PlaceholderPaneIdError;
-
-    fn try_from(id: u32) -> Result<Self, Self::Error> {
-        Self::from_raw(id).ok_or(PlaceholderPaneIdError)
+    /// Reconstruct a raw id without advancing the allocator. Live restore
+    /// must remap saved pane IDs through `alloc` before installing the layout.
+    pub fn from_raw(id: u32) -> Self {
+        Self(id)
     }
 }
 
@@ -269,8 +241,13 @@ impl TileLayout {
             first
         };
         let new_id = PaneId::alloc();
-        let old = std::mem::replace(&mut self.root, Node::Pane(PaneId::PLACEHOLDER));
-        self.root = split_at(old, target, direction, new_id, SplitRatio::clamped(ratio));
+        split_at(
+            &mut self.root,
+            target,
+            direction,
+            new_id,
+            SplitRatio::clamped(ratio),
+        );
         self.set_focus(new_id);
         new_id
     }
@@ -288,8 +265,13 @@ impl TileLayout {
             return None;
         }
         let new_id = PaneId::alloc();
-        let old = std::mem::replace(&mut self.root, Node::Pane(PaneId::PLACEHOLDER));
-        self.root = split_at(old, target, direction, new_id, SplitRatio::clamped(ratio));
+        split_at(
+            &mut self.root,
+            target,
+            direction,
+            new_id,
+            SplitRatio::clamped(ratio),
+        );
         Some(new_id)
     }
 
@@ -316,15 +298,12 @@ impl TileLayout {
             Some(prev) if prev != target && ids.contains(&prev) => prev,
             _ => ordered,
         };
-        let old = std::mem::replace(&mut self.root, Node::Pane(PaneId::PLACEHOLDER));
-        if let Some(new_root) = remove_pane(old, target) {
-            self.root = new_root;
-            self.focus = new_focus;
-            self.prev_focus = None;
-            true
-        } else {
-            false
+        if !remove_pane(&mut self.root, target) {
+            return false;
         }
+        self.focus = new_focus;
+        self.prev_focus = None;
+        true
     }
 
     /// Close any pane. Focus and its history are left alone unless the closed
@@ -336,11 +315,9 @@ impl TileLayout {
         if self.pane_count() <= MIN_WORKSPACE_PANES || !self.pane_ids().contains(&id) {
             return false;
         }
-        let old = std::mem::replace(&mut self.root, Node::Pane(PaneId::PLACEHOLDER));
-        let Some(new_root) = remove_pane(old, id) else {
+        if !remove_pane(&mut self.root, id) {
             return false;
-        };
-        self.root = new_root;
+        }
         if self.prev_focus == Some(id) {
             self.prev_focus = None;
         }
@@ -486,8 +463,6 @@ impl TileLayout {
 
 fn collect_validated_ids(node: &Node, ids: &mut HashSet<PaneId>) -> Result<(), InvalidSavedLayout> {
     match node {
-        // No leaf can be the placeholder: `PaneId` values outside this module
-        // are never it, and the edits that write it replace it before return.
         Node::Pane(id) => {
             if !ids.insert(*id) {
                 return Err(InvalidSavedLayout::DuplicatePaneId(*id));
@@ -751,56 +726,53 @@ fn swap_pane_ids(node: &mut Node, first: PaneId, second: PaneId) {
     }
 }
 
+/// Replaces the `target` leaf, in place, with a split of it and `new_id`.
+/// Returns whether the target was found; a tree without it is left untouched.
 fn split_at(
-    node: Node,
+    node: &mut Node,
     target: PaneId,
     direction: Direction,
     new_id: PaneId,
     split_ratio: SplitRatio,
-) -> Node {
+) -> bool {
     match node {
-        Node::Pane(id) if id == target => Node::Split {
-            direction,
-            ratio: split_ratio,
-            first: Box::new(Node::Pane(id)),
-            second: Box::new(Node::Pane(new_id)),
-        },
-        Node::Pane(_) => node,
-        Node::Split {
-            direction: d,
-            ratio,
-            first,
-            second,
-        } => Node::Split {
-            direction: d,
-            ratio,
-            first: Box::new(split_at(*first, target, direction, new_id, split_ratio)),
-            second: Box::new(split_at(*second, target, direction, new_id, split_ratio)),
-        },
+        Node::Pane(id) if *id == target => {
+            *node = Node::Split {
+                direction,
+                ratio: split_ratio,
+                first: Box::new(Node::Pane(target)),
+                second: Box::new(Node::Pane(new_id)),
+            };
+            true
+        }
+        Node::Pane(_) => false,
+        Node::Split { first, second, .. } => {
+            split_at(first, target, direction, new_id, split_ratio)
+                || split_at(second, target, direction, new_id, split_ratio)
+        }
     }
 }
 
-fn remove_pane(node: Node, target: PaneId) -> Option<Node> {
-    match node {
-        Node::Pane(id) if id == target => None,
-        Node::Pane(_) => Some(node),
-        Node::Split {
-            direction,
-            ratio,
-            first,
-            second,
-        } => match (remove_pane(*first, target), remove_pane(*second, target)) {
-            (None, Some(s)) => Some(s),
-            (Some(f), None) => Some(f),
-            (Some(f), Some(s)) => Some(Node::Split {
-                direction,
-                ratio,
-                first: Box::new(f),
-                second: Box::new(s),
-            }),
-            (None, None) => None,
-        },
-    }
+/// Removes the `target` leaf in place: its parent split is replaced by the
+/// sibling subtree. Returns whether the target was removed; a tree without
+/// it, or one that is only the target leaf, is left untouched.
+fn remove_pane(node: &mut Node, target: PaneId) -> bool {
+    let Node::Split { first, second, .. } = node else {
+        return false;
+    };
+    let is_target = |child: &Node| matches!(child, Node::Pane(id) if *id == target);
+    let sibling = if is_target(first) {
+        second
+    } else if is_target(second) {
+        first
+    } else {
+        return remove_pane(first, target) || remove_pane(second, target);
+    };
+    // The removed leaf's own id stands in for the sibling for the one line
+    // until the split holding both is overwritten; nothing reads it.
+    let sibling = std::mem::replace(&mut **sibling, Node::Pane(target));
+    *node = sibling;
+    true
 }
 
 fn set_ratio_at(node: &mut Node, path: &[SplitBranch], new_ratio: SplitRatio) -> bool {
@@ -940,19 +912,6 @@ mod tests {
     }
 
     #[test]
-    fn raw_pane_ids_refuse_the_placeholder_including_through_serde() {
-        assert_eq!(PaneId::from_raw(PLACEHOLDER_PANE_ID), None);
-        assert_eq!(PaneId::from_raw(7), Some(PaneId(7)));
-        let decode = |raw: u32| {
-            <PaneId as serde::Deserialize>::deserialize(serde::de::value::U32Deserializer::<
-                serde::de::value::Error,
-            >::new(raw))
-        };
-        assert_eq!(decode(7).ok(), Some(PaneId(7)));
-        assert!(decode(PLACEHOLDER_PANE_ID).is_err());
-    }
-
-    #[test]
     fn split_ratio_rejects_values_outside_layout_bounds() {
         assert_eq!(
             SplitRatio::new(MIN_SPLIT_RATIO).map(SplitRatio::get),
@@ -972,7 +931,7 @@ mod tests {
     }
 
     fn pane(id: u32) -> PaneId {
-        PaneId::from_raw(id).expect("test pane ids are not the placeholder")
+        PaneId::from_raw(id)
     }
 
     fn saved_layout(root: Node, focus: PaneId) -> TileLayout {

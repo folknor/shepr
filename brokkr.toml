@@ -190,6 +190,8 @@ exclude = [
     "crates/shepr-agent/src/integration/config_file/tests.rs",
     "crates/shepr-agent/src/integration/env.rs",
     "crates/shepr-agent/src/integration/opencode_config.rs",
+    "crates/shepr-client/src/fatal_panic.rs",
+    "crates/shepr-client/src/terminal_setup.rs",
     "crates/shepr-core/src/env.rs",
     "crates/shepr-mux/src/pane/terminal/migration_tests.rs",
     "crates/shepr-mux/src/persist/actor.rs",

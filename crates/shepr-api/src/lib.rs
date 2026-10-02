@@ -10,7 +10,7 @@ pub mod server_stop;
 mod status;
 mod stop;
 
-pub use limits::MAX_ACTIVE_CONNECTIONS;
+pub use limits::MAX_APP_REQUESTS_IN_FLIGHT;
 pub use server::start_server;
 pub use server::{ClientGate, ClientProtocolHandler, ConnectionSlot, ServerHandle};
 pub use status::{RuntimeStatus, ServerPresence, read_server_presence_at};

@@ -119,7 +119,7 @@ mod tests {
     #[test]
     fn connection_slots_cap_at_their_limit_and_release_on_drop() {
         let active = Arc::new(AtomicUsize::new(0));
-        let cap = crate::limits::MAX_ACTIVE_CONNECTIONS;
+        let cap = crate::limits::MAX_API_INGRESS_CONNECTIONS;
         let mut slots = (0..cap)
             .map(|_| ConnectionSlot::try_acquire(&active, cap).expect("slot"))
             .collect::<Vec<_>>();

@@ -65,7 +65,10 @@ impl HeadlessServer {
                 // its checkpoint or not removed at all.
                 let projection_before = self.app.state.shell_projection_revision;
                 let replay_generation = self.replaying_checkpointed_pane_exit.take();
-                if let Some(generation) = replay_generation {
+                // A replayed exit was held for its checkpoint, so it was
+                // decided as checkpointed; it is finished that way whatever
+                // has happened to the pane since.
+                let prepared = if let Some(generation) = replay_generation {
                     if !self.app.pane_exit_checkpoint_generation_settled(generation) {
                         self.pending_checkpointed_pane_exits.push_back(
                             PendingCheckpointedPaneExit {
@@ -82,26 +85,30 @@ impl HeadlessServer {
                         );
                         return false;
                     }
-                } else if let Some(checkpoint_generation) =
-                    self.app.prepare_pane_exit(*pane_id, *exit_reason)
-                {
-                    // Keep the pre-exit layout live until its checkpoint is durable.
-                    self.pending_checkpointed_pane_exits
-                        .push_back(PendingCheckpointedPaneExit {
-                            event: match runtime_origin {
-                                Some((pane_id, generation)) => AppEvent::Runtime {
-                                    pane_id,
-                                    generation,
-                                    event: Box::new(ev),
+                    crate::app::PreparedPaneExit::Held(generation)
+                } else {
+                    let prepared = self.app.prepare_pane_exit(*pane_id, *exit_reason);
+                    if let Some(checkpoint_generation) = prepared.held_generation() {
+                        // Keep the pre-exit layout live until its checkpoint is durable.
+                        self.pending_checkpointed_pane_exits.push_back(
+                            PendingCheckpointedPaneExit {
+                                event: match runtime_origin {
+                                    Some((pane_id, generation)) => AppEvent::Runtime {
+                                        pane_id,
+                                        generation,
+                                        event: Box::new(ev),
+                                    },
+                                    None => ev,
                                 },
-                                None => ev,
+                                checkpoint_generation,
                             },
-                            checkpoint_generation,
-                        });
-                    return self.app.state.shell_projection_revision != projection_before;
-                }
+                        );
+                        return self.app.state.shell_projection_revision != projection_before;
+                    }
+                    prepared
+                };
 
-                if !self.app.handle_prepared_pane_exit(ev) {
+                if !self.app.handle_prepared_pane_exit(ev, prepared) {
                     return self.app.state.shell_projection_revision != projection_before;
                 }
                 self.immediate_pty_sources_dirty = true;

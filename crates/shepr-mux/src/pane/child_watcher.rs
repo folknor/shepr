@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use shepr_pty::backend::PaneChild;
 
+use super::exit_arbiter::PaneExitArbiter;
 use super::launch_status::LaunchWatch;
 use super::teardown::ChildLiveness;
 use crate::events::{AppEvent, EventSender};
@@ -12,13 +13,15 @@ use tracing::error;
 /// Watches an owned child independently of detection and PTY parsing. The
 /// watcher must keep reaping after the pane runtime has been dropped. It
 /// reports the death only after the launch's settlement was published, so the
-/// app hears how the launch ended first; reaping does not wait for that.
+/// app hears how the launch ended first; reaping does not wait for that. It
+/// publishes the exit only if it decides the pane's ending through `arbiter`.
 pub(super) fn spawn(
     pane_id: PaneId,
     child: PaneChild,
     child_liveness: Arc<ChildLiveness>,
     mut launch: LaunchWatch,
     events: EventSender,
+    arbiter: Arc<PaneExitArbiter>,
 ) {
     let pidfd = child_liveness
         .leader()
@@ -53,6 +56,9 @@ pub(super) fn spawn(
         };
         child_liveness.mark_wait_completed();
         launch.published().await;
+        if !arbiter.decide() {
+            return;
+        }
         // Wait for channel capacity so this critical pane exit is not dropped.
         if let Err(e) = events
             .send(AppEvent::PaneDied {

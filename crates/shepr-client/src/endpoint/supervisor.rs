@@ -88,10 +88,7 @@ enum ConnectTarget {
     /// launch-time ssh settings, the temporary ssh config and the remembered remote
     /// executable from one attempt to the next. An attempt takes ownership and returns it
     /// in its event.
-    Ssh {
-        connector: Option<OwnedConnector>,
-        machine: shepr_config::MachineConfig,
-    },
+    Ssh { connector: Option<OwnedConnector> },
 }
 
 enum AttemptTarget {
@@ -171,7 +168,6 @@ impl EndpointSupervisors {
                 ReconnectState::new(
                     ConnectTarget::Ssh {
                         connector: Some(connector),
-                        machine: machine.clone(),
                     },
                     now,
                 ),
@@ -253,9 +249,9 @@ impl EndpointSupervisors {
                 }
                 let task_endpoint_id = endpoint_id.clone();
                 // The attempt owns the saved connector and hands it back with
-                // its event. A panic loses it with the task; the join error
-                // below then reports no connector, and `return_connector`
-                // rebuilds one from the machine so the endpoint still retries.
+                // its event. A panicking attempt loses it, but a panic ends
+                // the whole client (see `fatal_panic`), so the join error
+                // below only has to report the attempt without one.
                 let result = tokio::task::spawn_blocking(move || {
                     let mut target = target;
                     let result =
@@ -317,10 +313,10 @@ impl EndpointSupervisors {
             .min()
     }
 
-    /// Hands a finished attempt's connector back to its endpoint. An attempt
-    /// that lost it (its blocking task died outside the panic guard) gets a
-    /// fresh one built from the machine, so the endpoint never stalls without
-    /// a connector. An attempt of an endpoint no longer supervised drops it.
+    /// Hands a finished attempt's connector back to its endpoint. Only a
+    /// panicked attempt comes back without one, and a panic ends the whole
+    /// client (see `fatal_panic`), so nothing is rebuilt. An attempt of an
+    /// endpoint no longer supervised drops it.
     pub(crate) fn return_connector(
         &mut self,
         endpoint_id: &ClientEndpointId,
@@ -333,27 +329,12 @@ impl EndpointSupervisors {
         if state.generation != Some(generation.into()) {
             return;
         }
-        let ConnectTarget::Ssh {
-            connector: owned,
-            machine,
-        } = &mut state.target
-        else {
+        let ConnectTarget::Ssh { connector: owned } = &mut state.target else {
             return;
         };
-        if owned.is_some() {
-            return;
+        if owned.is_none() {
+            *owned = connector;
         }
-        *owned = Some(connector.unwrap_or_else(|| {
-            tracing::warn!(
-                endpoint = %endpoint_id.storage_key(),
-                "a connection attempt lost its SSH connector; rebuilding it"
-            );
-            Box::new(shepr_remote::MachineSshConnector::new(
-                &self.paths,
-                &machine.label,
-                &machine.ssh,
-            ))
-        }));
     }
 
     pub(crate) fn record_status(
@@ -626,6 +607,9 @@ pub(crate) fn handshake_error(
                 |reason| reason.to_string(),
             ),
         ),
+        // A handshake never panics into an error value; this only keeps the
+        // match exhaustive, and the panic latch ends the client regardless.
+        ClientError::Panicked => std::io::Error::other(ClientError::Panicked),
     };
     let kind = error.kind();
     let diagnostic =
@@ -721,35 +705,38 @@ mod tests {
             panic!("a configured machine must have an SSH target");
         };
         let connector = connector.take().expect("test connector is present");
-        assert!(matches!(
-            &supervisors.endpoints[&id].target,
-            ConnectTarget::Ssh {
-                connector: None,
-                ..
-            }
-        ));
+        let has_connector = |supervisors: &EndpointSupervisors| {
+            matches!(
+                &supervisors.endpoints[&id].target,
+                ConnectTarget::Ssh {
+                    connector: Some(_),
+                    ..
+                }
+            )
+        };
+        assert!(!has_connector(&supervisors));
+
+        // The current generation's connector goes back to its endpoint.
+        supervisors.return_connector(&id, 2, Some(connector));
+        assert!(has_connector(&supervisors));
 
         // A stale generation's connector is dropped, not installed.
+        let ConnectTarget::Ssh { connector, .. } = &mut supervisors
+            .endpoints
+            .get_mut(&id)
+            .expect("test precondition")
+            .target
+        else {
+            panic!("a configured machine must have an SSH target");
+        };
+        let connector = connector.take().expect("connector was returned");
         supervisors.return_connector(&id, 3, Some(connector));
-        assert!(matches!(
-            &supervisors.endpoints[&id].target,
-            ConnectTarget::Ssh {
-                connector: None,
-                ..
-            }
-        ));
+        assert!(!has_connector(&supervisors));
 
-        // An attempt whose task died returns nothing; the endpoint gets a
-        // rebuilt connector rather than stalling without one.
+        // Only a panicked attempt returns nothing, and a panic ends the
+        // client, so nothing is rebuilt.
         supervisors.return_connector(&id, 2, None);
-
-        assert!(matches!(
-            &supervisors.endpoints[&id].target,
-            ConnectTarget::Ssh {
-                connector: Some(_),
-                ..
-            }
-        ));
+        assert!(!has_connector(&supervisors));
     }
 
     #[test]

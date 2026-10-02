@@ -65,10 +65,8 @@ pub(crate) const PANE_MIN_COLS: u16 = 4;
 /// Smallest pane grid height in rows.
 pub(crate) const PANE_MIN_ROWS: u16 = 2;
 
-/// First ID available to a real pane; the reserved placeholder ID is excluded.
+/// The first ID the allocator hands out.
 pub(crate) const FIRST_PANE_ID: u32 = 1;
-/// Reserved ID used while a layout operation temporarily removes a pane.
-pub(crate) const PLACEHOLDER_PANE_ID: u32 = 0;
 
 /// Divider distance in cells accepted when selecting a split for keyboard
 /// resize. This absorbs integer-coordinate edge rounding.

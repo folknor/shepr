@@ -2,6 +2,7 @@ mod agent_detection;
 mod child_watcher;
 mod cursor;
 mod detection_task;
+mod exit_arbiter;
 mod launch;
 mod launch_status;
 mod osc;

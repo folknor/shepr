@@ -28,7 +28,7 @@ use super::client_protocol::{ClientGate, ClientProtocolHandler, ConnectionSlot, 
 use super::{handle_connection, reject_busy_connection, send_busy_refusal};
 use crate::limits::{
     ACCEPT_BACKOFF_MAX, ACCEPT_BACKOFF_MIN, BUSY_REFUSAL_QUEUE, BUSY_REQUEST_ID_TIMEOUT,
-    INITIAL_REQUEST_TIMEOUT, MAX_ACTIVE_CLIENT_CONNECTIONS, MAX_ACTIVE_CONNECTIONS,
+    INITIAL_REQUEST_TIMEOUT, MAX_ACTIVE_CLIENT_CONNECTIONS, MAX_API_INGRESS_CONNECTIONS,
     MAX_UNCLASSIFIED_CONNECTIONS,
 };
 
@@ -47,14 +47,16 @@ fn kind(byte: u8) -> Kind {
 }
 
 /// What every connection thread needs to admit and serve a classified
-/// connection: the API's request channel and stop signal, the TUI gate, and
-/// one admission counter per kind.
+/// connection: the API's request channel and stop signal, the TUI gate, one
+/// admission counter per kind, and the API's second counter for requests
+/// that wait on the app loop.
 #[derive(Clone)]
 struct Dispatch {
     api_tx: crate::ApiRequestSender,
     stop: Arc<crate::ServerStopSignal>,
     gate: ClientGate,
     api: Arc<AtomicUsize>,
+    api_app: Arc<AtomicUsize>,
     client: Arc<AtomicUsize>,
 }
 
@@ -70,7 +72,7 @@ enum Service {
 impl Dispatch {
     fn admit(&self, kind: Kind) -> Service {
         match kind {
-            Kind::Api => ConnectionSlot::try_acquire(&self.api, MAX_ACTIVE_CONNECTIONS)
+            Kind::Api => ConnectionSlot::try_acquire(&self.api, MAX_API_INGRESS_CONNECTIONS)
                 .map_or(Service::RefuseApi, Service::Api),
             Kind::Client => {
                 let Some(handler) = self.gate.handler() else {
@@ -95,10 +97,11 @@ impl Dispatch {
     fn serve(&self, stream: LocalStream, accepted: Instant, service: Service) {
         match service {
             Service::Api(slot) => {
-                let _slot = slot;
                 if let Err(error) = handle_connection(
                     stream,
                     accepted + INITIAL_REQUEST_TIMEOUT,
+                    slot,
+                    &self.api_app,
                     &self.api_tx,
                     &self.stop,
                     &self.gate,
@@ -202,6 +205,7 @@ pub(super) fn start_listener(
         stop,
         gate,
         api: Arc::new(AtomicUsize::new(0)),
+        api_app: Arc::new(AtomicUsize::new(0)),
         client: Arc::new(AtomicUsize::new(0)),
     };
     let unclassified = Arc::new(AtomicUsize::new(0));
@@ -349,6 +353,7 @@ mod tests {
             stop: Arc::default(),
             gate: ClientGate::default(),
             api: Arc::default(),
+            api_app: Arc::default(),
             client: Arc::default(),
         }
     }
@@ -482,7 +487,7 @@ mod tests {
     fn client_and_api_connections_are_admitted_separately() {
         let dispatch = dispatch();
         let received = open_gate(&dispatch);
-        let api_slots = hold(&dispatch.api, MAX_ACTIVE_CONNECTIONS);
+        let api_slots = hold(&dispatch.api, MAX_API_INGRESS_CONNECTIONS);
         let (_scratch, handle) = server(dispatch.clone(), Arc::default());
         let mut client = connect(&handle);
         hello(&mut client);
@@ -560,7 +565,7 @@ mod tests {
     #[test]
     fn the_busy_refuser_thread_echoes_the_request_id() {
         let dispatch = dispatch();
-        let _slots = hold(&dispatch.api, MAX_ACTIVE_CONNECTIONS);
+        let _slots = hold(&dispatch.api, MAX_API_INGRESS_CONNECTIONS);
         let tx = spawn_refuser(dispatch).expect("refuser");
         let (mut peer, stream) = LocalStream::pair().expect("pair");
         hand_off(
@@ -694,9 +699,12 @@ mod tests {
         let dispatch = dispatch();
         let (mut peer, stream) = LocalStream::pair().expect("pair");
         peer.write_all(b"{").expect("late first byte");
+        let ingress = ConnectionSlot::try_acquire(&dispatch.api, 1).expect("slot");
         let error = handle_connection(
             stream,
             Instant::now(),
+            ingress,
+            &dispatch.api_app,
             &dispatch.api_tx,
             &dispatch.stop,
             &dispatch.gate,

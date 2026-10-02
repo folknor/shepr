@@ -39,9 +39,16 @@ pub(crate) const MAX_INITIAL_REQUEST_BYTES: usize = shepr_protocol::MAX_INITIAL_
 /// while keeping each stack buffer small and fixed.
 pub(crate) const INITIAL_REQUEST_READ_CHUNK_BYTES: usize = 8 * 1024;
 
-/// Maximum concurrently served API connections. This bounds worker threads
-/// and request-owned stream state while allowing several clients and hooks.
-pub const MAX_ACTIVE_CONNECTIONS: usize = 64;
+/// Maximum API connections reading their request, or writing an answer given
+/// without the app loop (ping, the stops, parse errors and refusals). With
+/// [`MAX_APP_REQUESTS_IN_FLIGHT`] it bounds API worker threads and their
+/// stream state while allowing several clients and hooks.
+pub(crate) const MAX_API_INGRESS_CONNECTIONS: usize = 64;
+
+/// Maximum API requests waiting on, or writing, the app loop's answer. Kept
+/// apart from ingress so requests held by a stalled loop cannot keep a stop
+/// from being read.
+pub const MAX_APP_REQUESTS_IN_FLIGHT: usize = 64;
 
 /// Maximum connections queued for the refuser thread, of either kind: over a
 /// kind's admission limit, or over the classification limit with no first

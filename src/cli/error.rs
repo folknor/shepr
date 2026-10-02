@@ -101,9 +101,16 @@ pub(crate) fn finish_client(
     }
 }
 
+/// Fallible writes: a client's last lines can be a panic diagnostic, printed
+/// after the client has finalized, and a stderr failure here must not panic
+/// again outside every catch.
 fn print_client_lines(exit: &shepr_client::ClientExit) {
+    use std::io::Write as _;
+    let mut stderr = std::io::stderr().lock();
     for line in exit.lines() {
-        eprintln!("shepr: {line}");
+        if writeln!(stderr, "shepr: {line}").is_err() {
+            return;
+        }
     }
 }
 

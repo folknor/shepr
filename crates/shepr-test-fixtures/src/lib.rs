@@ -40,13 +40,8 @@ pub use config::{AppPathsFixture, ValidatedClientConfigFixture, ValidatedServerC
 pub use termio::{parse_raw_input_bytes_sync, parse_sgr_mouse_report};
 
 /// A fixed pane id for tests that key state by pane without a layout.
-///
-/// # Panics
-///
-/// Panics on the layout's placeholder, which `PaneId::from_raw` refuses.
 pub fn fixed_pane_id(raw: u32) -> shepr_core::layout::PaneId {
     shepr_core::layout::PaneId::from_raw(raw)
-        .unwrap_or_else(|| panic!("{raw} is the layout placeholder, not a pane id"))
 }
 
 /// A typed id parsed from its canonical text, for tests that spell workspace,

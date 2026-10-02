@@ -687,12 +687,13 @@ impl App {
     /// Delivers `ev` the way the headless loop does: a pane exit that needs a
     /// checkpoint waits for the background save before the app removes it.
     pub(crate) fn handle_internal_event_after_checkpoint(&mut self, ev: AppEvent) {
-        let pane_exit_prepared = if let AppEvent::PaneDied {
+        let prepared = if let AppEvent::PaneDied {
             pane_id,
             exit_reason,
         } = &ev
         {
-            if let Some(generation) = self.prepare_pane_exit(*pane_id, *exit_reason) {
+            let prepared = self.prepare_pane_exit(*pane_id, *exit_reason);
+            if let Some(generation) = prepared.held_generation() {
                 for _ in 0..4 {
                     self.wait_for_session_save();
                     if self.pane_exit_checkpoint_generation_settled(generation) {
@@ -702,14 +703,15 @@ impl App {
                     self.start_background_session_save();
                 }
             }
-            true
+            Some(prepared)
         } else {
-            false
+            None
         };
-        if pane_exit_prepared {
-            self.handle_prepared_pane_exit(ev);
-        } else {
-            self.handle_internal_event(ev);
+        match prepared {
+            Some(prepared) => {
+                self.handle_prepared_pane_exit(ev, prepared);
+            }
+            None => self.handle_internal_event(ev),
         }
     }
 
@@ -785,6 +787,7 @@ mod tests {
 
         let generation = app
             .prepare_pane_exit(exiting, shepr_platform::ChildExitReason::Interrupted)
+            .held_generation()
             .expect("a signalled exit is held for a checkpoint");
         assert!(app.session_saver.save_in_flight());
         // A change lands while the checkpoint is being written, and the loop
@@ -810,6 +813,7 @@ mod tests {
 
         let generation = app
             .prepare_pane_exit(exiting, shepr_platform::ChildExitReason::Interrupted)
+            .held_generation()
             .expect("a signalled exit is held for a checkpoint");
         earlier.complete(Ok(()));
         assert!(app.reap_finished_session_save());
@@ -835,7 +839,7 @@ mod tests {
         assert_eq!(saved_pane_counts(&app), vec![2]);
         assert_eq!(
             app.prepare_pane_exit(staying, shepr_platform::ChildExitReason::Interrupted),
-            None,
+            crate::app::PreparedPaneExit::Settled,
             "the checkpoint on disk already holds the second pane"
         );
         app.policy = super::super::AppPolicy::Test;
@@ -1235,20 +1239,28 @@ mod tests {
         app.state.workspaces[0].test_split(shepr_core::layout::Direction::Horizontal);
         app.state.ensure_test_terminals();
         let reason = shepr_platform::ChildExitReason::Interrupted;
-        let first_generation = app.prepare_pane_exit(first, reason).expect("first held");
-        let second_generation = app.prepare_pane_exit(second, reason).expect("second held");
+        let first_prepared = app.prepare_pane_exit(first, reason);
+        let second_prepared = app.prepare_pane_exit(second, reason);
+        let first_generation = first_prepared.held_generation().expect("first held");
+        let second_generation = second_prepared.held_generation().expect("second held");
         app.wait_for_session_save();
         assert!(app.pane_exit_checkpoint_generation_settled(first_generation));
         assert!(app.pane_exit_checkpoint_generation_settled(second_generation));
         assert!(!app.session_saver.exit.is_requested());
-        app.handle_prepared_pane_exit(AppEvent::PaneDied {
-            pane_id: first,
-            exit_reason: reason,
-        });
-        app.handle_prepared_pane_exit(AppEvent::PaneDied {
-            pane_id: second,
-            exit_reason: reason,
-        });
+        app.handle_prepared_pane_exit(
+            AppEvent::PaneDied {
+                pane_id: first,
+                exit_reason: reason,
+            },
+            first_prepared,
+        );
+        app.handle_prepared_pane_exit(
+            AppEvent::PaneDied {
+                pane_id: second,
+                exit_reason: reason,
+            },
+            second_prepared,
+        );
         app.sync_session_save_schedule();
         app.save_session_before_teardown_async().await;
         assert_eq!(saved_pane_counts(&app), vec![3]);

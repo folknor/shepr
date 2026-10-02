@@ -1,14 +1,15 @@
 use std::io::{self, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Instant;
 
 use tracing::{debug, info, warn};
 
 use crate::limits::{
-    BUSY_REQUEST_ID_TIMEOUT, INITIAL_REQUEST_READ_CHUNK_BYTES, MAX_ACTIVE_CONNECTIONS,
-    MAX_INITIAL_REQUEST_BYTES, ORDINARY_REQUEST_TIMEOUT, STREAM_WRITE_TIMEOUT,
+    BUSY_REQUEST_ID_TIMEOUT, INITIAL_REQUEST_READ_CHUNK_BYTES, MAX_API_INGRESS_CONNECTIONS,
+    MAX_APP_REQUESTS_IN_FLIGHT, MAX_INITIAL_REQUEST_BYTES, ORDINARY_REQUEST_TIMEOUT,
+    STREAM_WRITE_TIMEOUT,
 };
 use crate::schema::{
     AppMethod, AppRequest, ErrorResponse, Method, MethodTraits, Request, ResponseResult,
@@ -162,10 +163,18 @@ fn reject_busy_connection(mut stream: LocalStream) {
 }
 
 fn send_busy_refusal(mut stream: LocalStream, request_id: &str) {
+    // The refuser serves every refused peer in turn; an unbounded write to a
+    // stalled one would hold all the others.
+    if let Err(err) = stream.set_write_timeout(Some(STREAM_WRITE_TIMEOUT)) {
+        debug!(error = %err, "api refusal write timeout unavailable; closing unanswered");
+        return;
+    }
     let response = error_response_json(
         request_id,
         crate::error::ApiErrorCode::EndpointBusy,
-        format!("API server is at its limit of {MAX_ACTIVE_CONNECTIONS} active connections"),
+        format!(
+            "API server is at its limit of {MAX_API_INGRESS_CONNECTIONS} connections reading requests"
+        ),
     );
     if let Err(err) = write_text_line_allow_disconnect(&mut stream, &response.body) {
         debug!(error = %err, "failed to send API connection limit refusal");
@@ -174,16 +183,28 @@ fn send_busy_refusal(mut stream: LocalStream, request_id: &str) {
 
 /// Serves one API connection. `deadline` bounds the request line and is
 /// counted from accept, so classifying the connection does not extend it.
+///
+/// Admission is in two parts, so app admission saturation does not prevent
+/// control admission. `ingress` covers reading and parsing the request and
+/// writing any answer given without the app: `ping`, both stops, parse errors
+/// and refusals. A request for the app takes an app slot while still holding
+/// `ingress`, then gives `ingress` up and holds the app slot through the app's
+/// answer and its write, so every worker that can block is counted by one of
+/// the two. A stalled app loop therefore fills only app slots, and a stop
+/// still gets through; that delivers the stop, but a loop that never returns
+/// still never runs it.
 fn handle_connection(
     mut stream: LocalStream,
     deadline: Instant,
+    ingress: ConnectionSlot,
+    app_requests: &Arc<AtomicUsize>,
     api_tx: &ApiRequestSender,
     server_stop: &crate::ServerStopSignal,
     gate: &ClientGate,
 ) -> std::io::Result<()> {
-    if let Err(err) = stream.set_write_timeout(Some(STREAM_WRITE_TIMEOUT)) {
-        debug!(error = %err, "api connection write timeout unavailable");
-    }
+    // Every answer is a bounded write, so a stalled peer cannot hold a slot;
+    // a connection that cannot have that bound is closed unanswered.
+    stream.set_write_timeout(Some(STREAM_WRITE_TIMEOUT))?;
 
     let Some(line) = read_request_line_until(&mut stream, deadline)? else {
         return Ok(());
@@ -222,7 +243,28 @@ fn handle_connection(
         method_traits.routine,
     );
 
-    let response = handle_request(request, api_tx, server_stop, gate);
+    let response = match route_request(request, server_stop, gate) {
+        Route::Immediate(response) => response,
+        Route::App(request) => {
+            let Some(app_slot) =
+                ConnectionSlot::try_acquire(app_requests, MAX_APP_REQUESTS_IN_FLIGHT)
+            else {
+                let busy = error_response_json(
+                    &request_id,
+                    crate::error::ApiErrorCode::EndpointBusy,
+                    format!(
+                        "API server is at its limit of {MAX_APP_REQUESTS_IN_FLIGHT} requests waiting on the server loop"
+                    ),
+                );
+                return finish_api_response(&mut stream, &request_id, method_traits, &busy);
+            };
+            drop(ingress);
+            let response = dispatch_to_app(request, api_tx);
+            let written = finish_api_response(&mut stream, &request_id, method_traits, &response);
+            drop(app_slot);
+            return written;
+        }
+    };
     finish_api_response(&mut stream, &request_id, method_traits, &response)
 }
 
@@ -252,16 +294,24 @@ fn finish_api_response(
     Ok(())
 }
 
-/// Answers `ping` and both stop methods on this connection thread, including
-/// while App is restoring, and hands every other method to the app loop as an
-/// [`AppRequest`]. The match is the one routing classification: a method the
-/// app answers has an [`AppMethod`] arm, and nothing else reaches the app.
-fn handle_request(
+/// Where a parsed request is answered.
+enum Route {
+    /// By the connection thread, without the app loop.
+    Immediate(crate::error::EncodedApiResponse),
+    /// By the app loop.
+    App(AppRequest),
+}
+
+/// Answers `ping` and both stop methods on the connection thread, including
+/// while App is restoring or stalled, and routes every other method to the app
+/// loop as an [`AppRequest`]. The match is the one routing classification: a
+/// method the app answers has an [`AppMethod`] arm, and nothing else reaches
+/// the app.
+fn route_request(
     request: Request,
-    api_tx: &ApiRequestSender,
     server_stop: &crate::ServerStopSignal,
     gate: &ClientGate,
-) -> crate::error::EncodedApiResponse {
+) -> Route {
     let Request { id, method } = request;
     let method = match method {
         Method::Ping(_) => {
@@ -275,11 +325,17 @@ fn handle_request(
                     starting: !gate.is_open(),
                 },
             };
-            return crate::serialize_response_or_error_with_outcome(&id, &response);
+            return Route::Immediate(crate::serialize_response_or_error_with_outcome(
+                &id, &response,
+            ));
         }
-        Method::ServerStop(_) => return stop_server(&id, None, server_stop),
+        Method::ServerStop(_) => return Route::Immediate(stop_server(&id, None, server_stop)),
         Method::ServerStopIfBoot(params) => {
-            return stop_server(&id, Some(&params.expected_boot_id), server_stop);
+            return Route::Immediate(stop_server(
+                &id,
+                Some(&params.expected_boot_id),
+                server_stop,
+            ));
         }
         Method::DetectCapture(target) => AppMethod::DetectCapture(target),
         Method::DetectExplain(target) => AppMethod::DetectExplain(target),
@@ -288,14 +344,14 @@ fn handle_request(
     };
 
     if server_stop.is_requested() {
-        return error_response_json(
+        return Route::Immediate(error_response_json(
             &id,
             crate::error::ApiErrorCode::ServerUnavailable,
             "server is shutting down".into(),
-        );
+        ));
     }
 
-    dispatch_to_app(AppRequest { id, method }, api_tx)
+    Route::App(AppRequest { id, method })
 }
 
 fn stop_server(
@@ -495,6 +551,38 @@ mod tests {
         crate::ServerStopSignal::default()
     }
 
+    /// Routes a request as a connection does, dispatching an app-bound one.
+    fn handle_request(
+        request: Request,
+        api_tx: &ApiRequestSender,
+        server_stop: &crate::ServerStopSignal,
+        gate: &ClientGate,
+    ) -> crate::error::EncodedApiResponse {
+        match route_request(request, server_stop, gate) {
+            Route::Immediate(response) => response,
+            Route::App(request) => dispatch_to_app(request, api_tx),
+        }
+    }
+
+    /// Serves one connection with free admission and a running server.
+    fn serve_connection(
+        server: LocalStream,
+        api_tx: &ApiRequestSender,
+        app_requests: &Arc<AtomicUsize>,
+    ) -> io::Result<()> {
+        let ingress_count = Arc::new(AtomicUsize::new(0));
+        let ingress = ConnectionSlot::try_acquire(&ingress_count, 1).expect("ingress slot");
+        handle_connection(
+            server,
+            Instant::now() + crate::limits::INITIAL_REQUEST_TIMEOUT,
+            ingress,
+            app_requests,
+            api_tx,
+            &running(),
+            &ClientGate::default(),
+        )
+    }
+
     fn detect_capture(id: &str) -> Request {
         Request {
             id: id.into(),
@@ -546,7 +634,14 @@ mod tests {
             serde_json::from_str(&read_line(&mut client)).expect("valid refusal response");
         assert_eq!(response.id, "busy-request");
         assert_eq!(response.error.code, "endpoint_busy");
-        assert!(response.error.message.contains("64 active connections"));
+        assert!(
+            response
+                .error
+                .message
+                .contains(&format!("{MAX_API_INGRESS_CONNECTIONS} connections")),
+            "{}",
+            response.error.message
+        );
     }
 
     #[test]
@@ -686,14 +781,7 @@ mod tests {
             .expect("test precondition");
         client.flush().expect("test precondition");
 
-        handle_connection(
-            server,
-            Instant::now() + crate::limits::INITIAL_REQUEST_TIMEOUT,
-            &api_tx,
-            &running(),
-            &ClientGate::default(),
-        )
-        .expect("test precondition");
+        serve_connection(server, &api_tx, &Arc::default()).expect("test precondition");
 
         let response = read_line(&mut client);
         let response: serde_json::Value =
@@ -712,20 +800,55 @@ mod tests {
             .expect("test precondition");
         client.flush().expect("test precondition");
 
-        handle_connection(
-            server,
-            Instant::now() + crate::limits::INITIAL_REQUEST_TIMEOUT,
-            &api_tx,
-            &running(),
-            &ClientGate::default(),
-        )
-        .expect("test precondition");
+        serve_connection(server, &api_tx, &Arc::default()).expect("test precondition");
 
         let response = read_line(&mut client);
         let response: serde_json::Value =
             serde_json::from_str(&response).expect("test precondition");
         assert_eq!(response["id"], "ordinary");
         assert_eq!(response["result"]["type"], "pong");
+    }
+
+    /// A stalled app loop holds every app slot; a stop is still read and
+    /// answered, and another app request is refused at once.
+    #[test]
+    fn full_app_admission_still_admits_control_requests() {
+        let app_requests = Arc::new(AtomicUsize::new(0));
+        let _held = (0..MAX_APP_REQUESTS_IN_FLIGHT)
+            .map(|_| {
+                ConnectionSlot::try_acquire(&app_requests, MAX_APP_REQUESTS_IN_FLIGHT)
+                    .expect("app slot")
+            })
+            .collect::<Vec<_>>();
+        let (api_tx, mut api_rx) = mpsc::channel::<ApiRequestMessage>(1);
+
+        let (mut client, server) = local_stream_pair("full-app-admission-stop");
+        writeln!(
+            client,
+            r#"{{"id":"stop","method":"server.stop","params":{{}}}}"#
+        )
+        .expect("test precondition");
+        serve_connection(server, &api_tx, &app_requests).expect("stop served");
+        let stopped: serde_json::Value =
+            serde_json::from_str(&read_line(&mut client)).expect("json");
+        assert_eq!(stopped["result"]["type"], "ok");
+
+        let (mut client, server) = local_stream_pair("full-app-admission-report");
+        writeln!(
+            client,
+            r#"{{"id":"capture","method":"detect.capture","params":{{"pane_id":"w1:p1"}}}}"#
+        )
+        .expect("test precondition");
+        serve_connection(server, &api_tx, &app_requests).expect("refusal served");
+        let refused: serde_json::Value =
+            serde_json::from_str(&read_line(&mut client)).expect("json");
+        assert_eq!(refused["id"], "capture");
+        assert_eq!(refused["error"]["code"], "endpoint_busy");
+        assert!(api_rx.try_recv().is_err(), "nothing reached the app");
+        assert_eq!(
+            app_requests.load(Ordering::Acquire),
+            MAX_APP_REQUESTS_IN_FLIGHT
+        );
     }
 
     #[test]
@@ -953,14 +1076,7 @@ mod tests {
             let (api_tx, mut api_rx) = mpsc::channel(1);
             let (mut client, server) = local_stream_pair("invalid-request-id");
             writeln!(client, "{request}").expect("test precondition");
-            handle_connection(
-                server,
-                Instant::now() + crate::limits::INITIAL_REQUEST_TIMEOUT,
-                &api_tx,
-                &running(),
-                &ClientGate::default(),
-            )
-            .expect("test precondition");
+            serve_connection(server, &api_tx, &Arc::default()).expect("test precondition");
 
             let mut response = String::new();
             BufReader::new(client)

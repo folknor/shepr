@@ -50,13 +50,13 @@ pub(crate) const APP_EVENT_DRAIN_LIMIT: usize = 64;
 pub(crate) const MAX_WORKER_COMPLETION_BACKLOG: usize = 8;
 /// Limit API requests per loop pass so client and scheduled work still get service.
 pub(crate) const API_REQUEST_DRAIN_LIMIT: usize = 64;
-/// Bound queued API requests to the number of active API connections. Each
-/// connection has at most one request in the queue at a time. Requests whose
+/// Bound queued API requests to the number of app-bound API requests in
+/// flight. Each has at most one request in the queue at a time. Requests whose
 /// connection gave up waiting stay queued, so a stalled loop can fill the
 /// queue; producers then refuse new requests with `server_unavailable` at
 /// once instead of growing it. A refused agent hook report is dropped, as it
 /// is when the server is down.
-pub(crate) const API_REQUEST_CHANNEL_CAPACITY: usize = shepr_api::MAX_ACTIVE_CONNECTIONS;
+pub(crate) const API_REQUEST_CHANNEL_CAPACITY: usize = shepr_api::MAX_APP_REQUESTS_IN_FLIGHT;
 /// Limit server events per loop pass so API and scheduled work still get service.
 pub(crate) const SERVER_EVENT_DRAIN_LIMIT: usize = 64;
 

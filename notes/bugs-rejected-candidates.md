@@ -149,19 +149,6 @@ channel resolves at once on every poll, so the loop would spin. It never closes
 in production only because `run_server` keeps its original `api_tx` alive in a
 local for the whole `block_on`; nothing documents that the local is load-bearing.
 
-## REJ-012 - A failed remove leaves the layout's placeholder as the root
-
-Class: latent (the uniqueness and count guards rule out the failing case today).
-Scope: input and platform.
-
-`crates/shepr-core/src/layout.rs`, `TileLayout::close_focused` and `close_pane`
-`mem::replace` the root with `Node::Pane(PaneId::PLACEHOLDER)`, then call
-`remove_pane(old, target)`. On `None` they return `false` and leave the
-placeholder installed as the whole layout; `remove_pane` consumed `old`. Claim
-broken: `PaneId::PLACEHOLDER` "must not outlive the operation", which
-`collect_validated_ids` relies on. Have `remove_pane` take `&mut Node` and splice
-in place, or return the untouched subtree on failure (`Result<Node, Node>`).
-
 ## REJ-013 - An oversized OSC title cut by the adapter still reaches the parser
 
 Class: latent (unconfirmed; the terminal-core hunter left it for the mux side to
@@ -171,28 +158,6 @@ The adapter feeds CAN, which makes vte's `osc_end` dispatch the truncated OSC.
 For OSC 52 this is covered (the truncated base64 fails to decode or decodes over
 the cap). An OSC 0/2 title gets dispatched at up to `MAX_PARSER_OSC_BYTES` (about
 512 KiB). Whether the title path caps that was not checked.
-
-## REJ-015 - Hard PTY read/write errors are reported as a normal close, so the pane can outlive its reader
-
-Class: failure on failure (a non-EIO PTY error; the hunter calls the trigger rare
-on Linux, with a stuck pane as the outcome). Scope: terminal core.
-
-Location: `PtyIoActorRunner::read_chunk`, `write_next`, and the `pty_error` arm
-of `run` in `crates/shepr-pty/src/actor.rs`. Claims broken:
-`ReaderExit::Closed` ("The child has gone or is being torn down; its own exit is
-reported by whoever reaps it"); `ReaderExit::IoFailed` ("The child may still be
-running, so the owner must remove the pane"); the mux `on_reader_exit` ("a hard
-reader IO failure can leave the child alive with no reader, so report those
-exits"); the actor's own log lines ("closing the pane"). A read error other than
-EIO, EAGAIN or EINTR returns `ReadOutcome::Closed` with `exit_reason` still
-`Closed`; so does a non-EIO write error (via `handle_write_failure`), `Ok(0)` from
-write, and POLLERR. The mux maps `ReaderExit::Closed => return` and waits for the
-child watcher; nothing closes the pane. The only remaining lever is the SIGHUP the
-kernel sends when the master drops; a child that ignores or handles SIGHUP keeps
-running with no reader, and the pane sits frozen. EIO is the only error that
-means the slave closed (`pty_master_error_means_child_closed`); every other hard
-error and POLLERR should set `ReaderExit::IoFailed`, and the `Closed` doc should
-drop "a PTY read error".
 
 ## REJ-016 - Read failures are logged as "mutation was not applied" and use up the one-shot report
 
@@ -258,29 +223,6 @@ and restore replays scrollback older than its layout. The writer calls history
 panes. Stamp a save generation into both files and pair on it, or publish layout
 and history as one directory by a single rename.
 
-## REJ-023 - The global panic hook restores the terminal for panics the client is designed to survive
-
-Class: failure on failure (a panic in a helper thread). Scope: client endpoints.
-
-Claims broken: `EndpointSupervisors::spawn_due` survives a panicking connection
-attempt ("A panic loses it with the task; the join error below then reports no
-connector, and `return_connector` rebuilds one from the machine so the endpoint
-still retries"); `transport::report_disconnect` says a reader's exit is always
-handed to the loop. `run_launched_client` installs a process-wide panic hook that
-calls `panic_restore()` on any thread's panic. Release builds unwind
-(`overflow-checks = true` makes arithmetic panics reachable). A panic in the
-`spawn_blocking` connect task, an endpoint reader, the writer, the stdin thread or
-the resize thread leaves raw mode and the alternate screen and pops the keyboard
-modes, then claims the one-shot restore, while the loop keeps writing frames and
-mode sequences to a cooked, main-screen terminal; the final
-`TerminalGuard::restore` is then a no-op, so modes the loop re-enabled (mouse
-capture, report-all) are never undone. A panicked endpoint reader also never
-sends `ServerDisconnected`; for Local, which has no heartbeat, that endpoint is
-silently frozen until exit. Restore only for the main thread and turn
-helper-thread panics into loop events (reader: report a disconnect from a drop
-guard; connect task: already a `JoinError`), or adopt abort semantics and stop
-claiming survivability.
-
 ## REJ-024 - A crash-looping Local server is retried without backoff
 
 Class: failure on failure (a server that accepts and then dies). Scope: client
@@ -291,29 +233,6 @@ while SSH waits for `STABLE_CONNECTION_PERIOD` ("A brief maintenance wake can
 complete a handshake without restoring the link"). A Local server that accepts
 and then dies (a crash loop, or a stopping server that welcomes then sends
 `ServerShutdown`) is retried every `INITIAL_RETRY_DELAY` forever.
-
-## REJ-026 - The API's control path shares the admission pool with app-bound requests, so a stalled loop makes `server stop` fail
-
-Class: failure on failure (the app loop has already stalled). Scope: wire and
-config.
-
-`crates/shepr-api/src/server.rs` (`start_server`, `ConnectionAdmission`,
-`handle_request`, `reject_busy_connection`), `limits.rs`. Claim: ping and the
-stop methods are answered on the API thread so a stop works when the app loop
-does not answer (`server_stop_control_bypasses_app_channel`, `ServerStopSignal`).
-Admission (`ConnectionAdmission::try_acquire`, `MAX_ACTIVE_CONNECTIONS = 64`)
-runs on the listener thread before the request line is read, so it applies to
-every method. An app-bound request (`pane.report_agent`,
-`pane.report_agent_session`, `detect.*`) holds its slot until the app answers or
-`ORDINARY_REQUEST_TIMEOUT` (15 s) runs out. When the loop stalls, hook traffic
-fills all 64 slots within seconds; then `server.stop` / `server.stop_if_boot` get
-`endpoint_busy` (`send_stop_request` maps it to `ServerStopError::Protocol`, the
-stop is never delivered; the restart flow fails the same way), and `ping` gets
-`endpoint_busy`, so status, preflight and remote checks report a failure rather
-than a stalled server. The busy refuser already reads the refused line to echo the
-id and could answer `ping` and both stop methods there. Structural fix: admit by
-method class (a small reserve for control methods, or read the line before
-admission and cap only app-bound methods).
 
 ## REJ-027 - A stop that was never delivered is reported as a timeout with "socket still reachable"
 

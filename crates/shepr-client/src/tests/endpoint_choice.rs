@@ -185,6 +185,7 @@ impl Fixture {
             state,
             endpoint::LocalFailurePolicy::Reconnect,
             Arc::new(AtomicBool::new(false)),
+            Arc::default(),
             registry,
             supervisors,
             Arc::new(AtomicCellSize::new()),
