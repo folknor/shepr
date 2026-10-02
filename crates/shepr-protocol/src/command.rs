@@ -138,7 +138,15 @@ pub struct PaneZoomParams {
 pub struct LayoutSetSplitRatioParams {
     pub workspace_id: WorkspaceId,
     /// Exact pane membership of the two children, captured when dragging starts.
+    #[serde(
+        serialize_with = "crate::codec::serialize_bounded_vec::<{ crate::MAX_SURFACE_PANES }, _, _>",
+        deserialize_with = "crate::codec::deserialize_bounded_vec::<{ crate::MAX_SURFACE_PANES }, _, _>"
+    )]
     pub first_panes: Vec<PublicPaneId>,
+    #[serde(
+        serialize_with = "crate::codec::serialize_bounded_vec::<{ crate::MAX_SURFACE_PANES }, _, _>",
+        deserialize_with = "crate::codec::deserialize_bounded_vec::<{ crate::MAX_SURFACE_PANES }, _, _>"
+    )]
     pub second_panes: Vec<PublicPaneId>,
     pub ratio: f32,
 }

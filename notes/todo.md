@@ -58,6 +58,44 @@ not idempotent for hook-source bookkeeping: it can consume a pending start,
 discard a pending report and clear ordering. Confirmation would need to identify
 the exit generation it resolves.
 
+## Pane history can be restored into the wrong pane after repeated history-only write failures
+
+`layout_fingerprint` in `crates/shepr-mux/src/persist/snapshot.rs` pairs the
+history file to the layout by shape and pane IDs, and restore reassigns pane
+IDs in tree order, so the IDs carry no identity across boots. Swap two panes,
+have history writes fail (while layout writes succeed) across a restart, and a
+later layout can match the old history's fingerprint: each pane then restores
+the other's scrollback. Accepted for now (the comment at the function says so);
+the fix is a save generation stamped into both files and paired on.
+
+## Unverified: a cropped dirty patch can cut a wide character
+
+`terminal_collect_dirty_patch` in `crates/shepr-mux/src/pane/terminal/helpers.rs`
+takes `area_width` cells per row, which can split a wide character from its
+spacer; a cropped full render may do the same. Check whether `changed_rows`
+then rejects the patch as invalid, and what a client sees.
+
+## Unverified: a non-regular session path blocks every save
+
+`preserve_existing_in` in `crates/shepr-mux/src/persist/writer.rs` returns
+"session path is not a regular file" when `protect_unloaded` is set and the
+session path is a directory or other non-regular file, which fails every save
+until someone removes it by hand. Confirm the log names the path to remove.
+
+# Gaps and smells
+
+Not defects: paths with no test, and code that works but reads worse than it
+should.
+
+- No test forces a session persister job to panic, so `PersistState::run_guarded`'s latch is untested on both worker kinds; it needs a seam to inject a panicking job.
+- The headless loop's closed-API-channel arm (`api_request_open` in `crates/shepr-server/src/server/headless.rs`) has no test; the loop needs a full app to run.
+- The split's public number reaching the child's `SHEPR` pane id is not tested end to end; that needs a real spawn.
+- Client panic handling has untested paths: a panic in terminal setup whose restore also panics, a helper thread panicking during startup, and a pane core breaking between a pane exit's prepare and its replay on the server.
+- A delivered `server.stop` cannot make a wedged server loop finish; forcing that would need its own mechanism and a decision about the final save.
+- A non-persisting app (`Suspended`, or a test app) builds a full `SessionWriter` just to hold the data-directory lease, and server tests that flip a test app to Production exercise the inline persister, the path production almost never uses. A lease-only worker and spawned persisters in those tests would fix both.
+- `set_pane_keyboard_report_all` and `sync_shell_keyboard_report_all` in `crates/shepr-client/src/terminal_setup.rs` are near duplicates.
+- `restore_host_keyboard_protocol` in `crates/shepr-termio/src/host_term/modes.rs` does not flush; its one caller does, but a new caller that forgets would emit nothing.
+
 # Possible capabilities
 
 Proposals that arrived as defects but would widen what shepr claims. None is

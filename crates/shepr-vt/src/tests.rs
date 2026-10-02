@@ -1,7 +1,7 @@
 use super::*;
 use crate::limits::{
     KEYBOARD_MODE_STACK_MAX_DEPTH, MAX_OSC_BYTES, MAX_OSC_RAW_BYTES, MAX_SCROLLBACK_LINES,
-    MIN_SCROLLBACK_LINES,
+    MAX_TITLE_BYTES, MIN_SCROLLBACK_LINES,
 };
 
 /// The screen point shown at viewport row `row`: screen rows count from the
@@ -1388,6 +1388,31 @@ fn plain_reads_trim_trailing_blank_lines_and_spaces() {
             .expect("test precondition"),
         ""
     );
+}
+
+#[test]
+fn a_long_title_is_cut_before_alacritty_keeps_or_stacks_it() {
+    let mut terminal = Terminal::new(20, 3, 100);
+    // Two-byte characters, twice the cap in bytes.
+    let long = "\u{e9}".repeat(MAX_TITLE_BYTES);
+    let mut input = format!("\x1b]2;{long}\x07").into_bytes();
+    for _ in 0..64 {
+        input.extend_from_slice(b"\x1b[22t");
+    }
+    terminal.write(&input);
+    let Some(TitleUpdate::Set(title)) = terminal.take_title_update() else {
+        panic!("test precondition: a title was set");
+    };
+    assert!(title.len() <= MAX_TITLE_BYTES);
+    assert!(title.len() > MAX_TITLE_BYTES - 4);
+    assert!(title.chars().all(|ch| ch == '\u{e9}'));
+
+    // Every pushed copy is the capped title, not the original.
+    terminal.write(b"\x1b]2;x\x07\x1b[23t");
+    let Some(TitleUpdate::Set(popped)) = terminal.take_title_update() else {
+        panic!("test precondition: a title was popped");
+    };
+    assert_eq!(popped, title);
 }
 
 #[test]

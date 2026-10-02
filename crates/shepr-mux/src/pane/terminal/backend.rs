@@ -128,8 +128,9 @@ impl PaneTerminal {
             return false;
         };
         {
+            // A read stays silent: the PTY actor reports a poisoned core and
+            // closes the pane. Only the mutating lock below reports.
             let Ok(core) = shepr_vt::lock_terminal_core(&self.core) else {
-                self.report_terminal_mutation_failure("host theme restore");
                 return false;
             };
             if !should_probe_host_terminal_theme_restore(&core) {
@@ -172,7 +173,8 @@ impl PaneTerminal {
     /// latest OSC 9;4 payload; each is `""` when none was seen or it was cleared.
     pub(crate) fn agent_detection_inputs(&self) -> AgentDetectionInputs {
         let Ok(core) = shepr_vt::lock_terminal_core(&self.core) else {
-            self.report_terminal_mutation_failure("agent detection read");
+            // A read stays silent: the PTY actor reports a poisoned core and
+            // closes the pane, and a read is not a skipped mutation.
             return AgentDetectionInputs::default();
         };
         AgentDetectionInputs {

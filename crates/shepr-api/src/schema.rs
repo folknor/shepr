@@ -10,11 +10,139 @@ pub use panes::*;
 pub use response::*;
 pub use server::*;
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// One JSON request line: `{"id": .., "method": .., "params": ..}`.
+///
+/// Deserialization refuses any other top-level key. serde's
+/// `deny_unknown_fields` cannot be combined with the flattened method, and a
+/// derived decode would silently drop a stray key such as an
+/// `expected_boot_id` placed beside `server.stop` instead of inside
+/// `server.stop_if_boot`'s params, turning a request meant to be conditional
+/// into an unconditional stop. Serialization is the derived flattened form.
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Request {
     pub id: String,
     #[serde(flatten)]
     pub method: Method,
+}
+
+impl<'de> Deserialize<'de> for Request {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct RawRequest {
+            id: String,
+            method: serde_json::Value,
+            #[serde(default)]
+            params: Option<UniqueKeysValue>,
+        }
+
+        let RawRequest { id, method, params } = RawRequest::deserialize(deserializer)?;
+        let mut tagged = serde_json::Map::new();
+        tagged.insert("method".into(), method);
+        if let Some(UniqueKeysValue(params)) = params {
+            tagged.insert("params".into(), params);
+        }
+        let method = Method::deserialize(serde_json::Value::Object(tagged))
+            .map_err(serde::de::Error::custom)?;
+        Ok(Self { id, method })
+    }
+}
+
+/// A JSON value that refuses a repeated object key at any depth. A plain
+/// `serde_json::Value` keeps the last of two equal keys, so a params object
+/// with two `expected_boot_id`s would quietly guard on the second; the
+/// derived params structs refuse duplicates only when they read the request
+/// text themselves, which the method re-tagging in `Request`'s decode
+/// prevents.
+struct UniqueKeysValue(serde_json::Value);
+
+impl<'de> Deserialize<'de> for UniqueKeysValue {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct Visitor;
+
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = UniqueKeysValue;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a JSON value without repeated object keys")
+            }
+
+            fn visit_bool<E>(self, value: bool) -> Result<Self::Value, E> {
+                Ok(UniqueKeysValue(value.into()))
+            }
+
+            fn visit_i64<E>(self, value: i64) -> Result<Self::Value, E> {
+                Ok(UniqueKeysValue(value.into()))
+            }
+
+            fn visit_u64<E>(self, value: u64) -> Result<Self::Value, E> {
+                Ok(UniqueKeysValue(value.into()))
+            }
+
+            fn visit_f64<E>(self, value: f64) -> Result<Self::Value, E> {
+                Ok(UniqueKeysValue(
+                    serde_json::Number::from_f64(value).map_or(serde_json::Value::Null, Into::into),
+                ))
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<Self::Value, E> {
+                Ok(UniqueKeysValue(value.into()))
+            }
+
+            fn visit_string<E>(self, value: String) -> Result<Self::Value, E> {
+                Ok(UniqueKeysValue(value.into()))
+            }
+
+            fn visit_unit<E>(self) -> Result<Self::Value, E> {
+                Ok(UniqueKeysValue(serde_json::Value::Null))
+            }
+
+            fn visit_none<E>(self) -> Result<Self::Value, E> {
+                Ok(UniqueKeysValue(serde_json::Value::Null))
+            }
+
+            fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
+            where
+                D: serde::Deserializer<'de>,
+            {
+                UniqueKeysValue::deserialize(deserializer)
+            }
+
+            fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+            where
+                A: serde::de::SeqAccess<'de>,
+            {
+                let mut items = Vec::new();
+                while let Some(UniqueKeysValue(item)) = seq.next_element()? {
+                    items.push(item);
+                }
+                Ok(UniqueKeysValue(serde_json::Value::Array(items)))
+            }
+
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where
+                A: serde::de::MapAccess<'de>,
+            {
+                let mut object = serde_json::Map::new();
+                while let Some(key) = map.next_key::<String>()? {
+                    let UniqueKeysValue(value) = map.next_value()?;
+                    if object.contains_key(&key) {
+                        return Err(serde::de::Error::custom(format!("duplicate field `{key}`")));
+                    }
+                    object.insert(key, value);
+                }
+                Ok(UniqueKeysValue(serde_json::Value::Object(object)))
+            }
+        }
+
+        deserializer.deserialize_any(Visitor)
+    }
 }
 
 /// Facts about one API method, kept together so request handling, rendering

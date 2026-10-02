@@ -143,6 +143,9 @@ pub struct HeadlessServer {
     server_event_tx: mpsc::Sender<ServerEvent>,
     /// Bounded requests received by the JSON API listener.
     api_request_rx: mpsc::Receiver<shepr_api::ApiRequestMessage>,
+    /// False once `api_request_rx` reported closed; the loop then stops
+    /// selecting it instead of spinning on a receiver that resolves at once.
+    api_request_open: bool,
     /// Outboxes of new clients dequeued after stopping, held until their
     /// queued commands receive refusals before the shutdown notice is sent.
     shutdown_unregistered_clients: HashMap<ClientId, ClientOutbox>,
@@ -207,6 +210,7 @@ impl HeadlessServer {
             server_event_rx,
             server_event_tx,
             api_request_rx,
+            api_request_open: true,
             shutdown_unregistered_clients: HashMap::new(),
             shutdown_flushes: Vec::new(),
             pending_checkpointed_pane_exits: VecDeque::new(),
@@ -430,23 +434,45 @@ impl HeadlessServer {
             // A capped drain leaves queued work in its receiver. The matching
             // receive branch stays ready and starts another pass immediately.
             let event = {
+                // A closed receiver resolves at once on every poll, so a
+                // branch whose channel closed must stop being selected or the
+                // loop would spin on Timer events.
+                let api_open = self.api_request_open;
                 tokio::select! {
                     // A `server.stop` from the API sets the latch on another
                     // thread; this is what wakes an idle loop to act on it.
                     () = stop_signal.notified() => LoopEvent::Timer,
                     () = self.outbox_wake.notified() => LoopEvent::Timer,
-                    maybe_api = self.api_request_rx.recv() => match maybe_api {
+                    // The channel closes only if the API listener thread and
+                    // every connection worker holding a sender died, which also
+                    // means the socket is dead. Production keeps the sender in
+                    // the listener until this loop ends. Stop selecting it
+                    // rather than spin.
+                    maybe_api = self.api_request_rx.recv(), if api_open => match maybe_api {
                         Some(msg) => LoopEvent::Api(Box::new(msg)),
-                        None => LoopEvent::Timer,
+                        None => {
+                            self.api_request_open = false;
+                            tracing::error!(
+                                "API request channel closed; API requests are no longer served"
+                            );
+                            LoopEvent::Timer
+                        }
                     },
+                    // App keeps the sender of its own event channel, so this
+                    // cannot close while the loop runs.
                     maybe_ev = self.app.event_rx.recv() => match maybe_ev {
                         Some(ev) => LoopEvent::Internal(ev),
                         None => LoopEvent::Timer,
                     },
+                    // The server holds a sender for its own event channel (it
+                    // is cloned to clients), so this cannot close while the
+                    // loop runs.
                     maybe_server_ev = self.server_event_rx.recv() => match maybe_server_ev {
                         Some(ev) => LoopEvent::ServerEvent(ev),
                         None => LoopEvent::Timer,
                     },
+                    // The server keeps the worker sender it hands to jobs, so
+                    // this cannot close while the loop runs.
                     maybe_worker = self.worker_rx.recv() => match maybe_worker {
                         Some(completion) => LoopEvent::WorkerCompletion(completion),
                         None => LoopEvent::Timer,

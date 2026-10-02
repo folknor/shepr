@@ -444,6 +444,19 @@ fn capture_workspace(
     }
 }
 
+// Pairing history to a layout by shape is deliberate. If a save commits the
+// layout and its history write then fails, the history on disk is either for
+// a layout of a different shape (restore ignores it, so every pane's
+// scrollback is dropped; that fails safe) or for one of the same shape and
+// pane IDs. In the second case restore usually replays older scrollback of the
+// same panes, but pane IDs are process-local and restore reassigns them in
+// tree order, so the IDs do not carry pane identity across boots: after panes
+// are swapped and history writes keep failing across a restart while layout
+// writes succeed, a later layout can match the old history's fingerprint and
+// each pane gets the other's scrollback. The next successful save rewrites
+// the history in full. Pairing on a save generation stamped in both files
+// would close that; it was judged not worth the extra field for a case that
+// needs repeated history-only write failures.
 pub(super) fn layout_fingerprint(snapshot: &SessionSnapshot) -> Option<String> {
     use sha2::{Digest, Sha256};
     use std::fmt::Write as _;

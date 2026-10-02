@@ -668,6 +668,10 @@ fn preserve_existing_in(
 
         // Publish history first. The layout filename is the recovery copy's
         // commit marker, so a layout backup never appears without its pair.
+        // The `AlreadyExists` arms below are a backstop: under the data
+        // directory lease there is one writer, and the existence check above
+        // already skips a taken name, so only a file appearing in between
+        // (which the lease rules out) reaches them.
         let copied_history = if has_history {
             let mut source = File::open(&history_path)?;
             match copy_recovery(&mut source, &history_backup) {

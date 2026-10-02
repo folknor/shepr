@@ -592,6 +592,16 @@ fn send_stop_request(
         Err(ApiClientDeadlineError::Connect(error)) => {
             Err(stop_socket_io_error(socket_path, label, error))
         }
+        // A connection closed without an answer is ambiguous. The server may
+        // have begun stopping before it wrote one, or it may have dropped the
+        // connection unanswered, which the listener and the API connection
+        // handler do in several failure paths (a refused peer, a worker that
+        // cannot spawn, a saturated overflow queue, a request line it cannot
+        // read). The client cannot tell which, so this is a decision to count
+        // the request as accepted and let the wait that follows decide. A stop
+        // that never arrived then ends in the wait's `TimedOut`, whose
+        // wording reads as though the stop was delivered; that ambiguity is
+        // accepted rather than resolved.
         Ok(_) | Err(ApiClientDeadlineError::Request(ApiClientError::EmptyResponse)) => Ok(()),
         Err(ApiClientDeadlineError::Request(ApiClientError::Io(error)))
             if stop_request_error_allows_wait(&error) =>

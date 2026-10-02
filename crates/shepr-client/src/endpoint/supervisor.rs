@@ -362,6 +362,14 @@ impl EndpointSupervisors {
         state.in_flight = false;
         match status {
             ClientEndpointStatus::Online => {
+                // Local's attempts reset on every Online, unlike SSH's stable-period
+                // rule, so that reaching a Local server again after an outage
+                // retries quickly. A Local server that accepts and then dies
+                // repeatedly is retried every INITIAL_RETRY_DELAY, but only an
+                // external respawner can produce that (nothing in shepr restarts
+                // the server), and a retry costs one socket connect plus a
+                // handshake, never a server launch. A server that is gone fails
+                // the attempt and backs off normally.
                 if endpoint_id.is_local() {
                     state.attempts = 0;
                 }

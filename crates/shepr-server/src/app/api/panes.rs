@@ -94,11 +94,12 @@ impl App {
             terminal,
             runtime,
             prepared_layout,
+            public_number,
         } = new_pane;
         let terminal_id = terminal.id.clone();
         let Some(outcome) =
             self.state
-                .commit_pane_split(ws_idx, pane_id, prepared_layout, terminal)
+                .commit_pane_split(ws_idx, pane_id, prepared_layout, terminal, public_number)
         else {
             drop(runtime);
             return rejected("the split target is no longer available");

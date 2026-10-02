@@ -62,6 +62,35 @@ fn server_stop_rejects_a_boot_guard_on_the_unconditional_method() {
 }
 
 #[test]
+fn request_refuses_unknown_top_level_keys() {
+    // A guard placed beside the method instead of inside the conditional
+    // method's params must not decode as an unconditional stop.
+    let stray_guard = r#"{"id":"s","method":"server.stop","params":{},"expected_boot_id":"17-23"}"#;
+    let error = serde_json::from_str::<Request>(stray_guard)
+        .expect_err("a stray top-level key must be refused");
+    assert!(error.to_string().contains("expected_boot_id"), "{error}");
+
+    let stray_on_ping = r#"{"id":"p","method":"ping","params":{},"extra":1}"#;
+    assert!(serde_json::from_str::<Request>(stray_on_ping).is_err());
+
+    let duplicate_id = r#"{"id":"a","id":"b","method":"ping","params":{}}"#;
+    assert!(serde_json::from_str::<Request>(duplicate_id).is_err());
+}
+
+#[test]
+fn request_refuses_repeated_keys_inside_params() {
+    // Two guards are ambiguous: neither may win silently.
+    let two_guards = r#"{"id":"s","method":"server.stop_if_boot","params":{"expected_boot_id":"17-23","expected_boot_id":"17-24"}}"#;
+    let error = serde_json::from_str::<Request>(two_guards)
+        .expect_err("a repeated params key must be refused");
+    assert!(error.to_string().contains("expected_boot_id"), "{error}");
+
+    let one_guard =
+        r#"{"id":"s","method":"server.stop_if_boot","params":{"expected_boot_id":"17-23"}}"#;
+    assert!(serde_json::from_str::<Request>(one_guard).is_ok());
+}
+
+#[test]
 fn cross_build_ping_and_conditional_stop_json_is_frozen() {
     // Preflight can inspect and restart a server from another build. Keep the
     // ping identity and guarded stop request bytes stable across those builds.

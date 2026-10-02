@@ -127,6 +127,15 @@ pub fn set_host_keyboard_protocol<W: Write>(
         return Ok(());
     }
 
+    // `active` is updated only after a successful flush, on purpose. A failed
+    // host write is fatal to the client, and the final restore is driven by the
+    // client's own restore mask (`HostModes` in shepr-client), which is raised
+    // before every keyboard write and never narrowed by a failed one, so it
+    // over-approximates what shepr owns. The worst case after a write that
+    // fails part way is one extra pop at restore, which could remove an entry
+    // the shell or an outer multiplexer pushed if the terminal is still alive;
+    // leaking a pushed entry into the shell would be the worse bias. A stale
+    // `active` is never read again.
     if active.kitty_flags != next_kitty_flags {
         if active.kitty_flags.is_some() {
             writer.write_all(HOST_KITTY_KEYBOARD_POP_SEQUENCE)?;

@@ -361,6 +361,7 @@ impl Workspace {
             host_terminal_appearance,
             shell_config,
             &launch_env,
+            pane_number,
             spawn,
         ))
     }
@@ -370,15 +371,15 @@ impl Workspace {
         pane_id: PaneId,
         prepared_layout: TileLayout,
         terminal_id: TerminalId,
+        public_number: usize,
         focus: bool,
     ) -> Option<()> {
-        let number = self.next_public_pane_number;
-        self.commit_prepared_split(pane_id, prepared_layout, terminal_id, number)
+        self.commit_prepared_split(pane_id, prepared_layout, terminal_id, public_number)
             .then_some(())?;
         if focus && !self.focus_pane(pane_id) {
             tracing::error!(workspace = %self.id, ?pane_id, "refused to focus a pane after admitting its split");
         }
-        self.advance_next_public_pane_number(number);
+        self.advance_next_public_pane_number(public_number);
         Some(())
     }
 

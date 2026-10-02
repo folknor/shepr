@@ -8,11 +8,14 @@
 //! /proc, formatting new scrollback, serializing, writing and syncing the
 //! layout and history files as one bundle) happens on the persister's thread, one
 //! job at a time and in the order they were submitted, so a history is always
-//! resolved against the carry state its predecessor left.
+//! resolved against the carry state its predecessor left. The exception is an
+//! inline persister (no thread was asked for, or the thread could not be
+//! started): its jobs, expensive work included, run on the submitting thread,
+//! which for a server is the event loop.
 //!
 //! The lease is released only when the persister is retired, after every
 //! submitted job has finished or been abandoned.
-//! If a worker job panics, it fails closed: it reports that job and later
+//! If a job panics, on either kind of worker, it fails closed: it reports that job and later
 //! submissions as abandoned, keeps the writer (and lease) alive, and releases
 //! the lease only after the persister is retired.
 //!
@@ -111,8 +114,9 @@ impl SaveCompletion {
 }
 
 impl Drop for SaveCompletion {
-    /// Fires on every way a job ends: reported, or dropped unreported after a
-    /// job panic, which the pending side reads as abandoned. `notify_one`
+    /// Fires on every way a job ends: reported, or dropped unreported when the
+    /// persister went away before running it, which the pending side reads
+    /// as abandoned. `notify_one`
     /// keeps a permit when nobody is waiting yet, so a job that ends between
     /// the loop's check and its wait still wakes it.
     fn drop(&mut self) {
@@ -127,13 +131,59 @@ fn abandoned() -> io::Error {
     io::Error::other("session persister ended before finishing the save")
 }
 
+/// The result of a job that panicked, and of every job after it: the
+/// persister is still alive and holds the lease, but runs no more saves.
+fn stopped_after_panic() -> io::Error {
+    io::Error::other("session persister stopped after a save panicked; no further saves run")
+}
+
 /// The state the persister's thread owns.
 struct PersistState {
     writer: SessionWriter,
     history: HistoryCarry,
+    /// Cleared when a job panics: the state may be half updated, so no later
+    /// job runs against it. The writer, and its lease, stay alive.
+    accepting_jobs: bool,
 }
 
 impl PersistState {
+    fn new(writer: SessionWriter, history: HistoryCarry) -> Self {
+        Self {
+            writer,
+            history,
+            accepting_jobs: true,
+        }
+    }
+
+    /// Runs `job` under the persister's panic contract, whichever worker owns
+    /// the state. A job that panics fails, as does every later one, and the
+    /// state is kept so the lease stays held until retirement. For an inline
+    /// persister this means a panicking save no longer ends the server: it
+    /// keeps running with saves off, which the error log says once.
+    fn run_guarded(&mut self, job: PersistJob, now: SystemTime) -> io::Result<()> {
+        if !self.accepting_jobs {
+            return Err(stopped_after_panic());
+        }
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "the persister owns its job panics: a caught panic abandons that job and every later one, while the lease stays held until retirement"
+        )]
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.run(job, now)));
+        outcome.unwrap_or_else(|_| {
+            // The state stays outside the unwind boundary. Its writer owns
+            // the lease, so a failed persister cannot let another server
+            // restore stale files while this server still owns live panes.
+            self.accepting_jobs = false;
+            tracing::error!(
+                event = "persist.actor",
+                subsystem = "persist",
+                outcome = "panicked",
+                "session persister stopped after a job panicked; holding the data directory lease until retirement"
+            );
+            Err(stopped_after_panic())
+        })
+    }
+
     fn run(&mut self, job: PersistJob, now: SystemTime) -> io::Result<()> {
         match job {
             PersistJob::Clear => {
@@ -221,10 +271,10 @@ impl SessionPersister {
         finished: Arc<Notify>,
     ) -> Self {
         Self {
-            worker: Worker::Inline(Box::new(PersistState {
-                writer: SessionWriter::new(lease, protect_unloaded),
+            worker: Worker::Inline(Box::new(PersistState::new(
+                SessionWriter::new(lease, protect_unloaded),
                 history,
-            })),
+            ))),
             finished,
         }
     }
@@ -240,10 +290,7 @@ impl SessionPersister {
         history: HistoryCarry,
         finished: Arc<Notify>,
     ) -> Self {
-        let state = PersistState {
-            writer: SessionWriter::new(lease, protect_unloaded),
-            history,
-        };
+        let state = PersistState::new(SessionWriter::new(lease, protect_unloaded), history);
         // The state is handed over only once the thread runs, so a failed
         // spawn leaves it here for the inline fallback.
         let (state_sender, state_receiver) = mpsc::channel::<PersistState>();
@@ -254,36 +301,8 @@ impl SessionPersister {
                 let Ok(mut state) = state_receiver.recv() else {
                     return;
                 };
-                let mut accepting_jobs = true;
                 while let Ok(Command { job, now, done }) = command_receiver.recv() {
-                    if !accepting_jobs {
-                        drop(done);
-                        continue;
-                    }
-                    #[expect(
-                        clippy::disallowed_methods,
-                        reason = "the persister owns its job panics: a caught panic abandons that job and every later one, while the lease stays held until retirement"
-                    )]
-                    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        state.run(job, now)
-                    }));
-                    match outcome {
-                        Ok(result) => done.complete(result),
-                        Err(_) => {
-                            // Keep `state` outside the unwind boundary. Its
-                            // writer owns the lease, so a failed persister
-                            // cannot let another server restore stale files
-                            // while this server still owns live panes.
-                            drop(done);
-                            accepting_jobs = false;
-                            tracing::error!(
-                                event = "persist.actor",
-                                subsystem = "persist",
-                                outcome = "panicked",
-                                "session persister stopped after a job panicked; holding the data directory lease until retirement"
-                            );
-                        }
-                    }
+                    done.complete(state.run_guarded(job, now));
                 }
                 // Every sender is gone: the persister was retired or dropped,
                 // after the jobs queued before it were completed or abandoned.
@@ -324,7 +343,7 @@ impl SessionPersister {
                     command.done.complete(Err(abandoned()));
                 }
             }
-            Worker::Inline(state) => done.complete(state.run(job, now)),
+            Worker::Inline(state) => done.complete(state.run_guarded(job, now)),
             Worker::Retired => done.complete(Ok(())),
         }
         pending

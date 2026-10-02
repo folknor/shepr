@@ -142,7 +142,11 @@ pub(crate) fn test_headless_server() -> HeadlessServer {
 
     app.state.settings.default_shell = crate::app::exiting_test_command().into();
     let (server_event_tx, server_event_rx) = mpsc::channel(64);
-    let (_api_tx, api_request_rx) = mpsc::channel(crate::limits::API_REQUEST_CHANNEL_CAPACITY);
+    let (api_tx, api_request_rx) = mpsc::channel(crate::limits::API_REQUEST_CHANNEL_CAPACITY);
+    // Production's listener holds the sender for the server's whole life; a
+    // fixture that dropped it would start every test loop with a closed API
+    // channel. Tests that need to send swap in a channel of their own.
+    std::mem::forget(api_tx);
     let (worker_tx, worker_rx) = worker::channel();
     let stop_requested = Arc::new(shepr_api::ServerStopSignal::default());
 
@@ -165,6 +169,7 @@ pub(crate) fn test_headless_server() -> HeadlessServer {
         server_event_rx,
         server_event_tx,
         api_request_rx,
+        api_request_open: true,
         shutdown_unregistered_clients: HashMap::new(),
         shutdown_flushes: Vec::new(),
         pending_checkpointed_pane_exits: std::collections::VecDeque::new(),

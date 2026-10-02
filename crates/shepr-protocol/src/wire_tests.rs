@@ -104,6 +104,30 @@ mod tests {
     }
 
     #[test]
+    fn client_shell_pane_input_batch_is_bounded_at_decode() -> TestResult {
+        let input = |count: usize| ClientMessage::ClientShellPaneInput {
+            pane_id: "w1:p1".parse().expect("test pane id"),
+            events: vec![ClientPaneInputEvent::TextCommit(String::new()); count],
+        };
+        let at_cap = input(MAX_INPUT_EVENT_BATCH);
+        assert_eq!(roundtrip(&at_cap)?, at_cap);
+        assert!(codec::to_vec(&input(MAX_INPUT_EVENT_BATCH + 1)).is_err());
+
+        // A peer is not bound by the encoder: splice an over-cap list behind
+        // the encoding of an empty one (its last byte is the zero count).
+        let mut encoded = codec::to_vec(&input(0))?;
+        encoded.pop();
+        let over_cap =
+            vec![ClientPaneInputEvent::TextCommit(String::new()); MAX_INPUT_EVENT_BATCH + 1];
+        encoded.extend(codec::to_vec(&over_cap)?);
+        assert!(matches!(
+            codec::from_slice_exact::<ClientMessage>(&encoded),
+            Err(CodecError::Message(message)) if message.contains("item limit")
+        ));
+        Ok(())
+    }
+
+    #[test]
     fn client_shell_key_roundtrip_keeps_generated_text() -> TestResult {
         let event = ClientPaneInputEvent::Key {
             code: ClientKeyCode::Char('/'),

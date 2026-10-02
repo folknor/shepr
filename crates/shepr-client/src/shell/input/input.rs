@@ -321,6 +321,10 @@ impl ClientShellState {
             }
             RawInputEvent::OuterFocusLost => {
                 self.outer_focused = Some(false);
+                // A drag's release may or may not arrive once focus is gone,
+                // so the drag stays recorded; a sidebar drag's owed resize and
+                // persistence are done now in case it never does.
+                self.settle_sidebar_drag_in_place(outcome);
                 self.release_input_leases(outcome, accounting);
                 outcome
                     .requests

@@ -32,12 +32,14 @@ impl AppState {
         pane_id: PaneId,
         prepared_layout: shepr_core::layout::TileLayout,
         terminal: shepr_mux::terminal::TerminalState,
+        public_number: usize,
     ) -> Option<PaneCreationOutcome> {
         let terminal_id = terminal.id.clone();
         self.workspaces.get_mut(workspace_index)?.commit_new_pane(
             pane_id,
             prepared_layout,
             terminal_id.clone(),
+            public_number,
             true,
         )?;
         self.terminals.insert(terminal_id.clone(), terminal);

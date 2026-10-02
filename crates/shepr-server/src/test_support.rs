@@ -166,7 +166,8 @@ impl WorkspaceFixture for Workspace {
     fn test_split(&mut self, direction: Direction) -> PaneId {
         let mut layout = self.layout().clone();
         let new_id = layout.split_focused(direction);
-        self.commit_new_pane(new_id, layout, TerminalId::alloc(), false)
+        let number = self.next_public_pane_number();
+        self.commit_new_pane(new_id, layout, TerminalId::alloc(), number, false)
             .expect("test split commits");
         new_id
     }

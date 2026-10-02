@@ -29,10 +29,14 @@ impl AppState {
         let desired = !workspace.zoomed();
         // set_zoomed rejects only zooming a one-pane workspace. The count
         // check above already handles that case without reporting it missing;
-        // unzooming always succeeds.
-        workspace.set_zoomed(desired);
-        if workspace.zoomed() != desired {
-            return None;
+        // unzooming always succeeds. The focus change is already committed, so
+        // no path below may return None (which callers read as "pane not
+        // found"); a refusal would degrade to an unchanged zoom instead.
+        if !workspace.set_zoomed(desired) {
+            return Some(PaneZoomOutcome {
+                changed: false,
+                focus_changed,
+            });
         }
         self.mark_session_dirty();
         Some(PaneZoomOutcome {

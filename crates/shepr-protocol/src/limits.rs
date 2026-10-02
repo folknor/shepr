@@ -55,7 +55,11 @@ pub const MAX_INITIAL_REQUEST_BYTES: usize = MAX_CLIENT_REQUEST_BYTES;
 /// Maximum expanded pane input events (see
 /// [`ClientPaneInputEvent::expanded_event_count`](crate::ClientPaneInputEvent::expanded_event_count))
 /// in one `ClientShellPaneInput` message. The client batcher splits messages
-/// before they cross it and the server refuses a message past it. The config
+/// before they cross it and the server refuses a message past it. Every event
+/// counts at least once, so the wire field also caps the raw event count at
+/// this value: a longer list fails to decode before its events are
+/// materialized, and the server's expanded-count check still charges key
+/// repeats and scroll lines. The config
 /// crate owns the value because it also caps one configured mouse scroll step.
 pub const MAX_INPUT_EVENT_BATCH: usize = shepr_config::MAX_INPUT_EVENT_BATCH;
 

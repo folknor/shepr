@@ -62,6 +62,43 @@ impl ClientShellState {
         }
     }
 
+    /// Finishes a sidebar drag as its release would: a width drag owes the endpoint its
+    /// resize and both sidebar drags owe the preferences file the dragged value. Used for a
+    /// real release and for a drag whose release was lost. Other drag kinds owe nothing here.
+    pub(super) fn settle_chrome_drag(
+        &mut self,
+        drag: &ClientChromeDrag,
+        outcome: &mut ClientShellInput,
+    ) {
+        match drag {
+            ClientChromeDrag::SidebarWidth { resize_pending } => {
+                outcome.resize |= *resize_pending;
+                self.persist_chrome_preferences(outcome);
+            }
+            ClientChromeDrag::SidebarSection => {
+                self.persist_chrome_preferences(outcome);
+            }
+            _ => {}
+        }
+    }
+
+    /// Does a sidebar drag's owed work (the width drag's resize, both drags'
+    /// persistence) without ending the drag, for when its release may or may
+    /// not still arrive. Other drag kinds are left alone: they finish on
+    /// their release, or are abandoned at their last sent value by the next
+    /// press.
+    pub(super) fn settle_sidebar_drag_in_place(&mut self, outcome: &mut ClientShellInput) {
+        let resize_owed = match self.chrome_drag.as_mut() {
+            Some(ClientChromeDrag::SidebarWidth { resize_pending }) => {
+                std::mem::take(resize_pending)
+            }
+            Some(ClientChromeDrag::SidebarSection) => false,
+            _ => return,
+        };
+        outcome.resize |= resize_owed;
+        self.persist_chrome_preferences(outcome);
+    }
+
     fn set_sidebar_section_from_row(&mut self, row: u16, outcome: &mut ClientShellInput) {
         let divider = self.hits.sidebar_divider;
         if divider.height == 0 {
@@ -699,6 +736,14 @@ impl ClientShellState {
         accounting: &mut PaneInputBatchAccounting,
     ) {
         let point = (mouse.column, mouse.row);
+        // A new press while a chrome drag is still recorded means its release was lost (the
+        // terminal lost focus mid-drag, or mouse reporting was toggled). Settle it before
+        // anything else, including presses that overlays or pane gestures handle below.
+        if mouse.kind == MouseEventKind::Down(MouseButton::Left)
+            && let Some(drag) = self.chrome_drag.take()
+        {
+            self.settle_chrome_drag(&drag, outcome);
+        }
         if self.mode == ClientShellMode::Navigate
             && self.workspace_preview_action_blocked()
             && self.overlay.is_none()
@@ -1014,12 +1059,9 @@ impl ClientShellState {
                             );
                         }
                     }
-                    ClientChromeDrag::SidebarWidth { resize_pending } => {
-                        outcome.resize |= resize_pending;
-                        self.persist_chrome_preferences(outcome);
-                    }
-                    ClientChromeDrag::SidebarSection => {
-                        self.persist_chrome_preferences(outcome);
+                    drag @ (ClientChromeDrag::SidebarWidth { .. }
+                    | ClientChromeDrag::SidebarSection) => {
+                        self.settle_chrome_drag(&drag, outcome);
                     }
                     ClientChromeDrag::WorkspaceScrollbar { .. }
                     | ClientChromeDrag::AgentScrollbar { .. }
@@ -1427,14 +1469,11 @@ impl ClientShellState {
                 self.word_selection_gesture = None;
                 let previous_pane_click = self.last_pane_click.take();
                 self.workspace_press = None;
-                // A width drag whose release never arrived (the button went up outside the
-                // terminal) still owes the endpoint its resize.
-                if let Some(ClientChromeDrag::SidebarWidth {
-                    resize_pending: true,
-                }) = self.chrome_drag.take()
-                {
-                    outcome.resize = true;
-                }
+                // A drag still recorded here lost its release; the press at the top of this
+                // function already settled it (see `settle_chrome_drag`). Split and pane
+                // scrollbar drags are abandoned at the last value that was sent: the next
+                // press starts a new gesture and the endpoint's state is consistent, so
+                // the final throttled position is not replayed.
                 if super::contains(self.hits.sidebar_divider, point)
                     && !super::contains(self.hits.sidebar_toggle, point)
                 {

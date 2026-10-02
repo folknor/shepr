@@ -504,6 +504,11 @@ impl HostModes {
         update: HostKeyboardUpdate,
     ) -> io::Result<()> {
         let mut state = self.state();
+        // The restore mask is raised before the write and narrowed only when it
+        // succeeds (the report-all paths raise it and never narrow it), so a
+        // write that fails part way leaves it a superset of what shepr owns. The keyboard state helper does not update its own record
+        // on failure; restoration reads this mask, never that record, and a
+        // failed host write ends the client, so the mask is what decides.
         let (kitty_entry, modify_other_keys) = update.restore_state(&state.keyboard);
         self.record_keyboard_restore_state(
             state.keyboard.has_kitty_keyboard_entry() || kitty_entry,

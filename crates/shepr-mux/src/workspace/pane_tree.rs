@@ -46,6 +46,9 @@ pub struct NewPane {
     pub terminal: TerminalState,
     pub runtime: PaneRuntime,
     pub prepared_layout: TileLayout,
+    /// The public pane number reserved at prepare time. The child's `SHEPR`
+    /// pane id was built from it, and the commit registers the pane under it.
+    pub public_number: usize,
 }
 
 impl Workspace {
@@ -196,6 +199,7 @@ impl Workspace {
         host_terminal_appearance: Option<shepr_termio::host_term::theme::HostAppearance>,
         shell_config: crate::pane::PaneShellConfig<'_>,
         launch_env: &PaneLaunchEnv,
+        public_number: usize,
         spawn: &PaneSpawnHandles,
     ) -> std::io::Result<NewPane> {
         let mut prepared_layout = self.layout.clone();
@@ -235,12 +239,20 @@ impl Workspace {
             terminal,
             runtime,
             prepared_layout,
+            public_number,
         })
     }
 
     /// Installs a prepared split: the new layout, an unzoomed workspace and a
     /// record for the new pane. `false`, with the workspace unchanged, when the
     /// prepared layout is not this layout plus exactly `pane_id`.
+    ///
+    /// Only the pane-id set (and that the prepared focus is in it) is
+    /// verified, not ratios or ordering, and the public number is not checked
+    /// for reuse: prepare and commit run in one synchronous handler on the app
+    /// thread, so nothing can edit the layout or take a number between them.
+    /// Do not add a layout generation; if the two phases ever span an await,
+    /// collapse them or add one then.
     pub(super) fn commit_prepared_split(
         &mut self,
         pane_id: PaneId,

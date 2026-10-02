@@ -91,10 +91,18 @@ fn pane_split_state_command_commits_prepared_geometry_and_terminal() {
         std::path::PathBuf::from("/shepr-test/cwd"),
     );
 
+    // The number reserved at prepare time is the one the pane is registered
+    // under, whatever the workspace's counter holds when the commit runs: a
+    // number the counter does not hold shows the commit did not re-read it.
+    let reserved = state.workspaces[0].next_public_pane_number() + 7;
     let outcome = state
-        .commit_pane_split(0, new_pane, prepared_layout, terminal)
+        .commit_pane_split(0, new_pane, prepared_layout, terminal, reserved)
         .expect("prepared pane split commits");
 
+    assert_eq!(
+        state.workspaces[0].public_pane_number(new_pane),
+        Some(reserved)
+    );
     assert_eq!(outcome.pane_id, new_pane);
     assert_eq!(outcome.terminal_id, terminal_id);
     assert_eq!(state.workspaces[0].pane_count(), 2);

@@ -361,7 +361,12 @@ fn stop_server(
 ) -> crate::error::EncodedApiResponse {
     // The conditional operation has its own method name because this request
     // crosses builds. A server that predates it rejects the method instead of
-    // ignoring a guard and treating the request as an unconditional stop.
+    // ignoring a guard and treating the request as an unconditional stop. A
+    // guard sent anywhere but that method's params (for example beside
+    // `server.stop`) never reaches this function: `Request` refuses unknown
+    // top-level keys and repeated keys inside params, and `ServerStopParams`
+    // refuses unknown params, so a stop is conditional only when its one
+    // guard is where this method reads it.
     if let Some(expected) = expected_boot_id {
         // A stop aimed at one boot must not stop another: the caller observed
         // that instance, and the occupant may have been replaced since.

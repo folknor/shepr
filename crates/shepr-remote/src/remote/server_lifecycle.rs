@@ -43,10 +43,11 @@ pub struct DifferentBuildServer {
 /// one from the discovered executable, whose build discovery already matched.
 ///
 /// A running server of another build that reported both a printable build and a
-/// boot identity is a [`MachineSshCheck::DifferentBuild`], which can be restarted.
-/// One that did not (an unknown build, or one that predates the boot identity)
-/// cannot be stopped as a specific instance, so it is an error the operator has
-/// to act on.
+/// boot identity that parses as a [`shepr_protocol::BootId`] is a
+/// [`MachineSshCheck::DifferentBuild`], which can be restarted. One that did not
+/// (an unknown build, no boot identity, or one in a form the remote stop command
+/// refuses) cannot be stopped as a specific instance, so it is an error the
+/// operator has to act on.
 pub(super) fn judge_remote_server(
     target: &str,
     executable: &RemoteExecutable,
@@ -67,7 +68,13 @@ pub(super) fn judge_remote_server(
         return Ok(MachineSshCheck::Ready);
     }
     let build = printable_remote_token(build_id.as_deref());
-    let boot = printable_remote_token(boot_id.as_deref());
+    // The conditional stop runs the remote `server stop --expect-boot`, whose
+    // parser takes only a canonical boot id, so a boot identity in any other
+    // form is refused here rather than after the operator consented to a restart.
+    let boot = boot_id
+        .as_deref()
+        .filter(|boot| boot.parse::<shepr_protocol::BootId>().is_ok())
+        .map(str::to_owned);
     if let (Some(build_id), Some(boot_id)) = (build, boot) {
         return Ok(MachineSshCheck::DifferentBuild(DifferentBuildServer {
             executable: executable.clone(),
@@ -139,7 +146,7 @@ pub(super) fn printable_remote_value(value: Option<&str>) -> String {
         .to_owned()
 }
 
-/// A remote-reported identifier (a build id, a boot id): a non-empty run of
+/// A remote-reported identifier such as a build id: a non-empty run of
 /// printable ASCII with no spaces, or `None`. It is safe to show and to hand back
 /// to the remote as one argument.
 pub(super) fn printable_remote_token(value: Option<&str>) -> Option<String> {
@@ -237,6 +244,8 @@ mod tests {
         for stale in [
             running(Some("v".into()), Some(other_build()), None),
             running(Some("v".into()), Some(other_build()), Some("has space")),
+            // A printable token the remote stop command's boot id parser refuses.
+            running(Some("v".into()), Some(other_build()), Some("not-a-boot")),
             running(Some("v".into()), None, Some("17-23")),
             running(None, None, None),
         ] {

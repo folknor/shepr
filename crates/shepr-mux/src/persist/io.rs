@@ -75,7 +75,12 @@ fn resolve_write_target(path: &Path) -> std::io::Result<PathBuf> {
     for _ in 0..MAX_SESSION_PATH_SYMLINK_HOPS {
         let meta = match std::fs::symlink_metadata(&current) {
             Ok(meta) => meta,
-            Err(_) => return Ok(current),
+            // Only absence means "nothing here, write a plain file". Any
+            // other error (an unsearchable ancestor, EIO, ELOOP) means the
+            // path cannot be inspected, so it is returned rather than read
+            // as "not a symlink" and written over.
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(current),
+            Err(err) => return Err(err),
         };
         if !meta.file_type().is_symlink() {
             return Ok(current);
@@ -95,7 +100,9 @@ fn resolve_write_target(path: &Path) -> std::io::Result<PathBuf> {
             std::io::ErrorKind::InvalidInput,
             "session path still resolves through a symlink after the hop limit",
         )),
-        _ => Ok(current),
+        Ok(_) => Ok(current),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(current),
+        Err(err) => Err(err),
     }
 }
 
@@ -171,6 +178,11 @@ pub(super) fn publish_private_file(
     let mut published = false;
     let result = (|| {
         if !replace {
+            // This refusal is a guard, not an atomic no-clobber: the rename
+            // below overwrites whatever appears at `target` after this check.
+            // That is sufficient because the data directory lease admits one
+            // writer, so nothing else creates `target` in between. A taken
+            // recovery name is a leftover from an earlier interrupted save.
             match std::fs::symlink_metadata(target) {
                 Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
                 Err(err) => return Err(err),
@@ -1485,6 +1497,42 @@ mod tests {
                 .expect("test precondition")
                 .file_type()
                 .is_symlink()
+        );
+    }
+
+    #[test]
+    fn resolve_write_target_returns_a_stat_error_other_than_not_found() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let session = temp_session_path("unsearchable");
+        let dir = session.parent().expect("test precondition");
+        let locked = dir.join("locked");
+        std::fs::create_dir_all(&locked).expect("test precondition");
+        let path = locked.join("session.json");
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000))
+            .expect("test precondition");
+        let inspectable = !std::fs::symlink_metadata(&path)
+            .is_err_and(|err| err.kind() == std::io::ErrorKind::PermissionDenied);
+
+        let resolved = resolve_write_target(&path);
+        let cleared = clear_path(&path);
+
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o700))
+            .expect("test cleanup");
+        // A privileged runner can search the directory anyway; there is no
+        // stat error to observe then.
+        if inspectable {
+            return;
+        }
+        assert_eq!(
+            resolved
+                .expect_err("an unreadable path is not absent")
+                .kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
+        assert_eq!(
+            cleared.expect_err("a clear must not guess").kind(),
+            std::io::ErrorKind::PermissionDenied
         );
     }
 

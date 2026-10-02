@@ -779,6 +779,20 @@ impl DetectorState {
     pub(super) fn reset(&mut self) {
         // Lifecycle authority resets screen evidence, not the process identity
         // that ties a later confirmed exit back to that hook generation.
+        //
+        // Reset runs only when full-lifecycle hook authority becomes active,
+        // which needs the terminal's process evidence to show no exit. Once
+        // the app has applied a published exit, only a non-exit detection
+        // publish for the agent (a replacement process) clears that. Before
+        // the app drains the exit event, a hook report could still turn
+        // authority on and reset could land after the exit was published;
+        // the loop's rule of draining internal events before handling an API
+        // request keeps that window to the events already queued, but does
+        // not close it. A confirmed exit publishes in the same tick that
+        // confirms it, except while a restore absence hold withholds the
+        // publish, where a reset would delay the exit by a few probes. Either
+        // way the worst outcome is the exit of a process that really is gone
+        // being reported again, or late, which is accepted.
         let retained_agent = self.current_agent();
         self.agent_presence = AgentDetectionPresence::from_agent(retained_agent);
         self.state = AgentState::Unknown;

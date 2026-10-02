@@ -318,6 +318,71 @@ fn lost_sidebar_drag_release_still_resizes_on_the_next_press() {
 }
 
 #[test]
+fn lost_sidebar_drag_release_still_persists_the_width_on_the_next_press() {
+    let scratch = shepr_test_support::ScratchDir::new("lost-release-prefs");
+    let path = scratch.join("preferences.json");
+    let config = ClientShellConfig::from_config(&ClientConfig::default())
+        .with_preferences_path(path.clone());
+    let mut state = ClientShellState::new(config);
+    state.set_snapshot(Box::new(snapshot()));
+    state.receive_pane_surface(surface());
+    state.compose(106, 30).expect("expanded sidebar");
+    let divider = state.hits.sidebar_divider;
+    let mouse = |kind, column| {
+        RawInputEvent::Mouse(crossterm::event::MouseEvent {
+            kind,
+            column,
+            row: divider.y + 2,
+            modifiers: KeyModifiers::empty(),
+        })
+    };
+    state.handle_raw_events(vec![mouse(
+        MouseEventKind::Down(MouseButton::Left),
+        divider.x,
+    )]);
+    state.handle_raw_events(vec![mouse(MouseEventKind::Drag(MouseButton::Left), 31)]);
+    assert!(preferences::load(&path).is_none_or(|stored| stored.sidebar_width.is_none()));
+    // No release arrives; a press elsewhere settles the drag.
+    state.handle_raw_events(vec![mouse(MouseEventKind::Down(MouseButton::Left), 80)]);
+    assert!(state.chrome_drag.is_none());
+    let stored = preferences::load(&path).expect("preferences stored");
+    assert_eq!(stored.sidebar_width, Some(state.sidebar_width));
+}
+
+#[test]
+fn focus_loss_persists_a_sidebar_drag_but_keeps_it_for_its_release() {
+    let scratch = shepr_test_support::ScratchDir::new("focus-loss-prefs");
+    let path = scratch.join("preferences.json");
+    let config = ClientShellConfig::from_config(&ClientConfig::default())
+        .with_preferences_path(path.clone());
+    let mut state = ClientShellState::new(config);
+    state.set_snapshot(Box::new(snapshot()));
+    state.receive_pane_surface(surface());
+    state.compose(106, 30).expect("expanded sidebar");
+    let divider = state.hits.sidebar_divider;
+    let mouse = |kind, column| {
+        RawInputEvent::Mouse(crossterm::event::MouseEvent {
+            kind,
+            column,
+            row: divider.y + 2,
+            modifiers: KeyModifiers::empty(),
+        })
+    };
+    state.handle_raw_events(vec![mouse(
+        MouseEventKind::Down(MouseButton::Left),
+        divider.x,
+    )]);
+    state.handle_raw_events(vec![mouse(MouseEventKind::Drag(MouseButton::Left), 31)]);
+    state.handle_raw_events(vec![RawInputEvent::OuterFocusLost]);
+    let stored = preferences::load(&path).expect("preferences stored on focus loss");
+    assert_eq!(stored.sidebar_width, Some(state.sidebar_width));
+    assert!(
+        state.chrome_drag.is_some(),
+        "the drag stays recorded so a release that still arrives finishes it"
+    );
+}
+
+#[test]
 fn oversized_retained_surface_is_clipped_with_its_hits() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));

@@ -60,6 +60,13 @@ pub(crate) const MAX_CLIPBOARD_BYTES: usize = 192 * KIBIBYTE_BYTES;
 /// `MAX_CLIPBOARD_BYTES`, so it is dropped by size instead of stored truncated.
 pub(crate) const MAX_OSC_RAW_BYTES: usize = 2 * 4 * MAX_CLIPBOARD_BYTES.div_ceil(3);
 
+/// Maximum bytes of a window title handed to alacritty. Its `Term` keeps the
+/// title uncapped and `CSI 22 t` clones it onto a title stack up to 4096 deep,
+/// so a title of up to `MAX_OSC_RAW_BYTES` pushed repeatedly (5 bytes per push)
+/// would hold gigabytes per pane. The cap is far above what any title display
+/// or detection needs; a longer title is cut on a character boundary.
+pub(crate) const MAX_TITLE_BYTES: usize = 4 * KIBIBYTE_BYTES;
+
 /// Maximum active keyboard-mode stack depth accepted by the adapter. The
 /// pinned alacritty parser has a fixed cap with a broken overflow branch;
 /// matching that depth lets shepr reject the next push before it reaches that

@@ -28,7 +28,9 @@
 //!   (`rows.rs`) around themselves: they purge rows or change the grid the
 //!   tracker follows.
 //! * `set_title`/`push_title`/`pop_title` reach `Term`, whose `Title` and
-//!   `ResetTitle` events are the adapter's only title source; the pane never
+//!   `ResetTitle` events are the adapter's only title source; `set_title`
+//!   first cuts the title to `MAX_TITLE_BYTES`, because alacritty keeps it
+//!   uncapped and clones it onto a 4096-deep title stack; the pane never
 //!   parses OSC 0/2 itself.
 //! * `set_color` for the default foreground/background notes that the child
 //!   took over a default colour (the pane tracks who owns the override).
@@ -70,7 +72,7 @@ use vte::ansi::{
     PrivateMode, Rgb, ScpCharPath, ScpUpdateMode, StandardCharset, TabulationClearMode,
 };
 
-use crate::limits::KEYBOARD_MODE_STACK_MAX_DEPTH;
+use crate::limits::{KEYBOARD_MODE_STACK_MAX_DEPTH, MAX_TITLE_BYTES};
 
 use super::ExtraModes;
 use super::color::color_query_format;
@@ -244,7 +246,16 @@ impl<T: EventListener> CoreHandler<'_, T> {
 
 #[warn(clippy::missing_trait_methods)]
 impl<T: EventListener> Handler for CoreHandler<'_, T> {
-    fn set_title(&mut self, title: Option<String>) {
+    fn set_title(&mut self, mut title: Option<String>) {
+        if let Some(title) = title.as_mut()
+            && title.len() > MAX_TITLE_BYTES
+        {
+            let mut end = MAX_TITLE_BYTES;
+            while !title.is_char_boundary(end) {
+                end -= 1;
+            }
+            title.truncate(end);
+        }
         Handler::set_title(self.term, title);
     }
 

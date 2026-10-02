@@ -145,8 +145,12 @@ pub(crate) const SNAPSHOT_LIMIT: usize =
 /// Copies retained in the separate backup directory; this is a short
 /// fallback trail beside the longer snapshot history.
 pub(crate) const BACKUP_LIMIT: usize = 3;
-/// Name attempts per recovery timestamp. The copy is created exclusively, so a
-/// concurrent writer that picked the same timestamp moves on to the next one.
+/// Name attempts per recovery timestamp. The data directory lease admits one
+/// writer, so a name that is already taken is a leftover, not a concurrent
+/// writer: for example a history copy whose layout copy was never published,
+/// which pruning keeps when it is not older than the newest layout copy. The
+/// loop skips such names. The publish is not exclusive against a second
+/// writer and does not need to be.
 pub(crate) const RECOVERY_SEQUENCE_LIMIT: usize = 128;
 /// This is the session-history writer's file budget and restore uses the same
 /// bound. `serialize_history` trims pane text to it; if the workspace shape

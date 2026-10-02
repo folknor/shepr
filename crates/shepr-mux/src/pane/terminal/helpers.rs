@@ -233,6 +233,12 @@ pub(super) fn terminal_collect_dirty_patch(
     // collection with the same information. Rows below the area were not
     // collected: they stay dirty, and so does the overall state, so it only
     // reads Clean when no row is left to send.
+    //
+    // A collected row is cleared even when `area_width < cols`. The width is
+    // the widest `inner_rect` among the clients receiving this patch, so the
+    // columns past it are shown by no client holding a retained baseline. A
+    // client that does show them (not a recipient, or whose view later widens)
+    // is owed or promoted to a full render, which ignores dirty flags.
     let mut rows_left = false;
     for row in render_state.iter_rows() {
         if row.y() < area_height {

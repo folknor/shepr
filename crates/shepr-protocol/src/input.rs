@@ -366,6 +366,10 @@ pub enum ClientMessage {
     /// Deliver client-classified semantic input directly to a stable pane target.
     ClientShellPaneInput {
         pane_id: PublicPaneId,
+        #[serde(
+            serialize_with = "codec::serialize_bounded_vec::<MAX_INPUT_EVENT_BATCH, _, _>",
+            deserialize_with = "codec::deserialize_bounded_vec::<MAX_INPUT_EVENT_BATCH, _, _>"
+        )]
         events: Vec<ClientPaneInputEvent>,
     },
 
