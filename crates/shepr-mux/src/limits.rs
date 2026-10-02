@@ -196,6 +196,11 @@ pub(crate) const AGENT_PROCESS_EXIT_RELEASE_GRACE: Duration = Duration::from_mil
 /// listener's queue and is routed at once; this only bounds the wait for one
 /// that never connected (a failure before its first report).
 pub(crate) const LAUNCH_STATUS_AFTER_EXIT: Duration = Duration::from_secs(1);
+/// How long a launch still unsettled when its pane ended with the child
+/// possibly alive (a failed PTY reader, a failed wait) may take to settle
+/// before it is settled as unconfirmed. Lets a failure report already sent
+/// arrive, without letting a child stuck in its chdir keep the pane open.
+pub(crate) const LAUNCH_SETTLE_AFTER_PANE_END: Duration = Duration::from_secs(1);
 /// How often a pane launch checks whether its child exited when it cannot
 /// watch the child's pidfd (the dup failed). Only that fallback polls.
 pub(crate) const LAUNCH_EXIT_POLL_INTERVAL: Duration = Duration::from_millis(100);

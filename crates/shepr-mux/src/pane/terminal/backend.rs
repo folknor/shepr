@@ -970,6 +970,14 @@ impl PaneTerminal {
             for cell in &mut frame.cells[row_start + x..row_start + usize::from(area.width)] {
                 blank.write_cell(cell, " ", GridCellWidth::One, None);
             }
+            // The area can be narrower than the terminal, and the emulator can
+            // leave broken pairs of its own: no wide half without its other
+            // half leaves this row. A blanked cell's link was already interned
+            // above, so the frame's link table can keep an entry no cell
+            // names; that costs one table slot and draws nothing.
+            shepr_protocol::normalize_pane_row(
+                &mut frame.cells[row_start..row_start + usize::from(area.width)],
+            );
             rows_drawn += 1;
         }
         for y in rows_drawn..area.height {

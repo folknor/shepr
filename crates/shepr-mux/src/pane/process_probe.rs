@@ -777,31 +777,22 @@ impl DetectorState {
     }
 
     pub(super) fn reset(&mut self) {
-        // Lifecycle authority resets screen evidence, not the process identity
-        // that ties a later confirmed exit back to that hook generation.
-        //
-        // Reset runs only when full-lifecycle hook authority becomes active,
-        // which needs the terminal's process evidence to show no exit. Once
-        // the app has applied a published exit, only a non-exit detection
-        // publish for the agent (a replacement process) clears that. Before
-        // the app drains the exit event, a hook report could still turn
-        // authority on and reset could land after the exit was published;
-        // the loop's rule of draining internal events before handling an API
-        // request keeps that window to the events already queued, but does
-        // not close it. A confirmed exit publishes in the same tick that
-        // confirms it, except while a restore absence hold withholds the
-        // publish, where a reset would delay the exit by a few probes. Either
-        // way the worst outcome is the exit of a process that really is gone
-        // being reported again, or late, which is accepted.
-        let retained_agent = self.current_agent();
-        self.agent_presence = AgentDetectionPresence::from_agent(retained_agent);
+        // Lifecycle authority resets screen evidence, not process evidence.
+        // Reset runs when full-lifecycle hook authority becomes active, which
+        // says nothing about whether the agent process is present: presence
+        // with its miss count, a confirmed exit still to report, and whether
+        // that exit was already reported all stay. Clearing them let the next
+        // probe of a shell foreground report the same disappearance again.
+        // The scheduler is reset only so the process is rechecked promptly.
+        // This makes reset itself replay-free, not every exit delivery
+        // idempotent: `DetectionTask::provisional_release` deliberately
+        // republishes an exit as its live-shell confirmation, and the
+        // suspended-presence path in `observe_process_probe` clears the
+        // exit bookkeeping without publishing a presence event.
         self.state = AgentState::Unknown;
         self.last_visible_idle = false;
         self.scheduler.reset();
         self.transient_color_recheck_until = None;
-        self.pending_foreground_shell_clear = false;
-        self.foreground_shell_exit_reported = false;
-        self.pending_confirmed_process_exit = None;
         self.last_visible_blocker = false;
         self.last_visible_working = false;
         self.last_visible_signal_refresh = None;
@@ -1675,7 +1666,7 @@ mod tests {
     }
 
     #[test]
-    fn reset_keeps_process_identity_for_the_next_lifecycle_probe() {
+    fn reset_keeps_process_evidence_for_the_next_lifecycle_probe() {
         let now = std::time::Instant::now();
         let mut detector = DetectorState::new(now, LaunchPurpose::Fresh);
         detector.agent_presence = AgentDetectionPresence::from_agent(Some(Agent::Claude));
@@ -1684,7 +1675,8 @@ mod tests {
         detector.reset();
 
         assert_eq!(detector.current_agent(), Some(Agent::Claude));
-        assert!(!detector.process_exited(detector.current_agent()));
+        // The exit still to report survives the reset.
+        assert!(detector.process_exited(detector.current_agent()));
         assert_eq!(detector.state, AgentState::Unknown);
         assert!(
             detector
@@ -1695,6 +1687,39 @@ mod tests {
                 })
                 .should_probe()
         );
+    }
+
+    #[test]
+    fn reset_does_not_rereport_an_exit_already_reported() {
+        let now = std::time::Instant::now();
+        let mut detector = DetectorState::new(now, LaunchPurpose::Fresh);
+        detector.agent_presence = AgentDetectionPresence::from_agent(None);
+        detector.pending_confirmed_process_exit = Some(Agent::Pi);
+        detector.pending_foreground_shell_clear = true;
+        detector.foreground_shell_exit_reported = true;
+
+        detector.reset();
+
+        assert_eq!(detector.current_agent(), Some(Agent::Pi));
+        assert!(!detector.process_exited(detector.current_agent()));
+        // Presence is not rebuilt from the exited identity.
+        assert_eq!(detector.agent_presence.current_agent(), None);
+        let probe = ProcessProbeResult {
+            process_group_id: Some(25),
+            foreground_is_pane_shell: true,
+            suspended_agents: Vec::new(),
+            identity: ProcessProbeIdentity::Unidentified,
+        };
+        detector.observe_process_probe(
+            &probe,
+            now + std::time::Duration::from_secs(1),
+            Some(25),
+            ProbeScheduleDecision::Probe {
+                foreground_group_changed: false,
+                had_previous_probe: true,
+            },
+        );
+        assert!(!detector.process_exited(detector.current_agent()));
     }
 
     #[test]

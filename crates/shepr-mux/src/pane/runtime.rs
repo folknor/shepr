@@ -10,7 +10,7 @@ use tokio::sync::{Notify, mpsc};
 use tracing::{error, warn};
 
 use super::PaneClearError;
-use super::exit_arbiter::PaneExitArbiter;
+use super::exit_arbiter::{PaneEnding, PaneExitArbiter};
 use super::launch::*;
 use super::process_probe::*;
 use super::teardown::*;
@@ -714,48 +714,42 @@ impl PaneReadEffects {
     }
 }
 
-// Every pane death goes through the pane's exit arbiter, and only the
-// observer that decides it publishes. Reader failure can leave a live child
+// Every pane ending is recorded with the pane's exit arbiter, and the launch
+// coordinator publishes the first one. Reader failure can leave a live child
 // without an output reader, so it decides at once and the app tears the pane
 // down; IO failure checkpoints the usable terminal, a core panic does not. A
 // closed terminal is how a pane normally ends, so the child watcher gets
-// `closed_grace` (`TERMINAL_CLOSED_EXIT_GRACE` in production) to report the
+// `closed_grace` (`TERMINAL_CLOSED_EXIT_GRACE` in production) to record the
 // real exit. If it has not by then, the pane ends anyway: usually the child
 // closed its terminal and kept going, though a watcher that was merely slow
-// looks the same. The actor calls this after closing the PTY master, so the
+// looks the same. The reader never knows the child is gone, so its endings
+// are unconfirmed. The actor calls this after closing the PTY master, so the
 // wait holds none.
 fn reader_exit_callback(
     pane_id: PaneId,
-    events: crate::events::EventSender,
     arbiter: Arc<PaneExitArbiter>,
     closed_grace: std::time::Duration,
 ) -> Box<dyn FnOnce(ReaderExit) + Send> {
-    Box::new(move |exit| {
-        let exit_reason = match exit {
-            ReaderExit::ShutdownRequested => return,
-            ReaderExit::Closed => {
-                if !arbiter.decide_after(closed_grace) {
-                    return;
-                }
+    let ending = |reason| PaneEnding::Observed {
+        reason,
+        child_exit_confirmed: false,
+    };
+    Box::new(move |exit| match exit {
+        ReaderExit::ShutdownRequested => {}
+        ReaderExit::Closed => {
+            let closed = ending(shepr_platform::ChildExitReason::TerminalClosed);
+            if arbiter.decide_after(closed_grace, closed) {
                 warn!(
                     pane = pane_id.raw(),
                     "pane terminal closed and its child's exit was not reported in time; ending the pane"
                 );
-                shepr_platform::ChildExitReason::TerminalClosed
             }
-            ReaderExit::Panicked | ReaderExit::IoFailed if !arbiter.decide() => return,
-            ReaderExit::Panicked => shepr_platform::ChildExitReason::ReaderPanicked,
-            ReaderExit::IoFailed => shepr_platform::ChildExitReason::ReaderIoFailed,
-        };
-        if let Err(err) = events.blocking_send(AppEvent::PaneDied {
-            pane_id,
-            exit_reason,
-        }) {
-            error!(
-                pane = pane_id.raw(),
-                error = %err,
-                "failed to report a pane whose PTY reader failed"
-            );
+        }
+        ReaderExit::Panicked => {
+            arbiter.decide(ending(shepr_platform::ChildExitReason::ReaderPanicked));
+        }
+        ReaderExit::IoFailed => {
+            arbiter.decide(ending(shepr_platform::ChildExitReason::ReaderIoFailed));
         }
     })
 }
@@ -867,7 +861,6 @@ impl PtySetup<'_> {
             // Failure cleanup and read effects use the same child identity.
             let startup_child_liveness = Arc::clone(&child_liveness);
             let health_terminal = Arc::clone(terminal);
-            let reader_exit_events = events.clone();
             let effects = Arc::new(PaneReadEffects {
                 pane_id,
                 terminal: Arc::clone(terminal),
@@ -890,7 +883,6 @@ impl PtySetup<'_> {
             let on_read = Box::new(move |bytes: &[u8]| read_effects.read(&output, bytes));
             let on_reader_exit = reader_exit_callback(
                 pane_id,
-                reader_exit_events,
                 Arc::clone(exit_arbiter),
                 crate::limits::TERMINAL_CLOSED_EXIT_GRACE,
             );
@@ -1070,19 +1062,20 @@ impl PaneRuntime {
         .start()?;
 
         // Actor setup failures reap the child above without publishing an exit
-        // for a pane that was never constructed.
+        // for a pane that was never constructed: the coordinator, the pane's
+        // one publisher, starts only here. An ending the reader recorded
+        // before it existed is still published.
         let launch = super::launch_status::spawn(
             pane_id,
             launch,
             Arc::clone(&child_liveness),
+            Arc::clone(&exit_arbiter),
             events.clone(),
         );
         super::child_watcher::spawn(
             pane_id,
             child,
             Arc::clone(&child_liveness),
-            launch.clone(),
-            events.clone(),
             Arc::clone(&exit_arbiter),
         );
 
@@ -1603,7 +1596,7 @@ impl Drop for PaneRuntime {
         // Decided before anything is torn down, so the exits the teardown
         // causes publish nothing. An observer that already decided keeps its
         // publication, which the generation check then sorts out.
-        self.exit_arbiter.decide();
+        self.exit_arbiter.decide(PaneEnding::Silent);
         let owns_child_process = self.io.owns_child_process();
         self.io.shutdown();
         if owns_child_process {
@@ -1705,30 +1698,39 @@ mod tests {
         writer.begin().write(b"still usable");
     }
 
+    /// Runs the reader's exit callback and returns the ending it recorded,
+    /// `None` when it recorded nothing new.
     fn reader_exit(
         exit: ReaderExit,
         arbiter: &Arc<PaneExitArbiter>,
         grace: std::time::Duration,
-    ) -> Option<shepr_platform::ChildExitReason> {
-        let (events, mut rx) = mpsc::channel(1);
+    ) -> Option<PaneEnding> {
+        let before = arbiter.ending();
         let pane_id = shepr_test_fixtures::fixed_pane_id(1);
-        reader_exit_callback(pane_id, events.into(), Arc::clone(arbiter), grace)(exit);
-        match rx.try_recv() {
-            Ok(AppEvent::PaneDied {
-                pane_id: reported,
-                exit_reason,
-            }) if reported == pane_id => Some(exit_reason),
-            Ok(_) => panic!("unexpected event"),
-            Err(_) => None,
-        }
+        reader_exit_callback(pane_id, Arc::clone(arbiter), grace)(exit);
+        let after = arbiter.ending();
+        (after != before).then_some(after).flatten()
     }
+
+    fn unconfirmed(reason: shepr_platform::ChildExitReason) -> Option<PaneEnding> {
+        Some(PaneEnding::Observed {
+            reason,
+            child_exit_confirmed: false,
+        })
+    }
+
+    const REAPED: PaneEnding = PaneEnding::Observed {
+        reason: shepr_platform::ChildExitReason::Exited,
+        child_exit_confirmed: true,
+    };
 
     #[test]
     fn a_closed_terminal_leaves_the_exit_to_a_watcher_that_reported() {
         let arbiter = Arc::new(PaneExitArbiter::default());
-        assert!(arbiter.decide(), "the watcher decides first");
+        assert!(arbiter.decide(REAPED), "the watcher decides first");
         let grace = std::time::Duration::from_secs(30);
         assert_eq!(reader_exit(ReaderExit::Closed, &arbiter, grace), None);
+        assert_eq!(arbiter.ending(), Some(REAPED));
     }
 
     #[test]
@@ -1737,11 +1739,11 @@ mod tests {
         let grace = std::time::Duration::from_millis(10);
         assert_eq!(
             reader_exit(ReaderExit::Closed, &arbiter, grace),
-            Some(shepr_platform::ChildExitReason::TerminalClosed)
+            unconfirmed(shepr_platform::ChildExitReason::TerminalClosed)
         );
         assert!(
-            !arbiter.decide(),
-            "a later watcher report publishes nothing"
+            !arbiter.decide(REAPED),
+            "a later watcher report changes nothing"
         );
     }
 
@@ -1750,7 +1752,7 @@ mod tests {
         let arbiter = Arc::new(PaneExitArbiter::default());
         assert_eq!(
             reader_exit(ReaderExit::IoFailed, &arbiter, std::time::Duration::ZERO),
-            Some(shepr_platform::ChildExitReason::ReaderIoFailed)
+            unconfirmed(shepr_platform::ChildExitReason::ReaderIoFailed)
         );
     }
 
@@ -1762,7 +1764,7 @@ mod tests {
             ReaderExit::ShutdownRequested,
         ] {
             let arbiter = Arc::new(PaneExitArbiter::default());
-            arbiter.decide();
+            arbiter.decide(PaneEnding::Silent);
             assert_eq!(
                 reader_exit(exit, &arbiter, std::time::Duration::ZERO),
                 None,
@@ -1782,6 +1784,7 @@ mod tests {
             ),
             None
         );
+        assert_eq!(arbiter.ending(), None);
     }
     use shepr_agent::detect::Agent;
     use shepr_pty::PtyCommand;

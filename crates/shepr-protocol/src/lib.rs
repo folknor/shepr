@@ -11,6 +11,7 @@ mod ids;
 mod input;
 mod limits;
 mod message;
+mod pane_row;
 pub mod preamble;
 mod projection;
 mod ratatui_conversion;
@@ -37,6 +38,7 @@ pub use ids::{PublicIdParseError, PublicPaneId, decode_public_number, encode_pub
 pub use ids::{TerminalId, TerminalIdParseError, WorkspaceId, WorkspaceIdParseError};
 pub use input::*;
 pub use message::*;
+pub use pane_row::{blank_pane_cell, normalize_pane_row, pane_row_is_normalized};
 pub use projection::*;
 pub use revision::*;
 pub use status::*;

@@ -225,6 +225,9 @@ pub(super) fn terminal_collect_dirty_patch(
             );
             x += 1;
         }
+        // The same rule as a full render at this width; each recipient
+        // narrower than it applies it again to its own cut.
+        shepr_protocol::normalize_pane_row(&mut patch_cells);
         patch_rows.push((y, patch_cells));
     }
 

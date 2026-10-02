@@ -80,9 +80,7 @@ fn capture_history_with_carry(
     terminal_runtimes: &PaneRuntimeRegistry,
     carry: &mut HistoryCarry,
 ) -> SessionHistorySnapshot {
-    let snapshot = capture_from_state_with_runtimes(state, terminal_runtimes);
-    shepr_mux::persist::capture_pending_history(&state.workspaces, terminal_runtimes)
-        .resolve(&snapshot, carry)
+    shepr_mux::persist::capture_pending_history(&state.workspaces, terminal_runtimes).resolve(carry)
 }
 
 fn root_split_ratio(workspace: &WorkspaceSnapshot) -> Option<f32> {

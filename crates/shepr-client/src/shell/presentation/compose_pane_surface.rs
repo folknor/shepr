@@ -58,7 +58,14 @@ pub(super) fn compose_pane_surface(target: &mut FrameData, source: &FrameData, a
                     ((index as usize) < source.hyperlinks.len()).then_some(hyperlink_base + index)
                 });
                 if source_remnants.contains(&col) {
-                    blank(&mut cell);
+                    // A cut pane glyph becomes the blank the server emits for
+                    // the same cut; chrome keeps its own repair.
+                    match cell.grid_width {
+                        shepr_protocol::GridCellWidth::One | shepr_protocol::GridCellWidth::Two => {
+                            shepr_protocol::blank_pane_cell(&mut cell);
+                        }
+                        shepr_protocol::GridCellWidth::Grapheme => blank(&mut cell),
+                    }
                 }
                 target_row[usize::from(area.x) + col] = cell;
             }
@@ -146,6 +153,24 @@ mod tests {
         let source = frame("a漢~");
         compose_pane_surface(&mut target, &source, Rect::new(0, 0, 2, 1));
         assert_eq!(text(&target), "a ..");
+    }
+
+    #[test]
+    fn a_cut_pane_glyph_becomes_the_servers_pane_blank() {
+        let mut target = frame("....");
+        let mut source = frame("a\u{754c}~");
+        for cell in &mut source.cells {
+            cell.grid_width = shepr_protocol::GridCellWidth::One;
+        }
+        source.cells[1].grid_width = shepr_protocol::GridCellWidth::Two;
+        source.cells[1].style.underline = UnderlineStyle::Single;
+        compose_pane_surface(&mut target, &source, Rect::new(0, 0, 2, 1));
+        assert_eq!(text(&target), "a ..");
+        assert_eq!(
+            target.cells[1].grid_width,
+            shepr_protocol::GridCellWidth::One
+        );
+        assert_eq!(target.cells[1].style.underline, UnderlineStyle::None);
     }
 
     #[test]

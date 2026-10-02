@@ -131,14 +131,9 @@ pub fn restore(
     pane_teardowns: &Arc<crate::pane::PaneTeardownTracker>,
     now: std::time::Instant,
 ) -> RestoredSession {
-    let history = history.filter(|history| {
-        let matches = history.layout_fingerprint.is_some()
-            && history.layout_fingerprint == super::snapshot::layout_fingerprint(snapshot);
-        if !matches {
-            tracing::warn!("Ignoring pane history without a matching session layout");
-        }
-        matches
-    });
+    // `history` is the one `load_history` found to be the history this
+    // layout's own save serialized (its digest), so its keys are this
+    // snapshot's workspace positions and pane IDs.
     let mut workspaces = Vec::new();
     let mut terminals = HashMap::new();
     let mut terminal_runtimes = HashMap::new();
@@ -1087,7 +1082,7 @@ mod tests {
             (false, false, true),
         ] {
             let scratch = crate::test_support::ScratchDir::new("restore-runtime-history");
-            let (mut snapshot, mut history) = snapshot_with_saved_pane_history(scratch.path());
+            let (mut snapshot, history) = snapshot_with_saved_pane_history(scratch.path());
             let pane = snapshot.workspaces[0]
                 .panes
                 .get_mut(&0)
@@ -1104,7 +1099,6 @@ mod tests {
                 assert!(!pane.cwd.try_exists().expect("test stat"));
             }
             let saved_cwd = pane.cwd.clone();
-            history.layout_fingerprint = super::super::snapshot::layout_fingerprint(&snapshot);
             let (events, _rx) = mpsc::channel(8);
             let RestoredSession {
                 workspaces,
@@ -1166,12 +1160,8 @@ mod tests {
             );
 
             if carried {
-                let saved = crate::persist::capture_history(
-                    &captured,
-                    &workspaces,
-                    &runtimes,
-                    &mut history_carry,
-                );
+                let saved =
+                    crate::persist::capture_history(&workspaces, &runtimes, &mut history_carry);
                 let pane_history = saved.workspaces[0]
                     .panes
                     .values()
@@ -1194,24 +1184,16 @@ mod tests {
                         b"LIVE_SCREEN\r\n",
                     ),
                 );
-                let saved = crate::persist::capture_history(
-                    &captured,
-                    &workspaces,
-                    &runtimes,
-                    &mut history_carry,
-                );
+                let saved =
+                    crate::persist::capture_history(&workspaces, &runtimes, &mut history_carry);
                 let live = &saved.workspaces[0].panes[&root_pane.raw()];
                 assert!(live.ansi.contains("LIVE_SCREEN"));
                 assert!(!live.ansi.contains("RESTORED_HISTORY"));
                 // Should the pane lose its runtime again, what it keeps is its
                 // own last screen, never the restored history.
                 runtimes.remove(terminal_id);
-                let saved = crate::persist::capture_history(
-                    &captured,
-                    &workspaces,
-                    &runtimes,
-                    &mut history_carry,
-                );
+                let saved =
+                    crate::persist::capture_history(&workspaces, &runtimes, &mut history_carry);
                 let kept = &saved.workspaces[0].panes[&root_pane.raw()];
                 assert!(kept.ansi.contains("LIVE_SCREEN"));
                 assert!(!kept.ansi.contains("RESTORED_HISTORY"));
@@ -2452,55 +2434,6 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn restore_rejects_history_from_another_layout_or_without_provenance() {
-        for missing_fingerprint in [false, true] {
-            let scratch = crate::test_support::ScratchDir::new("restore-history-provenance");
-            let (snapshot, history) = snapshot_with_saved_pane_history(scratch.path());
-            let mut value = serde_json::to_value(history).expect("test precondition");
-            let fields = value.as_object_mut().expect("test precondition");
-            if missing_fingerprint {
-                fields.remove("layout_fingerprint");
-            } else {
-                // History recorded against a different layout: the fingerprint
-                // covers only layout structure and pane ids, so name another.
-                fields.insert(
-                    "layout_fingerprint".into(),
-                    serde_json::Value::String("0".repeat(64)),
-                );
-            }
-            let history = serde_json::from_value(value).expect("test precondition");
-            let (events, _rx) = mpsc::channel(8);
-            let RestoredSession {
-                terminal_runtimes: runtimes,
-                ..
-            } = restore(
-                &snapshot,
-                Some(&history),
-                test_geometry(5, 80),
-                4096,
-                crate::pane::PaneShellConfig::new(test_restore_shell(), false),
-                std::path::Path::new(TEST_SOCKET),
-                false,
-                &events,
-                &Arc::new(Notify::new()),
-                &Arc::new(RenderSignal::new()),
-                &Arc::default(),
-                test_restore_now(),
-            );
-            let runtime = runtimes.values().next().expect("test precondition");
-            assert!(
-                !runtime
-                    .recent_unwrapped_text(10)
-                    .contains("RESTORED_HISTORY"),
-                "screen history must belong to the exact saved layout"
-            );
-            for (_, runtime) in runtimes {
-                drop(runtime);
-            }
-        }
-    }
-
     fn snapshot_with_saved_pane_history(cwd: &Path) -> (SessionSnapshot, SessionHistorySnapshot) {
         let cwd = cwd.to_path_buf();
         let mut panes = HashMap::new();
@@ -2513,9 +2446,8 @@ mod tests {
                 agent_session: None,
             },
         );
-        let mut history = SessionHistorySnapshot {
+        let history = SessionHistorySnapshot {
             version: super::super::snapshot::SNAPSHOT_VERSION,
-            layout_fingerprint: None,
             workspaces: vec![WorkspaceHistorySnapshot {
                 panes: HashMap::from([(
                     0,
@@ -2545,7 +2477,6 @@ mod tests {
             }],
             active: Some(0),
         };
-        history.layout_fingerprint = super::super::snapshot::layout_fingerprint(&snapshot);
         (snapshot, history)
     }
 }

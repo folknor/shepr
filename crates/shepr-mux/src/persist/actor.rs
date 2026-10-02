@@ -210,15 +210,14 @@ impl PersistState {
                     Some(history) => {
                         // Formatting pane history is the expensive part of a
                         // save; a history that is the file's already is
-                        // neither assembled, serialized nor hashed.
-                        let resolved = history.resolve_for_save(
-                            &snapshot,
-                            &mut self.history,
-                            self.writer.history_is_current(),
-                        );
+                        // neither assembled, serialized nor hashed, and the
+                        // layout names it by the digest the save that wrote
+                        // it recorded.
+                        let resolved = history
+                            .resolve_for_save(&mut self.history, self.writer.history_is_current());
                         match resolved {
-                            ResolvedHistory::Unchanged => {
-                                self.writer.save_keeping_history(&snapshot, now)
+                            ResolvedHistory::Unchanged(digest) => {
+                                self.writer.save_keeping_history(&snapshot, digest, now)
                             }
                             ResolvedHistory::Changed(history) => {
                                 self.writer.save(&snapshot, Some(&history), now)
@@ -226,11 +225,16 @@ impl PersistState {
                         }
                     }
                 };
-                match &result {
-                    Ok(()) => self.history.note_saved(),
-                    Err(_) => self.history.forget_saved(),
+                match result {
+                    Ok(digest) => {
+                        self.history.note_saved(digest);
+                        Ok(())
+                    }
+                    Err(error) => {
+                        self.history.forget_saved();
+                        Err(error)
+                    }
                 }
-                result
             }
         }
     }

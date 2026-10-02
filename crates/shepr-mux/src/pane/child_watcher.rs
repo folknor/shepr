@@ -3,24 +3,19 @@ use std::sync::Arc;
 
 use shepr_pty::backend::PaneChild;
 
-use super::exit_arbiter::PaneExitArbiter;
-use super::launch_status::LaunchWatch;
+use super::exit_arbiter::{PaneEnding, PaneExitArbiter};
 use super::teardown::ChildLiveness;
-use crate::events::{AppEvent, EventSender};
 use shepr_core::layout::PaneId;
-use tracing::error;
 
 /// Watches an owned child independently of detection and PTY parsing. The
-/// watcher must keep reaping after the pane runtime has been dropped. It
-/// reports the death only after the launch's settlement was published, so the
-/// app hears how the launch ended first; reaping does not wait for that. It
-/// publishes the exit only if it decides the pane's ending through `arbiter`.
+/// watcher must keep reaping after the pane runtime has been dropped. Once
+/// the child is reaped it records the exit with `arbiter` at once, without
+/// waiting on the launch or the app: the launch coordinator publishes it after
+/// the launch's settlement.
 pub(super) fn spawn(
     pane_id: PaneId,
     child: PaneChild,
     child_liveness: Arc<ChildLiveness>,
-    mut launch: LaunchWatch,
-    events: EventSender,
     arbiter: Arc<PaneExitArbiter>,
 ) {
     let pidfd = child_liveness
@@ -43,31 +38,30 @@ pub(super) fn spawn(
     // Await the owned pidfd so each live pane uses no blocking-pool
     // thread; waitid reaps it while a blocking wait remains the fallback.
     tokio::spawn(async move {
-        let exit_reason = match wait_for_child_exit(child, pidfd).await {
-            Ok(status) => {
-                let exit_reason = shepr_platform::classify_child_exit(&status);
-                crate::logging::pane_exited(pane_id.raw(), &status);
-                exit_reason
-            }
-            Err(e) => {
-                crate::logging::pane_exit_failed(pane_id.raw(), &e.to_string());
-                shepr_platform::ChildExitReason::WaitFailed
-            }
-        };
+        let result = wait_for_child_exit(child, pidfd).await;
         child_liveness.mark_wait_completed();
-        launch.published().await;
-        if !arbiter.decide() {
-            return;
-        }
-        // Wait for channel capacity so this critical pane exit is not dropped.
-        if let Err(e) = events
-            .send(AppEvent::PaneDied {
-                pane_id,
-                exit_reason,
-            })
-            .await
-        {
-            error!(pane = pane_id.raw(), error = %e, "failed to send PaneDied event");
+        // Recorded before logging, so nothing delays the decision. A failed
+        // wait proves nothing about the child, which may still be alive.
+        let (ending, logged) = match result {
+            Ok(status) => (
+                PaneEnding::Observed {
+                    reason: shepr_platform::classify_child_exit(&status),
+                    child_exit_confirmed: true,
+                },
+                Ok(status),
+            ),
+            Err(error) => (
+                PaneEnding::Observed {
+                    reason: shepr_platform::ChildExitReason::WaitFailed,
+                    child_exit_confirmed: false,
+                },
+                Err(error),
+            ),
+        };
+        arbiter.decide(ending);
+        match logged {
+            Ok(status) => crate::logging::pane_exited(pane_id.raw(), &status),
+            Err(error) => crate::logging::pane_exit_failed(pane_id.raw(), &error.to_string()),
         }
     });
 }

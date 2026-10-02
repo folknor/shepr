@@ -1,6 +1,5 @@
 use crate::limits::{BACKUP_LIMIT, RECOVERY_SEQUENCE_LIMIT, SNAPSHOT_INTERVAL, SNAPSHOT_LIMIT};
-use std::fs::File;
-use std::io;
+use std::io::{self, Seek};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -43,7 +42,7 @@ impl HistoryFileStamp {
 }
 
 struct WrittenHistory {
-    digest: Vec<u8>,
+    digest: String,
     file: HistoryFileStamp,
 }
 
@@ -165,15 +164,29 @@ enum SnapshotHistoryPlan {
     RetryAfterWrite,
 }
 
-/// What a save does to the history file.
-#[derive(Clone, Copy)]
-enum HistoryIntent<'a> {
-    /// Delete it: history is not persisted.
+/// What a save does to the history file, decided before the layout is
+/// written, since the layout names the history it pairs with.
+enum HistoryIntent {
+    /// Delete it: history is not persisted. The layout names none.
     Remove,
-    /// Replace it, unless it already holds exactly these bytes.
-    Write(&'a SessionHistory),
-    /// The caller knows it already holds the right history.
-    Keep,
+    /// Replace it with these serialized bytes, unless it already holds
+    /// exactly them. The layout names `digest`, the hash of `json`.
+    Write { json: Vec<u8>, digest: String },
+    /// The caller knows it already holds the history `digest` names.
+    Keep(String),
+    /// The history could not be serialized: the layout names none, and the
+    /// error is the save's.
+    Failed(io::Error),
+}
+
+impl HistoryIntent {
+    /// The digest the layout written with this intent names.
+    fn digest(&self) -> Option<&str> {
+        match self {
+            Self::Write { digest, .. } | Self::Keep(digest) => Some(digest),
+            Self::Remove | Self::Failed(_) => None,
+        }
+    }
 }
 
 /// Shared by autosave, pane-exit checkpoints, and shutdown.
@@ -246,27 +259,48 @@ impl SessionWriter {
     /// Saves the layout and optional history, reporting durability failures.
     /// An error may follow publication if syncing or writing the history fails.
     /// `now` supplies the time used for recovery-copy naming and preservation.
+    /// On success, returns the digest the published layout names its history
+    /// by, `None` when it has none.
     pub fn save(
         &mut self,
         snapshot: &SessionSnapshot,
         history: Option<&SessionHistory>,
         now: SystemTime,
-    ) -> io::Result<()> {
-        let history = history.map_or(HistoryIntent::Remove, HistoryIntent::Write);
+    ) -> io::Result<Option<String>> {
+        let history = match history {
+            None => HistoryIntent::Remove,
+            Some(history) => self.prepare_history(history),
+        };
         self.save_with(snapshot, history, now)
     }
 
-    /// Saves the layout and leaves the history file as it is. Only right when
-    /// [`history_is_current`] and the history is known to be the one the file
-    /// holds.
+    /// Saves the layout, naming the history by `digest`, and leaves the
+    /// history file as it is. Only right when [`history_is_current`] and the
+    /// history the caller would save is known to be the one `digest` names.
     ///
     /// [`history_is_current`]: Self::history_is_current
     pub fn save_keeping_history(
         &mut self,
         snapshot: &SessionSnapshot,
+        digest: String,
         now: SystemTime,
-    ) -> io::Result<()> {
-        self.save_with(snapshot, HistoryIntent::Keep, now)
+    ) -> io::Result<Option<String>> {
+        self.save_with(snapshot, HistoryIntent::Keep(digest), now)
+    }
+
+    /// Serializes `history` (trimmed to the file cap) and hashes exactly the
+    /// bytes that would be written.
+    fn prepare_history(&mut self, history: &SessionHistory) -> HistoryIntent {
+        let history_path =
+            super::io::session_history_path(super::io::containing_directory(&self.path));
+        match super::io::serialize_history(history) {
+            Ok(super::io::SerializedHistory { json, trimmed }) => {
+                self.note_history_trim(&history_path, trimmed);
+                let digest = super::io::history_digest(&json);
+                HistoryIntent::Write { json, digest }
+            }
+            Err(error) => HistoryIntent::Failed(error),
+        }
     }
 
     /// Whether the history file is still exactly what this writer last put on
@@ -287,16 +321,16 @@ impl SessionWriter {
     fn save_with(
         &mut self,
         snapshot: &SessionSnapshot,
-        history: HistoryIntent<'_>,
+        history: HistoryIntent,
         now: SystemTime,
-    ) -> io::Result<()> {
+    ) -> io::Result<Option<String>> {
         if !self.may_write() {
-            return Ok(());
+            return Ok(None);
         }
         let mut snapshot_history_plan = SnapshotHistoryPlan::RetryAfterWrite;
         let result = self.preserve_unloaded(now).and_then(|()| {
             snapshot_history_plan = self.prepare_snapshot_history(snapshot, now);
-            super::io::save_to_path(&self.path, snapshot)
+            super::io::save_to_path(&self.path, snapshot, history.digest())
         });
         self.finish_save_with_snapshot_plan(result, snapshot, history, snapshot_history_plan, now)
     }
@@ -305,10 +339,11 @@ impl SessionWriter {
         &mut self,
         result: io::Result<super::io::Published>,
         snapshot: &SessionSnapshot,
-        history: HistoryIntent<'_>,
+        history: HistoryIntent,
         snapshot_history_plan: SnapshotHistoryPlan,
         now: SystemTime,
-    ) -> io::Result<()> {
+    ) -> io::Result<Option<String>> {
+        let digest = history.digest().map(str::to_owned);
         let mut failure = None;
         if result.is_ok() {
             self.snapshot_fingerprints
@@ -352,7 +387,7 @@ impl SessionWriter {
         if failure.is_none() {
             crate::logging::session_saved(&self.path, snapshot.workspaces.len());
         }
-        failure.map_or(Ok(()), Err)
+        failure.map_or(Ok(digest), Err)
     }
 
     fn prepare_snapshot_history(
@@ -411,21 +446,19 @@ impl SessionWriter {
     }
 
     /// Writes the history unless the file already holds exactly these bytes
-    /// from this writer's previous save. The history names the layout it
-    /// pairs with, so a changed layout always changes the bytes.
-    fn save_history(&mut self, history_path: &Path, history: HistoryIntent<'_>) -> io::Result<()> {
-        use sha2::{Digest, Sha256};
-        let history = match history {
-            HistoryIntent::Keep => return Ok(()),
+    /// from this writer's previous save. The layout names the history by the
+    /// digest of these bytes, so a layout only ever pairs with the history its
+    /// own save serialized.
+    fn save_history(&mut self, history_path: &Path, history: HistoryIntent) -> io::Result<()> {
+        let (json, digest) = match history {
+            HistoryIntent::Keep(_) => return Ok(()),
             HistoryIntent::Remove => {
                 self.written_history = None;
                 return super::io::save_history_to_path(history_path, None);
             }
-            HistoryIntent::Write(history) => history,
+            HistoryIntent::Failed(error) => return Err(error),
+            HistoryIntent::Write { json, digest } => (json, digest),
         };
-        let super::io::SerializedHistory { json, trimmed } = super::io::serialize_history(history)?;
-        self.note_history_trim(history_path, trimmed);
-        let digest = Sha256::digest(&json).to_vec();
         if let Some(written) = self
             .written_history
             .as_ref()
@@ -623,27 +656,32 @@ fn preserve_existing_in(
     keep: usize,
     now: SystemTime,
 ) -> io::Result<bool> {
-    let source = match File::open(path) {
+    // Both sources are opened once, through their type check, and the copies
+    // are read from these very descriptors: reopening the paths could meet
+    // other objects (a FIFO swapped in would block the copy). A session path
+    // that is not a regular file fails the preservation, and with it the save,
+    // with a message naming it; one that is a history path only leaves the
+    // copy without history.
+    let mut source = match super::io::open_regular(path) {
         Ok(file) => file,
         // Recheck on the next mutation until a fresh session is actually saved.
         Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(false),
         Err(err) => return Err(err),
     };
-    if !source.metadata()?.is_file() {
-        return Err(io::Error::other("session path is not a regular file"));
-    }
     let history_path = super::io::session_history_path(super::io::containing_directory(path));
-    let has_history = match File::open(&history_path) {
-        Ok(file) if file.metadata()?.is_file() => true,
-        Ok(_) => {
-            return Err(io::Error::other(
-                "session history path is not a regular file",
-            ));
+    let mut history_source = match super::io::open_regular(&history_path) {
+        Ok(file) => Some(file),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => None,
+        Err(err) if super::io::is_not_regular(&err) => {
+            tracing::warn!(
+                event = "persist.backup", subsystem = "persist", outcome = "history_skipped",
+                path = %history_path.display(), error = %err,
+                "preserving the session without its history"
+            );
+            None
         }
-        Err(err) if err.kind() == io::ErrorKind::NotFound => false,
         Err(err) => return Err(err),
     };
-    drop(source);
     shepr_platform::create_private_directory_all(directory)?;
     let older = recovery_files(directory)?;
     let timestamp_now = now
@@ -672,25 +710,23 @@ fn preserve_existing_in(
         // directory lease there is one writer, and the existence check above
         // already skips a taken name, so only a file appearing in between
         // (which the lease rules out) reaches them.
-        let copied_history = if has_history {
-            let mut source = File::open(&history_path)?;
-            match copy_recovery(&mut source, &history_backup) {
-                Ok(()) => true,
-                Err(err) if err.kind() == io::ErrorKind::AlreadyExists => continue,
-                Err(err) => return Err(err),
-            }
-        } else {
-            false
-        };
-        let mut source = match File::open(path) {
-            Ok(source) => source,
-            Err(err) => {
-                if copied_history {
-                    remove_recovery_history_copy(&history_backup)?;
+        let copied_history = match history_source.as_mut() {
+            Some(history) => {
+                history.rewind()?;
+                match copy_recovery(history, &history_backup) {
+                    Ok(()) => true,
+                    Err(err) if err.kind() == io::ErrorKind::AlreadyExists => continue,
+                    Err(err) => return Err(err),
                 }
-                return Err(err);
             }
+            None => false,
         };
+        if let Err(err) = source.rewind() {
+            if copied_history {
+                remove_recovery_history_copy(&history_backup)?;
+            }
+            return Err(err);
+        }
         match copy_recovery(&mut source, &backup) {
             Ok(()) => {}
             Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {
@@ -888,19 +924,25 @@ impl SessionWriter {
         snapshot: &SessionSnapshot,
         history: Option<&SessionHistory>,
     ) -> io::Result<()> {
+        let history = match history {
+            None => HistoryIntent::Remove,
+            Some(history) => self.prepare_history(history),
+        };
         self.finish_save_with_snapshot_plan(
             result,
             snapshot,
-            history.map_or(HistoryIntent::Remove, HistoryIntent::Write),
+            history,
             SnapshotHistoryPlan::RetryAfterWrite,
             UNIX_EPOCH,
         )
+        .map(drop)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs::File;
 
     impl SessionWriter {
         /// A save at the real current time, for tests whose subject is not
@@ -910,7 +952,7 @@ mod tests {
             snapshot: &SessionSnapshot,
             history: Option<&SessionHistory>,
         ) -> io::Result<()> {
-            self.save(snapshot, history, SystemTime::now())
+            self.save(snapshot, history, SystemTime::now()).map(drop)
         }
 
         /// A clear at the real current time; see [`Self::save_for_test`].
@@ -1029,7 +1071,7 @@ mod tests {
         let history_path = super::super::io::session_history_path(
             super::super::io::containing_directory(&writer.path),
         );
-        super::super::io::save_to_path(&writer.path, &snapshot()).expect("test precondition");
+        super::super::io::save_to_path(&writer.path, &snapshot(), None).expect("test precondition");
         std::fs::write(&history_path, b"matching screen history").expect("test precondition");
 
         writer.save_for_test(&snapshot(), None).expect("save");
@@ -1220,7 +1262,7 @@ mod tests {
         for protect_unloaded in [false, true] {
             let mut writer = writer(protect_unloaded);
             if !protect_unloaded {
-                super::super::io::save_to_path(&writer.path, &snapshot())
+                super::super::io::save_to_path(&writer.path, &snapshot(), None)
                     .expect("test precondition");
             }
             writer.save_for_test(&snapshot(), None).expect("save");
@@ -1312,7 +1354,6 @@ mod tests {
     fn unsynced_layout_save_still_writes_history_and_releases_the_guard() {
         let history = SessionHistory {
             version: super::super::snapshot::SNAPSHOT_VERSION,
-            layout_fingerprint: None,
             workspaces: Vec::new(),
         };
         let mut writer = writer(true);
@@ -1320,7 +1361,7 @@ mod tests {
             super::super::io::containing_directory(&writer.path),
         );
         // The layout rename happened; only the directory sync after it failed.
-        super::super::io::save_to_path(&writer.path, &snapshot()).expect("test precondition");
+        super::super::io::save_to_path(&writer.path, &snapshot(), None).expect("test precondition");
         assert!(
             writer
                 .finish_save(
@@ -1416,10 +1457,12 @@ mod tests {
 
     #[test]
     fn unchanged_history_is_not_rewritten() {
-        let history = |fingerprint: &str| SessionHistory {
+        let history = |text: &str| SessionHistory {
             version: super::super::snapshot::SNAPSHOT_VERSION,
-            layout_fingerprint: Some(fingerprint.into()),
-            workspaces: Vec::new(),
+            workspaces: vec![vec![(
+                0,
+                super::super::snapshot::HistoryText::single(std::sync::Arc::from(text)),
+            )]],
         };
         let mut writer = writer(false);
         let history_path = super::super::io::session_history_path(
@@ -1469,10 +1512,85 @@ mod tests {
     }
 
     #[test]
+    fn every_layout_names_the_digest_of_the_history_it_pairs_with() {
+        let history = SessionHistory {
+            version: super::super::snapshot::SNAPSHOT_VERSION,
+            workspaces: vec![vec![(
+                0,
+                super::super::snapshot::HistoryText::single(std::sync::Arc::from("screen")),
+            )]],
+        };
+        let mut writer = writer(false);
+        let history_path = super::super::io::session_history_path(
+            super::super::io::containing_directory(&writer.path),
+        );
+        let named = |writer: &SessionWriter| {
+            let layout: serde_json::Value =
+                serde_json::from_slice(&std::fs::read(&writer.path).expect("layout"))
+                    .expect("layout json");
+            layout["history_digest"].as_str().map(str::to_owned)
+        };
+        let file_digest =
+            || super::super::io::history_digest(&std::fs::read(&history_path).expect("history"));
+
+        let digest = writer
+            .save(&snapshot(), Some(&history), SystemTime::now())
+            .expect("save")
+            .expect("a history was saved");
+        assert_eq!(named(&writer).as_deref(), Some(digest.as_str()));
+        assert_eq!(file_digest(), digest);
+
+        let mut changed = snapshot();
+        changed.workspaces[0].custom_name = Some("layout only".into());
+        let kept = writer
+            .save_keeping_history(&changed, digest.clone(), SystemTime::now())
+            .expect("save");
+        assert_eq!(kept.as_deref(), Some(digest.as_str()));
+        assert_eq!(named(&writer).as_deref(), Some(digest.as_str()));
+        assert_eq!(file_digest(), digest);
+
+        assert_eq!(
+            writer
+                .save(&changed, None, SystemTime::now())
+                .expect("save"),
+            None
+        );
+        assert_eq!(named(&writer), None, "a layout without history names none");
+        std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
+            .expect("test precondition");
+    }
+
+    #[test]
+    fn a_history_path_that_is_not_a_regular_file_costs_only_history() {
+        let history = SessionHistory {
+            version: super::super::snapshot::SNAPSHOT_VERSION,
+            workspaces: Vec::new(),
+        };
+        let mut writer = writer(true);
+        std::fs::write(&writer.path, b"unloaded session").expect("test precondition");
+        let history_path = super::super::io::session_history_path(
+            super::super::io::containing_directory(&writer.path),
+        );
+        std::fs::create_dir(&history_path).expect("test precondition");
+        // The unloaded session is still preserved, without its history, and
+        // the layout is saved; only the history write fails.
+        assert!(writer.save_for_test(&snapshot(), Some(&history)).is_err());
+        assert!(!writer.protect_unloaded);
+        assert_eq!(backups(&writer), vec![b"unloaded session".to_vec()]);
+        assert!(
+            std::fs::metadata(&history_path)
+                .expect("test stat")
+                .is_dir(),
+            "the obstruction is left alone"
+        );
+        std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
+            .expect("test precondition");
+    }
+
+    #[test]
     fn deleted_unchanged_history_is_written_again() {
         let history = || SessionHistory {
             version: super::super::snapshot::SNAPSHOT_VERSION,
-            layout_fingerprint: Some("same-layout".into()),
             workspaces: Vec::new(),
         };
         let mut writer = writer(false);

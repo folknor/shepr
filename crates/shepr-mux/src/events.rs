@@ -1,7 +1,8 @@
 //! Internal app events delivered via channel.
 //!
-//! PTY child watchers, detectors, hook reports and the Git refresh send events
-//! to the main loop through this channel. No polling needed.
+//! Pane launch coordinators (each launch's settlement and the pane's death),
+//! detectors, hook reports and the Git refresh send events to the main loop
+//! through this channel. No polling needed.
 
 use std::time::Instant;
 
@@ -142,13 +143,6 @@ impl EventSender {
     ) -> Result<(), tokio::sync::mpsc::error::TrySendError<AppEvent>> {
         self.sender.try_send(self.tag(event))
     }
-
-    pub(crate) fn blocking_send(
-        &self,
-        event: AppEvent,
-    ) -> Result<(), tokio::sync::mpsc::error::SendError<AppEvent>> {
-        self.sender.blocking_send(self.tag(event))
-    }
 }
 
 #[cfg(test)]
@@ -175,17 +169,7 @@ mod tests {
             })
             .await
             .expect("async event");
-        std::thread::spawn(move || {
-            sender
-                .blocking_send(AppEvent::PaneDied {
-                    pane_id,
-                    exit_reason: shepr_platform::ChildExitReason::Interrupted,
-                })
-                .expect("child watcher event");
-        })
-        .join()
-        .expect("producer thread");
-        for _ in 0..3 {
+        for _ in 0..2 {
             match rx.try_recv().expect("tagged event") {
                 AppEvent::Runtime {
                     pane_id: reported_pane,

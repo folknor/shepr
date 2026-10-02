@@ -2,7 +2,8 @@
 //!
 //! Files live in the data directory passed by the runtime (per build
 //! profile). The layout is `session.json`; optional pane
-//! screen history is stored separately in `session-history.json`. One server
+//! screen history is stored separately in `session-history.json`, and the
+//! layout names the history it pairs with by the digest of its bytes. One server
 //! at a time owns a data directory, enforced by a lease on `session.lock`
 //! there (see `lock`). Within the server, the [`SessionPersister`] (see
 //! `actor`) is the one owner of those files once restore has read them: it
@@ -19,7 +20,9 @@ pub mod snapshot;
 mod writer;
 
 pub use self::actor::{PendingSave, PersistJob, SaveCompletion, SessionBundle, SessionPersister};
-pub use self::io::{SessionLoad, load, load_history, session_backup_directory};
+pub use self::io::{
+    SessionLoad, check_session_target, load, load_history, session_backup_directory,
+};
 pub use self::lock::{DataDirLease, DataDirLeaseHeld};
 pub use self::restore::restore;
 pub use self::snapshot::{

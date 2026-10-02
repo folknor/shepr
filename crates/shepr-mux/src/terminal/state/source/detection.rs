@@ -61,6 +61,22 @@ impl TerminalState {
             // generation, suppression or sequence change). A process-exit
             // repeat is consumed; a genuine withdrawal keeps the ordinary
             // arbitration against the new owner.
+            //
+            // Known gap: a session start the dying agent itself sent just
+            // before it died (Pi `New`, `Resume`, `Fork`) also moves the
+            // epoch, so its exit is voided and that authority stays with no
+            // process behind it. Nothing available tells it from a genuine
+            // quick restart's start: payload, receipt time and probes match,
+            // process start times only rule emitters out, and dropping starts
+            // received during the window would cost session-start-only
+            // integrations (Claude and others) their restart's resume
+            // identity for good. Ancestry from the reporting socket's peer is
+            // no anchor either: hook reporters outlive or are reparented away
+            // from their agent, and most agents run hooks through an extra
+            // shell. Closing it needs each report to carry a validated
+            // agent-runtime anchor (pid and /proc start time), and an
+            // unanchored report must never acquire ownership or cancel a
+            // release.
             return pending
                 .deferred
                 .map_or_else(TerminalStateMutation::default, |deferred| {
@@ -278,15 +294,33 @@ impl TerminalState {
                             == previous_detected_agent
                     })))
         {
-            let durable_session = self.hook_authority.as_ref().and_then(|authority| {
-                authority.session_ref.as_ref().and_then(|session_ref| {
-                    shepr_agent::agent::resume::PersistedAgentSession::from_report(
-                        &authority.source,
-                        &authority.agent_label,
-                        session_ref.clone(),
-                    )
-                })
-            });
+            // The authority withdrawn here never belongs to the agent the
+            // detector now reports (the guard above), so a persisted
+            // identity owned by that agent (a promoted parked start, a
+            // restored seed) outranks it. Otherwise the effective identity is
+            // kept: the authority's own session, else what was persisted. A
+            // sessionless authority never owned the resume identity and must
+            // not clear it. This only decides between the two slots: whether a
+            // promoted parked start really belongs to the process now detected
+            // is a separate attribution gap (a parked start has no expiry and
+            // carries no process identity), as is the ghost authority noted
+            // at `confirm_provisional_process_exit`.
+            let durable_session = match &self.persisted_agent_session {
+                Some(persisted) if agent == Some(persisted.agent) => Some(persisted.clone()),
+                persisted => self
+                    .hook_authority
+                    .as_ref()
+                    .and_then(|authority| {
+                        authority.session_ref.as_ref().and_then(|session_ref| {
+                            shepr_agent::agent::resume::PersistedAgentSession::from_report(
+                                &authority.source,
+                                &authority.agent_label,
+                                session_ref.clone(),
+                            )
+                        })
+                    })
+                    .or_else(|| persisted.clone()),
+            };
             self.suppress_current_full_lifecycle_hook_authority(
                 FullLifecycleHookSuppressionReason::HookClear,
                 now,

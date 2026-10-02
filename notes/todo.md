@@ -26,61 +26,36 @@ the history file and its restore path.
 
 # Open defects
 
-## Clearing hook authority can overwrite a newer persisted session
+## A dying agent's late session start can leave a ghost authority
 
-Found while sparring the provisional-exit fix; exists without it. The
-authority-clear branch at the end of `transition_detection` (shepr-mux
-`terminal/state/source/detection.rs`) commits `durable_session` built from the
-authority. A sessionless authority clears the persisted slot to `None`. One that
-names session A overwrites a persisted slot that was explicitly replaced with B.
-`current_session_identity_for_persistence` prefers the authority, so this keeps
-the effective identity, but nothing decides which of the two slots is newer when
-they disagree. Needs an explicit ownership rule (or ordering stamp) for
-authority versus persisted identity.
+During the provisional-exit grace (`AGENT_PROCESS_EXIT_RELEASE_GRACE`) process
+evidence stays available, so `transition_start` admits a recognized session
+replacement (Pi `New`, `Resume`, `Fork`) sent by the agent just before it died.
+That moves the ownership epoch, the exit is voided, and the replacement
+authority stays in charge with no process behind it.
 
-## A dying agent's delayed start can leave a ghost authority
+Not fixable with the evidence shepr has, which was argued to a conclusion:
 
-Found while sparring the provisional-exit fix. During the provisional-exit grace
-process evidence stays available, so `transition_start` admits a recognized
-session replacement (Pi `New`, `Resume`, `Fork`) sent by the agent just before
-it died. That bumps the ownership epoch, the exit is voided, and the replacement
-authority stays in charge with no process behind it. Telling it apart from a
-genuine quick restart needs process evidence the pane does not have at
-confirmation time.
+- A dying agent's late start and a genuine quick restart's start carry the
+  same payload, receipt time and probe observations. Timestamps (the
+  replacement process's start time against the hook's receipt) only rule
+  emitters out; an older background agent or a delayed delivery passes them.
+- Dropping every start received while an exit is pending trades the ghost for
+  a worse regression: integrations that report their session only at startup
+  (Claude, Copilot, Cursor, Droid, Grok) would lose a quick restart's resume
+  identity for good, which today survives.
+- Ancestry from the reporting socket's peer (`SO_PEERCRED`, then the ppid
+  chain) is not attribution: hook reporters outlive or are reparented away
+  from the agent, most agents run hooks through an extra shell (often in a new
+  session), and pids can be reused before the walk.
 
-## A detector reset can re-report an exit
-
-`DetectorState::reset` keeps the agent identity but clears the exit-report
-bookkeeping, and `DetectionTask::provisional_release` survives the reset. A
-later probe can publish a second exit for the same disappearance, which opens a
-new provisional marker against the current ownership epoch. Replaying an exit is
-not idempotent for hook-source bookkeeping: it can consume a pending start,
-discard a pending report and clear ordering. Confirmation would need to identify
-the exit generation it resolves.
-
-## Pane history can be restored into the wrong pane after repeated history-only write failures
-
-`layout_fingerprint` in `crates/shepr-mux/src/persist/snapshot.rs` pairs the
-history file to the layout by shape and pane IDs, and restore reassigns pane
-IDs in tree order, so the IDs carry no identity across boots. Swap two panes,
-have history writes fail (while layout writes succeed) across a restart, and a
-later layout can match the old history's fingerprint: each pane then restores
-the other's scrollback. Accepted for now (the comment at the function says so);
-the fix is a save generation stamped into both files and paired on.
-
-## Unverified: a cropped dirty patch can cut a wide character
-
-`terminal_collect_dirty_patch` in `crates/shepr-mux/src/pane/terminal/helpers.rs`
-takes `area_width` cells per row, which can split a wide character from its
-spacer; a cropped full render may do the same. Check whether `changed_rows`
-then rejects the patch as invalid, and what a client sees.
-
-## Unverified: a non-regular session path blocks every save
-
-`preserve_existing_in` in `crates/shepr-mux/src/persist/writer.rs` returns
-"session path is not a regular file" when `protect_unloaded` is set and the
-session path is a directory or other non-regular file, which fails every save
-until someone removes it by hand. Confirm the log names the path to remove.
+What would close it: each report carrying a validated agent-runtime anchor
+(pid plus `/proc` start time). In-process integrations (the Pi extension and
+the other JS or TS plugins) can name themselves; each shell integration has to
+prove how its runtime is identified or report unknown, and unknown must never
+acquire ownership or cancel a release. The lifecycle would then key process
+generations, pending exits and session selections on those anchors instead of
+`ownership_epoch`.
 
 # Gaps and smells
 
@@ -129,4 +104,3 @@ blackholed host (no RST) costs the ssh `ConnectTimeout` at every launch, so
 "fail soft" still means a slow start. This is the documented phase bound; a
 shorter path (show the TUI first and finish checks behind it, or remember a
 recently dead host) would be new behaviour.
-

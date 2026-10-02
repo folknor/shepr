@@ -106,6 +106,10 @@ pub(super) fn patch_rect(frame: &mut FrameData, rect: Rect, patch: StylePatch) {
 }
 
 /// Blanks `cell` in place: a space in its own style, no skip, no hyperlink.
+/// It keeps underline and strikethrough, unlike `shepr_protocol::blank_pane_cell`,
+/// which `compose_pane_surface` uses for pane cells its crop cuts; a pane
+/// glyph half that chrome overwrites here can therefore look different from a
+/// cropped one. Visual only.
 pub(in crate::shell) fn blank(cell: &mut CellData) {
     cell.symbol.clear();
     cell.symbol.push(' ');

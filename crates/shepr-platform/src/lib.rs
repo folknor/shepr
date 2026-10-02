@@ -35,7 +35,7 @@ pub use host::{
     take_terminal_resize_signal, terminal_grid_size, watch_terminal_resize_signal,
 };
 pub use owned_runtime::{release_remote_ssh_config_dir, release_single_use_socket_lock};
-pub use private_file::{create_private_file, sync_directory};
+pub use private_file::{create_private_file, open_regular_file, sync_directory};
 pub use process::{
     ProcessHandle, Signal, reap_pidfd, session_member_handles, wait_for_process_exits,
 };

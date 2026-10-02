@@ -376,8 +376,16 @@ can inherit. In shepr-mux, `pane/launch_status.rs` settles each launch from
 those reports. Exec committed while the child lives opens observation of the
 child (`ChildLiveness::live_pid`), starts detection and lets the pane's own
 screen supersede its carried history. A reported failure leaves the pane as a
-placeholder that says why. The settlement always reaches the app before the
-pane's death. The child is a `PaneChild`. The pane runtime watches its pidfd
+placeholder that says why. The child watcher, the PTY reader and the
+runtime's teardown only record how the pane ended with its exit arbiter
+(`pane/exit_arbiter.rs`), the first recording winning. The launch
+coordinator is the pane's one publisher: it sends the settlement, then the
+recorded death, so the settlement always reaches the app first whoever
+decided. An ending recorded while the child may still be alive (a failed
+reader or wait, or a closed terminal whose child was not reaped in time)
+gives the launch a bounded time to settle, then settles it as
+unconfirmed, so a child stuck in its chdir cannot keep the pane from ending.
+The child is a `PaneChild`. The pane runtime watches its pidfd
 and reaps it with `waitid` when available, with a blocking `waitpid` as the
 fallback. If the watcher is dropped before reaping, the child is handed to a
 detached reaper thread.

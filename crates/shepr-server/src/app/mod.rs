@@ -152,8 +152,15 @@ impl App {
         // What every client of this boot is told about a session that did
         // not come back in full; `None` when there is nothing to tell.
         let mut restore_notice = None;
+        let mut history_digest = None;
         let snapshot = match load {
-            Some(shepr_mux::persist::SessionLoad::Loaded(snapshot)) => Some(snapshot),
+            Some(shepr_mux::persist::SessionLoad::Loaded {
+                snapshot,
+                history_digest: digest,
+            }) => {
+                history_digest = digest;
+                Some(snapshot)
+            }
             Some(shepr_mux::persist::SessionLoad::Unusable(reason)) => {
                 restore_notice = Some(shepr_protocol::SessionRestoreNotice {
                     loss: shepr_protocol::SessionRestoreLoss::Unusable { reason },
@@ -175,7 +182,7 @@ impl App {
             let history = config
                 .experimental()
                 .pane_history
-                .then(|| shepr_mux::persist::load_history(&lease))
+                .then(|| shepr_mux::persist::load_history(&lease, history_digest.as_deref()))
                 .flatten();
             // No view exists yet, so each workspace is laid out in the headless
             // area (what the server lays out against until a client

@@ -66,7 +66,22 @@ fn changed_rows(
         let frame_start = usize::from(y) * usize::from(frame.width) + usize::from(area.x);
         let frame_end = frame_start.checked_add(width)?;
         let existing = frame.cells.get(frame_start..frame_end)?;
-        let desired = &cells[..width];
+        // The row was collected at the widest recipient's width; a narrower
+        // cut can split a pair the collection kept whole, so it gets the
+        // same rule a full render at this width applies. The shared row is
+        // left as it is for the wider recipients. Only whole rows are
+        // normalized: a span cut out of one below can start with a tail or
+        // end with a lead whose other half is unchanged in the baseline,
+        // which is valid once applied, so spans must never go through it.
+        let recut;
+        let desired = if shepr_protocol::pane_row_is_normalized(&cells[..width]) {
+            &cells[..width]
+        } else {
+            let mut row = cells[..width].to_vec();
+            shepr_protocol::normalize_pane_row(&mut row);
+            recut = row;
+            &recut[..]
+        };
         let mut offset = 0;
         while offset < width {
             if existing[offset] == desired[offset] {
@@ -933,6 +948,58 @@ mod tests {
                 cells: vec![cell("x"), cell("z")],
             }]
         );
+    }
+
+    #[test]
+    fn a_narrower_recipient_gets_a_blank_where_the_shared_row_holds_a_wide_glyph() {
+        let pane_cell = |symbol: &str, grid_width| shepr_protocol::CellData {
+            grid_width,
+            ..cell(symbol)
+        };
+        let one = shepr_protocol::GridCellWidth::One;
+        let two = shepr_protocol::GridCellWidth::Two;
+        // Collected once at the wider recipient's width: the pair is whole.
+        let patch = shepr_mux::pane::TerminalDirtyPatch {
+            rows: vec![(
+                0,
+                vec![
+                    pane_cell("a", one),
+                    pane_cell("\u{754c}", two),
+                    pane_cell("", one),
+                    pane_cell("b", one),
+                ],
+            )],
+        };
+        let frame = |width: u16| FrameData {
+            width,
+            height: 1,
+            cells: vec![pane_cell(" ", one); usize::from(width)],
+            cursor: None,
+            hyperlinks: Vec::new(),
+        };
+        let area = |width| shepr_protocol::SurfaceRect {
+            x: 0,
+            y: 0,
+            width,
+            height: 1,
+        };
+
+        let wide = changed_rows(&frame(4), area(4), &patch).expect("valid patch");
+        let wide_cells: Vec<_> = wide.iter().flat_map(|row| row.cells.clone()).collect();
+        assert!(wide_cells.iter().any(|cell| cell.grid_width == two));
+
+        let narrow = changed_rows(&frame(2), area(2), &patch).expect("valid patch");
+        let mut applied = frame(2);
+        for row in &narrow {
+            let start = usize::from(row.x);
+            applied.cells[start..start + row.cells.len()].clone_from_slice(&row.cells);
+        }
+        assert_eq!(applied.cells[0].symbol, "a");
+        assert_eq!(applied.cells[1].symbol, " ");
+        assert_eq!(applied.cells[1].grid_width, one);
+        assert!(shepr_protocol::pane_row_is_normalized(&applied.cells));
+        // The shared row is untouched for the wider recipient.
+        assert_eq!(patch.rows[0].1[1].grid_width, two);
     }
 
     #[test]

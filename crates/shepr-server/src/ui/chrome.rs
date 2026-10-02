@@ -16,7 +16,11 @@ use shepr_termio::blit::symbol_width;
 
 /// Blanks `cell` in place: a space in its own style, no skip, no link. The
 /// space is one column wide whatever the cell held, so a blanked wide pane
-/// lead no longer claims the column after it.
+/// lead no longer claims the column after it. Unlike
+/// `shepr_protocol::blank_pane_cell` (the blank for a pane glyph cut by a crop
+/// or broken by the emulator) it keeps underline and strikethrough, so a pane
+/// glyph half that chrome overwrites can look different from one a crop cut.
+/// Visual only; both are one column and draw nothing over a neighbour.
 fn blank(cell: &mut CellData) {
     cell.symbol.clear();
     cell.symbol.push(' ');

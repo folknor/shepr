@@ -145,8 +145,6 @@ impl SavedHostTheme {
 pub struct SessionHistorySnapshot {
     /// Format version follows the matching session snapshot version.
     pub version: SnapshotVersion,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub layout_fingerprint: Option<String>,
     pub workspaces: Vec<WorkspaceHistorySnapshot>,
 }
 
@@ -444,19 +442,12 @@ fn capture_workspace(
     }
 }
 
-// Pairing history to a layout by shape is deliberate. If a save commits the
-// layout and its history write then fails, the history on disk is either for
-// a layout of a different shape (restore ignores it, so every pane's
-// scrollback is dropped; that fails safe) or for one of the same shape and
-// pane IDs. In the second case restore usually replays older scrollback of the
-// same panes, but pane IDs are process-local and restore reassigns them in
-// tree order, so the IDs do not carry pane identity across boots: after panes
-// are swapped and history writes keep failing across a restart while layout
-// writes succeed, a later layout can match the old history's fingerprint and
-// each pane gets the other's scrollback. The next successful save rewrites
-// the history in full. Pairing on a save generation stamped in both files
-// would close that; it was judged not worth the extra field for a case that
-// needs repeated history-only write failures.
+// The layout's shape and pane IDs, which tell whether two layouts are the
+// same for recovery-copy cadence (the writer's snapshot history). It does not
+// pair a history file with a layout: pane IDs are process-local and restore
+// reassigns them, so two layouts can share a fingerprint while their panes
+// hold each other's scrollback. A layout names its history by the digest of
+// the history bytes its own save serialized instead.
 pub(super) fn layout_fingerprint(snapshot: &SessionSnapshot) -> Option<String> {
     use sha2::{Digest, Sha256};
     use std::fmt::Write as _;
@@ -536,7 +527,6 @@ impl HistoryText {
 #[derive(Clone)]
 pub struct SessionHistory {
     pub(super) version: SnapshotVersion,
-    pub(super) layout_fingerprint: Option<String>,
     pub(super) workspaces: Vec<Vec<(u32, HistoryText)>>,
 }
 
@@ -545,7 +535,6 @@ impl SessionHistory {
     pub(super) fn into_snapshot(self) -> SessionHistorySnapshot {
         SessionHistorySnapshot {
             version: self.version,
-            layout_fingerprint: self.layout_fingerprint,
             workspaces: self
                 .workspaces
                 .into_iter()
@@ -587,20 +576,22 @@ fn next_restored_revision() -> u64 {
 /// content: two saves with equal stamps hold equal text.
 type PaneStamp = Option<u64>;
 
-/// What one save's history was made of: the layout its file pairs with and
-/// the content of every pane, per workspace, sorted by pane number.
+/// What one save's history was made of: the content of every pane, under the
+/// workspace position and pane number it is saved with, sorted by pane
+/// number. Two equal stamps serialize to the same bytes: the history file
+/// holds nothing but that mapping (and the format version), and one build's
+/// serializer and cap are fixed.
 #[derive(PartialEq, Eq)]
 struct HistoryStamp {
-    layout_fingerprint: String,
     panes: Vec<Vec<(u32, PaneStamp)>>,
 }
 
 /// What resolving a save's history produced.
 pub enum ResolvedHistory {
-    /// The history file already holds exactly this history: nothing was
-    /// assembled and nothing needs writing. Only ever produced when the
-    /// caller allowed it.
-    Unchanged,
+    /// The history file already holds exactly this history, whose digest is
+    /// given: nothing was assembled and nothing needs writing. Only ever
+    /// produced when the caller allowed it.
+    Unchanged(String),
     Changed(SessionHistory),
 }
 
@@ -638,8 +629,9 @@ pub enum ResolvedHistory {
 pub struct HistoryCarry {
     restored: HashMap<TerminalId, RestoredEntry>,
     readers: HashMap<TerminalId, crate::pane::PaneHistoryCache>,
-    /// The stamp of the history the last successful save wrote.
-    saved: Option<HistoryStamp>,
+    /// The stamp of the history the last successful save wrote, with the
+    /// digest its layout names it by.
+    saved: Option<(HistoryStamp, String)>,
     /// The stamp of the history resolved for the save in progress.
     resolved: Option<HistoryStamp>,
 }
@@ -666,9 +658,12 @@ impl HistoryCarry {
         self.forget_saved();
     }
 
-    /// The save whose history was last resolved reached the disk.
-    pub(super) fn note_saved(&mut self) {
-        self.saved = self.resolved.take();
+    /// The save whose history was last resolved reached the disk, its layout
+    /// naming that history by `digest`. A save that wrote no history
+    /// (`None`) leaves nothing to skip against.
+    pub(super) fn note_saved(&mut self, digest: Option<String>) {
+        let resolved = self.resolved.take();
+        self.saved = resolved.zip(digest);
     }
 
     /// The history file may not hold what the last resolution said; the next
@@ -739,21 +734,18 @@ pub struct PendingHistory {
 }
 
 impl PendingHistory {
-    /// Formats every live pane's history and pairs the result with the layout
-    /// it was captured alongside. Meant for the persister's thread: it can
+    /// Formats every live pane's history, keyed as the layout it was captured
+    /// alongside keys its panes. Saves go through `resolve_for_save`; this
+    /// stays public for tests in this and the server crate, which have no
+    /// other way to read a capture back. Meant for the persister's thread: it can
     /// take as long as formatting what is new in every pane's scrollback
     /// does, in bounded chunks per hold of each pane's terminal lock.
-    pub fn resolve(
-        self,
-        snapshot: &SessionSnapshot,
-        carry: &mut HistoryCarry,
-    ) -> SessionHistorySnapshot {
-        match self.resolve_for_save(snapshot, carry, false) {
+    pub fn resolve(self, carry: &mut HistoryCarry) -> SessionHistorySnapshot {
+        match self.resolve_for_save(carry, false) {
             ResolvedHistory::Changed(history) => history.into_snapshot(),
             // Only produced when the caller allows it.
-            ResolvedHistory::Unchanged => SessionHistorySnapshot {
+            ResolvedHistory::Unchanged(_) => SessionHistorySnapshot {
                 version: SNAPSHOT_VERSION,
-                layout_fingerprint: layout_fingerprint(snapshot),
                 workspaces: Vec::new(),
             },
         }
@@ -768,7 +760,6 @@ impl PendingHistory {
     /// [`resolve`]: Self::resolve
     pub(super) fn resolve_for_save(
         self,
-        snapshot: &SessionSnapshot,
         carry: &mut HistoryCarry,
         allow_unchanged: bool,
     ) -> ResolvedHistory {
@@ -807,25 +798,27 @@ impl PendingHistory {
             named.push(named_panes);
         }
 
-        // Pair history to this saved layout here: live pane IDs are stable
-        // across saves, while restore allocates fresh IDs and carries the
-        // saved history through the ID remap.
-        let layout_fingerprint = layout_fingerprint(snapshot);
-        carry.resolved = layout_fingerprint
-            .clone()
-            .map(|layout_fingerprint| HistoryStamp {
-                layout_fingerprint,
-                panes: named
-                    .iter()
-                    .map(|panes| panes.iter().map(|(id, _, stamp)| (*id, *stamp)).collect())
-                    .collect(),
-            });
-        if allow_unchanged && carry.resolved.is_some() && carry.resolved == carry.saved {
-            return ResolvedHistory::Unchanged;
+        // Keyed by the pane IDs of the layout this history is saved with:
+        // live pane IDs are stable across saves, while restore allocates
+        // fresh IDs and carries the saved history through the ID remap, so
+        // the first save after a restore serializes the new mapping afresh.
+        let stamp = HistoryStamp {
+            panes: named
+                .iter()
+                .map(|panes| panes.iter().map(|(id, _, stamp)| (*id, *stamp)).collect())
+                .collect(),
+        };
+        if allow_unchanged
+            && let Some((saved, digest)) = &carry.saved
+            && *saved == stamp
+        {
+            let digest = digest.clone();
+            carry.resolved = Some(stamp);
+            return ResolvedHistory::Unchanged(digest);
         }
+        carry.resolved = Some(stamp);
         ResolvedHistory::Changed(SessionHistory {
             version: SNAPSHOT_VERSION,
-            layout_fingerprint,
             workspaces: named
                 .into_iter()
                 .map(|panes| {
@@ -961,12 +954,11 @@ pub(super) fn parse_history_snapshot(content: &str) -> Result<SessionHistorySnap
 /// event loop and the persister's thread instead.
 #[cfg(test)]
 pub fn capture_history(
-    snapshot: &SessionSnapshot,
     workspaces: &[Workspace],
     terminal_runtimes: &PaneRuntimeRegistry,
     carry: &mut HistoryCarry,
 ) -> SessionHistorySnapshot {
-    capture_pending_history(workspaces, terminal_runtimes).resolve(snapshot, carry)
+    capture_pending_history(workspaces, terminal_runtimes).resolve(carry)
 }
 
 #[cfg(test)]
@@ -1085,29 +1077,22 @@ mod tests {
             terminal_id.clone(),
             crate::pane::PaneRuntime::test_with_scrollback_bytes(20, 3, 4096, b"ONE\r\n"),
         );
-        let snapshot = super::capture(
-            &workspaces,
-            &HashMap::new(),
-            &runtimes,
-            PathBuf::from("/").as_path(),
-            None,
-            Default::default(),
-        );
         let mut carry = super::HistoryCarry::default();
         let resolve = |carry: &mut super::HistoryCarry, allow: bool| {
-            super::capture_pending_history(&workspaces, &runtimes)
-                .resolve_for_save(&snapshot, carry, allow)
+            super::capture_pending_history(&workspaces, &runtimes).resolve_for_save(carry, allow)
         };
 
         assert!(matches!(
             resolve(&mut carry, true),
             super::ResolvedHistory::Changed(_)
         ));
-        carry.note_saved();
+        carry.note_saved(Some("first".into()));
         assert!(matches!(
             resolve(&mut carry, true),
-            super::ResolvedHistory::Unchanged
+            super::ResolvedHistory::Unchanged(digest) if digest == "first"
         ));
+        // An unchanged save keeps what it can skip against.
+        carry.note_saved(Some("first".into()));
         assert!(
             matches!(
                 resolve(&mut carry, false),
@@ -1115,7 +1100,20 @@ mod tests {
             ),
             "a caller that cannot skip always gets the history"
         );
-        carry.note_saved();
+        carry.note_saved(Some("second".into()));
+        assert!(matches!(
+            resolve(&mut carry, true),
+            super::ResolvedHistory::Unchanged(digest) if digest == "second"
+        ));
+        carry.note_saved(None);
+        assert!(
+            matches!(
+                resolve(&mut carry, true),
+                super::ResolvedHistory::Changed(_)
+            ),
+            "a save that wrote no history leaves nothing to skip against"
+        );
+        carry.note_saved(Some("third".into()));
 
         runtimes
             .get(&terminal_id)

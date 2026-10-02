@@ -83,7 +83,7 @@ impl std::fmt::Display for ServerReady {
 }
 
 /// Runs the headless server, in this order: take the data-directory lease;
-/// start file logging, the detection manifests and the integration installer;
+/// refuse a session path no save could replace; start file logging, the detection manifests and the integration installer;
 /// bind the socket, which answers `ping` as `starting` from then on; build the
 /// runtime; restore panes; build [`HeadlessServer`], which opens the TUI gate;
 /// report ready; run the loop. Shutdown keeps the socket through the final
@@ -116,6 +116,10 @@ pub fn run_server(
         file_logging: shepr_platform::logging::FileLoggingOutcome,
     }
     let lease = shepr_mux::persist::DataDirLease::acquire(data_dir).map_err(lease_error)?;
+    // A session path no save can replace (a directory, a FIFO) refuses the
+    // start before anything is restored or launched, rather than running
+    // panes whose layout can never be saved.
+    shepr_mux::persist::check_session_target(&lease)?;
     // A log file that cannot be opened does not stop the server; the ready
     // notice says so instead of naming a log that is not being written.
     let file_logging = shepr_platform::logging::init_file_logging(

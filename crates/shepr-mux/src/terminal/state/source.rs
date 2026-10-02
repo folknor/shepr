@@ -2590,6 +2590,97 @@ mod pane_exit_tests {
         assert_ne!(terminal.ownership_epoch, epoch);
     }
 
+    fn official_session(agent: &str, id: &str) -> PersistedAgentSession {
+        PersistedAgentSession::from_report(
+            &format!("shepr:{agent}"),
+            agent,
+            AgentSessionRef::id(id).expect("session id"),
+        )
+        .expect("official session")
+    }
+
+    #[test]
+    fn a_sessionless_authority_clear_keeps_the_persisted_identity() {
+        let mut terminal = TerminalState::new(TerminalId::alloc(), "/".into());
+        // clock-io-ok: synthetic observation and report times.
+        let now = Instant::now();
+        terminal.set_detected_agent_process_at(Agent::Claude, now);
+        let persisted = official_session("pi", "kept");
+        terminal.set_persisted_agent_session(persisted.clone());
+        terminal.seed_hook_authority_for_test(Some(HookAuthority {
+            source: "custom-hook".into(),
+            agent_label: "claude".into(),
+            state: AgentState::Working,
+            reported_at: now,
+            session_ref: None,
+        }));
+        terminal.set_detected_state_with_screen_signals_at(
+            Some(Agent::Codex),
+            AgentState::Idle,
+            false,
+            false,
+            now + std::time::Duration::from_millis(1),
+        );
+        assert!(terminal.hook_authority.is_none());
+        assert_eq!(terminal.persisted_agent_session(), Some(&persisted));
+    }
+
+    #[test]
+    fn an_authority_clear_keeps_the_detected_agents_own_identity() {
+        let mut terminal = TerminalState::new(TerminalId::alloc(), "/".into());
+        // clock-io-ok: synthetic observation and report times.
+        let now = Instant::now();
+        terminal.set_detected_agent_process_at(Agent::Claude, now);
+        // A parked Pi start promoted on detection, while Claude still holds
+        // authority, leaves exactly these two slots.
+        let pi = official_session("pi", "pi-session");
+        terminal.set_persisted_agent_session(pi.clone());
+        terminal.seed_hook_authority_for_test(Some(HookAuthority {
+            source: "shepr:claude".into(),
+            agent_label: "claude".into(),
+            state: AgentState::Working,
+            reported_at: now,
+            session_ref: Some(AgentSessionRef::id("claude-session").expect("session id")),
+        }));
+        terminal.set_detected_state_with_screen_signals_at(
+            Some(Agent::Pi),
+            AgentState::Idle,
+            false,
+            false,
+            now + std::time::Duration::from_millis(1),
+        );
+        assert!(terminal.hook_authority.is_none());
+        assert_eq!(terminal.persisted_agent_session(), Some(&pi));
+    }
+
+    #[test]
+    fn an_authority_clear_away_from_its_agent_keeps_its_session() {
+        let mut terminal = TerminalState::new(TerminalId::alloc(), "/".into());
+        // clock-io-ok: synthetic observation and report times.
+        let now = Instant::now();
+        terminal.set_detected_agent_process_at(Agent::Claude, now);
+        terminal.set_persisted_agent_session(official_session("claude", "older"));
+        terminal.seed_hook_authority_for_test(Some(HookAuthority {
+            source: "shepr:claude".into(),
+            agent_label: "claude".into(),
+            state: AgentState::Working,
+            reported_at: now,
+            session_ref: Some(AgentSessionRef::id("current").expect("session id")),
+        }));
+        terminal.set_detected_state_with_screen_signals_at(
+            Some(Agent::Codex),
+            AgentState::Idle,
+            false,
+            false,
+            now + std::time::Duration::from_millis(1),
+        );
+        assert!(terminal.hook_authority.is_none());
+        assert_eq!(
+            terminal.persisted_agent_session(),
+            Some(&official_session("claude", "current"))
+        );
+    }
+
     #[test]
     fn normal_shell_exit_during_provisional_window_clears_identity() {
         let mut terminal = running_terminal();
