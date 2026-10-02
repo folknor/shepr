@@ -182,3 +182,11 @@ pub(crate) const PANE_TEARDOWN_STEPS: [(shepr_platform::Signal, Duration); 3] = 
 /// A detector release remains provisional while a session-wide kill can still
 /// reach the shell. The detector republishes after this live-shell interval.
 pub(crate) const AGENT_PROCESS_EXIT_RELEASE_GRACE: Duration = Duration::from_millis(750);
+/// How long a pane launch whose child has exited still waits for that child's
+/// status channel. A child that connected before exiting is already in the
+/// listener's queue and is routed at once; this only bounds the wait for one
+/// that never connected (a failure before its first report).
+pub(crate) const LAUNCH_STATUS_AFTER_EXIT: Duration = Duration::from_secs(1);
+/// How often a pane launch checks whether its child exited when it cannot
+/// watch the child's pidfd (the dup failed). Only that fallback polls.
+pub(crate) const LAUNCH_EXIT_POLL_INTERVAL: Duration = Duration::from_millis(100);

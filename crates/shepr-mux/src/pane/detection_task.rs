@@ -8,6 +8,7 @@ use tokio::sync::Notify;
 use tracing::info;
 
 use super::launch::LaunchPurpose;
+use super::launch_status::LaunchWatch;
 use super::process_probe::*;
 use super::teardown::ChildLiveness;
 use super::terminal::PaneTerminal;
@@ -49,20 +50,30 @@ impl Drop for CancelOnDrop {
 }
 
 impl DetectionTask {
+    /// Detection starts once the pane's shell launched: before exec commits
+    /// the child is the server's own image, and its startup windows count from
+    /// the launch, not from the fork.
     pub(super) fn spawn(
         pane_id: PaneId,
         launch_purpose: LaunchPurpose,
+        mut launch: LaunchWatch,
         handles: DetectionHandles,
     ) -> tokio::task::AbortHandle {
-        let task = Self {
-            pane_id,
-            handles,
-            detector: DetectorState::new(Instant::now(), launch_purpose),
-            next_wake: crate::limits::PROCESS_RECHECK_NO_AGENT,
-            cancelled: Arc::new(AtomicBool::new(false)),
-            provisional_release: None,
-        };
-        tokio::spawn(task.run()).abort_handle()
+        tokio::spawn(async move {
+            if !launch.launched().await {
+                return;
+            }
+            let task = Self {
+                pane_id,
+                handles,
+                detector: DetectorState::new(Instant::now(), launch_purpose),
+                next_wake: crate::limits::PROCESS_RECHECK_NO_AGENT,
+                cancelled: Arc::new(AtomicBool::new(false)),
+                provisional_release: None,
+            };
+            task.run().await;
+        })
+        .abort_handle()
     }
 
     async fn run(mut self) {

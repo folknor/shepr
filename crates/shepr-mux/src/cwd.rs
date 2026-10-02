@@ -23,6 +23,13 @@ impl UsableCwd {
         }
     }
 
+    /// A directory a pane child has just entered with chdir, which is the
+    /// observation this type records; checking it again here would stat it on
+    /// the event loop.
+    pub(crate) fn entered(path: PathBuf) -> Self {
+        Self(path)
+    }
+
     pub fn as_path(&self) -> &std::path::Path {
         &self.0
     }

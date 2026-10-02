@@ -439,8 +439,15 @@ async fn capture_follows_live_cwd_arbitration_and_keeps_it_after_exit() {
         &std::sync::Arc::default(),
     )
     .expect("test precondition");
-    let pid = runtime.child_pid().expect("test precondition");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    // The child is observable once its shell launched.
+    let pid = loop {
+        if let Some(pid) = runtime.child_pid() {
+            break pid;
+        }
+        assert!(std::time::Instant::now() < deadline, "the shell launches");
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    };
     while (shepr_agent::detect::process_cwd(pid).as_ref() != Some(&new)
         || runtime.cwd().as_ref() != Some(&old))
         && std::time::Instant::now() < deadline

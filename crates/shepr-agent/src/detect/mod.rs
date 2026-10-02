@@ -1607,6 +1607,7 @@ mod tests {
         let mut spawned = spawn_pty(
             shepr_core::geometry::PaneGeometry::new(80, 24, 0, 0),
             &command,
+            Box::new(drop),
         )
         .expect("failed to spawn");
         let pid = spawned.child.id();
@@ -1655,8 +1656,12 @@ mod tests {
         );
         let cmd =
             PtyCommand::interactive_shell(shell.to_str().expect("shell path is UTF-8"), false);
-        let mut spawned = spawn_pty(shepr_core::geometry::PaneGeometry::new(80, 24, 0, 0), &cmd)
-            .expect("failed to spawn");
+        let mut spawned = spawn_pty(
+            shepr_core::geometry::PaneGeometry::new(80, 24, 0, 0),
+            &cmd,
+            Box::new(drop),
+        )
+        .expect("failed to spawn");
         let pid = spawned.child.id();
 
         // Write a command to the shell
@@ -1706,8 +1711,12 @@ mod tests {
         );
         let cmd =
             PtyCommand::interactive_shell(wrapper.to_str().expect("wrapper path is UTF-8"), false);
-        let mut spawned = spawn_pty(shepr_core::geometry::PaneGeometry::new(80, 24, 0, 0), &cmd)
-            .expect("failed to spawn");
+        let mut spawned = spawn_pty(
+            shepr_core::geometry::PaneGeometry::new(80, 24, 0, 0),
+            &cmd,
+            Box::new(drop),
+        )
+        .expect("failed to spawn");
         let pid = spawned.child.id();
         std::thread::sleep(std::time::Duration::from_millis(100));
 

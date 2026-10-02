@@ -779,9 +779,10 @@ struct PtySetup<'a> {
 }
 
 struct StartedPty {
-    child: std::process::Child,
+    child: shepr_pty::backend::PaneChild,
     child_liveness: Arc<ChildLiveness>,
     io: Box<dyn ChildIo>,
+    launch: super::launch_status::LaunchStatus,
 }
 
 impl PtySetup<'_> {
@@ -797,24 +798,46 @@ impl PtySetup<'_> {
             render_dirty,
             teardown_tracker,
         } = self;
-        let spawned = shepr_pty::backend::spawn_pty(geometry, cmd).inspect_err(
-            |err| error!(pane = pane_id.raw(), error = %err, "failed to spawn shell"),
-        )?;
+        let (status_sender, status_channel) = tokio::sync::oneshot::channel();
+        // The fork returns at once; the child changes directory and execs on
+        // its own and reports through its status channel (`launch_status`).
+        let spawned = shepr_pty::backend::spawn_pty(
+            geometry,
+            cmd,
+            Box::new(move |channel| {
+                // A launch whose runtime is gone has no reader for it.
+                status_sender.send(channel).ok();
+            }),
+        )
+        .inspect_err(|err| error!(pane = pane_id.raw(), error = %err, "failed to spawn shell"))?;
 
         let mut child = spawned.child;
         let master_fd = spawned.master_fd;
+        let launch = super::launch_status::LaunchStatus {
+            channel: status_channel,
+            registration: spawned.status,
+            cwd_candidates: spawned.cwd_candidates,
+            program: cmd
+                .get_env(shepr_core::env::ChildEnv::Shell)
+                .map_or_else(String::new, |shell| shell.to_string_lossy().into_owned()),
+        };
         let pid = child.id();
         crate::logging::pane_spawned(pane_id.raw(), pid);
         // Opened before the watcher below exists, so nothing can have reaped
-        // the child yet and the pid is certainly still this child's.
-        let leader = shepr_platform::ProcessHandle::open(pid);
-        if leader.is_none() {
-            warn!(
-                pane = pane_id.raw(),
-                "no process handle for the pane's child; closing the pane cannot signal it directly"
-            );
-        }
-        let child_liveness = Arc::new(ChildLiveness::new(pid, leader));
+        // the child yet and the pid is certainly still this child's. Without
+        // it the child could not be signalled safely while it is still in its
+        // chdir (before setsid, no session scan finds it), so the launch is
+        // refused.
+        let Some(leader) = shepr_platform::ProcessHandle::open(pid) else {
+            if let Err(kill_err) = child.kill() {
+                warn!(pane = pane_id.raw(), pid, error = %kill_err, "failed to kill pane child without a process handle");
+            }
+            super::child_watcher::reap_after_startup_failure(pane_id, child, None);
+            return Err(std::io::Error::other(
+                "no process handle for the pane's child",
+            ));
+        };
+        let child_liveness = Arc::new(ChildLiveness::launching(pid, leader));
         let io: Box<dyn ChildIo> = {
             // Failure cleanup and read effects use the same child identity.
             let startup_child_liveness = Arc::clone(&child_liveness);
@@ -873,10 +896,10 @@ impl PtySetup<'_> {
                     // Startup is synchronous on its caller. Keep a delayed
                     // child exit from stalling the server loop by handing it
                     // to the child watcher's detached reaper.
-                    super::child_watcher::reap_after_actor_startup_failure(
+                    super::child_watcher::reap_after_startup_failure(
                         pane_id,
                         child,
-                        startup_child_liveness,
+                        Some(startup_child_liveness),
                     );
                     return Err(err);
                 }
@@ -891,6 +914,7 @@ impl PtySetup<'_> {
             child,
             child_liveness,
             io,
+            launch,
         })
     }
 }
@@ -997,6 +1021,7 @@ impl PaneRuntime {
             child,
             child_liveness,
             io,
+            launch,
         } = PtySetup {
             pane_id,
             geometry,
@@ -1012,12 +1037,25 @@ impl PaneRuntime {
 
         // Actor setup failures reap the child above without publishing an exit
         // for a pane that was never constructed.
-        super::child_watcher::spawn(pane_id, child, Arc::clone(&child_liveness), events.clone());
+        let launch = super::launch_status::spawn(
+            pane_id,
+            launch,
+            Arc::clone(&child_liveness),
+            events.clone(),
+        );
+        super::child_watcher::spawn(
+            pane_id,
+            child,
+            Arc::clone(&child_liveness),
+            launch.clone(),
+            events.clone(),
+        );
 
         let detect_reset_notify = Arc::new(Notify::new());
         let detect_handle = Some(super::detection_task::DetectionTask::spawn(
             pane_id,
             launch_purpose,
+            launch,
             super::detection_task::DetectionHandles {
                 terminal: Arc::clone(&terminal),
                 child_liveness: Arc::clone(&child_liveness),
@@ -1411,12 +1449,13 @@ impl PaneRuntime {
 
     /// Get the current working directory of the child shell process.
     ///
-    /// The latest OSC 7 report wins while the shell's usable /proc cwd is
-    /// unchanged since that report arrived; once the shell has moved without
-    /// reporting, its usable /proc cwd wins. One /proc read per call.
+    /// The latest OSC 7 report wins while the shell's /proc cwd is unchanged
+    /// since that report arrived; once the shell has moved without reporting,
+    /// its /proc cwd wins. One /proc readlink per call and no stat
+    /// (`readlink_process_cwd`): this runs on the event loop.
     pub fn cwd(&self) -> Option<std::path::PathBuf> {
         let shell_cwd = self.child_liveness.live_pid().and_then(|pid| {
-            let cwd = super::process_probe::usable_process_cwd(pid);
+            let cwd = super::process_probe::readlink_process_cwd(pid);
             (self.child_liveness.live_pid() == Some(pid))
                 .then_some(cwd)
                 .flatten()
@@ -1453,6 +1492,13 @@ impl PaneRuntime {
         self.child_liveness.live_pid()
     }
 
+    /// Whether the pane's shell exec committed. Before that the pane has a PTY
+    /// but no shell: its live screen holds nothing a save should prefer over
+    /// history carried for it.
+    pub fn launched(&self) -> bool {
+        self.child_liveness.is_launched()
+    }
+
     /// The cwd to inherit when a split or new workspace follows this pane.
     /// The shell's OSC 7 arbitration applies while its own process group is in
     /// the foreground; a foreground job's group leader takes precedence while
@@ -1469,7 +1515,7 @@ impl PaneRuntime {
             shell_pid,
             foreground_pgid,
             || self.cwd(),
-            usable_process_cwd,
+            readlink_process_cwd,
         );
         if shell_pid.is_some_and(|pid| self.child_liveness.live_pid() != Some(pid)) {
             None
@@ -2114,6 +2160,7 @@ mod tests {
         let mut spawned = shepr_pty::backend::spawn_pty(
             shepr_core::geometry::PaneGeometry::new(80, 24, 0, 0),
             &cmd,
+            Box::new(drop),
         )
         .expect("spawn session");
         let leader_pid = spawned.child.id();
@@ -2343,6 +2390,7 @@ mod tests {
         let mut spawned = shepr_pty::backend::spawn_pty(
             shepr_core::geometry::PaneGeometry::new(80, 24, 0, 0),
             &cmd,
+            Box::new(drop),
         )
         .expect("spawn in pty");
         let status = spawned.child.wait().expect("wait for the fixture");
@@ -2366,16 +2414,16 @@ mod tests {
         let mut spawned = shepr_pty::backend::spawn_pty(
             shepr_core::geometry::PaneGeometry::new(80, 24, 0, 0),
             &cmd,
+            Box::new(drop),
         )
         .expect("spawn test shell");
-        let command_line = std::fs::read(format!("/proc/{}/cmdline", spawned.child.id()));
+        let command_line = exec_command_line(spawned.child.id(), b"-shepr-login-shell");
         let shell_env = std::fs::read(format!("/proc/{}/environ", spawned.child.id()));
         spawned
             .child
             .kill()
             .expect("stop the sleeping shell fixture");
         spawned.child.wait().expect("reap the shell fixture");
-        let command_line = command_line.expect("read the fixture command line");
         let argv0_end = command_line
             .iter()
             .position(|byte| *byte == 0)
@@ -2405,16 +2453,16 @@ mod tests {
         let mut spawned = shepr_pty::backend::spawn_pty(
             shepr_core::geometry::PaneGeometry::new(80, 24, 0, 0),
             &cmd,
+            Box::new(drop),
         )
         .expect("spawn test shell");
-        let command_line = std::fs::read(format!("/proc/{}/cmdline", spawned.child.id()));
+        let command_line = exec_command_line(spawned.child.id(), shell.as_bytes());
         let shell_env = std::fs::read(format!("/proc/{}/environ", spawned.child.id()));
         spawned
             .child
             .kill()
             .expect("stop the sleeping shell fixture");
         spawned.child.wait().expect("reap the shell fixture");
-        let command_line = command_line.expect("read the fixture command line");
         let argv0_end = command_line
             .iter()
             .position(|byte| *byte == 0)
@@ -2432,47 +2480,48 @@ mod tests {
     }
 
     #[test]
-    fn pane_shell_spawn_rejects_a_missing_configured_shell() {
+    fn a_missing_configured_shell_fails_in_the_child_not_at_the_fork() {
         let cmd =
             pane_shell_command_builder(PaneShellConfig::new("/__shepr_missing_shell__", true));
-        let err = shepr_pty::backend::spawn_pty(
-            shepr_core::geometry::PaneGeometry::new(80, 24, 0, 0),
-            &cmd,
-        )
-        .err()
-        .expect("test precondition");
-        assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
-    }
-
-    #[test]
-    fn pane_shell_spawn_resolves_a_bare_name_on_the_child_path() {
-        let bin = crate::test_support::ScratchDir::new("bin");
-        let shell = fixture::stand_in(
-            bin.path(),
-            "fake-shell",
-            &[Step::Sleep(std::time::Duration::from_secs(30))],
-        );
-
-        let mut cmd = pane_shell_command_builder(PaneShellConfig::new("fake-shell", false));
-        cmd.env("PATH", bin.as_os_str());
         let mut spawned = shepr_pty::backend::spawn_pty(
             shepr_core::geometry::PaneGeometry::new(80, 24, 0, 0),
             &cmd,
+            Box::new(drop),
         )
-        .expect("spawn executable selected through PATH");
-        let executable = std::fs::read_link(format!("/proc/{}/exe", spawned.child.id()));
-        let shell_env = std::fs::read(format!("/proc/{}/environ", spawned.child.id()));
-        spawned
-            .child
-            .kill()
-            .expect("stop the sleeping shell fixture");
-        spawned.child.wait().expect("reap the shell fixture");
-        assert_eq!(executable.expect("read resolved executable"), shell);
-        use std::os::unix::ffi::OsStrExt;
-        assert_eq!(
-            child_shell_environment(&shell_env.expect("read fixture environment")),
-            shell.as_os_str().as_bytes()
-        );
+        .expect("the fork does not wait for exec");
+        let status = spawned.child.wait().expect("reap the failed launch");
+        assert_eq!(status.code(), Some(127));
+    }
+
+    #[test]
+    fn pane_shell_spawn_refuses_a_bare_name() {
+        // Config validation resolves the shell to an absolute path; the
+        // launch does no PATH walk of its own.
+        let cmd = pane_shell_command_builder(PaneShellConfig::new("fake-shell", false));
+        let err = shepr_pty::backend::spawn_pty(
+            shepr_core::geometry::PaneGeometry::new(80, 24, 0, 0),
+            &cmd,
+            Box::new(drop),
+        )
+        .err()
+        .expect("a bare name is refused");
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
+    }
+
+    /// The child's command line once it exec'd a program whose argv0 is
+    /// `argv0`: the fork returns before the exec, and until then /proc
+    /// describes a copy of the test binary.
+    fn exec_command_line(pid: u32, argv0: &[u8]) -> Vec<u8> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let command_line =
+                std::fs::read(format!("/proc/{pid}/cmdline")).expect("read the child command line");
+            if command_line.starts_with(argv0) && command_line.get(argv0.len()) == Some(&0) {
+                return command_line;
+            }
+            assert!(std::time::Instant::now() < deadline, "the child execs");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
     }
 
     fn child_shell_environment(environment: &[u8]) -> &[u8] {

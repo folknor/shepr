@@ -13,6 +13,7 @@ mod events;
 mod git_refresh;
 mod host_theme;
 mod ids;
+mod pane_launch;
 mod resume_schedule;
 mod runtime;
 mod session;
@@ -37,8 +38,7 @@ pub(crate) struct Outcome {
 
 use crate::limits::{
     DEFAULT_WORKSPACE_RETRY_MAX, DEFAULT_WORKSPACE_RETRY_MIN, GIT_REMOTE_STATUS_REFRESH_INTERVAL,
-    GIT_REPO_DISCOVERY_REFRESH_INTERVAL, PENDING_AGENT_RESUME_RETRY_INTERVAL,
-    PENDING_AGENT_RESUME_THEME_WAIT,
+    GIT_REPO_DISCOVERY_REFRESH_INTERVAL, PENDING_AGENT_RESUME_THEME_WAIT,
 };
 
 use tokio::sync::{Notify, mpsc};
@@ -91,6 +91,9 @@ pub struct App {
     /// been told about focus; `sync_pane_focus` drains this and re-sends the
     /// focus-in report for the ones that hold focus.
     pub(crate) runtimes_replaced_panes: Vec<shepr_core::layout::PaneId>,
+    /// Deferred agent resume commands whose shell is still launching; each is
+    /// typed into its pane when the launch settles (`pane_launch`).
+    pending_resume_commands: std::collections::HashMap<shepr_protocol::TerminalId, bytes::Bytes>,
     pub(crate) session_saver: session::SessionSaver,
     /// Host name resolved once for the window title.
     hostname: String,
@@ -299,12 +302,12 @@ impl App {
             resume_schedule: resume_schedule::ResumeSchedule::new(
                 PENDING_AGENT_RESUME_THEME_WAIT,
                 Duration::from_millis(config.session().startup_per_agent_delay_ms.into()),
-                PENDING_AGENT_RESUME_RETRY_INTERVAL,
             ),
             live_host_theme_reported: false,
             default_workspace_retry_at: None,
             default_workspace_retry_delay: None,
             runtimes_replaced_panes: Vec::new(),
+            pending_resume_commands: std::collections::HashMap::new(),
             session_saver: session::SessionSaver::new(persister, save_finished),
             hostname,
             window_title_template: None,
@@ -484,8 +487,8 @@ mod tests {
         app
     }
 
-    #[test]
-    fn restore_that_prunes_a_pane_backs_up_the_saved_session_before_the_first_save() {
+    #[tokio::test]
+    async fn restore_that_prunes_a_pane_backs_up_the_saved_session_before_the_first_save() {
         use crate::test_support::{AppPathsFixture as _, ValidatedServerConfigFixture as _};
         use shepr_mux::persist::snapshot::{
             DirectionSnapshot, LayoutSnapshot, PaneSnapshot, SessionSnapshot, WorkspaceSnapshot,

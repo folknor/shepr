@@ -18,6 +18,13 @@ pub enum AppEvent {
         generation: RuntimeGeneration,
         event: Box<AppEvent>,
     },
+    /// A pane's launch settled: its shell's exec committed, it reported why
+    /// it could not start, or it ended without a report. Always queued before
+    /// the same runtime's `PaneDied`.
+    PaneLaunchSettled {
+        pane_id: PaneId,
+        settlement: crate::pane::LaunchSettlement,
+    },
     /// A pane's child process exited.
     PaneDied {
         pane_id: PaneId,

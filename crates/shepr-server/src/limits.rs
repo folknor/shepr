@@ -68,14 +68,6 @@ pub(crate) const SESSION_SAVE_RETRY_MAX: Duration = Duration::from_secs(30);
 /// persistence must not stall either indefinitely.
 pub(crate) const CHECKPOINT_MAX_FAILURES: u8 = 3;
 
-/// Retry a restored agent launch when it has not consumed its plan;
-/// this bounds both launch latency and repeated work.
-pub(crate) const PENDING_AGENT_RESUME_RETRY_INTERVAL: Duration = Duration::from_secs(1);
-/// How long a restored agent's saved directory may take to stat before the
-/// resume treats it as unavailable. A stat stuck on a hung mount cannot be
-/// cancelled; past this the resume is abandoned and its thread left to finish.
-pub(crate) const RESUME_CWD_CHECK_TIMEOUT: Duration = Duration::from_secs(5);
-
 /// Refuse oversized copy-mode queries to bound search work per request.
 pub(crate) const MAX_QUERY_BYTES: usize = 4096;
 /// Limit copy-mode matches to bound each response.

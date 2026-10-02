@@ -205,12 +205,31 @@ pub(super) fn apply_pane_launch_env(cmd: &mut PtyCommand, launch_env: &PaneLaunc
         shepr_config::BuildProfile::current().marker(),
     );
     cmd.env_remove(ChildEnv::SheprBinPath);
-    if let Ok(executable) = shepr_platform::launch_executable() {
+    if let Some(executable) = launch_executable() {
         cmd.env(ChildEnv::SheprBinPath, executable);
     }
     if let Some(pane_id) = &launch_env.pane_id {
         cmd.env(EnvVar::SheprPaneId, pane_id.to_string());
     }
+}
+
+/// The path panes are told to run shepr by, resolved once: resolving it stats
+/// the server's own binary, which no pane spawn may do on the event loop. An
+/// install that replaces the binary keeps the same path, which is what the
+/// resolution would find again.
+fn launch_executable() -> Option<&'static std::path::Path> {
+    static EXECUTABLE: std::sync::OnceLock<Option<std::path::PathBuf>> = std::sync::OnceLock::new();
+    EXECUTABLE
+        .get_or_init(|| shepr_platform::launch_executable().ok())
+        .as_deref()
+}
+
+/// Does once, at server startup, everything a pane launch would otherwise do
+/// on its first spawn that may touch the filesystem or NSS: bind the launch
+/// status listener, read the passwd home, resolve the server binary path.
+pub fn init_pane_launches() -> std::io::Result<()> {
+    let _ = launch_executable();
+    shepr_pty::launch::init()
 }
 
 #[derive(Clone, Copy)]

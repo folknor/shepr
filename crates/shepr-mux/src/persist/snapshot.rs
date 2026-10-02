@@ -844,17 +844,27 @@ pub fn capture_pending_history(
                     .iter()
                     .map(|(id, pane)| {
                         let terminal = pane.attached_terminal_id.clone();
-                        let pending = match terminal_runtimes.get(&terminal) {
-                            Some(runtime) => {
-                                PendingPaneHistory::Live(terminal, runtime.history_source())
-                            }
-                            None => PendingPaneHistory::Runtimeless(terminal),
-                        };
-                        (id.raw(), pending)
+                        let runtime = terminal_runtimes.get(&terminal);
+                        (id.raw(), pending_pane_history(terminal, runtime))
                     })
                     .collect()
             })
             .collect(),
+    }
+}
+
+/// A pane's own screen supersedes its carried history only once its shell
+/// launched. Until then (a chdir on a hung mount can last indefinitely) the
+/// runtime holds a PTY and no shell, and a save must not trade the history
+/// carried for it for that empty screen; if the launch then fails, the pane is
+/// left with the carried history.
+fn pending_pane_history(
+    terminal: TerminalId,
+    runtime: Option<&crate::pane::PaneRuntime>,
+) -> PendingPaneHistory {
+    match runtime.filter(|runtime| runtime.launched()) {
+        Some(runtime) => PendingPaneHistory::Live(terminal, runtime.history_source()),
+        None => PendingPaneHistory::Runtimeless(terminal),
     }
 }
 
@@ -874,11 +884,8 @@ pub fn capture_pending_history_for_snapshot(
         let mut panes = Vec::with_capacity(pane_ids.len());
         for pane_id in pane_ids {
             let terminal = terminal_ids.get(&(workspace_index, pane_id))?.clone();
-            let pending = match terminal_runtimes.get(&terminal) {
-                Some(runtime) => PendingPaneHistory::Live(terminal, runtime.history_source()),
-                None => PendingPaneHistory::Runtimeless(terminal),
-            };
-            panes.push((pane_id, pending));
+            let runtime = terminal_runtimes.get(&terminal);
+            panes.push((pane_id, pending_pane_history(terminal, runtime)));
         }
         workspaces.push(panes);
     }

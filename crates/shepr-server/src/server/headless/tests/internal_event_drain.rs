@@ -216,8 +216,7 @@ async fn checkout_root_requests_are_limited_by_running_workers() {
             &completion,
             worker::WorkerCompletion::CheckoutRoot { .. }
         ));
-        let now = server.app.clock.now;
-        server.handle_worker_completion(completion, now);
+        server.handle_worker_completion(completion);
     }
     server.release_endpoint_replies(ReleaseMode::WithinBudget);
     shutdown_test_runtimes(&mut server);

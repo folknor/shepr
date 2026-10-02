@@ -157,6 +157,13 @@ impl App {
             let changed = self.handle_git_status_refreshed(results, cache_updates);
             return changed;
         }
+        if let AppEvent::PaneLaunchSettled {
+            pane_id,
+            settlement,
+        } = ev
+        {
+            return self.handle_pane_launch_settled(pane_id, settlement);
+        }
 
         // A detector tick can finish before the watcher publishes PaneDied.
         // Once the pane child is dead, only its exit reason can decide whether

@@ -159,7 +159,6 @@ pub struct HeadlessServer {
     worker_tx: tokio::sync::mpsc::UnboundedSender<worker::WorkerCompletion>,
     worker_rx: tokio::sync::mpsc::UnboundedReceiver<worker::WorkerCompletion>,
     checkout_root_runner: worker::CheckoutRootRunner,
-    resume_cwd_checks_in_flight: HashSet<(shepr_protocol::TerminalId, PathBuf)>,
 }
 
 impl HeadlessServer {
@@ -216,7 +215,6 @@ impl HeadlessServer {
             worker_tx,
             worker_rx,
             checkout_root_runner: worker::default_checkout_root_runner(),
-            resume_cwd_checks_in_flight: HashSet::new(),
         }
     }
 
@@ -462,7 +460,7 @@ impl HeadlessServer {
             };
             // The wait above can last until the next deadline; dispatch reads
             // the time the event arrived, not the time the wait began.
-            let event_time = self.refresh_app_clock();
+            self.refresh_app_clock();
 
             if self.lifecycle.stop_requested(self.app.state.should_quit) {
                 // This request was already dequeued when the stop arrived.
@@ -520,7 +518,7 @@ impl HeadlessServer {
                     self.handle_server_event(ev);
                 }
                 LoopEvent::WorkerCompletion(completion) => {
-                    if self.handle_worker_completion(completion, event_time) {
+                    if self.handle_worker_completion(completion) {
                         self.mark_view_changed();
                     }
                 }
@@ -1419,48 +1417,10 @@ impl HeadlessServer {
             // the next focus change.
             self.sync_pane_focus();
         }
-        let resumed_after_check_start = self.schedule_resume_cwd_checks(now);
-        changed | resumed | resumed_after_check_start
+        changed | resumed
     }
 
-    fn schedule_resume_cwd_checks(&mut self, now: Instant) -> bool {
-        let mut check_start_failed = false;
-        for (terminal_id, cwd) in self.app.pending_agent_resume_cwd_checks(now) {
-            let key = (terminal_id.clone(), cwd.clone());
-            if !self.resume_cwd_checks_in_flight.insert(key) {
-                continue;
-            }
-            if let Err(error) =
-                worker::resume_cwd_check(&self.worker_tx, terminal_id.clone(), cwd.clone())
-            {
-                warn!(
-                    terminal = %terminal_id,
-                    cwd = %cwd.display(),
-                    %error,
-                    "failed to start saved agent resume directory check"
-                );
-                self.resume_cwd_checks_in_flight
-                    .remove(&(terminal_id.clone(), cwd.clone()));
-                self.app
-                    .record_pending_agent_resume_cwd_check(terminal_id, cwd, false);
-                check_start_failed = true;
-            }
-        }
-        if !check_start_failed {
-            return false;
-        }
-        let resumed = self.app.start_pending_agent_resumes(now);
-        if resumed {
-            self.sync_pane_focus();
-        }
-        resumed
-    }
-
-    fn handle_worker_completion(
-        &mut self,
-        completion: worker::WorkerCompletion,
-        now: Instant,
-    ) -> bool {
+    fn handle_worker_completion(&mut self, completion: worker::WorkerCompletion) -> bool {
         match completion {
             worker::WorkerCompletion::CheckoutRoot {
                 ticket,
@@ -1482,34 +1442,6 @@ impl HeadlessServer {
                     &crate::server::client_commands::response_message(boot_id, request_id, result),
                 );
                 false
-            }
-            worker::WorkerCompletion::ResumeCwdChecked {
-                terminal_id,
-                cwd,
-                result,
-            } => {
-                self.resume_cwd_checks_in_flight
-                    .remove(&(terminal_id.clone(), cwd.clone()));
-                let available = match result {
-                    Ok(available) => available,
-                    Err(error) => {
-                        warn!(
-                            terminal = %terminal_id,
-                            cwd = %cwd.display(),
-                            %error,
-                            "saved agent resume directory cannot be read"
-                        );
-                        false
-                    }
-                };
-                self.app
-                    .record_pending_agent_resume_cwd_check(terminal_id, cwd, available);
-                let resumed = self.app.start_pending_agent_resumes(now);
-                if resumed {
-                    self.sync_pane_focus();
-                }
-                let resumed_after_check_start = self.schedule_resume_cwd_checks(now);
-                resumed | resumed_after_check_start
             }
         }
     }

@@ -359,11 +359,26 @@ login-shell argv0, injects its own variables, blocks in `Drop` waiting for the
 child, and exits the process on a failed resize. `crates/shepr-pty/src/` owns the PTY on
 libc instead: `command.rs` (`PtyCommand`: configured pane shell with no extra
 arguments, optional login argv0, full env control and cwd) builds the launch,
-`backend.rs` opens the PTY and spawns the child as a session leader with the PTY
+`backend.rs` opens the PTY and forks the child as a session leader with the PTY
 as controlling terminal, and
-`actor.rs`/`fd.rs` own the master fd, the IO loop and resizing. The child is a
-plain `std::process::Child`. The pane runtime watches its pidfd and reaps it
-with `waitid` when available; `Child::wait` runs in a blocking task as the
+`actor.rs`/`fd.rs` own the master fd, the IO loop and resizing.
+
+Pane spawns run on the server's event loop, so nothing on the parent side of a
+launch touches the user's filesystem. A hung mount must stall only its own
+pane. `backend.rs` forks the child itself (not through `std::process::Command`,
+whose `spawn` waits for the child's chdir and exec) and returns with its pid.
+The child closes every inherited fd, does the chdir (with the
+`HOME`/passwd-home/`/` fallback unless the cwd is required, as for restored
+panes and agent resumes) and execs the absolute shell path config validation
+resolved. It reports `ChdirOk` or a chdir or exec errno over a status socket it
+connects after the fork (`launch.rs`). A child-made socket is one no other fork
+can inherit. In shepr-mux, `pane/launch_status.rs` settles each launch from
+those reports. Exec committed while the child lives opens observation of the
+child (`ChildLiveness::live_pid`), starts detection and lets the pane's own
+screen supersede its carried history. A reported failure leaves the pane as a
+placeholder that says why. The settlement always reaches the app before the
+pane's death. The child is a `PaneChild`. The pane runtime watches its pidfd
+and reaps it with `waitid` when available, with a blocking `waitpid` as the
 fallback. If the watcher is dropped before reaping, the child is handed to a
 detached reaper thread.
 

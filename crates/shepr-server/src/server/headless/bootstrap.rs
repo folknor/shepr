@@ -129,6 +129,10 @@ pub fn run_server(
     // restores PTYs whose detection workers consult them, and after logging
     // starts, so a bundled manifest that fails to compile reaches the log.
     shepr_agent::detect::manifest::compile_bundled_manifests();
+    // Everything a pane launch would otherwise do on its first spawn that may
+    // block (the launch status listener, the passwd lookup, resolving this
+    // binary's path), done before any pane is restored or created.
+    shepr_mux::pane::init_pane_launches().map_err(startup_error)?;
     spawn_integration_install();
     let api = shepr_api::start_server(api_tx, Arc::clone(&stop_requested), paths)
         .map_err(startup_error)?;

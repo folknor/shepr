@@ -173,7 +173,6 @@ pub(crate) fn test_headless_server() -> HeadlessServer {
         worker_tx,
         worker_rx,
         checkout_root_runner: worker::default_checkout_root_runner(),
-        resume_cwd_checks_in_flight: HashSet::new(),
     }
 }
 
@@ -1684,7 +1683,7 @@ async fn slow_checkout_root_worker_does_not_hold_other_clients() {
         .await
         .expect("checkout completion should wake the loop")
         .expect("worker channel should stay open");
-    assert!(!server.handle_worker_completion(completion, server.app.clock.now));
+    assert!(!server.handle_worker_completion(completion));
     server.release_endpoint_replies(ReleaseMode::WithinBudget);
     let mut client_a_replies = Vec::new();
     while client_a_replies.len() < 2 {
@@ -5603,23 +5602,9 @@ async fn headless_scheduled_tasks_start_pending_agent_resume_without_foreground_
         .pending_agent_resume_wakeup()
         .expect("clientless resume should wait briefly for a host theme");
 
-    assert!(
-        !server.handle_scheduled_tasks_headless(deadline),
-        "the due pass hands the saved cwd check to a worker first"
-    );
-    assert!(server.app.terminal_runtimes.get(&terminal_id).is_none());
-    assert!(complete_resume_cwd_check(&mut server, deadline).await);
+    assert!(server.handle_scheduled_tasks_headless(deadline));
     assert!(server.app.terminal_runtimes.get(&terminal_id).is_some());
-    assert!(
-        server
-            .app
-            .state
-            .terminals
-            .get(&terminal_id)
-            .expect("test terminal should still exist")
-            .pending_agent_resume_plan
-            .is_none()
-    );
+    settle_resume_launch(&mut server, &terminal_id).await;
     shutdown_test_runtimes(&mut server);
 }
 
@@ -5669,25 +5654,29 @@ async fn headless_scheduled_tasks_keep_pending_agent_resume_deadline_across_tick
         assert_eq!(server.app.pending_agent_resume_wakeup(), Some(deadline));
     }
 
-    assert!(!server.handle_scheduled_tasks_headless(deadline));
-    assert!(complete_resume_cwd_check(&mut server, deadline).await);
+    assert!(server.handle_scheduled_tasks_headless(deadline));
     assert!(server.app.terminal_runtimes.get(&terminal_id).is_some());
     shutdown_test_runtimes(&mut server);
 }
 
-/// Receives the worker's saved-cwd check and hands it to the loop, as the
-/// headless loop does when the completion wakes it. Returns whether the
-/// completion started a resume.
-async fn complete_resume_cwd_check(server: &mut HeadlessServer, now: Instant) -> bool {
-    let completion = tokio::time::timeout(Duration::from_secs(5), server.worker_rx.recv())
-        .await
-        .expect("the resume cwd check completes")
-        .expect("worker channel should stay open");
-    assert!(matches!(
-        completion,
-        worker::WorkerCompletion::ResumeCwdChecked { .. }
-    ));
-    server.handle_worker_completion(completion, now)
+/// Hands the app its queued runtime events, as the headless loop does, until
+/// the resume's shell launch settled and typed its command (the plan is
+/// consumed then, not at dispatch).
+async fn settle_resume_launch(
+    server: &mut HeadlessServer,
+    terminal_id: &shepr_protocol::TerminalId,
+) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    while server.app.state.terminals[terminal_id]
+        .pending_agent_resume_plan
+        .is_some()
+    {
+        let event = tokio::time::timeout_at(deadline, server.app.event_rx.recv())
+            .await
+            .expect("the resume launch settles")
+            .expect("the event channel stays open");
+        server.app.handle_internal_event(event);
+    }
 }
 
 #[test]

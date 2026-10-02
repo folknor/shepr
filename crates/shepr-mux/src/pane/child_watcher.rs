@@ -1,17 +1,23 @@
 use std::os::fd::{AsFd, OwnedFd};
 use std::sync::Arc;
 
+use shepr_pty::backend::PaneChild;
+
+use super::launch_status::LaunchWatch;
 use super::teardown::ChildLiveness;
 use crate::events::{AppEvent, EventSender};
 use shepr_core::layout::PaneId;
 use tracing::error;
 
 /// Watches an owned child independently of detection and PTY parsing. The
-/// watcher must keep reaping after the pane runtime has been dropped.
+/// watcher must keep reaping after the pane runtime has been dropped. It
+/// reports the death only after the launch's settlement was published, so the
+/// app hears how the launch ended first; reaping does not wait for that.
 pub(super) fn spawn(
     pane_id: PaneId,
-    child: std::process::Child,
+    child: PaneChild,
     child_liveness: Arc<ChildLiveness>,
+    mut launch: LaunchWatch,
     events: EventSender,
 ) {
     let pidfd = child_liveness
@@ -32,7 +38,7 @@ pub(super) fn spawn(
     // poll still hands the child to a reaper thread.
     let child = UnreapedChild(Some(child));
     // Await the owned pidfd so each live pane uses no blocking-pool
-    // thread; waitid reaps it while Child::wait remains the fallback.
+    // thread; waitid reaps it while a blocking wait remains the fallback.
     tokio::spawn(async move {
         let exit_reason = match wait_for_child_exit(child, pidfd).await {
             Ok(status) => {
@@ -46,6 +52,7 @@ pub(super) fn spawn(
             }
         };
         child_liveness.mark_wait_completed();
+        launch.published().await;
         // Wait for channel capacity so this critical pane exit is not dropped.
         if let Err(e) = events
             .send(AppEvent::PaneDied {
@@ -59,53 +66,49 @@ pub(super) fn spawn(
     });
 }
 
-/// Reap a child whose PTY actor could not be started. There is no pane runtime
-/// for the normal watcher to own, but the failed launch still needs its child
-/// collected without waiting on the synchronous startup caller.
-pub(super) fn reap_after_actor_startup_failure(
+/// Reap a child whose pane runtime could not be assembled. There is no pane
+/// runtime for the normal watcher to own, but the failed launch still needs
+/// its child collected without waiting on the synchronous startup caller.
+pub(super) fn reap_after_startup_failure(
     pane_id: PaneId,
-    child: std::process::Child,
-    child_liveness: Arc<ChildLiveness>,
+    child: PaneChild,
+    child_liveness: Option<Arc<ChildLiveness>>,
 ) {
     reap_on_detached_thread(child, move |result| {
         match result {
             Ok(status) => crate::logging::pane_exited(pane_id.raw(), &status),
             Err(err) => crate::logging::pane_exit_failed(pane_id.raw(), &err.to_string()),
         }
-        child_liveness.mark_wait_completed();
+        if let Some(child_liveness) = child_liveness {
+            child_liveness.mark_wait_completed();
+        }
     });
 }
 
 type ReaperCompletion = Box<dyn FnOnce(std::io::Result<std::process::ExitStatus>) + Send + 'static>;
 
 /// Wait on a child away from the task or synchronous caller that gives it up.
-/// If the system cannot create the reaper thread, finish the wait inline so
-/// the child is still collected.
+/// If the system cannot create the reaper thread, the child is left for the
+/// process to collect at exit rather than waited on inline: the caller may be
+/// the event loop, and the child may be stuck in a hung chdir.
 fn reap_on_detached_thread(
-    child: std::process::Child,
+    child: PaneChild,
     on_wait: impl FnOnce(std::io::Result<std::process::ExitStatus>) + Send + 'static,
 ) {
     let pid = child.id();
     let on_wait: ReaperCompletion = Box::new(on_wait);
-    let work = Arc::new(std::sync::Mutex::new(Some((child, on_wait))));
-    let thread_work = Arc::clone(&work);
     let spawned = std::thread::Builder::new()
         .name("shepr-pane-reaper".into())
         .spawn(move || {
-            let Some((mut child, on_wait)) = shepr_vt::lock_auxiliary(&thread_work).take() else {
-                return;
-            };
+            let mut child = child;
             on_wait(child.wait());
         });
     if let Err(err) = spawned {
         tracing::warn!(
             pid,
             error = %err,
-            "could not start a reaper for a pane child; waiting inline"
+            "could not start a reaper for a pane child; it stays a zombie until the server exits"
         );
-        if let Some((mut child, on_wait)) = shepr_vt::lock_auxiliary(&work).take() {
-            on_wait(child.wait());
-        }
     }
 }
 
@@ -113,10 +116,10 @@ fn reap_on_detached_thread(
 /// dropped before it reaps (the runtime shutting down while the child still
 /// runs), the child is handed to a detached thread that waits for it, so it
 /// never stays a zombie for the rest of the process.
-struct UnreapedChild(Option<std::process::Child>);
+struct UnreapedChild(Option<PaneChild>);
 
 impl UnreapedChild {
-    fn take(&mut self) -> Option<std::process::Child> {
+    fn take(&mut self) -> Option<PaneChild> {
         self.0.take()
     }
 }
@@ -173,14 +176,16 @@ async fn wait_for_child_exit(
 
     match shepr_platform::reap_pidfd(async_pidfd.get_ref().as_fd()) {
         Ok(status) => {
-            // waitid(P_PIDFD, WEXITED) reaps the child, so dropping its
-            // std::process::Child wrapper cannot leave a zombie behind.
-            drop(child.take());
+            // waitid(P_PIDFD, WEXITED) reaped the child; record it so the
+            // handle never waits on a pid that may be reused.
+            if let Some(mut child) = child.take() {
+                child.mark_reaped(status);
+            }
             Ok(status)
         }
         Err(err) => {
             // Kernels may expose pidfd_open before waitid(P_PIDFD); the child
-            // is ready by now, so Child::wait is only a short fallback reap.
+            // is ready by now, so a blocking wait is only a short fallback.
             tracing::debug!(error = %err, "waitid on child pidfd failed; falling back to child wait");
             wait_for_child_exit_blocking(child).await
         }

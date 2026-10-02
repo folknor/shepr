@@ -14,30 +14,57 @@ use shepr_core::layout::PaneId;
 pub(super) struct ChildLiveness {
     pid: AtomicU32,
     wait_completed: AtomicBool,
+    /// Whether the child's exec committed. Until then the process is the
+    /// server's own image (in chdir, or exec'ing) and nothing about it, cwd or
+    /// foreground job, describes the pane's shell.
+    launched: AtomicBool,
     /// A pidfd or start-time handle opened before the child watcher starts.
     /// Teardown signals through it so a reused pid is never hit.
     leader: Option<shepr_platform::ProcessHandle>,
 }
 
 impl ChildLiveness {
+    /// A child known to run its program already.
     pub(super) fn new(pid: u32, leader: Option<shepr_platform::ProcessHandle>) -> Self {
         Self {
             pid: AtomicU32::new(pid),
             wait_completed: AtomicBool::new(false),
+            launched: AtomicBool::new(true),
             leader,
         }
     }
 
+    /// A child just forked, not yet past its exec.
+    pub(super) fn launching(pid: u32, leader: shepr_platform::ProcessHandle) -> Self {
+        Self {
+            launched: AtomicBool::new(false),
+            ..Self::new(pid, Some(leader))
+        }
+    }
+
+    pub(super) fn mark_launched(&self) {
+        self.launched.store(true, Ordering::Release);
+    }
+
+    pub(super) fn is_launched(&self) -> bool {
+        self.launched.load(Ordering::Acquire)
+    }
+
+    /// The pid the pane owns, launched or not: teardown signals it.
     pub(super) fn pid(&self) -> u32 {
         self.pid.load(Ordering::Acquire)
     }
 
-    /// The child pid while it still names this unreaped child. A numeric pid
-    /// is unsafe for /proc reads once the child has been reaped and the kernel
-    /// may have assigned that number to another process.
+    /// The child pid while it names this unreaped child running the pane's
+    /// program. A numeric pid is unsafe for /proc reads once the child has been
+    /// reaped and the kernel may have assigned that number to another process,
+    /// and before exec committed the process is not the shell yet. Every
+    /// observation of the child (cwd, foreground job, detection, theme probes)
+    /// goes through this, so launch gating lives here once.
     pub(super) fn live_pid(&self) -> Option<u32> {
         let pid = self.pid();
-        (pid != 0 && !self.wait_completed() && !self.is_reaped()).then_some(pid)
+        (pid != 0 && self.is_launched() && !self.wait_completed() && !self.is_reaped())
+            .then_some(pid)
     }
 
     pub(super) fn mark_wait_completed(&self) {

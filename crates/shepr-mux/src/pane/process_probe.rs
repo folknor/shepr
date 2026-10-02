@@ -94,6 +94,17 @@ pub(super) fn absolute_process_cwd(pid: u32) -> Option<std::path::PathBuf> {
     shepr_agent::detect::process_cwd(pid).filter(|cwd| cwd.is_absolute())
 }
 
+/// A process's cwd as the event loop may read it: one readlink of
+/// `/proc/<pid>/cwd`, which never touches the directory's filesystem, so a
+/// hung mount cannot stall the loop. A directory that was removed reads back
+/// with the kernel's ` (deleted)` suffix and is not a cwd anyone can use. Other
+/// unusable paths are left to whoever launches in them (the launch falls back
+/// by chdir).
+pub(super) fn readlink_process_cwd(pid: u32) -> Option<std::path::PathBuf> {
+    absolute_process_cwd(pid)
+        .filter(|cwd| !cwd.as_os_str().as_encoded_bytes().ends_with(b" (deleted)"))
+}
+
 pub(super) fn usable_process_cwd(pid: u32) -> Option<std::path::PathBuf> {
     absolute_process_cwd(pid)
         .and_then(UsableCwd::new)

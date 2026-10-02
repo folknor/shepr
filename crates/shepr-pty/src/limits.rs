@@ -13,6 +13,33 @@ pub(crate) const PASSWD_BUFFER_MAX_BYTES: usize = 64 * KIBIBYTE_BYTES;
 /// retries logarithmic while the separate maximum bounds total allocation.
 pub(crate) const PASSWD_BUFFER_GROWTH_FACTOR: usize = 2;
 
+/// Size of one pane launch status record: a kind word, a reserved word and a
+/// 64-bit value (ticket, cwd index or errno). Fixed so the child writes it from
+/// a stack array and the reader can reject a truncated or oversized one.
+pub(crate) const LAUNCH_STATUS_RECORD_BYTES: usize = 16;
+
+/// How long the status listener waits for a new connection's hello. Our own
+/// pane child sends it right after connecting; the bound only keeps a stray
+/// local connection from stalling the listener.
+pub(crate) const LAUNCH_HELLO_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// How long a status connection that arrived before its launch registered
+/// waits for that registration. The server registers right after the fork, so
+/// one that waits this long belongs to no launch.
+pub(crate) const LAUNCH_PARKED_CONNECTION_TTL: std::time::Duration =
+    std::time::Duration::from_secs(30);
+
+/// How long the launch status listener waits before accepting again after the
+/// process ran out of fds or memory. Long enough not to spin while the
+/// shortage lasts, short enough that waiting children are not held long.
+pub(crate) const LAUNCH_ACCEPT_RETRY_DELAY: std::time::Duration =
+    std::time::Duration::from_millis(100);
+
+/// Highest signal number whose disposition a pane child resets before exec.
+/// Linux architectures use numbers up to 64 or 128; unsupported ones report
+/// EINVAL and are skipped.
+pub(crate) const MAX_SIGNAL_NUMBER: libc::c_int = 128;
+
 /// Stack bytes supplied to each `getdents64` call while closing inherited
 /// descriptors. A fixed chunk avoids a heap allocation and keeps each syscall
 /// bounded while enumerating `/proc/self/fd`.

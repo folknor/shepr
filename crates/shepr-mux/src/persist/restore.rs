@@ -518,44 +518,11 @@ fn restore_workspace(
         let saved_history =
             old_id.and_then(|old_id| history.and_then(|history| history.panes.get(old_id)));
 
-        // A stat error other than absence is reported as itself: calling an
-        // unreadable directory missing would send the user to restore
-        // something that is still there.
-        let cwd_unavailable = match std::fs::metadata(&saved_pane.cwd) {
-            Ok(metadata) if metadata.is_dir() => None,
-            Ok(_) => Some(RestoreFailure::DirectoryUnavailable {
-                path: saved_pane.cwd.clone(),
-            }),
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
-                ) =>
-            {
-                Some(RestoreFailure::DirectoryUnavailable {
-                    path: saved_pane.cwd.clone(),
-                })
-            }
-            Err(error) => Some(RestoreFailure::directory_unreadable(
-                saved_pane.cwd.clone(),
-                &error,
-            )),
-        };
-        if let Some(reason) = cwd_unavailable {
-            let terminal = restored_terminal(
-                saved_pane,
-                RestoredPaneStart::Unavailable(reason),
-                runtime_context.now,
-            );
-            history_carry.carry_restored(&terminal.id, saved_history);
-            panes.insert(
-                *id,
-                crate::workspace::WorkspacePane::new(PaneState::new(terminal.id.clone())),
-            );
-            terminals.push(terminal);
-            continue;
-        }
-
+        // Nothing here looks at the saved directory: restore runs on the
+        // server's startup path, and a stat of a directory on a hung mount
+        // would hold the server before it serves anyone. The pane's launch
+        // enters it by chdir (never falling back), and a directory that is
+        // gone or unreadable settles that launch as a placeholder pane.
         let PaneRestoreStartup {
             restore_plan,
             initial_history_ansi,
@@ -618,7 +585,7 @@ fn restore_workspace(
             runtime_context.scrollback_limit_bytes,
             runtime_context.host_theme,
             None,
-            runtime_context.shell_config,
+            runtime_context.shell_config.require_cwd(),
             &launch_env,
             initial_history_ansi,
             &runtime_context.events,
@@ -639,6 +606,9 @@ fn restore_workspace(
                     },
                     runtime_context.now,
                 );
+                // Its saves keep the saved screen until the shell launches,
+                // and keep it if the launch fails.
+                history_carry.carry_restored(&terminal.id, saved_history);
                 panes.insert(
                     *id,
                     crate::workspace::WorkspacePane::new(PaneState::new(terminal.id.clone())),
@@ -1165,8 +1135,12 @@ mod tests {
             );
             let case =
                 format!("resume={resume} missing_cwd={missing_cwd} missing_shell={missing_shell}");
-            let runtimeless = resume || missing_cwd || missing_shell;
+            // A deferred resume and a refused shell leave no runtime. A saved
+            // directory that is gone leaves one whose shell never launches,
+            // which keeps its carried history just the same.
+            let runtimeless = resume || missing_shell;
             assert_eq!(runtimes.is_empty(), runtimeless, "{case}");
+            let carried = runtimeless || missing_cwd;
             let mut runtimes = crate::pane::PaneRuntimeRegistry::from(runtimes);
             let captured = crate::persist::capture(
                 &workspaces,
@@ -1191,7 +1165,7 @@ mod tests {
                 "{case}"
             );
 
-            if runtimeless {
+            if carried {
                 let saved = crate::persist::capture_history(
                     &captured,
                     &workspaces,
@@ -1264,8 +1238,7 @@ mod tests {
         assert_eq!(remap_saved_index(0, &[]), None);
     }
 
-    /// A pane snapshot whose saved directory does not exist, so restore keeps
-    /// it without starting a shell.
+    /// A pane snapshot whose saved directory does not exist.
     fn runtimeless_pane() -> super::super::snapshot::PaneSnapshot {
         let cwd = restore_test_path("__shepr_missing_restore_directory__");
         assert!(!cwd.try_exists().expect("test stat"));
@@ -1346,6 +1319,8 @@ mod tests {
         assert!(plan.restore_damage);
     }
 
+    /// Restores with a shell the launch refuses before any fork, so every pane
+    /// comes back as a placeholder without a runtime.
     fn restore_runtimeless(snapshot: &SessionSnapshot) -> RestoredSession {
         let (events, _rx) = mpsc::channel(8);
         let restored = restore(
@@ -1353,7 +1328,7 @@ mod tests {
             None,
             test_geometry(5, 40),
             0,
-            crate::pane::PaneShellConfig::new(test_restore_shell(), false),
+            crate::pane::PaneShellConfig::new("__shepr_refused_restore_shell__", false),
             std::path::Path::new(TEST_SOCKET),
             false,
             &events,
@@ -1825,7 +1800,7 @@ mod tests {
                 session_ref: shepr_agent::agent::resume::AgentSessionRef::id("keep-my-session")
                     .expect("test precondition"),
             });
-            let (events, _rx) = mpsc::channel(32);
+            let (events, mut events_rx) = mpsc::channel(32);
             let RestoredSession {
                 workspaces,
                 terminals,
@@ -1886,15 +1861,54 @@ mod tests {
             );
             let root = workspaces[0].root_pane();
             let terminal_id = workspaces[0].terminal_id(root).expect("test precondition");
-            assert!(
-                runtimes.get(terminal_id).is_none(),
-                "do not open a replacement shell elsewhere"
-            );
+            if missing_shell {
+                // The launch is refused before any fork.
+                assert!(runtimes.get(terminal_id).is_none());
+                assert!(terminals[terminal_id].restore_error.is_some());
+            } else {
+                // The child's chdir finds the saved directory gone and the
+                // launch settles as a failure, never in another directory.
+                assert!(matches!(
+                    launch_settlement(&mut events_rx, root).await,
+                    crate::pane::LaunchSettlement::Failed(RestoreFailure::DirectoryUnavailable {
+                        ref path
+                    }) if *path == missing
+                ));
+                assert!(
+                    !runtimes
+                        .get(terminal_id)
+                        .is_some_and(crate::pane::PaneRuntime::launched),
+                    "do not open a replacement shell elsewhere"
+                );
+            }
             let healthy = workspaces[1]
                 .terminal_id(workspaces[1].root_pane())
                 .expect("test precondition");
             assert_eq!(runtimes.get(healthy).is_some(), !missing_shell);
-            assert!(terminals[terminal_id].restore_error.is_some());
+        }
+    }
+
+    /// The settlement of `pane`'s launch, from the restore's event channel.
+    async fn launch_settlement(
+        events: &mut mpsc::Receiver<crate::events::AppEvent>,
+        pane: shepr_core::layout::PaneId,
+    ) -> crate::pane::LaunchSettlement {
+        loop {
+            let event = tokio::time::timeout(std::time::Duration::from_secs(10), events.recv())
+                .await
+                .expect("the launch settles")
+                .expect("the event channel stays open");
+            let crate::events::AppEvent::Runtime { event, .. } = event else {
+                continue;
+            };
+            if let crate::events::AppEvent::PaneLaunchSettled {
+                pane_id,
+                settlement,
+            } = *event
+                && pane_id == pane
+            {
+                return settlement;
+            }
         }
     }
 

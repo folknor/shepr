@@ -1271,8 +1271,8 @@ mod tests {
     /// A restore that drops a saved workspace leaves that workspace only in the
     /// session file, so the first save copies the file to `session-backups` before
     /// replacing it. The copy is made once, not on every save.
-    #[test]
-    fn a_restore_that_drops_a_workspace_backs_up_the_saved_session_before_the_first_save() {
+    #[tokio::test]
+    async fn a_restore_that_drops_a_workspace_backs_up_the_saved_session_before_the_first_save() {
         use crate::test_support::{AppPathsFixture as _, ValidatedServerConfigFixture as _};
         use shepr_mux::persist::snapshot::{
             DirectionSnapshot, LayoutSnapshot, PaneSnapshot, SessionSnapshot, WorkspaceSnapshot,
@@ -1288,8 +1288,8 @@ mod tests {
         let lease =
             shepr_mux::persist::DataDirLease::acquire(&data_dir).expect("test session lease");
 
-        // A working directory that does not exist restores each pane without
-        // starting a shell.
+        // A working directory that does not exist: each pane's shell launch
+        // fails in its chdir.
         let pane = || PaneSnapshot {
             cwd: scratch.join("missing-cwd"),
             public_number: None,

@@ -3,6 +3,7 @@ mod child_watcher;
 mod cursor;
 mod detection_task;
 mod launch;
+mod launch_status;
 mod osc;
 mod process_probe;
 mod runtime;
@@ -11,7 +12,8 @@ mod state;
 mod teardown;
 mod terminal;
 
-pub use launch::{PaneLaunchEnv, PaneShellConfig};
+pub use launch::{PaneLaunchEnv, PaneShellConfig, init_pane_launches};
+pub use launch_status::LaunchSettlement;
 pub use runtime::PaneCwdProbe;
 pub use runtime::WheelRouting;
 pub use runtime::{PaneOutputWrite, PaneOutputWriter, PaneRuntime};

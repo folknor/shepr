@@ -3,6 +3,7 @@ pub mod backend;
 mod child_io;
 mod command;
 mod fd;
+pub mod launch;
 mod limits;
 mod locks;
 

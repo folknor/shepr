@@ -69,6 +69,7 @@ impl StateEvent {
                 Some(Self::TerminalCwdReported { pane_id, cwd })
             }
             AppEvent::Runtime { .. }
+            | AppEvent::PaneLaunchSettled { .. }
             | AppEvent::PaneDied { .. }
             | AppEvent::ClipboardWrite { .. }
             | AppEvent::GitStatusRefreshed { .. } => None,
