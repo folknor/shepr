@@ -7,45 +7,22 @@ use super::SessionSnapshot;
 use super::error::SaveError;
 use super::snapshot::SessionHistory;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-struct HistoryFileStamp {
-    device: u64,
-    inode: u64,
-    length: u64,
-    modified_seconds: i64,
-    modified_nanoseconds: i64,
-    changed_seconds: i64,
-    changed_nanoseconds: i64,
-}
-
-impl HistoryFileStamp {
-    fn read(path: &Path) -> io::Result<Option<Self>> {
-        use std::os::unix::fs::MetadataExt;
-
-        let resolved = super::io::SessionPath::resolve(path)?;
-        let Some(metadata) = resolved.regular_metadata(path)? else {
-            return Ok(None);
-        };
-        Ok(Some(Self {
-            device: metadata.dev(),
-            inode: metadata.ino(),
-            length: metadata.len(),
-            modified_seconds: metadata.mtime(),
-            modified_nanoseconds: metadata.mtime_nsec(),
-            changed_seconds: metadata.ctime(),
-            changed_nanoseconds: metadata.ctime_nsec(),
-        }))
-    }
+fn history_file_stamp(path: &Path) -> io::Result<Option<shepr_platform::FileStamp>> {
+    let resolved = super::io::SessionPath::resolve(path)?;
+    let Some(metadata) = resolved.regular_metadata(path)? else {
+        return Ok(None);
+    };
+    Ok(Some(shepr_platform::FileStamp::from_metadata(metadata)))
 }
 
 struct WrittenHistory {
     digest: super::io::HistoryDigest,
-    file: HistoryFileStamp,
+    file: shepr_platform::FileStamp,
 }
 
 struct CachedSnapshotLayout {
     path: PathBuf,
-    stamp: Option<HistoryFileStamp>,
+    stamp: Option<shepr_platform::FileStamp>,
     layout: Option<SavedLayout>,
 }
 
@@ -75,7 +52,7 @@ impl SnapshotFingerprintCache {
         path: &Path,
         cached: &mut Option<CachedSnapshotLayout>,
     ) -> io::Result<Option<SavedLayout>> {
-        let stamp = HistoryFileStamp::read(path)?;
+        let stamp = history_file_stamp(path)?;
         if let Some(cached) = cached
             && cached.path.as_path() == path
             && cached.stamp == stamp
@@ -111,7 +88,7 @@ impl SnapshotFingerprintCache {
     }
 
     fn remember_current(&mut self, path: &Path, snapshot: &SessionSnapshot) {
-        self.current = match HistoryFileStamp::read(path) {
+        self.current = match history_file_stamp(path) {
             Ok(Some(stamp)) => Some(CachedSnapshotLayout {
                 path: path.to_path_buf(),
                 stamp: Some(stamp),
@@ -302,7 +279,7 @@ impl SessionWriter {
         };
         let history_path =
             super::io::session_history_path(super::io::containing_directory(&self.path));
-        HistoryFileStamp::read(&history_path)
+        history_file_stamp(&history_path)
             .ok()
             .flatten()
             .is_some_and(|file| file == written.file)
@@ -449,7 +426,7 @@ impl SessionWriter {
             .written_history
             .as_ref()
             .filter(|written| written.digest == digest)
-            && HistoryFileStamp::read(history_path)? == Some(written.file)
+            && history_file_stamp(history_path)? == Some(written.file)
         {
             return Ok(());
         }
@@ -458,7 +435,7 @@ impl SessionWriter {
         // Metadata only guards the optimization. If it cannot be captured
         // after a successful write, future saves simply publish the history
         // again rather than trusting a cache with no matching file stamp.
-        self.written_history = HistoryFileStamp::read(history_path)
+        self.written_history = history_file_stamp(history_path)
             .ok()
             .flatten()
             .map(|file| WrittenHistory { digest, file });

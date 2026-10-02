@@ -3,6 +3,18 @@ use shepr_core::socket_path::SocketPath;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+impl crate::machine::SshTarget {
+    /// Append this checked destination as one command-line argument.
+    pub fn append_to(&self, command: &mut Command) {
+        command.arg(self.as_str());
+    }
+
+    /// Render this destination as one POSIX shell word for operator guidance.
+    pub fn shell_word(&self) -> String {
+        shepr_core::shell_quote::quote(self.as_str())
+    }
+}
+
 /// The server socket this process targets: the build profile's runtime
 /// `shepr.sock`, or the socket `SHEPR_SOCKET_PATH` selects.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -87,7 +99,7 @@ impl ServerAddress {
             format!(
                 "{}={} {command}",
                 EnvVar::SheprSocketPath,
-                shell_quote(&self.socket.to_string_lossy())
+                shepr_core::shell_quote::quote(&self.socket.to_string_lossy())
             )
         } else {
             command.to_owned()
@@ -115,25 +127,9 @@ pub fn operator_entrypoint() -> String {
         crate::BuildProfile::Release => "shepr".to_owned(),
         crate::BuildProfile::Dev => shepr_platform::launch_executable().map_or_else(
             |_| "brokkr run --".to_owned(),
-            |path| shell_quote(&path.to_string_lossy()),
+            |path| shepr_core::shell_quote::quote(&path.to_string_lossy()),
         ),
     }
-}
-
-fn shell_quote(value: &str) -> String {
-    if !value.is_empty()
-        && !value.starts_with('=')
-        && value.chars().all(|ch| {
-            ch.is_ascii_alphanumeric()
-                || matches!(
-                    ch,
-                    '@' | '%' | '_' | '+' | '=' | ':' | ',' | '.' | '/' | '-'
-                )
-        })
-    {
-        return value.to_string();
-    }
-    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 #[cfg(test)]
@@ -142,8 +138,8 @@ mod tests {
 
     #[test]
     fn a_leading_equals_sign_is_quoted_for_zsh() {
-        assert_eq!(shell_quote("=shepr"), "'=shepr'");
-        assert_eq!(shell_quote("/x/a=b.sock"), "/x/a=b.sock");
+        assert_eq!(shepr_core::shell_quote::quote("=shepr"), "'=shepr'");
+        assert_eq!(shepr_core::shell_quote::quote("/x/a=b.sock"), "/x/a=b.sock");
     }
 
     #[test]

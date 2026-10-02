@@ -57,19 +57,17 @@ impl RemoteExecutable {
         Ok(Self(value))
     }
 
-    pub fn as_str(&self) -> &str {
+    pub(crate) fn as_str(&self) -> &str {
         &self.0
     }
 
+    /// This checked path can be placed in an account-shell command without quoting.
+    pub fn shell_word(&self) -> &str {
+        self.as_str()
+    }
+
     pub(crate) fn is_shell_plain_word(value: &str) -> bool {
-        !value.is_empty()
-            && value.chars().all(|ch| {
-                ch.is_ascii_alphanumeric()
-                    || matches!(
-                        ch,
-                        '@' | '%' | '_' | '+' | '=' | ':' | ',' | '.' | '/' | '-'
-                    )
-            })
+        shepr_core::shell_quote::is_plain_word(value)
     }
 }
 

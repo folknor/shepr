@@ -75,6 +75,9 @@ impl EndpointSupervisorEvent {
 /// it between the loop and an attempt stay small.
 type OwnedConnector = Box<shepr_remote::MachineSshConnector>;
 
+// These variants carry different resources rather than another copy of endpoint policy: Local
+// owns its resolved socket and mismatch guidance, while SSH owns a connector returned by an
+// attempt.
 enum ConnectTarget {
     /// The Local server socket, and the guidance a build mismatch on
     /// it names: the plain `shepr` and `shepr server stop` commands, plus the
@@ -91,6 +94,8 @@ enum ConnectTarget {
     Ssh { connector: Option<OwnedConnector> },
 }
 
+// The attempt takes ownership of an SSH connector while it runs in a blocking task; this is an
+// ownership shape distinct from the endpoint's stable policy.
 enum AttemptTarget {
     Local {
         path: PathBuf,
@@ -373,7 +378,7 @@ impl EndpointSupervisors {
                 // the server), and a retry costs one socket connect plus a
                 // handshake, never a server launch. A server that is gone fails
                 // the attempt and backs off normally.
-                if endpoint_id.is_local() {
+                if endpoint_id.policy().resets_attempts_on_online() {
                     state.attempts = 0;
                 }
                 state.online_since.get_or_insert(now);
@@ -471,7 +476,9 @@ fn attempt_time_remaining(deadline: Instant) -> Result<Duration, std::io::Error>
     Ok(remaining)
 }
 
-/// What carries one endpoint connection, for the handshake's diagnostics.
+/// Connection-owned state needed after connect: SSH keeps its bridge for stderr and lifetime,
+/// while Local carries the mismatch guidance available from its local launch check. This is
+/// separate from EndpointPolicy, which selects behavior from the endpoint identity.
 enum EndpointLink<'a> {
     Local { mismatch_guidance: &'a str },
     Ssh(shepr_remote::MachineSshBridge),
@@ -486,24 +493,18 @@ fn establish(
     generation: u64,
     deadline: Instant,
 ) -> Result<EndpointSupervisorEvent, std::io::Error> {
-    let (ssh_bridge, mismatch_guidance, link_kind) = match link {
-        EndpointLink::Local { mismatch_guidance } => (
-            None,
-            Some(mismatch_guidance),
-            crate::handshake::HandshakeLinkKind::Local,
-        ),
-        EndpointLink::Ssh(bridge) => (
-            Some(bridge),
-            None,
-            crate::handshake::HandshakeLinkKind::Remote,
-        ),
+    // The link carries the SSH bridge's lifetime and diagnostics, or Local's mismatch guidance;
+    // handshake timing follows the endpoint identity's shared policy.
+    let (ssh_bridge, mismatch_guidance) = match link {
+        EndpointLink::Local { mismatch_guidance } => (None, Some(mismatch_guidance)),
+        EndpointLink::Ssh(bridge) => (Some(bridge), None),
     };
-    crate::handshake::do_handshake_for_link(
+    crate::handshake::do_handshake_for_endpoint(
         &mut stream,
         options.geometry,
         options.mouse_capture,
         false,
-        link_kind,
+        endpoint_id.policy(),
         Some(deadline),
     )
     .map_err(|error| {

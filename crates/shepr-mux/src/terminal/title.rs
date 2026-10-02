@@ -7,8 +7,7 @@ pub(crate) fn stripped_terminal_title(title: &str) -> Option<String> {
     let mut chars = title.char_indices();
     let (_, first) = chars.next()?;
     let after_first = &title[first.len_utf8()..];
-    let recognized =
-        shepr_agent::agent::Agent::all().any(|agent| agent.has_title_activity_glyph(first));
+    let recognized = shepr_agent::detect::TITLE_ACTIVITY_GLYPHS.contains(first);
     let stripped = if recognized
         && (after_first.is_empty() || after_first.chars().next().is_some_and(char::is_whitespace))
     {

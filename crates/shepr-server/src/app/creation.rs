@@ -12,18 +12,13 @@ pub(crate) fn resolve_new_terminal_cwd(
     current_dir: Option<&std::path::Path>,
     follow_cwd: Option<PathBuf>,
 ) -> PathBuf {
+    let fallback = current_dir.unwrap_or_else(|| std::path::Path::new("/"));
     match policy {
         NewTerminalCwd::Follow => follow_cwd
             .or_else(|| home_dir.map(std::path::Path::to_path_buf))
-            .or_else(|| current_dir.map(std::path::Path::to_path_buf))
-            .unwrap_or_else(|| PathBuf::from("/")),
-        NewTerminalCwd::Home => home_dir
-            .map(std::path::Path::to_path_buf)
-            .or_else(|| current_dir.map(std::path::Path::to_path_buf))
-            .unwrap_or_else(|| PathBuf::from("/")),
-        NewTerminalCwd::Current => {
-            current_dir.map_or_else(|| PathBuf::from("/"), std::path::Path::to_path_buf)
-        }
+            .unwrap_or_else(|| fallback.to_path_buf()),
+        NewTerminalCwd::Home => home_dir.unwrap_or(fallback).to_path_buf(),
+        NewTerminalCwd::Current => fallback.to_path_buf(),
         // ServerConfig validation resolved it to an absolute directory at launch
         // (`~` expanded, relative paths joined to the launch directory).
         NewTerminalCwd::Path(path) => path.clone(),
@@ -38,14 +33,11 @@ pub(super) fn launch_cwd_for_terminal(
     >,
     terminal_runtimes: &shepr_mux::pane::PaneRuntimeRegistry,
 ) -> Option<PathBuf> {
-    terminal_runtimes
-        .get(terminal_id)
-        .and_then(shepr_mux::pane::PaneRuntime::follow_cwd)
-        .or_else(|| {
-            terminals
-                .get(terminal_id)
-                .map(|terminal| terminal.cwd().to_path_buf())
-        })
+    shepr_mux::workspace::terminal_cwd(
+        terminal_runtimes.get(terminal_id),
+        terminals.get(terminal_id),
+        shepr_mux::workspace::CwdPurpose::FollowForNewPane,
+    )
 }
 
 impl App {
@@ -81,7 +73,7 @@ impl App {
         resolve_new_terminal_cwd(
             &self.state.settings.new_terminal_cwd,
             self.paths.home_dir(),
-            self.paths.current_dir(),
+            Some(self.paths.fallback_cwd()),
             follow_cwd,
         )
     }

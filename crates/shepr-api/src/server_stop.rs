@@ -424,11 +424,7 @@ fn wait_for_lease_release(lease_path: &Path, deadline: Instant) -> io::Result<bo
 // daemon that loses the probe. Keeping it lets a stop detect a successor that
 // acquired the lease before the socket appeared.
 fn data_dir_lease_is_free(lease_path: &Path) -> io::Result<bool> {
-    match shepr_platform::ipc::acquire_flock_lock(lease_path, false) {
-        Ok(_free) => Ok(true),
-        Err(error) if error.kind() == io::ErrorKind::WouldBlock => Ok(false),
-        Err(error) => Err(error),
-    }
+    shepr_platform::DataDirectoryLease::probe(lease_path)
 }
 
 // The boot probe says which process answers; the socket check says whether

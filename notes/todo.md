@@ -33,6 +33,8 @@ should.
 - The owned-runtime tests build fixture names with `DirectoryKind::directory_name` and `content_path`, the helpers under test, so nothing pins the literal directory prefixes and content names.
 - `bootstrap_opens_the_gate_after_restore` (`crates/shepr-server/src/server/headless/bootstrap.rs`) repeats `run_server`'s startup steps by hand instead of running them, so deleting `open_client_protocol()` from `run_server` would leave it green; only daemon-level tests would notice.
 - The client's `present_frame` relies on the presentation gate never passing a pane frame while no endpoint is shown; the test that covered that through a frozen-frames check went with the check, and nothing at the gate replaces it.
+- `cwd_purposes_preserve_missing_absolute_state_without_filesystem_checks` passes no pane runtime, so the per-purpose runtime branches of the mux terminal cwd resolution have no test.
+- Navigator tests that call `render::client_navigator_rows` build a fresh index, so the cached `navigator_index` that production reads is not exercised.
 - The client launch's own check for a helper-thread panic (`fatal.is_latched()` in `run_client_loop`, after the host helpers start) has no test: reaching it needs a real terminal. The loop's own latch checks are tested.
 
 # Possible capabilities

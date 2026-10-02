@@ -95,15 +95,6 @@ symlink policy and the meaning of a failed dir sync differ. Owner: platform
 refuse_symlink_target, durability })`; `config_file.rs` is the start of it but is
 named for one consumer. (foundation)
 
-## CON-012 - Has a file changed since it was stamped?
-
-Git `config.rs` stamps by mtime and length plus canonical target;
-`persist/writer.rs` `HistoryFileStamp` stamps by device, inode, length, mtime ns
-and ctime ns (also reused under its history name for layout files in
-`SnapshotFingerprintCache`). They disagree: the Git stamp misses an atomic
-replace with equal size and mtime, which editors and `git config` both do.
-Owner: one `FileStamp` in platform with the persist semantics. (mux-state)
-
 ## CON-013 - The socket path type is thrown away after the check
 
 `SocketPath` in `crates/shepr-core/src/socket_path.rs` owns the length check
@@ -167,14 +158,6 @@ XDG state home and hard-codes `"shepr"` independently of config's
 `opencode_state_dir` each re-decide "XDG var or `~/.config`/`~/.local/state`".
 Owner: shared `xdg_config_home()`/`xdg_state_home()` in core or platform.
 Reported by foundation and agents.
-
-## CON-020 - The data-directory lease has two owners
-
-mux `persist/lock.rs` owns `DataDirLease`; `shepr-api` `server_stop.rs`
-`data_dir_lease_is_free` probes the same file with its own
-`acquire_flock_lock(path, false)`. Only the file name is shared (through config),
-and api sits below mux. Owner: the lease (acquire and probe) in platform with the
-file name. (contracts)
 
 ## Terminal emulation and input
 
@@ -335,15 +318,6 @@ time for the opt-in debug log (and says so). If the collector drifts, the debug
 log shows sequences the terminal did not see. Owner: the scanner, emitting an
 `OscBody` event when the debug log is on. Reported by terminal and mux-panes.
 
-## CON-036 - Is the kitty protocol on?
-
-`matches!(protocol, Kitty { flags } if flags != 0)` in `encode_terminal_key`,
-`modes.kitty_flags != 0` in `encode_terminal_key_with_modes`, and
-`KeyboardProtocol::from_kitty_flags`; `Kitty { flags: 0 }` is constructible
-through the public variant, which is why the first site checks. Owner:
-`KeyboardProtocol` with a private typed payload and only a `from_flags`
-constructor. (terminal)
-
 ## CON-037 - Synchronized output: two notions, one draw gate
 
 DECRQM ?2026 answers from `ExtraModes.synchronized_update` (replay order) and
@@ -399,38 +373,6 @@ already has authority) do not call it, so the copy is correct only when the last
 mutation went through one of the two synced paths. Owner: report the change in
 `TerminalStateMutation`, apply it at `update_terminal_state`, and set it on
 runtime installation. (mux-panes)
-
-## CON-043 - Does a state report need a session id?
-
-Rust: `HookSessionPolicy::state_requires_current_session` is true only for Codex
-and only rejects a ref that differs from the current one. Assets: Kimi and
-MastraCode refuse to send state without a session id, Codex refuses too, and Pi,
-OMP, OpenCode and Kilo send state only when they have a ref. The server accepts a
-session-less state report from `shepr:kimi` or `shepr:mastracode` that the shipped
-asset would never send; whether that leniency is deliberate is recorded on one
-side only. Owner: the descriptor's integration policy, with the asset contract
-tests asserting the asset obeys it. (agents)
-
-## CON-045 - Which agents have a screen manifest, and which file is it?
-
-`AgentDescriptor.screen_manifest: bool`, the `BUNDLED_MANIFESTS` table in
-`detect/manifest.rs` (keyed by label, with file names that differ from the key:
-`antigravity.toml` under `"agy"`, `github-copilot.toml` under `"copilot"`), and
-the manifest's own `id` (checked by `parse_bundled_manifest`), held together by
-`all_bundled_manifests_parse_validate_and_compile`. A descriptor with
-`screen_manifest: true` and no table entry silently degrades to Unknown with no
-log. Owner: the descriptor holds the `include_str!` and the table goes. (agents)
-
-## CON-046 - Which glyph at the start of a title is agent activity?
-
-`AgentDescriptor.title_activity_glyphs` (only Claude's is non-empty) plus the
-braille range in `Agent::has_title_activity_glyph`; the Claude manifest's
-`osc_title_working`/`osc_title_idle` regexes; the Codex manifest's braille
-subset; and mux `terminal/title.rs`, which asks whether any agent recognises the
-glyph. Since the only consumer unions all agents, the per-agent field is a
-global set, and the manifests keep their own copies. Owner: one global
-`TitleActivityGlyphs` set in detection, referenced by the manifests through a
-named class if the rule language grows one. (agents)
 
 ## CON-049 - Hook asset contracts are spelled in every asset
 
@@ -505,43 +447,15 @@ processes }, Unknown}`. (mux-panes)
 
 ## CON-053 - What is a process's cwd, and what is a pane's or workspace's cwd?
 
-Process cwd: `absolute_process_cwd` (absolute only), `readlink_process_cwd` (also
-drops a ` (deleted)` target), `usable_process_cwd` (stat through `UsableCwd`),
-and the raw `shepr_agent::detect::process_cwd` used for
-`ReportedCwd::shell_cwd_at_report`; `ReportedCwd::resolve` compares a raw sample
-with a filtered one. They disagree (filed as a bug).
-
-Pane cwd: the runtime arbitrates OSC 7 against `/proc` and offers `cwd`,
-`follow_cwd`, `foreground_cwd`, `remembered_cwd` and `PaneCwdProbe::read`; each
-caller then builds its own fallback chain onto `TerminalState::cwd()`:
-`Workspace::cwd_for_pane` (runtime `cwd()` then terminal),
-`creation::launch_cwd_for_terminal` (`follow_cwd()` then terminal),
-`persist/snapshot.rs` `capture_workspace` (`remembered_cwd()` then terminal then
-the server's fallback), `PendingCwds` (probe `read()`), `agent_resume.rs`
-(terminal alone). There are two copies of the last OSC 7 report
-(`PaneCwdState::reported` and `TerminalState::cwd`, written from the
-`TerminalCwdReported` event and from `LaunchSettlement::Launched { cwd }`), kept
-in step by the event.
-
-Workspace identity cwd (the root pane's cwd, else the stored one):
-`Workspace::resolved_identity_cwd_from*` (live, through `cwd_for_pane`),
-`capture_workspace` (save), `PendingCwds::resolve` plus `root_pane_cwd` (save,
-after the probe), `restore::plan_workspace` (a non-absolute saved value is
-replaced by the root pane's). The live path skips the usability filter the save
-path applies.
-
-Cwd of last resort: `creation::resolve_new_terminal_cwd` (three `"/"`
-fallbacks), `handle_pane_split` (`paths.current_dir()` or `"/"`),
-`capture_session_save_job` (`current_dir()` or `"/"`), and the PTY child's own
-chdir fallback.
-
-Owner: one `ProcessCwd` reader returning `Live | Deleted | Unavailable` with the
-stat check a separate explicit step; a `PaneCwd` query in mux taking runtime and
-terminal state with an explicit purpose (`Identity`, `FollowForNewPane`, `Save`,
-`Resume`), or the runtime returning one `ObservedCwd` with freshness; one
-workspace `identity_cwd` both live and capture call (and the saved field dropped,
-see cleanup); and `AppPaths::fallback_cwd()`. Reported by mux-panes, mux-state
-and server-app.
+One `ProcessCwd::{Live, Deleted, Unavailable}` reader, a purpose-based terminal
+cwd resolution (identity, follow, save, resume), capture through the workspace
+identity resolver and `AppPaths::fallback_cwd()` now exist. Still open:
+`Workspace::cwd_for_pane` (in the mux workspace pane tree) builds its own
+fallback onto the terminal cwd instead of the purpose-based resolution, and the
+runtime's arbitrated cwd (`PaneCwdState::reported`) and `TerminalState::cwd`
+remain two copies of the last OSC 7 report kept in step by the event (kept
+deliberately so save probes survive without terminal state; the reason is at
+the code). Reported by mux-panes, mux-state and server-app.
 
 ## CON-054 - Content, detection, sync and history counters are bumped at each mutation site
 
@@ -654,15 +568,12 @@ checkpoint code takes that value. (mux-state)
 
 ## CON-061 - Which pane maps to which terminal and runtime?
 
-`workspaces.iter().enumerate().any(|(i, _)| runtime_for_pane_in_workspace(.., i,
-pane))` appears in `admit_runtime_event`, `pane_exit_needs_checkpoint` and the
-detector-drop guard; `find_pane`, `update_terminal_state`,
-`sync_pane_lifecycle_authority_detection_pause` and the `TerminalCwdReported`
-branch re-walk workspaces for pane to terminal. `PaneRuntimeRegistry` is keyed by
-`TerminalId` while events and the runtime know `PaneId`. Owner:
-`AppState::terminal_of(PaneId)` and `runtime_of(PaneId)`, or key the registry by
-`PaneId`, or carry the terminal id in the runtime envelope. Reported by
-server-app and mux-panes (the cost is filed as a bug).
+`AppState` now keeps a `PaneId -> TerminalId` index with `terminal_of` and
+`runtime_of`, used by six paths. Still open: `find_pane` in
+`crates/shepr-server/src/app/ids.rs` re-walks workspaces, and state assembled
+directly (outside the creation, restore and removal paths that maintain the
+index) still falls back to a scan, so the index is a second record kept in step
+by hand. Reported by server-app and mux-panes.
 
 ## CON-062 - Where does a copy-mode motion land?
 
@@ -841,40 +752,6 @@ the rule, with `claim(client, ClaimReason)` and `settle(&views)`, run as a
 settlement step before the render plan, with alternate-screen transitions
 reported by mux as a PTY event. (server-serving)
 
-## CON-072 - Which clients count?
-
-`presents_surface` (active and attached) for `workspace_geometry_source` and
-`automatic_creation_source`; inline `is_active_shell_client() &&
-outbox.is_attached()` in `app_client_count`, `pane_viewers`,
-`reapply_controlled_shell_workspace_geometry`, `sync_immediate_pty_sources`,
-`any_shell_surface_contains_pane`; active only in `latest_shell_client`,
-`promote_to_foreground`, `claim_geometry`, `window_title_clients`,
-`panes_holding_focus`, `stream_shell_keyboard_mode` and
-`stream_host_mouse_capture_mode` (which reads `surface_active` directly);
-attached only in `render_targets`, with `render_plan` and `render_full` filtering
-by active again. `attached` is false only for fixtures, so production agrees, but
-the choice among predicates is made at about fifteen sites by accident
-(`create_automatic_workspace` gates on active-only but picks its source with
-active-and-attached). Owner: one `ClientRegistry::presenting()` and no
-`attached` state. (server-serving)
-
-## CON-073 - What happens when a client stops presenting?
-
-`reap_closed_clients` (remove, then if not stopping reapply geometry and mark the
-view changed), `remove_client_and_resize_if_needed` (remove, reapply; the caller
-marks the view changed), and `set_client_shell_surface_active(false)` (removes
-controllers, promotes the latest remaining client, reapplies, without going
-through `remove_client`). Visible-state bookkeeping (`immediate_pty_sources_dirty`,
-`host_input_modes_dirty`) is set by hand at about ten sites (connect, resize,
-`remove_client`, `create_automatic_workspace`, pane death, navigation and
-reconcile, surface activation computed outside the function from a captured
-`surface_active` although the function knows `changed`, and `run`); the doc
-admits a missed mark only delays a repaint. `handle_server_event`'s
-`may_move_focus` list classifies variants by effect though several arms already
-sync focus. Owner: one registry operation returning a typed departure outcome
-applied in one place, and a cheap per-client view key recomputed when it
-changes. (server-serving)
-
 ## CON-074 - What cursor does a client see?
 
 `ui::surface_cursor` (full render: synchronized output, scrollback hiding, the
@@ -1041,15 +918,13 @@ the old spelling. Which commands need application paths is decided in
 and `server_stop` (or clap derive); printed commands render the same value.
 Reported by edges and contracts.
 
-## CON-094 - Shell quoting: four implementations
+## CON-094 - The server still quotes through shepr-remote
 
-`shepr-remote/src/remote/launch.rs::shell_quote` (quotes a leading `=`, uses
-`RemoteExecutable::is_shell_plain_word`); `shepr-config/src/address.rs::shell_quote`
-(same set, no `=`; filed as a bug); `shepr-agent/src/integration/command.rs` (the
-`'"'"'` escape); `shepr-test-support/src/fixture.rs`. `shepr-server` depends on
-`shepr-remote` only to call `interactive_shell_command` in
-`app/agent_resume.rs`. Owner: one quoting module (`quote`, `join_argv`,
-`is_plain_word`) in core or platform. Reported by edges, contracts and
+Quoting lives in one module, `crates/shepr-core/src/shell_quote.rs`, used by
+remote, config, agent integration and the test fixture. `shepr-server` still
+depends on `shepr-remote` only to call `interactive_shell_command` in
+`app/agent_resume.rs`; switching that call to the core module removes the edge
+and the `shepr-server-layer` allowance for it. Reported by edges, contracts and
 server-app.
 
 ## CON-095 - Sanitizing remote text
@@ -1092,15 +967,6 @@ one `Endpoints` owner (id, connection, generation, supervisor state, status,
 snapshot, role) with the shell reading a projection, and an endpoint state enum
 (`Connecting`, `Online { snapshot, generation }`, `Stale { last }`, `Attention {
 last }`) with `usable()`/`stale()`. Reported by client-core and client-shell.
-
-## CON-098 - Will a pick be abandoned, and is the target ready?
-
-`shell_runtime::dispatch_client_shell_actions` predicts what `view::start_move`
-will do on the next reconcile to choose a notice: `abandoned =
-connection.is_none() && !endpoint_id.is_local() && choice.shown().is_some()`
-mirrors `start_move`'s abandon rule, and `metadata_ready =
-shell.endpoint_snapshot_identity(..).is_some()` mirrors its Waiting check. Owner:
-`EndpointChoice::select` (or a dry run) returning the outcome. (client-core)
 
 ## CON-099 - What geometry does an endpoint render, and what is the host's?
 
@@ -1152,18 +1018,6 @@ launch. A connection is assembled two ways and the reader-spawn failure branch
 duplicates the `Status` arm (filed among the structure findings). Owner: one
 attach routine used synchronously at launch, with `LocalFailurePolicy` applied
 once to its typed outcome. (client-core)
-
-## CON-102 - Local versus machine policy
-
-"Is this Local or a machine" is asked separately for heartbeat
-(`EndpointRegistry::crosses_ssh`), handshake read timeout (`HandshakeLinkKind`
-from `EndpointLink`), attempt-counter reset on Online (`record_status`'s
-`is_local()`), abandon when unconnected (`start_move` and
-`dispatch_client_shell_actions`), fatal on loss (`LocalFailurePolicy`) and
-mismatch guidance (`ConnectTarget::Local` only): three enums
-(`ClientEndpointId`, `EndpointLink`, `HandshakeLinkKind`) plus `ConnectTarget`
-and `AttemptTarget` for one axis. Owner: an `EndpointPolicy` derived once from the
-id. (client-core)
 
 ## CON-103 - Is a host terminal write failure fatal?
 
@@ -1223,20 +1077,6 @@ epoch (or the child lists) lets the client send `(workspace, path, epoch,
 ratio)` and drop the hash and the rect classification. The split hit-rect
 geometry in the server (`client_shell.rs::split_hit_rect`) is layout policy that
 could sit with the border rules. Reported by client-shell and server-serving.
-
-## CON-110 - Agent order and agent rows
-
-Priority order is coded in `sort_agent_refs` (`agent_sidebar.rs`), again in
-`AgentRowIndex::new`, and a third cross-endpoint version in `sort_aggregate_rows`
-(stale first, then rank, then client-side recency instead of
-`state_change_seq`). The panel computes sorted rows per endpoint, keys them by
-`(ClientEndpointId, pane_id.to_string())`, then reorders by
-`aggregate_agent_rows`. "An agent row needs its workspace" is decided in
-`aggregate_agent_rows` and again in `AgentRowIndex::agent_row`. Single endpoint
-versus federated selects between `hits.agents` (PaneFocus directly) and
-`hits.endpoint_agents` (`focus_or_activate`). Owner: one `AgentPanelModel` built
-per snapshot change, used by both sidebars, keyboard agent navigation and
-`indexed_navigation_target_exists`. (client-shell)
 
 ## CON-112 - Is a surface sized for this client?
 

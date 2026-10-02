@@ -25,8 +25,15 @@ pub enum ClientEndpointId {
 }
 
 impl ClientEndpointId {
+    pub(crate) fn policy(&self) -> EndpointPolicy {
+        match self {
+            Self::Local => EndpointPolicy::Local,
+            Self::Ssh(_) => EndpointPolicy::Machine,
+        }
+    }
+
     pub(crate) fn is_local(&self) -> bool {
-        matches!(self, Self::Local)
+        self.policy().is_local()
     }
 
     /// The name the client shows for this endpoint: "Local", or the machine's configured label.
@@ -43,6 +50,40 @@ impl ClientEndpointId {
             Self::Local => "local".into(),
             Self::Ssh(label) => format!("ssh:{label}"),
         }
+    }
+}
+
+/// Behavior shared by an endpoint identity's local or machine role. Values that own transport
+/// resources remain in their target and link types; this policy answers only client behavior
+/// that varies by role.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum EndpointPolicy {
+    Local,
+    Machine,
+}
+
+impl EndpointPolicy {
+    pub(crate) fn is_local(self) -> bool {
+        matches!(self, Self::Local)
+    }
+
+    pub(crate) fn uses_ssh_heartbeat(self) -> bool {
+        matches!(self, Self::Machine)
+    }
+
+    pub(crate) fn handshake_read_timeout(self) -> std::time::Duration {
+        match self {
+            Self::Local => crate::limits::LOCAL_HANDSHAKE_READ_TIMEOUT,
+            Self::Machine => crate::limits::REMOTE_HANDSHAKE_READ_TIMEOUT,
+        }
+    }
+
+    pub(crate) fn resets_attempts_on_online(self) -> bool {
+        self.is_local()
+    }
+
+    pub(crate) fn abandons_unconnected_move(self, has_shown_endpoint: bool) -> bool {
+        matches!(self, Self::Machine) && has_shown_endpoint
     }
 }
 

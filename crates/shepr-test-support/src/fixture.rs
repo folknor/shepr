@@ -846,7 +846,7 @@ pub fn argv(steps: &[Step]) -> Vec<String> {
 pub fn shell_line(steps: &[Step]) -> String {
     argv(steps)
         .iter()
-        .map(|token| format!("'{}'", token.replace('\'', "'\\''")))
+        .map(|token| shepr_core::shell_quote::quote_always(token))
         .collect::<Vec<_>>()
         .join(" ")
 }

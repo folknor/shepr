@@ -1,4 +1,5 @@
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::Arc;
 
 #[path = "shell/navigation/actions.rs"]
 mod actions;

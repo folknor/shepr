@@ -34,6 +34,65 @@ pub enum StartOutcome {
     Started,
 }
 
+enum TargetReadiness {
+    Waiting,
+    Abandon,
+    FailedGeneration,
+    Ready {
+        generation: u64,
+        boot_id: BootId,
+        minimum_revision: u64,
+    },
+}
+
+/// The action notice and reconcile use one assessment, so a pick cannot promise to wait when
+/// the next reconcile will abandon it, or report a wait when its current connection is ready.
+fn target_readiness(
+    target: &ClientEndpointId,
+    has_shown_endpoint: bool,
+    failed_generation: Option<u64>,
+    endpoints: &EndpointRegistry,
+    shell: &ClientShellState,
+) -> TargetReadiness {
+    let Some(connection) = endpoints.connection(target) else {
+        return if target
+            .policy()
+            .abandons_unconnected_move(has_shown_endpoint)
+        {
+            TargetReadiness::Abandon
+        } else {
+            TargetReadiness::Waiting
+        };
+    };
+    let generation = connection.generation.get();
+    if failed_generation == Some(generation) {
+        return TargetReadiness::FailedGeneration;
+    }
+    let Some((boot_id, minimum_revision)) = shell.endpoint_snapshot_identity(target, generation)
+    else {
+        return TargetReadiness::Waiting;
+    };
+    TargetReadiness::Ready {
+        generation,
+        boot_id: boot_id.clone(),
+        minimum_revision,
+    }
+}
+
+/// Whether a shell pick needs its waiting notice. This uses the same target assessment as the
+/// reconcile step that starts or abandons the move.
+pub(crate) fn selection_wait_notice_needed(
+    target: &ClientEndpointId,
+    choice: &EndpointChoice,
+    endpoints: &EndpointRegistry,
+    shell: &ClientShellState,
+) -> bool {
+    matches!(
+        target_readiness(target, choice.shown().is_some(), None, endpoints, shell),
+        TargetReadiness::Waiting
+    )
+}
+
 /// The viewing request: `active: true` turns a connection on, `false` turns it off.
 pub(crate) fn surface_interest_request(
     boot_id: &BootId,
@@ -62,27 +121,30 @@ pub fn start_move(
     let Some(pending) = choice.pending_start() else {
         return StartOutcome::Idle;
     };
-    let Some(connection) = endpoints.connection(pending.to) else {
-        if !pending.to.is_local()
-            && pending.from.is_some()
-            && let Some(to) = choice.abandon()
-        {
-            return StartOutcome::Abandoned(to);
+    let (generation, boot_id, minimum_revision) = match target_readiness(
+        pending.to,
+        pending.from.is_some(),
+        pending.failed_generation,
+        endpoints,
+        shell,
+    ) {
+        TargetReadiness::Waiting => return StartOutcome::Waiting,
+        TargetReadiness::Abandon => {
+            return choice
+                .abandon()
+                .map_or(StartOutcome::Waiting, StartOutcome::Abandoned);
         }
-        return StartOutcome::Waiting;
-    };
-    let generation = connection.generation.get();
-    if pending.failed_generation == Some(generation) {
-        return StartOutcome::Idle;
-    }
-    let Some((boot, minimum_revision)) = shell.endpoint_snapshot_identity(pending.to, generation)
-    else {
-        return StartOutcome::Waiting;
+        TargetReadiness::FailedGeneration => return StartOutcome::Idle,
+        TargetReadiness::Ready {
+            generation,
+            boot_id,
+            minimum_revision,
+        } => (generation, boot_id, minimum_revision),
     };
     let lease = ViewLease {
         endpoint_id: pending.to.clone(),
         generation,
-        boot_id: boot.clone(),
+        boot_id,
         minimum_revision,
     };
     let request: RequestId = format!("client-shell-view:{serial}:on").into();

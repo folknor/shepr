@@ -9,7 +9,3 @@ pub(crate) const MAX_LOCAL_OFFERS: usize = 2;
 /// API client's ordinary response window (the server's own request deadline
 /// plus a short grace), so a slow but working loop still answers in time.
 pub(crate) const STATUS_ANSWER_TIMEOUT: Duration = Duration::from_secs(20);
-
-/// Maximum wait for the fresh local server's readiness, shared with the
-/// remote launch helper so both use the same startup window.
-pub(crate) const SERVER_READY_TIMEOUT: Duration = shepr_remote::local_server::SERVER_READY_TIMEOUT;

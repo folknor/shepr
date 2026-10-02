@@ -376,11 +376,23 @@ mod tests {
             shepr_agent::agent::resume::PersistedAgentSession::from_report(
                 "shepr:omp",
                 "omp",
-                session_ref,
+                session_ref.clone(),
             )
             .expect("test precondition"),
         );
-        terminal.set_hook_authority("shepr:omp", "omp", AgentState::Working, Some(1));
+        terminal
+            .set_hook_authority_at(
+                "shepr:omp",
+                "omp",
+                AgentState::Working,
+                Some(session_ref),
+                Some(1),
+                shepr_mux::terminal::state::HookClockSample {
+                    monotonic: std::time::Instant::now(),
+                    wall: std::time::SystemTime::now(),
+                },
+            )
+            .expect("test precondition");
         app.terminal_runtimes.insert(
             terminal_id,
             shepr_mux::pane::PaneRuntime::test_with_screen_bytes(80, 24, b""),

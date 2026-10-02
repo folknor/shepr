@@ -43,7 +43,7 @@ impl ClientLoop {
             );
             if self
                 .local_failure_policy
-                .ends_client_for(&failure.endpoint_id)
+                .ends_client_for(failure.endpoint_id.policy())
             {
                 return Err(ClientError::ConnectionLost(io::Error::new(
                     failure.kind,

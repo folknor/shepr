@@ -173,7 +173,10 @@ fn modes_and_kitty_flags_follow_terminal_state() {
     assert!(terminal.mode_get(DecMode::ApplicationCursorKeys));
     assert!(terminal.mode_get(DecMode::CursorBlink));
     assert!(terminal.mode_get(DecMode::UrgencyHints));
-    assert_eq!(terminal.kitty_keyboard_flags(), 1);
+    assert_eq!(
+        terminal.kitty_keyboard_flags(),
+        KittyKeyboardFlags::DISAMBIGUATE
+    );
     assert!(terminal.mouse_tracking_enabled());
     assert!(terminal.mode_get(DecMode::MousePressRelease));
     assert!(terminal.mode_get(DecMode::MouseSgr));
@@ -191,7 +194,7 @@ fn modes_and_kitty_flags_follow_terminal_state() {
     terminal.write(b"\x1b[?12l\x1b[?1042l");
     assert!(!terminal.mode_get(DecMode::CursorBlink));
     assert!(!terminal.mode_get(DecMode::UrgencyHints));
-    assert_eq!(terminal.kitty_keyboard_flags(), 0);
+    assert!(terminal.kitty_keyboard_flags().is_empty());
 }
 
 #[test]
@@ -977,23 +980,35 @@ fn kitty_keyboard_push_flood_is_bounded_without_panicking() {
         terminal.write(&flood);
         terminal.write(suffix);
         assert_eq!(terminal.keyboard_depth.primary, max, "{prefix:?}");
-        assert_eq!(terminal.kitty_keyboard_flags(), 1);
+        assert_eq!(
+            terminal.kitty_keyboard_flags(),
+            KittyKeyboardFlags::DISAMBIGUATE
+        );
 
         // At the cap a push replaces the top entry, so the new mode is active
         // and one pop returns to the entry beneath it.
         terminal.write(b"\x1b[>3u");
         assert_eq!(terminal.keyboard_depth.primary, max);
-        assert_eq!(terminal.kitty_keyboard_flags(), 3);
+        assert_eq!(
+            terminal.kitty_keyboard_flags(),
+            KittyKeyboardFlags::DISAMBIGUATE | KittyKeyboardFlags::REPORT_EVENT_TYPES
+        );
         terminal.write(b"\x1b[<u");
-        assert_eq!(terminal.kitty_keyboard_flags(), 1);
+        assert_eq!(
+            terminal.kitty_keyboard_flags(),
+            KittyKeyboardFlags::DISAMBIGUATE
+        );
 
         // alacritty's real stack is bounded too: popping the mirrored depth
         // empties it.
         terminal.write(format!("\x1b[<{}u", max - 2).as_bytes());
-        assert_eq!(terminal.kitty_keyboard_flags(), 1);
+        assert_eq!(
+            terminal.kitty_keyboard_flags(),
+            KittyKeyboardFlags::DISAMBIGUATE
+        );
         terminal.write(b"\x1b[<u");
         assert_eq!(terminal.keyboard_depth.primary, 0);
-        assert_eq!(terminal.kitty_keyboard_flags(), 0);
+        assert!(terminal.kitty_keyboard_flags().is_empty());
     }
 }
 
@@ -1018,12 +1033,15 @@ fn kitty_keyboard_depth_follows_screen_swaps_and_ris() {
         ),
         (3, 7)
     );
-    assert_eq!(terminal.kitty_keyboard_flags(), 1);
+    assert_eq!(
+        terminal.kitty_keyboard_flags(),
+        KittyKeyboardFlags::DISAMBIGUATE
+    );
     terminal.write(b"\x1b[<9u");
     assert_eq!(terminal.keyboard_depth.primary, 0);
     terminal.write(b"\x1b[?1049h\x1bc");
     assert_eq!(terminal.keyboard_depth, KeyboardStackDepth::default());
-    assert_eq!(terminal.kitty_keyboard_flags(), 0);
+    assert!(terminal.kitty_keyboard_flags().is_empty());
 }
 
 #[test]

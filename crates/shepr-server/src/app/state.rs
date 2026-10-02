@@ -33,6 +33,11 @@ pub struct AppState {
     pub terminals:
         std::collections::HashMap<shepr_protocol::TerminalId, shepr_mux::terminal::TerminalState>,
     pub workspaces: Vec<Workspace>,
+    /// The pane's attached terminal, kept in sync by restore, workspace
+    /// creation, split and removal (see `terminal_of`). This lets pane-originated events reach terminal
+    /// metadata and runtimes without searching the workspace list.
+    pub(super) pane_terminal_ids:
+        std::collections::HashMap<shepr_core::layout::PaneId, shepr_protocol::TerminalId>,
     /// The session's bookmark: the workspace saved with the session and where
     /// a new client starts. It is set only from the navigation of a client
     /// whose surface is active, and no request acts on it: each client keeps
@@ -267,6 +272,55 @@ impl AppState {
         self.settings.pane_geometry_in(area)
     }
 
+    /// The terminal attached to `pane_id`, wherever it lives. Pane events
+    /// carry pane ids while terminal metadata and runtimes are keyed by
+    /// terminal id, so this is the one state-level mapping between them.
+    ///
+    /// The index is kept in step by hand at every path that adds or removes
+    /// panes, so a miss falls back to scanning the workspaces. A miss for a
+    /// pane that is already gone is normal (late events from a closed pane)
+    /// and the scan finds nothing. A scan that does find the pane means some
+    /// path put a pane into state without indexing it, which is a bug in
+    /// production and is logged; tests that assign `workspaces` directly
+    /// reach it on purpose.
+    pub(crate) fn terminal_of(
+        &self,
+        pane_id: shepr_core::layout::PaneId,
+    ) -> Option<&shepr_protocol::TerminalId> {
+        if let Some(terminal_id) = self.pane_terminal_ids.get(&pane_id) {
+            return Some(terminal_id);
+        }
+        let terminal_id = self
+            .workspaces
+            .iter()
+            .find_map(|workspace| workspace.terminal_id(pane_id))?;
+        tracing::warn!(
+            ?pane_id,
+            %terminal_id,
+            "pane is in a workspace but missing from the pane terminal index"
+        );
+        Some(terminal_id)
+    }
+
+    /// Adds the pane-to-terminal links from a workspace entering state.
+    pub(crate) fn index_workspace_terminals(&mut self, workspace: &Workspace) {
+        self.pane_terminal_ids.extend(
+            workspace
+                .panes()
+                .iter()
+                .map(|(pane_id, pane)| (*pane_id, pane.attached_terminal_id.clone())),
+        );
+    }
+
+    /// The live runtime for `pane_id`, when its attached terminal has one.
+    pub(crate) fn runtime_of<'a>(
+        &self,
+        terminal_runtimes: &'a shepr_mux::pane::PaneRuntimeRegistry,
+        pane_id: shepr_core::layout::PaneId,
+    ) -> Option<&'a shepr_mux::pane::PaneRuntime> {
+        terminal_runtimes.get(self.terminal_of(pane_id)?)
+    }
+
     /// The live runtime of `pane_id` in workspace `ws_idx`: the pane's
     /// terminal id looked up in `terminal_runtimes`. `None` when the pane is
     /// not in that workspace or its terminal has no runtime (a restored pane
@@ -308,6 +362,7 @@ impl AppState {
             clock_now: super::tests::test_clock().now,
             terminals: std::collections::HashMap::new(),
             workspaces: Vec::new(),
+            pane_terminal_ids: std::collections::HashMap::new(),
             bookmark: None,
             bookmark_position: 0,
             workspace_geometry: std::collections::HashMap::new(),

@@ -58,16 +58,13 @@ fn workspace_geometry_source(
     let mut lowest_viewer = None;
     let mut lowest_focused_viewer = None;
     let mut current_controller = None;
-    for (&client_id, client) in clients {
-        if !presents_surface(client) {
-            continue;
-        }
+    for (&client_id, client) in clients.presenting() {
         if sole_presenter.is_some() {
             has_multiple_presenters = true;
         } else {
             sole_presenter = Some(client_id);
         }
-        if client.shell_state().location.focused_workspace_id.as_ref() == Some(workspace_id) {
+        if client.shell_state().location.focused_workspace_id() == Some(workspace_id) {
             if lowest_viewer.is_none_or(|viewer| client_id < viewer) {
                 lowest_viewer = Some(client_id);
             }
@@ -99,13 +96,6 @@ fn workspace_geometry_source(
     None
 }
 
-/// Whether a client presents a surface: an active shell with a way to send
-/// frames. Only such a client sizes panes, controls geometry or is chosen to
-/// create a workspace.
-fn presents_surface(client: &ClientConnection) -> bool {
-    client.is_active_shell_client() && client.outbox.is_attached()
-}
-
 impl HeadlessServer {
     /// The workspace `client_id` views: what its own location names, if that
     /// is still a workspace. A client with no workspace views none; nothing
@@ -118,8 +108,8 @@ impl HeadlessServer {
             .get(&client_id)?
             .shell_state()
             .location
-            .focused_workspace_id
-            .clone()
+            .focused_workspace_id()
+            .cloned()
             .filter(|workspace_id| self.app.state.workspace_index(workspace_id).is_some())
     }
 
@@ -173,6 +163,9 @@ impl HeadlessServer {
         for client in self.clients.values_mut() {
             changed |= client.shell_state_mut().location.reconcile(&topology);
         }
+        if changed {
+            self.refresh_client_view_keys();
+        }
         changed
     }
 
@@ -198,6 +191,7 @@ impl HeadlessServer {
             .navigate(workspace_id.clone(), index);
         if moved {
             crate::logging::workspace_focused(workspace_id);
+            self.refresh_client_view_keys();
         }
         if surface_active {
             self.app.state.set_bookmark(workspace_id);
@@ -228,11 +222,10 @@ impl HeadlessServer {
     /// workspace is sized for the headless area with no controller.
     fn automatic_creation_source(&self, trigger: Option<ClientId>) -> Option<ClientId> {
         trigger
-            .filter(|client_id| self.clients.get(client_id).is_some_and(presents_surface))
+            .filter(|client_id| self.clients.is_presenting(client_id))
             .or_else(|| {
                 self.clients
-                    .iter()
-                    .filter(|(_, client)| presents_surface(client))
+                    .presenting()
                     .map(|(&client_id, _)| client_id)
                     .min()
             })
@@ -292,11 +285,8 @@ impl HeadlessServer {
         &self,
     ) -> HashSet<(shepr_protocol::WorkspaceId, shepr_core::layout::PaneId)> {
         self.clients
-            .iter()
-            .filter(|(_, client)| {
-                client.is_active_shell_client()
-                    && client.shell_state().outer_terminal_focus == Some(true)
-            })
+            .presenting()
+            .filter(|(_, client)| client.shell_state().outer_terminal_focus == Some(true))
             .filter_map(|(&client_id, _)| self.shell_focus_target(client_id))
             .map(|target| (target.workspace_id, target.pane_id))
             .collect()
@@ -367,8 +357,7 @@ impl HeadlessServer {
         };
         let mut viewers: Vec<ClientId> = self
             .clients
-            .iter()
-            .filter(|(_, client)| client.is_active_shell_client() && client.outbox.is_attached())
+            .presenting()
             .map(|(&client_id, _)| client_id)
             .filter(|&client_id| self.shell_client_views_pane(client_id, workspace_index, pane_id))
             .collect();
@@ -520,10 +509,7 @@ impl HeadlessServer {
         start_pending_agent_resumes: bool,
     ) -> bool {
         let mut viewed_workspaces = HashMap::<shepr_protocol::WorkspaceId, Vec<ClientId>>::new();
-        for (&client_id, client) in &self.clients {
-            if !client.is_active_shell_client() || !client.outbox.is_attached() {
-                continue;
-            }
+        for (&client_id, _) in self.clients.presenting() {
             let Some(workspace_id) = self.shell_target_for_client(client_id) else {
                 continue;
             };
@@ -564,13 +550,6 @@ impl HeadlessServer {
         client_id: ClientId,
         start_pending_agent_resumes: bool,
     ) -> bool {
-        if !self
-            .clients
-            .get(&client_id)
-            .is_some_and(ClientConnection::is_active_shell_client)
-        {
-            return false;
-        }
         let Some(workspace_id) = self.shell_target_for_client(client_id) else {
             return false;
         };
@@ -587,13 +566,6 @@ impl HeadlessServer {
         client_id: ClientId,
         start_pending_agent_resumes: bool,
     ) -> bool {
-        if !self
-            .clients
-            .get(&client_id)
-            .is_some_and(ClientConnection::is_active_shell_client)
-        {
-            return false;
-        }
         let Some(workspace_id) = self.shell_target_for_client(client_id) else {
             return false;
         };
@@ -627,14 +599,13 @@ mod tests {
         } else {
             crate::server::outbox::ClientOutbox::detached()
         };
-        let mut client = ClientConnection::new(
-            (80, 24),
+        ClientConnection::with_shell(
+            ClientShellState::with_surface_active(active),
+            shepr_core::geometry::GridSize::clamped(80, 24),
             shepr_termio::host_term::cell_size::HostCellSize::default(),
             1,
             outbox,
-        );
-        client.shell_state_mut().surface_active = active;
-        client
+        )
     }
 
     #[test]
@@ -648,7 +619,10 @@ mod tests {
 
         let first = ClientId::test_new(1);
         let mut first_client = client(true, true);
-        first_client.shell_state_mut().location.focused_workspace_id = Some(workspace_id.clone());
+        first_client
+            .shell_state_mut()
+            .location
+            .navigate(workspace_id.clone(), 0);
         clients.insert(first, first_client);
         assert_eq!(
             workspace_geometry_source(&clients, &workspace_id),
@@ -661,7 +635,7 @@ mod tests {
         second_client
             .shell_state_mut()
             .location
-            .focused_workspace_id = Some(workspace_id.clone());
+            .navigate(workspace_id.clone(), 0);
         second_client.shell_state_mut().outer_terminal_focus = Some(true);
         clients.insert(second, second_client);
         assert_eq!(
@@ -678,7 +652,10 @@ mod tests {
 
         let other_workspace_id: shepr_protocol::WorkspaceId = shepr_test_fixtures::id("w2");
         if let Some(client) = clients.get_mut(&first) {
-            client.shell_state_mut().location.focused_workspace_id = Some(other_workspace_id);
+            client
+                .shell_state_mut()
+                .location
+                .navigate(other_workspace_id, 0);
         }
         assert_eq!(
             workspace_geometry_source(&clients, &workspace_id),
@@ -687,16 +664,21 @@ mod tests {
         );
 
         // An inactive surface presents nothing: the other one is sole again.
-        if let Some(client) = clients.get_mut(&second) {
-            client.shell_state_mut().surface_active = false;
-        }
+        assert!(matches!(
+            clients.set_surface_active(second, false),
+            Some(crate::server::clients::ClientSurfaceChange {
+                changed: true,
+                departure: Some(_),
+                ..
+            })
+        ));
         assert_eq!(
             workspace_geometry_source(&clients, &workspace_id),
             Some(GeometrySource::Client(first))
         );
 
         // A metadata-only connection never sizes anything.
-        let (_, _) = clients.remove_client(first);
+        assert!(clients.remove_client(first).is_some());
         assert_eq!(
             workspace_geometry_source(&clients, &workspace_id),
             Some(GeometrySource::Headless)

@@ -236,8 +236,8 @@ impl HeadlessServer {
             .iter()
             .map(|(&client_id, client)| {
                 let shell = client.shell_state();
-                let focused = shell
-                    .surface_active
+                let presenting = self.clients.is_presenting(&client_id);
+                let focused = presenting
                     .then(|| self.shell_focused_runtime(client_id))
                     .flatten();
                 let child_requests_mouse =
@@ -246,8 +246,8 @@ impl HeadlessServer {
                     && focused.is_some_and(|(runtime, _)| runtime.sgr_pixel_mouse_enabled());
                 (
                     client_id,
-                    shell.surface_active && (shell.mouse_capture || child_requests_mouse),
-                    shell.surface_active && sgr_pixels,
+                    presenting && (shell.mouse_capture || child_requests_mouse),
+                    presenting && sgr_pixels,
                 )
             })
             .collect::<Vec<_>>();
@@ -263,8 +263,8 @@ impl HeadlessServer {
         let shell_modes = self
             .clients
             .iter()
-            .map(|(&client_id, client)| {
-                let report_all = client.is_active_shell_client()
+            .map(|(&client_id, _)| {
+                let report_all = self.clients.is_presenting(&client_id)
                     && self
                         .shell_focused_runtime(client_id)
                         .is_some_and(|(runtime, _)| {
@@ -285,8 +285,8 @@ impl HeadlessServer {
 
     pub(super) fn sync_immediate_pty_sources(&self) {
         let mut pane_ids = HashSet::new();
-        for (&client_id, client) in &self.clients {
-            if !client.is_active_shell_client() || !client.outbox.is_attached() {
+        for (&client_id, _) in &self.clients {
+            if !self.clients.is_presenting(&client_id) {
                 continue;
             }
             let Some(target) = self.shell_target_for_client(client_id) else {
@@ -333,8 +333,8 @@ impl HeadlessServer {
     }
 
     fn any_shell_surface_contains_pane(&self, pane_id: shepr_core::layout::PaneId) -> bool {
-        self.clients.iter().any(|(&client_id, client)| {
-            if !client.is_active_shell_client() || !client.outbox.is_attached() {
+        self.clients.iter().any(|(&client_id, _)| {
+            if !self.clients.is_presenting(&client_id) {
                 return false;
             }
             let Some(target) = self.shell_target_for_client(client_id) else {
@@ -405,13 +405,13 @@ impl HeadlessServer {
             let full = !client.render_state.is_settled_at(self.view_epoch)
                 || shell.projected_location_generation != shell.location.generation()
                 || shell.snapshot.is_none()
-                || (client.is_active_shell_client()
+                || (client.presents_surface()
                     && client.render_state.surface_debt()
                     && self.surface_deliverable(target.client_id, &mut held));
             if full {
                 plan.full.push(target.client_id);
             } else if render_signal_pending
-                && client.is_active_shell_client()
+                && client.presents_surface()
                 && client.render_state.takes_patches()
             {
                 plan.patch.push(target.client_id);
@@ -546,7 +546,7 @@ impl HeadlessServer {
             let Some(client) = self.clients.get(&target.client_id) else {
                 continue;
             };
-            if !client.is_active_shell_client()
+            if !client.presents_surface()
                 || !deliverable.get(&target.client_id).copied().unwrap_or(false)
             {
                 continue;
@@ -577,7 +577,7 @@ impl HeadlessServer {
             let Some(client) = self.clients.get(&client_id) else {
                 continue;
             };
-            if !client.is_active_shell_client() {
+            if !client.presents_surface() {
                 continue;
             }
             let changed = client
@@ -782,7 +782,7 @@ impl HeadlessServer {
             shell.projected_location_generation = shell.location.generation();
         }
         let shell_projection_revision = client.shell_state().projection_revision;
-        if !client.is_active_shell_client() {
+        if !client.presents_surface() {
             return ClientPassOutcome::Skipped;
         }
         // A client that cannot take a surface now was projected above and

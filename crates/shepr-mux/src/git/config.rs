@@ -1,7 +1,6 @@
 use std::io::ErrorKind;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
 
 use super::GitReadError;
 use super::discovery::{
@@ -16,11 +15,8 @@ pub(super) struct BranchConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum FileStamp {
-    Present {
-        modified: Option<SystemTime>,
-        len: u64,
-    },
+pub(super) enum DependencyStamp {
+    Present { file: shepr_platform::FileStamp },
     Missing,
     Unavailable,
 }
@@ -28,7 +24,7 @@ pub(super) enum FileStamp {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct FileDependency {
     path: PathBuf,
-    stamp: FileStamp,
+    stamp: DependencyStamp,
     canonical_target: Option<PathBuf>,
 }
 
@@ -42,7 +38,7 @@ impl Dependencies {
     pub(super) fn tracked(dependencies: Vec<FileDependency>) -> Self {
         if dependencies
             .iter()
-            .any(|dependency| dependency.stamp == FileStamp::Unavailable)
+            .any(|dependency| dependency.stamp == DependencyStamp::Unavailable)
         {
             Self::Uncacheable
         } else {
@@ -52,7 +48,7 @@ impl Dependencies {
 
     fn push(&mut self, dependency: FileDependency) {
         match self {
-            Self::Tracked(dependencies) if dependency.stamp != FileStamp::Unavailable => {
+            Self::Tracked(dependencies) if dependency.stamp != DependencyStamp::Unavailable => {
                 dependencies.push(dependency);
             }
             Self::Tracked(_) => *self = Self::Uncacheable,
@@ -81,12 +77,11 @@ pub(super) struct ConfigCtx {
 
 pub(super) fn stamp(path: PathBuf, canonical_target: Option<PathBuf>) -> FileDependency {
     let stamp = match std::fs::metadata(&path) {
-        Ok(metadata) => FileStamp::Present {
-            modified: metadata.modified().ok(),
-            len: metadata.len(),
+        Ok(metadata) => DependencyStamp::Present {
+            file: shepr_platform::FileStamp::from_metadata(&metadata),
         },
-        Err(error) if error.kind() == ErrorKind::NotFound => FileStamp::Missing,
-        Err(_) => FileStamp::Unavailable,
+        Err(error) if error.kind() == ErrorKind::NotFound => DependencyStamp::Missing,
+        Err(_) => DependencyStamp::Unavailable,
     };
     FileDependency {
         path,
@@ -298,14 +293,14 @@ pub(super) fn read_repository_format_value(
         })?;
     let dep = stamp(path.to_path_buf(), None);
     match dep.stamp.clone() {
-        FileStamp::Unavailable => {
+        DependencyStamp::Unavailable => {
             return Err(GitReadError::FileRead {
                 path: path.to_path_buf(),
                 message: "repository config metadata is unavailable".into(),
             });
         }
-        FileStamp::Missing => return Ok((None, Dependencies::tracked(vec![dep]))),
-        FileStamp::Present { .. } => {}
+        DependencyStamp::Missing => return Ok((None, Dependencies::tracked(vec![dep]))),
+        DependencyStamp::Present { .. } => {}
     }
     let query = format!("{section}.{key}");
     let args = ["config", "--file", name, "--no-includes", "--get", &query];

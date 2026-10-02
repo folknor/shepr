@@ -43,7 +43,7 @@ pub(super) fn parse(matches: &ArgMatches) -> Option<Command> {
 
 pub(super) fn run_detect_command(
     command: Command,
-    paths: &super::target::CliContext,
+    paths: &shepr_config::AppPaths,
 ) -> super::CliResult<i32> {
     match command {
         Command::Capture { pane } => capture(paths, &pane),
@@ -62,7 +62,7 @@ fn capture_request(pane: &str) -> Request {
     }
 }
 
-fn capture(paths: &super::target::CliContext, pane: &str) -> super::CliResult<i32> {
+fn capture(paths: &shepr_config::AppPaths, pane: &str) -> super::CliResult<i32> {
     let response = super::send_request(paths, &capture_request(pane))?;
     if response.get("error").is_some() {
         print_detect_error(&response)?;
@@ -77,13 +77,7 @@ fn capture(paths: &super::target::CliContext, pane: &str) -> super::CliResult<i3
     Ok(0)
 }
 
-pub(super) fn explain(
-    paths: &super::target::CliContext,
-    args: ExplainArgs,
-) -> super::CliResult<i32> {
-    if args.file.is_some() {
-        return run_file_explain(&args);
-    }
+pub(super) fn explain(paths: &shepr_config::AppPaths, args: ExplainArgs) -> super::CliResult<i32> {
     let target = args.pane.ok_or_else(|| {
         super::CliError::Usage("explain requires PANE unless --file is used".into())
     })?;

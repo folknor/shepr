@@ -11,6 +11,7 @@ static NEXT_TEMP_FILE: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Serialize, Deserialize)]
 struct StoredMetadata {
+    // The on-disk record is JSON; the cache itself retains the checked type.
     target: String,
     executable: String,
 }
@@ -21,7 +22,7 @@ struct StoredMetadata {
 /// and a release client never overwrite each other's hint for a target.
 pub struct SshMetadataCache {
     path: PathBuf,
-    target: String,
+    target: SshTarget,
 }
 
 impl SshMetadataCache {
@@ -38,8 +39,8 @@ impl SshMetadataCache {
             path: paths
                 .client_state_dir()
                 .join(format!("ssh-metadata-{}", profile.marker()))
-                .join(format!("{:016x}.json", target_file_key(target.as_str()))),
-            target: target.as_str().to_owned(),
+                .join(format!("{:016x}.json", target_file_key(target))),
+            target: target.clone(),
         }
     }
 
@@ -59,7 +60,7 @@ impl SshMetadataCache {
     /// still lose that entry, in which case discovery can rebuild it.
     pub fn store(&self, executable: &RemoteExecutable) -> io::Result<()> {
         let stored = StoredMetadata {
-            target: self.target.clone(),
+            target: self.target.as_str().to_owned(),
             executable: executable.as_str().to_owned(),
         };
         let bytes = serde_json::to_vec(&stored).map_err(io::Error::other)?;
@@ -86,11 +87,11 @@ impl SshMetadataCache {
 /// A stable 64-bit FNV-1a hash of the target, naming its cache file. Targets can
 /// hold characters and lengths a file name cannot, and a collision only costs
 /// a cache miss because the stored target is compared on load.
-fn target_file_key(target: &str) -> u64 {
+fn target_file_key(target: &SshTarget) -> u64 {
     // limits-exempt: the FNV-1a 64-bit offset basis and prime are fixed by the algorithm.
     const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
     const PRIME: u64 = 0x0000_0100_0000_01b3;
-    target.bytes().fold(OFFSET_BASIS, |hash, byte| {
+    target.as_str().bytes().fold(OFFSET_BASIS, |hash, byte| {
         (hash ^ u64::from(byte)).wrapping_mul(PRIME)
     })
 }
@@ -172,7 +173,7 @@ impl Drop for AbandonedTempFile {
     }
 }
 
-fn load_metadata(path: &Path, target: &str) -> Option<RemoteExecutable> {
+fn load_metadata(path: &Path, target: &SshTarget) -> Option<RemoteExecutable> {
     let file_type = std::fs::symlink_metadata(path).ok()?.file_type();
     if !file_type.is_file() {
         return None;
@@ -187,7 +188,7 @@ fn load_metadata(path: &Path, target: &str) -> Option<RemoteExecutable> {
         return None;
     }
     let stored: StoredMetadata = serde_json::from_slice(&bytes).ok()?;
-    if stored.target != target {
+    if stored.target != target.as_str() {
         return None;
     }
     RemoteExecutable::parse(stored.executable).ok()
@@ -230,18 +231,24 @@ mod tests {
         let root = shepr_test_support::ScratchDir::new("ssh-metadata").join("cache");
         let first = SshMetadataCache {
             path: root.join("first.json"),
-            target: "mac".into(),
+            target: SshTarget::parse("mac").expect("test precondition"),
         };
         let second = SshMetadataCache {
             path: root.join("second.json"),
-            target: "mac".into(),
+            target: SshTarget::parse("mac").expect("test precondition"),
         };
         let metadata = RemoteExecutable::parse("/some-path/shepr").expect("test precondition");
         assert!(first.load().is_none());
         first.store(&metadata).expect("first store");
         second.store(&metadata).expect("second store");
         assert_eq!(first.load(), Some(metadata.clone()));
-        assert!(load_metadata(&first.path, "different-host").is_none());
+        assert!(
+            load_metadata(
+                &first.path,
+                &SshTarget::parse("different-host").expect("test precondition")
+            )
+            .is_none()
+        );
         {
             use std::os::unix::fs::PermissionsExt as _;
             assert_eq!(
@@ -294,7 +301,7 @@ mod tests {
         let root = shepr_test_support::ScratchDir::new("ssh-metadata-link");
         let cache = SshMetadataCache {
             path: root.join("cache.json"),
-            target: "mac".into(),
+            target: SshTarget::parse("mac").expect("test precondition"),
         };
         let other = root.join("other");
         std::fs::write(&other, "untouched").expect("test precondition");
@@ -329,6 +336,12 @@ mod tests {
         })
         .expect("the published disposable cache is still a successful store");
 
-        assert_eq!(load_metadata(&path, "dev@build.example"), Some(executable));
+        assert_eq!(
+            load_metadata(
+                &path,
+                &SshTarget::parse("dev@build.example").expect("test precondition")
+            ),
+            Some(executable)
+        );
     }
 }

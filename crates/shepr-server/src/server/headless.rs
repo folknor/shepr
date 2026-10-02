@@ -31,7 +31,9 @@ use crate::app;
 use crate::limits::SERVER_EVENT_CHANNEL_CAPACITY;
 use crate::server::client_shell::render_pane_surface as render_client_shell_pane_surface;
 use crate::server::client_transport::ServerEvent;
-use crate::server::clients::{ClientConnection, ClientRegistry, ClientShellState, render_targets};
+use crate::server::clients::{
+    ClientConnection, ClientDeparture, ClientRegistry, ClientShellState, render_targets,
+};
 use crate::server::outbox::{ClientOutbox, Delivery, ReleaseMode, ReplyTicket};
 use crate::server::pane_input::apply_client_pane_input_events;
 use crate::server::render_stream::ViewEpoch;
@@ -85,6 +87,18 @@ struct PendingCheckpointedPaneExit {
 // Headless server
 // ---------------------------------------------------------------------------
 
+/// The per-client inputs to the immediate PTY sources and the host input
+/// modes. A presenting client whose key changes, appears or departs marks
+/// both stale (`HeadlessServer::refresh_client_view_keys`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ClientViewKey {
+    presenting: bool,
+    location_generation: u64,
+    terminal_size: shepr_core::geometry::GridSize,
+    cell_size: shepr_termio::host_term::cell_size::HostCellSize,
+    pixel_mouse: bool,
+}
+
 /// Coordinates the event loop without a real terminal. Lifecycle policy and
 /// asynchronous endpoint workers own their rules separately. Client geometry
 /// application stays here because it can start resumes and send focus reports;
@@ -99,6 +113,9 @@ pub struct HeadlessServer {
     /// removes the socket file (`release_socket_after_save`).
     api_server: Option<shepr_api::ServerHandle>,
     clients: ClientRegistry,
+    /// Last small client-view inputs used to invalidate PTY visibility and
+    /// host input modes when a connection's view changes.
+    client_view_keys: HashMap<ClientId, ClientViewKey>,
     /// Identity used to reject shell replacements from an earlier server boot.
     /// Production takes the process boot (`BootId::for_this_process`), the same
     /// value `ping` reports and the stop guard compares, since one process runs
@@ -122,6 +139,8 @@ pub struct HeadlessServer {
     /// (`sync_immediate_pty_sources`) may be stale. That set depends only on
     /// the clients' workspace views, pane membership, and focused pane when a
     /// workspace is zoomed. A PTY render wake changes none of those.
+    /// Client activation, location, and geometry changes mark it through the
+    /// per-client key; topology changes mark it where they are applied.
     /// Recomputing it on every loop wake walked every pane per PTY notify. A
     /// missed mark would only delay a visible pane's repaint to the normal
     /// render cadence, never drop it: visibility at render time is computed
@@ -130,10 +149,10 @@ pub struct HeadlessServer {
     /// Whether the host mouse-capture and keyboard modes pushed to clients
     /// (`stream_host_mouse_capture_mode`, `stream_shell_keyboard_mode`)
     /// may be stale. They follow the focused pane's terminal modes, which only
-    /// PTY output changes, plus the same client/topology changes as above. Set
-    /// whenever a render request carrying PTY sources is taken; every render
-    /// is followed by another loop iteration, which pushes the modes before
-    /// the loop sleeps again.
+    /// PTY output changes, plus the same client/topology changes as above.
+    /// Client changes mark it through the per-client key and a render request
+    /// carrying PTY sources is taken; every render is followed by another loop
+    /// iteration, which pushes the modes before the loop sleeps again.
     host_input_modes_dirty: bool,
     /// Reason captured by the retained renderer and reported after the full
     /// render that recovers from it.
@@ -190,6 +209,7 @@ impl HeadlessServer {
             headless_settled: ViewEpoch::ZERO,
             api_server: Some(api_server),
             clients: ClientRegistry::default(),
+            client_view_keys: HashMap::new(),
             client_shell_boot_id: shepr_protocol::BootId::for_this_process(),
             shell_session_cache: None,
             shell_session_generation: 0,
@@ -229,6 +249,45 @@ impl HeadlessServer {
 
     fn mark_view_changed(&mut self) {
         self.view_epoch.advance();
+    }
+
+    /// Rechecks scalar per-client view inputs after a client mutation. The
+    /// pane list is still rebuilt only when one of these inputs changes or
+    /// application topology explicitly changes it.
+    pub(super) fn refresh_client_view_keys(&mut self) {
+        let next = self
+            .clients
+            .iter()
+            .map(|(&client_id, client)| {
+                (
+                    client_id,
+                    ClientViewKey {
+                        presenting: self.clients.is_presenting(&client_id),
+                        location_generation: client.shell_state().location.generation(),
+                        terminal_size: client.terminal_size,
+                        cell_size: client.cell_size,
+                        pixel_mouse: client.pixel_mouse,
+                    },
+                )
+            })
+            .collect::<HashMap<_, _>>();
+        let changed =
+            self.client_view_keys
+                .iter()
+                .any(|(client_id, previous)| match next.get(client_id) {
+                    Some(current) => {
+                        (previous.presenting || current.presenting) && previous != current
+                    }
+                    None => previous.presenting,
+                })
+                || next.iter().any(|(client_id, current)| {
+                    !self.client_view_keys.contains_key(client_id) && current.presenting
+                });
+        self.client_view_keys = next;
+        if changed {
+            self.immediate_pty_sources_dirty = true;
+            self.host_input_modes_dirty = true;
+        }
     }
 
     /// Starts request dispatch only while the lifecycle accepts work.
@@ -642,18 +701,9 @@ impl HeadlessServer {
     }
 
     /// Records activity from `client_id`, making it the foreground client if
-    /// it is an active shell. Returns whether the foreground client changed.
+    /// it is presenting a shell surface. Returns whether the foreground client changed.
     fn promote_client_to_foreground(&mut self, client_id: ClientId) -> bool {
         let changed = self.clients.promote_to_foreground(client_id);
-        if changed {
-            // The theme setters invalidate what a change reaches.
-            self.sync_host_theme_from_foreground();
-        }
-        changed
-    }
-
-    fn promote_latest_remaining_client(&mut self) -> bool {
-        let changed = self.clients.promote_latest_remaining();
         if changed {
             // The theme setters invalidate what a change reaches.
             self.sync_host_theme_from_foreground();
@@ -670,19 +720,44 @@ impl HeadlessServer {
     }
 
     fn remove_client(&mut self, client_id: ClientId) -> bool {
-        self.immediate_pty_sources_dirty = true;
-        let (removed, was_foreground) = self.clients.remove_client(client_id);
-        if let Some(mut removed) = removed {
-            let held_inputs = removed.drain_shell_held_inputs();
+        let Some(departure) = self.clients.remove_client(client_id) else {
+            return false;
+        };
+        self.apply_client_departures(vec![(client_id, departure)])
+    }
+
+    /// Applies effects for clients that stopped presenting or left the
+    /// registry. The registry has already released ownership; one settlement
+    /// now releases held input, focus, geometry, and the shared view epoch.
+    fn apply_client_departures(&mut self, departures: Vec<(ClientId, ClientDeparture)>) -> bool {
+        if departures.is_empty() {
+            return false;
+        }
+        let mut foreground_changed = false;
+        for (client_id, departure) in departures {
+            let (changed, held_inputs) = match departure {
+                ClientDeparture::SurfaceDeactivated {
+                    foreground_changed,
+                    held_inputs,
+                }
+                | ClientDeparture::ConnectionRemoved {
+                    foreground_changed,
+                    held_inputs,
+                } => (foreground_changed, held_inputs),
+            };
+            foreground_changed |= changed;
             self.release_client_shell_inputs(client_id, held_inputs);
         }
-        // The departed client no longer holds focus on the pane it viewed.
-        self.sync_pane_focus();
-        if was_foreground {
-            self.promote_latest_remaining_client()
-        } else {
-            false
+        if foreground_changed {
+            self.sync_host_theme_from_foreground();
         }
+        self.sync_pane_focus();
+        self.refresh_client_view_keys();
+        if self.lifecycle.phase() != ShutdownPhase::Stopping {
+            self.reapply_controlled_shell_workspace_geometry(true);
+            self.mark_view_changed();
+        }
+        foreground_changed
     }
 
     fn release_client_shell_inputs(
@@ -736,7 +811,7 @@ impl HeadlessServer {
         );
     }
 
-    fn remove_client_and_resize_if_needed(&mut self, client_id: ClientId) -> bool {
+    fn remove_client_if_present(&mut self, client_id: ClientId) -> bool {
         // Reader-side exits arrive as events, ordered after that client's
         // input. Closing an outbox makes its reader report EOF too, so ignore
         // a detach or disconnect for a client already removed (by the reap).
@@ -744,13 +819,6 @@ impl HeadlessServer {
             return false;
         }
         self.remove_client(client_id);
-        // Removing the client dropped its geometry controller mappings. Each
-        // workspace it controlled goes to a remaining viewer, or every
-        // workspace to the headless size when no surface remains, so no pane
-        // keeps the departed client's size.
-        if self.lifecycle.phase() != ShutdownPhase::Stopping {
-            self.reapply_controlled_shell_workspace_geometry(true);
-        }
         true
     }
 
@@ -768,14 +836,14 @@ impl HeadlessServer {
         if closed.is_empty() {
             return false;
         }
+        let mut departures = Vec::with_capacity(closed.len());
         for client_id in closed {
             info!(?client_id, "client connection closed");
-            self.remove_client(client_id);
+            if let Some(departure) = self.clients.remove_client(client_id) {
+                departures.push((client_id, departure));
+            }
         }
-        if self.lifecycle.phase() != ShutdownPhase::Stopping {
-            self.reapply_controlled_shell_workspace_geometry(true);
-            self.mark_view_changed();
-        }
+        self.apply_client_departures(departures);
         true
     }
 
@@ -894,8 +962,7 @@ impl HeadlessServer {
     fn window_title_clients(&self) -> Vec<ClientId> {
         let mut clients = self
             .clients
-            .iter()
-            .filter(|(_, client)| client.is_active_shell_client())
+            .presenting()
             .map(|(&client_id, _)| client_id)
             .collect::<Vec<_>>();
         clients.sort_unstable();
@@ -1066,17 +1133,10 @@ impl HeadlessServer {
         ) {
             return;
         }
-        // Pane input events move no client's view or outer focus. Failed sends
-        // close the outbox; registry changes wait for the next iteration's reap.
-        let may_move_focus = matches!(
-            ev,
-            ServerEvent::ClientShellConnected { .. }
-                | ServerEvent::ClientShellResize { .. }
-                | ServerEvent::ClientShellFocus { .. }
-                | ServerEvent::ClientShellEndpointRequest { .. }
-                | ServerEvent::ClientDetach { .. }
-                | ServerEvent::ClientDisconnected { .. }
-        );
+        // Endpoint commands and client departures settle pane focus in their
+        // own shared effect path; only an outer focus report needs this step.
+        // Failed sends close the outbox and the next reap handles departure.
+        let may_move_focus = matches!(ev, ServerEvent::ClientShellFocus { .. });
         self.apply_server_event(ev);
         if may_move_focus {
             self.sync_pane_focus();
@@ -1112,7 +1172,7 @@ impl HeadlessServer {
                     height_px: cell_height_px,
                 };
                 let mut connection = ClientConnection::with_shell(
-                    ClientShellState::active(),
+                    ClientShellState::with_surface_active(surface_active),
                     shepr_core::geometry::GridSize::clamped(surface_cols, surface_rows),
                     observed,
                     last_activity,
@@ -1121,14 +1181,11 @@ impl HeadlessServer {
                 connection.pixel_mouse = pixel_mouse && observed.is_known();
                 let shell = &mut connection.shell;
                 shell.mouse_capture = mouse_capture;
-                shell.surface_active = surface_active;
                 shell.projection_revision = shepr_protocol::ProjectionRevision::new(1);
                 // The location is initialised before anything is projected: a
                 // new client starts where the session's bookmark is.
                 shell.location = self.initial_client_location();
                 self.clients.insert(client_id, connection);
-                self.immediate_pty_sources_dirty = true;
-                self.host_input_modes_dirty = true;
                 // A known connection with an empty session can create the
                 // workspace it will view. Either way the locations are settled
                 // once more: a bookmark-less session leaves the new client
@@ -1137,6 +1194,7 @@ impl HeadlessServer {
                     self.mark_view_changed();
                 }
                 self.reconcile_client_shell_locations();
+                self.refresh_client_view_keys();
                 let Some((location, projection_revision)) =
                     self.clients.get(&client_id).map(|client| {
                         (
@@ -1209,31 +1267,37 @@ impl HeadlessServer {
                 cell_height_px,
                 pixel_mouse,
             } => {
-                let Some(client) = self.clients.get_mut(&client_id) else {
-                    return;
+                let active = {
+                    let Some(client) = self.clients.get_mut(&client_id) else {
+                        return;
+                    };
+                    let previous_geometry =
+                        (client.terminal_size, client.cell_size, client.pixel_mouse);
+                    client.terminal_size =
+                        shepr_core::geometry::GridSize::clamped(surface_cols, surface_rows);
+                    let observed = shepr_termio::host_term::cell_size::HostCellSize {
+                        width_px: cell_width_px,
+                        height_px: cell_height_px,
+                    };
+                    if observed.is_known() {
+                        client.cell_size = observed;
+                    }
+                    client.pixel_mouse = pixel_mouse && observed.is_known();
+                    if previous_geometry
+                        == (client.terminal_size, client.cell_size, client.pixel_mouse)
+                    {
+                        return;
+                    }
+                    let active = client.is_active_shell_client();
+                    if active {
+                        client.request_repaint();
+                    }
+                    active
                 };
-                let previous_geometry =
-                    (client.terminal_size, client.cell_size, client.pixel_mouse);
-                client.terminal_size =
-                    shepr_core::geometry::GridSize::clamped(surface_cols, surface_rows);
-                let observed = shepr_termio::host_term::cell_size::HostCellSize {
-                    width_px: cell_width_px,
-                    height_px: cell_height_px,
-                };
-                if observed.is_known() {
-                    client.cell_size = observed;
-                }
-                client.pixel_mouse = pixel_mouse && observed.is_known();
-                if previous_geometry == (client.terminal_size, client.cell_size, client.pixel_mouse)
-                {
+                self.refresh_client_view_keys();
+                if !active {
                     return;
                 }
-                if !client.is_active_shell_client() {
-                    return;
-                }
-                client.request_repaint();
-                self.immediate_pty_sources_dirty = true;
-                self.host_input_modes_dirty = true;
                 // A resize reports view geometry, not user activity. Window
                 // layout and font changes must not switch the host theme or
                 // pane-less clipboard destination.
@@ -1249,7 +1313,7 @@ impl HeadlessServer {
                 if !client.update_host_theme(&update) {
                     return;
                 }
-                if !client.shell_state().surface_active || !is_foreground {
+                if !client.presents_surface() || !is_foreground {
                     return;
                 }
                 // Pane colours changed under every surface. The epoch alone
@@ -1266,7 +1330,7 @@ impl HeadlessServer {
                 let Some(client) = self.clients.get_mut(&client_id) else {
                     return;
                 };
-                if !client.is_active_shell_client()
+                if !client.presents_surface()
                     || client.shell_state().outer_terminal_focus == Some(focused)
                 {
                     return;
@@ -1287,7 +1351,7 @@ impl HeadlessServer {
                 let Some(client) = self.clients.get_mut(&client_id) else {
                     return;
                 };
-                if !client.is_active_shell_client() {
+                if !client.presents_surface() {
                     return;
                 }
                 client.outbox.forget_presentation();
@@ -1303,7 +1367,7 @@ impl HeadlessServer {
                 if !self
                     .clients
                     .get(&client_id)
-                    .is_some_and(ClientConnection::is_active_shell_client)
+                    .is_some_and(ClientConnection::presents_surface)
                 {
                     return;
                 }
@@ -1395,18 +1459,16 @@ impl HeadlessServer {
                 self.handle_client_shell_endpoint_request(client_id, boot_id, request_id, *command);
             }
             ServerEvent::ClientDetach { client_id } => {
-                if !self.remove_client_and_resize_if_needed(client_id) {
+                if !self.remove_client_if_present(client_id) {
                     return;
                 }
                 info!(?client_id, "client detached");
-                self.mark_view_changed();
             }
             ServerEvent::ClientDisconnected { client_id } => {
-                if !self.remove_client_and_resize_if_needed(client_id) {
+                if !self.remove_client_if_present(client_id) {
                     return;
                 }
                 info!(?client_id, "client disconnected");
-                self.mark_view_changed();
             }
         }
     }

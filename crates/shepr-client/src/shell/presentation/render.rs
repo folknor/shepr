@@ -6,7 +6,6 @@ mod overlays;
 #[path = "../sidebar/sidebar.rs"]
 pub(in crate::shell) mod sidebar;
 
-pub(super) use super::aggregate_navigation::navigator_rows as client_navigator_rows;
 pub(super) use overlays::{render_client_overlay, render_context_menu, render_global_menu};
 pub(in crate::shell) fn render_sidebar_background(
     buffer: &mut Buffer,
@@ -259,6 +258,7 @@ pub(super) struct ShellRenderState<'a> {
     pub(super) machine_diagnostics: &'a super::machine_diagnostics::MachineDiagnostics,
     pub(super) endpoints: &'a [ClientShellEndpoint],
     pub(super) active_endpoint_id: &'a ClientEndpointId,
+    pub(super) agent_panel_model: &'a super::aggregate_navigation::AgentPanelModel,
     pub(super) collapsed_endpoints: &'a HashSet<ClientEndpointId>,
     pub(super) workspace_scroll: &'a mut usize,
     pub(super) agent_scroll: &'a mut usize,
@@ -426,6 +426,9 @@ pub(super) fn put_spans(
         }
     }
 }
+
+#[cfg(test)]
+pub(super) use super::aggregate_navigation::navigator_rows as client_navigator_rows;
 
 #[cfg(test)]
 mod tests {

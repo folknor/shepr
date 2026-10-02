@@ -32,7 +32,7 @@ fn remote_executable_rejects_paths_that_need_shell_quoting() {
     let path = "/home/user/.local/bin/shepr-0.1+dev";
     let resolved = RemoteExecutable::parse(path).expect("test precondition");
     assert_eq!(resolved.as_str(), path);
-    assert_eq!(resolved.quoted(), shell_quote(path));
+    assert_eq!(resolved.shell_word(), shell_quote(path));
 }
 
 #[test]

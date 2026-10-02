@@ -1,5 +1,3 @@
-use std::time::Duration;
-
 use tracing::info;
 
 use shepr_platform::ipc::{LocalStream, LocalStreamDeadlineReader};
@@ -7,7 +5,7 @@ use shepr_protocol::endpoint::{EndpointClientHello, EndpointServerWelcome};
 use shepr_protocol::{ClientMessage, ServerMessage};
 
 use super::ClientError;
-use crate::limits::{Deadline, LOCAL_HANDSHAKE_READ_TIMEOUT, REMOTE_HANDSHAKE_READ_TIMEOUT};
+use crate::limits::Deadline;
 
 /// What the hello reports: the host terminal (its cell size) and the size of
 /// the pane surface the shell asks the server to render.
@@ -15,19 +13,6 @@ use crate::limits::{Deadline, LOCAL_HANDSHAKE_READ_TIMEOUT, REMOTE_HANDSHAKE_REA
 pub(crate) struct HandshakeGeometry {
     pub(crate) host: shepr_core::geometry::HostGeometry,
     pub(crate) surface_size: shepr_protocol::ClientSurfaceSize,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum HandshakeLinkKind {
-    Local,
-    Remote,
-}
-
-fn read_timeout_for_link(link_kind: HandshakeLinkKind) -> Duration {
-    match link_kind {
-        HandshakeLinkKind::Local => LOCAL_HANDSHAKE_READ_TIMEOUT,
-        HandshakeLinkKind::Remote => REMOTE_HANDSHAKE_READ_TIMEOUT,
-    }
 }
 
 /// Retains the preamble cause; the handshake failure classifier decides the
@@ -54,23 +39,23 @@ pub(super) fn do_handshake(
     surface_active: bool,
     deadline: Option<std::time::Instant>,
 ) -> Result<(), ClientError> {
-    do_handshake_for_link(
+    do_handshake_for_endpoint(
         stream,
         geometry,
         mouse_capture,
         surface_active,
-        HandshakeLinkKind::Local,
+        crate::endpoint::EndpointPolicy::Local,
         deadline,
     )
 }
 
-/// Performs a supervised handshake using the transport link kind to select its read timeout.
-pub(crate) fn do_handshake_for_link(
+/// Performs a supervised handshake using endpoint policy to select its read timeout.
+pub(crate) fn do_handshake_for_endpoint(
     stream: &mut LocalStream,
     geometry: HandshakeGeometry,
     mouse_capture: bool,
     surface_active: bool,
-    link_kind: HandshakeLinkKind,
+    endpoint_policy: crate::endpoint::EndpointPolicy,
     deadline: Option<std::time::Instant>,
 ) -> Result<(), ClientError> {
     let surface_size = geometry.surface_size;
@@ -108,7 +93,7 @@ pub(crate) fn do_handshake_for_link(
             .map_err(|error| hello_write_error(shepr_protocol::FramingError::Io(error)))?;
     }
 
-    let read_timeout = read_timeout_for_link(link_kind);
+    let read_timeout = endpoint_policy.handshake_read_timeout();
     // One deadline for the preamble and the whole Welcome frame together, not a
     // per-read idle timeout.
     // clock-io-ok: bound the real handshake reads after writing the hello.
@@ -156,6 +141,7 @@ fn hello_write_error(error: shepr_protocol::FramingError) -> ClientError {
 mod tests {
     use super::*;
     use std::io;
+    use std::time::Duration;
 
     fn test_geometry() -> HandshakeGeometry {
         HandshakeGeometry {
@@ -231,14 +217,14 @@ mod tests {
     }
 
     #[test]
-    fn handshake_timeout_follows_link_kind_not_surface_activity() {
+    fn handshake_timeout_follows_endpoint_policy_not_surface_activity() {
         assert_eq!(
-            read_timeout_for_link(HandshakeLinkKind::Local),
-            LOCAL_HANDSHAKE_READ_TIMEOUT
+            crate::endpoint::EndpointPolicy::Local.handshake_read_timeout(),
+            crate::limits::LOCAL_HANDSHAKE_READ_TIMEOUT
         );
         assert_eq!(
-            read_timeout_for_link(HandshakeLinkKind::Remote),
-            REMOTE_HANDSHAKE_READ_TIMEOUT
+            crate::endpoint::EndpointPolicy::Machine.handshake_read_timeout(),
+            crate::limits::REMOTE_HANDSHAKE_READ_TIMEOUT
         );
     }
 

@@ -413,9 +413,9 @@ pub(super) fn bridge_connection(
     let mut command = ssh_command();
     apply_managed_ssh_options(&mut command, ssh_options);
     apply_batch_ssh_options(&mut command);
+    command.arg("-T");
+    target.append_to(&mut command);
     command
-        .arg("-T")
-        .arg(target.as_str())
         .arg(remote_command.as_str())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

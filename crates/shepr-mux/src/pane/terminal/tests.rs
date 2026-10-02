@@ -1041,7 +1041,7 @@ fn terminal_keyboard_protocol_tracks_live_terminal_flags() {
 
     assert_eq!(
         pane.negotiated_keyboard_protocol(),
-        Some(shepr_termio::input::KeyboardProtocol::Kitty { flags: 3 })
+        Some(shepr_termio::input::KeyboardProtocol::from_kitty_flags(3))
     );
 }
 
@@ -1055,7 +1055,7 @@ fn terminal_plain_text_chars_still_encode_as_text() {
             crossterm::event::KeyCode::Char('a'),
             crossterm::event::KeyModifiers::empty(),
         ),
-        shepr_termio::input::KeyboardProtocol::Legacy,
+        shepr_termio::input::KeyboardProtocol::legacy(),
     );
 
     assert_eq!(encoded, b"a");
@@ -1069,7 +1069,7 @@ fn terminal_backtab_preserves_shift_across_keyboard_protocols() {
     assert_eq!(
         legacy_pane.encode_terminal_key(
             host_shift_tab,
-            shepr_termio::input::KeyboardProtocol::Legacy,
+            shepr_termio::input::KeyboardProtocol::legacy(),
         ),
         b"\x1b[Z"
     );
@@ -1117,7 +1117,7 @@ fn terminal_backtab_preserves_shift_across_keyboard_protocols() {
             crossterm::event::KeyCode::Tab,
             crossterm::event::KeyModifiers::empty(),
         ),
-        shepr_termio::input::KeyboardProtocol::Legacy,
+        shepr_termio::input::KeyboardProtocol::legacy(),
     );
     assert_eq!(encoded, b"\t");
 }
@@ -1132,7 +1132,7 @@ fn terminal_ctrl_tab_matches_the_pane_keyboard_protocol() {
     );
 
     assert_eq!(
-        legacy.encode_terminal_key(key.clone(), shepr_termio::input::KeyboardProtocol::Legacy),
+        legacy.encode_terminal_key(key.clone(), shepr_termio::input::KeyboardProtocol::legacy()),
         b"\t"
     );
 
@@ -1144,7 +1144,7 @@ fn terminal_ctrl_tab_matches_the_pane_keyboard_protocol() {
     assert_eq!(
         kitty.encode_terminal_key(
             key,
-            shepr_termio::input::KeyboardProtocol::Kitty { flags: 3 }
+            shepr_termio::input::KeyboardProtocol::from_kitty_flags(3)
         ),
         b"\x1b[9;5:1u"
     );
@@ -1156,7 +1156,7 @@ fn terminal_legacy_modified_enter_is_shell_compatible() {
 
     let terminal = shepr_vt::Terminal::new(80, 24, 0);
     let pane = PaneTerminal::new(terminal);
-    let protocol = shepr_termio::input::KeyboardProtocol::Legacy;
+    let protocol = shepr_termio::input::KeyboardProtocol::legacy();
 
     for modifiers in [
         KeyModifiers::empty(),
@@ -1252,7 +1252,7 @@ fn terminal_modified_enter_tracks_live_protocol_negotiation() {
         {
             let key = shepr_termio::input::TerminalKey::new(KeyCode::Enter, modifiers);
             assert_eq!(
-                pane.encode_terminal_key(key, shepr_termio::input::KeyboardProtocol::Legacy),
+                pane.encode_terminal_key(key, shepr_termio::input::KeyboardProtocol::legacy()),
                 expected.as_bytes(),
                 "{modifiers:?} after {sequence:?}"
             );
@@ -1271,7 +1271,7 @@ fn terminal_modified_enter_respects_existing_terminal_mode() {
     );
 
     assert_eq!(
-        pane.encode_terminal_key(key, shepr_termio::input::KeyboardProtocol::Legacy),
+        pane.encode_terminal_key(key, shepr_termio::input::KeyboardProtocol::legacy()),
         b"\x1b[27;2;13~"
     );
 }
@@ -1287,12 +1287,12 @@ fn terminal_enter_backspace_release_in_legacy_pane_emits_nothing() {
     ] {
         let press = pane.encode_terminal_key(
             shepr_termio::input::TerminalKey::new(code, crossterm::event::KeyModifiers::empty()),
-            shepr_termio::input::KeyboardProtocol::Legacy,
+            shepr_termio::input::KeyboardProtocol::legacy(),
         );
         let release = pane.encode_terminal_key(
             shepr_termio::input::TerminalKey::new(code, crossterm::event::KeyModifiers::empty())
                 .with_kind(crossterm::event::KeyEventKind::Release),
-            shepr_termio::input::KeyboardProtocol::Legacy,
+            shepr_termio::input::KeyboardProtocol::legacy(),
         );
         assert!(!press.is_empty(), "{code:?} press should emit bytes");
         assert!(
@@ -1347,7 +1347,7 @@ fn terminal_char_keys_still_use_shepr_encoding() {
             crossterm::event::KeyCode::Char('a'),
             crossterm::event::KeyModifiers::CONTROL | crossterm::event::KeyModifiers::SHIFT,
         ),
-        shepr_termio::input::KeyboardProtocol::Legacy,
+        shepr_termio::input::KeyboardProtocol::legacy(),
     );
 
     assert_eq!(encoded, vec![1]);
@@ -1364,7 +1364,7 @@ fn terminal_key_encoding_honors_application_cursor_mode() {
             crossterm::event::KeyCode::Up,
             crossterm::event::KeyModifiers::empty(),
         ),
-        shepr_termio::input::KeyboardProtocol::Legacy,
+        shepr_termio::input::KeyboardProtocol::legacy(),
     );
 
     assert_eq!(encoded, b"\x1bOA");
@@ -1381,7 +1381,7 @@ fn grouped_key_repeats_expand_at_the_destination() {
     .with_repeat_count(3);
 
     assert_eq!(
-        pane.encode_terminal_key(key, shepr_termio::input::KeyboardProtocol::Legacy),
+        pane.encode_terminal_key(key, shepr_termio::input::KeyboardProtocol::legacy()),
         b"xxx"
     );
 
@@ -1395,7 +1395,7 @@ fn grouped_key_repeats_expand_at_the_destination() {
     assert_eq!(
         pane.encode_terminal_key(
             shifted.clone(),
-            shepr_termio::input::KeyboardProtocol::Legacy,
+            shepr_termio::input::KeyboardProtocol::legacy(),
         ),
         legacy_expected
     );
@@ -1407,7 +1407,7 @@ fn grouped_key_repeats_expand_at_the_destination() {
     let mut terminal = shepr_vt::Terminal::new(80, 24, 0);
     terminal.write(b"\x1b[>15u");
     let pane = PaneTerminal::new(terminal);
-    let kitty_protocol = shepr_termio::input::KeyboardProtocol::Kitty { flags: 15 };
+    let kitty_protocol = shepr_termio::input::KeyboardProtocol::from_kitty_flags(15);
     let pressed =
         pane.encode_terminal_key_once(shifted.clone().with_repeat_count(1), kitty_protocol);
     assert!(
@@ -1460,7 +1460,7 @@ fn terminal_key_encoder_updates_after_terminal_mode_changes() {
             crossterm::event::KeyCode::Up,
             crossterm::event::KeyModifiers::empty(),
         ),
-        shepr_termio::input::KeyboardProtocol::Legacy,
+        shepr_termio::input::KeyboardProtocol::legacy(),
     );
     assert_eq!(before, b"\x1b[A");
 
@@ -1471,7 +1471,7 @@ fn terminal_key_encoder_updates_after_terminal_mode_changes() {
             crossterm::event::KeyCode::Up,
             crossterm::event::KeyModifiers::empty(),
         ),
-        shepr_termio::input::KeyboardProtocol::Legacy,
+        shepr_termio::input::KeyboardProtocol::legacy(),
     );
     assert_eq!(after, b"\x1bOA");
 }
@@ -1487,10 +1487,10 @@ fn terminal_key_encoder_updates_after_kitty_flag_changes() {
     );
 
     let before =
-        pane.encode_terminal_key(key.clone(), shepr_termio::input::KeyboardProtocol::Legacy);
+        pane.encode_terminal_key(key.clone(), shepr_termio::input::KeyboardProtocol::legacy());
     pane.process_pty_bytes(pane_id, b"\x1b[>1u");
     let after =
-        pane.encode_terminal_key(key.clone(), shepr_termio::input::KeyboardProtocol::Legacy);
+        pane.encode_terminal_key(key.clone(), shepr_termio::input::KeyboardProtocol::legacy());
 
     assert_ne!(before, after);
     assert_eq!(after, b"\x1b[13;6u");
@@ -1506,11 +1506,11 @@ fn terminal_kitty_pane_encodes_shift_enter_as_csi_u() {
     let key =
         shepr_termio::input::parse_terminal_key_sequence("\x1b[13;2u").expect("test precondition");
     let encoded =
-        pane.encode_terminal_key(key.clone(), shepr_termio::input::KeyboardProtocol::Legacy);
+        pane.encode_terminal_key(key.clone(), shepr_termio::input::KeyboardProtocol::legacy());
 
     assert_eq!(
         pane.negotiated_keyboard_protocol(),
-        Some(shepr_termio::input::KeyboardProtocol::Kitty { flags: 5 })
+        Some(shepr_termio::input::KeyboardProtocol::from_kitty_flags(5))
     );
     assert_eq!(encoded, b"\x1b[13;2u");
 }
@@ -1525,7 +1525,7 @@ fn terminal_modify_other_keys_mode_one_preserves_shift_enter() {
     pane.seed_history_ansi("\x1b[>4;1m");
     assert_eq!(pane.modify_other_keys_level(), 1);
     let encoded =
-        pane.encode_terminal_key(key.clone(), shepr_termio::input::KeyboardProtocol::Legacy);
+        pane.encode_terminal_key(key.clone(), shepr_termio::input::KeyboardProtocol::legacy());
 
     assert_eq!(encoded, b"\x1b[27;2;13~");
 }
@@ -1540,7 +1540,7 @@ fn terminal_kitty_pane_encodes_parsed_legacy_alt_backspace_as_csi_u() {
     let key =
         shepr_termio::input::parse_terminal_key_sequence("\x1b\x7f").expect("test precondition");
     let encoded =
-        pane.encode_terminal_key(key.clone(), shepr_termio::input::KeyboardProtocol::Legacy);
+        pane.encode_terminal_key(key.clone(), shepr_termio::input::KeyboardProtocol::legacy());
 
     assert_eq!(encoded, b"\x1b[127;3u");
 }
@@ -1576,7 +1576,7 @@ fn terminal_pane_characterizes_ctrl_backspace_encoding() {
     assert_eq!(
         legacy.encode_terminal_key(
             ctrl_backspace.clone(),
-            shepr_termio::input::KeyboardProtocol::Legacy
+            shepr_termio::input::KeyboardProtocol::legacy()
         ),
         b"\x08"
     );
@@ -1588,7 +1588,7 @@ fn terminal_pane_characterizes_ctrl_backspace_encoding() {
     assert_eq!(
         legacy.encode_terminal_key(
             plain_backspace,
-            shepr_termio::input::KeyboardProtocol::Legacy
+            shepr_termio::input::KeyboardProtocol::legacy()
         ),
         b"\x7f"
     );
@@ -1600,7 +1600,7 @@ fn terminal_pane_characterizes_ctrl_backspace_encoding() {
     assert_eq!(
         kitty.encode_terminal_key(
             ctrl_backspace,
-            shepr_termio::input::KeyboardProtocol::Legacy
+            shepr_termio::input::KeyboardProtocol::legacy()
         ),
         b"\x1b[127;5u"
     );
@@ -1618,14 +1618,14 @@ fn terminal_key_encoders_are_isolated_per_pane() {
             crossterm::event::KeyCode::Up,
             crossterm::event::KeyModifiers::empty(),
         ),
-        shepr_termio::input::KeyboardProtocol::Legacy,
+        shepr_termio::input::KeyboardProtocol::legacy(),
     );
     let second_encoded = second.encode_terminal_key(
         shepr_termio::input::TerminalKey::new(
             crossterm::event::KeyCode::Up,
             crossterm::event::KeyModifiers::empty(),
         ),
-        shepr_termio::input::KeyboardProtocol::Legacy,
+        shepr_termio::input::KeyboardProtocol::legacy(),
     );
 
     assert_eq!(first_encoded, b"\x1bOA");

@@ -871,12 +871,7 @@ impl ClientShellState {
                 .as_deref()
                 .is_some_and(|snapshot| snapshot.workspaces.get(*index).is_some()),
             KeybindMatch::Action(KeybindAction::FocusAgent(index)) => {
-                super::aggregate_navigation::displayed_agent_targets(
-                    &self.endpoints,
-                    self.config.agent_panel_sort,
-                )
-                .get(*index)
-                .is_some()
+                self.agent_panel_model.targets().get(*index).is_some()
             }
             _ => true,
         }

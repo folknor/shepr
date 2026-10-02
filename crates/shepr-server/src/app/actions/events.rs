@@ -185,10 +185,7 @@ impl AppState {
                 )
             }),
             StateEvent::TerminalCwdReported { pane_id, cwd } => {
-                let Some(terminal_id) = self.workspaces.iter().find_map(|ws| {
-                    ws.pane_state(pane_id)
-                        .map(|pane| pane.attached_terminal_id.clone())
-                }) else {
+                let Some(terminal_id) = self.terminal_of(pane_id).cloned() else {
                     return StateUpdate::Unchanged;
                 };
                 let Some(terminal) = self.terminals.get_mut(&terminal_id) else {
@@ -210,17 +207,7 @@ impl AppState {
     where
         F: FnOnce(&mut shepr_mux::terminal::TerminalState) -> Option<TerminalStateMutation>,
     {
-        let Some(ws_idx) = self
-            .workspaces
-            .iter()
-            .position(|ws| ws.pane_state(pane_id).is_some())
-        else {
-            return StateUpdate::Unchanged;
-        };
-        let Some(terminal_id) = self.workspaces[ws_idx]
-            .pane_state(pane_id)
-            .map(|pane| pane.attached_terminal_id.clone())
-        else {
+        let Some(terminal_id) = self.terminal_of(pane_id).cloned() else {
             return StateUpdate::Unchanged;
         };
         let (mutation, unchanged_change) = {

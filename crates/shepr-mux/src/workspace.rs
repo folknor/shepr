@@ -27,6 +27,42 @@ impl SurfaceChange {
     }
 }
 
+/// Why a caller needs a terminal's cwd. Resume preserves the saved path even
+/// when it no longer exists or reads as deleted; its required chdir must
+/// report that failure.
+#[derive(Clone, Copy)]
+pub enum CwdPurpose {
+    Identity,
+    FollowForNewPane,
+    Save,
+    Resume,
+}
+
+/// Resolve runtime observations and plain terminal state in one place. This
+/// performs no directory stat; save probes validate live paths off the loop.
+/// These are observations, not UsableCwd values: a path can disappear after
+/// observation, and checking it here could block the event loop on a mount.
+pub fn terminal_cwd(
+    runtime: Option<&crate::pane::PaneRuntime>,
+    terminal: Option<&crate::terminal::TerminalState>,
+    purpose: CwdPurpose,
+) -> Option<PathBuf> {
+    let stored = terminal.map(|terminal| terminal.cwd().to_path_buf());
+    let observed = match purpose {
+        CwdPurpose::Identity => runtime.and_then(crate::pane::PaneRuntime::cwd),
+        CwdPurpose::FollowForNewPane => runtime.and_then(crate::pane::PaneRuntime::follow_cwd),
+        CwdPurpose::Save => runtime.and_then(crate::pane::PaneRuntime::remembered_cwd),
+        // The saved path is handed to the resumed launch unfiltered: its
+        // required chdir reports a path that is gone, instead of the resume
+        // silently never starting.
+        CwdPurpose::Resume => return stored,
+    };
+    // Each source is filtered on its own, so an unusable observation falls
+    // back to the stored report instead of hiding it.
+    let usable = |path: &PathBuf| path.is_absolute() && !process_cwd_is_deleted(path);
+    observed.filter(usable).or_else(|| stored.filter(usable))
+}
+
 pub(crate) fn process_cwd_is_deleted(path: &Path) -> bool {
     // The kernel adds this marker to a /proc cwd link after its directory is
     // removed. Reject it without statting the path on the event loop.
@@ -424,11 +460,14 @@ impl Workspace {
         terminals: &HashMap<TerminalId, TerminalState>,
         terminal_runtimes: &PaneRuntimeRegistry,
     ) -> Option<PathBuf> {
-        Some(self.resolved_identity_cwd_from_root_pane(self.cwd_for_pane(
-            self.root_pane,
-            terminals,
-            terminal_runtimes,
-        )))
+        let root_cwd = self.terminal_id(self.root_pane).and_then(|id| {
+            terminal_cwd(
+                terminal_runtimes.get(id),
+                terminals.get(id),
+                CwdPurpose::Identity,
+            )
+        });
+        Some(self.resolved_identity_cwd_from_root_pane(root_cwd))
     }
 
     /// Resolves the workspace identity from a root pane cwd already observed
@@ -436,7 +475,7 @@ impl Workspace {
     /// compare cwd snapshots without probing a pane runtime.
     pub fn resolved_identity_cwd_from_root_pane(&self, root_pane_cwd: Option<PathBuf>) -> PathBuf {
         root_pane_cwd
-            .filter(|cwd| !process_cwd_is_deleted(cwd))
+            .filter(|cwd| cwd.is_absolute() && !process_cwd_is_deleted(cwd))
             .unwrap_or_else(|| self.identity_cwd.clone())
     }
 
@@ -990,6 +1029,36 @@ mod tests {
             Some(PathBuf::from("/new/repo/deep"))
         );
         assert_eq!(ws.display_name(), "repo");
+    }
+
+    #[test]
+    fn cwd_purposes_preserve_missing_absolute_state_without_filesystem_checks() {
+        let terminal = TerminalState::new(
+            TerminalId::alloc(),
+            PathBuf::from("/shepr-test-missing-cwd/agent"),
+        );
+        for purpose in [
+            super::CwdPurpose::Identity,
+            super::CwdPurpose::FollowForNewPane,
+            super::CwdPurpose::Save,
+            super::CwdPurpose::Resume,
+        ] {
+            assert_eq!(
+                super::terminal_cwd(None, Some(&terminal), purpose),
+                Some(terminal.cwd().to_path_buf()),
+            );
+        }
+    }
+
+    #[test]
+    fn cwd_query_rejects_relative_and_deleted_state() {
+        for path in ["relative", "/gone (deleted)"] {
+            let terminal = TerminalState::new(TerminalId::alloc(), PathBuf::from(path));
+            assert_eq!(
+                super::terminal_cwd(None, Some(&terminal), super::CwdPurpose::Save),
+                None,
+            );
+        }
     }
 
     #[test]

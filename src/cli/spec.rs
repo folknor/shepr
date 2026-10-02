@@ -390,7 +390,7 @@ mod tests {
         assert!(matches!(
             &invocation.launch,
             Launch::Cli(command)
-                if matches!(**command, CliCommand::Status(status::Command::Client { json: true }))
+                if matches!(**command, CliCommand::ClientStatus { json: true })
         ));
 
         let invocation = parse(RemoteCliCommand::ServerStatus);

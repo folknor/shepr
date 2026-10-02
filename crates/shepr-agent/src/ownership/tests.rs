@@ -10,6 +10,58 @@ fn test_terminal() -> AgentOwnership {
     AgentOwnership::new()
 }
 
+fn set_codex_hook_state(terminal: &mut AgentOwnership, state: AgentState) {
+    terminal
+        .set_hook_authority_with_session_ref(
+            "shepr:codex",
+            "codex",
+            state,
+            crate::agent::resume::AgentSessionRef::id("codex-session"),
+            None,
+        )
+        .expect("Codex state reports require a session id");
+}
+
+/// The session reference the Pi tests anchor their root session on.
+fn pi_root_session_ref() -> Option<crate::agent::resume::AgentSessionRef> {
+    crate::agent::resume::AgentSessionRef::path(test_session_path("root.jsonl"))
+}
+
+#[test]
+fn official_state_reports_require_the_session_reference_declared_by_the_descriptor() {
+    for (agent, source, label) in [
+        (Agent::Pi, "shepr:pi", "pi"),
+        (Agent::Codex, "shepr:codex", "codex"),
+        (Agent::Omp, "shepr:omp", "omp"),
+        (Agent::Mastracode, "shepr:mastracode", "mastracode"),
+        (Agent::OpenCode, "shepr:opencode", "opencode"),
+        (Agent::Kimi, "shepr:kimi", "kimi"),
+        (Agent::Kilo, "shepr:kilo", "kilo"),
+    ] {
+        assert!(
+            agent
+                .descriptor()
+                .hook_session_policy
+                .state_requires_session_ref
+        );
+        let mut terminal = test_terminal();
+        assert!(
+            terminal
+                .set_hook_authority_at(
+                    source,
+                    label,
+                    AgentState::Working,
+                    None,
+                    None,
+                    Instant::now()
+                )
+                .is_none()
+        );
+        assert_eq!(terminal.state, AgentState::Unknown);
+        assert!(terminal.hook_authority.is_none());
+    }
+}
+
 fn test_session_path(name: &str) -> String {
     TEST_SESSION_ROOT.with(|root| root.join(name).display().to_string())
 }
@@ -59,7 +111,13 @@ fn hook_authority_overrides_fallback_for_same_agent() {
         crate::agent::resume::AgentSessionRef::path(test_session_path("root.jsonl"))
             .expect("test precondition"),
     );
-    terminal.set_hook_authority("shepr:pi", "pi", AgentState::Working, None);
+    terminal.set_hook_authority_with_session_ref(
+        "shepr:pi",
+        "pi",
+        AgentState::Working,
+        pi_root_session_ref(),
+        None,
+    );
 
     assert_eq!(terminal.detected_agent, Some(Agent::Pi));
     assert_eq!(terminal.fallback_state, AgentState::Idle);
@@ -150,7 +208,13 @@ fn omp_hook_authority_overrides_detected_fallback() {
         "omp",
         crate::agent::resume::AgentSessionRef::id("omp-root").expect("test precondition"),
     );
-    terminal.set_hook_authority("shepr:omp", "omp", AgentState::Working, None);
+    terminal.set_hook_authority_with_session_ref(
+        "shepr:omp",
+        "omp",
+        AgentState::Working,
+        crate::agent::resume::AgentSessionRef::id("omp-root"),
+        None,
+    );
 
     assert_eq!(terminal.detected_agent, Some(Agent::Omp));
     assert_eq!(terminal.effective_agent_label(), Some("omp"));
@@ -1186,7 +1250,9 @@ fn missing_session_after_process_exit_waits_for_fresh_process_evidence() {
         "shepr:pi",
         "pi",
         AgentState::Working,
-        None,
+        crate::agent::resume::AgentSessionRef::path(test_session_path(
+            "fresh-after-nosession-process-exit.jsonl",
+        )),
         Some(601),
         now + Duration::from_millis(6),
     );
@@ -1300,7 +1366,7 @@ fn omp_reacquires_full_lifecycle_hook_after_process_exit_with_fresh_process_and_
 fn visible_blocker_overrides_non_blocked_hook_for_same_agent() {
     let mut terminal = test_terminal();
     terminal.set_detected_state(Some(Agent::Codex), AgentState::Idle);
-    terminal.set_hook_authority("shepr:codex", "codex", AgentState::Working, None);
+    set_codex_hook_state(&mut terminal, AgentState::Working);
 
     let change = terminal.set_detected_state_with_visible_blocker(
         Some(Agent::Codex),
@@ -1330,7 +1396,13 @@ fn visible_blocker_does_not_override_full_lifecycle_hook_authority() {
         crate::agent::resume::AgentSessionRef::path(test_session_path("root.jsonl"))
             .expect("test precondition"),
     );
-    terminal.set_hook_authority("shepr:pi", "pi", AgentState::Working, None);
+    terminal.set_hook_authority_with_session_ref(
+        "shepr:pi",
+        "pi",
+        AgentState::Working,
+        pi_root_session_ref(),
+        None,
+    );
 
     let change = terminal.set_detected_state_with_visible_blocker(
         Some(Agent::Pi),
@@ -1349,7 +1421,7 @@ fn visible_blocker_does_not_override_full_lifecycle_hook_authority() {
 fn weak_blocked_fallback_does_not_override_hook_authority() {
     let mut terminal = test_terminal();
     terminal.set_detected_state(Some(Agent::Codex), AgentState::Idle);
-    terminal.set_hook_authority("shepr:codex", "codex", AgentState::Working, None);
+    set_codex_hook_state(&mut terminal, AgentState::Working);
 
     let change = terminal.set_detected_state_with_visible_blocker(
         Some(Agent::Codex),
@@ -1368,7 +1440,7 @@ fn weak_blocked_fallback_does_not_override_hook_authority() {
 fn hook_blocked_wins_over_visible_blocker() {
     let mut terminal = test_terminal();
     terminal.set_detected_state(Some(Agent::Codex), AgentState::Working);
-    terminal.set_hook_authority("shepr:codex", "codex", AgentState::Blocked, None);
+    set_codex_hook_state(&mut terminal, AgentState::Blocked);
 
     terminal.set_detected_state_with_visible_blocker(
         Some(Agent::Codex),
@@ -1442,7 +1514,7 @@ fn fallback_idle_does_not_override_full_lifecycle_hook_working() {
         "shepr:opencode",
         "opencode",
         AgentState::Working,
-        None,
+        crate::agent::resume::AgentSessionRef::id("opencode-root"),
         None,
         now,
     );
@@ -1490,7 +1562,14 @@ fn visible_working_does_not_override_full_lifecycle_hook_idle() {
         "kimi",
         crate::agent::resume::AgentSessionRef::id("kimi-root").expect("test precondition"),
     );
-    terminal.set_hook_authority_at("shepr:kimi", "kimi", AgentState::Idle, None, None, now);
+    terminal.set_hook_authority_at(
+        "shepr:kimi",
+        "kimi",
+        AgentState::Idle,
+        crate::agent::resume::AgentSessionRef::id("kimi-root"),
+        None,
+        now,
+    );
 
     let change = terminal.set_detected_state_with_screen_signals_at(
         Some(Agent::Kimi),
@@ -1517,7 +1596,14 @@ fn detected_working_fallback_is_ignored_under_full_lifecycle_hook_authority() {
         "kilo",
         crate::agent::resume::AgentSessionRef::id("kilo-root").expect("test precondition"),
     );
-    terminal.set_hook_authority_at("shepr:kilo", "kilo", AgentState::Idle, None, None, now);
+    terminal.set_hook_authority_at(
+        "shepr:kilo",
+        "kilo",
+        AgentState::Idle,
+        crate::agent::resume::AgentSessionRef::id("kilo-root"),
+        None,
+        now,
+    );
 
     let change = terminal.set_detected_state_with_screen_signals_at(
         Some(Agent::Kilo),
@@ -1579,7 +1665,7 @@ fn refreshed_visible_working_does_not_override_newer_hook_blocked() {
         "shepr:codex",
         "codex",
         AgentState::Blocked,
-        None,
+        crate::agent::resume::AgentSessionRef::id("codex-session"),
         None,
         now + Duration::from_millis(1201),
     );
@@ -1603,7 +1689,7 @@ fn refreshed_visible_working_does_not_override_newer_hook_blocked() {
 fn fallback_idle_does_not_override_other_agent_hook_working() {
     let mut terminal = test_terminal();
     terminal.set_detected_state(Some(Agent::Codex), AgentState::Working);
-    terminal.set_hook_authority("shepr:codex", "codex", AgentState::Working, None);
+    set_codex_hook_state(&mut terminal, AgentState::Working);
 
     let change = terminal.set_detected_state_with_visible_blocker(
         Some(Agent::Codex),
@@ -1671,7 +1757,14 @@ fn full_lifecycle_hook_authority_ignores_detected_agent_clear_without_process_ex
         crate::agent::resume::AgentSessionRef::path(test_session_path("root.jsonl"))
             .expect("test precondition"),
     );
-    terminal.set_hook_authority_at("shepr:pi", "pi", AgentState::Working, None, None, now);
+    terminal.set_hook_authority_at(
+        "shepr:pi",
+        "pi",
+        AgentState::Working,
+        pi_root_session_ref(),
+        None,
+        now,
+    );
 
     let change = terminal.set_detected_state_with_screen_signals_at(
         None,
@@ -1707,7 +1800,7 @@ fn detected_agent_clear_clears_matching_hook_authority() {
 fn detected_agent_clear_clears_matching_working_hook_authority() {
     let mut terminal = test_terminal();
     terminal.set_detected_state(Some(Agent::Codex), AgentState::Working);
-    terminal.set_hook_authority("shepr:codex", "codex", AgentState::Working, None);
+    set_codex_hook_state(&mut terminal, AgentState::Working);
 
     terminal.set_detected_state(None, AgentState::Unknown);
 
@@ -1721,7 +1814,7 @@ fn detected_agent_clear_clears_matching_working_hook_authority() {
 fn process_exit_clears_matching_hook_authority_before_reporting_idle() {
     let mut terminal = test_terminal();
     terminal.set_detected_state(Some(Agent::Codex), AgentState::Working);
-    terminal.set_hook_authority("shepr:codex", "codex", AgentState::Working, None);
+    set_codex_hook_state(&mut terminal, AgentState::Working);
 
     terminal.set_detected_state_with_visible_blocker(
         Some(Agent::Codex),
@@ -1899,7 +1992,7 @@ fn process_exit_clears_newer_same_agent_hook_authority() {
 fn detected_agent_change_clears_previous_matching_hook_authority() {
     let mut terminal = test_terminal();
     terminal.set_detected_state(Some(Agent::Codex), AgentState::Idle);
-    terminal.set_hook_authority("shepr:codex", "codex", AgentState::Idle, None);
+    set_codex_hook_state(&mut terminal, AgentState::Idle);
 
     terminal.set_detected_state(Some(Agent::OpenCode), AgentState::Working);
 
@@ -1921,9 +2014,21 @@ fn stale_hook_report_sequence_is_ignored_for_same_source() {
         crate::agent::resume::AgentSessionRef::path(test_session_path("root.jsonl"))
             .expect("test precondition"),
     );
-    terminal.set_hook_authority("shepr:pi", "pi", AgentState::Working, Some(20));
+    terminal.set_hook_authority_with_session_ref(
+        "shepr:pi",
+        "pi",
+        AgentState::Working,
+        pi_root_session_ref(),
+        Some(20),
+    );
 
-    let change = terminal.set_hook_authority("shepr:pi", "pi", AgentState::Idle, Some(19));
+    let change = terminal.set_hook_authority_with_session_ref(
+        "shepr:pi",
+        "pi",
+        AgentState::Idle,
+        pi_root_session_ref(),
+        Some(19),
+    );
 
     assert!(change.is_none());
     assert_eq!(terminal.state, AgentState::Working);
@@ -2014,7 +2119,7 @@ fn stale_hook_report_cannot_overwrite_session_ref() {
 }
 
 #[test]
-fn accepted_hook_report_without_session_ref_preserves_current_generation() {
+fn hook_report_without_session_ref_is_rejected_and_preserves_current_generation() {
     let mut terminal = test_terminal();
     let session_path = test_session_path("pi.jsonl");
     anchor_full_lifecycle_session(
@@ -2033,12 +2138,14 @@ fn accepted_hook_report_without_session_ref_preserves_current_generation() {
         Some(20),
     );
 
-    let mutation = terminal
-        .set_hook_authority_with_session_ref("shepr:pi", "pi", AgentState::Working, None, Some(21))
-        .expect("accepted report");
-
-    assert!(!mutation.session_ref_changed);
-    assert!(mutation.effective_state_change.is_none());
+    // Pi declares that state reports need a session reference, so a report
+    // without one is dropped and the current generation is untouched.
+    assert!(
+        terminal
+            .set_hook_authority_with_session_ref("shepr:pi", "pi", AgentState::Idle, None, Some(21))
+            .is_none()
+    );
+    assert_eq!(terminal.state, AgentState::Working);
     assert!(
         terminal
             .hook_authority
@@ -3248,9 +3355,21 @@ fn unsequenced_hook_report_is_ignored_after_source_uses_sequence() {
         crate::agent::resume::AgentSessionRef::path(test_session_path("root.jsonl"))
             .expect("test precondition"),
     );
-    terminal.set_hook_authority("shepr:pi", "pi", AgentState::Working, Some(20));
+    terminal.set_hook_authority_with_session_ref(
+        "shepr:pi",
+        "pi",
+        AgentState::Working,
+        pi_root_session_ref(),
+        Some(20),
+    );
 
-    let change = terminal.set_hook_authority("shepr:pi", "pi", AgentState::Idle, None);
+    let change = terminal.set_hook_authority_with_session_ref(
+        "shepr:pi",
+        "pi",
+        AgentState::Idle,
+        pi_root_session_ref(),
+        None,
+    );
 
     assert!(change.is_none());
     assert_eq!(terminal.state, AgentState::Working);
@@ -3302,7 +3421,13 @@ fn changing_a_custom_label_does_not_reset_its_reporter_sequence() {
 fn same_sequence_from_different_sources_is_independent() {
     let mut terminal = test_terminal();
     terminal.set_detected_state(Some(Agent::Pi), AgentState::Idle);
-    terminal.set_hook_authority("shepr:pi", "pi", AgentState::Working, Some(20));
+    terminal.set_hook_authority_with_session_ref(
+        "shepr:pi",
+        "pi",
+        AgentState::Working,
+        pi_root_session_ref(),
+        Some(20),
+    );
 
     terminal.set_hook_authority("custom:pi", "pi", AgentState::Idle, Some(19));
 

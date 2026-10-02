@@ -90,24 +90,39 @@ pub(super) struct AgentDetectionPresence {
     consecutive_misses: u8,
 }
 
-pub(super) fn absolute_process_cwd(pid: u32) -> Option<std::path::PathBuf> {
-    shepr_agent::detect::process_cwd(pid).filter(|cwd| cwd.is_absolute())
+/// A readlink observation, without traversing the directory's filesystem.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum ProcessCwd {
+    Live(std::path::PathBuf),
+    Deleted,
+    Unavailable,
 }
 
-/// A process's cwd as the event loop may read it: one readlink of
-/// `/proc/<pid>/cwd`, which never touches the directory's filesystem, so a
-/// hung mount cannot stall the loop. A directory that was removed reads back
-/// with the kernel's ` (deleted)` suffix and is not a cwd anyone can use. Other
-/// unusable paths are left to whoever launches in them (the launch falls back
-/// by chdir).
+impl ProcessCwd {
+    pub(super) fn read(pid: u32) -> Self {
+        match shepr_agent::detect::process_cwd(pid) {
+            Some(path) if crate::workspace::process_cwd_is_deleted(&path) => Self::Deleted,
+            Some(path) if path.is_absolute() => Self::Live(path),
+            _ => Self::Unavailable,
+        }
+    }
+
+    fn live(self) -> Option<std::path::PathBuf> {
+        match self {
+            Self::Live(path) => Some(path),
+            Self::Deleted | Self::Unavailable => None,
+        }
+    }
+}
+
+/// Event-loop reads never stat: a hung mount must not stall other panes.
 pub(super) fn readlink_process_cwd(pid: u32) -> Option<std::path::PathBuf> {
-    absolute_process_cwd(pid).filter(|cwd| !crate::workspace::process_cwd_is_deleted(cwd))
+    ProcessCwd::read(pid).live()
 }
 
-pub(super) fn usable_process_cwd(pid: u32) -> Option<std::path::PathBuf> {
-    absolute_process_cwd(pid)
-        .and_then(UsableCwd::new)
-        .map(UsableCwd::into_path_buf)
+/// Only background save work checks directory usability.
+pub(super) fn usable_process_cwd(pid: u32) -> Option<UsableCwd> {
+    readlink_process_cwd(pid).and_then(UsableCwd::new)
 }
 
 pub(super) fn foreground_member_cwd_different_from_shell(

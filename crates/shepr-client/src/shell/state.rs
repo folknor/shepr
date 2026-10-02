@@ -655,8 +655,10 @@ pub struct ClientShellState {
     pub(crate) now: std::time::Instant,
     pub(super) machine_diagnostics: super::machine_diagnostics::MachineDiagnostics,
     pub(super) config: ClientShellConfig,
-    pub(super) snapshot: Option<Box<ClientShellSnapshot>>,
+    pub(super) snapshot: Option<Arc<ClientShellSnapshot>>,
     pub(super) active_snapshot_generation: Option<u64>,
+    pub(super) agent_panel_model: super::aggregate_navigation::AgentPanelModel,
+    pub(super) navigator_index: super::aggregate_navigation::NavigatorIndex,
     pub(super) surfaces: PaneSurfaces,
     pub(super) ledger: Ledger,
     pub(super) scroll_lanes: ScrollLanes,
@@ -762,12 +764,18 @@ impl ClientShellState {
         if let Some(sort) = preferences.agent_panel_sort {
             config.agent_panel_sort = sort;
         }
+        let endpoints = vec![local_endpoint()];
+        let agent_panel_model =
+            super::aggregate_navigation::AgentPanelModel::build(&endpoints, &config);
+        let navigator_index = super::aggregate_navigation::NavigatorIndex::build(&endpoints);
         Self {
             now,
             machine_diagnostics: Default::default(),
             config,
             snapshot: None,
             active_snapshot_generation: None,
+            agent_panel_model,
+            navigator_index,
             surfaces: PaneSurfaces::default(),
             ledger: Ledger::default(),
             scroll_lanes: ScrollLanes::default(),
@@ -800,7 +808,7 @@ impl ClientShellState {
                 word_gesture: None,
             },
             hits: ShellHitMap::default(),
-            endpoints: vec![local_endpoint()],
+            endpoints,
             active_endpoint_id: ClientEndpointId::Local,
             collapsed_endpoints: HashSet::new(),
             mode: ClientShellMode::Terminal,
@@ -981,7 +989,7 @@ impl ClientShellState {
 
     pub(super) fn apply_active_snapshot(
         &mut self,
-        snapshot: Box<ClientShellSnapshot>,
+        snapshot: Arc<ClientShellSnapshot>,
         generation: Option<u64>,
     ) {
         let active_boot_key = match &self.active_endpoint_id {

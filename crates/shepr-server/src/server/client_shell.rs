@@ -26,8 +26,8 @@ pub(super) fn snapshot_from_session(
     // The client views what its own location names and nothing else: a client
     // with no workspace has no focus, never the session's bookmark.
     let focused_workspace_id = location
-        .focused_workspace_id
-        .clone()
+        .focused_workspace_id()
+        .cloned()
         .filter(|workspace_id| app.resolve_workspace_id(workspace_id).is_some());
     let focused_pane_id = focused_workspace_id
         .as_ref()

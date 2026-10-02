@@ -1,6 +1,7 @@
 use super::*;
 use serde::{Deserialize, Serialize};
 use shepr_core::limits::PALETTE_COLOR_COUNT;
+pub use shepr_vt::KittyKeyboardFlags;
 
 // ---------------------------------------------------------------------------
 // Client → Server messages
@@ -279,47 +280,6 @@ impl std::ops::BitOr for WireModifiers {
 }
 
 impl std::ops::BitOrAssign for WireModifiers {
-    fn bitor_assign(&mut self, rhs: Self) {
-        self.0 |= rhs.0;
-    }
-}
-
-/// Kitty keyboard protocol flags. The terminal core only reports the low five
-/// defined bits, while the wire and host stack use the protocol's integer form.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct KittyKeyboardFlags(u16);
-
-impl KittyKeyboardFlags {
-    pub const NONE: Self = Self(0);
-    pub const DISAMBIGUATE: Self = Self(1);
-    pub const REPORT_EVENT_TYPES: Self = Self(2);
-    pub const REPORT_ALTERNATE_KEYS: Self = Self(4);
-    pub const REPORT_ALL_KEYS: Self = Self(8);
-    pub const REPORT_ASSOCIATED_TEXT: Self = Self(16);
-
-    pub const fn from_bits_retain(bits: u16) -> Self {
-        Self(bits)
-    }
-
-    pub const fn bits(self) -> u16 {
-        self.0
-    }
-
-    pub const fn is_empty(self) -> bool {
-        self.0 == 0
-    }
-}
-
-impl std::ops::BitOr for KittyKeyboardFlags {
-    type Output = Self;
-
-    fn bitor(self, rhs: Self) -> Self {
-        Self(self.0 | rhs.0)
-    }
-}
-
-impl std::ops::BitOrAssign for KittyKeyboardFlags {
     fn bitor_assign(&mut self, rhs: Self) {
         self.0 |= rhs.0;
     }

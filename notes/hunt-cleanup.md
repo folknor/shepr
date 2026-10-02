@@ -53,32 +53,13 @@ for. (client-shell)
   tests.
 - `DaemonExit::code()` is used only in its own test; `shepr-daemon`'s
   `report_server_error` and `config_error` map to the raw constants by hand.
-- `MachineProbe::resolve`'s arm `Err(error) if failed_before_remote_result(..)`
-  precedes `Err(error) if !is_remote_candidate_mismatch(..)`; the origins are
-  disjoint, so the first adds nothing but reads as a distinct rule.
-- `status::run_status_command` keeps a `Client` arm `dispatch` can no longer
-  reach, and `detect::explain` re-checks `args.file.is_some()` after `cli::run`
-  routed it.
-- `main.rs`'s `ClientBridge | Cli(_) => Err("launch was already handled")` arm
-  is unreachable.
-- `cli/target.rs` `CliContext` is left over from the removed `--machine`
-  targeting: one constructor (`test_local` is identical), a `Deref` to
-  `AppPaths`, one-line wrappers, and `build_checked: Cell<bool>` serving only
-  `send_request`.
-- `cli/server_not_running.rs` is 47 lines whose production content is one
-  response builder plus a `cli_error` identity wrapper.
-- `cli/matches.rs` keeps fallible and infallible versions of every helper; the
-  infallible ones serve only the root help and version flags.
-- `ServerStatusJson.compatible` and `.restart_needed`, and
-  `FullStatusJson.update.restart_needed`, are computed in `src/cli/status.rs`
-  (`build_compatible_bool` and `restart_needed_bool` each call `is_this_build`
-  on the same field) but the only machine consumer recomputes compatibility
-  from `build_id` and ignores them.
-- `forward_remote_bridge_stdio(stream, idle_timeout: bool)`: the only
-  production caller passes `true`.
-- `local_server::ensure_running(paths, timeout, ..)`: every caller passes the
-  same `SERVER_READY_TIMEOUT`, which is re-exported and re-aliased on the way
-  (`shepr-remote` limits, `local_server`, `src/limits.rs`).
+- `ServerStatusJson.compatible` and `.restart_needed` are still written by
+  `src/cli/status.rs` while the remote preflight parse
+  (`crates/shepr-remote/src/remote/server_lifecycle.rs`) recomputes
+  compatibility from `build_id`; drop the fields with that consumer.
+- `forward_remote_bridge_stdio(stream, idle_timeout: bool)` in
+  `crates/shepr-platform/src/remote_bridge_io.rs`: the only production caller
+  (`crates/shepr-remote/src/remote/host.rs`) passes `true`.
 
 Reported by edges; contracts also notes the doubled compatibility derivation.
 
@@ -117,28 +98,6 @@ drop those branches together. (contracts)
 
 Reported by mux-state and foundation.
 
-## CLN-015 - Dead pieces in the terminal crates
-
-- `PANE_TRUECOLOR_BITS_PER_CHANNEL: Option<&[u8]>` makes `PANE_COLORTERM` a
-  `match` yielding `""` for "no truecolor": a compile-time switch with one
-  value ever used. Make it, and the XTGETTCAP `Tc`/`RGB` answers, plain
-  constants.
-- `KeybindMatch` has a single variant `Action(KeybindAction)`.
-- `input::raw_input::HostReplyPolicy` is a 13-method trait with default no-ops
-  and two impls, one empty (`NoHostReplies`). A concrete `HostReplies` with an
-  inactive state would do.
-- `InputLeaseTable::normalize_press` returns its input unchanged; it only drops
-  an old lease.
-- `selection_render::selection_palette_background` and `panel_contrast_fg` have
-  identical bodies (client-shell also lists four panel-contrast copies among
-  its duplicated answers).
-- `ModifyOtherKeysLevel::from_parameter` is used only by tests.
-- `Terminal::drain_events` drops empty clipboard stores and any
-  `ClipboardType::Selection` store with no counter, unlike the oversized case;
-  probably fine, but it is the only effect with no trace.
-
-(terminal)
-
 ## CLN-023 - Small leftovers from the first fixes
 
 - `crates/shepr-remote/src/remote/local_server.rs`:
@@ -176,6 +135,21 @@ Reported by mux-state and foundation.
 
 (wave-1 review and gate, wave-3 review, wave-5 fixer and review)
 
+## CLN-024 - Leftovers in the terminal input crates
+
+- `KeybindMatch` (generated in `crates/shepr-termio/src/input/keybindings.rs`)
+  has the single variant `Action(KeybindAction)`, matched at some 46 client
+  sites.
+- `InputLeaseTable::normalize_press` returns its input unchanged; it only drops
+  an old lease.
+- `HostReplyPolicy` in `crates/shepr-termio/src/input/raw_input.rs` is a trait
+  with one implementation and `NoHostReplies` is an alias of `HostReplies`, so
+  the policy generic on `RawInputFramer` and `RawInputByteFramer` can go.
+- `KeyboardProtocol::from_kitty_flags(u16)` is public but used only by tests
+  (about 60 sites) now that `from_flags` exists.
+
+(wave-6 review)
+
 ## Test-only twins and test seams in production
 
 ## CLN-016 - Production rules with a test-only twin that the tests exercise instead
@@ -205,8 +179,11 @@ test green. Reported by mux-panes, mux-state and server-app.
 
 ## CLN-017 - Production types shaped by test fixtures
 
-- `ClientOutbox.attached: bool` is false only for `detached()` fixtures, yet
-  every presenting predicate in production checks it.
+- `ClientOutbox.attached` (`crates/shepr-server/src/server/outbox.rs`) is a
+  production field again, false only for `detached()` fixtures, and
+  `ClientRegistry::presenting()` checks it; making it test-only tripped the
+  rule against production code below the first test cfg, so the fixture seam
+  needs another shape.
 - `client_read_loop_with_endpoint_controls(.., Option<&ControlSender>)` is
   always `Some` in production.
 - `SurfaceBoundary` holds function pointers for encode and render so a test can

@@ -49,7 +49,7 @@ pub(crate) fn client_is_viewed(
     server
         .clients
         .get(&client_id)
-        .is_some_and(|client| client.shell_state().surface_active)
+        .is_some_and(|client| client.shell_state().is_surface_active())
 }
 
 pub(crate) fn dispatch_lifecycle_messages(
@@ -156,6 +156,7 @@ pub(crate) fn test_headless_server() -> HeadlessServer {
         headless_settled: ViewEpoch::ZERO,
         api_server: None,
         clients: ClientRegistry::default(),
+        client_view_keys: HashMap::new(),
         client_shell_boot_id: shepr_test_fixtures::fixed_boot_id(1),
         shell_session_cache: None,
         shell_session_generation: 0,
@@ -190,6 +191,7 @@ impl HeadlessServer {
         client.shell.location = self.initial_client_location();
         self.clients.insert(client_id, client);
         self.reconcile_client_shell_locations();
+        self.refresh_client_view_keys();
     }
 
     /// Puts a client's location on `workspace_id` without a command: no
@@ -205,10 +207,13 @@ impl HeadlessServer {
         let Some(client) = self.clients.get_mut(&client_id) else {
             return false;
         };
-        client
+        let moved = client
             .shell_state_mut()
             .location
             .navigate(workspace_id.clone(), index);
+        if moved {
+            self.refresh_client_view_keys();
+        }
         true
     }
 }
@@ -3858,7 +3863,7 @@ async fn controller_disconnect_hands_geometry_to_a_remaining_viewer() {
     );
 
     // Two shells remain, so this is not the single-shell resize path.
-    server.remove_client_and_resize_if_needed(ClientId::test_new(31));
+    server.remove_client_if_present(ClientId::test_new(31));
 
     assert_eq!(
         server.clients.geometry_controller(&second_workspace_id),
@@ -3972,7 +3977,7 @@ async fn client_shell_workspaces_render_accept_input_and_resize_independently() 
         resized_second
     );
 
-    server.remove_client_and_resize_if_needed(ClientId::test_new(21));
+    server.remove_client_if_present(ClientId::test_new(21));
     let singleton_first = server.app.test_runtime(first_pane).current_size();
     let singleton_second = server.app.test_runtime(second_pane).current_size();
     assert_ne!(singleton_first, first_size);
@@ -4010,12 +4015,12 @@ async fn workspace_focus_moves_only_its_client() {
     let first_location = &server.clients[&41].shell_state().location;
     let second_location = &server.clients[&42].shell_state().location;
     assert_eq!(
-        first_location.focused_workspace_id.as_deref(),
-        Some(second_workspace_id.as_str())
+        first_location.focused_workspace_id(),
+        Some(&second_workspace_id)
     );
     assert_eq!(
-        second_location.focused_workspace_id.as_deref(),
-        Some(first_workspace_id.as_str())
+        second_location.focused_workspace_id(),
+        Some(&first_workspace_id)
     );
     shutdown_test_runtimes(&mut server);
 }
@@ -4092,10 +4097,7 @@ async fn pane_focus_replaces_a_diverged_client_shell_projection() {
     assert!(pane.focused);
     assert_eq!(server.app.state.bookmark_index(), Some(0));
     let location = &server.clients[&9].shell_state().location;
-    assert_eq!(
-        location.focused_workspace_id.as_deref(),
-        Some(first_workspace_id.as_str())
-    );
+    assert_eq!(location.focused_workspace_id(), Some(&first_workspace_id));
 
     server.render_now();
     let replacement = client_shell_snapshot(&control_rx);
@@ -4170,7 +4172,7 @@ async fn client_shell_input_targets_runtime_without_server_shell_classification(
     server.insert_test_client(
         11,
         ClientConnection::with_shell(
-            ClientShellState::active(),
+            ClientShellState::with_surface_active(true),
             shepr_core::geometry::GridSize::clamped(80, 24),
             shepr_termio::host_term::cell_size::HostCellSize::default(),
             1,
@@ -4287,6 +4289,7 @@ async fn client_shell_hidden_pane_rejects_presses_but_accepts_releases() {
             crate::server::outbox::ClientOutbox::detached(),
         ),
     );
+    let _writer_lanes = attach_test_writer(&mut server, 11);
     let key = |kind| shepr_protocol::ClientPaneInputEvent::Key {
         code: shepr_protocol::ClientKeyCode::Char('x'),
         modifiers: shepr_protocol::WireModifiers::NONE,
@@ -4346,13 +4349,14 @@ async fn client_shell_text_input_renders_only_when_resetting_scrollback() {
     server.insert_test_client(
         11,
         ClientConnection::with_shell(
-            ClientShellState::active(),
+            ClientShellState::with_surface_active(true),
             shepr_core::geometry::GridSize::clamped(80, 24),
             shepr_termio::host_term::cell_size::HostCellSize::default(),
             1,
             crate::server::outbox::ClientOutbox::detached(),
         ),
     );
+    let _writer_lanes = attach_test_writer(&mut server, 11);
     server
         .clients
         .set_foreground_client_id(Some(ClientId::test_new(11)));
@@ -4403,13 +4407,14 @@ async fn client_shell_mouse_motion_delivers_without_render_when_foreground() {
     server.insert_test_client(
         11,
         ClientConnection::with_shell(
-            ClientShellState::active(),
+            ClientShellState::with_surface_active(true),
             shepr_core::geometry::GridSize::clamped(80, 24),
             shepr_termio::host_term::cell_size::HostCellSize::default(),
             1,
             crate::server::outbox::ClientOutbox::detached(),
         ),
     );
+    let _writer_lanes = attach_test_writer(&mut server, 11);
     server
         .clients
         .set_foreground_client_id(Some(ClientId::test_new(11)));
@@ -4443,13 +4448,14 @@ async fn client_shell_mouse_motion_promotes_and_requests_render() {
     server.insert_test_client(
         11,
         ClientConnection::with_shell(
-            ClientShellState::active(),
+            ClientShellState::with_surface_active(true),
             shepr_core::geometry::GridSize::clamped(80, 24),
             shepr_termio::host_term::cell_size::HostCellSize::default(),
             1,
             crate::server::outbox::ClientOutbox::detached(),
         ),
     );
+    let _writer_lanes = attach_test_writer(&mut server, 11);
 
     let render_impact = server.test_handle_server_event(ServerEvent::ClientShellPaneInput {
         client_id: ClientId::test_new(11),
@@ -4603,6 +4609,8 @@ fn client_shell_host_theme_follows_foreground_client() {
             crate::server::outbox::ClientOutbox::detached(),
         ),
     );
+    let _first_lanes = attach_test_writer(&mut server, 1);
+    let _second_lanes = attach_test_writer(&mut server, 2);
     server
         .clients
         .set_foreground_client_id(Some(ClientId::test_new(1)));
@@ -5717,6 +5725,8 @@ async fn client_shell_release_cleanup_does_not_promote_and_survives_disconnect()
             ),
         );
     }
+    let _first_lanes = attach_test_writer(&mut server, 1);
+    let _second_lanes = attach_test_writer(&mut server, 2);
     let key = |kind| shepr_protocol::ClientPaneInputEvent::Key {
         code: shepr_protocol::ClientKeyCode::Char('x'),
         modifiers: shepr_protocol::WireModifiers::NONE,

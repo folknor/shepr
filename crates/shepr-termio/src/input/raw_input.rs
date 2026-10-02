@@ -57,6 +57,8 @@ pub struct FramedRawInputEvent {
 
 #[derive(Default)]
 pub struct HostKeyboardProbeResponses {
+    /// Kept numeric for the outer-terminal setup API, which inspects replies
+    /// before building the typed pane keyboard protocol.
     pub flags: Option<u16>,
     pub primary_device_attributes: bool,
 }
@@ -137,7 +139,7 @@ fn raw_input_event_kind(event: &RawInputEvent) -> &'static str {
 }
 
 /// Client-side accounting for replies to queries sent to the outer terminal.
-/// The byte framer only asks whether a reply may still be in flight.
+/// A default value is inactive until a query or tracking preference is set.
 #[derive(Default)]
 pub struct HostReplies {
     color: u16,
@@ -147,7 +149,7 @@ pub struct HostReplies {
     query_appearance_on_focus: bool,
 }
 
-impl HostReplyPolicy for HostReplies {
+impl HostReplies {
     fn color_query_sent(&mut self) {
         self.color = MAX_HOST_COLOR_QUERY_REPLIES;
     }
@@ -222,35 +224,24 @@ impl HostReplyPolicy for HostReplies {
     }
 }
 
-/// Reply accounting is supplied by the client. Ordinary framing uses the
-/// empty policy and has no host-query state in its byte buffer.
+/// Gives the byte framer access to its reply-accounting state.
 pub trait HostReplyPolicy: Default {
-    fn color_query_sent(&mut self) {}
-    fn cell_size_query_sent(&mut self) {}
-    fn enable_color_scheme_tracking(&mut self) {}
-    fn enable_appearance_query_on_focus(&mut self) {}
-    fn awaiting_reply(&self) -> bool {
-        false
-    }
-    fn awaiting_cell_size_or_appearance(&self) -> bool {
-        false
-    }
-    fn awaiting_cell_size(&self) -> bool {
-        false
-    }
-    fn awaiting_appearance(&self) -> bool {
-        false
-    }
-    fn clear_cell_size_and_appearance(&mut self) {}
-    fn clear_cell_size(&mut self) {}
-    fn clear_appearance(&mut self) {}
-    fn clear_all(&mut self) {}
-    fn observe(&mut self, _event: &RawInputEvent) {}
+    fn host_replies(&self) -> &HostReplies;
+    fn host_replies_mut(&mut self) -> &mut HostReplies;
 }
 
-#[derive(Default)]
-pub struct NoHostReplies;
-impl HostReplyPolicy for NoHostReplies {}
+impl HostReplyPolicy for HostReplies {
+    fn host_replies(&self) -> &HostReplies {
+        self
+    }
+
+    fn host_replies_mut(&mut self) -> &mut HostReplies {
+        self
+    }
+}
+
+/// Kept as an entry point for callers that construct an inactive framer.
+pub type NoHostReplies = HostReplies;
 
 #[derive(Default)]
 pub struct RawInputFramer<P: HostReplyPolicy = NoHostReplies> {
@@ -538,23 +529,27 @@ impl<P: HostReplyPolicy> RawInputByteFramer<P> {
     /// Hold a lone trailing ESC for one idle flush so an OSC 10/11 reply split
     /// at its ESC introducer stitches back together instead of leaking.
     fn host_color_query_sent(&mut self) {
-        self.host_replies.color_query_sent();
+        self.host_replies.host_replies_mut().color_query_sent();
     }
 
     /// Same hold window as `host_color_query_sent`, for the XTWINOPS cell size
     /// reply.
     fn host_cell_size_query_sent(&mut self) {
-        self.host_replies.cell_size_query_sent();
+        self.host_replies.host_replies_mut().cell_size_query_sent();
     }
 
     fn enable_host_color_scheme_change_tracking(&mut self) {
-        self.host_replies.enable_color_scheme_tracking();
+        self.host_replies
+            .host_replies_mut()
+            .enable_color_scheme_tracking();
     }
 
     /// Arm a possible appearance-reply window after focus gain. If no reply
     /// arrives, a lone Escape is held for one idle flush and released on the next.
     fn enable_host_appearance_query_on_focus(&mut self) {
-        self.host_replies.enable_appearance_query_on_focus();
+        self.host_replies
+            .host_replies_mut()
+            .enable_appearance_query_on_focus();
     }
 
     fn has_pending_input(&self) -> bool {
@@ -681,7 +676,10 @@ impl<P: HostReplyPolicy> RawInputByteFramer<P> {
             self.buffer.drain(..1);
         }
 
-        if self.host_replies.awaiting_cell_size_or_appearance()
+        if self
+            .host_replies
+            .host_replies()
+            .awaiting_cell_size_or_appearance()
             && self.buffer.as_slice() == b"\x1b["
         {
             if !matches!(self.held, Held::HostReplyPrefix) && !mouse_wait_served {
@@ -689,24 +687,26 @@ impl<P: HostReplyPolicy> RawInputByteFramer<P> {
                 tracing::trace!("holding incomplete host CSI reply one flush");
                 return chunks;
             }
-            self.host_replies.clear_cell_size_and_appearance();
+            self.host_replies
+                .host_replies_mut()
+                .clear_cell_size_and_appearance();
             self.held = Held::Sequence;
         }
 
-        if self.host_replies.awaiting_cell_size()
+        if self.host_replies.host_replies().awaiting_cell_size()
             && starts_with_incomplete_host_cell_size_report(&self.buffer)
         {
             tracing::debug!(
                 len = self.buffer.len(),
                 "discarding incomplete host cell size report after input timeout"
             );
-            self.host_replies.clear_cell_size();
+            self.host_replies.host_replies_mut().clear_cell_size();
             self.begin_control_tail(ControlStringFamily::HostReplyCsi);
             return chunks;
         }
 
         if starts_with_incomplete_host_color_scheme_report(&self.buffer) {
-            if self.host_replies.awaiting_appearance()
+            if self.host_replies.host_replies().awaiting_appearance()
                 && !matches!(self.held, Held::HostReplyPrefix)
             {
                 self.held = Held::HostReplyPrefix;
@@ -720,7 +720,7 @@ impl<P: HostReplyPolicy> RawInputByteFramer<P> {
                 len = self.buffer.len(),
                 "discarding incomplete host color scheme report after input timeout"
             );
-            self.host_replies.clear_appearance();
+            self.host_replies.host_replies_mut().clear_appearance();
             self.begin_control_tail(ControlStringFamily::HostReplyCsi);
             return chunks;
         }
@@ -737,7 +737,7 @@ impl<P: HostReplyPolicy> RawInputByteFramer<P> {
         }
 
         if self.buffer.as_slice() == [ESC] {
-            if self.host_replies.awaiting_reply()
+            if self.host_replies.host_replies().awaiting_reply()
                 && !matches!(self.held, Held::HostReplyPrefix)
                 && !mouse_wait_served
             {
@@ -746,7 +746,7 @@ impl<P: HostReplyPolicy> RawInputByteFramer<P> {
                 return chunks;
             }
             // No continuation arrived; give up the window so Escape is not delayed again.
-            self.host_replies.clear_all();
+            self.host_replies.host_replies_mut().clear_all();
             tracing::warn!(
                 len = self.buffer.len(),
                 "flushing lone escape after input timeout; if this follows an alt chord or focus switch it may reach the pane as plain esc"
@@ -969,7 +969,7 @@ impl<P: HostReplyPolicy> RawInputByteFramer<P> {
                 }
                 break;
             };
-            self.host_replies.observe(&event);
+            self.host_replies.host_replies_mut().observe(&event);
             self.held = Held::None;
             chunks.push(self.buffer[..consumed].to_vec());
             self.buffer.drain(..consumed);

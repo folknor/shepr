@@ -241,11 +241,13 @@ const MASTRACODE_HOOK_EVENTS: &[IntegrationHookEvent] = &[
     hook_event("Stop", None, Some(IntegrationHookAction::Idle)),
 ];
 
-/// Session transitions supported by the integration's own event vocabulary.
+/// Session transitions and report requirements of an integration's event vocabulary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HookSessionPolicy {
     pub replacement_starts: &'static [resume::AgentSessionStartSource],
     pub replace_without_start: bool,
+    /// Whether state events from this integration are invalid without a session reference.
+    pub state_requires_session_ref: bool,
     pub state_requires_current_session: bool,
     pub unsequenced_selection: bool,
     pub foreground_takeover: bool,
@@ -255,6 +257,7 @@ impl HookSessionPolicy {
     const DEFAULT: Self = Self {
         replacement_starts: &[],
         replace_without_start: false,
+        state_requires_session_ref: false,
         state_requires_current_session: false,
         unsequenced_selection: false,
         foreground_takeover: true,
@@ -286,20 +289,24 @@ impl HookSessionPolicy {
             resume::AgentSessionStartSource::Resume,
             resume::AgentSessionStartSource::Compact,
         ],
+        state_requires_session_ref: true,
         state_requires_current_session: true,
         ..Self::DEFAULT
     };
     const MASTRACODE: Self = Self {
         replacement_starts: &[resume::AgentSessionStartSource::Startup],
+        state_requires_session_ref: true,
         ..Self::DEFAULT
     };
     const KILO: Self = Self {
         replacement_starts: &[resume::AgentSessionStartSource::Startup],
+        state_requires_session_ref: true,
         ..Self::DEFAULT
     };
     const OPENCODE: Self = Self {
         replacement_starts: &[resume::AgentSessionStartSource::Select],
         unsequenced_selection: true,
+        state_requires_session_ref: true,
         ..Self::DEFAULT
     };
     const PI: Self = Self {
@@ -308,6 +315,7 @@ impl HookSessionPolicy {
             resume::AgentSessionStartSource::Resume,
             resume::AgentSessionStartSource::Fork,
         ],
+        state_requires_session_ref: true,
         ..Self::DEFAULT
     };
     const GROK: Self = Self {
@@ -325,6 +333,7 @@ impl HookSessionPolicy {
             resume::AgentSessionStartSource::Resume,
             resume::AgentSessionStartSource::Fork,
         ],
+        state_requires_session_ref: true,
         ..Self::DEFAULT
     };
     const ANTIGRAVITY: Self = Self {
@@ -342,9 +351,9 @@ impl HookSessionPolicy {
             resume::AgentSessionStartSource::Fork,
             resume::AgentSessionStartSource::Compact,
         ],
+        state_requires_session_ref: true,
         ..Self::DEFAULT
     };
-
     pub fn allows_replacement(self, start: Option<resume::AgentSessionStartSource>) -> bool {
         start.map_or(self.replace_without_start, |start| {
             self.replacement_starts.contains(&start)
@@ -365,12 +374,10 @@ pub struct AgentDescriptor {
     pub session_identity_only_integration: bool,
     pub hook_session_policy: HookSessionPolicy,
     pub resume_support: Option<ResumeSupport>,
-    pub screen_manifest: bool,
-    pub title_activity_glyphs: &'static str,
+    /// Bundled screen-detection rules, embedded with the owning agent descriptor.
+    pub screen_manifest: Option<&'static str>,
     pub integration_hook_events: &'static [IntegrationHookEvent],
 }
-
-const CLAUDE_ACTIVITY_GLYPHS: &str = "·\u{2722}\u{2733}\u{2736}\u{273B}\u{273D}◐◓◑◒";
 
 pub const AGENTS: [AgentDescriptor; 23] = [
     AgentDescriptor {
@@ -388,8 +395,7 @@ pub const AGENTS: [AgentDescriptor; 23] = [
             SessionRefPolicy::IdOrPath,
             ResumeArgs::FlagValue("--session"),
         )),
-        screen_manifest: true,
-        title_activity_glyphs: "",
+        screen_manifest: Some(include_str!("../detect/manifests/pi.toml")),
         integration_hook_events: &[],
     },
     AgentDescriptor {
@@ -407,8 +413,7 @@ pub const AGENTS: [AgentDescriptor; 23] = [
             SessionRefPolicy::Id,
             ResumeArgs::FlagValue("--resume"),
         )),
-        screen_manifest: true,
-        title_activity_glyphs: CLAUDE_ACTIVITY_GLYPHS,
+        screen_manifest: Some(include_str!("../detect/manifests/claude.toml")),
         integration_hook_events: &[],
     }
     .with_integration_hook_events(CLAUDE_HOOK_EVENTS),
@@ -427,8 +432,7 @@ pub const AGENTS: [AgentDescriptor; 23] = [
             SessionRefPolicy::Id,
             ResumeArgs::Subcommand("resume"),
         )),
-        screen_manifest: true,
-        title_activity_glyphs: "",
+        screen_manifest: Some(include_str!("../detect/manifests/codex.toml")),
         integration_hook_events: &[],
     }
     .with_integration_hook_events(CODEX_HOOK_EVENTS),
@@ -444,8 +448,7 @@ pub const AGENTS: [AgentDescriptor; 23] = [
         session_identity_only_integration: false,
         hook_session_policy: HookSessionPolicy::DEFAULT,
         resume_support: None,
-        screen_manifest: true,
-        title_activity_glyphs: "",
+        screen_manifest: Some(include_str!("../detect/manifests/gemini.toml")),
         integration_hook_events: &[],
     },
     AgentDescriptor {
@@ -463,8 +466,7 @@ pub const AGENTS: [AgentDescriptor; 23] = [
             SessionRefPolicy::Id,
             ResumeArgs::FlagValue("--resume"),
         )),
-        screen_manifest: true,
-        title_activity_glyphs: "",
+        screen_manifest: Some(include_str!("../detect/manifests/cursor.toml")),
         integration_hook_events: &[],
     }
     .with_integration_hook_events(CURSOR_HOOK_EVENTS),
@@ -483,8 +485,7 @@ pub const AGENTS: [AgentDescriptor; 23] = [
             SessionRefPolicy::Id,
             ResumeArgs::FlagValue("--resume"),
         )),
-        screen_manifest: true,
-        title_activity_glyphs: "",
+        screen_manifest: Some(include_str!("../detect/manifests/devin.toml")),
         integration_hook_events: &[],
     }
     .with_integration_hook_events(DEVIN_HOOK_EVENTS),
@@ -503,8 +504,7 @@ pub const AGENTS: [AgentDescriptor; 23] = [
             SessionRefPolicy::Id,
             ResumeArgs::FlagValue(CONVERSATION_FLAG),
         )),
-        screen_manifest: true,
-        title_activity_glyphs: "",
+        screen_manifest: Some(include_str!("../detect/manifests/antigravity.toml")),
         integration_hook_events: &[],
     }
     .with_integration_hook_events(ANTIGRAVITY_HOOK_EVENTS),
@@ -520,8 +520,7 @@ pub const AGENTS: [AgentDescriptor; 23] = [
         session_identity_only_integration: false,
         hook_session_policy: HookSessionPolicy::DEFAULT,
         resume_support: None,
-        screen_manifest: true,
-        title_activity_glyphs: "",
+        screen_manifest: Some(include_str!("../detect/manifests/cline.toml")),
         integration_hook_events: &[],
     },
     AgentDescriptor {
@@ -539,8 +538,7 @@ pub const AGENTS: [AgentDescriptor; 23] = [
             SessionRefPolicy::IdOrPath,
             ResumeArgs::InlineFlag("--resume="),
         )),
-        screen_manifest: false,
-        title_activity_glyphs: "",
+        screen_manifest: None,
         integration_hook_events: &[],
     },
     AgentDescriptor {
@@ -558,8 +556,7 @@ pub const AGENTS: [AgentDescriptor; 23] = [
             SessionRefPolicy::Id,
             ResumeArgs::FlagValue("--thread"),
         )),
-        screen_manifest: false,
-        title_activity_glyphs: "",
+        screen_manifest: None,
         integration_hook_events: &[],
     }
     .with_integration_hook_events(MASTRACODE_HOOK_EVENTS),
@@ -578,8 +575,7 @@ pub const AGENTS: [AgentDescriptor; 23] = [
             SessionRefPolicy::Id,
             ResumeArgs::FlagValue("--session"),
         )),
-        screen_manifest: true,
-        title_activity_glyphs: "",
+        screen_manifest: Some(include_str!("../detect/manifests/opencode.toml")),
         integration_hook_events: &[],
     },
     AgentDescriptor {
@@ -597,8 +593,7 @@ pub const AGENTS: [AgentDescriptor; 23] = [
             SessionRefPolicy::Id,
             ResumeArgs::InlineFlag("--resume="),
         )),
-        screen_manifest: true,
-        title_activity_glyphs: "",
+        screen_manifest: Some(include_str!("../detect/manifests/github-copilot.toml")),
         integration_hook_events: &[],
     }
     .with_integration_hook_events(COPILOT_HOOK_EVENTS),
@@ -617,8 +612,7 @@ pub const AGENTS: [AgentDescriptor; 23] = [
             SessionRefPolicy::Id,
             ResumeArgs::FlagValue("--session"),
         )),
-        screen_manifest: true,
-        title_activity_glyphs: "",
+        screen_manifest: Some(include_str!("../detect/manifests/kimi.toml")),
         integration_hook_events: &[],
     }
     .with_integration_hook_events(KIMI_HOOK_EVENTS),
@@ -634,8 +628,7 @@ pub const AGENTS: [AgentDescriptor; 23] = [
         session_identity_only_integration: false,
         hook_session_policy: HookSessionPolicy::DEFAULT,
         resume_support: None,
-        screen_manifest: true,
-        title_activity_glyphs: "",
+        screen_manifest: Some(include_str!("../detect/manifests/kiro.toml")),
         integration_hook_events: &[],
     },
     AgentDescriptor {
@@ -653,8 +646,7 @@ pub const AGENTS: [AgentDescriptor; 23] = [
             SessionRefPolicy::Id,
             ResumeArgs::FlagValue("--resume"),
         )),
-        screen_manifest: true,
-        title_activity_glyphs: "",
+        screen_manifest: Some(include_str!("../detect/manifests/droid.toml")),
         integration_hook_events: &[],
     }
     .with_integration_hook_events(DROID_HOOK_EVENTS),
@@ -670,8 +662,7 @@ pub const AGENTS: [AgentDescriptor; 23] = [
         session_identity_only_integration: false,
         hook_session_policy: HookSessionPolicy::DEFAULT,
         resume_support: None,
-        screen_manifest: true,
-        title_activity_glyphs: "",
+        screen_manifest: Some(include_str!("../detect/manifests/amp.toml")),
         integration_hook_events: &[],
     },
     AgentDescriptor {
@@ -689,8 +680,7 @@ pub const AGENTS: [AgentDescriptor; 23] = [
             SessionRefPolicy::Id,
             ResumeArgs::FlagValue("--resume"),
         )),
-        screen_manifest: true,
-        title_activity_glyphs: "",
+        screen_manifest: Some(include_str!("../detect/manifests/grok.toml")),
         integration_hook_events: &[],
     }
     .with_integration_hook_events(GROK_HOOK_EVENTS),
@@ -709,8 +699,7 @@ pub const AGENTS: [AgentDescriptor; 23] = [
             SessionRefPolicy::Id,
             ResumeArgs::FlagValue("--session"),
         )),
-        screen_manifest: true,
-        title_activity_glyphs: "",
+        screen_manifest: Some(include_str!("../detect/manifests/kilo.toml")),
         integration_hook_events: &[],
     },
     AgentDescriptor {
@@ -725,8 +714,7 @@ pub const AGENTS: [AgentDescriptor; 23] = [
         session_identity_only_integration: false,
         hook_session_policy: HookSessionPolicy::DEFAULT,
         resume_support: None,
-        screen_manifest: true,
-        title_activity_glyphs: "",
+        screen_manifest: Some(include_str!("../detect/manifests/qodercli.toml")),
         integration_hook_events: &[],
     },
     AgentDescriptor {
@@ -741,8 +729,7 @@ pub const AGENTS: [AgentDescriptor; 23] = [
         session_identity_only_integration: false,
         hook_session_policy: HookSessionPolicy::DEFAULT,
         resume_support: None,
-        screen_manifest: true,
-        title_activity_glyphs: "",
+        screen_manifest: Some(include_str!("../detect/manifests/qwen.toml")),
         integration_hook_events: &[],
     },
     AgentDescriptor {
@@ -757,8 +744,7 @@ pub const AGENTS: [AgentDescriptor; 23] = [
         session_identity_only_integration: false,
         hook_session_policy: HookSessionPolicy::DEFAULT,
         resume_support: None,
-        screen_manifest: true,
-        title_activity_glyphs: "",
+        screen_manifest: Some(include_str!("../detect/manifests/letta.toml")),
         integration_hook_events: &[],
     },
     AgentDescriptor {
@@ -773,8 +759,7 @@ pub const AGENTS: [AgentDescriptor; 23] = [
         session_identity_only_integration: false,
         hook_session_policy: HookSessionPolicy::DEFAULT,
         resume_support: None,
-        screen_manifest: true,
-        title_activity_glyphs: "",
+        screen_manifest: Some(include_str!("../detect/manifests/maki.toml")),
         integration_hook_events: &[],
     },
     AgentDescriptor {
@@ -789,8 +774,7 @@ pub const AGENTS: [AgentDescriptor; 23] = [
         session_identity_only_integration: false,
         hook_session_policy: HookSessionPolicy::DEFAULT,
         resume_support: None,
-        screen_manifest: true,
-        title_activity_glyphs: "",
+        screen_manifest: Some(include_str!("../detect/manifests/muse.toml")),
         integration_hook_events: &[],
     },
 ];
@@ -879,16 +863,11 @@ impl Agent {
     }
 
     pub const fn screen_manifest(self) -> bool {
+        self.descriptor().screen_manifest.is_some()
+    }
+
+    pub const fn screen_manifest_source(self) -> Option<&'static str> {
         self.descriptor().screen_manifest
-    }
-
-    pub const fn activity_glyphs(self) -> &'static str {
-        self.descriptor().title_activity_glyphs
-    }
-
-    /// Whether this agent's OSC title can start with a recognized activity glyph.
-    pub fn has_title_activity_glyph(self, glyph: char) -> bool {
-        is_braille_activity_glyph(glyph) || self.activity_glyphs().contains(glyph)
     }
 
     pub fn parse_label(value: &str) -> Option<Self> {
@@ -917,12 +896,6 @@ impl Agent {
     pub fn screen_manifest_agents() -> impl Iterator<Item = Self> {
         Self::all().filter(|agent| agent.screen_manifest())
     }
-}
-
-const BRAILLE_ACTIVITY_GLYPH_RANGE: std::ops::RangeInclusive<char> = '\u{2800}'..='\u{28ff}';
-
-fn is_braille_activity_glyph(glyph: char) -> bool {
-    BRAILLE_ACTIVITY_GLYPH_RANGE.contains(&glyph)
 }
 
 fn agent_name_lookup() -> &'static HashMap<&'static str, Agent> {
@@ -1187,12 +1160,12 @@ mod tests {
         );
         assert_eq!(Agent::Antigravity.label(), "agy");
         assert_eq!(Agent::Antigravity.integration_source(), Some("shepr:agy"));
-        assert!(Agent::Claude.activity_glyphs().contains('◐'));
+        assert!(crate::detect::TITLE_ACTIVITY_GLYPHS.contains('◐'));
         assert_eq!(
             Agent::screen_manifest_agents().count(),
             AGENTS
                 .iter()
-                .filter(|descriptor| descriptor.screen_manifest)
+                .filter(|descriptor| descriptor.screen_manifest.is_some())
                 .count()
         );
     }

@@ -298,14 +298,6 @@ pub(crate) trait TerminalStateFixture {
         agent: Option<Agent>,
         fallback_state: AgentState,
     ) -> Option<EffectiveStateChange>;
-    /// A hook report arriving now, without a session reference.
-    fn set_hook_authority(
-        &mut self,
-        source: &str,
-        agent_label: &str,
-        state: AgentState,
-        seq: Option<u64>,
-    ) -> Option<EffectiveStateChange>;
 }
 
 impl TerminalStateFixture for TerminalState {
@@ -322,27 +314,6 @@ impl TerminalStateFixture for TerminalState {
             Instant::now(),
         )
         .effective_state_change
-    }
-
-    fn set_hook_authority(
-        &mut self,
-        source: &str,
-        agent_label: &str,
-        state: AgentState,
-        seq: Option<u64>,
-    ) -> Option<EffectiveStateChange> {
-        self.set_hook_authority_at(
-            source,
-            agent_label,
-            state,
-            None,
-            seq,
-            shepr_mux::terminal::state::HookClockSample {
-                monotonic: Instant::now(),
-                wall: std::time::SystemTime::now(),
-            },
-        )
-        .and_then(|mutation| mutation.effective_state_change)
     }
 }
 

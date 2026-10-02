@@ -33,6 +33,10 @@ use crate::limits::{
 };
 use memchr::memchr;
 
+const XTGETTCAP_RGB_BITS_PER_CHANNEL: &[u8] = b"8";
+const XTGETTCAP_SETRGBF: &[u8] = b"\\E[38:2:%p1%d:%p2%d:%p3%dm";
+const XTGETTCAP_SETRGBB: &[u8] = b"\\E[48:2:%p1%d:%p2%d:%p3%dm";
+
 /// Raw OSC working-directory report. OSC 7 carries a URI; the other supported
 /// reports carry paths. Parsing belongs to the pane after the scanner frames it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -431,17 +435,14 @@ fn xtgettcap_value(cap_hex: &[u8]) -> Option<Option<&'static [u8]>> {
         // limits-exempt: XTGETTCAP requires the indexed palette size as decimal bytes.
         // Co / colors: palette size.
         b"436F" | b"636F6C6F7273" => Some(Some(b"256")),
-        // Tc, RGB and the RGB setters follow the same truecolor capability as COLORTERM.
-        b"5463" => super::PANE_TRUECOLOR_BITS_PER_CHANNEL.map(|_| None),
-        // Su: styled underlines; a boolean capability.
-        b"5375" => Some(None),
+        // Tc: truecolor, matching the pane's COLORTERM value; Su: styled
+        // underlines. Both are boolean capabilities.
+        b"5463" | b"5375" => Some(None),
         // RGB: bits per channel.
-        b"524742" => super::PANE_TRUECOLOR_BITS_PER_CHANNEL.map(Some),
+        b"524742" => Some(Some(XTGETTCAP_RGB_BITS_PER_CHANNEL)),
         // setrgbf / setrgbb.
-        b"73657472676266" => super::PANE_TRUECOLOR_BITS_PER_CHANNEL
-            .map(|_| Some(b"\\E[38:2:%p1%d:%p2%d:%p3%dm".as_slice())),
-        b"73657472676262" => super::PANE_TRUECOLOR_BITS_PER_CHANNEL
-            .map(|_| Some(b"\\E[48:2:%p1%d:%p2%d:%p3%dm".as_slice())),
+        b"73657472676266" => Some(Some(XTGETTCAP_SETRGBF)),
+        b"73657472676262" => Some(Some(XTGETTCAP_SETRGBB)),
         // Ms: OSC 52 clipboard.
         b"4D73" => Some(Some(b"\\E]52;%p1%s;%p2%s\\007")),
         // Smulx: underline style.

@@ -370,7 +370,7 @@ pub(crate) fn remote_candidate_mismatch_error(message: impl Into<String>) -> std
 /// Operator hint lines for a failed configured-machine SSH operation, one per
 /// line and without a trailing newline. Empty when there is no hint. The
 /// binary renders them; this crate does not print.
-pub fn machine_ssh_error_hint(err: &SshFailureDiagnostic, target: &str) -> Vec<String> {
+pub fn machine_ssh_error_hint(err: &SshFailureDiagnostic, target: &SshTarget) -> Vec<String> {
     if err.is_host_key() {
         vec![
             "hint: configured machines use strict host-key checking; add the host key to the configured known_hosts file, then retry."
@@ -386,7 +386,10 @@ pub fn machine_ssh_error_hint(err: &SshFailureDiagnostic, target: &str) -> Vec<S
     }
 }
 
-fn remote_error_hint_for_failure(failure: &SshFailureDiagnostic, target: &str) -> Vec<String> {
+fn remote_error_hint_for_failure(
+    failure: &SshFailureDiagnostic,
+    target: &SshTarget,
+) -> Vec<String> {
     if failure.requires_authentication() {
         vec![
             format!(
@@ -401,8 +404,8 @@ fn remote_error_hint_for_failure(failure: &SshFailureDiagnostic, target: &str) -
     }
 }
 
-fn ssh_check_command(target: &str) -> String {
-    format!("ssh {}", shell_quote(target))
+fn ssh_check_command(target: &SshTarget) -> String {
+    format!("ssh {}", target.shell_word())
 }
 
 #[cfg(test)]
@@ -420,8 +423,13 @@ impl SshFailureDiagnostic {
 mod tests {
     use super::*;
 
+    fn test_host() -> SshTarget {
+        SshTarget::parse("host").expect("test precondition")
+    }
+
     #[test]
     fn remote_host_key_error_matches_ssh_diagnostics() {
+        let target = SshTarget::parse("host").expect("test precondition");
         for message in [
             "Host key verification failed.",
             "REMOTE HOST IDENTIFICATION HAS CHANGED!",
@@ -430,12 +438,12 @@ mod tests {
                 Some(SSH_OWN_FAILURE_EXIT_CODE),
                 message.into(),
             );
-            assert!(!machine_ssh_error_hint(&failure, "host").is_empty());
+            assert!(!machine_ssh_error_hint(&failure, &target).is_empty());
         }
         assert!(
             machine_ssh_error_hint(
                 &SshFailureDiagnostic::from_message("server closed connection"),
-                "host"
+                &target
             )
             .is_empty()
         );
@@ -447,7 +455,7 @@ mod tests {
             Some(SSH_OWN_FAILURE_EXIT_CODE),
             "remote platform detection failed: user@host: Permission denied (publickey).".into(),
         );
-        assert!(!remote_error_hint_for_failure(&diagnostic, "host").is_empty());
+        assert!(!remote_error_hint_for_failure(&diagnostic, &test_host()).is_empty());
     }
 
     #[test]
@@ -457,7 +465,7 @@ mod tests {
             "remote server status failed: user@host: Permission denied (keyboard-interactive)."
                 .into(),
         );
-        assert!(!remote_error_hint_for_failure(&diagnostic, "host").is_empty());
+        assert!(!remote_error_hint_for_failure(&diagnostic, &test_host()).is_empty());
     }
 
     #[test]
@@ -466,7 +474,7 @@ mod tests {
             "remote platform detection failed: unsupported platform",
         );
 
-        assert!(remote_error_hint_for_failure(&diagnostic, "host").is_empty());
+        assert!(remote_error_hint_for_failure(&diagnostic, &test_host()).is_empty());
     }
 
     #[test]
@@ -476,7 +484,7 @@ mod tests {
             "SIGN_AND_SEND_PUBKEY: SIGNING FAILED for ED25519 from agent: agent refused operation"
                 .into(),
         );
-        assert!(!remote_error_hint_for_failure(&diagnostic, "host").is_empty());
+        assert!(!remote_error_hint_for_failure(&diagnostic, &test_host()).is_empty());
     }
 
     #[test]
@@ -485,7 +493,7 @@ mod tests {
             Some(SSH_OWN_FAILURE_EXIT_CODE),
             "Permission denied (publickey). Host key verification failed.".into(),
         );
-        assert!(remote_error_hint_for_failure(&diagnostic, "host").is_empty());
+        assert!(remote_error_hint_for_failure(&diagnostic, &test_host()).is_empty());
     }
 
     #[test]
@@ -564,6 +572,7 @@ mod tests {
 
     #[test]
     fn ssh_check_command_quotes_remote_target() {
-        assert_eq!(ssh_check_command("host name"), "ssh 'host name'");
+        let target = SshTarget::parse("host name").expect("test precondition");
+        assert_eq!(ssh_check_command(&target), "ssh 'host name'");
     }
 }

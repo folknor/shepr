@@ -17,7 +17,7 @@ impl HeadlessServer {
         let Some(client) = self.clients.get(&client_id) else {
             return;
         };
-        let surface_active = client.shell_state().surface_active;
+        let surface_active = client.shell_state().is_surface_active();
         if boot_id != self.client_shell_boot_id {
             let message = crate::server::client_commands::error_message(
                 boot_id,
@@ -33,9 +33,6 @@ impl HeadlessServer {
             else {
                 return;
             };
-            if surface_active != params.active {
-                self.immediate_pty_sources_dirty = true;
-            }
             self.queue_endpoint_reply(
                 client_id,
                 &crate::server::client_commands::response_message(
@@ -47,7 +44,7 @@ impl HeadlessServer {
                     }),
                 ),
             );
-            if changed {
+            if changed && params.active {
                 self.mark_view_changed();
             }
             return;
@@ -154,15 +151,14 @@ impl HeadlessServer {
         let mut navigated = false;
         if let Some(workspace_id) = &outcome.navigate {
             navigated = self.navigate_shell_client(client_id, workspace_id);
-            immediate_sources_changed |= navigated;
         }
         // A command can empty the session (the last pane closing), and a
         // session some client looks at is never left without a workspace.
         // Both move what some client views, so both change the sources.
         let created = self.create_automatic_workspace(Some(client_id));
-        let reconciled = self.reconcile_client_shell_locations();
+        self.reconcile_client_shell_locations();
         changed |= created;
-        immediate_sources_changed |= created | reconciled;
+        immediate_sources_changed |= created;
         if immediate_sources_changed {
             self.immediate_pty_sources_dirty = true;
         }

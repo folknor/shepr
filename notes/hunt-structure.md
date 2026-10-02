@@ -494,18 +494,6 @@ unrepresentable. `api_helpers.rs` is `pub(crate)` while holding one
 
 ## Server serving
 
-## STR-035 - Client connection state exposes writable invariants
-
-All `ClientConnection` and `ClientShellState` fields are `pub(crate)`.
-`surface_active` is written directly in `apply_server_event` and
-`set_client_shell_surface_active`; the registry's invariants (the foreground
-client is an active shell; inactive clients hold no geometry control) are
-maintained by the server at those sites, not by the registry.
-`ClientShellLocation.focused_workspace_id` is `pub(crate)`, so a write bypasses
-the generation it exists to move (only tests write it; `index` and `generation`
-are already private). Proposal: `registry.set_surface_active(id, bool) ->
-ActivationChange` and a private location field. (server-serving)
-
 ## STR-036 - Pane input takes a detour through `RawInputEvent`
 
 `pane_input::apply_client_pane_input_event` handles `Mouse` and `TextCommit`

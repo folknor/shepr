@@ -12,29 +12,7 @@ pub(super) struct AgentRow {
     pub(super) status: shepr_protocol::AgentStatus,
     pub(super) focused: bool,
     pub(super) rows: Vec<Vec<ResolvedToken>>,
-}
-
-pub(super) fn ordered_agent_pane_ids(
-    snapshot: &ClientShellSnapshot,
-    sort: shepr_config::AgentPanelSortConfig,
-) -> Vec<shepr_protocol::PublicPaneId> {
-    let mut agents = snapshot.agents.iter().collect::<Vec<_>>();
-    sort_agent_refs(&mut agents, sort);
-    agents
-        .into_iter()
-        .map(|agent| agent.pane_id.clone())
-        .collect()
-}
-
-fn sort_agent_refs(agents: &mut [&ClientShellAgent], sort: shepr_config::AgentPanelSortConfig) {
-    if sort == shepr_config::AgentPanelSortConfig::Priority {
-        agents.sort_by_key(|agent| {
-            (
-                std::cmp::Reverse(status_priority(agent.agent_status)),
-                std::cmp::Reverse(agent.state_change_seq),
-            )
-        });
-    }
+    pub(super) state_change_seq: u64,
 }
 
 pub(super) fn render_agent_panel_header(
@@ -196,20 +174,25 @@ pub(super) fn agent_rows(
         .collect()
 }
 
-/// Snapshot-local joins for the agent panel. Build the indexes once per list
-/// render so each row resolves its related resources with keyed lookups.
+/// Snapshot-local joins used while building the shared agent panel model.
 struct AgentRowIndex<'a> {
     agents: &'a [ClientShellAgent],
-    workspaces: Vec<&'a ClientShellWorkspace>,
-    panes: Vec<&'a ClientShellPane>,
+    workspaces: HashMap<&'a str, &'a ClientShellWorkspace>,
+    panes: HashMap<&'a str, &'a ClientShellPane>,
 }
 
 impl<'a> AgentRowIndex<'a> {
     fn new(snapshot: &'a ClientShellSnapshot) -> Self {
-        let mut workspaces = snapshot.workspaces.iter().collect::<Vec<_>>();
-        workspaces.sort_unstable_by(|left, right| left.workspace_id.cmp(&right.workspace_id));
-        let mut panes = snapshot.panes.iter().collect::<Vec<_>>();
-        panes.sort_unstable_by(|left, right| left.pane_id.cmp(&right.pane_id));
+        let workspaces = snapshot
+            .workspaces
+            .iter()
+            .map(|workspace| (workspace.workspace_id.as_str(), workspace))
+            .collect();
+        let panes = snapshot
+            .panes
+            .iter()
+            .map(|pane| (pane.pane_id.as_str(), pane))
+            .collect();
         Self {
             agents: &snapshot.agents,
             workspaces,
@@ -218,19 +201,11 @@ impl<'a> AgentRowIndex<'a> {
     }
 
     fn workspace(&self, workspace_id: &str) -> Option<&'a ClientShellWorkspace> {
-        let index = self
-            .workspaces
-            .binary_search_by(|workspace| workspace.workspace_id.as_str().cmp(workspace_id))
-            .ok()?;
-        Some(self.workspaces[index])
+        self.workspaces.get(workspace_id).copied()
     }
 
     fn pane(&self, pane_id: &PublicPaneId) -> Option<&'a ClientShellPane> {
-        let index = self
-            .panes
-            .binary_search_by(|pane| pane.pane_id.cmp(pane_id))
-            .ok()?;
-        Some(self.panes[index])
+        self.panes.get(pane_id.as_str()).copied()
     }
 
     fn agent_row(
@@ -265,6 +240,7 @@ impl<'a> AgentRowIndex<'a> {
             status: agent.agent_status,
             focused: agent.focused,
             rows,
+            state_change_seq: agent.state_change_seq,
         })
     }
 }
@@ -273,15 +249,16 @@ pub(super) fn render_agent_row(
     buffer: &mut Buffer,
     rect: Rect,
     row: &AgentRow,
+    focused: bool,
     config: &ClientShellConfig,
 ) {
     let palette = &config.palette;
-    let row_style = if row.focused {
+    let row_style = if focused {
         Style::default().bg(palette.active_row_bg)
     } else {
         Style::default()
     };
-    let name_style = if row.focused {
+    let name_style = if focused {
         Style::default()
             .fg(palette.text)
             .add_modifier(Modifier::BOLD)
@@ -293,13 +270,14 @@ pub(super) fn render_agent_row(
     let glyph = status_glyph(row.status, config.status_indicators, palette, false);
     let status_style = glyph.style;
     let secondary = Style::default().fg(palette.overlay0);
+    let fallback = [vec![ResolvedToken {
+        kind: ResolvedTokenKind::StateIcon,
+        style: Default::default(),
+    }]];
     let rows = if row.rows.is_empty() {
-        vec![vec![ResolvedToken {
-            kind: ResolvedTokenKind::StateIcon,
-            style: Default::default(),
-        }]]
+        &fallback[..]
     } else {
-        row.rows.clone()
+        &row.rows
     };
     for (index, tokens) in rows.iter().take(rect.height as usize).enumerate() {
         let indent = if index == 0 { 1 } else { 3 };

@@ -97,11 +97,12 @@ fn run_launched_client(
 
     let machines = config.machines().to_vec();
     let local_failure_policy = endpoint::LocalFailurePolicy::for_machines(&machines);
+    let local_endpoint_policy = endpoint::ClientEndpointId::Local.policy();
     let mut initial_local_failure = None;
 
     let initial_stream = match shepr_platform::ipc::connect_trusted_local_stream(&socket_path) {
         Ok(stream) => Some(stream),
-        Err(error) if !local_failure_policy.ends_client_for(&endpoint::ClientEndpointId::Local) => {
+        Err(error) if !local_failure_policy.ends_client_for(local_endpoint_policy) => {
             // An absent or refusing Local socket is the ordinary "server not running" case:
             // Local shows as Connecting and the supervisor attempts it at once, with its own
             // guidance, rather than seeding a diagnostic from the raw connect error.
@@ -138,9 +139,7 @@ fn run_launched_client(
             None,
         ) {
             Ok(()) => Some(stream),
-            Err(error)
-                if !local_failure_policy.ends_client_for(&endpoint::ClientEndpointId::Local) =>
-            {
+            Err(error) if !local_failure_policy.ends_client_for(local_endpoint_policy) => {
                 let error = endpoint::handshake_error(error, Some(&mismatch_guidance));
                 warn!(%error, "Local handshake failed; keeping configured machines available");
                 initial_local_failure = Some(shepr_remote::EndpointFailure::from_error(&error));
@@ -419,7 +418,8 @@ async fn run_client_loop(
                 registry
             }
             Err(error)
-                if !local_failure_policy.ends_client_for(&endpoint::ClientEndpointId::Local) =>
+                if !local_failure_policy
+                    .ends_client_for(endpoint::ClientEndpointId::Local.policy()) =>
             {
                 warn!(%error, "Local transport setup failed; keeping configured machines available");
                 let diagnostic = errors::endpoint_setup_failure(&error);
@@ -1046,7 +1046,7 @@ impl ClientLoop {
                 }
             }
             ServerMessage::ServerShutdown { reason } => {
-                if local_failure_policy.ends_client_for(endpoint_id) {
+                if local_failure_policy.ends_client_for(endpoint_id.policy()) {
                     return Err(ClientError::ServerShutdown { reason });
                 }
                 write_stream.fail(

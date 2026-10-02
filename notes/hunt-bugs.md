@@ -112,15 +112,6 @@ is computed twice per cell. `terminal_buffer_symbol_into` re-measures
 `symbol.width()` for every cell of every dirty row. Both run per cell per patch
 collection. (terminal)
 
-## BUG-056 - Runtime event admission walks every workspace
-
-`admit_runtime_event`, `pane_exit_needs_checkpoint` and the detector-drop gate
-in `handle_internal_event_inner` each scan all workspaces to find a pane's
-runtime, because `PaneRuntimeRegistry` is keyed by `TerminalId` while events
-carry `PaneId`. Every clipboard write, cwd report and detector update pays it.
-The pane-to-runtime lookup is filed among the consolidations. (mux-panes,
-server-app)
-
 ## BUG-057 - `render_plan` runs on every loop wake and locks visible terminal cores
 
 It runs on every wake, sometimes twice, allocating and sorting
@@ -132,8 +123,7 @@ signal, avoids the locks. (server-serving)
 ## BUG-060 - Per-loop scans in the app
 
 `start_pending_agent_resumes` runs every loop iteration and starts with a scan
-of all terminals and a `retain` over `pending_resume_commands`;
-`remove_unattached_terminal_ids` is terminals times panes; per client per
+of all terminals and a `retain` over `pending_resume_commands`; per client per
 frame, `compute_surface_for`, `render_panes` and `surface_cursor` each resolve
 the target `WorkspaceId` by linear scan; `Workspace::display_name()` and
 `branch()` clone a `String` per read on projection and title paths. Reported
@@ -155,18 +145,6 @@ that owns both (filed among the structure findings). (mux-state)
 `shell.surface_size`) before every wait, and `reconcile` computes
 `view_geometry` and `surface_size` again even when no attempt or move is due.
 Both run per pane patch event. (client-core)
-
-## BUG-064 - Shell models are rebuilt per event instead of per snapshot
-
-Every navigator key, wheel step and render calls `navigator_rows` over every
-endpoint, workspace and pane, lowercasing each candidate; `End` and
-`scroll_navigator_to` compute it again. `aggregate_agent_rows` does a linear
-`find` per ordered pane id (quadratic per endpoint), and every compose builds
-`AgentRowIndex`, sorts it, resolves tokens, builds a `HashMap` and sorts again;
-`render_expanded` resolves every workspace's tokens twice. The active
-endpoint's snapshot is deep-cloned per snapshot
-(`apply_cached_endpoint_snapshot`, `activate_endpoint_projection`).
-(client-shell)
 
 ## BUG-065 - `ValidatedClientConfig::live_keybinds()` clones the whole keymap per call
 

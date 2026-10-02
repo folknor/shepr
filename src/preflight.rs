@@ -177,7 +177,7 @@ fn remote_offer(machine: &MachineConfig, server: &DifferentBuildServer) -> Strin
          Restarting it stops that server, which ends every pane process it hosts on that machine. The saved layout is restored with fresh shells, and agents are resumed where they can be.\n\
          Restart it now? [y/N] ",
         machine.label,
-        machine.ssh.as_str(),
+        machine.ssh,
         server.build_id,
         server.boot_id,
         shepr_protocol::BUILD_ID
@@ -239,8 +239,7 @@ fn local_notice(local: &RestartResult) -> Option<String> {
 fn prompt_notice(machine: &MachineConfig) -> String {
     format!(
         "shepr: machine {} ({}) needs authentication; running ssh for it.",
-        machine.label,
-        machine.ssh.as_str()
+        machine.label, machine.ssh
     )
 }
 
@@ -248,8 +247,8 @@ fn prompt_notice(machine: &MachineConfig) -> String {
 fn remote_stop_command(machine: &MachineConfig, server: &DifferentBuildServer) -> String {
     format!(
         "ssh {} {} server stop --expect-boot {}",
-        shepr_remote::shell_quote(machine.ssh.as_str()),
-        shepr_remote::shell_quote(server.executable.as_str()),
+        machine.ssh.shell_word(),
+        server.executable.shell_word(),
         shepr_remote::shell_quote(&server.boot_id)
     )
 }
@@ -284,7 +283,7 @@ fn result_notices(outcomes: &[PreflightOutcome], can_prompt: bool) -> Vec<String
             }
             (MachineCheck::HostKey(diagnostic), _) => {
                 let mut notice = format!("shepr: machine {}: {diagnostic}", machine.label);
-                for hint in shepr_remote::machine_ssh_error_hint(diagnostic, machine.ssh.as_str()) {
+                for hint in shepr_remote::machine_ssh_error_hint(diagnostic, &machine.ssh) {
                     notice.push('\n');
                     notice.push_str(&hint);
                 }
@@ -301,7 +300,7 @@ fn result_notices(outcomes: &[PreflightOutcome], can_prompt: bool) -> Vec<String
                     "shepr: machine {} could not be checked: {diagnostic}. {client_action}",
                     machine.label
                 );
-                for hint in shepr_remote::machine_ssh_error_hint(diagnostic, machine.ssh.as_str()) {
+                for hint in shepr_remote::machine_ssh_error_hint(diagnostic, &machine.ssh) {
                     notice.push('\n');
                     notice.push_str(&hint);
                 }

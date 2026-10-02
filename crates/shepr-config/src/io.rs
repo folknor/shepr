@@ -227,6 +227,11 @@ impl AppPaths {
         self.current_dir.as_deref()
     }
 
+    /// Last-resort server cwd, captured at launch without later filesystem IO.
+    pub fn fallback_cwd(&self) -> &Path {
+        self.current_dir().unwrap_or_else(|| Path::new("/"))
+    }
+
     /// The absolute `SHEPR_STARTUP_CWD` handed to the server, when present.
     /// The server's own working directory is not a startup handoff.
     pub fn startup_cwd(&self) -> Option<&Path> {

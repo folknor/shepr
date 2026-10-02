@@ -1,6 +1,6 @@
 use std::io;
 
-use crate::{SshFailure, SshFailureDiagnostic, SshFailureOrigin};
+use crate::{SshFailure, SshFailureDiagnostic, SshFailureOrigin, SshTarget};
 
 /// The operator action established by a failure, independent of its display text.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -131,7 +131,7 @@ impl EndpointFailure {
         }
     }
 
-    pub fn hint(&self, target: &str) -> Vec<String> {
+    pub fn hint(&self, target: &SshTarget) -> Vec<String> {
         match &self.cause {
             Cause::Ssh(diagnostic) => crate::machine_ssh_error_hint(diagnostic, target),
             _ => Vec::new(),
@@ -283,12 +283,13 @@ mod tests {
             "Permission denied (publickey).".into(),
         );
         let failure = EndpointFailure::from_ssh(diagnostic).with_context("handshake failed");
-        let hints = failure.hint("buildbox");
+        let target = crate::SshTarget::parse("buildbox").expect("test precondition");
+        let hints = failure.hint(&target);
         assert!(!hints.is_empty());
         let error = io::Error::other(failure);
         let restored = EndpointFailure::from_error(&error);
         assert_eq!(restored.disposition(), FailureDisposition::Authentication);
-        assert_eq!(restored.hint("buildbox"), hints);
+        assert_eq!(restored.hint(&target), hints);
         assert!(restored.diagnostic().requires_authentication());
     }
 

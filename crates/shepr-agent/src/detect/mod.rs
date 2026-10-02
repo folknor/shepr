@@ -8,11 +8,13 @@ pub mod manifest;
 pub use crate::agent::Agent;
 
 mod proc_tree;
+mod title_activity;
 pub use proc_tree::is_pane_shell_process_name;
 pub use proc_tree::{
     ForegroundJob, ForegroundProcess, foreground_group_leader_job, foreground_job,
     foreground_process_group_id, process_cwd,
 };
+pub use title_activity::{TITLE_ACTIVITY_GLYPHS, TitleActivityGlyphs};
 
 /// The detected state of a terminal pane.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

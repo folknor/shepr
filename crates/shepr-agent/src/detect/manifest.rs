@@ -490,30 +490,6 @@ fn default_state() -> ManifestState {
     ManifestState::Unknown
 }
 
-const BUNDLED_MANIFESTS: &[(&str, &str)] = &[
-    ("amp", include_str!("manifests/amp.toml")),
-    ("agy", include_str!("manifests/antigravity.toml")),
-    ("claude", include_str!("manifests/claude.toml")),
-    ("cline", include_str!("manifests/cline.toml")),
-    ("codex", include_str!("manifests/codex.toml")),
-    ("cursor", include_str!("manifests/cursor.toml")),
-    ("devin", include_str!("manifests/devin.toml")),
-    ("droid", include_str!("manifests/droid.toml")),
-    ("gemini", include_str!("manifests/gemini.toml")),
-    ("grok", include_str!("manifests/grok.toml")),
-    ("kilo", include_str!("manifests/kilo.toml")),
-    ("kimi", include_str!("manifests/kimi.toml")),
-    ("kiro", include_str!("manifests/kiro.toml")),
-    ("letta", include_str!("manifests/letta.toml")),
-    ("maki", include_str!("manifests/maki.toml")),
-    ("muse", include_str!("manifests/muse.toml")),
-    ("opencode", include_str!("manifests/opencode.toml")),
-    ("pi", include_str!("manifests/pi.toml")),
-    ("qodercli", include_str!("manifests/qodercli.toml")),
-    ("qwen", include_str!("manifests/qwen.toml")),
-    ("copilot", include_str!("manifests/github-copilot.toml")),
-];
-
 /// Every screen-manifest agent's bundled manifest, compiled once per process
 /// on first use and never replaced.
 static MANIFESTS: OnceLock<Vec<(Agent, Option<CompiledManifest>)>> = OnceLock::new();
@@ -739,10 +715,9 @@ fn fallback_explain(
 
 fn bundled_manifest(agent: Agent) -> Option<CompiledManifest> {
     let id = agent_label(agent);
-    BUNDLED_MANIFESTS
-        .iter()
-        .find(|(manifest_id, _)| *manifest_id == id)
-        .and_then(|(_, content)| match parse_bundled_manifest(id, content) {
+    agent
+        .screen_manifest_source()
+        .and_then(|content| match parse_bundled_manifest(id, content) {
             Ok(manifest) => Some(manifest),
             Err(err) => {
                 tracing::error!(agent = id, error = %err, "bundled manifest could not be compiled");
@@ -751,13 +726,12 @@ fn bundled_manifest(agent: Agent) -> Option<CompiledManifest> {
         })
 }
 
-/// Parse a bundled manifest and check its identity: the file's `id` must be
-/// the registry key it is filed under.
-fn parse_bundled_manifest(key: &str, content: &str) -> Result<CompiledManifest, String> {
+/// Parse a bundled manifest and check its identity against its owning agent.
+fn parse_bundled_manifest(label: &str, content: &str) -> Result<CompiledManifest, String> {
     let manifest = parse_manifest_source(content)?;
-    if manifest.id != key {
+    if manifest.id != label {
         return Err(format!(
-            "manifest id {} does not match registry key {key}",
+            "manifest id {} does not match agent label {label}",
             manifest.id
         ));
     }

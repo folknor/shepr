@@ -36,10 +36,8 @@ mod detect;
 mod error;
 mod matches;
 mod server;
-mod server_not_running;
 mod spec;
 mod status;
-mod target;
 
 pub(crate) use error::{CliError, finish_client, print_notice};
 pub(crate) type CliResult<T> = Result<T, CliError>;
@@ -55,6 +53,7 @@ pub(crate) enum Launch {
 
 pub(crate) enum CliCommand {
     Status(status::Command),
+    ClientStatus { json: bool },
     Server(server::Command),
     Detect(detect::Command),
 }
@@ -62,7 +61,10 @@ pub(crate) enum CliCommand {
 impl CliCommand {
     fn from_matches(name: &str, matches: &ArgMatches) -> Option<Self> {
         Some(match name {
-            COMMAND_STATUS => Self::Status(status::parse(matches)?),
+            COMMAND_STATUS => match status::parse(matches)? {
+                status::ParsedCommand::Local(command) => Self::Status(command),
+                status::ParsedCommand::Client { json } => Self::ClientStatus { json },
+            },
             COMMAND_SERVER => Self::Server(server::parse(matches)?),
             "detect" => Self::Detect(detect::parse(matches)?),
             _ => return None,
@@ -159,15 +161,6 @@ impl Invocation {
     pub(crate) fn version_requested(&self) -> bool {
         self.version
     }
-
-    /// The CLI command this invocation runs, or `None` for a launch mode
-    /// (TUI, client, remote bridge) that is not a CLI command.
-    pub(crate) fn cli_command(&self) -> Option<&CliCommand> {
-        match &self.launch {
-            Launch::Cli(command) => Some(command.as_ref()),
-            _ => None,
-        }
-    }
 }
 
 pub(crate) fn print_help() {
@@ -201,24 +194,29 @@ pub(crate) fn run(command: &CliCommand) -> CliResult<i32> {
         return detect::run_file_explain(args);
     }
 
-    if let CliCommand::Status(status::Command::Client { json }) = command {
-        // A standalone identity report of this executable and its sibling
-        // `shepr-server`: it reads only the binaries, never sockets or runtime
-        // paths, so it answers even where application paths cannot be resolved.
-        status::print_client_status(*json)?;
-        return Ok(0);
+    match command {
+        CliCommand::ClientStatus { json } => {
+            // This identity report reads only the binaries, never sockets or
+            // runtime paths, so it works even where application paths cannot
+            // be resolved.
+            status::print_client_status(*json)?;
+            Ok(0)
+        }
+        CliCommand::Status(command) => {
+            run_with_paths(|paths| status::run_status_command(*command, paths))
+        }
+        CliCommand::Server(command) => {
+            run_with_paths(|paths| server::run_server_command(command.clone(), paths))
+        }
+        CliCommand::Detect(command) => {
+            run_with_paths(|paths| detect::run_detect_command(command.clone(), paths))
+        }
     }
-    let paths = resolve_app_paths()?;
-    let context = target::CliContext::local(paths);
-    dispatch(command, &context)
 }
 
-fn dispatch(command: &CliCommand, context: &target::CliContext) -> CliResult<i32> {
-    match command {
-        CliCommand::Status(command) => status::run_status_command(*command, context),
-        CliCommand::Server(command) => server::run_server_command(command.clone(), context),
-        CliCommand::Detect(command) => detect::run_detect_command(command.clone(), context),
-    }
+fn run_with_paths(run: impl FnOnce(&shepr_config::AppPaths) -> CliResult<i32>) -> CliResult<i32> {
+    let paths = resolve_app_paths()?;
+    run(&paths)
 }
 
 fn resolve_app_paths() -> CliResult<shepr_config::AppPaths> {
@@ -230,28 +228,23 @@ fn resolve_app_paths() -> CliResult<shepr_config::AppPaths> {
     })
 }
 
-fn send_request(context: &target::CliContext, request: &Request) -> CliResult<serde_json::Value> {
-    let client = target::api_client(context);
-    ensure_server_build_matches(context, &client, &request.id)?;
+fn send_request(paths: &shepr_config::AppPaths, request: &Request) -> CliResult<serde_json::Value> {
+    let client = ApiClient::local(paths);
+    ensure_server_build_matches(paths, &client, &request.id)?;
     client
         .request_value(request)
-        .map_err(|err| map_server_not_running_or_io(context, err, &request.id, &client))
+        .map_err(|err| map_server_not_running_or_io(paths, err, &request.id, &client))
 }
 
 fn ensure_server_build_matches(
-    context: &target::CliContext,
+    paths: &shepr_config::AppPaths,
     client: &ApiClient,
     request_id: &str,
 ) -> CliResult<()> {
-    // Checked once per target so polling commands need only one status request.
-    if context.build_checked() {
-        return Ok(());
-    }
     let status = client
         .status()
-        .map_err(|err| map_server_not_running_or_io(context, err, request_id, client))?;
+        .map_err(|err| map_server_not_running_or_io(paths, err, request_id, client))?;
     if shepr_protocol::is_this_build(&status.build_id) {
-        context.mark_build_checked();
         return Ok(());
     }
     let response = shepr_api::schema::ErrorResponse {
@@ -262,7 +255,9 @@ fn ensure_server_build_matches(
                 "this shepr client (build {}) differs from the running server (build {}); restart the server with this build before using this command. {}",
                 shepr_protocol::BUILD_ID,
                 status.build_id,
-                target::restart_guidance(context)
+                paths
+                    .server_address()
+                    .build_mismatch_guidance(&shepr_config::operator_entrypoint())
             ),
         ),
     };
@@ -280,7 +275,7 @@ pub(super) fn server_not_running_error(socket_path: &std::path::Path) -> CliResu
 
 /// Classify a socket failure before it reaches the CLI printer.
 fn map_server_not_running_or_io(
-    context: &target::CliContext,
+    paths: &shepr_config::AppPaths,
     err: ApiClientError,
     request_id: &str,
     client: &ApiClient,
@@ -289,11 +284,23 @@ fn map_server_not_running_or_io(
         ApiClientError::Io(_)
             if server_not_running_error(&client.socket_path()).unwrap_or(false) =>
         {
-            server_not_running::cli_error(server_not_running::response(
-                request_id,
-                &client.socket_path(),
-                context,
-            ))
+            let socket_path = client.socket_path();
+            let attach_command = paths
+                .server_address()
+                .attach_command(&shepr_config::operator_entrypoint());
+            let message = shepr_api::guidance::operator_guidance(
+                shepr_api::guidance::OperatorGuidance::ServerNotRunning {
+                    socket_path: &socket_path,
+                    attach_command: &attach_command,
+                },
+            );
+            CliError::Response(shepr_api::schema::ErrorResponse {
+                id: request_id.to_owned(),
+                error: shepr_api::schema::ErrorBody::new(
+                    &shepr_api::error::ApiErrorCode::ServerNotRunning,
+                    message,
+                ),
+            })
         }
         err => api_client_error_to_io(err).into(),
     }
@@ -361,7 +368,7 @@ mod output_capture {
 
 #[cfg(test)]
 mod tests {
-    use super::{CliCommand, Invocation, Launch};
+    use super::{CliCommand, CliError, Invocation, Launch};
     use shepr_test_fixtures::*;
 
     pub(super) fn parse(args: &[&str]) -> Invocation {
@@ -464,11 +471,15 @@ mod tests {
         let explain =
             command_matches(&["detect", "explain", "--file=screen.txt", "--agent=claude"]);
         assert_eq!(
-            super::matches::string(&explain, "file").as_deref(),
+            super::matches::try_string(&explain, "file")
+                .expect("test argument is a string")
+                .as_deref(),
             Some("screen.txt")
         );
         assert_eq!(
-            super::matches::string(&explain, "agent").as_deref(),
+            super::matches::try_string(&explain, "agent")
+                .expect("test argument is a string")
+                .as_deref(),
             Some("claude")
         );
     }
@@ -549,8 +560,7 @@ mod tests {
         use shepr_api::client::{ApiClient, ApiClientError};
 
         let scratch = crate::test_support::ScratchDir::new("cli-socket-error");
-        let paths =
-            super::target::CliContext::test_local(shepr_config::AppPaths::test_at(scratch.path()));
+        let paths = shepr_config::AppPaths::test_at(scratch.path());
         let client = ApiClient::local(&paths);
         let socket = client.socket_path().display().to_string();
 
@@ -562,17 +572,15 @@ mod tests {
             &client,
         );
 
-        let response = super::server_not_running::reported_response(&mapped)
-            .expect("dead-server connect failure should carry a server_not_running response");
+        let CliError::Response(response) = &mapped else {
+            panic!("dead-server connect failure should carry a response");
+        };
         assert_eq!(response.id, "cli:detect:capture");
         assert_eq!(
             response.error.code,
             shepr_api::error::ApiErrorCode::ServerNotRunning
         );
         assert!(response.error.message.contains(&socket));
-
-        // The API error code is checked through its canonical constant.
-        assert!(super::server_not_running::was_reported(&mapped));
     }
 
     #[test]
@@ -580,8 +588,7 @@ mod tests {
         use shepr_api::client::{ApiClient, ApiClientError};
 
         let scratch = crate::test_support::ScratchDir::new("cli-socket-classifier");
-        let paths =
-            super::target::CliContext::test_local(shepr_config::AppPaths::test_at(scratch.path()));
+        let paths = shepr_config::AppPaths::test_at(scratch.path());
         std::fs::create_dir_all(paths.runtime_dir()).expect("create test runtime directory");
         let client = ApiClient::local(&paths);
         let _listener = shepr_platform::ipc::bind_local_listener(&client.socket_path())
@@ -592,6 +599,10 @@ mod tests {
             "cli:detect:capture",
             &client,
         );
-        assert!(!super::server_not_running::was_reported(&mapped));
+        assert!(!matches!(
+            &mapped,
+            CliError::Response(response)
+                if response.error.code == shepr_api::error::ApiErrorCode::ServerNotRunning
+        ));
     }
 }

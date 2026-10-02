@@ -1807,6 +1807,32 @@ fn run_kimi_hook(base: &Path, action: &str, payload: &[u8]) -> Option<String> {
     capture.requests.into_iter().next()
 }
 
+fn run_state_hook(
+    base: &Path,
+    name: &str,
+    asset: &str,
+    action: &str,
+    payload: &[u8],
+) -> (bool, Vec<u8>, Option<String>) {
+    fs::create_dir_all(base).expect("test precondition");
+    let hook = base.join("hook.sh");
+    fs::write(&hook, asset).expect("test precondition");
+    let socket_path = base.join("s.sock");
+
+    // host-program-ok: the shipped shell hook asset is the subject, run as its agent runs it
+    let mut command = shepr_test_support::command_in_scratch("sh", name);
+    command
+        .arg(&hook)
+        .arg(action)
+        .env("SHEPR_BUILD_PROFILE", "release");
+    let output = shepr_test_support::capture_hook(command, &socket_path, base, "w1:p2", payload);
+    (
+        output.status.success(),
+        output.stderr,
+        output.requests.into_iter().next(),
+    )
+}
+
 /// Fails the test when python3 is missing, rather than letting it pass without
 /// running: the python hook assets are the subject, and python3 is a
 /// development dependency of shepr (the gate's script checks run on it too).
@@ -1848,6 +1874,101 @@ fn kimi_hook_reports_state_only_from_an_object_payload_naming_its_session() {
     assert_eq!(request["params"]["state"], "working");
     assert_eq!(request["params"]["pane_id"], "w1:p2");
     assert_eq!(request["params"]["agent_session_id"], "abc");
+}
+
+#[test]
+fn session_required_state_hooks_match_the_descriptor_policy() {
+    let env = IsolatedEnv::new();
+    require_python3();
+    let base = unique_base(&env);
+    let agents: Vec<_> = crate::agent::Agent::all()
+        .filter(|agent| {
+            agent
+                .descriptor()
+                .hook_session_policy
+                .state_requires_session_ref
+        })
+        .collect();
+    assert_eq!(
+        agents,
+        vec![
+            crate::agent::Agent::Pi,
+            crate::agent::Agent::Codex,
+            crate::agent::Agent::Omp,
+            crate::agent::Agent::Mastracode,
+            crate::agent::Agent::OpenCode,
+            crate::agent::Agent::Kimi,
+            crate::agent::Agent::Kilo,
+        ]
+    );
+
+    // Pi and OMP are TypeScript extensions; each checks the current ref before
+    // its state request. OpenCode and Kilo have runtime tests beside their JS
+    // assets. Execute the shell hook contracts here.
+    for agent in [crate::agent::Agent::Pi, crate::agent::Agent::Omp] {
+        let asset = integration_asset(
+            agent
+                .integration_target()
+                .expect("session-required state reports have an integration"),
+        )
+        .expect("integration has a bundled asset");
+        let Some(start) = asset.find("function sendState(") else {
+            panic!("{} has no state sender", agent.label());
+        };
+        let send_state = &asset[start..];
+        let guard = send_state
+            .find("if (!currentSessionRef()) {")
+            .unwrap_or_else(|| {
+                panic!(
+                    "{} can send state without its session reference",
+                    agent.label()
+                )
+            });
+        let send = send_state
+            .find("return sendRequest(")
+            .unwrap_or_else(|| panic!("{} has no state request", agent.label()));
+        assert!(
+            guard < send,
+            "{} sends before checking its session reference",
+            agent.label()
+        );
+    }
+
+    for agent in [
+        crate::agent::Agent::Codex,
+        crate::agent::Agent::Kimi,
+        crate::agent::Agent::Mastracode,
+    ] {
+        let name = agent.label();
+        let target = agent
+            .integration_target()
+            .expect("session-required state reports have an integration");
+        let asset = integration_asset(target).expect("integration has a bundled asset");
+        let (success, stderr, request) = run_state_hook(
+            &base.join(format!("{name}-missing")),
+            name,
+            asset,
+            "working",
+            br#"{}"#,
+        );
+        assert!(success, "{name} hook failed without a session id");
+        assert!(stderr.is_empty(), "{name} hook wrote to stderr");
+        assert!(request.is_none(), "{name} sent a sessionless state report");
+
+        let (success, stderr, request) = run_state_hook(
+            &base.join(format!("{name}-present")),
+            name,
+            asset,
+            "working",
+            br#"{"session_id":"abc"}"#,
+        );
+        assert!(success, "{name} hook failed with a session id");
+        assert!(stderr.is_empty(), "{name} hook wrote to stderr");
+        let request = request.unwrap_or_else(|| panic!("{name} sent no state report"));
+        let request: Value = serde_json::from_str(request.trim()).expect("test precondition");
+        assert_eq!(request["method"], "pane.report_agent");
+        assert_eq!(request["params"]["agent_session_id"], "abc");
+    }
 }
 
 /// Runs a session-only python hook asset with `payload` on stdin. Returns the

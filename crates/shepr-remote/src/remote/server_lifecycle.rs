@@ -50,7 +50,7 @@ pub struct DifferentBuildServer {
 /// refuses) cannot be stopped as a specific instance, so it is an error the
 /// operator has to act on.
 pub(super) fn judge_remote_server(
-    target: &str,
+    target: &SshTarget,
     executable: &RemoteExecutable,
     status: &RemoteServerStatus,
 ) -> io::Result<MachineSshCheck> {
@@ -144,7 +144,7 @@ pub(super) fn parse_remote_server_status_json(status: &str) -> io::Result<Remote
 }
 
 pub(super) fn remote_server_compatibility_error(
-    target: &str,
+    target: &SshTarget,
     version: Option<&str>,
     build_id: Option<&str>,
 ) -> io::Error {
@@ -217,8 +217,12 @@ mod tests {
         RemoteExecutable::parse("/home/u/.cargo/bin/shepr").expect("test precondition")
     }
 
+    fn target() -> SshTarget {
+        SshTarget::parse("host").expect("test precondition")
+    }
+
     fn judge(status: &RemoteServerStatus) -> io::Result<MachineSshCheck> {
-        judge_remote_server("host", &executable(), status)
+        judge_remote_server(&target(), &executable(), status)
     }
 
     fn other_build() -> &'static str {

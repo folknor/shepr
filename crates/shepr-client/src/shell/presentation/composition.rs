@@ -63,6 +63,7 @@ impl ClientShellState {
                 machine_diagnostics: &self.machine_diagnostics,
                 endpoints: &self.endpoints,
                 active_endpoint_id: &self.active_endpoint_id,
+                agent_panel_model: &self.agent_panel_model,
                 collapsed_endpoints: &self.collapsed_endpoints,
                 workspace_scroll: &mut self.workspace_scroll,
                 agent_scroll: &mut self.agent_scroll,
@@ -403,7 +404,7 @@ impl ClientShellState {
                 _ => render::render_client_overlay(
                     &mut scratch,
                     overlay,
-                    &self.endpoints,
+                    &self.navigator_index,
                     &self.active_endpoint_id,
                     &self.config.keybinds,
                     &self.config.palette,

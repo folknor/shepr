@@ -290,24 +290,16 @@ Proposal: in `shepr-platform`, `Pid(NonZeroU32)` with `as_pid_t()`, `Pgid` and
 `SessionId::of_leader(Pid)`, and `enum ProcState` with `is_finished()` and
 `allows_remote_memory_read()`. Reported by foundation, agents and mux-panes.
 
-## TYP-011 - `SshTarget`, `RemoteExecutable` and `MachineLabel` escape to `&str`
+## TYP-011 - `SshTarget` still derefs to `str`
 
-`SshTarget: Deref<Target = str>` (and `IntoSshTarget for &String` clones):
-`.arg(target.as_str())` in four places; `SshMetadataCache` and
-`StoredMetadata.target: String`; `RemoteSsh::target() -> &str`,
-`DiscoverySteps::target()`; message builders taking `target: &str`
-(`judge_remote_server`, `remote_server_compatibility_error`,
-`ensure_remote_client_build`, `ensure_remote_sibling_build`,
-`machine_ssh_error_hint`); `shell_quote(machine.ssh.as_str())` in
-`src/preflight.rs`. `push_if_new_remote_binary_candidate` compares
-`existing.as_str() == candidate.as_str()` although `RemoteExecutable` derives
-`PartialEq`, and `remote_stop_command` re-quotes a value `RemoteExecutable`
-already guarantees is a plain word (`quoted()` exists but is `pub(super)`).
-`MachineSshPreflight::probes: HashMap<String, ..>` is keyed by
-`machine.label.as_str().to_owned()`. Proposal: `SshTarget::append_to(&mut
-Command)`, `cache_key()`, `shell_word()` and `Display`, no `Deref`; key by
-`MachineLabel` (which has no `Deref` and is the good model). Reported by edges
-and contracts.
+The remote crate now uses `SshTarget::append_to`, typed target accessors and
+messages, an `SshTarget` metadata target, `MachineLabel`-keyed probes and
+`RemoteExecutable` equality. Still open: `SshTarget: Deref<Target = str>` and
+`IntoSshTarget for &String` in `crates/shepr-config/src/machine.rs`, one
+`.arg(target.as_str())` site in the machine probe, and the persisted
+`StoredMetadata.target` and platform control-socket API still take text at
+their boundaries. Drop the `Deref` once those go. Reported by edges and
+contracts.
 
 ## TYP-012 - `ClientEndpointId::storage_key()` is used as an identity component
 
@@ -763,11 +755,10 @@ Reported by mux-state and server-app.
 
 ## TYP-045 - Cwds are `PathBuf`s right after `UsableCwd` exists
 
-`UsableCwd` is used only for the OSC 7 event; `Workspace::identity_cwd`,
-`PaneSnapshot::cwd`, `WorkspaceSnapshot::identity_cwd`, `cwd_for_pane`,
-`resolved_identity_cwd_from*`, `PendingCwds` and
-`WorkspaceGitStatus::resolved_identity_cwd` are `PathBuf`, and restore checks
-`is_absolute()` by hand twice. On the wire and in the server, paths are
+Save-time process validation now returns `UsableCwd`; event-loop observations
+deliberately stay unstat'ed paths (a stat could block the loop; commented at
+the code). Saved cwds (`PaneSnapshot::cwd`, `WorkspaceSnapshot::identity_cwd`)
+are still `PathBuf` with restore checking `is_absolute()` by hand. On the wire and in the server, paths are
 `String`: `WorkspaceCreateSource::Cwd`, `WorkspaceCheckoutRootParams::cwd`
 (validated later by `api::cwd::launch_cwd`), `EndpointReply::WorkspaceCheckoutRoot
 { root, home }`, `ClientShellWorkspace::new_workspace_cwd` (where `""` means
@@ -983,22 +974,14 @@ empty string as "no evidence". `OscDebugEvent::command: String` is one of `"0"`,
 Option<u8> }` parsed once by the scanner and `Option<&str>` evidence through to
 the matcher. Reported by terminal and mux-panes.
 
-## TYP-057 - `ModifyOtherKeysLevel` and kitty flags collapse to integers
+## TYP-057 - Keyboard modes still leave the terminal as integers
 
-`ModifyOtherKeysLevel::as_u8()` is called in mux twice (`modify_other_keys_level`
-returning `u8`, with `0` on a poisoned core, and `encode_terminal_key_once`
-filling `KeyEncodeModes.modify_other_keys: u8`); the encoder compares `>= 2`,
-`> 0`, `< 2`, the server compares `> 0` (`render.rs`), the test snapshot collapses
-it to a bool, and `Display` prints the number for splicing into escapes. Kitty
-flags are `u16` (`Terminal::kitty_keyboard_flags()` with inline bit literals,
-`KeyboardProtocol::Kitty { flags: u16 }`, `KeyEncodeModes.kitty_flags`,
-`HostKeyboardProbeResponses.flags`); protocol's `KittyKeyboardFlags` has `bits()`
-and no `contains`, so about ten sites write `flags & X.bits() != 0`, and
-`set_host_kitty_keyboard_report_all` round-trips through crossterm's `u8` with
-`u8::try_from(..).unwrap_or_default()`. Proposal: the enum in `KeyEncodeModes`
-with `encodes(KeyCode)` and `set_sequence()`, no `as_u8` or `Display`; a flags
-type with `contains`, `is_empty`, `insert` owned low enough for vt to return.
-Reported by terminal and mux-panes.
+`KittyKeyboardFlags` now lives in vt with `contains`, `is_empty` and `insert`,
+and `KeyEncodeModes` carries typed flags and `ModifyOtherKeysLevel`. Still
+integers: `PaneTerminal::modify_other_keys_level() -> u8` with the server
+comparing `> 0`, `HostKeyboardProbeResponses.flags: Option<u16>`, and the client's
+`terminal_setup.rs` using `bits()` and `from_bits_retain()` around crossterm's
+`u8`. Reported by terminal and mux-panes.
 
 ## TYP-058 - Cursor shapes round-trip through `u8`
 

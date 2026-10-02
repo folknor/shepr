@@ -114,18 +114,12 @@ pub(super) fn dispatch_client_shell_actions(
                     repaint = true;
                 }
                 endpoint::Selection::Moving => {
-                    let connection = endpoints.connection(&endpoint_id);
-                    let metadata_ready = connection.is_some_and(|connection| {
-                        shell
-                            .endpoint_snapshot_identity(&endpoint_id, connection.generation.get())
-                            .is_some()
-                    });
-                    // A machine without a connection while something is shown is abandoned by
-                    // the next reconcile with its own "is not ready" notice; promising that
-                    // the selection resumes would contradict it.
-                    let abandoned =
-                        connection.is_none() && !endpoint_id.is_local() && choice.shown().is_some();
-                    if !metadata_ready && !abandoned {
+                    if endpoint::view::selection_wait_notice_needed(
+                        &endpoint_id,
+                        choice,
+                        endpoints,
+                        shell,
+                    ) {
                         let notice = waiting_notice(
                             endpoint_id.display_label(),
                             shell.endpoint_status(&endpoint_id),

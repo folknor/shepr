@@ -63,9 +63,8 @@ pub(crate) enum SurfaceOffer {
 #[derive(Debug)]
 pub(crate) struct ClientOutbox {
     queue: Arc<OutboxQueue>,
-    /// False only for `detached()` fixtures, which never connected. Constant
-    /// for the outbox's life, so presenting predicates that read it give one
-    /// answer within a loop iteration.
+    /// Production outboxes are always attached because they come from an
+    /// accepted transport; only `detached()` test fixtures clear it.
     attached: bool,
     replies: ReplyQueue,
     told: Told,
@@ -96,6 +95,8 @@ impl ClientOutbox {
         ControlSender::new(Arc::clone(&self.queue))
     }
 
+    /// Production has no detached outbox state; test fixtures can model one
+    /// that never passed through the accepted transport path.
     pub(crate) fn is_attached(&self) -> bool {
         self.attached
     }
@@ -104,7 +105,7 @@ impl ClientOutbox {
     /// threads, so only the loop's reap reads it; everything else reads
     /// `is_attached` and leaves a closed client to the reap.
     pub(crate) fn is_closed(&self) -> bool {
-        self.attached && !self.queue.lock_state().writer_alive
+        self.is_attached() && !self.queue.lock_state().writer_alive
     }
 
     pub(crate) fn close(&self) {
@@ -154,7 +155,7 @@ impl ClientOutbox {
     /// Encodes a message for this outbox, or `None` when the outbox cannot
     /// take it: it is closed, or the message cannot be encoded, which closes it.
     fn frame<M: serde::Serialize>(&self, message: &M) -> Option<Vec<u8>> {
-        if !self.attached || !self.queue.lock_state().writer_alive {
+        if !self.is_attached() || !self.queue.lock_state().writer_alive {
             return None;
         }
         encode_message_or_close(&self.queue, message)
@@ -163,7 +164,7 @@ impl ClientOutbox {
 
 impl Drop for ClientOutbox {
     fn drop(&mut self) {
-        if self.attached {
+        if self.is_attached() {
             self.queue.remove_sender();
         }
     }
@@ -701,7 +702,7 @@ impl ClientOutbox {
 
     /// `Queued` while the outbox can still take messages, `Closed` after.
     fn liveness(&self) -> Delivery {
-        if self.attached && self.queue.lock_state().writer_alive {
+        if self.is_attached() && self.queue.lock_state().writer_alive {
             Delivery::Queued
         } else {
             Delivery::Closed

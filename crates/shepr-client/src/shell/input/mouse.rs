@@ -1571,6 +1571,7 @@ impl ClientShellState {
                     };
                     self.config.agent_panel_sort = sort;
                     self.agent_panel_sort_manual = true;
+                    self.rebuild_agent_panel_model();
                     self.agent_scroll = 0;
                     self.persist_chrome_preferences(outcome);
                     outcome.repaint = true;

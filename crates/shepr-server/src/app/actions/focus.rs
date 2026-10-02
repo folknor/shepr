@@ -15,6 +15,7 @@ impl AppState {
         let workspace_id = workspace.id.clone();
         let root_pane = workspace.root_pane();
         self.terminals.insert(terminal.id.clone(), terminal);
+        self.index_workspace_terminals(&workspace);
         self.workspaces.push(workspace);
         let workspace_index = self.workspaces.len() - 1;
         self.mark_session_dirty();
@@ -42,6 +43,7 @@ impl AppState {
             public_number,
             true,
         )?;
+        self.pane_terminal_ids.insert(pane_id, terminal_id.clone());
         self.terminals.insert(terminal_id.clone(), terminal);
         self.mark_session_dirty();
         Some(PaneCreationOutcome {

@@ -185,10 +185,17 @@ impl App {
                 let Some(plan) = terminal.pending_agent_resume_plan.clone() else {
                     continue;
                 };
+                let Some(cwd) = shepr_mux::workspace::terminal_cwd(
+                    None,
+                    Some(terminal),
+                    shepr_mux::workspace::CwdPurpose::Resume,
+                ) else {
+                    continue;
+                };
                 pending.push(PendingAgentResumeCandidate {
                     pane_id: info.id,
                     terminal_id: pane.attached_terminal_id.clone(),
-                    cwd: terminal.cwd().to_path_buf(),
+                    cwd,
                     plan,
                     geometry: shepr_mux::workspace::spawn_geometry(
                         info.inner_rect.height,

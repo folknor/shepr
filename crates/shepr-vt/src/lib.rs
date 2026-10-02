@@ -58,11 +58,56 @@ pub use format::AnsiCarry;
 pub use modes::DecMode;
 // limits-exempt: this fixed terminfo name advertises the pane terminal type.
 pub const PANE_TERM: &str = "xterm-256color";
-const PANE_TRUECOLOR_BITS_PER_CHANNEL: Option<&'static [u8]> = Some(b"8");
-pub const PANE_COLORTERM: &str = match PANE_TRUECOLOR_BITS_PER_CHANNEL {
-    Some(_) => "truecolor",
-    None => "",
-};
+pub const PANE_COLORTERM: &str = "truecolor";
+
+/// Kitty keyboard mode flags reported by the terminal core and shared with
+/// the wire and host-terminal adapters.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(transparent)]
+pub struct KittyKeyboardFlags(u16);
+
+impl KittyKeyboardFlags {
+    pub const NONE: Self = Self(0);
+    pub const DISAMBIGUATE: Self = Self(1);
+    pub const REPORT_EVENT_TYPES: Self = Self(2);
+    pub const REPORT_ALTERNATE_KEYS: Self = Self(4);
+    pub const REPORT_ALL_KEYS: Self = Self(8);
+    pub const REPORT_ASSOCIATED_TEXT: Self = Self(16);
+
+    pub const fn from_bits_retain(bits: u16) -> Self {
+        Self(bits)
+    }
+
+    pub const fn bits(self) -> u16 {
+        self.0
+    }
+
+    pub const fn contains(self, flags: Self) -> bool {
+        self.0 & flags.0 == flags.0
+    }
+
+    pub const fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+
+    pub fn insert(&mut self, flags: Self) {
+        self.0 |= flags.0;
+    }
+}
+
+impl std::ops::BitOr for KittyKeyboardFlags {
+    type Output = Self;
+
+    fn bitor(self, rhs: Self) -> Self {
+        Self(self.0 | rhs.0)
+    }
+}
+
+impl std::ops::BitOrAssign for KittyKeyboardFlags {
+    fn bitor_assign(&mut self, rhs: Self) {
+        self.0 |= rhs.0;
+    }
+}
 
 pub use color::{ColorQuery, ColorQueryTarget, DefaultColor, RgbColor, default_palette};
 pub use render::{CursorVisualStyle, Dirty, RenderState};
@@ -263,7 +308,7 @@ struct ExtraModes {
     sgr_pixels_mouse: bool,
     color_scheme_report: bool,
     in_band_resize: bool,
-    /// xterm modifyOtherKeys level (0, 1 or 2).
+    /// xterm modifyOtherKeys level.
     modify_other_keys: ModifyOtherKeysLevel,
     /// The child chose a cursor shape (DECSCUSR 1-6 or OSC 50) and has not
     /// asked for the default back (DECSCUSR 0, RIS).
@@ -284,26 +329,12 @@ pub enum ModifyOtherKeysLevel {
 }
 
 impl ModifyOtherKeysLevel {
-    pub const fn from_parameter(value: u16) -> Self {
-        match value {
-            0 => Self::Off,
-            1 => Self::ExceptWellDefined,
-            _ => Self::All,
-        }
-    }
-
-    pub const fn as_u8(self) -> u8 {
+    pub const fn set_sequence(self) -> &'static [u8] {
         match self {
-            Self::Off => 0,
-            Self::ExceptWellDefined => 1,
-            Self::All => 2,
+            Self::Off => b"\x1b[>4;0m",
+            Self::ExceptWellDefined => b"\x1b[>4;1m",
+            Self::All => b"\x1b[>4;2m",
         }
-    }
-}
-
-impl fmt::Display for ModifyOtherKeysLevel {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.as_u8())
     }
 }
 
@@ -682,12 +713,7 @@ impl Terminal {
             // state here. During synchronized output the parser buffers these
             // bytes and replays them in order with the surrounding frame.
             ScanEvent::ModifyOtherKeys(level) => {
-                let sequence = match level {
-                    ModifyOtherKeysLevel::Off => b"\x1b[>4;0m".as_slice(),
-                    ModifyOtherKeysLevel::ExceptWellDefined => b"\x1b[>4;1m".as_slice(),
-                    ModifyOtherKeysLevel::All => b"\x1b[>4;2m".as_slice(),
-                };
-                self.advance(sequence, now);
+                self.advance(level.set_sequence(), now);
             }
         }
     }
@@ -713,6 +739,8 @@ impl Terminal {
                 TerminalEvent::ColorQuery(query) => {
                     self.responses.push(PtyResponse::ColorQuery(query));
                 }
+                // Clipboard effects carry only non-empty clipboard-target
+                // payloads; empty and selection-target stores are ignored.
                 TerminalEvent::ClipboardStore(ClipboardType::Clipboard, text)
                     if !text.is_empty() && text.len() <= MAX_CLIPBOARD_BYTES =>
                 {
@@ -842,18 +870,33 @@ impl Terminal {
     }
 
     /// Active kitty keyboard flags (bit 0 disambiguate through bit 4 associated text).
-    pub fn kitty_keyboard_flags(&self) -> u16 {
+    pub fn kitty_keyboard_flags(&self) -> KittyKeyboardFlags {
         let mode = *self.term.mode();
-        let mut flags = 0;
-        for (term_mode, bit) in [
-            (TermMode::DISAMBIGUATE_ESC_CODES, 1),
-            (TermMode::REPORT_EVENT_TYPES, 2),
-            (TermMode::REPORT_ALTERNATE_KEYS, 4),
-            (TermMode::REPORT_ALL_KEYS_AS_ESC, 8),
-            (TermMode::REPORT_ASSOCIATED_TEXT, 16),
+        let mut flags = KittyKeyboardFlags::NONE;
+        for (term_mode, flag) in [
+            (
+                TermMode::DISAMBIGUATE_ESC_CODES,
+                KittyKeyboardFlags::DISAMBIGUATE,
+            ),
+            (
+                TermMode::REPORT_EVENT_TYPES,
+                KittyKeyboardFlags::REPORT_EVENT_TYPES,
+            ),
+            (
+                TermMode::REPORT_ALTERNATE_KEYS,
+                KittyKeyboardFlags::REPORT_ALTERNATE_KEYS,
+            ),
+            (
+                TermMode::REPORT_ALL_KEYS_AS_ESC,
+                KittyKeyboardFlags::REPORT_ALL_KEYS,
+            ),
+            (
+                TermMode::REPORT_ASSOCIATED_TEXT,
+                KittyKeyboardFlags::REPORT_ASSOCIATED_TEXT,
+            ),
         ] {
             if mode.contains(term_mode) {
-                flags |= bit;
+                flags.insert(flag);
             }
         }
         flags

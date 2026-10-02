@@ -744,7 +744,11 @@ impl<T: EventListener> Handler for CoreHandler<'_, T> {
 
     /// Answered here; the pinned alacritty leaves it a no-op.
     fn report_modify_other_keys(&mut self) {
-        let level = self.modes.modify_other_keys;
+        let level = match self.modes.modify_other_keys {
+            super::ModifyOtherKeysLevel::Off => 0,
+            super::ModifyOtherKeysLevel::ExceptWellDefined => 1,
+            super::ModifyOtherKeysLevel::All => 2,
+        };
         self.reply(format!("\x1b[>4;{level}m"));
     }
 

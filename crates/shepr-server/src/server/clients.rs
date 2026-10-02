@@ -49,7 +49,7 @@ impl std::fmt::Display for ClientId {
 #[derive(Debug, Default)]
 pub(crate) struct ClientShellState {
     /// Whether this shell currently receives pane surfaces.
-    pub(crate) surface_active: bool,
+    surface_active: bool,
     /// Whether this shell wants host mouse capture without pane demand.
     pub(crate) mouse_capture: bool,
     /// Last host terminal default colors reported by this shell.
@@ -81,11 +81,15 @@ pub(crate) struct ClientShellState {
 }
 
 impl ClientShellState {
-    pub(crate) fn active() -> Self {
+    pub(crate) fn with_surface_active(surface_active: bool) -> Self {
         Self {
-            surface_active: true,
+            surface_active,
             ..Self::default()
         }
+    }
+
+    pub(crate) fn is_surface_active(&self) -> bool {
+        self.surface_active
     }
 
     fn update_host_theme(&mut self, update: &shepr_protocol::ClientHostThemeUpdate) -> bool {
@@ -149,6 +153,29 @@ pub(crate) struct RenderTarget {
     pub(crate) cell_size: shepr_termio::host_term::cell_size::HostCellSize,
 }
 
+/// State returned when a client stops presenting a pane surface or leaves the
+/// connection registry. Registry ownership and foreground arbitration are
+/// settled before the headless server applies these effects to panes.
+pub(crate) enum ClientDeparture {
+    SurfaceDeactivated {
+        foreground_changed: bool,
+        held_inputs: Vec<ClientShellHeldInput>,
+    },
+    ConnectionRemoved {
+        foreground_changed: bool,
+        held_inputs: Vec<ClientShellHeldInput>,
+    },
+}
+
+/// What `set_surface_active` changed. Activation reports the foreground
+/// change here; deactivation reports it inside its departure, which exists
+/// only when the surface was presenting.
+pub(crate) struct ClientSurfaceChange {
+    pub(crate) changed: bool,
+    pub(crate) foreground_changed: bool,
+    pub(crate) departure: Option<ClientDeparture>,
+}
+
 /// Pure client identity and ownership state for one headless server.
 ///
 /// Connection accessors support the transport and rendering paths that need to
@@ -158,9 +185,10 @@ pub(crate) struct RenderTarget {
 /// Presentation (surface size, outer focus, location, window title, input
 /// modes) lives on each connection, and so does what the connection is owed
 /// (its render state's settle point and surface debt); nothing here or in the
-/// app mirrors one client's view as a session-wide one. The registry holds two arbitrations
-/// between clients: which one controls each workspace's PTY geometry, and which
-/// active shell most recently recorded user activity (the foreground client).
+/// app mirrors one client's view as a session-wide one. The registry holds two
+/// arbitrations between clients: which one controls each workspace's PTY
+/// geometry, and which presenting shell most recently recorded user activity
+/// (the foreground client).
 /// Connection or surface activation, outer focus gain, pane interaction, and
 /// endpoint commands record activity; a surface resize only changes geometry.
 /// The foreground client supplies the host theme panes are coloured with, the
@@ -254,6 +282,20 @@ impl ClientRegistry {
         self.connections.iter()
     }
 
+    /// Shells that currently present a pane surface. Keep the connection and
+    /// activation checks here so geometry, visibility, focus, and foreground
+    /// decisions agree about which clients count.
+    pub(crate) fn presenting(&self) -> impl Iterator<Item = (&ClientId, &ClientConnection)> {
+        self.connections
+            .iter()
+            .filter(|(_, client)| client.presents_surface())
+    }
+
+    pub(crate) fn is_presenting<K: Copy + Into<ClientId>>(&self, client_id: &K) -> bool {
+        self.get(client_id)
+            .is_some_and(ClientConnection::presents_surface)
+    }
+
     pub(crate) fn allocate_activity_stamp(&mut self) -> ActivityStamp {
         let stamp = self.next_activity_stamp;
         self.next_activity_stamp = self.next_activity_stamp.saturating_add(1);
@@ -265,7 +307,9 @@ impl ClientRegistry {
     }
 
     pub(crate) fn latest_shell_client(&self) -> Option<ClientId> {
-        latest_shell_client(&self.connections)
+        self.presenting()
+            .max_by_key(|(_, client)| client.last_activity)
+            .map(|(&client_id, _)| client_id)
     }
 
     pub(crate) fn promote_to_foreground(&mut self, client_id: ClientId) -> bool {
@@ -273,7 +317,7 @@ impl ClientRegistry {
         let Some(client) = self.connections.get_mut(&client_id) else {
             return false;
         };
-        if !client.is_active_shell_client() {
+        if !client.presents_surface() {
             return false;
         }
         client.last_activity = stamp;
@@ -282,36 +326,80 @@ impl ClientRegistry {
         changed
     }
 
+    /// Changes whether this shell presents a pane surface. Deactivation also
+    /// relinquishes geometry and foreground ownership and returns the held
+    /// input releases for the headless server to apply to the panes.
+    pub(crate) fn set_surface_active(
+        &mut self,
+        client_id: ClientId,
+        active: bool,
+    ) -> Option<ClientSurfaceChange> {
+        if active {
+            let client = self.connections.get_mut(&client_id)?;
+            let changed = !client.shell_state().is_surface_active();
+            client.shell_state_mut().surface_active = true;
+            let foreground_changed = self.promote_to_foreground(client_id);
+            return Some(ClientSurfaceChange {
+                changed,
+                foreground_changed,
+                departure: None,
+            });
+        }
+
+        let client = self.connections.get_mut(&client_id)?;
+        let changed = client.shell_state().is_surface_active();
+        if !changed {
+            return Some(ClientSurfaceChange {
+                changed: false,
+                foreground_changed: false,
+                departure: None,
+            });
+        }
+        client.shell_state_mut().surface_active = false;
+        let held_inputs = client.drain_shell_held_inputs();
+        self.remove_geometry_controllers_for(client_id);
+        let foreground_changed = if self.foreground_client_id == Some(client_id) {
+            self.promote_latest_remaining()
+        } else {
+            false
+        };
+        Some(ClientSurfaceChange {
+            changed: true,
+            foreground_changed: false,
+            departure: Some(ClientDeparture::SurfaceDeactivated {
+                foreground_changed,
+                held_inputs,
+            }),
+        })
+    }
+
     pub(crate) fn promote_latest_remaining(&mut self) -> bool {
-        let next = latest_shell_client(&self.connections);
+        let next = self.latest_shell_client();
         let changed = next != self.foreground_client_id;
         self.foreground_client_id = next;
         changed
     }
 
     pub(crate) fn app_client_count(&self) -> usize {
-        self.connections
-            .values()
-            .filter(|client| client.is_active_shell_client() && client.outbox.is_attached())
-            .count()
+        self.presenting().count()
     }
 
-    pub(crate) fn remove_client(
-        &mut self,
-        client_id: ClientId,
-    ) -> (Option<ClientConnection>, bool) {
-        let was_foreground = self.foreground_client_id == Some(client_id);
-        let removed = self.connections.remove(&client_id);
-        if let Some(removed) = &removed {
-            // The reader thread holds a control sender on the same queue, so
-            // dropping the outbox cannot by itself end the transport lifetime.
-            removed.outbox.close();
-        }
+    pub(crate) fn remove_client(&mut self, client_id: ClientId) -> Option<ClientDeparture> {
+        let mut removed = self.connections.remove(&client_id)?;
+        // The reader thread holds a control sender on the same queue, so
+        // dropping the outbox cannot by itself end the transport lifetime.
+        removed.outbox.close();
+        let held_inputs = removed.drain_shell_held_inputs();
         self.remove_geometry_controllers_for(client_id);
-        if was_foreground {
-            self.foreground_client_id = None;
-        }
-        (removed, was_foreground)
+        let foreground_changed = if self.foreground_client_id == Some(client_id) {
+            self.promote_latest_remaining()
+        } else {
+            false
+        };
+        Some(ClientDeparture::ConnectionRemoved {
+            foreground_changed,
+            held_inputs,
+        })
     }
 
     pub(crate) fn clear(&mut self) {
@@ -332,6 +420,9 @@ impl ClientRegistry {
         workspace_id: WorkspaceId,
         client_id: ClientId,
     ) -> Option<ClientId> {
+        if !self.is_presenting(&client_id) {
+            return None;
+        }
         self.geometry_controllers.insert(workspace_id, client_id)
     }
 
@@ -343,7 +434,7 @@ impl ClientRegistry {
         if !self
             .connections
             .get(&client_id)
-            .is_some_and(ClientConnection::is_active_shell_client)
+            .is_some_and(ClientConnection::presents_surface)
         {
             return false;
         }
@@ -358,7 +449,7 @@ impl ClientRegistry {
         if !self
             .connections
             .get(&client_id)
-            .is_some_and(ClientConnection::is_active_shell_client)
+            .is_some_and(ClientConnection::presents_surface)
         {
             return false;
         }
@@ -407,7 +498,7 @@ pub(crate) struct ClientShellHeldInput {
 /// views the same workspace.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct ClientShellLocation {
-    pub(crate) focused_workspace_id: Option<WorkspaceId>,
+    focused_workspace_id: Option<WorkspaceId>,
     index: usize,
     generation: u64,
 }
@@ -433,6 +524,10 @@ impl ClientShellLocation {
     /// which workspace this is, and only then.
     pub(crate) fn generation(&self) -> u64 {
         self.generation
+    }
+
+    pub(crate) fn focused_workspace_id(&self) -> Option<&WorkspaceId> {
+        self.focused_workspace_id.as_ref()
     }
 
     /// Moves to `workspace_id`, now at `index`. Returns whether the viewed
@@ -665,22 +760,17 @@ impl ClientConnection {
     }
 
     pub(crate) fn is_active_shell_client(&self) -> bool {
-        self.shell_state().surface_active
+        self.shell_state().is_surface_active()
+    }
+
+    pub(crate) fn presents_surface(&self) -> bool {
+        self.is_active_shell_client() && self.outbox.is_attached()
     }
 }
 
-pub(crate) fn latest_shell_client(
-    clients: &HashMap<ClientId, ClientConnection>,
-) -> Option<ClientId> {
-    clients
-        .iter()
-        .filter(|(_, client)| client.is_active_shell_client())
-        .max_by_key(|(_, client)| client.last_activity)
-        .map(|(&client_id, _)| client_id)
-}
-
-/// Every connection with a writer, each rendered at its own surface size, in
-/// a stable order.
+/// Every transport-backed shell, including inactive shells that still receive
+/// control projections. Keep connection provenance here; pane surfaces are
+/// sent only to the registry's presenting subset.
 pub(crate) fn render_targets(clients: &ClientRegistry) -> Vec<RenderTarget> {
     let mut targets: Vec<RenderTarget> = clients
         .iter()
@@ -771,7 +861,7 @@ impl ClientConnection {
         outbox: ClientOutbox,
     ) -> Self {
         Self::with_shell(
-            ClientShellState::active(),
+            ClientShellState::with_surface_active(true),
             shepr_core::geometry::GridSize::clamped(terminal_size.0, terminal_size.1),
             cell_size,
             last_activity,
@@ -803,7 +893,14 @@ mod tests {
             (first_id, second_id),
             (ClientId::test_new(1), ClientId::test_new(2))
         );
-        let first = shell_client();
+        let (first_outbox, _first_control, _first_render) = ClientOutbox::test_pair();
+        let first = ClientConnection::with_shell(
+            ClientShellState::with_surface_active(true),
+            shepr_core::geometry::GridSize::clamped(80, 24),
+            shepr_termio::host_term::cell_size::HostCellSize::default(),
+            registry.allocate_activity_stamp(),
+            first_outbox,
+        );
         // A shell whose surface is not active never becomes the foreground.
         let second = ClientConnection::with_shell(
             ClientShellState::default(),
@@ -823,14 +920,38 @@ mod tests {
         assert!(!registry.claim_unowned_geometry(workspace_id.clone(), first_id));
         assert_eq!(registry.geometry_controller(&workspace_id), Some(first_id));
 
-        let (_, was_foreground) = registry.remove_client(first_id);
-        assert!(was_foreground);
+        let Some(ClientSurfaceChange {
+            changed: true,
+            departure,
+            ..
+        }) = registry.set_surface_active(first_id, false)
+        else {
+            panic!("deactivating a presenting surface changes it");
+        };
+        assert!(matches!(
+            departure,
+            Some(ClientDeparture::SurfaceDeactivated {
+                foreground_changed: true,
+                ..
+            })
+        ));
         assert_eq!(registry.geometry_controller(&workspace_id), None);
         assert!(!registry.promote_latest_remaining());
         assert_eq!(registry.foreground_client_id(), None);
-        let (removed, was_foreground) = registry.remove_client(second_id);
-        assert!(removed.is_some());
-        assert!(!was_foreground);
+        assert!(matches!(
+            registry.remove_client(first_id),
+            Some(ClientDeparture::ConnectionRemoved {
+                foreground_changed: false,
+                ..
+            })
+        ));
+        assert!(matches!(
+            registry.remove_client(second_id),
+            Some(ClientDeparture::ConnectionRemoved {
+                foreground_changed: false,
+                ..
+            })
+        ));
     }
 
     #[test]
@@ -850,8 +971,10 @@ mod tests {
             ),
         );
 
-        let (removed, _) = registry.remove_client(client_id);
-        assert!(removed.is_some());
+        assert!(matches!(
+            registry.remove_client(client_id),
+            Some(ClientDeparture::ConnectionRemoved { .. })
+        ));
         assert_eq!(
             reader_control.send(&shepr_protocol::ServerMessage::HealthPong),
             crate::server::outbox::Delivery::Closed

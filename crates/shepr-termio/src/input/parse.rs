@@ -608,7 +608,10 @@ mod tests {
             crossterm::event::KeyEventKind::Press,
             None,
         );
-        assert_eq!(encode_terminal_key(key, KeyboardProtocol::Legacy), b"\x1bA");
+        assert_eq!(
+            encode_terminal_key(key, KeyboardProtocol::legacy()),
+            b"\x1bA"
+        );
     }
 
     #[test]
@@ -623,7 +626,7 @@ mod tests {
             None,
         );
         assert_eq!(
-            encode_terminal_key(key, KeyboardProtocol::Legacy),
+            encode_terminal_key(key, KeyboardProtocol::legacy()),
             b"\x1b\x06"
         );
     }
@@ -1015,7 +1018,7 @@ mod tests {
     #[test]
     fn legacy_lf_roundtrips_as_lf() {
         let key = parse_terminal_key_sequence("\n").expect("test precondition");
-        assert_eq!(encode_terminal_key(key, KeyboardProtocol::Legacy), b"\n");
+        assert_eq!(encode_terminal_key(key, KeyboardProtocol::legacy()), b"\n");
     }
 
     #[test]

@@ -7,6 +7,8 @@ priority = 1100
 region = "osc_title"
 visible_working = true
 # Braille covers <= 2.1.227; half-circles are the 2.1.228 busy spinner.
+# This classifies Claude's working title; cross-agent title cleanup strips a
+# broader set and does not decide whether a marker means working or idle.
 regex = ['^[\x{2800}-\x{28FF}\x{25D0}-\x{25D3}] ']
 # This rule outranks every blocker, and the title can keep a spinner frame
 # while a dialog waits on the user. Stand down while live dialog controls sit

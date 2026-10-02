@@ -118,18 +118,7 @@ impl App {
                 generation,
                 event,
             } => {
-                let runtime = self
-                    .state
-                    .workspaces
-                    .iter()
-                    .enumerate()
-                    .find_map(|(index, _)| {
-                        self.state.runtime_for_pane_in_workspace(
-                            &self.terminal_runtimes,
-                            index,
-                            pane_id,
-                        )
-                    });
+                let runtime = self.state.runtime_of(&self.terminal_runtimes, pane_id);
                 runtime.filter(|runtime| runtime.generation() == generation)?;
                 self.admit_runtime_event(*event)
             }
@@ -184,11 +173,10 @@ impl App {
         exit_reason: shepr_platform::ChildExitReason,
     ) -> bool {
         exit_reason.requires_session_checkpoint()
-            && !self.state.workspaces.iter().enumerate().any(|(index, _)| {
-                self.state
-                    .runtime_for_pane_in_workspace(&self.terminal_runtimes, index, pane_id)
-                    .is_some_and(shepr_mux::pane::PaneRuntime::terminal_core_broken)
-            })
+            && !self
+                .state
+                .runtime_of(&self.terminal_runtimes, pane_id)
+                .is_some_and(shepr_mux::pane::PaneRuntime::terminal_core_broken)
     }
 
     /// Applies an event whose pane-exit publication and checkpoint decision
@@ -238,11 +226,10 @@ impl App {
         // including the identity-clear tick following its process-exit report.
         if let AppEvent::StateChanged { pane_id, .. }
         | AppEvent::AgentProcessDetected { pane_id, .. } = &ev
-            && self.state.workspaces.iter().enumerate().any(|(index, _)| {
-                self.state
-                    .runtime_for_pane_in_workspace(&self.terminal_runtimes, index, *pane_id)
-                    .is_some_and(shepr_mux::pane::PaneRuntime::child_has_exited)
-            })
+            && self
+                .state
+                .runtime_of(&self.terminal_runtimes, *pane_id)
+                .is_some_and(shepr_mux::pane::PaneRuntime::child_has_exited)
         {
             return false;
         }
@@ -359,12 +346,7 @@ impl App {
     }
 
     fn sync_pane_lifecycle_authority_detection_pause(&self, pane_id: PaneId) {
-        let Some(terminal_id) = self
-            .state
-            .workspaces
-            .iter()
-            .find_map(|workspace| workspace.terminal_id(pane_id))
-        else {
+        let Some(terminal_id) = self.state.terminal_of(pane_id) else {
             return;
         };
         if let (Some(terminal), Some(runtime)) = (

@@ -15,6 +15,8 @@ state = "working"
 priority = 1050
 region = "osc_title"
 visible_working = true
+# Codex exposes this spinner subset as a working signal. Title cleanup strips
+# any braille prefix without assigning state.
 regex = ['(?:^| )[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏](?: |$)']
 
 [[rules]]

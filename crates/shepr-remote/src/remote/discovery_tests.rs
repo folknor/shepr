@@ -1,9 +1,15 @@
 //! Full discovery of a configured machine's remote executable, resumed across attempts.
 
 use super::*;
+use std::sync::OnceLock;
 
 fn executable(path: &'static str) -> RemoteExecutable {
     RemoteExecutable::parse(path).expect("test precondition")
+}
+
+fn build_target() -> &'static SshTarget {
+    static TARGET: OnceLock<SshTarget> = OnceLock::new();
+    TARGET.get_or_init(|| SshTarget::parse("build").expect("test precondition"))
 }
 
 /// A remote host reached through fake round trips. `fail_at` names the call (counted
@@ -83,8 +89,8 @@ impl DiscoverySteps for FakeHost {
         Ok(candidate.as_str() == self.matching)
     }
 
-    fn target(&self) -> &str {
-        "build"
+    fn target(&self) -> &SshTarget {
+        build_target()
     }
 }
 
@@ -314,7 +320,7 @@ fn ssh_exit_255_from_a_discovery_command_has_no_remote_result() {
             }
             self.0.matches(candidate)
         }
-        fn target(&self) -> &str {
+        fn target(&self) -> &SshTarget {
             self.0.target()
         }
     }
@@ -392,7 +398,7 @@ fn remote_client_status_requires_an_exact_build_id() {
         binary: None,
         server: None,
     };
-    assert!(ensure_remote_client_build("build", &matching).is_ok());
+    assert!(ensure_remote_client_build(build_target(), &matching).is_ok());
 
     let other_build = if shepr_protocol::BUILD_ID == "ffffffffffffffff" {
         "0000000000000000"
@@ -405,7 +411,8 @@ fn remote_client_status_requires_an_exact_build_id() {
         binary: None,
         server: None,
     };
-    let error = ensure_remote_client_build("build", &mismatched).expect_err("build mismatch");
+    let error =
+        ensure_remote_client_build(build_target(), &mismatched).expect_err("build mismatch");
     assert_eq!(error.kind(), io::ErrorKind::Unsupported);
     assert!(error.to_string().contains(other_build));
 }
@@ -418,7 +425,8 @@ fn client_build_mismatch_filters_remote_text_with_the_shared_rule() {
         binary: None,
         server: None,
     };
-    let error = ensure_remote_client_build("build", &mismatched).expect_err("build mismatch");
+    let error =
+        ensure_remote_client_build(build_target(), &mismatched).expect_err("build mismatch");
     assert!(
         error
             .to_string()
@@ -450,7 +458,8 @@ fn sibling(build_id: Option<&str>, error: Option<&str>) -> shepr_api::schema::Si
 #[test]
 fn the_remote_pair_check_requires_a_sibling_of_this_build() {
     let matching = client_status_with_sibling(Some(sibling(Some(shepr_protocol::BUILD_ID), None)));
-    assert!(ensure_remote_sibling_build("host", &matching).is_ok());
+    let host = SshTarget::parse("host").expect("test precondition");
+    assert!(ensure_remote_sibling_build(&host, &matching).is_ok());
 
     let other_build = if shepr_protocol::BUILD_ID == "ffffffffffffffff" {
         "0000000000000000"
@@ -458,7 +467,7 @@ fn the_remote_pair_check_requires_a_sibling_of_this_build() {
         "ffffffffffffffff"
     };
     let stale = client_status_with_sibling(Some(sibling(Some(other_build), None)));
-    let error = ensure_remote_sibling_build("host", &stale).expect_err("stale sibling");
+    let error = ensure_remote_sibling_build(&host, &stale).expect_err("stale sibling");
     assert_eq!(error.kind(), io::ErrorKind::Unsupported);
     assert!(error.to_string().contains(other_build), "{error}");
     assert!(error.to_string().contains("shepr-server"), "{error}");
@@ -466,8 +475,9 @@ fn the_remote_pair_check_requires_a_sibling_of_this_build() {
 
 #[test]
 fn a_missing_or_unreported_remote_sibling_is_an_install_error() {
+    let host = SshTarget::parse("host").expect("test precondition");
     let unreported = client_status_with_sibling(None);
-    let error = ensure_remote_sibling_build("host", &unreported).expect_err("no report");
+    let error = ensure_remote_sibling_build(&host, &unreported).expect_err("no report");
     assert_eq!(error.kind(), io::ErrorKind::Unsupported);
     assert!(error.to_string().contains("did not report"), "{error}");
 
@@ -475,7 +485,7 @@ fn a_missing_or_unreported_remote_sibling_is_an_install_error() {
         None,
         Some("shepr-server was not found at /home/u/.cargo/bin/shepr-server"),
     )));
-    let error = ensure_remote_sibling_build("host", &missing).expect_err("missing sibling");
+    let error = ensure_remote_sibling_build(&host, &missing).expect_err("missing sibling");
     assert!(error.to_string().contains("was not found"), "{error}");
     assert!(
         error
@@ -487,13 +497,14 @@ fn a_missing_or_unreported_remote_sibling_is_an_install_error() {
 
 #[test]
 fn remote_sibling_text_is_filtered_before_local_output() {
+    let host = SshTarget::parse("host").expect("test precondition");
     let hostile = client_status_with_sibling(Some(shepr_api::schema::SiblingServerJson {
         binary: Some("/bin/\x1b[2Jshepr-server".into()),
         version: Some("1.0\x1b[2J".into()),
         build_id: Some("\x1b[2J".into()),
         error: Some("boom\x1b[2J".into()),
     }));
-    let error = ensure_remote_sibling_build("host", &hostile).expect_err("hostile report");
+    let error = ensure_remote_sibling_build(&host, &hostile).expect_err("hostile report");
     assert!(!error.to_string().contains('\x1b'), "{error}");
 
     let hostile = client_status_with_sibling(Some(shepr_api::schema::SiblingServerJson {
@@ -502,7 +513,7 @@ fn remote_sibling_text_is_filtered_before_local_output() {
         build_id: Some("\x1b[2J".into()),
         error: None,
     }));
-    let error = ensure_remote_sibling_build("host", &hostile).expect_err("hostile report");
+    let error = ensure_remote_sibling_build(&host, &hostile).expect_err("hostile report");
     assert!(!error.to_string().contains('\x1b'), "{error}");
 }
 
@@ -524,8 +535,8 @@ fn exhausted_discovery_names_a_path_rejected_for_shell_quoting() {
         fn matches(&mut self, _candidate: &RemoteExecutable) -> io::Result<bool> {
             Ok(false)
         }
-        fn target(&self) -> &str {
-            "build"
+        fn target(&self) -> &SshTarget {
+            build_target()
         }
         fn take_rejected_shell_unsafe_candidate(&mut self) -> Option<RejectedShellUnsafeCandidate> {
             self.0.take()
@@ -680,8 +691,8 @@ impl DiscoverySteps for RejectingHost {
         Ok(candidate.as_str() == self.matches)
     }
 
-    fn target(&self) -> &str {
-        "build"
+    fn target(&self) -> &SshTarget {
+        build_target()
     }
 }
 

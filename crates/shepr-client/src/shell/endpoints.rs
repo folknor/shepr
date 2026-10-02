@@ -4,7 +4,8 @@ use super::*;
 pub(crate) struct ClientShellEndpoint {
     pub(crate) endpoint_id: ClientEndpointId,
     pub(crate) status: ClientEndpointStatus,
-    pub(crate) snapshot: Option<Box<ClientShellSnapshot>>,
+    /// The cached endpoint and active projection share this immutable snapshot.
+    pub(crate) snapshot: Option<Arc<ClientShellSnapshot>>,
     /// Connection generation that produced the snapshot; absent only in tests.
     pub(crate) snapshot_generation: Option<u64>,
     pub(crate) agent_recency: HashMap<shepr_protocol::PublicPaneId, u64>,
@@ -46,6 +47,7 @@ impl ClientShellState {
             });
         }
         self.endpoints = next;
+        self.rebuild_endpoint_models();
     }
 
     pub fn set_endpoint_status(
@@ -59,12 +61,17 @@ impl ClientShellState {
         if endpoint_id == &self.active_endpoint_id && status != ClientEndpointStatus::Online {
             self.pending_workspace_highlight = None;
         }
+        let mut changed = false;
         if let Some(endpoint) = self
             .endpoints
             .iter_mut()
             .find(|endpoint| &endpoint.endpoint_id == endpoint_id)
         {
+            changed = endpoint.status != status;
             endpoint.status = status;
+        }
+        if changed {
+            self.rebuild_endpoint_models();
         }
     }
 
@@ -217,16 +224,16 @@ impl ClientShellState {
         &mut self,
         endpoint_id: &ClientEndpointId,
         generation: u64,
-        snapshot: Box<ClientShellSnapshot>,
+        snapshot: impl Into<Arc<ClientShellSnapshot>>,
     ) {
-        self.cache_endpoint_snapshot_at_generation(endpoint_id, Some(generation), snapshot);
+        self.cache_endpoint_snapshot_at_generation(endpoint_id, Some(generation), snapshot.into());
     }
 
     fn cache_endpoint_snapshot_at_generation(
         &mut self,
         endpoint_id: &ClientEndpointId,
         generation: Option<u64>,
-        snapshot: Box<ClientShellSnapshot>,
+        snapshot: Arc<ClientShellSnapshot>,
     ) {
         let Some(index) = self
             .endpoints
@@ -246,6 +253,11 @@ impl ClientShellState {
             return;
         }
         let previous = self.endpoints[index].snapshot.as_deref();
+        let previous_sequences = previous
+            .into_iter()
+            .flat_map(|snapshot| snapshot.agents.iter())
+            .map(|agent| (agent.pane_id.as_str(), agent.state_change_seq))
+            .collect::<HashMap<_, _>>();
         let mut next_recency = self
             .endpoints
             .iter()
@@ -257,14 +269,9 @@ impl ClientShellState {
         agents.sort_by_key(|agent| agent.state_change_seq);
         let mut recency = self.endpoints[index].agent_recency.clone();
         for agent in agents {
-            let changed = previous
-                .and_then(|snapshot| {
-                    snapshot
-                        .agents
-                        .iter()
-                        .find(|previous| previous.pane_id == agent.pane_id)
-                })
-                .is_none_or(|previous| previous.state_change_seq != agent.state_change_seq);
+            let changed = previous_sequences
+                .get(agent.pane_id.as_str())
+                .is_none_or(|previous_seq| *previous_seq != agent.state_change_seq);
             if changed {
                 next_recency = next_recency.saturating_add(1);
                 recency.insert(agent.pane_id.clone(), next_recency);
@@ -280,6 +287,7 @@ impl ClientShellState {
         endpoint.agent_recency = recency;
         endpoint.snapshot_generation = generation;
         endpoint.snapshot = Some(snapshot);
+        self.rebuild_endpoint_models();
     }
 
     pub fn set_endpoint_snapshot_for_generation(
@@ -309,6 +317,16 @@ impl ClientShellState {
         if endpoint_id == &self.active_endpoint_id {
             self.apply_active_snapshot(snapshot, generation);
         }
+    }
+
+    pub(super) fn rebuild_agent_panel_model(&mut self) {
+        self.agent_panel_model =
+            super::aggregate_navigation::AgentPanelModel::build(&self.endpoints, &self.config);
+    }
+
+    fn rebuild_endpoint_models(&mut self) {
+        self.rebuild_agent_panel_model();
+        self.navigator_index = super::aggregate_navigation::NavigatorIndex::build(&self.endpoints);
     }
 }
 
@@ -344,9 +362,9 @@ impl ClientShellState {
     pub(crate) fn cache_endpoint_snapshot(
         &mut self,
         endpoint_id: &ClientEndpointId,
-        snapshot: Box<ClientShellSnapshot>,
+        snapshot: impl Into<Arc<ClientShellSnapshot>>,
     ) {
-        self.cache_endpoint_snapshot_at_generation(endpoint_id, None, snapshot);
+        self.cache_endpoint_snapshot_at_generation(endpoint_id, None, snapshot.into());
     }
 
     pub fn set_endpoint_snapshot(

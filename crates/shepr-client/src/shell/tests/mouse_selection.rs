@@ -729,7 +729,7 @@ fn reconnect_word_selection_tracks_content_changes() {
             next_surface.frame.cells[14].symbol = " ".into();
         }
         let endpoint_id = state.active_endpoint_id.clone();
-        let snapshot = state.snapshot.as_ref().expect("test precondition").clone();
+        let snapshot = std::sync::Arc::clone(state.snapshot.as_ref().expect("test precondition"));
         state.mark_endpoint_disconnected(&endpoint_id);
         state.cache_endpoint_snapshot_for_generation(&endpoint_id, 1, snapshot);
         state.set_endpoint_status(&endpoint_id, crate::endpoint::ClientEndpointStatus::Online);

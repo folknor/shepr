@@ -147,35 +147,51 @@ fn host_modify_other_keys_mode_for_env(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum KeyboardProtocol {
+pub struct KeyboardProtocol(KeyboardProtocolMode);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum KeyboardProtocolMode {
     Legacy,
-    Kitty { flags: u16 },
+    Kitty(KittyKeyboardFlags),
 }
 
 impl KeyboardProtocol {
-    pub fn from_kitty_flags(flags: u16) -> Self {
-        if flags == 0 {
-            Self::Legacy
+    pub const fn legacy() -> Self {
+        Self(KeyboardProtocolMode::Legacy)
+    }
+
+    pub const fn from_flags(flags: KittyKeyboardFlags) -> Self {
+        if flags.is_empty() {
+            Self::legacy()
         } else {
-            Self::Kitty { flags }
+            Self(KeyboardProtocolMode::Kitty(flags))
         }
     }
 
-    // `KittyKeyboardFlags` is a wire newtype, not a bitflags set; use its named bits.
+    /// Retains the integer constructor for callers that still receive raw flags.
+    pub fn from_kitty_flags(flags: u16) -> Self {
+        Self::from_flags(KittyKeyboardFlags::from_bits_retain(flags))
+    }
+
+    pub const fn is_kitty(self) -> bool {
+        matches!(self.0, KeyboardProtocolMode::Kitty(_))
+    }
+
+    pub const fn kitty_flags(self) -> KittyKeyboardFlags {
+        match self.0 {
+            KeyboardProtocolMode::Legacy => KittyKeyboardFlags::NONE,
+            KeyboardProtocolMode::Kitty(flags) => flags,
+        }
+    }
+
     pub fn reports_event_types(self) -> bool {
-        matches!(
-            self,
-            Self::Kitty { flags }
-                if flags & KittyKeyboardFlags::REPORT_EVENT_TYPES.bits() != 0
-        )
+        self.kitty_flags()
+            .contains(KittyKeyboardFlags::REPORT_EVENT_TYPES)
     }
 
     pub fn reports_all_keys(self) -> bool {
-        matches!(
-            self,
-            Self::Kitty { flags }
-                if flags & KittyKeyboardFlags::REPORT_ALL_KEYS.bits() != 0
-        )
+        self.kitty_flags()
+            .contains(KittyKeyboardFlags::REPORT_ALL_KEYS)
     }
 }
 
@@ -230,7 +246,7 @@ mod tests {
     fn protocol_from_zero_flags_is_legacy() {
         assert_eq!(
             KeyboardProtocol::from_kitty_flags(0),
-            KeyboardProtocol::Legacy
+            KeyboardProtocol::legacy()
         );
     }
 
@@ -238,7 +254,7 @@ mod tests {
     fn protocol_from_nonzero_flags_is_kitty() {
         assert_eq!(
             KeyboardProtocol::from_kitty_flags(7),
-            KeyboardProtocol::Kitty { flags: 7 }
+            KeyboardProtocol::from_flags(KittyKeyboardFlags::from_bits_retain(7))
         );
     }
 

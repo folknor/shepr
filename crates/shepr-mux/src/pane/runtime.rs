@@ -134,7 +134,7 @@ impl PaneCwdProbe {
             return self.remembered_cwd();
         }
         let reported = shepr_vt::lock_auxiliary(&self.cwd.reported).clone();
-        let cwd = ReportedCwd::resolve(reported.as_ref(), Some(shell_cwd))?;
+        let cwd = ReportedCwd::resolve(reported.as_ref(), Some(shell_cwd.into_path_buf()))?;
         *shepr_vt::lock_auxiliary(&self.cwd.remembered) = Some(PersistedCwd {
             path: cwd.clone(),
             report_generation: reported.map(|reported| reported.generation),
@@ -341,7 +341,7 @@ fn publish_reported_cwd(
     };
     // One readlink per OSC 7, sampled before taking the lock.
     let shell_cwd_at_report = child_liveness.live_pid().and_then(|pid| {
-        let shell_cwd = shepr_agent::detect::process_cwd(pid);
+        let shell_cwd = readlink_process_cwd(pid);
         (child_liveness.live_pid() == Some(pid))
             .then_some(shell_cwd)
             .flatten()
@@ -1336,7 +1336,7 @@ impl PaneRuntime {
     pub fn keyboard_protocol(&self) -> shepr_termio::input::KeyboardProtocol {
         // Legacy only when the terminal core is unreadable (a poisoned lock).
         self.terminal
-            .keyboard_protocol(shepr_termio::input::KeyboardProtocol::Legacy)
+            .keyboard_protocol(shepr_termio::input::KeyboardProtocol::legacy())
     }
 
     pub fn modify_other_keys_level(&self) -> u8 {
@@ -2133,7 +2133,7 @@ mod tests {
             shepr_test_support::drop_dac_capabilities_on_this_thread();
             (
                 std::fs::metadata(&probe_cwd).map(|_| ()),
-                absolute_process_cwd(pid),
+                readlink_process_cwd(pid),
             )
         })
         .join();

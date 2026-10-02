@@ -302,6 +302,7 @@ pattern = '\binclude_(?:str|bytes)!'
 paths = ["crates/**/*.rs", "src/**/*.rs"]
 exclude = [
     "crates/shepr-config/src/lib.rs",
+    "crates/shepr-agent/src/agent/mod.rs",
     "crates/shepr-agent/src/detect/manifest.rs",
     "crates/shepr-agent/src/integration/mod.rs",
 ]

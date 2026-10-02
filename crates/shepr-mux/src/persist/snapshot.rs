@@ -202,6 +202,8 @@ pub struct PaneSnapshot {
         serialize_with = "path_bytes::serialize",
         deserialize_with = "path_bytes::deserialize"
     )]
+    // Saved paths may disappear between capture and restore. Keep the path
+    // observation; restore and the child's required chdir own admission.
     pub cwd: PathBuf,
     /// The pane's public number within its workspace. Restore gives a pane
     /// with none, or with zero (which no public ID can carry), a fresh free
@@ -400,10 +402,9 @@ fn capture_workspace(
         let terminal_id = ws.terminal_id(*id);
         let terminal = terminal_id.and_then(|id| terminals.get(id));
         let runtime = terminal_id.and_then(|id| terminal_runtimes.get(id));
-        let cwd = runtime
-            .and_then(crate::pane::PaneRuntime::remembered_cwd)
-            .or_else(|| terminal.map(|terminal| terminal.cwd().to_path_buf()))
-            .unwrap_or_else(|| fallback_cwd.to_path_buf());
+        let cwd =
+            crate::workspace::terminal_cwd(runtime, terminal, crate::workspace::CwdPurpose::Save)
+                .unwrap_or_else(|| fallback_cwd.to_path_buf());
         if let Some(runtime) = runtime {
             cwds.probes
                 .push(((workspace_index, id.raw()), runtime.cwd_probe()));
@@ -426,9 +427,9 @@ fn capture_workspace(
             },
         );
     }
-    let identity_cwd = panes
-        .get(&ws.root_pane.raw())
-        .map_or_else(|| ws.identity_cwd.clone(), |pane| pane.cwd.clone());
+    let identity_cwd = ws.resolved_identity_cwd_from_root_pane(
+        panes.get(&ws.root_pane.raw()).map(|pane| pane.cwd.clone()),
+    );
     WorkspaceSnapshot {
         id: Some(ws.id.to_string()),
         custom_name: ws.custom_name.clone(),

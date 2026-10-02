@@ -300,10 +300,20 @@ impl App {
             "using pane scrollback configuration"
         );
 
+        let pane_terminal_ids = workspaces
+            .iter()
+            .flat_map(|workspace| {
+                workspace
+                    .panes()
+                    .iter()
+                    .map(|(pane_id, pane)| (*pane_id, pane.attached_terminal_id.clone()))
+            })
+            .collect();
         let mut state = AppState {
             clock_now: clock.now,
             terminals: std::collections::HashMap::new(),
             workspaces,
+            pane_terminal_ids,
             bookmark: None,
             bookmark_position: 0,
             workspace_geometry: std::collections::HashMap::new(),

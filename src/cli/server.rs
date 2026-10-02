@@ -23,7 +23,7 @@ pub(super) fn parse(matches: &clap::ArgMatches) -> Option<Command> {
 
 pub(super) fn run_server_command(
     command: Command,
-    paths: &super::target::CliContext,
+    paths: &shepr_config::AppPaths,
 ) -> super::CliResult<i32> {
     match command {
         Command::Stop { expected_boot } => server_stop(paths, expected_boot.as_deref()),
@@ -37,7 +37,7 @@ pub(super) fn run_server_command(
 /// it exits with `ServerStopExit::NoServer`, and a refused conditional stop
 /// with `ServerStopExit::BootMismatch` (see `CliError::exit_code`).
 fn server_stop(
-    paths: &super::target::CliContext,
+    paths: &shepr_config::AppPaths,
     expected_boot: Option<&str>,
 ) -> super::CliResult<i32> {
     shepr_api::server_stop::stop_active_server(paths, expected_boot)

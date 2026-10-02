@@ -163,12 +163,11 @@ async fn navigation_moves_the_requester_and_the_bookmark_only_from_an_active_cli
     assert!(server.app.state.session_dirty, "the bookmark is saved");
 
     // A client whose surface is not active moves itself and nothing shared.
-    server
-        .clients
-        .get_mut(&8)
-        .expect("client 8")
-        .shell_state_mut()
-        .surface_active = false;
+    assert!(
+        server
+            .set_client_shell_surface_active(ClientId::test_new(8), false)
+            .is_some_and(|(changed, _)| changed)
+    );
     assert!(server.navigate_shell_client(ClientId::test_new(8), &second));
     assert_eq!(location_of(&server, 8), Some(second.clone()));
     assert!(server.navigate_shell_client(ClientId::test_new(8), &first));
@@ -219,7 +218,7 @@ async fn a_client_whose_workspace_vanished_lands_by_remembered_index_across_a_mo
         vec![b.clone(), c.clone(), a.clone()]
     );
     let location = &server.clients[&7].shell_state().location;
-    assert_eq!(location.focused_workspace_id.as_ref(), Some(&b));
+    assert_eq!(location.focused_workspace_id(), Some(&b));
     assert_eq!(
         location.index(),
         0,
@@ -380,8 +379,9 @@ async fn automatic_creation_falls_back_to_the_lowest_id_presenting_client() {
 #[tokio::test]
 async fn automatic_creation_with_no_presenting_client_is_headless_with_no_controller() {
     let mut server = test_headless_server();
-    // An active connection that cannot present (no writer): the loop still
-    // wants a workspace for it, sized for the headless area.
+    // An active connection that cannot present (no writer) triggers the
+    // creation: the workspace is sized for the headless area, with no
+    // controller.
     server.insert_test_client(
         4,
         ClientConnection::new(
@@ -392,7 +392,7 @@ async fn automatic_creation_with_no_presenting_client_is_headless_with_no_contro
         ),
     );
 
-    assert!(server.create_automatic_workspace(None));
+    assert!(server.create_automatic_workspace(Some(ClientId::test_new(4))));
 
     let created = created_workspace(&server);
     assert_eq!(server.clients.geometry_controller(&created), None);

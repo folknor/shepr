@@ -5,6 +5,7 @@ pub mod layout;
 pub mod limits;
 pub mod pathutil;
 pub mod shell;
+pub mod shell_quote;
 pub mod socket_path;
 
 pub mod workspace_label;

@@ -373,7 +373,8 @@ fn state_with_scrollable_agents() -> (ClientShellState, ClientEndpointId) {
             .find(|endpoint| endpoint.endpoint_id == endpoint_id)
             .expect("test precondition")
             .snapshot
-            .clone()
+            .as_deref()
+            .cloned()
             .expect("test precondition");
         projection.agents = (0..8)
             .map(|index| ClientShellAgent {
@@ -394,7 +395,7 @@ fn state_with_scrollable_agents() -> (ClientShellState, ClientEndpointId) {
                 ..projection.panes[0].clone()
             })
             .collect();
-        state.set_endpoint_snapshot(&endpoint_id, projection);
+        state.set_endpoint_snapshot(&endpoint_id, Box::new(projection));
     }
     state.compose(100, 28).expect("test precondition");
     state.agent_scroll = 6;
@@ -484,10 +485,7 @@ fn agent_navigation_reveal_is_cancelled_by_another_selection() {
 fn agent_navigation_keeps_scroll_when_target_is_visible() {
     let (mut state, _) = state_with_scrollable_agents();
     let (_, endpoint_id, pane_id) = state.hits.endpoint_agents[1].clone();
-    let targets = super::super::aggregate_navigation::displayed_agent_targets(
-        &state.endpoints,
-        state.config.agent_panel_sort,
-    );
+    let targets = state.agent_panel_model.targets();
     let index = targets
         .iter()
         .position(|target| {
@@ -608,10 +606,7 @@ fn agent_indices_keep_stale_rows_and_skip_agents_the_sidebar_cannot_render() {
         .iter()
         .map(|(_, endpoint_id, pane_id)| (endpoint_id.clone(), pane_id.clone()))
         .collect::<Vec<_>>();
-    let targets = super::super::aggregate_navigation::displayed_agent_targets(
-        &state.endpoints,
-        state.config.agent_panel_sort,
-    );
+    let targets = state.agent_panel_model.targets();
     let indexed = targets
         .iter()
         .map(|target| (target.endpoint_id.clone(), target.pane_id.clone()))
@@ -720,14 +715,15 @@ fn aggregate_agent_scroll_still_clamps_when_rows_shrink_on_activation() {
             .find(|endpoint| endpoint.endpoint_id == endpoint_id)
             .expect("test precondition")
             .snapshot
-            .clone()
+            .as_deref()
+            .cloned()
             .expect("test precondition");
         projection.revision = projection
             .revision
             .checked_next()
             .expect("test precondition");
         projection.agents.truncate(1);
-        state.set_endpoint_snapshot(&endpoint_id, projection);
+        state.set_endpoint_snapshot(&endpoint_id, Box::new(projection));
     }
     assert!(state.activate_endpoint_projection(&remote));
     state.compose(100, 28).expect("test precondition");
@@ -739,9 +735,13 @@ fn aggregate_agent_scroll_still_clamps_when_rows_shrink_on_activation() {
 #[test]
 fn same_machine_reboot_still_resets_agent_scroll() {
     let (mut state, _) = state_with_scrollable_agents();
-    let mut projection = state.snapshot.clone().expect("test precondition");
+    let mut projection = state
+        .snapshot
+        .as_deref()
+        .expect("test precondition")
+        .clone();
     projection.boot_id = crate::tests::test_boot_id("restarted-local");
-    state.cache_endpoint_snapshot(&ClientEndpointId::Local, projection);
+    state.cache_endpoint_snapshot(&ClientEndpointId::Local, Box::new(projection));
     assert!(state.activate_endpoint_projection(&ClientEndpointId::Local));
     assert_eq!(state.agent_scroll, 0);
 }
@@ -1871,7 +1871,7 @@ fn disconnected_active_endpoint_freezes_surface_and_marks_cached_ui_stale() {
         .iter_mut()
         .find(|endpoint| endpoint.endpoint_id == endpoint_id)
         .expect("remote endpoint");
-    endpoint.snapshot.as_mut().expect("remote snapshot").agents =
+    std::sync::Arc::make_mut(endpoint.snapshot.as_mut().expect("remote snapshot")).agents =
         vec![agent(AgentStatus::Blocked, 1)];
     assert!(state.activate_endpoint_projection(&endpoint_id));
     let mut remote_surface = surface();
@@ -2121,15 +2121,14 @@ fn focus_agent_index_uses_the_rendered_aggregate_rows() {
     use shepr_protocol::AgentStatus;
 
     let (mut state, endpoint_id) = state_with_remote();
-    state
+    let endpoint = state
         .endpoints
         .iter_mut()
         .find(|endpoint| endpoint.endpoint_id == endpoint_id)
-        .expect("remote endpoint")
-        .snapshot
-        .as_mut()
-        .expect("remote snapshot")
-        .agents = vec![agent(AgentStatus::Working, 2)];
+        .expect("remote endpoint");
+    std::sync::Arc::make_mut(endpoint.snapshot.as_mut().expect("remote snapshot")).agents =
+        vec![agent(AgentStatus::Working, 2)];
+    state.rebuild_agent_panel_model();
     let focus_agent = |index| {
         shepr_termio::input::KeybindMatch::Action(shepr_termio::input::KeybindAction::FocusAgent(
             index,
@@ -2185,15 +2184,12 @@ fn collapsed_aggregate_workspace_status_uses_its_status_color() {
     use shepr_protocol::AgentStatus;
 
     let (mut state, endpoint_id) = state_with_remote();
-    state
+    let endpoint = state
         .endpoints
         .iter_mut()
         .find(|endpoint| endpoint.endpoint_id == endpoint_id)
-        .expect("remote endpoint")
-        .snapshot
-        .as_mut()
-        .expect("remote snapshot")
-        .workspaces[0]
+        .expect("remote endpoint");
+    std::sync::Arc::make_mut(endpoint.snapshot.as_mut().expect("remote snapshot")).workspaces[0]
         .agent_status = AgentStatus::Blocked;
     state.sidebar_collapsed = true;
 

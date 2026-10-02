@@ -397,7 +397,7 @@ mod tests {
                 "shepr:codex",
                 "codex",
                 AgentState::Working,
-                None,
+                shepr_agent::agent::resume::AgentSessionRef::id("codex-session"),
                 Some(1),
                 shepr_mux::terminal::state::HookClockSample {
                     monotonic: observed_at + std::time::Duration::from_secs(1),

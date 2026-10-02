@@ -1,4 +1,4 @@
-use super::ClientEndpointId;
+use super::EndpointPolicy;
 
 /// Whether losing Local is fatal for the client process.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -21,8 +21,10 @@ impl LocalFailurePolicy {
         matches!(self, Self::Reconnect)
     }
 
-    pub(crate) fn ends_client_for(self, endpoint_id: &ClientEndpointId) -> bool {
-        endpoint_id.is_local() && !self.reconnects_local()
+    /// Client lifetime depends on whether machines are configured; endpoint role is supplied
+    /// separately so this policy does not duplicate the distinction between Local and machine.
+    pub(crate) fn ends_client_for(self, endpoint_policy: EndpointPolicy) -> bool {
+        endpoint_policy.is_local() && !self.reconnects_local()
     }
 }
 
@@ -33,7 +35,7 @@ mod tests {
     #[test]
     fn a_config_without_machines_makes_local_failure_fatal() {
         let policy = LocalFailurePolicy::for_machines(&[]);
-        assert!(policy.ends_client_for(&ClientEndpointId::Local));
+        assert!(policy.ends_client_for(EndpointPolicy::Local));
         assert!(!policy.reconnects_local());
     }
 
@@ -44,10 +46,9 @@ mod tests {
             ssh: shepr_config::SshTarget::parse("build").expect("test precondition"),
         };
         let policy = LocalFailurePolicy::for_machines(std::slice::from_ref(&machine));
-        assert!(!policy.ends_client_for(&ClientEndpointId::Local));
+        assert!(!policy.ends_client_for(EndpointPolicy::Local));
         assert!(policy.reconnects_local());
 
-        let remote = ClientEndpointId::Ssh(machine.label);
-        assert!(!policy.ends_client_for(&remote));
+        assert!(!policy.ends_client_for(EndpointPolicy::Machine));
     }
 }

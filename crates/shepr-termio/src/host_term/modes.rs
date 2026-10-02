@@ -64,19 +64,13 @@ pub fn set_host_kitty_keyboard_report_all<W: Write>(
     let mut flags = ime_compatible_keyboard_enhancement_flags();
     if report_all_keys {
         flags |= crossterm::event::KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES;
-        flags = crossterm::event::KeyboardEnhancementFlags::from_bits_retain(
-            flags.bits()
-                | u8::try_from(KittyKeyboardFlags::REPORT_ASSOCIATED_TEXT.bits())
-                    .unwrap_or_default(),
-        );
     }
     let modify_other_keys_level = active.modify_other_keys_level;
-    set_host_keyboard_protocol(
-        writer,
-        active,
-        KittyKeyboardFlags::from_bits_retain(u16::from(flags.bits())),
-        modify_other_keys_level,
-    )
+    let mut kitty_flags = KittyKeyboardFlags::from_bits_retain(u16::from(flags.bits()));
+    if report_all_keys {
+        kitty_flags.insert(KittyKeyboardFlags::REPORT_ASSOCIATED_TEXT);
+    }
+    set_host_keyboard_protocol(writer, active, kitty_flags, modify_other_keys_level)
 }
 
 pub fn set_host_modify_other_keys<W: Write>(
@@ -140,11 +134,7 @@ pub fn set_host_keyboard_protocol<W: Write>(
         }
     }
     if active.modify_other_keys_level != next_modify_other_keys_level {
-        if next_modify_other_keys_level == ModifyOtherKeysLevel::Off {
-            writer.write_all(HOST_MODIFY_OTHER_KEYS_RESET_SEQUENCE)?;
-        } else {
-            write!(writer, "\x1b[>4;{next_modify_other_keys_level}m")?;
-        }
+        writer.write_all(next_modify_other_keys_level.set_sequence())?;
     }
     writer.flush()?;
     *active = HostKeyboardState {
@@ -190,21 +180,21 @@ mod tests {
             &mut output,
             &mut active,
             KittyKeyboardFlags::from_bits_retain(3),
-            ModifyOtherKeysLevel::from_parameter(0),
+            ModifyOtherKeysLevel::Off,
         )
         .expect("test precondition");
         set_host_keyboard_protocol(
             &mut output,
             &mut active,
             KittyKeyboardFlags::from_bits_retain(15),
-            ModifyOtherKeysLevel::from_parameter(2),
+            ModifyOtherKeysLevel::All,
         )
         .expect("test precondition");
         set_host_keyboard_protocol(
             &mut output,
             &mut active,
             KittyKeyboardFlags::from_bits_retain(0),
-            ModifyOtherKeysLevel::from_parameter(0),
+            ModifyOtherKeysLevel::Off,
         )
         .expect("test precondition");
 
@@ -224,21 +214,21 @@ mod tests {
             &mut output,
             &mut active,
             KittyKeyboardFlags::from_bits_retain(0),
-            ModifyOtherKeysLevel::from_parameter(1),
+            ModifyOtherKeysLevel::ExceptWellDefined,
         )
         .expect("test precondition");
         set_host_keyboard_protocol(
             &mut output,
             &mut active,
             KittyKeyboardFlags::from_bits_retain(0),
-            ModifyOtherKeysLevel::from_parameter(2),
+            ModifyOtherKeysLevel::All,
         )
         .expect("test precondition");
         set_host_keyboard_protocol(
             &mut output,
             &mut active,
             KittyKeyboardFlags::from_bits_retain(0),
-            ModifyOtherKeysLevel::from_parameter(0),
+            ModifyOtherKeysLevel::Off,
         )
         .expect("test precondition");
 
@@ -255,7 +245,7 @@ mod tests {
             &mut output,
             &mut active,
             KittyKeyboardFlags::from_bits_retain(0),
-            ModifyOtherKeysLevel::from_parameter(0),
+            ModifyOtherKeysLevel::Off,
         )
         .expect("test precondition");
 

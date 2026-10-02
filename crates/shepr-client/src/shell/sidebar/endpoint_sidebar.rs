@@ -212,10 +212,10 @@ pub(super) fn render_collapsed(
     super::endpoint_agents::render_collapsed(
         buffer,
         detail_area,
-        state.endpoints,
         state.active_endpoint_id,
         single_endpoint,
         config,
+        state.agent_panel_model,
         hits,
     );
     hits.sidebar_toggle = if area.is_empty() || workspace_area.width == 0 {
@@ -556,10 +556,10 @@ pub(super) fn render_expanded(
     super::endpoint_agents::render_expanded(
         buffer,
         detail_area,
-        state.endpoints,
         state.active_endpoint_id,
         single_endpoint,
         config,
+        state.agent_panel_model,
         state.agent_scroll,
         hits,
     );

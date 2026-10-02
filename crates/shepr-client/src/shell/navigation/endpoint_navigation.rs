@@ -146,10 +146,7 @@ impl ClientShellState {
             action,
             KeybindAction::PreviousAgent | KeybindAction::NextAgent | KeybindAction::FocusAgent(_)
         ) {
-            let agents = super::aggregate_navigation::displayed_agent_targets(
-                &self.endpoints,
-                self.config.agent_panel_sort,
-            );
+            let agents = self.agent_panel_model.targets();
             if agents.is_empty() {
                 return true;
             }
@@ -158,28 +155,28 @@ impl ClientShellState {
                 .as_deref()
                 .and_then(|snapshot| snapshot.focused_pane_id.as_deref());
             let Some(next) = super::aggregate_navigation::agent_target_index(
-                &agents,
+                agents,
                 &self.active_endpoint_id,
                 focused,
                 action,
             ) else {
                 return true;
             };
-            let target = &agents[next];
+            let target_endpoint_id = agents[next].endpoint_id.clone();
+            let target_pane_id = agents[next].pane_id.clone();
             if self.focus_or_activate(
-                target.endpoint_id.clone(),
-                ClientEndpointFocusTarget::Pane(target.pane_id.clone()),
+                target_endpoint_id.clone(),
+                ClientEndpointFocusTarget::Pane(target_pane_id.clone()),
                 outcome,
             ) {
-                if target.endpoint_id == self.active_endpoint_id {
+                if target_endpoint_id == self.active_endpoint_id {
                     self.reveal_endpoint_agent(
-                        &target.endpoint_id,
-                        &target.pane_id,
+                        &target_endpoint_id,
+                        &target_pane_id,
                         self.hits.agent_body.height,
                     );
                 } else {
-                    self.pending_agent_reveal =
-                        Some((target.endpoint_id.clone(), target.pane_id.clone()));
+                    self.pending_agent_reveal = Some((target_endpoint_id, target_pane_id));
                 }
                 outcome.repaint = true;
             }

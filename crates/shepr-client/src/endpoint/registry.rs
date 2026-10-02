@@ -65,14 +65,6 @@ impl EndpointRegistry {
         registry
     }
 
-    /// The reader timestamps complete frames on machine connections before it queues them for
-    /// the client loop. Health deadlines therefore measure transport silence, not time spent
-    /// waiting for the client loop to process its event queue. Local uses a socket on this host
-    /// and reports a dead server as a transport error, so it needs no heartbeat.
-    fn crosses_ssh(endpoint_id: &ClientEndpointId) -> bool {
-        matches!(endpoint_id, ClientEndpointId::Ssh(_))
-    }
-
     /// Whether this endpoint's connection has been told it is viewed. False without a
     /// connection.
     pub fn viewed(&self, id: &ClientEndpointId) -> bool {
@@ -126,7 +118,12 @@ impl EndpointRegistry {
         read_activity: Option<Arc<EndpointReadActivity>>,
         now: Instant,
     ) {
-        let health = Self::crosses_ssh(&endpoint_id).then(|| EndpointHealth::new(now));
+        // Machine readers timestamp complete frames before queueing them, so health deadlines
+        // measure transport silence. Local reports a dead server as a socket transport error.
+        let health = endpoint_id
+            .policy()
+            .uses_ssh_heartbeat()
+            .then(|| EndpointHealth::new(now));
         if let Some(mut previous) = self.connections.insert(
             endpoint_id,
             EndpointConnection {

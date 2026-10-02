@@ -232,10 +232,9 @@ pub fn ssh_authentication_command(
     let control_dir = SshControlDir::runtime(paths).map_err(|error| {
         crate::local_setup_error("could not prepare local SSH configuration", error)
     })?;
-    let config =
-        write_managed_ssh_config(target.as_str(), paths, control_dir).map_err(|error| {
-            crate::local_setup_error("could not prepare local SSH configuration", error)
-        })?;
+    let config = write_managed_ssh_config(target, paths, control_dir).map_err(|error| {
+        crate::local_setup_error("could not prepare local SSH configuration", error)
+    })?;
     Ok(authentication_command_with_config(target, config))
 }
 
@@ -256,7 +255,9 @@ pub(super) fn authentication_command_with_config(
         ],
     );
     ssh_options::append_shepr_options(&mut command);
-    command.arg("-T").arg(target.as_str()).arg("exit");
+    command.arg("-T");
+    target.append_to(&mut command);
+    command.arg("exit");
     SshAuthenticationCommand {
         command,
         _config: config,
@@ -283,8 +284,8 @@ impl RemoteSsh {
         let control_dir = SshControlDir::runtime(paths).map_err(|error| {
             crate::local_setup_error("could not prepare local SSH configuration", error)
         })?;
-        let managed_config = write_managed_ssh_config(target.as_str(), paths, control_dir)
-            .map_err(|error| {
+        let managed_config =
+            write_managed_ssh_config(&target, paths, control_dir).map_err(|error| {
                 crate::local_setup_error("could not prepare local SSH configuration", error)
             })?;
         Ok(Self {
@@ -319,8 +320,8 @@ impl RemoteSsh {
         })
     }
 
-    pub(super) fn target(&self) -> &str {
-        self.target.as_str()
+    pub(super) fn target(&self) -> &SshTarget {
+        &self.target
     }
 
     pub(crate) fn options(&self) -> &ManagedSshOptions {
@@ -331,7 +332,8 @@ impl RemoteSsh {
         let mut command = ssh_command();
         apply_managed_ssh_options(&mut command, Some(self.options()));
         apply_batch_ssh_options(&mut command);
-        command.arg("-T").arg(self.target.as_str());
+        command.arg("-T");
+        self.target.append_to(&mut command);
         command
     }
 
@@ -561,7 +563,7 @@ pub(super) fn ensure_ssh_runtime_dir(app_paths: &shepr_config::AppPaths) -> io::
 /// Builds a temporary ssh config that includes the user's settings first, so
 /// OpenSSH's first-value-wins behavior preserves explicit user keepalives.
 pub(super) fn write_managed_ssh_config(
-    target: &str,
+    target: &SshTarget,
     app_paths: &shepr_config::AppPaths,
     control_dir: SshControlDir<'_>,
 ) -> io::Result<ManagedSshConfig> {
@@ -572,7 +574,7 @@ pub(super) fn write_managed_ssh_config(
     let control_path = Some(shepr_platform::ssh_control_path_under(
         control_dir.path,
         &config_file,
-        target,
+        target.as_str(),
     )?);
 
     let dir =

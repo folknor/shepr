@@ -8,7 +8,9 @@ mod client_stream;
 mod clipboard;
 mod config_file;
 mod daemon;
+mod data_directory_lease;
 mod executable;
+mod file_stamp;
 mod host;
 pub mod ipc;
 mod limits;
@@ -32,7 +34,9 @@ pub use client_stream::{ClientStreamReader, wait_client_stream_readable, write_c
 pub use clipboard::{read_clipboard_text, write_clipboard};
 pub use config_file::{config_file_link_count, create_config_temporary, write_config_temporary};
 pub use daemon::{SpawnedDaemon, create_private_directory_all, open_boot_log, read_boot_log_tail};
+pub use data_directory_lease::{DataDirectoryLease, DataDirectoryLeaseHeld};
 pub use executable::has_execute_access;
+pub use file_stamp::FileStamp;
 pub use host::{
     begin_cli_output, child_command, detach_server_daemon_command, hostname, launch_executable,
     take_terminal_resize_signal, terminal_grid_size, watch_terminal_resize_signal,

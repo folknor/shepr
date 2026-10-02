@@ -1,6 +1,6 @@
 use super::*;
 
-// Codex is only a registry key here; behavior tests supply synthetic rules.
+// Synthetic manifests use the Codex label; behavior tests supply their own rules.
 fn local_manifest(state: &str, contains: &str) -> String {
     format!(
         r#"
@@ -611,24 +611,26 @@ fn screen_regions_extract_structure_without_classifying_agent_state() {
     }
 }
 
-// Enforcement: keep the descriptor flags and bundled manifest registry aligned.
+// Enforcement: every descriptor-owned manifest parses and compiles.
 #[test]
 fn all_bundled_manifests_parse_validate_and_compile() {
-    for agent in Agent::screen_manifest_agents() {
+    for agent in Agent::all() {
+        let Some(content) = agent.screen_manifest_source() else {
+            assert!(!agent.screen_manifest());
+            continue;
+        };
         assert!(
             bundled_manifest(agent).is_some(),
-            "missing bundled manifest for {}",
+            "missing compiled manifest for {}",
             agent_label(agent)
         );
-    }
-    for (key, content) in BUNDLED_MANIFESTS {
+        let manifest = parse_bundled_manifest(agent_label(agent), content)
+            .unwrap_or_else(|error| panic!("bundled {} manifest: {error}", agent.label()));
         assert!(
-            Agent::screen_manifest_agents().any(|agent| agent.label() == *key),
-            "bundled manifest {key} has no screen-detection descriptor"
+            !manifest.rules.is_empty(),
+            "bundled {} has no rules",
+            agent.label()
         );
-        let manifest = parse_bundled_manifest(key, content)
-            .unwrap_or_else(|error| panic!("bundled {key} manifest: {error}"));
-        assert!(!manifest.rules.is_empty(), "bundled {key} has no rules");
     }
     assert!(parse_bundled_manifest("claude", &local_manifest("idle", "x")).is_err());
 }

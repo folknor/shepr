@@ -82,15 +82,16 @@ fn launch_with_args(raw_args: &[String]) -> CliResult<i32> {
         return Ok(0);
     }
 
-    if let Some(command) = invocation.cli_command() {
-        return cli::run(command);
-    }
-
-    if matches!(invocation.launch, cli::Launch::ClientBridge) {
-        let paths = resolve_bridge_paths()?;
-        init_client_logging(&paths)?;
-        return finish_bridge(shepr_remote::run_remote_client_bridge(&paths)?);
-    }
+    let run_tui = match invocation.launch {
+        cli::Launch::ClientBridge => {
+            let paths = resolve_bridge_paths()?;
+            init_client_logging(&paths)?;
+            return finish_bridge(shepr_remote::run_remote_client_bridge(&paths)?);
+        }
+        cli::Launch::Cli(command) => return cli::run(command.as_ref()),
+        cli::Launch::Client => false,
+        cli::Launch::Tui => true,
+    };
 
     // Resolve the typed pane markers before reading client.toml. A same-profile
     // pane is refused even when the file is broken.
@@ -102,15 +103,9 @@ fn launch_with_args(raw_args: &[String]) -> CliResult<i32> {
     let loaded_config = load_validated_config(Ok(paths))?;
     let paths = loaded_config.paths();
 
-    match invocation.launch {
-        cli::Launch::Client => {
-            init_client_logging(paths)?;
-            return cli::finish_client(shepr_client::run_client(&loaded_config, paths));
-        }
-        cli::Launch::Tui => {}
-        cli::Launch::ClientBridge | cli::Launch::Cli(_) => {
-            return Err(io::Error::other("launch was already handled").into());
-        }
+    if !run_tui {
+        init_client_logging(paths)?;
+        return cli::finish_client(shepr_client::run_client(&loaded_config, paths));
     }
 
     autodetect::ensure_terminal_geometry()
@@ -123,7 +118,7 @@ fn launch_with_args(raw_args: &[String]) -> CliResult<i32> {
     let client = autodetect::auto_detect_launch(
         &loaded_config,
         paths,
-        limits::SERVER_READY_TIMEOUT,
+        shepr_remote::local_server::SERVER_READY_TIMEOUT,
         shepr_client::run_client,
     )
     .map_err(|error| CliError::Client(shepr_client::ClientRunError::Launch(error)))?;

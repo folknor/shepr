@@ -1,49 +1,76 @@
 //! Endpoint-qualified rows shared by aggregate navigation surfaces.
 
 use super::*;
-use shepr_protocol::ClientShellAgent;
-
-#[derive(Clone, Copy)]
-pub(super) struct CachedEndpointSnapshot<'a> {
-    pub(super) endpoint_id: &'a ClientEndpointId,
-    pub(super) label: &'a str,
-    pub(super) status: ClientEndpointStatus,
-    pub(super) snapshot: &'a ClientShellSnapshot,
-    pub(super) agent_recency: &'a HashMap<shepr_protocol::PublicPaneId, u64>,
-}
-
-impl CachedEndpointSnapshot<'_> {
-    pub(super) fn stale(self) -> bool {
-        self.status != ClientEndpointStatus::Online
-    }
-}
-
-pub(super) fn cached_endpoint_snapshots(
-    endpoints: &[ClientShellEndpoint],
-) -> impl Iterator<Item = CachedEndpointSnapshot<'_>> {
-    endpoints.iter().filter_map(|endpoint| {
-        endpoint
-            .snapshot
-            .as_deref()
-            .map(|snapshot| CachedEndpointSnapshot {
-                endpoint_id: &endpoint.endpoint_id,
-                label: endpoint.endpoint_id.display_label(),
-                status: endpoint.status,
-                snapshot,
-                agent_recency: &endpoint.agent_recency,
-            })
-    })
-}
-
-pub(super) struct AggregateAgentRow<'a> {
-    pub(super) endpoint: CachedEndpointSnapshot<'a>,
-    pub(super) agent: &'a ClientShellAgent,
-    pub(super) recency: u64,
-}
-
 pub(super) struct AggregateAgentTarget {
     pub(super) endpoint_id: ClientEndpointId,
     pub(super) pane_id: shepr_protocol::PublicPaneId,
+}
+
+pub(super) struct AgentPanelRow {
+    pub(super) endpoint_id: ClientEndpointId,
+    pub(super) machine_label: String,
+    pub(super) stale: bool,
+    pub(super) agent: super::agent_sidebar::AgentRow,
+    endpoint_order: usize,
+    recency: u64,
+}
+
+pub(super) struct AgentPanelModel {
+    pub(super) rows: Vec<AgentPanelRow>,
+    targets: Vec<AggregateAgentTarget>,
+}
+
+impl AgentPanelModel {
+    // Sidebar rows and keyboard targets share the same workspace filter and display order.
+    // Token templates are prepared at refresh; painting only lays out these stored rows.
+    pub(super) fn build(endpoints: &[ClientShellEndpoint], config: &ClientShellConfig) -> Self {
+        let mut rows = Vec::new();
+        for (endpoint_order, endpoint) in endpoints.iter().enumerate() {
+            let Some(snapshot) = endpoint.snapshot.as_deref() else {
+                continue;
+            };
+            let machine = (endpoints.len() > 1).then(|| endpoint.endpoint_id.display_label());
+            rows.extend(
+                super::agent_sidebar::agent_rows(snapshot, config, machine)
+                    .into_iter()
+                    .map(|agent| AgentPanelRow {
+                        recency: endpoint
+                            .agent_recency
+                            .get(&agent.pane_id)
+                            .copied()
+                            .unwrap_or_default(),
+                        endpoint_order,
+                        endpoint_id: endpoint.endpoint_id.clone(),
+                        machine_label: endpoint.endpoint_id.display_label().to_owned(),
+                        stale: endpoint.status != ClientEndpointStatus::Online,
+                        agent,
+                    }),
+            );
+        }
+        if config.agent_panel_sort == shepr_config::AgentPanelSortConfig::Priority {
+            rows.sort_by_key(|row| {
+                (
+                    row.stale,
+                    std::cmp::Reverse(status_priority(row.agent.status)),
+                    std::cmp::Reverse(row.recency),
+                    row.endpoint_order,
+                    std::cmp::Reverse(row.agent.state_change_seq),
+                )
+            });
+        }
+        let targets = rows
+            .iter()
+            .map(|row| AggregateAgentTarget {
+                endpoint_id: row.endpoint_id.clone(),
+                pane_id: row.agent.pane_id.clone(),
+            })
+            .collect();
+        Self { rows, targets }
+    }
+
+    pub(super) fn targets(&self) -> &[AggregateAgentTarget] {
+        &self.targets
+    }
 }
 
 pub(super) fn cycle_index(length: usize, current: Option<usize>, delta: isize) -> Option<usize> {
@@ -92,115 +119,55 @@ pub(super) fn agent_target_index(
     }
 }
 
-pub(super) fn aggregate_agent_rows<'a>(
-    endpoints: &'a [ClientShellEndpoint],
-    sort: shepr_config::AgentPanelSortConfig,
-) -> Vec<AggregateAgentRow<'a>> {
-    let mut rows = cached_endpoint_snapshots(endpoints)
-        .flat_map(|endpoint| {
-            let workspaces = endpoint
-                .snapshot
-                .workspaces
-                .iter()
-                .map(|workspace| workspace.workspace_id.as_str())
-                .collect::<HashSet<_>>();
-            super::agent_sidebar::ordered_agent_pane_ids(endpoint.snapshot, sort)
-                .into_iter()
-                .filter_map(move |pane_id| {
-                    let agent = endpoint
-                        .snapshot
-                        .agents
-                        .iter()
-                        .find(|agent| agent.pane_id == pane_id)?;
-                    // These are the same records the sidebar can render: an agent row needs a
-                    // workspace for its label, while its pane label is optional.
-                    if !workspaces.contains(agent.workspace_id.as_str()) {
-                        return None;
-                    }
-                    Some(AggregateAgentRow {
-                        recency: endpoint
-                            .agent_recency
-                            .get(&pane_id)
-                            .copied()
-                            .unwrap_or_default(),
-                        endpoint,
-                        agent,
-                    })
-                })
-        })
-        .collect::<Vec<_>>();
-    sort_aggregate_rows(&mut rows, sort);
-    rows
+pub(super) struct NavigatorIndex {
+    federated: bool,
+    endpoints: Vec<NavigatorEndpoint>,
 }
 
-fn sort_aggregate_rows(
-    rows: &mut [AggregateAgentRow<'_>],
-    sort: shepr_config::AgentPanelSortConfig,
-) {
-    if sort == shepr_config::AgentPanelSortConfig::Priority {
-        rows.sort_by_key(|row| {
-            (
-                row.endpoint.stale(),
-                std::cmp::Reverse(status_priority(row.agent.agent_status)),
-                std::cmp::Reverse(row.recency),
-            )
-        });
-    }
+struct NavigatorEndpoint {
+    endpoint_id: ClientEndpointId,
+    label: String,
+    search_label: String,
+    status: ClientEndpointStatus,
+    focused_pane_id: Option<shepr_protocol::PublicPaneId>,
+    workspaces: Vec<NavigatorWorkspace>,
 }
 
-pub(super) fn displayed_agent_targets(
-    endpoints: &[ClientShellEndpoint],
-    sort: shepr_config::AgentPanelSortConfig,
-) -> Vec<AggregateAgentTarget> {
-    // Keep stale rows in the displayed order so their indices stay aligned with the sidebar.
-    aggregate_agent_rows(endpoints, sort)
-        .into_iter()
-        .map(|row| AggregateAgentTarget {
-            endpoint_id: row.endpoint.endpoint_id.clone(),
-            pane_id: row.agent.pane_id.clone(),
-        })
-        .collect()
+struct NavigatorWorkspace {
+    row: ClientNavigatorRow,
+    search_fields: Vec<String>,
+    panes: Vec<NavigatorPane>,
 }
 
-pub(super) fn navigator_rows(
-    endpoints: &[ClientShellEndpoint],
-    active_endpoint_id: &ClientEndpointId,
-    navigator: &ClientNavigatorOverlay,
-) -> Vec<ClientNavigatorRow> {
-    let query = navigator.query.trim().to_lowercase();
-    let filter = |status| match navigator.filter {
-        Some(ClientNavigatorFilter::Blocked) => status == shepr_protocol::AgentStatus::Blocked,
-        Some(ClientNavigatorFilter::Working) => status == shepr_protocol::AgentStatus::Working,
-        Some(ClientNavigatorFilter::Idle) => status == shepr_protocol::AgentStatus::Idle,
-        None => true,
-    };
-    let words = query.split_whitespace().collect::<Vec<_>>();
-    let text = |value: &str| {
-        if words.is_empty() {
-            return true;
-        }
-        let value = value.to_lowercase();
-        words.iter().all(|word| value.contains(word))
-    };
-    let filtering = navigator.filter.is_some() || !query.is_empty();
-    let federated = endpoints.len() > 1;
-    let depth_offset = u8::from(federated);
-    let mut rows = Vec::new();
+struct NavigatorPane {
+    row: ClientNavigatorRow,
+    search_fields: Vec<String>,
+}
 
-    for endpoint in endpoints {
-        let stale = endpoint.status != ClientEndpointStatus::Online;
-        let endpoint_query_matches =
-            !query.is_empty() && text(endpoint.endpoint_id.display_label());
-        let mut endpoint_rows = Vec::new();
-        if let Some(snapshot) = endpoint.snapshot.as_deref() {
+impl NavigatorIndex {
+    // Snapshot text is normalized here so key and wheel events only normalize the query.
+    pub(super) fn build(endpoints: &[ClientShellEndpoint]) -> Self {
+        let federated = endpoints.len() > 1;
+        let mut indexed_endpoints = Vec::with_capacity(endpoints.len());
+        for endpoint in endpoints {
+            let mut indexed = NavigatorEndpoint {
+                endpoint_id: endpoint.endpoint_id.clone(),
+                label: endpoint.endpoint_id.display_label().to_owned(),
+                search_label: endpoint.endpoint_id.display_label().to_lowercase(),
+                status: endpoint.status,
+                focused_pane_id: None,
+                workspaces: Vec::new(),
+            };
+            let Some(snapshot) = endpoint.snapshot.as_deref() else {
+                indexed_endpoints.push(indexed);
+                continue;
+            };
+            indexed.focused_pane_id = snapshot.focused_pane_id.clone();
             let agents = snapshot
                 .agents
                 .iter()
-                .map(|agent| (agent.pane_id.to_string(), agent))
+                .map(|agent| (agent.pane_id.as_str(), agent))
                 .collect::<HashMap<_, _>>();
-            // Build endpoint-local indexes once. Walk each bucket in snapshot
-            // order so interleaved input and overlapping IDs on other endpoints
-            // retain their existing navigation order and targets.
             let mut panes_by_workspace = HashMap::new();
             for pane in &snapshot.panes {
                 panes_by_workspace
@@ -208,104 +175,191 @@ pub(super) fn navigator_rows(
                     .or_insert_with(Vec::new)
                     .push(pane);
             }
+            indexed.workspaces.reserve(snapshot.workspaces.len());
             for workspace in &snapshot.workspaces {
-                let workspace_matches = endpoint_query_matches
-                    || text(&workspace.label)
-                    || workspace.branch.as_deref().is_some_and(text);
-                let mut children = Vec::new();
                 let workspace_panes = panes_by_workspace
                     .get(workspace.workspace_id.as_str())
                     .map_or_default(Vec::as_slice);
+                let mut panes = Vec::with_capacity(workspace_panes.len());
                 for (index, pane) in workspace_panes.iter().enumerate() {
                     let agent = agents.get(pane.pane_id.as_str()).copied();
                     let status = agent.map_or(shepr_protocol::AgentStatus::Idle, |agent| {
                         agent.agent_status
                     });
                     let agent_kind = agent.and_then(|agent| agent.agent.as_deref());
-                    let name = pane.label.as_deref();
                     let title = agent.and_then(|agent| agent.terminal_title_stripped.as_deref());
-                    let label = if workspace_panes.len() == 1 {
-                        match name.or(title) {
-                            Some(label) => label.to_owned(),
-                            None => workspace.label.clone(),
-                        }
-                    } else {
-                        let pane_name = name.or(title).or(agent_kind).unwrap_or("terminal");
-                        format!("{pane_name} · {}", index + 1)
-                    };
                     let meta = pane
                         .foreground_cwd
                         .as_deref()
                         .or(pane.cwd.as_deref())
                         .unwrap_or_default();
-                    if filter(status)
-                        && (workspace_matches
-                            || text(&label)
-                            || text(meta)
-                            || pane.cwd.as_deref().is_some_and(text)
-                            || agent_kind.is_some_and(text)
-                            || title.is_some_and(text)
-                            || text(&pane.pane_id))
-                    {
-                        children.push(ClientNavigatorRow {
-                            depth: 1 + depth_offset,
-                            label,
-                            meta: meta.to_owned(),
-                            detail: format!("{} / {}", workspace.label, pane.pane_id),
-                            agent: agent_kind.map(str::to_owned),
-                            status: Some(status),
-                            stale,
-                            current: endpoint.endpoint_id == *active_endpoint_id
-                                && snapshot.focused_pane_id.as_deref() == Some(&pane.pane_id),
-                            target: ClientNavigatorTarget::Pane {
-                                endpoint_id: endpoint.endpoint_id.clone(),
-                                pane_id: pane.pane_id.clone(),
-                            },
-                        });
+                    let label = if workspace_panes.len() == 1 {
+                        pane.label
+                            .as_deref()
+                            .or(title)
+                            .unwrap_or(workspace.label.as_str())
+                            .to_owned()
+                    } else {
+                        let pane_name = pane
+                            .label
+                            .as_deref()
+                            .or(title)
+                            .or(agent_kind)
+                            .unwrap_or("terminal");
+                        format!("{pane_name} · {}", index + 1)
+                    };
+                    let row = ClientNavigatorRow {
+                        depth: 1 + u8::from(federated),
+                        label: label.clone(),
+                        meta: meta.to_owned(),
+                        detail: format!("{} / {}", workspace.label, pane.pane_id),
+                        agent: agent_kind.map(str::to_owned),
+                        status: Some(status),
+                        stale: false,
+                        current: false,
+                        target: ClientNavigatorTarget::Pane {
+                            endpoint_id: endpoint.endpoint_id.clone(),
+                            pane_id: pane.pane_id.clone(),
+                        },
+                    };
+                    let mut search_fields = vec![
+                        label.to_lowercase(),
+                        meta.to_lowercase(),
+                        pane.pane_id.as_str().to_lowercase(),
+                    ];
+                    if let Some(cwd) = pane.cwd.as_deref() {
+                        search_fields.push(cwd.to_lowercase());
                     }
+                    if let Some(agent_kind) = agent_kind {
+                        search_fields.push(agent_kind.to_lowercase());
+                    }
+                    if let Some(title) = title {
+                        search_fields.push(title.to_lowercase());
+                    }
+                    panes.push(NavigatorPane { row, search_fields });
                 }
-                if !filtering
-                    || !children.is_empty()
-                    || (navigator.filter.is_none() && !query.is_empty() && workspace_matches)
-                {
-                    endpoint_rows.push(ClientNavigatorRow {
-                        depth: depth_offset,
+                let mut search_fields = vec![workspace.label.to_lowercase()];
+                if let Some(branch) = workspace.branch.as_deref() {
+                    search_fields.push(branch.to_lowercase());
+                }
+                indexed.workspaces.push(NavigatorWorkspace {
+                    row: ClientNavigatorRow {
+                        depth: u8::from(federated),
                         label: workspace.label.clone(),
                         meta: workspace.branch.clone().unwrap_or_default(),
                         detail: workspace.new_workspace_cwd.clone(),
                         agent: None,
                         status: None,
-                        stale,
+                        stale: false,
                         current: false,
                         target: ClientNavigatorTarget::Workspace {
                             endpoint_id: endpoint.endpoint_id.clone(),
                             workspace_id: workspace.workspace_id.clone(),
                         },
-                    });
+                    },
+                    search_fields,
+                    panes,
+                });
+            }
+            indexed_endpoints.push(indexed);
+        }
+        Self {
+            federated,
+            endpoints: indexed_endpoints,
+        }
+    }
+
+    pub(super) fn endpoint_status(
+        &self,
+        endpoint_id: &ClientEndpointId,
+    ) -> Option<ClientEndpointStatus> {
+        self.endpoints
+            .iter()
+            .find(|endpoint| &endpoint.endpoint_id == endpoint_id)
+            .map(|endpoint| endpoint.status)
+    }
+
+    pub(super) fn rows(
+        &self,
+        active_endpoint_id: &ClientEndpointId,
+        navigator: &ClientNavigatorOverlay,
+    ) -> Vec<ClientNavigatorRow> {
+        let query = navigator.query.trim().to_lowercase();
+        let words = query.split_whitespace().collect::<Vec<_>>();
+        let filtering = navigator.filter.is_some() || !query.is_empty();
+        let mut rows = Vec::new();
+        for endpoint in &self.endpoints {
+            let stale = endpoint.status != ClientEndpointStatus::Online;
+            let endpoint_matches = !query.is_empty()
+                && search_matches(std::slice::from_ref(&endpoint.search_label), &words);
+            let mut endpoint_rows = Vec::new();
+            for workspace in &endpoint.workspaces {
+                let workspace_matches =
+                    endpoint_matches || search_matches(&workspace.search_fields, &words);
+                let mut children = Vec::new();
+                for pane in &workspace.panes {
+                    let status = pane.row.status.unwrap_or(shepr_protocol::AgentStatus::Idle);
+                    if navigator
+                        .filter
+                        .is_some_and(|filter| !filter_status(filter, status))
+                        || !(workspace_matches || search_matches(&pane.search_fields, &words))
+                    {
+                        continue;
+                    }
+                    let mut row = pane.row.clone();
+                    row.stale = stale;
+                    row.current = &endpoint.endpoint_id == active_endpoint_id
+                        && endpoint.focused_pane_id.as_ref().is_some_and(|focused| {
+                            matches!(&row.target, ClientNavigatorTarget::Pane { pane_id, .. } if pane_id == focused)
+                        });
+                    children.push(row);
+                }
+                if !filtering
+                    || !children.is_empty()
+                    || (navigator.filter.is_none() && !query.is_empty() && workspace_matches)
+                {
+                    let mut row = workspace.row.clone();
+                    row.stale = stale;
+                    endpoint_rows.push(row);
                     endpoint_rows.extend(children);
                 }
             }
-        }
-        if !filtering || endpoint_query_matches || !endpoint_rows.is_empty() {
-            if federated {
-                rows.push(ClientNavigatorRow {
-                    depth: 0,
-                    label: endpoint.endpoint_id.display_label().to_owned(),
-                    meta: String::new(),
-                    detail: String::new(),
-                    agent: None,
-                    status: None,
-                    stale,
-                    current: false,
-                    target: ClientNavigatorTarget::Machine {
-                        endpoint_id: endpoint.endpoint_id.clone(),
-                    },
-                });
+            if !filtering || endpoint_matches || !endpoint_rows.is_empty() {
+                if self.federated {
+                    rows.push(ClientNavigatorRow {
+                        depth: 0,
+                        label: endpoint.label.clone(),
+                        meta: String::new(),
+                        detail: String::new(),
+                        agent: None,
+                        status: None,
+                        stale,
+                        current: false,
+                        target: ClientNavigatorTarget::Machine {
+                            endpoint_id: endpoint.endpoint_id.clone(),
+                        },
+                    });
+                }
+                rows.extend(endpoint_rows);
             }
-            rows.extend(endpoint_rows);
         }
+        rows
     }
-    rows
+}
+
+fn search_matches(fields: &[String], words: &[&str]) -> bool {
+    words.is_empty()
+        || fields
+            .iter()
+            .any(|field| words.iter().all(|word| field.contains(word)))
+}
+
+fn filter_status(filter: ClientNavigatorFilter, status: shepr_protocol::AgentStatus) -> bool {
+    match filter {
+        ClientNavigatorFilter::Blocked => status == shepr_protocol::AgentStatus::Blocked,
+        ClientNavigatorFilter::Working => status == shepr_protocol::AgentStatus::Working,
+        ClientNavigatorFilter::Idle => status == shepr_protocol::AgentStatus::Idle,
+    }
 }
 
 pub(super) fn navigator_selected_index(
@@ -331,4 +385,13 @@ pub(super) fn selected_navigator_target(
     navigator: &ClientNavigatorOverlay,
 ) -> Option<ClientNavigatorTarget> {
     navigator_selected_index(rows, navigator).map(|index| rows[index].target.clone())
+}
+
+#[cfg(test)]
+pub(super) fn navigator_rows(
+    endpoints: &[ClientShellEndpoint],
+    active_endpoint_id: &ClientEndpointId,
+    navigator: &ClientNavigatorOverlay,
+) -> Vec<ClientNavigatorRow> {
+    NavigatorIndex::build(endpoints).rows(active_endpoint_id, navigator)
 }

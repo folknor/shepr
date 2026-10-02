@@ -16,6 +16,16 @@ impl AgentOwnership {
         if !origin.authority_class().admits_state_report() {
             return self.transition_start(&origin, session_ref, seq, None, sample);
         }
+        // Preserve the stricter session contract enforced by bundled hook assets.
+        if origin.official_agent().is_some_and(|agent| {
+            agent
+                .descriptor()
+                .hook_session_policy
+                .state_requires_session_ref
+        }) && session_ref.is_none()
+        {
+            return None;
+        }
         if let Some(session_ref) = session_ref.as_ref()
             && origin.official_agent().is_some()
             && origin.session(session_ref.clone()).is_none()

@@ -29,7 +29,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use crate::SshFailureDiagnostic;
-use crate::machine::MachineConfig;
+use crate::machine::{MachineConfig, MachineLabel};
 use crate::machine_ssh::MachineProbe;
 use crate::{DifferentBuildServer, MachineSshCheck, RemoteStop};
 
@@ -386,7 +386,7 @@ pub fn restart_different_builds(
 pub struct MachineSshPreflight<'a> {
     paths: &'a shepr_config::AppPaths,
     deadline: Mutex<Instant>,
-    probes: Mutex<HashMap<String, Arc<Mutex<MachineProbe>>>>,
+    probes: Mutex<HashMap<MachineLabel, Arc<Mutex<MachineProbe>>>>,
 }
 
 impl<'a> MachineSshPreflight<'a> {
@@ -425,7 +425,7 @@ impl PreflightSsh for MachineSshPreflight<'_> {
             self.probes
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .entry(machine.label.as_str().to_owned())
+                .entry(machine.label.clone())
                 .or_default(),
         );
         let mut probe = probe

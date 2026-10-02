@@ -1,6 +1,6 @@
 use super::*;
 
-use crate::machine::RemoteExecutableError;
+use crate::machine::{RemoteExecutableError, SshTarget};
 use std::io;
 use std::process::Output;
 
@@ -16,7 +16,7 @@ pub(super) trait DiscoverySteps {
     fn known_locations(&mut self) -> io::Result<Vec<RemoteExecutable>>;
     /// Whether `candidate` passes the caller's verification.
     fn matches(&mut self, candidate: &RemoteExecutable) -> io::Result<bool>;
-    fn target(&self) -> &str;
+    fn target(&self) -> &SshTarget;
 
     /// A path rejected because nested remote shell commands cannot safely use it.
     fn take_rejected_shell_unsafe_candidate(&mut self) -> Option<RejectedShellUnsafeCandidate> {
@@ -74,7 +74,7 @@ impl DiscoverySteps for SshDiscovery<'_> {
         Ok(true)
     }
 
-    fn target(&self) -> &str {
+    fn target(&self) -> &SshTarget {
         self.ssh.target()
     }
 
@@ -264,10 +264,7 @@ pub(super) fn push_if_new_remote_binary_candidate(
     candidates: &mut Vec<RemoteExecutable>,
     candidate: RemoteExecutable,
 ) {
-    if !candidates
-        .iter()
-        .any(|existing| existing.as_str() == candidate.as_str())
-    {
+    if !candidates.iter().any(|existing| existing == &candidate) {
         candidates.push(candidate);
     }
 }
@@ -355,7 +352,7 @@ pub(super) fn remote_client_status(
     let status_command = PosixScript::new(remote_shepr.status_client_command());
     let command = PosixScript::new(format!(
         "test -x {} || exit {CANDIDATE_NOT_EXECUTABLE}; {}",
-        remote_shepr.quoted(),
+        remote_shepr.shell_word(),
         status_command.as_str(),
     ));
     let output = ssh.sh_output(&command)?;
@@ -403,7 +400,7 @@ pub(super) fn parse_client_status_json(
 }
 
 fn ensure_remote_client_build(
-    target: &str,
+    target: &SshTarget,
     status: &shepr_api::schema::ClientStatusJson,
 ) -> io::Result<()> {
     if status
@@ -421,7 +418,7 @@ fn ensure_remote_client_build(
 /// installed on the host is the pair this client can use. A candidate whose
 /// status does not report a sibling at all is one that predates the report.
 fn ensure_remote_sibling_build(
-    target: &str,
+    target: &SshTarget,
     status: &shepr_api::schema::ClientStatusJson,
 ) -> io::Result<()> {
     let install_hint =
@@ -459,7 +456,7 @@ fn ensure_remote_sibling_build(
 }
 
 fn remote_compatibility_error(
-    target: &str,
+    target: &SshTarget,
     status: &shepr_api::schema::ClientStatusJson,
 ) -> io::Error {
     let version = super::server_lifecycle::printable_remote_value(status.version.as_deref());

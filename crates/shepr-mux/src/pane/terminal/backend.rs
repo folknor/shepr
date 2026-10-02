@@ -606,7 +606,7 @@ impl PaneTerminal {
         let Ok(core) = shepr_vt::lock_terminal_core(&self.core) else {
             return None;
         };
-        Some(shepr_termio::input::KeyboardProtocol::from_kitty_flags(
+        Some(shepr_termio::input::KeyboardProtocol::from_flags(
             core.terminal.kitty_keyboard_flags(),
         ))
     }
@@ -624,9 +624,21 @@ impl PaneTerminal {
             .is_ok_and(|core| core.terminal.mouse_tracking_enabled())
     }
 
-    pub(crate) fn modify_other_keys_level(&self) -> u8 {
+    pub(crate) fn modify_other_keys_mode(&self) -> shepr_vt::ModifyOtherKeysLevel {
         shepr_vt::lock_terminal_core(&self.core)
-            .map_or(0, |core| core.terminal.modify_other_keys_level().as_u8())
+            .map_or(shepr_vt::ModifyOtherKeysLevel::Off, |core| {
+                core.terminal.modify_other_keys_level()
+            })
+    }
+
+    /// Keeps the runtime's existing numeric mode check while the encoder uses
+    /// the terminal's typed mode directly.
+    pub(crate) fn modify_other_keys_level(&self) -> u8 {
+        match self.modify_other_keys_mode() {
+            shepr_vt::ModifyOtherKeysLevel::Off => 0,
+            shepr_vt::ModifyOtherKeysLevel::ExceptWellDefined => 1,
+            shepr_vt::ModifyOtherKeysLevel::All => 2,
+        }
     }
 
     pub(crate) fn sgr_pixel_mouse_enabled(&self) -> bool {
@@ -725,7 +737,7 @@ impl PaneTerminal {
         let Some(modes) = shepr_vt::lock_terminal_core(&self.core).ok().map(|core| {
             shepr_termio::input::KeyEncodeModes {
                 kitty_flags: core.terminal.kitty_keyboard_flags(),
-                modify_other_keys: core.terminal.modify_other_keys_level().as_u8(),
+                modify_other_keys: core.terminal.modify_other_keys_level(),
                 application_cursor: core
                     .terminal
                     .mode_get(shepr_vt::DecMode::ApplicationCursorKeys),

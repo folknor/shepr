@@ -43,11 +43,7 @@ impl App {
         let chrome = self.state.pane_geometry_in(geometry.area);
         let follow_cwd = self.launch_cwd_for_pane_in_workspace(ws_idx, target_pane_id);
         let split_cwd = self.resolve_new_terminal_cwd(follow_cwd);
-        let default_cwd = self
-            .paths
-            .current_dir()
-            .unwrap_or_else(|| std::path::Path::new("/"))
-            .to_path_buf();
+        let default_cwd = self.paths.fallback_cwd().to_path_buf();
         let default_shell = self.state.settings.default_shell.clone();
         let scrollback_limit_bytes = self.state.settings.pane_scrollback_limit_bytes;
         let host_terminal_theme = self.state.host_terminal_theme;

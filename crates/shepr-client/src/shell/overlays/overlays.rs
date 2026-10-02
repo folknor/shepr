@@ -35,7 +35,7 @@ pub(crate) struct OverlayRender {
 pub(crate) fn render_client_overlay(
     b: &mut Buffer,
     o: &ClientShellOverlay,
-    endpoints: &[ClientShellEndpoint],
+    navigator_index: &super::aggregate_navigation::NavigatorIndex,
     active_endpoint_id: &ClientEndpointId,
     k: &LiveKeybindConfig,
     p: &Palette,
@@ -53,7 +53,7 @@ pub(crate) fn render_client_overlay(
         ClientShellOverlay::ConfirmClose(v) => backdrop(render_confirm_close_overlay(b, v, p)),
         ClientShellOverlay::Help(v) => backdrop(render_help_overlay(b, v, k, p)),
         ClientShellOverlay::Navigator(v) => {
-            render_navigator_overlay(b, v, endpoints, active_endpoint_id, p)
+            render_navigator_overlay(b, v, navigator_index, active_endpoint_id, p)
         }
         ClientShellOverlay::ContextMenu(_) | ClientShellOverlay::GlobalMenu(_) => None,
     }
@@ -323,7 +323,7 @@ fn render_rename_overlay(
 fn render_navigator_overlay(
     b: &mut Buffer,
     n: &ClientNavigatorOverlay,
-    endpoints: &[ClientShellEndpoint],
+    navigator_index: &super::aggregate_navigation::NavigatorIndex,
     active_endpoint_id: &ClientEndpointId,
     p: &Palette,
 ) -> Option<OverlayRender> {
@@ -349,7 +349,7 @@ fn render_navigator_overlay(
         " Go to ",
         Style::default().fg(p.accent).bg(p.panel_bg),
     );
-    let rows = super::aggregate_navigation::navigator_rows(endpoints, active_endpoint_id, n);
+    let rows = navigator_index.rows(active_endpoint_id, n);
     let search = if n.search_focused {
         " / ".to_owned()
     } else if let Some(f) = n.filter {
@@ -594,10 +594,9 @@ fn render_navigator_overlay(
             }
         }
         let machine_status = match &r.target {
-            ClientNavigatorTarget::Machine { endpoint_id } if !endpoint_id.is_local() => endpoints
-                .iter()
-                .find(|endpoint| &endpoint.endpoint_id == endpoint_id)
-                .map(|endpoint| endpoint.status),
+            ClientNavigatorTarget::Machine { endpoint_id } if !endpoint_id.is_local() => {
+                navigator_index.endpoint_status(endpoint_id)
+            }
             _ => None,
         };
         if let Some(status) = machine_status {

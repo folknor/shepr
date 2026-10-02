@@ -56,17 +56,13 @@ pub enum RemoteStop {
 }
 
 impl RemoteExecutable {
-    pub(super) fn quoted(&self) -> String {
-        shell_quote(self.as_str())
-    }
-
     pub(super) fn command(&self, args: &[&str]) -> String {
-        let mut command = self.quoted();
-        for arg in args {
-            command.push(' ');
-            command.push_str(&shell_quote(arg));
+        let arguments = shepr_core::shell_quote::join_argv(args.iter().copied());
+        if arguments.is_empty() {
+            self.shell_word().to_owned()
+        } else {
+            format!("{} {arguments}", self.shell_word())
         }
-        command
     }
 
     pub(super) fn status_client_command(&self) -> String {
@@ -109,23 +105,11 @@ pub(super) fn posix_shell_command(script: &str) -> String {
 }
 
 pub fn shell_quote(value: &str) -> String {
-    // zsh expands an unquoted leading `=`, and this command can be typed into
-    // the user's interactive shell before any inner POSIX shell sees it.
-    if !value.starts_with('=') && RemoteExecutable::is_shell_plain_word(value) {
-        return value.to_string();
-    }
-
-    format!("'{}'", value.replace('\'', "'\\''"))
+    shepr_core::shell_quote::quote(value)
 }
 
 pub fn interactive_shell_command(argv: &[String]) -> Option<String> {
-    let mut parts = argv.iter();
-    let mut command = shell_quote(parts.next()?);
-    for part in parts {
-        command.push(' ');
-        command.push_str(&shell_quote(part));
-    }
-    Some(command)
+    (!argv.is_empty()).then(|| shepr_core::shell_quote::join_argv(argv))
 }
 
 #[cfg(test)]

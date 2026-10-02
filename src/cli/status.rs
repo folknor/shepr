@@ -8,24 +8,28 @@ use shepr_remote::{COMMAND_CLIENT, COMMAND_SERVER, FLAG_JSON, option_name_from_f
 pub(crate) enum Command {
     Overview { json: bool },
     Server { json: bool },
+}
+
+pub(super) enum ParsedCommand {
+    Local(Command),
     Client { json: bool },
 }
 
-pub(super) fn parse(matches: &clap::ArgMatches) -> Option<Command> {
+pub(super) fn parse(matches: &clap::ArgMatches) -> Option<ParsedCommand> {
     let root_json = super::matches::try_flag(matches, option_name_from_flag(FLAG_JSON)).ok()?;
     match matches.subcommand() {
-        None => Some(Command::Overview { json: root_json }),
+        None => Some(ParsedCommand::Local(Command::Overview { json: root_json })),
         Some((COMMAND_SERVER, scope)) => {
             let command_json =
                 super::matches::try_flag(scope, option_name_from_flag(FLAG_JSON)).ok()?;
-            Some(Command::Server {
+            Some(ParsedCommand::Local(Command::Server {
                 json: root_json || command_json,
-            })
+            }))
         }
         Some((COMMAND_CLIENT, scope)) => {
             let command_json =
                 super::matches::try_flag(scope, option_name_from_flag(FLAG_JSON)).ok()?;
-            Some(Command::Client {
+            Some(ParsedCommand::Client {
                 json: root_json || command_json,
             })
         }
@@ -35,28 +39,23 @@ pub(super) fn parse(matches: &clap::ArgMatches) -> Option<Command> {
 
 pub(super) fn run_status_command(
     command: Command,
-    paths: &super::target::CliContext,
+    paths: &shepr_config::AppPaths,
 ) -> super::CliResult<i32> {
     match command {
         Command::Overview { json } => print_full_status(paths, json),
         Command::Server { json } => print_server_status(paths, json),
-        Command::Client { json } => {
-            print_client_status(json)?;
-            Ok(0)
-        }
     }
 }
 
 type ServerRuntimeStatus = ServerPresence;
 
-fn print_full_status(paths: &super::target::CliContext, json: bool) -> super::CliResult<i32> {
+fn print_full_status(paths: &shepr_config::AppPaths, json: bool) -> super::CliResult<i32> {
     let server = read_server_runtime_status(paths)?;
 
     if json {
         print_json(&FullStatusJson {
             local_client: client_status_json(),
             server: server_status_json(paths, &server),
-            update: update_status_json(&server),
         })?;
         return Ok(0);
     }
@@ -65,21 +64,26 @@ fn print_full_status(paths: &super::target::CliContext, json: bool) -> super::Cl
     print_client_status_body(&client_status_json(), "  ");
     println!();
     println!("server:");
-    print_server_status_body(paths, &server, "  ");
+    let (compatible, restart_needed) = build_status_flags(&server);
+    print_server_status_body(paths, &server, "  ", compatible);
     println!();
     println!("update:");
-    println!("  restart_needed: {}", restart_needed_label(&server));
+    println!(
+        "  restart_needed: {}",
+        restart_needed_label(&server, restart_needed)
+    );
 
     Ok(0)
 }
 
-fn print_server_status(paths: &super::target::CliContext, json: bool) -> super::CliResult<i32> {
+fn print_server_status(paths: &shepr_config::AppPaths, json: bool) -> super::CliResult<i32> {
     let server = read_server_runtime_status(paths)?;
     if json {
         print_json(&server_status_json(paths, &server))?;
         return Ok(0);
     }
-    print_server_status_body(paths, &server, "");
+    let (compatible, _) = build_status_flags(&server);
+    print_server_status_body(paths, &server, "", compatible);
     Ok(0)
 }
 
@@ -130,9 +134,10 @@ fn print_client_status_body(status: &ClientStatusJson, indent: &str) {
 }
 
 fn print_server_status_body(
-    paths: &super::target::CliContext,
+    paths: &shepr_config::AppPaths,
     server: &ServerRuntimeStatus,
     indent: &str,
+    compatible: Option<bool>,
 ) {
     let label = match server {
         ServerPresence::Gone => "not running",
@@ -148,10 +153,13 @@ fn print_server_status_body(
     if !matches!(server, ServerPresence::Gone) {
         println!(
             "{indent}build_compatible: {}",
-            build_compatible_label(server)
+            build_compatible_label(compatible)
         );
     }
-    println!("{indent}socket: {}", super::target::socket_label(paths));
+    println!(
+        "{indent}socket: {}",
+        paths.server_address().socket().display()
+    );
 }
 
 /// The identity a server answered with: present for starting, running and
@@ -175,7 +183,7 @@ fn print_runtime_identity(status: &RuntimeStatus, indent: &str) {
 }
 
 fn read_server_runtime_status(
-    paths: &super::target::CliContext,
+    paths: &shepr_config::AppPaths,
 ) -> super::CliResult<ServerRuntimeStatus> {
     Ok(shepr_api::read_server_presence_at(
         paths.server_address().socket(),
@@ -187,10 +195,10 @@ fn option_label(value: Option<&str>) -> &str {
     value.unwrap_or("unknown")
 }
 
-fn restart_needed_label(server: &ServerRuntimeStatus) -> &'static str {
+fn restart_needed_label(server: &ServerRuntimeStatus, restart_needed: bool) -> &'static str {
     match server {
         ServerPresence::Unresponsive => "unknown",
-        _ if restart_needed_bool(server) => "yes",
+        _ if restart_needed => "yes",
         _ => "no",
     }
 }
@@ -199,12 +207,6 @@ fn restart_needed_label(server: &ServerRuntimeStatus) -> &'static str {
 struct FullStatusJson {
     local_client: ClientStatusJson,
     server: ServerStatusJson,
-    update: UpdateStatusJson,
-}
-
-#[derive(Serialize)]
-struct UpdateStatusJson {
-    restart_needed: bool,
 }
 
 fn client_status_json() -> ClientStatusJson {
@@ -217,7 +219,7 @@ fn client_status_json() -> ClientStatusJson {
 }
 
 fn server_status_json(
-    paths: &super::target::CliContext,
+    paths: &shepr_config::AppPaths,
     server: &ServerRuntimeStatus,
 ) -> ServerStatusJson {
     let presence = match server {
@@ -228,44 +230,39 @@ fn server_status_json(
         ServerPresence::Unresponsive => ServerPresenceJson::Unresponsive,
     };
     let status = answered_status(server);
+    let (compatible, restart_needed) = build_status_flags(server);
+    // Keep the compatibility and restart fields in the shared server status
+    // JSON shape. Remote preflight parses this shape and uses presence and
+    // build_id to make its decision.
     ServerStatusJson {
         presence,
         version: status.and_then(|status| status.version.clone()),
         build_id: status.map(|status| status.build_id.clone()),
         boot_id: status.map(|status| status.boot_id.clone()),
-        compatible: build_compatible_bool(server),
+        compatible,
         socket: paths.server_address().socket().display().to_string(),
-        restart_needed: restart_needed_bool(server),
+        restart_needed,
     }
 }
 
-fn update_status_json(server: &ServerRuntimeStatus) -> UpdateStatusJson {
-    UpdateStatusJson {
-        restart_needed: restart_needed_bool(server),
-    }
-}
-
-fn build_compatible_label(server: &ServerRuntimeStatus) -> &'static str {
-    match build_compatible_bool(server) {
+fn build_compatible_label(compatible: Option<bool>) -> &'static str {
+    match compatible {
         Some(true) => "yes",
         Some(false) => "no",
         None => "unknown",
     }
 }
 
-fn build_compatible_bool(server: &ServerRuntimeStatus) -> Option<bool> {
-    answered_status(server).map(|status| shepr_protocol::is_this_build(&status.build_id))
-}
-
 /// A starting or running server of another build needs a restart; a stopping
 /// one is already going away, and the successor is launched from this install.
-fn restart_needed_bool(server: &ServerRuntimeStatus) -> bool {
-    match server {
-        ServerPresence::Starting(status) | ServerPresence::Running(status) => {
-            !shepr_protocol::is_this_build(&status.build_id)
-        }
-        ServerPresence::Stopping(_) | ServerPresence::Unresponsive | ServerPresence::Gone => false,
-    }
+fn build_status_flags(server: &ServerRuntimeStatus) -> (Option<bool>, bool) {
+    let compatible =
+        answered_status(server).map(|status| shepr_protocol::is_this_build(&status.build_id));
+    let restart_needed = matches!(
+        server,
+        ServerPresence::Starting(_) | ServerPresence::Running(_)
+    ) && compatible == Some(false);
+    (compatible, restart_needed)
 }
 
 fn print_json(value: &impl Serialize) -> super::CliResult<()> {
@@ -304,8 +301,8 @@ mod tests {
         ServerPresence::Running(runtime_status(version, build_id))
     }
 
-    fn test_paths() -> super::super::target::CliContext {
-        super::super::target::CliContext::test_local(shepr_config::AppPaths::test_default())
+    fn test_paths() -> shepr_config::AppPaths {
+        shepr_config::AppPaths::test_default()
     }
 
     #[test]
@@ -345,13 +342,13 @@ mod tests {
         assert_eq!(json.boot_id.as_deref(), Some("4242-1700000000"));
         assert_eq!(json.compatible, Some(false));
         assert!(json.restart_needed);
-        assert_eq!(restart_needed_label(&starting), "yes");
+        assert_eq!(restart_needed_label(&starting, json.restart_needed), "yes");
 
         let stopping = ServerPresence::Stopping(other);
         let json = server_status_json(&test_paths(), &stopping);
         assert_eq!(json.presence, ServerPresenceJson::Stopping);
         assert!(!json.restart_needed);
-        assert_eq!(restart_needed_label(&stopping), "no");
+        assert_eq!(restart_needed_label(&stopping, json.restart_needed), "no");
     }
 
     #[test]
@@ -364,15 +361,17 @@ mod tests {
         assert_eq!(json.boot_id, None);
         assert_eq!(json.compatible, None);
         assert!(!json.restart_needed);
-        assert_eq!(restart_needed_label(&server), "unknown");
+        assert_eq!(
+            restart_needed_label(&server, json.restart_needed),
+            "unknown"
+        );
     }
 
     #[test]
     fn same_build_does_not_require_restart() {
         let server = running_server(Some("0.0.0-old"), shepr_protocol::BUILD_ID);
 
-        assert!(!restart_needed_bool(&server));
-        assert_eq!(build_compatible_bool(&server), Some(true));
+        assert_eq!(build_status_flags(&server), (Some(true), false));
     }
 
     #[test]
@@ -382,7 +381,6 @@ mod tests {
             "ffffffffffffffff",
         );
 
-        assert!(restart_needed_bool(&server));
-        assert_eq!(build_compatible_bool(&server), Some(false));
+        assert_eq!(build_status_flags(&server), (Some(false), true));
     }
 }

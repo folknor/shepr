@@ -54,17 +54,28 @@ impl AppState {
         &mut self,
         terminal_ids: impl IntoIterator<Item = shepr_protocol::TerminalId>,
     ) -> Vec<shepr_protocol::TerminalId> {
+        let terminal_ids = terminal_ids.into_iter().collect::<Vec<_>>();
+        let mut unattached = terminal_ids
+            .iter()
+            .cloned()
+            .collect::<std::collections::HashSet<_>>();
+        if unattached.is_empty() {
+            return Vec::new();
+        }
+        for pane in self
+            .workspaces
+            .iter()
+            .flat_map(|workspace| workspace.panes().values())
+        {
+            unattached.remove(&pane.attached_terminal_id);
+            if unattached.is_empty() {
+                break;
+            }
+        }
+
         let mut detached = Vec::new();
         for terminal_id in terminal_ids {
-            let still_attached = self.workspaces.iter().any(|ws| {
-                ws.panes()
-                    .values()
-                    .any(|pane| pane.attached_terminal_id == terminal_id)
-            });
-            if still_attached {
-                continue;
-            }
-            if self.terminals.remove(&terminal_id).is_some() {
+            if unattached.remove(&terminal_id) && self.terminals.remove(&terminal_id).is_some() {
                 detached.push(terminal_id);
             }
         }
@@ -119,6 +130,7 @@ impl AppState {
             });
         }
 
+        self.pane_terminal_ids.remove(&removal.pane_id);
         let detached_terminal_ids =
             self.remove_unattached_terminal_ids(removal.terminal_ids.iter().cloned());
         self.mark_session_dirty();
@@ -141,6 +153,9 @@ impl AppState {
         let pane_ids = self.pane_ids_for_workspace(ws_idx);
 
         self.workspaces.remove(ws_idx);
+        for pane_id in &pane_ids {
+            self.pane_terminal_ids.remove(pane_id);
+        }
         let detached_terminal_ids =
             self.remove_unattached_terminal_ids(terminal_ids.iter().cloned());
         self.reconcile_bookmark();

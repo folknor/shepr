@@ -5,9 +5,9 @@ use crate::limits::BRIDGE_NAME_LABEL_CHARS;
 use crate::machine::{MachineLabel, RemoteExecutable, SshMetadataCache, SshTarget};
 
 use super::{
-    DiscoveryProgress, MachineSshCheck, RemoteSsh, SshStdioBridge, failed_before_remote_result,
-    is_remote_candidate_mismatch, judge_remote_server, remote_server_status,
-    resume_installed_remote_shepr_discovery, verify_remote_shepr,
+    DiscoveryProgress, MachineSshCheck, RemoteSsh, SshStdioBridge, is_remote_candidate_mismatch,
+    judge_remote_server, remote_server_status, resume_installed_remote_shepr_discovery,
+    verify_remote_shepr,
 };
 
 /// One machine's executable resolution and preflight server validation. Disk metadata is an
@@ -109,9 +109,8 @@ impl MachineProbe {
                         self.executable = ProbeExecutable::Verified(cached.clone());
                         return Ok(cached);
                     }
-                    // A failure before any remote result says nothing about the
-                    // cached executable, so the hint is kept for the next attempt.
-                    Err(error) if failed_before_remote_result(&error) => return Err(error),
+                    // Only a candidate mismatch is evidence that the cached
+                    // executable is stale; other failures keep the hint.
                     Err(error) if !is_remote_candidate_mismatch(&error) => return Err(error),
                     Ok(false) | Err(_) => self.invalidate(cache),
                 }
@@ -533,12 +532,13 @@ mod tests {
             !is_launch_fatal_setup_error(&error),
             "a runtime root that can return remains retryable: {error}"
         );
+        let diagnostic = crate::SshFailureDiagnostic::from_error(&error);
         assert!(
-            !failed_before_remote_result(&error),
+            !diagnostic.failed_before_remote_result(),
             "a missing local runtime root is not an SSH failure"
         );
         assert!(
-            super::super::SshFailureDiagnostic::from_error(&error).needs_attention(),
+            diagnostic.needs_attention(),
             "a missing local runtime root is actionable, not a dropped SSH link"
         );
         assert!(state.ssh.is_none(), "a failed setup keeps nothing to reuse");
@@ -838,12 +838,13 @@ mod tests {
             build_id: Some(format!("{}-other", shepr_protocol::BUILD_ID)),
             boot_id: Some("17-23".into()),
         };
+        let target = SshTarget::parse("build.example").expect("test precondition");
         let (_, check) = probe
             .advance_with(
                 &cache,
                 |_| panic!("empty cache"),
                 |_| Ok(executable("/found/shepr")),
-                |remote| judge_remote_server("build.example", remote, &status),
+                |remote| judge_remote_server(&target, remote, &status),
             )
             .expect("startup can offer a restart");
         assert!(matches!(check, MachineSshCheck::DifferentBuild(_)));
@@ -853,6 +854,7 @@ mod tests {
     struct InterruptedDiscovery {
         account_calls: usize,
         interruption: Option<io::Error>,
+        target: SshTarget,
     }
 
     impl super::super::discovery::DiscoverySteps for InterruptedDiscovery {
@@ -873,8 +875,8 @@ mod tests {
             Ok(true)
         }
 
-        fn target(&self) -> &str {
-            "build.example"
+        fn target(&self) -> &SshTarget {
+            &self.target
         }
     }
 
@@ -913,6 +915,7 @@ mod tests {
             let mut discovery = InterruptedDiscovery {
                 account_calls: 0,
                 interruption: Some(failure),
+                target: SshTarget::parse("build.example").expect("test precondition"),
             };
             assert!(
                 probe

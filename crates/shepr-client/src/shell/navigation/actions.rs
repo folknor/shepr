@@ -400,12 +400,9 @@ impl ClientShellState {
             KeybindAction::FocusAgent(_)
             | KeybindAction::PreviousAgent
             | KeybindAction::NextAgent => {
-                let agents = super::aggregate_navigation::displayed_agent_targets(
-                    &self.endpoints,
-                    self.config.agent_panel_sort,
-                );
+                let agents = self.agent_panel_model.targets();
                 let index = super::aggregate_navigation::agent_target_index(
-                    &agents,
+                    agents,
                     &self.active_endpoint_id,
                     snapshot.focused_pane_id.as_deref(),
                     action,
@@ -414,6 +411,7 @@ impl ClientShellState {
                 if target.endpoint_id != self.active_endpoint_id {
                     return None;
                 }
+                let target_endpoint_id = target.endpoint_id.clone();
                 let pane_id = target.pane_id.clone();
                 // Relative moves can land on a row scrolled out of the sidebar;
                 // bring it into view, as a numbered pick already names a shown one.
@@ -427,7 +425,7 @@ impl ClientShellState {
                     .any(|(_, visible_pane_id)| *visible_pane_id == pane_id)
                 {
                     let body_height = self.hits.agent_body.height;
-                    self.reveal_endpoint_agent(&target.endpoint_id, &pane_id, body_height);
+                    self.reveal_endpoint_agent(&target_endpoint_id, &pane_id, body_height);
                 }
                 Some(EndpointCommand::PaneFocus(PaneTarget { pane_id }))
             }

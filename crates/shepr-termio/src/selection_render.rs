@@ -4,7 +4,7 @@ use ratatui::{
 };
 use shepr_config::theme::Palette;
 
-fn panel_contrast_fg(p: &Palette) -> Color {
+fn panel_background(p: &Palette) -> Color {
     if p.panel_bg == Color::Reset {
         p.surface_dim
     } else {
@@ -65,7 +65,7 @@ pub fn automatic_selection_bg(
     p: &Palette,
     host_theme: crate::host_term::theme::TerminalTheme,
 ) -> Color {
-    let fallback = selection_palette_background(p);
+    let fallback = panel_background(p);
     let Some(background) = host_theme
         .background
         .map(|color| (color.r, color.g, color.b))
@@ -86,14 +86,6 @@ pub fn automatic_selection_bg(
     Color::Rgb(selected.0, selected.1, selected.2)
 }
 
-fn selection_palette_background(p: &Palette) -> Color {
-    if p.panel_bg == Color::Reset {
-        p.surface_dim
-    } else {
-        p.panel_bg
-    }
-}
-
 fn selection_fg_for_bg(bg: Color, p: &Palette) -> Color {
     if let Color::Rgb(r, g, b) = bg {
         let luminance = relative_luminance((r, g, b));
@@ -107,7 +99,7 @@ fn selection_fg_for_bg(bg: Color, p: &Palette) -> Color {
     }
 
     color_to_rgb(bg).map_or_else(
-        || panel_contrast_fg(p),
+        || panel_background(p),
         |bg| {
             if relative_luminance(bg) < 0.5 {
                 Color::White

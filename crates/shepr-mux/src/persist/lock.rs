@@ -1,93 +1,39 @@
 //! Exclusive ownership of a session state directory.
 
-use std::fs::{File, OpenOptions, TryLockError};
 use std::io;
-use std::os::unix::fs::OpenOptionsExt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-/// The name is owned by `shepr-config`, where a stop (which does not link this
-/// crate) finds the same file to wait for its release.
+/// Config owns the lease filename used to build API paths; platform is below
+/// config in the crate layers and owns opening and locking that path.
 pub(super) const LOCK_FILE_NAME: &str = shepr_config::DATA_DIR_LEASE_FILE_NAME;
 
 /// Acquired before restore and held through the final save. Possession of this
 /// value is required to construct a session writer.
 pub struct DataDirLease {
-    directory: PathBuf,
-    file: Option<File>,
+    inner: shepr_platform::DataDirectoryLease,
 }
 
 impl DataDirLease {
     pub fn acquire(directory: &Path) -> io::Result<Self> {
-        shepr_platform::create_private_directory_all(directory)?;
-        let directory = std::fs::canonicalize(directory)?;
-        let file = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .mode(0o600)
-            .open(directory.join(LOCK_FILE_NAME))?;
-        match file.try_lock() {
-            Ok(()) => Ok(Self {
-                directory,
-                file: Some(file),
-            }),
-            Err(TryLockError::WouldBlock) => Err(DataDirLeaseHeld::error(directory)),
-            Err(TryLockError::Error(err)) => Err(err),
-        }
+        Ok(Self {
+            inner: shepr_platform::DataDirectoryLease::acquire(directory, LOCK_FILE_NAME)?,
+        })
     }
 
     pub fn directory(&self) -> &Path {
-        &self.directory
+        self.inner.directory()
     }
 
     pub(super) fn is_active(&self) -> bool {
-        self.file.is_some()
+        self.inner.is_active()
     }
 
     pub fn release(&mut self) {
-        self.file.take();
+        self.inner.release();
     }
 }
 
-/// Another process already holds the lease on a session data directory.
-///
-/// [`DataDirLease::acquire`] reports it as an [`io::ErrorKind::ResourceBusy`]
-/// error carrying this payload, so the directory survives whichever caller
-/// sees it. Callers that word the refusal themselves find it with
-/// [`DataDirLeaseHeld::from_io`].
-#[derive(Debug)]
-pub struct DataDirLeaseHeld {
-    directory: PathBuf,
-}
-
-impl DataDirLeaseHeld {
-    fn error(directory: PathBuf) -> io::Error {
-        io::Error::new(io::ErrorKind::ResourceBusy, Self { directory })
-    }
-
-    /// The held-lease refusal inside `error`, if it is one.
-    pub fn from_io(error: &io::Error) -> Option<&Self> {
-        error.get_ref()?.downcast_ref::<Self>()
-    }
-
-    /// The canonical session data directory another process holds.
-    pub fn directory(&self) -> &Path {
-        &self.directory
-    }
-}
-
-impl std::fmt::Display for DataDirLeaseHeld {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "another shepr server owns the session files in {}",
-            self.directory.display()
-        )
-    }
-}
-
-impl std::error::Error for DataDirLeaseHeld {}
+pub use shepr_platform::DataDirectoryLeaseHeld as DataDirLeaseHeld;
 
 #[cfg(test)]
 mod tests {
