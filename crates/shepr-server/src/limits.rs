@@ -1,7 +1,7 @@
 use std::time::Duration;
 
-/// Maximum retry delay for host-shutdown session checkpoints.
-pub(crate) const HOST_SHUTDOWN_CHECKPOINT_RETRY_MAX_DELAY: Duration = Duration::from_secs(1);
+/// Longest retry delay of a failed pane-exit or host-shutdown checkpoint.
+pub(crate) const CHECKPOINT_RETRY_MAX_DELAY: Duration = Duration::from_secs(1);
 
 /// Initial delay after the logind shutdown signal stream is lost. The delay
 /// retries promptly while avoiding a reconnect spin.

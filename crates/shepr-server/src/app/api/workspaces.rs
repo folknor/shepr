@@ -571,11 +571,11 @@ mod tests {
         .expect("the workspace is renamed");
 
         assert!(app.state.session_dirty);
-        assert_eq!(app.session_saver.session_save_deadline, None);
+        assert_eq!(app.session_saver.autosave_deadline(), None);
         app.sync_session_save_schedule();
         assert!(!app.state.session_dirty);
         assert_eq!(
-            app.session_saver.session_save_deadline,
+            app.session_saver.autosave_deadline(),
             Some(sample.now + crate::limits::SESSION_SAVE_DEBOUNCE)
         );
     }

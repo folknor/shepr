@@ -1394,23 +1394,18 @@ impl HeadlessServer {
         }
 
         self.sync_host_shutdown_freeze(now);
-        let pane_exit_checkpoint_ready = self.app.take_pane_exit_checkpoint_ready();
-        if pane_exit_checkpoint_ready
-            || (!self.app.policy.persists_session() && !self.app.pane_exit_checkpoint_requested())
-        {
-            let queued = self.pending_checkpointed_pane_exits.len();
-            for _ in 0..queued {
-                if let Some(pending) = self.pending_checkpointed_pane_exits.pop_front() {
-                    if self
-                        .app
-                        .pane_exit_checkpoint_generation_settled(pending.checkpoint_generation)
-                    {
-                        self.replaying_checkpointed_pane_exit = Some(pending.checkpoint_generation);
-                        changed |= self.handle_internal_event_with_forwarding(pending.event);
-                    } else {
-                        self.pending_checkpointed_pane_exits.push_back(pending);
-                    }
-                }
+        for _ in 0..self.pending_checkpointed_pane_exits.len() {
+            let Some(pending) = self.pending_checkpointed_pane_exits.pop_front() else {
+                break;
+            };
+            if self
+                .app
+                .pane_exit_checkpoint_generation_settled(pending.checkpoint_generation)
+            {
+                self.replaying_checkpointed_pane_exit = Some(pending.checkpoint_generation);
+                changed |= self.handle_internal_event_with_forwarding(pending.event);
+            } else {
+                self.pending_checkpointed_pane_exits.push_back(pending);
             }
         }
 

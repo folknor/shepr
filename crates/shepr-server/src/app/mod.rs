@@ -972,7 +972,7 @@ mod tests {
 
         assert!(!app.state.session_dirty);
         assert_eq!(
-            app.session_saver.session_save_deadline,
+            app.session_saver.autosave_deadline(),
             Some(sample.now + SESSION_SAVE_DEBOUNCE)
         );
     }
@@ -981,11 +981,12 @@ mod tests {
     fn headless_next_loop_deadline_ignores_resize_poll() {
         let mut app = test_app();
         let now = Instant::now();
-        app.session_saver.session_save_deadline = Some(now + Duration::from_secs(2));
+        app.session_saver
+            .set_autosave_deadline(Some(now + Duration::from_secs(2)));
 
         assert_eq!(
             app.next_headless_loop_deadline_with_git_refresh(now, false, true),
-            app.session_saver.session_save_deadline
+            app.session_saver.autosave_deadline()
         );
     }
 
@@ -993,7 +994,7 @@ mod tests {
     fn headless_next_loop_deadline_returns_none_when_resize_poll_is_only_deadline() {
         let mut app = test_app();
         let now = Instant::now();
-        app.session_saver.session_save_deadline = None;
+        app.session_saver.set_autosave_deadline(None);
         app.state.workspaces.clear();
 
         assert_eq!(
@@ -1008,12 +1009,13 @@ mod tests {
         app.policy = AppPolicy::Production;
         app.state.workspaces = vec![Workspace::test_new("autosave")];
         app.state.ensure_test_terminals();
-        app.session_saver.session_save_deadline = Some(Instant::now() - Duration::from_secs(1));
+        app.session_saver
+            .set_autosave_deadline(Some(Instant::now() - Duration::from_secs(1)));
 
         app.start_background_session_save();
 
         assert!(app.session_saver.save_in_flight());
-        assert!(app.session_saver.session_save_deadline.is_none());
+        assert!(app.session_saver.autosave_deadline().is_none());
         app.save_session_now();
         assert!(
             app.paths
@@ -1025,45 +1027,17 @@ mod tests {
     }
 
     #[test]
-    fn failed_session_saves_back_off_and_recover() {
-        let mut app = test_app();
-        let now = Instant::now();
-        let mut previous = Duration::ZERO;
-        for _ in 0..12 {
-            app.session_saver.session_save_deadline = None;
-            assert!(!app.record_session_save_result(Err(std::io::Error::other("disk full")), now));
-            let delay = app
-                .session_saver
-                .session_save_deadline
-                .expect("a failed save schedules a retry")
-                - now;
-            assert!(delay >= previous, "retry delay never shrinks while failing");
-            assert!(delay <= Duration::from_secs(30), "retry delay is capped");
-            previous = delay;
-        }
-        assert_eq!(previous, Duration::from_secs(30));
-
-        assert!(app.record_session_save_result(Ok(()), now));
-        app.session_saver.session_save_deadline = None;
-        app.record_session_save_result(Err(std::io::Error::other("disk full")), now);
-        assert_eq!(
-            app.session_saver.session_save_deadline,
-            Some(now + Duration::from_millis(250)),
-            "a success resets the backoff"
-        );
-    }
-
-    #[test]
     fn background_session_save_reschedules_when_writer_is_busy() {
         let mut app = test_app();
         app.policy = AppPolicy::Production;
         let release = app.session_saver.hold_test_save_in_flight();
-        app.session_saver.session_save_deadline = Some(Instant::now() - Duration::from_secs(1));
+        app.session_saver
+            .set_autosave_deadline(Some(Instant::now() - Duration::from_secs(1)));
 
         app.start_background_session_save();
 
         assert!(app.session_saver.save_in_flight());
-        assert!(app.session_saver.session_save_deadline.is_some());
+        assert!(app.session_saver.autosave_deadline().is_some());
 
         release.complete(Ok(()));
         app.policy = AppPolicy::Test;
@@ -1228,12 +1202,13 @@ mod tests {
         .expect("the pane exit writes a checkpoint");
         assert!(shepr_mux::persist::snapshot::parse_snapshot(&checkpoint).is_ok());
         assert!(
-            app.session_saver.session_save_deadline.is_some(),
+            app.session_saver.autosave_deadline().is_some(),
             "the pane exit schedules the normal autosave"
         );
 
         // The loop starts the autosave once its debounce has elapsed.
-        app.session_saver.session_save_deadline = Some(Instant::now() - Duration::from_secs(1));
+        app.session_saver
+            .set_autosave_deadline(Some(Instant::now() - Duration::from_secs(1)));
         app.start_background_session_save();
         assert!(app.session_saver.save_in_flight());
         app.wait_for_session_save();

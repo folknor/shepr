@@ -4893,7 +4893,7 @@ async fn host_shutdown_warning_freezes_saves_before_applying_events_and_thaws_on
     // Pretend saving was on before the warning, so the thaw has to restore it.
     server.lifecycle.set_frozen_session_policy_for_test(true);
     assert!(!server.app.policy.persists_session());
-    assert!(server.app.session_saver.session_save_deadline.is_none());
+    assert!(server.app.session_saver.autosave_deadline().is_none());
 
     // The server keeps running and applies pane deaths; only the disk is frozen.
     assert!(

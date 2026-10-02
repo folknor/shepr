@@ -2,14 +2,16 @@ use super::*;
 use crate::app::AppPolicy;
 use shepr_mux::events::{AppEvent, RuntimeGeneration};
 
-fn server_with_held_runtime_exit() -> (
+/// A production-policy server with one pane whose runtime is live.
+fn server_with_runtime_pane(
+    name: &str,
+) -> (
     HeadlessServer,
     shepr_core::layout::PaneId,
     RuntimeGeneration,
-    u64,
 ) {
     let mut server = test_headless_server();
-    let workspace = shepr_mux::workspace::Workspace::test_new("checkpointed-runtime-exit");
+    let workspace = shepr_mux::workspace::Workspace::test_new(name);
     let pane_id = workspace.root_pane();
     server.app.state.workspaces = vec![workspace];
     server.app.state.ensure_test_terminals();
@@ -19,7 +21,15 @@ fn server_with_held_runtime_exit() -> (
     let generation = runtime.generation();
     server.app.insert_test_runtime(pane_id, runtime);
     server.app.policy = AppPolicy::Production;
+    (server, pane_id, generation)
+}
 
+/// Delivers a signalled, runtime-tagged exit of the pane the way the loop does.
+fn deliver_interrupted_exit(
+    server: &mut HeadlessServer,
+    pane_id: shepr_core::layout::PaneId,
+    generation: RuntimeGeneration,
+) {
     server.handle_internal_event_with_forwarding(AppEvent::Runtime {
         pane_id,
         generation,
@@ -28,6 +38,16 @@ fn server_with_held_runtime_exit() -> (
             exit_reason: shepr_platform::ChildExitReason::Interrupted,
         }),
     });
+}
+
+fn server_with_held_runtime_exit() -> (
+    HeadlessServer,
+    shepr_core::layout::PaneId,
+    RuntimeGeneration,
+    u64,
+) {
+    let (mut server, pane_id, generation) = server_with_runtime_pane("checkpointed-runtime-exit");
+    deliver_interrupted_exit(&mut server, pane_id, generation);
 
     assert!(server.app.find_pane(pane_id).is_some());
     let held = server
@@ -105,5 +125,51 @@ async fn replaced_runtime_drops_a_checkpointed_stale_exit_on_replay() {
         server.app.test_runtime(pane_id).generation(),
         replacement_generation
     );
+    shutdown_test_runtimes(&mut server);
+}
+
+/// An abandoned checkpoint releases its exit, and an autosave that lands
+/// before the next scheduled-tasks pass does not hold it again: release is a
+/// property of the generation, not a flag that pass must consume.
+#[tokio::test]
+async fn a_released_exit_is_replayed_by_the_pass_after_the_autosave_that_followed() {
+    let (mut server, pane_id, runtime_generation) = server_with_runtime_pane("released-exit");
+    // An autosave in flight keeps the exit's checkpoint from starting.
+    let autosave = server.app.session_saver.hold_test_save_in_flight();
+    deliver_interrupted_exit(&mut server, pane_id, runtime_generation);
+    let generation = server
+        .pending_checkpointed_pane_exits
+        .front()
+        .expect("held exit")
+        .checkpoint_generation;
+    autosave.complete(Ok(()));
+    assert!(server.app.reap_finished_session_save());
+    for _ in 0..crate::limits::CHECKPOINT_MAX_FAILURES {
+        let completion = server
+            .app
+            .session_saver
+            .hold_test_checkpoint_in_flight(generation);
+        completion.complete(Err(std::io::Error::other("disk full")));
+        assert!(server.app.reap_finished_session_save());
+    }
+    assert!(
+        server
+            .app
+            .pane_exit_checkpoint_generation_settled(generation)
+    );
+    let autosave = server.app.session_saver.hold_test_save_in_flight();
+    autosave.complete(Ok(()));
+    assert!(server.app.reap_finished_session_save());
+    assert!(
+        server
+            .app
+            .pane_exit_checkpoint_generation_settled(generation)
+    );
+    assert_eq!(server.pending_checkpointed_pane_exits.len(), 1);
+    assert!(server.app.find_pane(pane_id).is_some());
+
+    server.handle_scheduled_tasks_headless(server.app.clock.now);
+    assert!(server.pending_checkpointed_pane_exits.is_empty());
+    assert!(server.app.find_pane(pane_id).is_none());
     shutdown_test_runtimes(&mut server);
 }
