@@ -5,294 +5,290 @@ use std::time::Duration;
 
 use crate::agent::IntegrationTarget as Target;
 
-use super::command::{hook_command, is_hook_command_for_path};
-use super::config_edit::{direct_command_field, is_matching_command_hook};
+use super::command::is_hook_command_for_path;
+use super::config_edit::HOOK_COMMAND_FIELDS;
 use super::env::{AgentIntegrationPaths, DirectoryKey};
-use super::types::InstallOutcome;
+use super::registration::{HooksRoot, JsonShape, Registration};
+use super::types::{ArtifactRole, InstallOutcome};
+
+#[derive(Clone, Copy)]
+pub(super) struct ManagedAsset {
+    pub(super) contents: &'static str,
+    pub(super) path: &'static [&'static str],
+    pub(super) executable: bool,
+    pub(super) role: Option<ArtifactRole>,
+}
 
 #[derive(Clone, Copy)]
 struct IntegrationSpec {
     target: Target,
-    assets: &'static [&'static str],
+    primary_asset: ManagedAsset,
+    additional_assets: &'static [ManagedAsset],
     directory: DirectoryKey,
-    /// Agent-owned config files in `directory` that install edits. Install
-    /// vets them before touching anything, and the registration check reads
-    /// them from the directory `path` is installed under.
-    config_files: &'static [&'static str],
-    /// How status confirms the agent's own config still runs the hook.
-    registration: RegistrationCheck,
-    path: &'static [&'static str],
-    hook_timeout: Option<Duration>,
-    // Operator-facing label for install messages. For Antigravity this names
-    // the CLI integration while the agent's internal label is `agy`.
-    action_label: &'static str,
-    install: fn(&AgentIntegrationPaths) -> io::Result<InstallOutcome>,
+    registration: Registration,
 }
 
-#[derive(Clone, Copy)]
-enum RegistrationCheck {
-    DirectoryLoaded,
-    Json { root: HooksRoot, shape: JsonShape },
-    Codex,
-    Kimi,
-    AntigravityCli,
-    Grok,
-    Opencode,
+const fn spec_for(target: Target) -> &'static IntegrationSpec {
+    match target {
+        Target::Pi => &IntegrationSpec {
+            target: Target::Pi,
+            registration: Registration::DirectoryLoaded,
+            primary_asset: ManagedAsset {
+                contents: super::PI_EXTENSION_ASSET,
+                path: &[super::PI_EXTENSION_INSTALL_NAME],
+                executable: false,
+                role: Some(ArtifactRole::Extension),
+            },
+            additional_assets: &[],
+            directory: DirectoryKey::PiExtension,
+        },
+        Target::Omp => &IntegrationSpec {
+            target: Target::Omp,
+            registration: Registration::DirectoryLoaded,
+            primary_asset: ManagedAsset {
+                contents: super::OMP_EXTENSION_ASSET,
+                path: &[super::OMP_EXTENSION_INSTALL_NAME],
+                executable: false,
+                role: Some(ArtifactRole::Extension),
+            },
+            additional_assets: &[],
+            directory: DirectoryKey::OmpExtension,
+        },
+        Target::Claude => &IntegrationSpec {
+            target: Target::Claude,
+            registration: Registration::Json {
+                file: super::CLAUDE_SETTINGS_NAME,
+                root: HooksRoot::HooksKey,
+                shape: JsonShape::NestedClaude(super::HOOK_TIMEOUT),
+            },
+            primary_asset: ManagedAsset {
+                contents: super::CLAUDE_HOOK_ASSET,
+                path: &["hooks", super::CLAUDE_HOOK_INSTALL_NAME],
+                executable: true,
+                role: Some(ArtifactRole::Hook),
+            },
+            additional_assets: &[],
+            directory: DirectoryKey::Claude,
+        },
+        Target::Codex => &IntegrationSpec {
+            target: Target::Codex,
+            registration: Registration::Codex {
+                hooks: super::CODEX_HOOKS_NAME,
+                config: super::CODEX_CONFIG_NAME,
+                timeout: super::HOOK_TIMEOUT,
+            },
+            primary_asset: ManagedAsset {
+                contents: super::CODEX_HOOK_ASSET,
+                path: &[super::CODEX_HOOK_INSTALL_NAME],
+                executable: true,
+                role: Some(ArtifactRole::Hook),
+            },
+            additional_assets: &[],
+            directory: DirectoryKey::Codex,
+        },
+        Target::Copilot => &IntegrationSpec {
+            target: Target::Copilot,
+            registration: Registration::Json {
+                file: super::COPILOT_SETTINGS_NAME,
+                root: HooksRoot::HooksKey,
+                shape: JsonShape::Direct(super::HOOK_TIMEOUT),
+            },
+            primary_asset: ManagedAsset {
+                contents: super::COPILOT_HOOK_ASSET,
+                path: &["hooks", super::COPILOT_HOOK_INSTALL_NAME],
+                executable: true,
+                role: Some(ArtifactRole::Hook),
+            },
+            additional_assets: &[],
+            directory: DirectoryKey::Copilot,
+        },
+        Target::Devin => &IntegrationSpec {
+            target: Target::Devin,
+            registration: Registration::Json {
+                file: super::DEVIN_CONFIG_NAME,
+                root: HooksRoot::HooksKey,
+                shape: JsonShape::Nested(super::HOOK_TIMEOUT),
+            },
+            primary_asset: ManagedAsset {
+                contents: super::DEVIN_HOOK_ASSET,
+                path: &[super::DEVIN_HOOK_INSTALL_NAME],
+                executable: true,
+                role: Some(ArtifactRole::Hook),
+            },
+            additional_assets: &[],
+            directory: DirectoryKey::Devin,
+        },
+        Target::Droid => &IntegrationSpec {
+            target: Target::Droid,
+            registration: Registration::Json {
+                file: super::DROID_SETTINGS_NAME,
+                root: HooksRoot::HooksKey,
+                shape: JsonShape::Nested(super::HOOK_TIMEOUT),
+            },
+            primary_asset: ManagedAsset {
+                contents: super::DROID_HOOK_ASSET,
+                path: &["hooks", super::DROID_HOOK_INSTALL_NAME],
+                executable: true,
+                role: Some(ArtifactRole::Hook),
+            },
+            additional_assets: &[],
+            directory: DirectoryKey::Droid,
+        },
+        Target::Kimi => &IntegrationSpec {
+            target: Target::Kimi,
+            registration: Registration::Kimi {
+                file: super::KIMI_CONFIG_NAME,
+                timeout: super::HOOK_TIMEOUT,
+            },
+            primary_asset: ManagedAsset {
+                contents: super::KIMI_HOOK_ASSET,
+                path: &["hooks", super::KIMI_HOOK_INSTALL_NAME],
+                executable: true,
+                role: Some(ArtifactRole::Hook),
+            },
+            additional_assets: &[],
+            directory: DirectoryKey::Kimi,
+        },
+        Target::Opencode => &IntegrationSpec {
+            target: Target::Opencode,
+            registration: Registration::Opencode,
+            primary_asset: ManagedAsset {
+                contents: super::OPENCODE_PLUGIN_ASSET,
+                path: &["plugins", super::OPENCODE_PLUGIN_INSTALL_NAME],
+                executable: false,
+                role: Some(ArtifactRole::Plugin),
+            },
+            additional_assets: &[
+                ManagedAsset {
+                    contents: super::OPENCODE_TUI_PLUGIN_ASSET,
+                    path: &[super::OPENCODE_TUI_PLUGIN_INSTALL_NAME],
+                    executable: false,
+                    role: Some(ArtifactRole::TuiPlugin),
+                },
+                ManagedAsset {
+                    contents: super::OPENCODE_V2_TUI_PLUGIN_ASSET,
+                    path: &[super::OPENCODE_V2_TUI_PLUGIN_DIR, "tui.js"],
+                    executable: false,
+                    role: None,
+                },
+            ],
+            directory: DirectoryKey::Opencode,
+        },
+        Target::Kilo => &IntegrationSpec {
+            target: Target::Kilo,
+            registration: Registration::DirectoryLoaded,
+            primary_asset: ManagedAsset {
+                contents: super::KILO_PLUGIN_ASSET,
+                path: &["plugin", super::KILO_PLUGIN_INSTALL_NAME],
+                executable: false,
+                role: Some(ArtifactRole::Plugin),
+            },
+            additional_assets: &[],
+            directory: DirectoryKey::Kilo,
+        },
+        Target::Cursor => &IntegrationSpec {
+            target: Target::Cursor,
+            registration: Registration::Json {
+                file: super::CURSOR_HOOKS_NAME,
+                root: HooksRoot::HooksKey,
+                shape: JsonShape::Simple,
+            },
+            primary_asset: ManagedAsset {
+                contents: super::CURSOR_HOOK_ASSET,
+                path: &[super::CURSOR_HOOK_INSTALL_NAME],
+                executable: true,
+                role: Some(ArtifactRole::Hook),
+            },
+            additional_assets: &[],
+            directory: DirectoryKey::Cursor,
+        },
+        Target::Mastracode => &IntegrationSpec {
+            target: Target::Mastracode,
+            registration: Registration::Json {
+                file: super::MASTRACODE_HOOKS_NAME,
+                root: HooksRoot::Document,
+                shape: JsonShape::Flat(super::HOOK_TIMEOUT),
+            },
+            primary_asset: ManagedAsset {
+                contents: super::MASTRACODE_HOOK_ASSET,
+                path: &["hooks", super::MASTRACODE_HOOK_INSTALL_NAME],
+                executable: true,
+                role: Some(ArtifactRole::Hook),
+            },
+            additional_assets: &[],
+            directory: DirectoryKey::Mastracode,
+        },
+        Target::AntigravityCli => &IntegrationSpec {
+            target: Target::AntigravityCli,
+            registration: Registration::AntigravityCli {
+                file: super::ANTIGRAVITY_CLI_HOOKS_NAME,
+                timeout: super::HOOK_TIMEOUT,
+            },
+            primary_asset: ManagedAsset {
+                contents: super::ANTIGRAVITY_CLI_HOOK_ASSET,
+                path: &["hooks", super::ANTIGRAVITY_CLI_HOOK_INSTALL_NAME],
+                executable: true,
+                role: Some(ArtifactRole::Hook),
+            },
+            additional_assets: &[],
+            directory: DirectoryKey::AntigravityCli,
+        },
+        Target::Grok => &IntegrationSpec {
+            target: Target::Grok,
+            registration: Registration::Grok {
+                file: super::GROK_HOOK_CONFIG_NAME,
+                timeout: super::HOOK_TIMEOUT,
+            },
+            primary_asset: ManagedAsset {
+                contents: super::GROK_HOOK_ASSET,
+                path: &["hooks", super::GROK_HOOK_INSTALL_NAME],
+                executable: true,
+                role: Some(ArtifactRole::Hook),
+            },
+            additional_assets: &[],
+            directory: DirectoryKey::Grok,
+        },
+    }
 }
 
-#[derive(Clone, Copy)]
-enum JsonShape {
-    Nested,
-    NestedClaude,
-    Flat,
-    Direct,
-    Simple,
+pub(super) fn registration(target: Target) -> Registration {
+    spec_for(target).registration
 }
 
-const INTEGRATION_SPECS: &[IntegrationSpec] = &[
-    IntegrationSpec {
-        target: Target::Pi,
-        config_files: &[],
-        registration: RegistrationCheck::DirectoryLoaded,
-        action_label: "pi",
-        install: super::targets::install_pi,
-        assets: &[super::PI_EXTENSION_ASSET],
-        directory: DirectoryKey::PiExtension,
-        path: &[super::PI_EXTENSION_INSTALL_NAME],
-        hook_timeout: None,
-    },
-    IntegrationSpec {
-        target: Target::Omp,
-        config_files: &[],
-        registration: RegistrationCheck::DirectoryLoaded,
-        action_label: "omp",
-        install: super::targets::install_omp,
-        assets: &[super::OMP_EXTENSION_ASSET],
-        directory: DirectoryKey::OmpExtension,
-        path: &[super::OMP_EXTENSION_INSTALL_NAME],
-        hook_timeout: None,
-    },
-    IntegrationSpec {
-        target: Target::Claude,
-        config_files: &[super::CLAUDE_SETTINGS_NAME],
-        registration: RegistrationCheck::Json {
-            root: HooksRoot::HooksKey,
-            shape: JsonShape::NestedClaude,
-        },
-        action_label: "claude",
-        install: super::targets::install_claude,
-        assets: &[super::CLAUDE_HOOK_ASSET],
-        directory: DirectoryKey::Claude,
-        path: &["hooks", super::CLAUDE_HOOK_INSTALL_NAME],
-        hook_timeout: Some(super::HOOK_TIMEOUT),
-    },
-    IntegrationSpec {
-        target: Target::Codex,
-        config_files: &[super::CODEX_HOOKS_NAME, super::CODEX_CONFIG_NAME],
-        registration: RegistrationCheck::Codex,
-        action_label: "codex",
-        install: super::targets::install_codex,
-        assets: &[super::CODEX_HOOK_ASSET],
-        directory: DirectoryKey::Codex,
-        path: &[super::CODEX_HOOK_INSTALL_NAME],
-        hook_timeout: Some(super::HOOK_TIMEOUT),
-    },
-    IntegrationSpec {
-        target: Target::Copilot,
-        config_files: &[super::COPILOT_SETTINGS_NAME],
-        registration: RegistrationCheck::Json {
-            root: HooksRoot::HooksKey,
-            shape: JsonShape::Direct,
-        },
-        action_label: "copilot",
-        install: super::targets::install_copilot,
-        assets: &[super::COPILOT_HOOK_ASSET],
-        directory: DirectoryKey::Copilot,
-        path: &["hooks", super::COPILOT_HOOK_INSTALL_NAME],
-        hook_timeout: Some(super::HOOK_TIMEOUT),
-    },
-    IntegrationSpec {
-        target: Target::Devin,
-        config_files: &[super::DEVIN_CONFIG_NAME],
-        registration: RegistrationCheck::Json {
-            root: HooksRoot::HooksKey,
-            shape: JsonShape::Nested,
-        },
-        action_label: "devin",
-        install: super::targets::install_devin,
-        assets: &[super::DEVIN_HOOK_ASSET],
-        directory: DirectoryKey::Devin,
-        path: &[super::DEVIN_HOOK_INSTALL_NAME],
-        hook_timeout: Some(super::HOOK_TIMEOUT),
-    },
-    IntegrationSpec {
-        target: Target::Droid,
-        config_files: &[super::DROID_SETTINGS_NAME],
-        registration: RegistrationCheck::Json {
-            root: HooksRoot::HooksKey,
-            shape: JsonShape::Nested,
-        },
-        action_label: "droid",
-        install: super::targets::install_droid,
-        assets: &[super::DROID_HOOK_ASSET],
-        directory: DirectoryKey::Droid,
-        path: &["hooks", super::DROID_HOOK_INSTALL_NAME],
-        hook_timeout: Some(super::HOOK_TIMEOUT),
-    },
-    IntegrationSpec {
-        target: Target::Kimi,
-        config_files: &[super::KIMI_CONFIG_NAME],
-        registration: RegistrationCheck::Kimi,
-        action_label: "kimi",
-        install: super::targets::install_kimi,
-        assets: &[super::KIMI_HOOK_ASSET],
-        directory: DirectoryKey::Kimi,
-        path: &["hooks", super::KIMI_HOOK_INSTALL_NAME],
-        hook_timeout: Some(super::HOOK_TIMEOUT),
-    },
-    IntegrationSpec {
-        target: Target::Opencode,
-        config_files: &[
-            super::OPENCODE_TUI_CONFIG_NAME,
-            super::OPENCODE_LEGACY_TUI_CONFIG_NAME,
-            super::OPENCODE_CLI_CONFIG_NAME,
-        ],
-        registration: RegistrationCheck::Opencode,
-        action_label: "opencode",
-        install: super::targets::install_opencode,
-        assets: &[
-            super::OPENCODE_PLUGIN_ASSET,
-            super::OPENCODE_TUI_PLUGIN_ASSET,
-            super::OPENCODE_V2_TUI_PLUGIN_ASSET,
-        ],
-        directory: DirectoryKey::Opencode,
-        path: &["plugins", super::OPENCODE_PLUGIN_INSTALL_NAME],
-        hook_timeout: None,
-    },
-    IntegrationSpec {
-        target: Target::Kilo,
-        config_files: &[],
-        registration: RegistrationCheck::DirectoryLoaded,
-        action_label: "kilo",
-        install: super::targets::install_kilo,
-        assets: &[super::KILO_PLUGIN_ASSET],
-        directory: DirectoryKey::Kilo,
-        path: &["plugin", super::KILO_PLUGIN_INSTALL_NAME],
-        hook_timeout: None,
-    },
-    IntegrationSpec {
-        target: Target::Cursor,
-        config_files: &[super::CURSOR_HOOKS_NAME],
-        registration: RegistrationCheck::Json {
-            root: HooksRoot::HooksKey,
-            shape: JsonShape::Simple,
-        },
-        action_label: "cursor",
-        install: super::targets::install_cursor,
-        assets: &[super::CURSOR_HOOK_ASSET],
-        directory: DirectoryKey::Cursor,
-        path: &[super::CURSOR_HOOK_INSTALL_NAME],
-        hook_timeout: None,
-    },
-    IntegrationSpec {
-        target: Target::Mastracode,
-        config_files: &[super::MASTRACODE_HOOKS_NAME],
-        registration: RegistrationCheck::Json {
-            root: HooksRoot::Document,
-            shape: JsonShape::Flat,
-        },
-        action_label: "mastracode",
-        install: super::targets::install_mastracode,
-        assets: &[super::MASTRACODE_HOOK_ASSET],
-        directory: DirectoryKey::Mastracode,
-        path: &["hooks", super::MASTRACODE_HOOK_INSTALL_NAME],
-        hook_timeout: Some(super::HOOK_TIMEOUT),
-    },
-    IntegrationSpec {
-        target: Target::AntigravityCli,
-        config_files: &[super::ANTIGRAVITY_CLI_HOOKS_NAME],
-        registration: RegistrationCheck::AntigravityCli,
-        action_label: "antigravity-cli",
-        install: super::targets::install_antigravity_cli,
-        assets: &[super::ANTIGRAVITY_CLI_HOOK_ASSET],
-        directory: DirectoryKey::AntigravityCli,
-        path: &["hooks", super::ANTIGRAVITY_CLI_HOOK_INSTALL_NAME],
-        hook_timeout: Some(super::HOOK_TIMEOUT),
-    },
-    IntegrationSpec {
-        target: Target::Grok,
-        config_files: &[],
-        registration: RegistrationCheck::Grok,
-        action_label: "grok",
-        install: super::targets::install_grok,
-        assets: &[super::GROK_HOOK_ASSET],
-        directory: DirectoryKey::Grok,
-        path: &["hooks", super::GROK_HOOK_INSTALL_NAME],
-        hook_timeout: Some(super::HOOK_TIMEOUT),
-    },
-];
-
-fn spec_for(target: Target) -> io::Result<&'static IntegrationSpec> {
-    INTEGRATION_SPECS
-        .iter()
-        .find(|spec| spec.target == target)
-        .ok_or_else(|| io::Error::other(format!("missing integration spec for {target:?}")))
+pub(super) fn target_directory(
+    paths: &AgentIntegrationPaths,
+    target: Target,
+) -> io::Result<PathBuf> {
+    paths.directory(spec_for(target).directory)
 }
 
-/// The agent-owned config files `target`'s install edits, as its spec row
-/// declares them.
-pub(crate) fn config_file_names(target: Target) -> io::Result<&'static [&'static str]> {
-    spec_for(target).map(|spec| spec.config_files)
-}
-
-pub(crate) fn integration_hook_timeout(target: Target) -> io::Result<Duration> {
-    spec_for(target)?.hook_timeout.ok_or_else(|| {
-        io::Error::other(format!(
-            "integration spec for {target:?} has no hook timeout"
-        ))
-    })
+pub(super) fn target_path(paths: &AgentIntegrationPaths, target: Target) -> io::Result<PathBuf> {
+    installed_path(paths, spec_for(target))
 }
 
 pub(crate) fn action_label(target: Target) -> &'static str {
-    INTEGRATION_SPECS
-        .iter()
-        .find(|spec| spec.target == target)
-        .map_or(target.label(), |spec| spec.action_label)
+    match target {
+        Target::AntigravityCli => "antigravity-cli",
+        _ => target.label(),
+    }
 }
 
 pub(crate) fn install_operation(
     paths: &AgentIntegrationPaths,
     target: Target,
 ) -> io::Result<InstallOutcome> {
-    let Some(spec) = INTEGRATION_SPECS.iter().find(|spec| spec.target == target) else {
-        return Err(io::Error::other(format!(
-            "missing integration spec for {target:?}"
-        )));
-    };
-    (spec.install)(paths)
+    super::targets::install(paths, target)
 }
 
-pub(crate) fn integration_asset(target: crate::agent::IntegrationTarget) -> Option<&'static str> {
-    INTEGRATION_SPECS
-        .iter()
-        .copied()
-        .find(|spec| spec.target == target)
-        .and_then(|spec| spec.assets.first().copied())
-}
-
-pub(crate) fn integration_hook_events(
-    target: crate::agent::IntegrationTarget,
-) -> &'static [crate::agent::IntegrationHookEvent] {
-    INTEGRATION_SPECS
-        .iter()
-        .find(|spec| spec.target == target)
-        .map_or(&[], |spec| spec.target.hook_events())
+pub(super) fn managed_assets(target: Target) -> impl Iterator<Item = &'static ManagedAsset> {
+    let spec = spec_for(target);
+    std::iter::once(&spec.primary_asset).chain(spec.additional_assets.iter())
 }
 
 /// The primary managed file `spec` installs, whose bundled bytes status checks.
 fn installed_path(paths: &AgentIntegrationPaths, spec: &IntegrationSpec) -> io::Result<PathBuf> {
     let mut path = paths.directory(spec.directory)?;
-    for part in spec.path {
+    for part in spec.primary_asset.path {
         path.push(part);
     }
     Ok(path)
@@ -305,7 +301,7 @@ pub(crate) fn integration_status(
     paths: &AgentIntegrationPaths,
     target: Target,
 ) -> io::Result<super::IntegrationStatus> {
-    let spec = spec_for(target)?;
+    let spec = spec_for(target);
     integration_status_at_with_paths(target, installed_path(paths, spec)?, paths)
 }
 
@@ -315,7 +311,11 @@ pub(crate) fn integration_status(
 /// `extensions` directory inside the agent directory, which install creates
 /// when missing, so for them the agent directory is its parent.
 pub(crate) fn agent_present(paths: &AgentIntegrationPaths, target: Target) -> io::Result<bool> {
-    let spec = spec_for(target)?;
+    super::file_ops::is_dir(&agent_directory(paths, target)?)
+}
+
+fn agent_directory(paths: &AgentIntegrationPaths, target: Target) -> io::Result<PathBuf> {
+    let spec = spec_for(target);
     let directory = paths.directory(spec.directory)?;
     let agent_directory = match spec.directory {
         DirectoryKey::PiExtension | DirectoryKey::OmpExtension => {
@@ -329,18 +329,18 @@ pub(crate) fn agent_present(paths: &AgentIntegrationPaths, target: Target) -> io
         }
         _ => directory,
     };
-    super::file_ops::is_dir(&agent_directory)
+    Ok(agent_directory)
 }
 
 /// Whether the Shepr-owned Grok hook config exactly matches the installed
 /// integration. JSON formatting and object key order do not affect validity.
-fn grok_hook_config_is_valid(hook_path: &Path) -> io::Result<bool> {
-    let Some(hooks_dir) = hook_path.parent() else {
-        return Ok(false);
-    };
-    let expected_config = super::targets::grok_hook_config(hook_path)?;
-    let config_path = hooks_dir.join(super::GROK_HOOK_CONFIG_NAME);
-    let Some(content) = read_config_content(&config_path)? else {
+fn grok_hook_config_is_valid(
+    config_path: &Path,
+    hook_path: &Path,
+    timeout: Duration,
+) -> io::Result<bool> {
+    let expected_config = super::targets::grok_hook_config_with_timeout(hook_path, timeout)?;
+    let Some(content) = read_config_content(config_path)? else {
         return Ok(false);
     };
     let config = serde_json::from_str::<serde_json::Value>(&content).map_err(|error| {
@@ -356,16 +356,14 @@ fn opencode_tui_integration_is_valid(plugin_path: &Path, state_dir: &Path) -> io
     let Some(config_dir) = plugin_path.parent().and_then(Path::parent) else {
         return Ok(false);
     };
-    let tui_plugin_path = config_dir.join(super::OPENCODE_TUI_PLUGIN_INSTALL_NAME);
-    let tui_plugin_current =
-        file_matches_asset(&tui_plugin_path, super::OPENCODE_TUI_PLUGIN_ASSET)?;
-    let v2_plugin_path = config_dir
-        .join(super::OPENCODE_V2_TUI_PLUGIN_DIR)
-        .join("tui.js");
-    let v2_plugin_current =
-        file_matches_asset(&v2_plugin_path, super::OPENCODE_V2_TUI_PLUGIN_ASSET)?;
-    if !tui_plugin_current || !v2_plugin_current {
-        return Ok(false);
+    for asset in managed_assets(Target::Opencode).skip(1) {
+        let mut path = config_dir.to_path_buf();
+        for part in asset.path {
+            path.push(part);
+        }
+        if !file_matches_asset(&path, asset.contents)? {
+            return Ok(false);
+        }
     }
     if !super::opencode_config::tui_plugin_is_configured(
         config_dir,
@@ -389,103 +387,9 @@ fn ancestor(path: &Path, levels: usize) -> Option<&Path> {
     Some(current)
 }
 
-#[derive(Clone, Copy)]
-enum HooksRoot {
-    /// Events live under the document's top-level `hooks` object.
-    HooksKey,
-    /// Events are the document's own top-level keys (MastraCode).
-    Document,
-}
-
-enum JsonHookShape {
-    // `None` means the installer wrote no matcher field on the event group.
-    Nested {
-        matcher: Option<String>,
-        timeout_seconds: u64,
-    },
-    Flat {
-        timeout_millis: u64,
-    },
-    Direct {
-        timeout_seconds: u64,
-    },
-    Simple,
-}
-
-/// Whether `entries` holds `command` in the shape its installer writes, under
-/// the installer's matcher. Install first strips every entry invoking shepr's
-/// hook path from every event, whatever its matcher or extra fields, and then
-/// writes the canonical set, so anything this rejects a reinstall repairs.
-///
-/// There is deliberately no per-entry `disabled` or `enabled` check: none of
-/// these agents documents such a field (Claude Code only offers the global
-/// `disableAllHooks`, Cursor has neither), so an entry carrying one still runs
-/// and still counts as registered.
-fn json_event_has_command(
-    entries: &serde_json::Value,
-    command: &str,
-    shape: &JsonHookShape,
-) -> bool {
-    let Some(entries) = entries.as_array() else {
-        return false;
-    };
-    match shape {
-        JsonHookShape::Nested {
-            matcher,
-            timeout_seconds,
-        } => entries.iter().any(|group| {
-            let matcher_matches = match matcher {
-                Some(matcher) => {
-                    group.get("matcher").and_then(serde_json::Value::as_str)
-                        == Some(matcher.as_str())
-                }
-                None => group.get("matcher").is_none(),
-            };
-            matcher_matches
-                && group
-                    .get("hooks")
-                    .and_then(serde_json::Value::as_array)
-                    .is_some_and(|hooks| {
-                        hooks.iter().any(|hook| {
-                            is_matching_command_hook(hook, command)
-                                && hook.get("timeout").and_then(serde_json::Value::as_u64)
-                                    == Some(*timeout_seconds)
-                        })
-                    })
-        }),
-        JsonHookShape::Flat { timeout_millis } => entries.iter().any(|hook| {
-            hook.get("matcher").is_none()
-                && is_matching_command_hook(hook, command)
-                && hook.get("timeout").and_then(serde_json::Value::as_u64) == Some(*timeout_millis)
-                && hook.get("description").and_then(serde_json::Value::as_str)
-                    == Some(super::config_edit::MASTRACODE_HOOK_DESCRIPTION)
-        }),
-        JsonHookShape::Direct { timeout_seconds } => entries.iter().any(|hook| {
-            hook.get("matcher").is_none()
-                && hook.get("type").and_then(serde_json::Value::as_str) == Some("command")
-                && hook
-                    .get(direct_command_field())
-                    .and_then(serde_json::Value::as_str)
-                    == Some(command)
-                && hook.get("timeoutSec").and_then(serde_json::Value::as_u64)
-                    == Some(*timeout_seconds)
-        }),
-        JsonHookShape::Simple => entries.iter().any(|hook| {
-            hook.get("matcher").is_none()
-                && hook.get("command").and_then(serde_json::Value::as_str) == Some(command)
-        }),
-    }
-}
-
+// Registration reads use the same regular-file policy as install.
 fn read_config_content(path: &Path) -> io::Result<Option<String>> {
-    match fs::read_to_string(path) {
-        Ok(content) => Ok(Some(content)),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(io::Error::new(
-            error.kind(),
-            format!("cannot read {}: {error}", path.display()),
-        )),
-    }
+    super::file_ops::read_if_file(path)
 }
 
 fn read_json(path: &Path) -> io::Result<Option<serde_json::Value>> {
@@ -500,13 +404,32 @@ fn read_json(path: &Path) -> io::Result<Option<serde_json::Value>> {
     })
 }
 
-/// Expected hook commands use the installer's shape, and no other command
-/// invokes this hook path under a different event or action.
+/// Check the same canonical entries installation merges, allowing unrelated
+/// fields and hooks. A matcher absent from the canonical entry must stay absent.
+fn canonical_entry_matches(actual: &serde_json::Value, expected: &serde_json::Value) -> bool {
+    match expected {
+        serde_json::Value::Object(fields) => actual.as_object().is_some_and(|object| {
+            fields.iter().all(|(key, value)| {
+                object
+                    .get(key)
+                    .is_some_and(|actual| canonical_entry_matches(actual, value))
+            })
+        }),
+        serde_json::Value::Array(entries) => actual.as_array().is_some_and(|actual| {
+            entries.iter().all(|entry| {
+                actual
+                    .iter()
+                    .any(|value| canonical_entry_matches(value, entry))
+            })
+        }),
+        _ => actual == expected,
+    }
+}
+
 fn json_hook_commands_registered(
     config_path: &Path,
     root: HooksRoot,
-    expected: &[(&str, String)],
-    shape: &JsonHookShape,
+    expected: &serde_json::Map<String, serde_json::Value>,
     hook_path: &Path,
 ) -> io::Result<bool> {
     let Some(document) = read_json(config_path)? else {
@@ -519,22 +442,30 @@ fn json_hook_commands_registered(
     let Some(events) = events.and_then(serde_json::Value::as_object) else {
         return Ok(false);
     };
-    let expected_are_canonical = expected.iter().all(|(event, command)| {
-        events
-            .get(*event)
-            .is_some_and(|entries| json_event_has_command(entries, command, shape))
+    let canonical = expected.iter().all(|(event, entries)| {
+        let Some(actual) = events.get(event).and_then(serde_json::Value::as_array) else {
+            return false;
+        };
+        entries.as_array().is_some_and(|entries| {
+            entries.iter().all(|expected| {
+                actual.iter().any(|entry| {
+                    (expected.get("matcher").is_some() || entry.get("matcher").is_none())
+                        && canonical_entry_matches(entry, expected)
+                })
+            })
+        })
     });
     let mut installed = Vec::new();
+    let mut commands = Vec::new();
     for (event, entries) in events {
         collect_hook_path_commands(entries, hook_path, event, &mut installed);
     }
-    let mut expected_commands = expected
-        .iter()
-        .map(|(event, command)| ((*event).to_string(), command.clone()))
-        .collect::<Vec<_>>();
+    for (event, entries) in expected {
+        collect_hook_path_commands(entries, hook_path, event, &mut commands);
+    }
     installed.sort();
-    expected_commands.sort();
-    Ok(expected_are_canonical && installed == expected_commands)
+    commands.sort();
+    Ok(canonical && installed == commands)
 }
 
 fn collect_hook_path_commands(
@@ -550,7 +481,7 @@ fn collect_hook_path_commands(
             }
         }
         serde_json::Value::Object(object) => {
-            for field in ["command", "bash"] {
+            for &field in HOOK_COMMAND_FIELDS {
                 if let Some(command) = object.get(field).and_then(serde_json::Value::as_str)
                     && is_hook_command_for_path(command, hook_path)
                 {
@@ -587,7 +518,11 @@ fn codex_hooks_feature_enabled(config_path: &Path) -> io::Result<bool> {
     Ok(feature_enabled == Some(true))
 }
 
-fn kimi_hooks_registered(config_path: &Path, hook_path: &Path) -> io::Result<bool> {
+fn kimi_hooks_registered(
+    config_path: &Path,
+    hook_path: &Path,
+    timeout: Duration,
+) -> io::Result<bool> {
     let Some(content) = read_config_content(config_path)? else {
         return Ok(false);
     };
@@ -599,138 +534,58 @@ fn kimi_hooks_registered(config_path: &Path, hook_path: &Path) -> io::Result<boo
             format!("cannot parse {}: {error}", config_path.display()),
         )
     })?;
-    super::config_edit::kimi_config_block_is_current(&content, hook_path)
+    super::config_edit::kimi_config_block_with_timeout_is_current(&content, hook_path, timeout)
 }
 
-/// Convert an agent's hook events into the commands its integration registers.
-fn hook_event_commands(
-    hook_path: &Path,
-    events: &[crate::agent::IntegrationHookEvent],
-) -> Vec<(&'static str, String)> {
-    events
-        .iter()
-        .filter_map(|hook| {
-            hook.action
-                .map(|action| (hook.event, hook_command(hook_path, Some(action.as_str()))))
-        })
-        .collect()
-}
-
-/// Whether the agent's own config still registers the installed hook, the
-/// way install wrote it. The hook file alone cannot tell: an
-/// install whose config edit failed, or a user who deleted the settings entry,
-/// leaves a current hook script the agent never runs.
-///
-/// The config files are read from the directory the spec row's `path` is
-/// installed under, so the depth follows the row instead of a hand-kept count.
 fn hook_registration_is_current(
     spec: &IntegrationSpec,
     hook_path: &Path,
     paths: &AgentIntegrationPaths,
 ) -> io::Result<bool> {
-    let Some(dir) = ancestor(hook_path, spec.path.len()) else {
+    let Some(dir) = ancestor(hook_path, spec.primary_asset.path.len()) else {
         return Ok(false);
     };
-    let config = |index: usize| {
-        spec.config_files
-            .get(index)
-            .map(|name| dir.join(name))
-            .ok_or_else(|| {
-                io::Error::other(format!(
-                    "integration spec for {:?} declares no config file {index} for its registration check",
-                    spec.target
-                ))
-            })
-    };
     let registered = match spec.registration {
-        RegistrationCheck::DirectoryLoaded => true,
-        RegistrationCheck::Grok => grok_hook_config_is_valid(hook_path)?,
-        RegistrationCheck::Opencode => {
+        Registration::DirectoryLoaded => true,
+        Registration::Grok { file, timeout } => {
+            grok_hook_config_is_valid(&dir.join("hooks").join(file), hook_path, timeout)?
+        }
+        Registration::Opencode => {
             return opencode_tui_integration_is_valid(
                 hook_path,
                 &paths.directory(DirectoryKey::OpencodeState)?,
             );
         }
-        RegistrationCheck::Kimi => kimi_hooks_registered(&config(0)?, hook_path)?,
-        RegistrationCheck::AntigravityCli => {
-            let expected_block = super::targets::antigravity_cli_hook_block(hook_path)?;
-            read_json(&config(0)?)?.is_some_and(|document| {
+        Registration::Kimi { file, timeout } => {
+            kimi_hooks_registered(&dir.join(file), hook_path, timeout)?
+        }
+        Registration::AntigravityCli { file, timeout } => {
+            let expected_block =
+                super::targets::antigravity_cli_hook_block_with_timeout(hook_path, timeout)?;
+            read_json(&dir.join(file))?.is_some_and(|document| {
                 document.get(super::ANTIGRAVITY_CLI_HOOK_BLOCK_NAME) == Some(&expected_block)
             })
         }
-        RegistrationCheck::Codex => {
-            let hook_commands_registered = json_hook_commands_registered(
-                &config(0)?,
+        Registration::Codex {
+            hooks,
+            config,
+            timeout,
+        } => {
+            json_hook_commands_registered(
+                &dir.join(hooks),
                 HooksRoot::HooksKey,
-                &hook_event_commands(hook_path, spec.target.hook_events()),
-                &JsonHookShape::Nested {
-                    matcher: None,
-                    timeout_seconds: hook_timeout_seconds(spec)?,
-                },
+                &JsonShape::Nested(timeout).expected_events(spec.target, hook_path)?,
                 hook_path,
-            )?;
-            let hooks_feature_enabled = codex_hooks_feature_enabled(&config(1)?)?;
-            hook_commands_registered && hooks_feature_enabled
+            )? && codex_hooks_feature_enabled(&dir.join(config))?
         }
-        RegistrationCheck::Json { root, shape } => {
-            let expected = match shape {
-                // A direct entry is written for every event, including the
-                // ones whose hook takes no action argument.
-                JsonShape::Direct => spec
-                    .target
-                    .hook_events()
-                    .iter()
-                    .map(|hook| {
-                        (
-                            hook.event,
-                            hook_command(
-                                hook_path,
-                                hook.action.map(crate::agent::IntegrationHookAction::as_str),
-                            ),
-                        )
-                    })
-                    .collect::<Vec<_>>(),
-                _ => hook_event_commands(hook_path, spec.target.hook_events()),
-            };
-            let shape = match shape {
-                JsonShape::Nested => JsonHookShape::Nested {
-                    matcher: None,
-                    timeout_seconds: hook_timeout_seconds(spec)?,
-                },
-                JsonShape::NestedClaude => JsonHookShape::Nested {
-                    matcher: Some(super::claude_settings::claude_session_start_matcher()),
-                    timeout_seconds: hook_timeout_seconds(spec)?,
-                },
-                JsonShape::Flat => JsonHookShape::Flat {
-                    timeout_millis: hook_timeout_millis(spec)?,
-                },
-                JsonShape::Direct => JsonHookShape::Direct {
-                    timeout_seconds: hook_timeout_seconds(spec)?,
-                },
-                JsonShape::Simple => JsonHookShape::Simple,
-            };
-            json_hook_commands_registered(&config(0)?, root, &expected, &shape, hook_path)?
-        }
+        Registration::Json { file, root, shape } => json_hook_commands_registered(
+            &dir.join(file),
+            root,
+            &shape.expected_events(spec.target, hook_path)?,
+            hook_path,
+        )?,
     };
     Ok(registered)
-}
-
-fn hook_timeout(spec: &IntegrationSpec) -> io::Result<Duration> {
-    spec.hook_timeout.ok_or_else(|| {
-        io::Error::other(format!(
-            "integration spec for {:?} has no hook timeout",
-            spec.target
-        ))
-    })
-}
-
-fn hook_timeout_seconds(spec: &IntegrationSpec) -> io::Result<u64> {
-    Ok(hook_timeout(spec)?.as_secs())
-}
-
-fn hook_timeout_millis(spec: &IntegrationSpec) -> io::Result<u64> {
-    u64::try_from(hook_timeout(spec)?.as_millis())
-        .map_err(|_| io::Error::other("hook timeout exceeds millisecond configuration range"))
 }
 
 fn file_matches_asset(path: &Path, asset: &str) -> io::Result<bool> {
@@ -796,11 +651,8 @@ fn integration_status_at_with_paths(
     path: PathBuf,
     paths: &AgentIntegrationPaths,
 ) -> io::Result<super::IntegrationStatus> {
-    let spec = spec_for(target)?;
-    let expected_asset =
-        spec.assets.first().copied().ok_or_else(|| {
-            io::Error::other(format!("integration spec for {target:?} has no asset"))
-        })?;
+    let spec = spec_for(target);
+    let expected_asset = spec.primary_asset.contents;
     let (mut state, installed_version) = integration_state_for_path(&path, expected_asset)?;
 
     if state == super::IntegrationStatusKind::Current
@@ -834,6 +686,26 @@ fn parse_integration_version(content: &str) -> Option<u32> {
     })
 }
 
+#[cfg(test)]
+pub(crate) fn integration_hook_timeout(target: Target) -> io::Result<Duration> {
+    spec_for(target)
+        .registration
+        .timeout()
+        .ok_or_else(|| io::Error::other(format!("{target:?} does not register timed hooks")))
+}
+
+#[cfg(test)]
+pub(crate) fn integration_asset(target: Target) -> Option<&'static str> {
+    Some(spec_for(target).primary_asset.contents)
+}
+
+#[cfg(test)]
+pub(crate) fn integration_hook_events(
+    target: Target,
+) -> &'static [crate::agent::IntegrationHookEvent] {
+    target.hook_events()
+}
+
 /// `integration_status_at_with_paths` with the paths resolved from the
 /// process environment.
 #[cfg(test)]
@@ -845,19 +717,19 @@ pub(crate) fn integration_status_at(
     integration_status_at_with_paths(target, path, &paths)
 }
 
-/// One status per supported target, in spec order.
+/// One status per supported target, in descriptor order.
 #[cfg(test)]
 pub(crate) fn integration_status_rows(
     paths: &AgentIntegrationPaths,
 ) -> Vec<io::Result<super::IntegrationStatus>> {
-    INTEGRATION_SPECS
-        .iter()
-        .map(|spec| integration_status(paths, spec.target))
+    Target::all()
+        .map(|target| integration_status(paths, target))
         .collect()
 }
 
 #[cfg(test)]
 mod registration_tests {
+    use super::super::command::hook_command;
     use super::*;
     use crate::agent::IntegrationTarget;
     use crate::integration::IntegrationStatusKind;
@@ -877,16 +749,9 @@ mod registration_tests {
     fn every_target_reads_current_right_after_install() {
         let _env = shepr_test_support::IsolatedEnv::new();
         let paths = AgentIntegrationPaths::resolve();
-        for spec in INTEGRATION_SPECS {
+        for spec in Target::all().map(spec_for) {
             let label = spec.target.label();
-            let directory = paths.directory(spec.directory).expect("test precondition");
-            let agent_directory = match spec.directory {
-                DirectoryKey::PiExtension | DirectoryKey::OmpExtension => directory
-                    .parent()
-                    .map(Path::to_path_buf)
-                    .expect("test precondition"),
-                _ => directory,
-            };
+            let agent_directory = agent_directory(&paths, spec.target).expect("test precondition");
             fs::create_dir_all(&agent_directory).expect("test precondition");
             install_operation(&paths, spec.target)
                 .unwrap_or_else(|error| panic!("{label} install failed: {error}"));
@@ -897,16 +762,74 @@ mod registration_tests {
     }
 
     #[test]
-    fn bundled_integration_specs_register_their_assets() {
-        for spec in INTEGRATION_SPECS {
+    fn every_config_target_is_checked_before_any_asset_changes() {
+        let _env = shepr_test_support::IsolatedEnv::new();
+        let paths = AgentIntegrationPaths::resolve();
+        for target in Target::all() {
+            let dir = target_directory(&paths, target).expect("target directory");
+            let config_paths = registration(target).config_paths(&dir);
+            let Some(config_path) = config_paths.first() else {
+                continue;
+            };
+            fs::create_dir_all(agent_directory(&paths, target).expect("agent directory"))
+                .expect("create agent directory");
+            fs::create_dir_all(config_path).expect("occupy config with directory");
+            let hook_path = target_path(&paths, target).expect("hook path");
+            fs::create_dir_all(hook_path.parent().expect("hook parent"))
+                .expect("create hook parent");
+            fs::write(&hook_path, "previous hook").expect("write previous hook");
+
+            assert!(install_operation(&paths, target).is_err(), "{target:?}");
+            assert_eq!(
+                fs::read_to_string(&hook_path).expect("read previous hook"),
+                "previous hook",
+                "{target:?}"
+            );
             assert!(
-                !spec.assets.is_empty(),
+                super::super::file_ops::is_dir(config_path).expect("config remains a directory")
+            );
+        }
+    }
+
+    #[test]
+    fn codex_prepares_both_configs_before_publishing_either_or_the_hook() {
+        let _env = shepr_test_support::IsolatedEnv::new();
+        let paths = AgentIntegrationPaths::resolve();
+        let dir = target_directory(&paths, Target::Codex).expect("Codex directory");
+        fs::create_dir_all(&dir).expect("create Codex directory");
+        let hook = target_path(&paths, Target::Codex).expect("hook path");
+        let hooks = dir.join(super::super::CODEX_HOOKS_NAME);
+        let config = dir.join(super::super::CODEX_CONFIG_NAME);
+        fs::write(&hook, "previous hook").expect("write hook");
+        fs::write(&hooks, "{}\n").expect("write hooks config");
+        fs::write(&config, "[broken\n").expect("write malformed TOML config");
+
+        assert!(install_operation(&paths, Target::Codex).is_err());
+        assert_eq!(
+            fs::read_to_string(hook).expect("read hook"),
+            "previous hook"
+        );
+        assert_eq!(fs::read_to_string(hooks).expect("read hooks"), "{}\n");
+        assert_eq!(
+            fs::read_to_string(config).expect("read config"),
+            "[broken\n"
+        );
+    }
+
+    #[test]
+    fn bundled_integration_specs_register_their_assets() {
+        for spec in Target::all().map(spec_for) {
+            assert!(
+                !spec.primary_asset.contents.is_empty(),
                 "{} must register its bundled assets",
                 spec.target.label()
             );
-            for (index, asset) in spec.assets.iter().enumerate() {
+            for (index, asset) in std::iter::once(&spec.primary_asset)
+                .chain(spec.additional_assets.iter())
+                .enumerate()
+            {
                 assert!(
-                    parse_integration_version(asset).is_some(),
+                    parse_integration_version(asset.contents).is_some(),
                     "{} bundled asset {index} must carry diagnostic version metadata",
                     spec.target.label()
                 );
@@ -916,25 +839,28 @@ mod registration_tests {
 
     #[test]
     fn bundled_integration_assets_report_the_descriptor_identity() {
-        for spec in INTEGRATION_SPECS {
+        for spec in Target::all().map(spec_for) {
             let agent = spec.target.agent();
             let source = agent
                 .integration_source()
                 .expect("integration targets must have a source");
-            for (index, asset) in spec.assets.iter().enumerate() {
+            for (index, asset) in std::iter::once(&spec.primary_asset)
+                .chain(spec.additional_assets.iter())
+                .enumerate()
+            {
                 // OpenCode V2 re-exports the TUI reporter, so its identity lives in that asset.
                 if spec.target == Target::Opencode
-                    && *asset == super::super::OPENCODE_V2_TUI_PLUGIN_ASSET
+                    && asset.contents == super::super::OPENCODE_V2_TUI_PLUGIN_ASSET
                 {
                     continue;
                 }
                 assert!(
-                    asset.contains(source),
+                    asset.contents.contains(source),
                     "{} bundled asset {index} must report source {source:?}",
                     agent.label()
                 );
                 assert!(
-                    asset.contains(agent.label()),
+                    asset.contents.contains(agent.label()),
                     "{} bundled asset {index} must report its canonical label",
                     agent.label()
                 );
@@ -949,7 +875,11 @@ mod registration_tests {
         let paths = crate::integration::AgentIntegrationPaths::resolve();
 
         let rows = integration_status_rows(&paths);
-        assert_eq!(rows.len(), INTEGRATION_SPECS.len(), "one row per target");
+        assert_eq!(
+            rows.len(),
+            IntegrationTarget::all().count(),
+            "one row per target"
+        );
         let errors = rows.iter().filter(|row| row.is_err()).count();
         assert!(errors > 0, "targets under HOME cannot resolve without it");
         // An unresolved directory is an error for the presence check too, so
@@ -1248,10 +1178,8 @@ mod registration_tests {
         let hook = dir.join("hooks").join("shepr-agent-state.sh");
         write_current_hook(IntegrationTarget::Mastracode, &hook);
         let mut document = serde_json::Map::new();
-        let timeout_millis = hook_timeout_millis(
-            spec_for(IntegrationTarget::Mastracode).expect("test precondition"),
-        )
-        .expect("test precondition");
+        let timeout_millis = super::super::registration::timeout_millis(super::super::HOOK_TIMEOUT)
+            .expect("test precondition");
         for event_spec in integration_hook_events(IntegrationTarget::Mastracode) {
             let Some(action) = event_spec.action else {
                 continue;
@@ -1515,18 +1443,10 @@ mod registration_tests {
     }
 
     #[test]
-    fn every_target_has_exactly_one_spec() {
+    fn every_target_has_its_exhaustive_spec() {
         for target in IntegrationTarget::all() {
-            assert_eq!(
-                INTEGRATION_SPECS
-                    .iter()
-                    .filter(|spec| spec.target == target)
-                    .count(),
-                1,
-                "{target:?}"
-            );
+            assert_eq!(spec_for(target).target, target);
         }
-        assert_eq!(INTEGRATION_SPECS.len(), IntegrationTarget::all().count());
     }
 
     #[test]

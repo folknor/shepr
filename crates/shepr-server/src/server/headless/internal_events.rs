@@ -20,6 +20,10 @@ impl HeadlessServer {
             } => Some((*pane_id, *generation)),
             _ => None,
         };
+        // PendingCheckpointedPaneExit retains only an AppEvent, so replay
+        // carries its checkpoint generation through this one-dispatch slot.
+        // Passing an explicit origin instead requires the queued replay item
+        // and its scheduler to retain that origin too.
         let Some(ev) = self.app.admit_runtime_event(ev) else {
             self.replaying_checkpointed_pane_exit = None;
             return false;
@@ -69,14 +73,7 @@ impl HeadlessServer {
                     if !self.app.pane_exit_checkpoint_generation_settled(generation) {
                         self.pending_checkpointed_pane_exits.push_back(
                             PendingCheckpointedPaneExit {
-                                event: match runtime_origin {
-                                    Some((pane_id, generation)) => AppEvent::Runtime {
-                                        pane_id,
-                                        generation,
-                                        event: Box::new(ev),
-                                    },
-                                    None => ev,
-                                },
+                                event: preserve_runtime_origin(runtime_origin, ev),
                                 checkpoint_generation: generation,
                             },
                         );
@@ -91,14 +88,7 @@ impl HeadlessServer {
                         // Keep the pre-exit layout live until its checkpoint is durable.
                         self.pending_checkpointed_pane_exits.push_back(
                             PendingCheckpointedPaneExit {
-                                event: match runtime_origin {
-                                    Some((pane_id, generation)) => AppEvent::Runtime {
-                                        pane_id,
-                                        generation,
-                                        event: Box::new(ev),
-                                    },
-                                    None => ev,
-                                },
+                                event: preserve_runtime_origin(runtime_origin, ev),
                                 checkpoint_generation,
                             },
                         );
@@ -151,5 +141,24 @@ impl HeadlessServer {
             changed |= self.handle_internal_event_with_forwarding(ev);
         }
         changed
+    }
+}
+
+/// Keep runtime identity attached while a pane exit waits so admission checks
+/// the same producer again when the queued event is replayed.
+fn preserve_runtime_origin(
+    origin: Option<(
+        shepr_core::layout::PaneId,
+        shepr_mux::events::RuntimeGeneration,
+    )>,
+    event: AppEvent,
+) -> AppEvent {
+    match origin {
+        Some((pane_id, generation)) => AppEvent::Runtime {
+            pane_id,
+            generation,
+            event: Box::new(event),
+        },
+        None => event,
     }
 }

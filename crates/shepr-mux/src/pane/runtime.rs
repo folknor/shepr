@@ -14,7 +14,9 @@ use super::exit_arbiter::{PaneEnding, PaneExitArbiter};
 use super::launch::*;
 use super::process_probe::*;
 use super::teardown::*;
-use super::terminal::{PaneTerminal, ProcessBytesResult};
+use super::terminal::{
+    DefaultColorGeneration, PaneTerminal, ProcessBytesEffects, ProcessBytesResult, RenderRequest,
+};
 use super::*;
 use crate::UsableCwd;
 use crate::events::AppEvent;
@@ -22,7 +24,9 @@ use crate::render_signal::RenderSignal;
 use crate::workspace::SurfaceChange;
 use shepr_core::layout::PaneId;
 use shepr_pty::ChildIo;
-use shepr_pty::actor::{PtyIoActor, PtyIoActorConfig, PtyIoActorHandle, PtyReadResult, ReaderExit};
+use shepr_pty::actor::{
+    PtyIoActor, PtyIoActorConfig, PtyIoActorHandle, PtyReadEffects, PtyReadResult, ReaderExit,
+};
 
 pub struct TerminalDirtyPatchSnapshot {
     /// `None` means the terminal is clean. An unavailable or fallback read
@@ -226,15 +230,12 @@ impl PaneOutputWrite<'_> {
     /// Effects produced by the parser are intentionally not dispatched here;
     /// this seam is for tests that need to seed or mutate terminal contents.
     pub fn write(self, bytes: &[u8]) {
-        let _ = self.process(bytes, std::time::Instant::now());
+        self.process(bytes, std::time::Instant::now()).ok();
     }
 
     fn process(self, bytes: &[u8], now: std::time::Instant) -> ProcessBytesResult {
         let Some(core) = self.core else {
-            return ProcessBytesResult {
-                core_poisoned: true,
-                ..ProcessBytesResult::default()
-            };
+            return Err(shepr_vt::TerminalCorePoisoned);
         };
         self.writer
             .terminal
@@ -411,7 +412,7 @@ struct PaneReadEffects {
 /// with no terminal or reply-order lock held.
 struct DeferredEffects {
     ticket: DeferredEffectTicket,
-    default_color_generation: Option<u64>,
+    default_color_generation: Option<DefaultColorGeneration>,
     reported_cwd: Option<std::path::PathBuf>,
 }
 
@@ -505,21 +506,15 @@ impl DeferredEffectTicket {
     }
 }
 
-fn has_deferred_effects(result: &ProcessBytesResult) -> bool {
-    result.default_color_owner_pending || result.reported_cwd.is_some()
+fn has_deferred_effects(result: &ProcessBytesEffects) -> bool {
+    result.default_color_generation.is_some() || result.reported_cwd.is_some()
 }
 
 /// The initial screen for a child-I/O fixture is state, not output from a
 /// live child. Clear every queued parser effect before later writes can collect
 /// it as though the child had just produced it.
 fn discard_initial_terminal_effects(terminal: &mut shepr_vt::Terminal) {
-    let _ = terminal.take_pty_responses();
-    let _ = terminal.take_clipboard_writes();
-    let _ = terminal.take_dropped_clipboard_store_bytes();
-    let _ = terminal.take_pwd_changes();
-    let _ = terminal.take_title_update();
-    let _ = terminal.take_progress_update();
-    let _ = terminal.take_default_color_set();
+    drop(terminal.take_effects());
 }
 
 impl PaneReadEffects {
@@ -527,18 +522,13 @@ impl PaneReadEffects {
         let write = output.begin();
         // Ticks an expired synchronized update first, then parses; the
         // core lock is released when this returns.
-        let mut result = write.process(bytes, std::time::Instant::now());
-        if result.core_poisoned {
-            // The actor ends the loop and reports the pane dead.
-            return PtyReadResult {
-                terminal_responses: Vec::new(),
-                after_response_order: None,
-                core_broken: true,
-            };
-        }
+        let mut result = match write.process(bytes, std::time::Instant::now()) {
+            Ok(result) => result,
+            Err(_) => return PtyReadResult::CoreBroken,
+        };
         let deferred_ticket = self.reserve_deferred(&result);
         let terminal_responses = std::mem::take(&mut result.terminal_responses);
-        if let Some(delay) = result.render_delay {
+        if let RenderRequest::After(delay) = result.render_request {
             self.arm_sync_timeout(delay);
         }
         let after_response_order: Option<Box<dyn FnOnce() + Send>> = self
@@ -549,11 +539,10 @@ impl PaneReadEffects {
                     Box::new(move || effects.apply_deferred(deferred));
                 run
             });
-        PtyReadResult {
+        PtyReadResult::Effects(PtyReadEffects {
             terminal_responses,
             after_response_order,
-            core_broken: false,
-        }
+        })
     }
 
     /// Applies the effects that never block (render and title requests,
@@ -563,13 +552,13 @@ impl PaneReadEffects {
     /// under the reply-order lock exactly when `has_deferred_effects` held.
     fn apply_immediate(
         &self,
-        result: ProcessBytesResult,
+        result: ProcessBytesEffects,
         ticket: Option<DeferredEffectTicket>,
     ) -> Option<DeferredEffects> {
         let pane_id = self.pane_id;
         let title_requested =
             result.terminal_title_changed && self.render_dirty.request_terminal_title(pane_id);
-        let render_requested = result.request_render
+        let render_requested = matches!(result.render_request, RenderRequest::Now)
             && self
                 .render_dirty
                 .request_pty_coalesced(pane_id, &self.terminal.render_queued);
@@ -590,16 +579,14 @@ impl PaneReadEffects {
         }
         ticket.map(|ticket| DeferredEffects {
             ticket,
-            default_color_generation: result
-                .default_color_owner_pending
-                .then_some(result.default_color_generation),
+            default_color_generation: result.default_color_generation,
             reported_cwd: result.reported_cwd,
         })
     }
 
     /// Reserves the write's place in the deferred-effect order when it has
     /// deferred effects. Called under the reply-order lock.
-    fn reserve_deferred(&self, result: &ProcessBytesResult) -> Option<DeferredEffectTicket> {
+    fn reserve_deferred(&self, result: &ProcessBytesEffects) -> Option<DeferredEffectTicket> {
         has_deferred_effects(result).then(|| self.deferred_effect_order.reserve())
     }
 
@@ -675,14 +662,19 @@ impl PaneReadEffects {
     /// its replies at one point in the reply order (taken before the core
     /// lock, as the reader does), then apply its effects with no lock held.
     fn flush_expired_synchronized_output(&self) {
-        let mut tick_result = None;
+        let mut tick_result: Option<ProcessBytesResult> = None;
         let mut deferred_ticket = None;
-        let mut tick = || {
-            let mut result = self.terminal.tick(std::time::Instant::now());
-            deferred_ticket = self.reserve_deferred(&result);
-            let replies = std::mem::take(&mut result.terminal_responses);
-            tick_result = Some(result);
-            replies
+        let mut tick = || match self.terminal.tick(std::time::Instant::now()) {
+            Ok(mut result) => {
+                deferred_ticket = self.reserve_deferred(&result);
+                let replies = std::mem::take(&mut result.terminal_responses);
+                tick_result = Some(Ok(result));
+                replies
+            }
+            Err(poisoned) => {
+                tick_result = Some(Err(poisoned));
+                Vec::new()
+            }
         };
         match self.timer_writer.get() {
             Some(writer) => writer.write_terminal_responses(tick),
@@ -703,14 +695,11 @@ impl PaneReadEffects {
                 drop(replies);
             }
         }
-        let Some(result) = tick_result else {
-            return;
-        };
-        if result.core_poisoned {
+        let Some(Ok(result)) = tick_result else {
             // The PTY actor checks the poisoned core on every loop, including
             // idle polls, and reports that exit through its broken-core path.
             return;
-        }
+        };
         if let Some(deferred) = self.apply_immediate(result, deferred_ticket) {
             self.apply_deferred(deferred);
         }
@@ -2344,7 +2333,9 @@ mod tests {
         });
 
         let begin = terminal.process_pty_bytes(pane_id, b"\x1b[?2026hframe");
-        let delay = begin.render_delay.expect("the update is open");
+        let RenderRequest::After(delay) = begin.render_request else {
+            panic!("the open update has a flush deadline");
+        };
         assert!(terminal.synchronized_output_active());
         let notified = effects.render_notify.notified();
         effects.arm_sync_timeout(delay);

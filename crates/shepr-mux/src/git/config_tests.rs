@@ -7,12 +7,15 @@ use super::status::git_status_fingerprint;
 use super::test_support::{temp_test_dir, write_fake_tracked_repo};
 use std::os::unix::ffi::OsStringExt;
 
-fn upstream(root: &std::path::Path) -> (Option<String>, Vec<super::config::FileDep>) {
+fn upstream(root: &std::path::Path) -> (Option<String>, super::config::Dependencies) {
     let info = git_worktree_info(root).expect("repository");
     let mut errors = Vec::new();
-    let (_, config, deps) = read_config_for_status(&info, "main", &mut errors);
+    let context = read_config_for_status(&info, "main", &mut errors);
     assert!(errors.is_empty(), "{errors:?}");
-    (config.as_ref().and_then(upstream_full_ref), deps)
+    (
+        context.config.as_ref().and_then(upstream_full_ref),
+        context.dependencies,
+    )
 }
 
 #[test]
@@ -138,10 +141,10 @@ fn git_config_malformed_config_is_not_reusable() {
     std::fs::write(root.join(".git/config"), "[broken\n").expect("config");
     let info = git_worktree_info(&root).expect("repository");
     let mut errors = Vec::new();
-    let (_, config, deps) = read_config_for_status(&info, "main", &mut errors);
-    assert!(config.is_none());
+    let context = read_config_for_status(&info, "main", &mut errors);
+    assert!(context.config.is_none());
     assert!(!errors.is_empty());
-    assert!(!deps_current(&deps));
+    assert!(!deps_current(&context.dependencies));
 }
 
 fn bare_layout(name: &str, config: &str) -> std::path::PathBuf {

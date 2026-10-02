@@ -18,18 +18,22 @@ use crate::{
     },
 };
 
-pub struct PtyReadResult {
+/// Effects from a PTY read that the actor can deliver to the child.
+pub struct PtyReadEffects {
+    /// Replies generated while parsing this read.
     pub terminal_responses: Vec<Bytes>,
     /// Effects that may block or call into other subsystems. The actor queues
     /// `terminal_responses` under the reply-order lock, then runs these only
     /// after releasing it.
     pub after_response_order: Option<Box<dyn FnOnce() + Send + 'static>>,
-    /// The callback could not consume the bytes and never will again: the
-    /// terminal core's lock was poisoned by a panic on some other thread
-    /// (render, detection, an API read). The loop ends exactly as for a
-    /// panic in the callback itself, so the owner hears the pane is dead
-    /// instead of the reader discarding output forever.
-    pub core_broken: bool,
+}
+
+pub enum PtyReadResult {
+    /// The read was parsed and produced these effects.
+    Effects(PtyReadEffects),
+    /// The callback cannot consume this or any later bytes because the
+    /// terminal core's lock was poisoned by a panic on another thread.
+    CoreBroken,
 }
 
 type ReadCallback = Box<dyn FnMut(&[u8]) -> PtyReadResult + Send + 'static>;
@@ -85,8 +89,8 @@ pub struct PtyIoActorConfig {
     /// Checked on every loop iteration, including the idle poll that fires
     /// at least once a second, so a core poisoned off the reader thread ends
     /// the pane even when the child prints nothing. Without it only the next
-    /// read would notice (`PtyReadResult::core_broken`), and an idle pane
-    /// would sit frozen, its reads quietly answering empty, indefinitely.
+    /// read would notice (`PtyReadResult::CoreBroken`), and an idle pane
+    /// would stay frozen until another read arrived.
     pub core_broken: CoreBrokenCheck,
 }
 
@@ -820,19 +824,25 @@ impl PtyIoActorRunner {
                             return ReadOutcome::Closed;
                         }
                     };
-                if result.core_broken {
-                    error!(
-                        pane = self.pane_id.raw(),
-                        "terminal core is broken by an earlier panic; closing the pane"
-                    );
-                    self.raise_exit(ReaderExit::Panicked);
-                    return ReadOutcome::Closed;
-                }
-                let after_response_order = result.after_response_order;
+                let effects = match result {
+                    PtyReadResult::Effects(effects) => effects,
+                    PtyReadResult::CoreBroken => {
+                        error!(
+                            pane = self.pane_id.raw(),
+                            "terminal core is broken by an earlier panic; closing the pane"
+                        );
+                        self.raise_exit(ReaderExit::Panicked);
+                        return ReadOutcome::Closed;
+                    }
+                };
+                let PtyReadEffects {
+                    terminal_responses,
+                    after_response_order,
+                } = effects;
                 let mut inbox = crate::locks::lock_auxiliary(&self.inbox);
                 let mut should_report_drop = false;
                 if !inbox.shutdown {
-                    for response in result.terminal_responses {
+                    for response in terminal_responses {
                         let (accepted, first_drop) = inbox.push_terminal_response(response);
                         if !accepted {
                             should_report_drop |= first_drop;
@@ -975,11 +985,10 @@ fn panic_payload_message(payload: &(dyn std::any::Any + Send)) -> &str {
 #[cfg(test)]
 impl PtyReadResult {
     fn empty() -> Self {
-        Self {
+        Self::Effects(PtyReadEffects {
             terminal_responses: Vec::new(),
             after_response_order: None,
-            core_broken: false,
-        }
+        })
     }
 }
 
@@ -1374,11 +1383,8 @@ mod tests {
 
     #[test]
     fn broken_core_ends_the_loop_like_a_panic() {
-        let (_handle, mut peer, exit_rx) = actor_reporting_exit(Box::new(|_| PtyReadResult {
-            terminal_responses: Vec::new(),
-            after_response_order: None,
-            core_broken: true,
-        }));
+        let (_handle, mut peer, exit_rx) =
+            actor_reporting_exit(Box::new(|_| PtyReadResult::CoreBroken));
 
         peer.write_all(b"output").expect("peer write");
 
@@ -1792,14 +1798,15 @@ mod tests {
     fn appearance_transition_report_precedes_query_of_new_scheme() {
         let light = Arc::new(AtomicBool::new(false));
         let query_light = Arc::clone(&light);
-        let (runner, handle, mut peer) = actor_test_parts(Box::new(move |_| PtyReadResult {
-            terminal_responses: vec![if query_light.load(Ordering::Acquire) {
-                Bytes::from_static(b"query-light")
-            } else {
-                Bytes::from_static(b"query-dark")
-            }],
-            after_response_order: None,
-            core_broken: false,
+        let (runner, handle, mut peer) = actor_test_parts(Box::new(move |_| {
+            PtyReadResult::Effects(PtyReadEffects {
+                terminal_responses: vec![if query_light.load(Ordering::Acquire) {
+                    Bytes::from_static(b"query-light")
+                } else {
+                    Bytes::from_static(b"query-dark")
+                }],
+                after_response_order: None,
+            })
         }));
         let (changed_tx, changed_rx) = std_mpsc::channel();
         let (continue_tx, continue_rx) = std_mpsc::channel();
@@ -1974,11 +1981,10 @@ mod tests {
                 // The actor thread keeps reading after the test has counted
                 // enough and dropped the receiver; later reads need no count.
                 read_tx.send(bytes.len()).ok();
-                PtyReadResult {
+                PtyReadResult::Effects(PtyReadEffects {
                     terminal_responses: vec![Bytes::from(vec![b'r'; REPLY_LEN])],
                     after_response_order: None,
-                    core_broken: false,
-                }
+                })
             }),
             on_reader_exit: Box::new(|_| {}),
             core_broken: Box::new(|| false),

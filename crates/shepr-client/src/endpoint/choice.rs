@@ -113,11 +113,6 @@ impl EndpointChoice {
         }
     }
 
-    /// Pane frames are held back only while nothing is shown.
-    pub fn frames_frozen(&self) -> bool {
-        self.shown().is_none()
-    }
-
     pub fn role(&self, endpoint: &ClientEndpointId) -> ConnectionRole {
         if self.shown() == Some(endpoint) {
             ConnectionRole::Shown
@@ -341,12 +336,10 @@ mod tests {
     fn a_launch_with_local_connected_shows_local() {
         let c = EndpointChoice::showing(ClientEndpointId::Local);
         assert_eq!(c.shown(), Some(&ClientEndpointId::Local));
-        assert!(!c.frames_frozen());
     }
     #[test]
     fn an_unreachable_local_at_launch_waits_with_nothing_shown() {
         let c = EndpointChoice::waiting_for(ClientEndpointId::Local);
-        assert!(c.frames_frozen());
         assert_eq!(
             c.pending_start().expect("waiting").to,
             &ClientEndpointId::Local

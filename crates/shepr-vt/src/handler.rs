@@ -78,7 +78,7 @@ use super::ExtraModes;
 use super::color::color_query_format;
 use super::modes::{self, ExtraMode};
 use super::rows::RowOrigin;
-use super::{ColorQuery, ColorQueryTarget, RgbColor, TerminalEvent};
+use super::{ColorQuery, ColorQueryTarget, HistoryCapacity, RgbColor, TerminalEvent};
 use shepr_core::geometry::PaneGeometry;
 
 /// The in-band resize report (`CSI 48 ; rows ; cols ; height ; width t`),
@@ -146,7 +146,7 @@ pub(super) struct CoreHandler<'a, T: EventListener> {
     pub(super) events: &'a Mutex<Vec<TerminalEvent>>,
     /// Set when the child sets the default foreground or background (OSC
     /// 10/11); the terminal hands it to the pane with
-    /// `take_default_color_set`.
+    /// `take_effects`.
     pub(super) default_color_set: &'a mut bool,
     /// Absolute row accounting. The terminal opens a batch before handing
     /// the handler to the parser and closes it afterwards; the handler
@@ -181,20 +181,13 @@ impl<T: EventListener> CoreHandler<'_, T> {
     /// A purge leaves no retained history whose old capacity must be
     /// preserved, so restore the byte-budget limit at the current width.
     fn restore_scrollback_budget_after_history_purge(&mut self) {
-        if !super::primary_screen_active(self.term) || self.term.history_size() != 0 {
-            return;
-        }
-        let history_limit = super::scrollback_lines(self.max_scrollback, self.term.columns());
-        if history_limit == *self.history_limit {
-            return;
-        }
-
-        // set_options announces the current title; suppress that synthetic
-        // event because changing the history capacity did not change the title.
-        let queued_events = super::lock_auxiliary(self.events).len();
-        self.term.set_options(super::term_config(history_limit));
-        super::lock_auxiliary(self.events).truncate(queued_events);
-        *self.history_limit = history_limit;
+        HistoryCapacity::new(
+            self.term,
+            self.events,
+            self.history_limit,
+            self.max_scrollback,
+        )
+        .restore_after_history_purge();
     }
 
     fn active_keyboard_depth(&mut self) -> &mut usize {

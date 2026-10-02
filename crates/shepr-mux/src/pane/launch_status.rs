@@ -280,18 +280,15 @@ async fn settle(
                     }
                 }
             }
-            Ok(RecordRead::Record(LaunchRecord::ChdirFailed { index, errno }))
-                if selected.is_none() =>
-            {
-                let Some(path) = usize::try_from(index)
-                    .ok()
-                    .and_then(|index| cwd_candidates.get(index))
-                    .cloned()
-                else {
-                    tracing::warn!(
-                        index,
-                        "pane launch reported an unknown failed cwd candidate"
-                    );
+            Ok(RecordRead::Record(LaunchRecord::ChdirFailed(errno))) if selected.is_none() => {
+                // The failure names the first candidate, the directory the
+                // pane was meant to open in (the requested one, or HOME when
+                // none was requested), with its own errno: that is what the
+                // placeholder tells the user to restore. Every fallback failed
+                // too, which needs `/` itself to be unenterable; that is too
+                // exotic to spell out.
+                let Some(path) = cwd_candidates.first().cloned() else {
+                    tracing::warn!("pane launch reported a cwd failure with no candidates");
                     return LaunchSettlement::Unconfirmed;
                 };
                 return LaunchSettlement::Failed(directory_failure(path, errno));

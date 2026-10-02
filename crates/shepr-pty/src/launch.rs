@@ -10,8 +10,9 @@
 //! One listening `SOCK_SEQPACKET` socket per server process, bound by Linux
 //! abstract autobind (no filesystem path), accepts those channels. The child
 //! connects to it before any filesystem step, names its launch with the ticket
-//! the server gave it, then reports `ChdirOk(index)`, the last failed chdir
-//! candidate and errno, or an exec errno.
+//! the server gave it, then reports `ChdirOk(index)`, the first cwd
+//! candidate's chdir errno when no candidate could be entered, or an exec
+//! errno.
 //! Its end is close-on-exec, so EOF after `ChdirOk` while the child is still
 //! alive means exec passed its point of no return (ExecCommitted). The kernel
 //! closes those fds before the new image is fully mapped, so it does not prove
@@ -44,9 +45,11 @@ const RECORD_EXEC_FAILED: u32 = 4;
 pub enum LaunchRecord {
     /// The child changed into cwd candidate `index` and is about to exec.
     ChdirOk(u32),
-    /// No cwd candidate could be entered; the last failed candidate and its
-    /// errno.
-    ChdirFailed { index: u32, errno: i32 },
+    /// No cwd candidate could be entered; the errno of candidate 0, the
+    /// directory the pane was meant to open in. The fallbacks' errnos are not
+    /// reported: they are only tried because candidate 0 failed, and the user
+    /// acts on candidate 0.
+    ChdirFailed(i32),
     /// `execve` of the shell returned this errno.
     ExecFailed(i32),
 }
@@ -80,9 +83,8 @@ pub(crate) fn chdir_ok_record(index: u32) -> [u8; LAUNCH_STATUS_RECORD_BYTES] {
     encode_record(RECORD_CHDIR_OK, u64::from(index))
 }
 
-pub(crate) fn chdir_failed_record(index: u32, errno: i32) -> [u8; LAUNCH_STATUS_RECORD_BYTES] {
-    let value = (u64::from(index) << 32) | errno_value(errno);
-    encode_record(RECORD_CHDIR_FAILED, value)
+pub(crate) fn chdir_failed_record(errno: i32) -> [u8; LAUNCH_STATUS_RECORD_BYTES] {
+    encode_record(RECORD_CHDIR_FAILED, errno_value(errno))
 }
 
 pub(crate) fn exec_failed_record(errno: i32) -> [u8; LAUNCH_STATUS_RECORD_BYTES] {
@@ -136,12 +138,7 @@ pub fn read_record(channel: &OwnedFd) -> io::Result<RecordRead> {
                 u32::try_from(value)
                     .map_err(|_| protocol_error("launch status cwd index out of range"))?,
             ),
-            RECORD_CHDIR_FAILED => LaunchRecord::ChdirFailed {
-                index: u32::try_from(value >> 32)
-                    .map_err(|_| protocol_error("launch status cwd index out of range"))?,
-                errno: i32::try_from(value & u64::from(u32::MAX))
-                    .map_err(|_| protocol_error("launch status errno out of range"))?,
-            },
+            RECORD_CHDIR_FAILED => LaunchRecord::ChdirFailed(errno()?),
             RECORD_EXEC_FAILED => LaunchRecord::ExecFailed(errno()?),
             _ => return Err(protocol_error("unexpected launch status record")),
         }));
@@ -521,7 +518,7 @@ mod tests {
         for (kind, value) in [
             (RECORD_HELLO, u64::MAX),
             (RECORD_CHDIR_OK, 3),
-            (RECORD_CHDIR_FAILED, (3_u64 << 32) | 2),
+            (RECORD_CHDIR_FAILED, 2),
         ] {
             assert_eq!(
                 decode_record(&encode_record(kind, value)),

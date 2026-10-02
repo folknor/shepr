@@ -1,5 +1,5 @@
 use std::fs;
-use std::io;
+use std::io::{self, Read};
 use std::path::Path;
 
 use super::atomic_replace::{AtomicReplace, PermissionPolicy};
@@ -24,14 +24,48 @@ pub(crate) fn is_dir(path: &Path) -> io::Result<bool> {
     }
 }
 
-/// The contents of `path` when it is a regular file, `None` when nothing
-/// (or a non-file) is there. Stat and read errors are returned.
-pub(crate) fn read_if_file(path: &Path) -> io::Result<Option<String>> {
-    if is_file(path)? {
-        fs::read_to_string(path).map(Some)
-    } else {
-        Ok(None)
+/// Missing config is empty; every existing non-regular object is an error.
+/// Pin the object before reading so a FIFO never blocks and a concurrent path
+/// replacement cannot swap a checked regular file for a device or pipe.
+pub(super) fn read_config_bytes(path: &Path) -> io::Result<Option<Vec<u8>>> {
+    let mut file = match shepr_platform::open_regular_file(path) {
+        Ok(Ok(file)) => file,
+        Ok(Err(_)) => return Err(io::Error::other(NotRegularFile(path.to_path_buf()))),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(io::Error::new(
+                error.kind(),
+                format!("cannot read {}: {error}", path.display()),
+            ));
+        }
+    };
+    let mut contents = Vec::new();
+    file.read_to_end(&mut contents)?;
+    Ok(Some(contents))
+}
+
+#[derive(Debug)]
+pub(super) struct NotRegularFile(pub(super) std::path::PathBuf);
+
+impl std::fmt::Display for NotRegularFile {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "cannot read {}: config is not a regular file",
+            self.0.display()
+        )
     }
+}
+
+impl std::error::Error for NotRegularFile {}
+
+pub(crate) fn read_if_file(path: &Path) -> io::Result<Option<String>> {
+    read_config_bytes(path)?
+        .map(|bytes| {
+            String::from_utf8(bytes)
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+        })
+        .transpose()
 }
 
 pub(crate) fn make_executable(path: &Path) -> io::Result<()> {
@@ -78,6 +112,53 @@ mod tests {
     use super::*;
     use shepr_test_support::ScratchDir;
     use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn config_reader_follows_files_and_distinguishes_absence_from_nonregular_objects() {
+        use std::os::unix::fs::symlink;
+
+        let dir = ScratchDir::new("integration-config-reader");
+        let missing = dir.join("missing");
+        let regular = dir.join("regular");
+        let link = dir.join("link");
+        let dangling = dir.join("dangling");
+        let directory = dir.join("directory");
+        let fifo = dir.join("fifo");
+        let socket = dir.join("socket");
+        fs::write(&regular, "preferences").expect("write config");
+        symlink(&regular, &link).expect("link config");
+        symlink(&missing, &dangling).expect("link absent config");
+        fs::create_dir(&directory).expect("create directory");
+        let fifo_name =
+            std::ffi::CString::new(fifo.as_os_str().as_encoded_bytes()).expect("FIFO path");
+        // SAFETY: the path is NUL-terminated and mkfifo retains no pointer.
+        assert_eq!(unsafe { libc::mkfifo(fifo_name.as_ptr(), 0o600) }, 0);
+        let _socket = std::os::unix::net::UnixListener::bind(&socket).expect("bind socket");
+
+        assert_eq!(
+            read_if_file(&regular).expect("read config"),
+            Some("preferences".to_string())
+        );
+        assert_eq!(
+            read_if_file(&link).expect("read linked config"),
+            Some("preferences".to_string())
+        );
+        assert_eq!(read_if_file(&missing).expect("absent config"), None);
+        assert_eq!(read_if_file(&dangling).expect("dangling config"), None);
+        for path in [&directory, &fifo, &socket] {
+            let error = read_if_file(path)
+                .expect_err("non-regular config must fail without opening for IO");
+            assert!(
+                error
+                    .get_ref()
+                    .is_some_and(<dyn std::error::Error + Send + Sync>::is::<NotRegularFile>)
+            );
+            assert!(
+                read_config_bytes(path).is_err(),
+                "snapshot uses the same policy"
+            );
+        }
+    }
 
     #[test]
     fn managed_asset_replaces_the_inode_instead_of_rewriting_in_place() {

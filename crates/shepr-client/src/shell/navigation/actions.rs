@@ -140,7 +140,7 @@ impl ClientShellState {
     /// live terminal, with no content revision: output between the displayed
     /// frame and this request must not reject the copy.
     pub(super) fn request_selection_copy(&mut self, outcome: &mut ClientShellInput) {
-        let Some(selection) = self.selection.as_ref() else {
+        let Some(selection) = self.mouse_selection.selection.as_ref() else {
             return;
         };
         let pane_id = selection.pane_id.clone();

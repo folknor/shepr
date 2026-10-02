@@ -90,15 +90,6 @@ fn canonicalize_config_target(target: &Path) -> io::Result<PathBuf> {
     }
 }
 
-/// Check before changing assets as well as immediately before replacing a config.
-/// This is deliberately not config parsing or a transaction across multiple files.
-pub(super) fn check_config_targets(dir: &Path, names: &[&str]) -> io::Result<()> {
-    for name in names {
-        check_config_target(&dir.join(name))?;
-    }
-    Ok(())
-}
-
 pub(super) fn check_config_target(path: &Path) -> io::Result<()> {
     reject_hard_links(path)?;
     resolve_target(path).map(|_| ())
@@ -181,11 +172,7 @@ pub(super) fn is_config_changed(error: &io::Error) -> bool {
 }
 
 fn read_config_snapshot(path: &Path) -> io::Result<Option<Vec<u8>>> {
-    match fs::read(path) {
-        Ok(contents) => Ok(Some(contents)),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(error),
-    }
+    super::file_ops::read_config_bytes(path)
 }
 
 fn config_changed_error(path: &Path) -> io::Error {

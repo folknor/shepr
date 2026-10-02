@@ -8,6 +8,7 @@ use std::os::fd::{AsRawFd, RawFd};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use shepr_termio::input::raw_input::{HostReplies, RawInputFramer};
 use tokio::sync::mpsc;
 
 use super::{ClientLoopEvent, ParsedHostInput};
@@ -40,7 +41,7 @@ pub(crate) fn stdin_reader_loop(
     // Bypass StdinLock's shared buffer so polling and reading observe the same bytes.
     let stdin_fd = stdin.as_raw_fd();
     let mut scratch = [0u8; HOST_INPUT_READ_CHUNK_BYTES];
-    let mut framer = super::host_replies::HostInputFramer::for_host_input();
+    let mut framer: RawInputFramer<HostReplies> = RawInputFramer::for_host_input();
     framer.set_host_escape_disambiguation_active(host_escape_disambiguation_active);
     if host_color_query_sent {
         framer.host_color_query_sent();
@@ -134,7 +135,7 @@ fn report_terminal_unavailable(event_tx: &mpsc::Sender<ClientLoopEvent>, error: 
 
 fn consume_input_bytes(
     data: &[u8],
-    framer: &mut super::host_replies::HostInputFramer,
+    framer: &mut RawInputFramer<HostReplies>,
     event_tx: &mpsc::Sender<ClientLoopEvent>,
     pending_palette: &mut Vec<ParsedHostInput>,
     pending_mode: &mut Option<bool>,
@@ -164,7 +165,7 @@ fn consume_input_bytes(
 
 fn flush_idle_input(
     stdin_fd: RawFd,
-    framer: &mut super::host_replies::HostInputFramer,
+    framer: &mut RawInputFramer<HostReplies>,
     event_tx: &mpsc::Sender<ClientLoopEvent>,
     pending_palette: &mut Vec<ParsedHostInput>,
     pending_mode: &mut Option<bool>,

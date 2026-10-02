@@ -40,8 +40,7 @@ impl GitRefreshScheduler {
     }
 
     fn mark_due(&mut self, now: Instant) {
-        self.git_status_cache
-            .retain(|_, entry| entry.fingerprint.is_some());
+        self.git_status_cache.retain(|_, entry| !entry.is_miss());
         if self.git_refresh_in_flight {
             self.git_refresh_due_after_in_flight = true;
             return;
@@ -59,7 +58,7 @@ impl GitRefreshScheduler {
         let mut refreshed_keys = HashSet::with_capacity(cache_updates.len());
         for (key, entry) in cache_updates {
             refreshed_keys.insert(key.clone());
-            for error in &entry.read_errors {
+            for error in entry.read_errors() {
                 if self.reported_git_read_errors.insert(error.clone()) {
                     tracing::warn!(%error, "git status read failed");
                 }
@@ -74,7 +73,7 @@ impl GitRefreshScheduler {
             let current_errors: HashSet<_> = self
                 .git_status_cache
                 .values()
-                .flat_map(|entry| entry.read_errors.iter().cloned())
+                .flat_map(|entry| entry.read_errors().iter().cloned())
                 .collect();
             // Keep error deduplication only while an active cache entry carries it.
             self.reported_git_read_errors
@@ -97,6 +96,8 @@ fn refresh_deadline_after(now: Instant) -> Instant {
 struct WorkspaceGitRefreshItem {
     workspace_id: String,
     resolved_identity_cwd: PathBuf,
+    // The workspace/AppState cache boundary currently carries a path without
+    // recording whether it came from a checkout or an outside-repo cwd.
     cache_key_hint: Option<PathBuf>,
 }
 
@@ -223,6 +224,8 @@ fn deduplicate_git_refresh_items(
     items: Vec<WorkspaceGitRefreshItem>,
     cache: &HashMap<PathBuf, GitStatusCacheEntry>,
 ) -> Vec<WorkspaceGitRefreshJob> {
+    // A path-only workspace hint cannot tell checkout from outside-cwd keys.
+    // Keep the key path-shaped until workspace/AppState can carry that tag.
     let mut indexes = HashMap::<PathBuf, usize>::new();
     let mut jobs = Vec::<WorkspaceGitRefreshJob>::new();
 
@@ -371,14 +374,9 @@ mod tests {
             cwd: path.clone(),
             message: "git is unavailable".into(),
         };
-        let cache_entry = || GitStatusCacheEntry {
-            fingerprint: None,
-            retry_after: None,
-            snapshot: shepr_mux::git::WorkspaceGitStatusSnapshot {
-                repo_root: None,
-                branch: None,
-                ahead_behind: None,
-            },
+        let cache_entry = || GitStatusCacheEntry::Miss {
+            retry_after: now + std::time::Duration::from_secs(30),
+            repo_root: None,
             read_errors: vec![error.clone()],
         };
         let mut scheduler = GitRefreshScheduler::new(now);
@@ -392,14 +390,9 @@ mod tests {
     #[test]
     fn shared_root_repo_refresh_keeps_workspace_specific_labels() {
         let cache_key = PathBuf::from("/");
-        let cached = GitStatusCacheEntry {
-            fingerprint: None,
-            retry_after: Some(Instant::now() + std::time::Duration::from_secs(30)),
-            snapshot: shepr_mux::git::WorkspaceGitStatusSnapshot {
-                repo_root: Some(cache_key.clone()),
-                branch: Some("main".into()),
-                ahead_behind: None,
-            },
+        let cached = GitStatusCacheEntry::Miss {
+            retry_after: Instant::now() + std::time::Duration::from_secs(30),
+            repo_root: Some(cache_key.clone()),
             read_errors: Vec::new(),
         };
         let items = ["alpha", "beta"]
@@ -417,8 +410,8 @@ mod tests {
         assert_eq!(output.results.len(), 2);
         assert_eq!(output.results[0].auto_label, "alpha");
         assert_eq!(output.results[1].auto_label, "beta");
-        assert_eq!(output.results[0].branch.as_deref(), Some("main"));
-        assert_eq!(output.results[1].branch.as_deref(), Some("main"));
+        assert_eq!(output.results[0].branch, None);
+        assert_eq!(output.results[1].branch, None);
     }
 
     #[test]
@@ -469,14 +462,9 @@ mod tests {
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].cache_key_hint, None);
         let cache_key = items[0].resolved_identity_cwd.clone();
-        let cached = GitStatusCacheEntry {
-            fingerprint: None,
-            retry_after: None,
-            snapshot: shepr_mux::git::WorkspaceGitStatusSnapshot {
-                repo_root: None,
-                branch: None,
-                ahead_behind: None,
-            },
+        let cached = GitStatusCacheEntry::Miss {
+            retry_after: Instant::now(),
+            repo_root: None,
             read_errors: Vec::new(),
         };
         let jobs = deduplicate_git_refresh_items(items, &HashMap::from([(cache_key, cached)]));

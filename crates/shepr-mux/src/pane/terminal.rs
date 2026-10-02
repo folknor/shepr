@@ -122,21 +122,30 @@ pub(super) struct TerminalDirtyPatchCollection {
     pub fallback_reason: Option<&'static str>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub(crate) struct ProcessBytesResult {
-    pub request_render: bool,
-    pub render_delay: Option<Duration>,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RenderRequest {
+    /// No render is due yet.
+    None,
+    /// Render as soon as the read's immediate effects are applied.
+    Now,
+    /// Render when the synchronized-output timeout flushes the frame.
+    After(Duration),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct DefaultColorGeneration(pub(crate) u64);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ProcessBytesEffects {
+    pub render_request: RenderRequest,
     pub terminal_title_changed: bool,
     pub clipboard_writes: Vec<Vec<u8>>,
     pub reported_cwd: Option<std::path::PathBuf>,
     pub terminal_responses: Vec<Bytes>,
-    pub default_color_owner_pending: bool,
-    pub default_color_generation: u64,
-    /// The core lock was poisoned: a panic on another thread (render,
-    /// detection, an API read) while it held the lock. The bytes were not
-    /// processed and no later bytes will be; the reader must end the pane.
-    pub core_poisoned: bool,
+    pub default_color_generation: Option<DefaultColorGeneration>,
 }
+
+pub(crate) type ProcessBytesResult = Result<ProcessBytesEffects, shepr_vt::TerminalCorePoisoned>;
 
 pub(crate) struct PaneTerminal {
     /// Poisoned for good once anything panics while holding it. The readers

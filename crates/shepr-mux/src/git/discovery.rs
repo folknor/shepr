@@ -298,13 +298,17 @@ pub(super) fn git_rev_parse_verify_with_errors(
 /// config cannot switch the ref backend, so neither is read here.
 pub(super) fn git_ref_storage_is_reftable(
     info: &GitWorktreeInfo,
-) -> Result<(bool, Vec<super::config::FileDep>), GitReadError> {
+) -> Result<(super::RefBackend, super::config::Dependencies), GitReadError> {
     let config_path = info.git_common_dir.join("config");
     let result =
         super::config::read_repository_format_value(&config_path, "extensions", "refstorage");
     let (value, deps) = result?;
     Ok((
-        value.is_some_and(|value| value.eq_ignore_ascii_case("reftable")),
+        if value.is_some_and(|value| value.eq_ignore_ascii_case("reftable")) {
+            super::RefBackend::Reftable
+        } else {
+            super::RefBackend::Files
+        },
         deps,
     ))
 }

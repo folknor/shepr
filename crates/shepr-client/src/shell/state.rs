@@ -16,10 +16,6 @@ impl TypedText {
     pub(super) fn is_empty(&self) -> bool {
         self.0.is_empty()
     }
-
-    pub(super) fn clear(&mut self) {
-        self.0.clear();
-    }
 }
 
 impl From<String> for TypedText {
@@ -257,6 +253,43 @@ pub(super) enum ClientShellMode {
     Navigate,
     Resize,
     Copy,
+}
+
+/// The live mouse range, pending focus, gestures and timers form one lifecycle.
+/// Copy-mode anchors stay in `ClientCopyModeState` so focus return can rebuild
+/// the projected range; click history can outlive a cleared range for double-clicks.
+pub(super) struct MouseSelection {
+    pub(super) selection: Option<shepr_vt::selection::Selection<shepr_protocol::PublicPaneId>>,
+    pub(super) focus_pending: Option<shepr_protocol::PublicPaneId>,
+    pub(super) last_pane_click: Option<ClientPaneClick>,
+    pub(super) autoscroll: Option<ClientSelectionAutoscroll>,
+    pub(super) autoscroll_deadline: Option<std::time::Instant>,
+    pub(super) highlight_clear_deadline: Option<std::time::Instant>,
+    pub(super) repaint_deadline: Option<std::time::Instant>,
+    pub(super) word_gesture: Option<ClientWordSelection>,
+}
+
+impl MouseSelection {
+    /// End the range interaction while preserving click history for double-click detection.
+    pub(super) fn clear_range(&mut self) {
+        self.selection = None;
+        self.focus_pending = None;
+        self.autoscroll = None;
+        self.autoscroll_deadline = None;
+        self.highlight_clear_deadline = None;
+        self.repaint_deadline = None;
+        self.word_gesture = None;
+    }
+
+    pub(super) fn clear(&mut self) {
+        self.clear_range();
+        self.last_pane_click = None;
+    }
+
+    pub(super) fn stop_autoscroll(&mut self) {
+        self.autoscroll = None;
+        self.autoscroll_deadline = None;
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -555,6 +588,29 @@ pub(super) struct ClientCopySearchResult {
     pub(super) current_global: Option<u64>,
 }
 
+/// One live search lifecycle: prompt, query, result projection and deferred-copy intent.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(super) struct ClientCopySearch {
+    pub(super) prompt: Option<ClientCopySearchPrompt>,
+    pub(super) query: TypedText,
+    pub(super) direction: Option<shepr_protocol::command::PaneCopySearchDirection>,
+    pub(super) matches: Vec<shepr_protocol::command::PaneTextRange>,
+    pub(super) total: u64,
+    pub(super) current: Option<usize>,
+    pub(super) current_global: Option<u64>,
+    pub(super) copy_after_result: bool,
+}
+
+impl ClientCopySearch {
+    pub(super) fn clear_results(&mut self) {
+        self.matches.clear();
+        self.total = 0;
+        self.current = None;
+        self.current_global = None;
+        self.copy_after_result = false;
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct ClientCopyModeState {
     pub(super) pane_id: shepr_protocol::PublicPaneId,
@@ -565,16 +621,13 @@ pub(super) struct ClientCopyModeState {
     pub(super) offset_from_bottom: usize,
     pub(super) max_offset_from_bottom: usize,
     pub(super) entry_offset_from_bottom: usize,
+    /// The anchor and selection shape drive the projected VT range in `MouseSelection`.
+    /// They are not a duplicate range: the projection changes as the copy cursor moves.
     pub(super) selection: Option<ClientCopySelection>,
-    pub(super) search_prompt: Option<ClientCopySearchPrompt>,
-    pub(super) search_query: TypedText,
-    pub(super) search_direction: Option<shepr_protocol::command::PaneCopySearchDirection>,
-    pub(super) search_matches: Vec<shepr_protocol::command::PaneTextRange>,
-    pub(super) search_total: u64,
-    pub(super) search_current: Option<usize>,
-    pub(super) search_current_global: Option<u64>,
-    pub(super) search_generation: u64,
-    pub(super) copy_after_search: bool,
+    pub(super) search: Option<ClientCopySearch>,
+    /// Invalidates replies from searches canceled while their endpoint request is pending.
+    /// It survives clearing the optional search state so late replies stay stale.
+    pub(super) operation_generation: u64,
 }
 
 /// The selected pane as the previously presented surface showed it. The selection
@@ -627,29 +680,22 @@ pub struct ClientShellState {
     pub(super) reveal_focused_workspace: bool,
     pub(super) last_composed_size: Option<(u16, u16)>,
     pub(super) last_composed_at: Option<std::time::Instant>,
-    pub(super) selection_repaint_deadline: Option<std::time::Instant>,
+    pub(super) mouse_selection: MouseSelection,
     pub(super) hits: ShellHitMap,
     pub(super) endpoints: Vec<ClientShellEndpoint>,
     pub(super) active_endpoint_id: ClientEndpointId,
     pub(super) collapsed_endpoints: HashSet<ClientEndpointId>,
+    /// This is the input-mode authority. A copy session can be parked while its pane
+    /// stays focused, so focus alone cannot say whether copy input is active.
     pub(super) mode: ClientShellMode,
+    /// Navigation remains active when no workspace target exists, so the preview is optional.
     pub(super) navigate_workspace_id: Option<WorkspaceNavigationTarget>,
     pub(super) pending_workspace_highlight: Option<PendingWorkspaceHighlight>,
     pub(super) reveal_navigation_workspace: bool,
     pub(super) overlay: Option<ClientShellOverlay>,
     pub(super) previous_pane_id: Option<shepr_protocol::PublicPaneId>,
     pub(super) pane_mouse_gesture: Option<ClientPaneMouseGesture>,
-    pub(super) selection: Option<shepr_vt::selection::Selection<shepr_protocol::PublicPaneId>>,
-    /// Pane a mouse selection was started in while another pane held focus.
-    /// The click's `PaneFocus` travels the serialized command lane, so
-    /// snapshots can still report the old focus for a while; until one shows
-    /// this pane focused, those snapshots must not cancel the drag.
-    pub(super) selection_focus_pending: Option<shepr_protocol::PublicPaneId>,
-    pub(super) last_pane_click: Option<ClientPaneClick>,
-    pub(super) selection_autoscroll: Option<ClientSelectionAutoscroll>,
-    pub(super) selection_autoscroll_deadline: Option<std::time::Instant>,
-    pub(super) selection_highlight_clear_deadline: Option<std::time::Instant>,
-    pub(super) word_selection_gesture: Option<ClientWordSelection>,
+    /// Stored copy cursor state can survive while the Copy input mode is parked.
     pub(super) copy_mode: Option<ClientCopyModeState>,
     pub(super) host_mouse_pixels: Option<shepr_termio::input::mouse::HostPixels>,
     pub(super) input_leases: ClientInputLeases,
@@ -675,30 +721,26 @@ pub struct ClientShellState {
 /// rows go first, so each dropped match was ahead of the current one in the
 /// server's global count.
 fn prune_evicted_search_matches(copy_mode: &mut ClientCopyModeState) {
+    let Some(search) = copy_mode.search.as_mut() else {
+        return;
+    };
     let origin = copy_mode.history_origin;
-    let before = copy_mode.search_matches.len();
-    let current = copy_mode
-        .search_current
-        .and_then(|index| copy_mode.search_matches.get(index).copied());
-    copy_mode
-        .search_matches
-        .retain(|found| found.start.row >= origin);
-    let removed = before - copy_mode.search_matches.len();
+    let before = search.matches.len();
+    let current = search
+        .current
+        .and_then(|index| search.matches.get(index).copied());
+    let current_global = search.current_global;
+    search.matches.retain(|found| found.start.row >= origin);
+    let removed = before - search.matches.len();
     if removed == 0 {
         return;
     }
     let removed = u64::try_from(removed).unwrap_or(u64::MAX);
-    copy_mode.search_total = copy_mode.search_total.saturating_sub(removed);
-    copy_mode.search_current = current.and_then(|current| {
-        copy_mode
-            .search_matches
-            .iter()
-            .position(|found| *found == current)
-    });
-    copy_mode.search_current_global = match copy_mode.search_current {
-        Some(_) => copy_mode
-            .search_current_global
-            .map(|global| global.saturating_sub(removed)),
+    search.total = search.total.saturating_sub(removed);
+    search.current =
+        current.and_then(|current| search.matches.iter().position(|found| *found == current));
+    search.current_global = match search.current {
+        Some(_) => current_global.map(|global| global.saturating_sub(removed)),
         None => None,
     };
 }
@@ -747,7 +789,16 @@ impl ClientShellState {
             reveal_focused_workspace: true,
             last_composed_size: None,
             last_composed_at: None,
-            selection_repaint_deadline: None,
+            mouse_selection: MouseSelection {
+                selection: None,
+                focus_pending: None,
+                last_pane_click: None,
+                autoscroll: None,
+                autoscroll_deadline: None,
+                highlight_clear_deadline: None,
+                repaint_deadline: None,
+                word_gesture: None,
+            },
             hits: ShellHitMap::default(),
             endpoints: vec![local_endpoint()],
             active_endpoint_id: ClientEndpointId::Local,
@@ -759,13 +810,6 @@ impl ClientShellState {
             overlay,
             previous_pane_id: None,
             pane_mouse_gesture: None,
-            selection: None,
-            selection_focus_pending: None,
-            last_pane_click: None,
-            selection_autoscroll: None,
-            selection_autoscroll_deadline: None,
-            selection_highlight_clear_deadline: None,
-            word_selection_gesture: None,
             copy_mode: None,
             host_mouse_pixels: None,
             input_leases: ClientInputLeases::default(),
@@ -908,7 +952,7 @@ impl ClientShellState {
         self.reveal_focused_workspace = true;
         self.last_composed_size = None;
         self.last_composed_at = None;
-        self.selection_repaint_deadline = None;
+        self.mouse_selection.clear();
         self.drop_all_requests(DropReason::Reset);
         self.scroll_lanes.clear();
         self.endpoint_notice_seen.clear();
@@ -926,13 +970,7 @@ impl ClientShellState {
         self.overlay = None;
         self.previous_pane_id = None;
         self.pane_mouse_gesture = None;
-        self.selection = None;
-        self.selection_focus_pending = None;
-        self.last_pane_click = None;
-        self.selection_autoscroll = None;
-        self.selection_autoscroll_deadline = None;
-        self.selection_highlight_clear_deadline = None;
-        self.word_selection_gesture = None;
+        self.mouse_selection.clear();
         self.copy_mode = None;
         if self.mode == ClientShellMode::Copy {
             self.mode = ClientShellMode::Terminal;
@@ -1007,7 +1045,8 @@ impl ClientShellState {
         {
             self.reveal_focused_workspace = true;
         }
-        let selection_focus_lost = if let Some(gesture) = self.word_selection_gesture.as_mut() {
+        let selection_focus_lost = if let Some(gesture) = self.mouse_selection.word_gesture.as_mut()
+        {
             let focused_pane = snapshot.focused_pane_id.as_deref();
             // Remember confirmed focus across intermediate snapshots with no
             // focused pane, without rejecting the gesture's in-flight focus request.
@@ -1018,16 +1057,17 @@ impl ClientShellState {
                 .any(|pane| pane.pane_id == gesture.pane_id)
                 || (gesture.focus_confirmed
                     && focused_pane.is_some_and(|pane_id| pane_id != gesture.pane_id.as_str()))
-        } else if let Some(selection) = self.selection.as_ref() {
+        } else if let Some(selection) = self.mouse_selection.selection.as_ref() {
             let focused_pane = snapshot.focused_pane_id.as_deref();
             let focused_here = focused_pane == Some(selection.pane_id.as_str());
             // Like the word-gesture guard above: a selection started in an
             // unfocused pane survives snapshots that predate its focus
             // request, and only a focus change after that ends it.
             let awaiting_focus = !focused_here
-                && self.selection_focus_pending.as_deref() == Some(selection.pane_id.as_str());
+                && self.mouse_selection.focus_pending.as_deref()
+                    == Some(selection.pane_id.as_str());
             if focused_here {
-                self.selection_focus_pending = None;
+                self.mouse_selection.focus_pending = None;
             }
             !snapshot
                 .panes
@@ -1038,16 +1078,11 @@ impl ClientShellState {
             false
         };
         if selection_focus_lost {
-            self.selection = None;
-            self.selection_focus_pending = None;
-            self.selection_autoscroll = None;
-            self.selection_autoscroll_deadline = None;
-            self.selection_highlight_clear_deadline = None;
-            self.word_selection_gesture = None;
-            self.last_pane_click = None;
+            self.mouse_selection.clear();
         }
-        // Snapshot reconciliation only enters or leaves Copy mode. Report-all is requested by
-        // Prefix and Navigate, which this projection update does not change.
+        // Snapshot reconciliation reactivates or parks the session as focus settles. A session
+        // can also be parked explicitly while its pane remains focused, so this is not derived
+        // from focus alone.
         if let Some(copy_pane_id) = self
             .copy_mode
             .as_ref()
@@ -1057,20 +1092,21 @@ impl ClientShellState {
                 .panes
                 .iter()
                 .any(|pane| pane.pane_id == copy_pane_id);
-            let pane_focused = snapshot.focused_pane_id.as_deref() == Some(copy_pane_id.as_str());
+            let pane_focused = self.copy_mode.as_ref().is_some_and(|copy_mode| {
+                copy_mode.pane_is_focused(snapshot.focused_pane_id.as_deref())
+            });
             if !pane_exists {
                 // Queued copy-mode keys belonged to this removed pane. Replaying
                 // them as input into another pane would be dangerous.
                 self.copy_mode = None;
                 self.reset_copy_pipeline();
                 if self
+                    .mouse_selection
                     .selection
                     .as_ref()
                     .is_some_and(|selection| selection.pane_id == copy_pane_id)
                 {
-                    self.selection = None;
-                    self.stop_selection_autoscroll();
-                    self.selection_highlight_clear_deadline = None;
+                    self.mouse_selection.clear();
                 }
                 if self.mode == ClientShellMode::Copy {
                     self.mode = ClientShellMode::Terminal;
@@ -1079,18 +1115,17 @@ impl ClientShellState {
                 if self.mode == ClientShellMode::Terminal {
                     self.mode = ClientShellMode::Copy;
                 }
-                if self.selection.is_none() {
+                if self.mouse_selection.selection.is_none() {
                     self.sync_copy_selection();
                 }
             } else {
                 if self
+                    .mouse_selection
                     .selection
                     .as_ref()
                     .is_some_and(|selection| selection.pane_id == copy_pane_id)
                 {
-                    self.selection = None;
-                    self.stop_selection_autoscroll();
-                    self.selection_highlight_clear_deadline = None;
+                    self.mouse_selection.clear();
                 }
                 if self.mode == ClientShellMode::Copy {
                     self.mode = ClientShellMode::Terminal;
@@ -1173,10 +1208,11 @@ impl ClientShellState {
     /// Captures the selected (or word-gesture) pane as `previous` showed it.
     pub(super) fn pane_facts_before(&self, previous: Option<&PaneSurfaceFrame>) -> PreviousPane {
         let pane_id = self
-            .word_selection_gesture
+            .mouse_selection
+            .word_gesture
             .as_ref()
             .map(|g| &g.pane_id)
-            .or_else(|| self.selection.as_ref().map(|s| &s.pane_id));
+            .or_else(|| self.mouse_selection.selection.as_ref().map(|s| &s.pane_id));
         let Some(pane_id) = pane_id else {
             return PreviousPane::Absent;
         };
@@ -1222,10 +1258,11 @@ impl ClientShellState {
         surface: &PaneSurfaceFrame,
     ) {
         let pane_id = self
-            .word_selection_gesture
+            .mouse_selection
+            .word_gesture
             .as_ref()
             .map(|g| &g.pane_id)
-            .or_else(|| self.selection.as_ref().map(|s| &s.pane_id));
+            .or_else(|| self.mouse_selection.selection.as_ref().map(|s| &s.pane_id));
         let next = pane_id.and_then(|id| surface.panes.iter().find(|p| &p.pane_id == id));
         let selection_invalidated = match (before, next) {
             (PreviousPane::NoSurface, _) => true,
@@ -1235,16 +1272,13 @@ impl ClientShellState {
                     || previous.alternate_screen_active != next.alternate_screen_active
                     // Ordinary selections are live buffer ranges. Only word gestures
                     // cache content-dependent boundaries that output can invalidate.
-                    || (self.word_selection_gesture.is_some()
+                    || (self.mouse_selection.word_gesture.is_some()
                         && previous.content_revision != next.content_revision)
             }
             _ => false,
         };
         if selection_invalidated {
-            self.word_selection_gesture = None;
-            self.selection = None;
-            self.stop_selection_autoscroll();
-            self.selection_highlight_clear_deadline = None;
+            self.mouse_selection.clear_range();
         }
         for pane in &surface.panes {
             self.scroll_target_shown(&pane.pane_id, pane.scroll);
@@ -1267,12 +1301,10 @@ impl ClientShellState {
                 copy_mode.alternate_screen_active = pane.alternate_screen_active;
                 copy_mode.selection = None;
                 invalidated_copy_pane = Some(copy_mode.pane_id.clone());
-                copy_mode.search_matches.clear();
-                copy_mode.search_total = 0;
-                copy_mode.search_current = None;
-                copy_mode.search_current_global = None;
-                copy_mode.search_generation = copy_mode.search_generation.saturating_add(1);
-                copy_mode.copy_after_search = false;
+                if let Some(search) = copy_mode.search.as_mut() {
+                    search.clear_results();
+                }
+                copy_mode.operation_generation = copy_mode.operation_generation.saturating_add(1);
             }
             if let Some(scroll) = pane.scroll {
                 copy_mode.history_origin = scroll.history_origin;
@@ -1308,24 +1340,23 @@ impl ClientShellState {
             self.sync_copy_selection();
         }
         if invalidated_copy_pane.as_ref().is_some_and(|pane_id| {
-            self.selection
+            self.mouse_selection
+                .selection
                 .as_ref()
                 .is_some_and(|selection| &selection.pane_id == pane_id)
         }) {
-            self.selection = None;
-            self.stop_selection_autoscroll();
-            self.selection_highlight_clear_deadline = None;
+            self.mouse_selection.clear();
         }
     }
 
     pub(crate) fn tick_selection_highlight(&mut self, now: std::time::Instant) -> bool {
         let mut repaint = false;
         if self
-            .selection_highlight_clear_deadline
+            .mouse_selection
+            .highlight_clear_deadline
             .is_some_and(|deadline| now >= deadline)
         {
-            self.selection = None;
-            self.selection_highlight_clear_deadline = None;
+            self.mouse_selection.clear_range();
             repaint = true;
         }
         repaint
@@ -1453,14 +1484,15 @@ const SHELL_TIMERS: &[ShellTimer] = &[
 
 fn selection_timer_deadline(shell: &ClientShellState) -> Option<std::time::Instant> {
     shell
-        .selection_autoscroll_deadline
+        .mouse_selection
+        .autoscroll_deadline
         .into_iter()
-        .chain(shell.selection_repaint_deadline)
+        .chain(shell.mouse_selection.repaint_deadline)
         .min()
 }
 
 fn selection_highlight_deadline(shell: &ClientShellState) -> Option<std::time::Instant> {
-    shell.selection_highlight_clear_deadline
+    shell.mouse_selection.highlight_clear_deadline
 }
 
 fn workspace_highlight_deadline(shell: &ClientShellState) -> Option<std::time::Instant> {

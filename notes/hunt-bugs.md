@@ -28,12 +28,6 @@ refuses its config is retried silently forever. Suggested: answer a launch
 refusal the way a build mismatch is answered, with a typed refusal preamble
 carrying the `DaemonExit` class, so the client can show Attention. (edges)
 
-## BUG-031 - Client exit is classified by coincidence
-
-`run_launched_client` treats `ConnectionLost` as a clean exit only when
-terminal restoration also failed (`connection_lost_during_terminal_hangup`):
-two independent failures read as one cause by inference. (client-core)
-
 ## BUG-040 - A line selection does not cover columns added by a widening resize
 
 `Selection::line_range(pane, anchor_row, cursor_row, end_col)` encodes whole
@@ -59,21 +53,6 @@ the ownership machine moved into shepr-agent, so the custom-source warning
 does not say which pane reported. Log it at the server's `HookStateReported`
 and `AgentSessionReported` call sites, or run those inside a pane span.
 (wave-3 review)
-
-## BUG-074 - A fresh pane whose every cwd candidate failed blames `/`
-
-The launch status now reports the last failed cwd candidate with its errno. For
-a fresh pane whose requested directory, `HOME`, passwd home and `/` all fail,
-the placeholder names `/` rather than the requested directory. Record and
-errno agree; which candidate the user should be shown is open. (wave-3 review)
-
-## BUG-072 - Git status dependencies can differ between discovery and a cache hit
-
-`git_status_discovery` replaces `info.repo_root` with the canonical cache key
-but keeps `git_dir` and `git_common_dir` as discovered from the workspace's own
-cwd. Discovery used to start from the canonical root, so the cached dependency
-paths can now differ from the ones a cache hit would compute for the same key.
-(wave-2 review)
 
 ## BUG-071 - Parked hook starts have no expiry or process attribution
 

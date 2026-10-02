@@ -5,7 +5,10 @@ use std::time::Instant;
 use super::{AheadBehind, GitReadError, WorkspaceGitStatusSnapshot};
 
 use super::{
-    config::{ConfigCtx, FileDep, deps_current, read_config_for_status, stamp, upstream_full_ref},
+    RefBackend,
+    config::{
+        ConfigCtx, Dependencies, deps_current, read_config_for_status, stamp, upstream_full_ref,
+    },
     discovery::{
         GitWorktreeInfo, canonicalize_best_effort_path, git_ref_storage_is_reftable,
         git_rev_parse_verify_with_errors, git_symbolic_head_full, git_trimmed_stdout,
@@ -15,11 +18,83 @@ use super::{
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GitStatusCacheEntry {
-    pub fingerprint: Option<GitStatusFingerprint>,
-    pub retry_after: Option<Instant>,
-    pub snapshot: WorkspaceGitStatusSnapshot,
-    pub read_errors: Vec<GitReadError>,
+pub enum GitStatusCacheEntry {
+    Miss {
+        retry_after: Instant,
+        repo_root: Option<PathBuf>,
+        read_errors: Vec<GitReadError>,
+    },
+    Hit {
+        fingerprint: Box<GitStatusFingerprint>,
+        ahead_behind: AheadBehindState,
+        read_errors: Vec<GitReadError>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AheadBehindState {
+    NotComputed,
+    Known(AheadBehind),
+    Failed { retry_after: Instant },
+}
+
+impl GitStatusCacheEntry {
+    pub fn is_miss(&self) -> bool {
+        matches!(self, Self::Miss { .. })
+    }
+
+    fn fingerprint(&self) -> Option<&GitStatusFingerprint> {
+        match self {
+            Self::Miss { .. } => None,
+            Self::Hit { fingerprint, .. } => Some(fingerprint.as_ref()),
+        }
+    }
+
+    fn retry_is_pending(&self, now: Instant) -> bool {
+        matches!(self, Self::Miss { retry_after, .. } if *retry_after > now)
+    }
+
+    fn can_reuse_fingerprint(&self, fingerprint: &GitStatusFingerprint, now: Instant) -> bool {
+        match self {
+            Self::Hit {
+                fingerprint: cached_fingerprint,
+                ahead_behind,
+                ..
+            } if cached_fingerprint.as_ref() == fingerprint => match ahead_behind {
+                AheadBehindState::Failed { retry_after } => *retry_after > now,
+                AheadBehindState::NotComputed | AheadBehindState::Known(_) => true,
+            },
+            Self::Miss { .. } | Self::Hit { .. } => false,
+        }
+    }
+
+    pub fn snapshot(&self) -> WorkspaceGitStatusSnapshot {
+        match self {
+            Self::Miss { repo_root, .. } => WorkspaceGitStatusSnapshot {
+                repo_root: repo_root.clone(),
+                branch: None,
+                ahead_behind: None,
+            },
+            Self::Hit {
+                fingerprint,
+                ahead_behind,
+                ..
+            } => WorkspaceGitStatusSnapshot {
+                repo_root: Some(fingerprint.repository_context.info.repo_root.clone()),
+                branch: fingerprint.branch_name().map(str::to_string),
+                ahead_behind: match ahead_behind {
+                    AheadBehindState::Known(ahead_behind) => Some(*ahead_behind),
+                    AheadBehindState::NotComputed | AheadBehindState::Failed { .. } => None,
+                },
+            },
+        }
+    }
+
+    pub fn read_errors(&self) -> &[GitReadError] {
+        match self {
+            Self::Miss { read_errors, .. } | Self::Hit { read_errors, .. } => read_errors,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -29,7 +104,13 @@ pub struct GitStatusFingerprint {
     repository_context: RepoContext,
 }
 
-type RepoContext = (GitWorktreeInfo, bool, Vec<FileDep>, Option<ConfigCtx>);
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RepoContext {
+    info: GitWorktreeInfo,
+    backend: RefBackend,
+    dependencies: Dependencies,
+    config: Option<ConfigCtx>,
+}
 
 fn repo_context(cwd: &Path, read_errors: &mut Vec<GitReadError>) -> Option<RepoContext> {
     let info = git_worktree_info_with_errors(cwd, read_errors)?;
@@ -48,7 +129,7 @@ fn repo_context_for_info(
     info: GitWorktreeInfo,
     read_errors: &mut Vec<GitReadError>,
 ) -> Option<RepoContext> {
-    let (reftable, config_deps) = match git_ref_storage_is_reftable(&info) {
+    let (backend, format_dependencies) = match git_ref_storage_is_reftable(&info) {
         Ok(result) => result,
         Err(error) => {
             read_errors.push(error);
@@ -59,10 +140,15 @@ fn repo_context_for_info(
     paths.push(info.git_dir.join("HEAD"));
     paths.push(info.git_common_dir.join("config"));
     paths.extend((info.git_dir != info.git_common_dir).then(|| info.git_dir.join("config")));
-    let mut deps: Vec<_> = paths.into_iter().map(|path| stamp(path, None)).collect();
-    deps.extend(config_deps);
-    deps[0].2 &= deps_current(&deps);
-    Some((info, reftable, deps, None))
+    let mut dependencies =
+        Dependencies::tracked(paths.into_iter().map(|path| stamp(path, None)).collect());
+    dependencies.extend(format_dependencies);
+    Some(RepoContext {
+        info,
+        backend,
+        dependencies,
+        config: None,
+    })
 }
 
 /// Repository discovery captured with the cache key, so a refresh can group
@@ -90,6 +176,9 @@ pub fn git_status_discovery(cwd: &Path) -> GitStatusDiscovery {
         |info| canonicalize_best_effort_path(&info.repo_root),
     );
     if let Some(info) = &mut info {
+        // git_worktree_info_with_errors best-effort canonicalizes git_dir and
+        // git_common_dir; only repo_root keeps the walk spelling. The .git
+        // dependency is built from this key, so rebuilds from it use the same paths.
         info.repo_root = cache_key.clone();
     }
     GitStatusDiscovery {
@@ -147,19 +236,14 @@ fn git_status_snapshot(
     // a subprocess must not move the cache decision partway through a snapshot.
     let now = Instant::now();
     let mut read_errors = Vec::new();
-    if let Some(cached) = cached.filter(|entry| {
-        entry.fingerprint.is_none()
-            && entry
-                .retry_after
-                .is_some_and(|retry_after| retry_after > now)
-    }) {
-        return (cached.snapshot.clone(), Some(cached.clone()));
+    if let Some(cached) = cached.filter(|entry| entry.retry_is_pending(now)) {
+        return (cached.snapshot(), Some(cached.clone()));
     }
 
     let cached_context = cached
-        .and_then(|entry| entry.fingerprint.as_ref())
+        .and_then(GitStatusCacheEntry::fingerprint)
         .map(|fingerprint| fingerprint.repository_context.clone())
-        .filter(|context| deps_current(&context.2));
+        .filter(|context| deps_current(&context.dependencies));
     let repository_context = match discovery {
         Some(discovery) => repo_context_for_discovery(discovery, &mut read_errors),
         None => cached_context.or_else(|| repo_context(cwd, &mut read_errors)),
@@ -172,79 +256,82 @@ fn git_status_snapshot(
         };
         return (
             snapshot.clone(),
-            Some(GitStatusCacheEntry {
-                fingerprint: None,
-                retry_after: Some(now + GIT_STATUS_RETRY_DELAY),
-                snapshot,
+            Some(GitStatusCacheEntry::Miss {
+                retry_after: now + GIT_STATUS_RETRY_DELAY,
+                repo_root: None,
                 read_errors,
             }),
         );
     };
-    let repo_root = repository_context.0.repo_root.clone();
+    let repo_root = repository_context.info.repo_root.clone();
     let Some(fingerprint) = fingerprint(repository_context, &mut read_errors) else {
         let snapshot = WorkspaceGitStatusSnapshot {
-            repo_root: Some(repo_root),
+            repo_root: Some(repo_root.clone()),
             branch: None,
             ahead_behind: None,
         };
         return (
             snapshot.clone(),
-            Some(GitStatusCacheEntry {
-                fingerprint: None,
-                retry_after: Some(now + GIT_STATUS_RETRY_DELAY),
-                snapshot,
+            Some(GitStatusCacheEntry::Miss {
+                retry_after: now + GIT_STATUS_RETRY_DELAY,
+                repo_root: Some(repo_root),
                 read_errors,
             }),
         );
     };
     let branch = fingerprint.branch_name().map(str::to_string);
 
-    if let Some(cached) = cached.filter(|entry| {
-        entry.fingerprint.as_ref() == Some(&fingerprint)
-            && entry
-                .retry_after
-                .is_none_or(|retry_after| retry_after > now)
-    }) {
+    if let Some(GitStatusCacheEntry::Hit {
+        fingerprint: cached_fingerprint,
+        ahead_behind,
+        read_errors: cached_read_errors,
+        ..
+    }) = cached.filter(|entry| entry.can_reuse_fingerprint(&fingerprint, now))
+    {
         let snapshot = WorkspaceGitStatusSnapshot {
-            repo_root: Some(repo_root),
-            branch,
-            ahead_behind: cached.snapshot.ahead_behind,
+            repo_root: Some(repo_root.clone()),
+            branch: branch.clone(),
+            ahead_behind: match ahead_behind {
+                AheadBehindState::Known(ahead_behind) => Some(*ahead_behind),
+                AheadBehindState::NotComputed | AheadBehindState::Failed { .. } => None,
+            },
         };
         return (
             snapshot.clone(),
-            Some(GitStatusCacheEntry {
-                fingerprint: Some(fingerprint),
-                retry_after: cached.retry_after,
-                snapshot,
-                read_errors: cached.read_errors.clone(),
+            Some(GitStatusCacheEntry::Hit {
+                fingerprint: cached_fingerprint.clone(),
+                ahead_behind: *ahead_behind,
+                read_errors: cached_read_errors.clone(),
             }),
         );
     }
 
     let revision_pair = fingerprint.head_oid().zip(fingerprint.upstream_oid());
-    let (ahead_behind, retry_after) = match revision_pair {
+    let ahead_behind = match revision_pair {
         Some((head_oid, upstream_oid)) => {
-            let repo_root = &fingerprint.repository_context.0.repo_root;
-            let ahead_behind =
-                git_ahead_behind_between(repo_root, head_oid, upstream_oid, &mut read_errors);
-            let retry_after = ahead_behind
-                .is_none()
-                .then_some(now + GIT_STATUS_RETRY_DELAY);
-            (ahead_behind, retry_after)
+            let repo_root = &fingerprint.repository_context.info.repo_root;
+            match git_ahead_behind_between(repo_root, head_oid, upstream_oid, &mut read_errors) {
+                Some(ahead_behind) => AheadBehindState::Known(ahead_behind),
+                None => AheadBehindState::Failed {
+                    retry_after: now + GIT_STATUS_RETRY_DELAY,
+                },
+            }
         }
-        None => (None, None),
+        None => AheadBehindState::NotComputed,
     };
     let snapshot = WorkspaceGitStatusSnapshot {
-        repo_root: Some(repo_root),
-        branch,
-        ahead_behind,
+        repo_root: Some(repo_root.clone()),
+        branch: branch.clone(),
+        ahead_behind: match ahead_behind {
+            AheadBehindState::Known(ahead_behind) => Some(ahead_behind),
+            AheadBehindState::NotComputed | AheadBehindState::Failed { .. } => None,
+        },
     };
     (
         snapshot.clone(),
-        Some(GitStatusCacheEntry {
-            fingerprint: Some(fingerprint),
-            retry_after,
-            snapshot,
+        Some(GitStatusCacheEntry::Hit {
+            fingerprint: Box::new(fingerprint),
+            ahead_behind,
             read_errors,
         }),
     )
@@ -254,7 +341,7 @@ fn fingerprint(
     mut repo: RepoContext,
     read_errors: &mut Vec<GitReadError>,
 ) -> Option<GitStatusFingerprint> {
-    let head = read_head_identity(&repo.0, repo.1, read_errors)?;
+    let head = read_head_identity(&repo.info, repo.backend, read_errors)?;
     let upstream = match &head {
         GitHeadIdentity::Branch { short_name, .. } => {
             read_upstream(&mut repo, short_name, read_errors)
@@ -293,14 +380,13 @@ impl GitStatusFingerprint {
 
 fn read_head_identity(
     info: &GitWorktreeInfo,
-    reftable: bool,
+    backend: RefBackend,
     read_errors: &mut Vec<GitReadError>,
 ) -> Option<GitHeadIdentity> {
-    if reftable {
-        return read_head_identity_from_git(info, read_errors);
+    match backend {
+        RefBackend::Reftable => read_head_identity_from_git(info, read_errors),
+        RefBackend::Files => read_head_identity_from_files(info, read_errors),
     }
-
-    read_head_identity_from_files(info, read_errors)
 }
 
 fn read_head_identity_from_git(
@@ -365,18 +451,21 @@ fn read_upstream(
     read_errors: &mut Vec<GitReadError>,
 ) -> Option<GitUpstreamIdentity> {
     if repo
-        .3
+        .config
         .as_ref()
-        .is_none_or(|context| context.0 != branch || !deps_current(&context.2))
+        .is_none_or(|context| context.branch != branch || !deps_current(&context.dependencies))
     {
-        repo.3 = Some(read_config_for_status(&repo.0, branch, read_errors));
+        repo.config = Some(read_config_for_status(&repo.info, branch, read_errors));
     }
-    let config = repo.3.as_ref()?.1.clone()?;
+    let config = repo.config.as_ref()?.config.clone()?;
     let full_ref = upstream_full_ref(&config)?;
-    let oid = if repo.1 {
-        git_rev_parse_verify_with_errors(&repo.0.repo_root, &full_ref, read_errors)
-    } else {
-        read_ref_oid_with_errors(&repo.0.git_common_dir, &full_ref, read_errors)
+    let oid = match repo.backend {
+        RefBackend::Reftable => {
+            git_rev_parse_verify_with_errors(&repo.info.repo_root, &full_ref, read_errors)
+        }
+        RefBackend::Files => {
+            read_ref_oid_with_errors(&repo.info.git_common_dir, &full_ref, read_errors)
+        }
     };
     Some(GitUpstreamIdentity {
         remote: config.remote,
@@ -487,7 +576,11 @@ mod tests {
 
         assert_eq!(snapshot.branch.as_deref(), Some("main"));
         assert!(entry.is_some_and(|entry| {
-            entry.read_errors.iter().any(
+            let read_errors = match &entry {
+                GitStatusCacheEntry::Miss { read_errors, .. }
+                | GitStatusCacheEntry::Hit { read_errors, .. } => read_errors,
+            };
+            read_errors.iter().any(
                 |error| matches!(error, GitReadError::FileRead { path, .. } if path == &ref_path),
             )
         }));
@@ -553,7 +646,10 @@ mod tests {
         );
         assert!(
             update
-                .and_then(|entry| entry.fingerprint)
+                .and_then(|entry| match entry {
+                    GitStatusCacheEntry::Miss { .. } => None,
+                    GitStatusCacheEntry::Hit { fingerprint, .. } => Some(fingerprint),
+                })
                 .is_some_and(|fingerprint| fingerprint.head
                     == GitHeadIdentity::Detached {
                         oid: "3e1b9a8d3e1b9a8d3e1b9a8d3e1b9a8d3e1b9a8d".into()
@@ -617,13 +713,16 @@ mod tests {
         let root = temp_test_dir("expired-miss");
         let (_, cache_entry) = git_status_snapshot_for_cwd(&root, None);
         let mut cache_entry = cache_entry.expect("non-Git result should be cached");
-        cache_entry.retry_after = Some(Instant::now() - Duration::from_secs(1));
+        let GitStatusCacheEntry::Miss { retry_after, .. } = &mut cache_entry else {
+            panic!("non-Git result should be a miss");
+        };
+        *retry_after = Instant::now() - Duration::from_secs(1);
         write_fake_tracked_repo(&root);
 
         let (snapshot, update) = git_status_snapshot_for_cwd(&root, Some(&cache_entry));
 
         assert_eq!(snapshot.branch.as_deref(), Some("main"));
-        assert!(update.is_some_and(|entry| entry.fingerprint.is_some()));
+        assert!(update.is_some_and(|entry| !entry.is_miss()));
     }
 
     #[test]
@@ -652,10 +751,13 @@ mod tests {
         assert_eq!(snapshot.branch.as_deref(), Some("main"));
         assert_eq!(snapshot.ahead_behind, None);
         assert!(update.is_some_and(|entry| {
-            entry.fingerprint.is_some()
-                && entry
-                    .retry_after
-                    .is_some_and(|retry_after| retry_after > Instant::now())
+            matches!(
+                entry,
+                GitStatusCacheEntry::Hit {
+                    ahead_behind: AheadBehindState::Failed { retry_after },
+                    ..
+                } if retry_after > Instant::now()
+            )
         }));
     }
 
@@ -665,17 +767,12 @@ mod tests {
         let root = temp_test_dir("cache-hit");
         write_fake_tracked_repo(&root);
         let fingerprint = git_status_fingerprint(&root).expect("test precondition");
-        let cached = GitStatusCacheEntry {
-            fingerprint: Some(fingerprint),
-            retry_after: None,
-            snapshot: WorkspaceGitStatusSnapshot {
-                repo_root: Some(root.clone()),
-                branch: Some("main".into()),
-                ahead_behind: Some(crate::git::AheadBehind {
-                    ahead: 2,
-                    behind: 1,
-                }),
-            },
+        let cached = GitStatusCacheEntry::Hit {
+            fingerprint: Box::new(fingerprint),
+            ahead_behind: AheadBehindState::Known(AheadBehind {
+                ahead: 2,
+                behind: 1,
+            }),
             read_errors: Vec::new(),
         };
 
@@ -690,7 +787,7 @@ mod tests {
             })
         );
         assert_eq!(
-            update.expect("test precondition").snapshot.ahead_behind,
+            update.expect("test precondition").snapshot().ahead_behind,
             Some(AheadBehind {
                 ahead: 2,
                 behind: 1
@@ -704,17 +801,12 @@ mod tests {
         let root = temp_test_dir("branch-switch");
         write_fake_tracked_repo(&root);
         let fingerprint = git_status_fingerprint(&root).expect("test precondition");
-        let cached = GitStatusCacheEntry {
-            fingerprint: Some(fingerprint),
-            retry_after: None,
-            snapshot: WorkspaceGitStatusSnapshot {
-                repo_root: Some(root.clone()),
-                branch: Some("main".into()),
-                ahead_behind: Some(crate::git::AheadBehind {
-                    ahead: 4,
-                    behind: 0,
-                }),
-            },
+        let cached = GitStatusCacheEntry::Hit {
+            fingerprint: Box::new(fingerprint),
+            ahead_behind: AheadBehindState::Known(AheadBehind {
+                ahead: 4,
+                behind: 0,
+            }),
             read_errors: Vec::new(),
         };
         std::fs::write(root.join(".git/HEAD"), "ref: refs/heads/feature\n")
@@ -742,17 +834,12 @@ mod tests {
         let root = temp_test_dir("upstream-unset");
         write_fake_tracked_repo(&root);
         let fingerprint = git_status_fingerprint(&root).expect("test precondition");
-        let cached = GitStatusCacheEntry {
-            fingerprint: Some(fingerprint),
-            retry_after: None,
-            snapshot: WorkspaceGitStatusSnapshot {
-                repo_root: Some(root.clone()),
-                branch: Some("main".into()),
-                ahead_behind: Some(crate::git::AheadBehind {
-                    ahead: 0,
-                    behind: 3,
-                }),
-            },
+        let cached = GitStatusCacheEntry::Hit {
+            fingerprint: Box::new(fingerprint),
+            ahead_behind: AheadBehindState::Known(AheadBehind {
+                ahead: 0,
+                behind: 3,
+            }),
             read_errors: Vec::new(),
         };
         std::fs::write(root.join(".git/config"), "").expect("test precondition");
@@ -782,12 +869,11 @@ mod tests {
 
         let (_, updated) = git_status_snapshot_for_cwd(&root, cached.as_ref());
 
-        let upstream = updated
-            .expect("test precondition")
-            .fingerprint
-            .expect("test precondition")
-            .upstream
-            .expect("test precondition");
+        let upstream = match updated.expect("test precondition") {
+            GitStatusCacheEntry::Miss { .. } => panic!("repository result should be a hit"),
+            GitStatusCacheEntry::Hit { fingerprint, .. } => fingerprint.upstream,
+        }
+        .expect("test precondition");
         assert_eq!(upstream.remote, "fork");
     }
 

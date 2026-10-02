@@ -19,7 +19,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use super::App;
+use super::{App, Backoff};
 use crate::limits::{CHECKPOINT_MAX_FAILURES, CHECKPOINT_RETRY_MAX_DELAY, SESSION_SAVE_RETRY_MIN};
 
 mod autosave;
@@ -88,12 +88,8 @@ pub(crate) struct SessionSaver {
 /// `SESSION_SAVE_RETRY_MIN`, capped at `CHECKPOINT_RETRY_MAX_DELAY`. Total for
 /// every `u8`, so raising `CHECKPOINT_MAX_FAILURES` cannot make it overflow.
 fn checkpoint_retry_delay(failures_before: u8) -> Duration {
-    let factor = 1_u32
-        .checked_shl(u32::from(failures_before))
-        .unwrap_or(u32::MAX);
-    SESSION_SAVE_RETRY_MIN
-        .saturating_mul(factor)
-        .min(CHECKPOINT_RETRY_MAX_DELAY)
+    Backoff::new(SESSION_SAVE_RETRY_MIN, CHECKPOINT_RETRY_MAX_DELAY)
+        .delay_after(u32::from(failures_before))
 }
 
 impl SessionSaver {

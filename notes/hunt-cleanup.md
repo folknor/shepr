@@ -20,16 +20,6 @@ raw reports are in the commit that precedes this file's.
 
 ## Dead code and dead state
 
-## CLN-001 - A Git config parser in `shepr-core` with no production caller
-
-`shepr-core/src/env.rs` carries about 200 lines (`read_git_config_parameters`,
-`parse_git_config_parameters`, `parse_git_single_quote`,
-`parse_git_config_count`, `indexed_git_config_pair`) with no production caller;
-only `is_registered_name` uses the indexed-name recognizer, for test isolation.
-Git subprocesses spawned by mux inherit the variables and apply them
-themselves. Delete the parser and keep the recognizer, or move it to
-`shepr-mux/src/git/config.rs` and wire it if that was the intent. (foundation)
-
 ## CLN-006 - Dead checks in the server serving path
 
 - `ProtocolCellSize::from_wire` in `shepr-protocol` still nulls oversize
@@ -41,21 +31,12 @@ themselves. Delete the parser and keep the recognizer, or move it to
 
 ## CLN-008 - Dead pieces in the client core
 
-- `ClientState::frames_frozen` checks in `present_frame` and
-  `present_surface_patch` cannot fire at any call site.
-- The `ClientMessage::ClientShellResize` arm in `finish_client_shell_input` is
-  never reached; the shell does not emit it, so resize is requestable two ways
-  of which one is dead.
 - `ServerMessage::SurfaceUpdate` and `EndpointWelcome` reach the loop only as
-  protocol violations; `DecodedServerMessage::Wire(ServerMessage)` admits every
-  wire variant.
-- `install_client_shell_snapshot` returns `Result` but never fails.
-- `EndpointRegistry::received` exists only for transports without reader
-  stamps, which in production means none that are health tracked; `insert`
-  and `insert_native` are two insertion paths.
-- `host_replies.rs`'s `HostInputFramer` is a `Deref`/`DerefMut` newtype over
-  `RawInputFramer<HostReplies>` that buys nothing; its test exercises termio's
-  `HostReplies` and belongs there.
+  protocol violations, rejected there; `DecodedServerMessage::Wire(ServerMessage)`
+  still admits every wire variant, so the decoder type could exclude them.
+- The test that exercised termio's `HostReplies` through the removed
+  `HostInputFramer` wrapper was deleted with it rather than moved into
+  `shepr-termio`.
 
 (client-core)
 
@@ -180,7 +161,20 @@ Reported by mux-state and foundation.
   to `Suspended`, with a comment calling Suspended a different state, while
   every test teardown now spells `Suspended`. One spelling should win.
 
-(wave-1 review and gate, wave-3 review)
+- `crates/shepr-server/src/server/headless.rs`: `send_to_all_clients` has no
+  callers although its comment describes one in shutdown completion.
+
+- `crates/shepr-server/src/server/headless/worker.rs`:
+  `EndpointWorkers::dispatch_checkout_root` is an associated function taking
+  the whole `&mut HeadlessServer`, ownership in name only; it reads as a
+  `HeadlessServer` method.
+- `crates/shepr-remote/src/remote/preflight.rs`: `RestartResult::offer` checks
+  for a missing decision callback before its loop and again inside it, so the
+  inner `NoTerminal` branch cannot be reached.
+- `crates/shepr-client/src/shell/state.rs`: `MouseSelection` is built field by
+  field in `ClientShellState::new`; a derived `Default` would do.
+
+(wave-1 review and gate, wave-3 review, wave-5 fixer and review)
 
 ## Test-only twins and test seams in production
 

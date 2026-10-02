@@ -640,8 +640,7 @@ fn process_pty_bytes_surfaces_clipboard_writes_without_other_results() {
         b"output\x1b]52;c;Y2xpcGJvYXJk\x07",
     );
 
-    assert!(result.request_render);
-    assert_eq!(result.render_delay, None);
+    assert_eq!(result.render_request, RenderRequest::Now);
     assert_eq!(result.clipboard_writes, vec![b"clipboard".to_vec()]);
     assert_eq!(result.reported_cwd, None);
     assert!(result.terminal_responses.is_empty());
@@ -783,7 +782,7 @@ fn cursor_state_reports_the_live_position() {
     pane.process_pty_bytes(pane_id, b"x");
     let result = pane.process_pty_bytes(pane_id, b"\x1b[6;21H");
 
-    assert_eq!(result.render_delay, None);
+    assert_eq!(result.render_request, RenderRequest::Now);
     assert_eq!(
         pane.cursor_state()
             .map(|cursor| (cursor.x, cursor.y, cursor.visible)),
@@ -865,10 +864,14 @@ fn expired_synchronized_update_is_flushed_only_by_tick() {
     );
     assert!(pane.synchronized_output_active());
 
-    let not_yet_flushed = pane.tick(deadline - Duration::from_millis(1));
-    assert!(!not_yet_flushed.request_render);
-    let flushed = pane.tick(deadline + Duration::from_millis(1));
-    assert!(flushed.request_render);
+    let not_yet_flushed = pane
+        .tick(deadline - Duration::from_millis(1))
+        .expect("terminal core is healthy");
+    assert_eq!(not_yet_flushed.render_request, RenderRequest::None);
+    let flushed = pane
+        .tick(deadline + Duration::from_millis(1))
+        .expect("terminal core is healthy");
+    assert_eq!(flushed.render_request, RenderRequest::Now);
     assert_eq!(
         flushed.terminal_responses,
         vec![Bytes::from_static(b"\x1b[1;1R")]
@@ -895,16 +898,20 @@ fn tick_ends_an_expired_synchronized_update() {
     let pane_id = shepr_test_fixtures::fixed_pane_id(1);
 
     let begin = pane.process_pty_bytes(pane_id, b"\x1b[?2026h\x1b[5n");
-    assert!(begin.render_delay.is_some());
+    assert!(matches!(begin.render_request, RenderRequest::After(_)));
     let deadline = shepr_vt::lock_terminal_core(&pane.core)
         .expect("test precondition")
         .terminal
         .synchronized_output_deadline()
         .expect("test precondition");
-    let not_yet_flushed = pane.tick(deadline - Duration::from_millis(1));
-    assert!(!not_yet_flushed.request_render);
-    let flushed = pane.tick(deadline + Duration::from_millis(1));
-    assert!(flushed.request_render);
+    let not_yet_flushed = pane
+        .tick(deadline - Duration::from_millis(1))
+        .expect("terminal core is healthy");
+    assert_eq!(not_yet_flushed.render_request, RenderRequest::None);
+    let flushed = pane
+        .tick(deadline + Duration::from_millis(1))
+        .expect("terminal core is healthy");
+    assert_eq!(flushed.render_request, RenderRequest::Now);
     assert_eq!(
         flushed.terminal_responses,
         vec![Bytes::from_static(b"\x1b[0n")]
@@ -937,8 +944,7 @@ fn late_output_flushes_the_expired_update_first_and_keeps_reply_order() {
     // Before the deadline the new bytes join the open update.
     let inside = pane.process_pty_bytes_at(pane_id, b"a", deadline - Duration::from_millis(1));
     assert!(inside.terminal_responses.is_empty());
-    assert!(!inside.request_render);
-    assert!(inside.render_delay.is_some());
+    assert!(matches!(inside.render_request, RenderRequest::After(_)));
 
     let late = pane.process_pty_bytes_at(pane_id, b"\x1b[6n", deadline + Duration::from_millis(1));
     assert_eq!(
@@ -948,8 +954,7 @@ fn late_output_flushes_the_expired_update_first_and_keeps_reply_order() {
             Bytes::from_static(b"\x1b[1;2R"),
         ]
     );
-    assert!(late.request_render);
-    assert!(late.render_delay.is_none());
+    assert_eq!(late.render_request, RenderRequest::Now);
     assert_eq!(pane.synchronized_output_state(), Some((false, 2)));
 }
 
@@ -2324,15 +2329,15 @@ fn synchronized_output_suppresses_intermediate_render_requests_until_batch_ends(
     assert_eq!(pane_terminal.synchronized_output_state(), Some((false, 0)));
 
     let begin = pane_terminal.process_pty_bytes(pane_id, b"\x1b[?2026h");
-    assert!(!begin.request_render);
+    assert!(matches!(begin.render_request, RenderRequest::After(_)));
     assert_eq!(pane_terminal.synchronized_output_state(), Some((true, 1)));
 
     let body = pane_terminal.process_pty_bytes(pane_id, b"hello");
-    assert!(!body.request_render);
+    assert!(matches!(body.render_request, RenderRequest::After(_)));
     assert_eq!(pane_terminal.synchronized_output_state(), Some((true, 1)));
 
     let end = pane_terminal.process_pty_bytes(pane_id, b"\x1b[?2026l");
-    assert!(end.request_render);
+    assert_eq!(end.render_request, RenderRequest::Now);
     assert_eq!(pane_terminal.synchronized_output_state(), Some((false, 2)));
 }
 
@@ -3921,13 +3926,19 @@ fn default_color_changes_ask_for_an_owner_only_while_an_override_stands() {
     let pane = PaneTerminal::new(terminal);
     let mut core = shepr_vt::lock_terminal_core(&pane.core).expect("test precondition");
     core.terminal.write(b"\x1b]11;rgb:10/20/30\x07");
-    assert!(note_default_color_change(&mut core));
+    let first_set = core.terminal.take_effects().default_color_set;
+    assert_eq!(
+        note_default_color_change(&mut core, first_set),
+        Some(DefaultColorGeneration(1))
+    );
     // Nothing new since.
-    assert!(!note_default_color_change(&mut core));
+    let no_new_set = core.terminal.take_effects().default_color_set;
+    assert_eq!(note_default_color_change(&mut core, no_new_set), None);
 
     core.transient_default_color_owner_pgid = Some(42);
     core.terminal.write(b"\x1b]111\x07");
-    assert!(!note_default_color_change(&mut core));
+    let reset_set = core.terminal.take_effects().default_color_set;
+    assert_eq!(note_default_color_change(&mut core, reset_set), None);
     assert_eq!(core.transient_default_color_owner_pgid, None);
 }
 
@@ -3977,7 +3988,10 @@ fn a_core_poisoned_off_the_reader_is_reported_to_the_reader() {
     let terminal = shepr_vt::Terminal::new(20, 3, 0);
     let pane = std::sync::Arc::new(PaneTerminal::new(terminal));
     let pane_id = shepr_test_fixtures::fixed_pane_id(1);
-    assert!(!pane.process_pty_bytes(pane_id, b"before").core_poisoned);
+    assert!(
+        pane.try_process_pty_bytes_at(pane_id, b"before", Instant::now())
+            .is_ok()
+    );
     assert!(!pane.core_poisoned());
 
     // A render or API read panicking while it holds the core lock.
@@ -3991,6 +4005,9 @@ fn a_core_poisoned_off_the_reader_is_reported_to_the_reader() {
 
     // Visible without any output, for the actor's idle check.
     assert!(pane.core_poisoned());
-    assert!(pane.process_pty_bytes(pane_id, b"after").core_poisoned);
+    assert!(
+        pane.try_process_pty_bytes_at(pane_id, b"after", Instant::now())
+            .is_err()
+    );
     assert_eq!(pane.synchronized_output_state(), None);
 }

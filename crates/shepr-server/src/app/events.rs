@@ -159,6 +159,9 @@ impl App {
         // before) marks the session dirty, so no older checkpoint can settle
         // this exit without it.
         self.publish_pane_process_exit(pane_id, exit_reason, ended_at);
+        // This probe decides whether to checkpoint before removal is allowed.
+        // The actual removal plan is rebuilt when the event is applied because
+        // a held exit can outlive intervening workspace changes.
         if self.pane_exit_needs_checkpoint(pane_id, exit_reason)
             && self.state.prepare_pane_removal_by_id(pane_id).is_some()
         {
@@ -264,6 +267,10 @@ impl App {
         } else {
             None
         };
+        // Direct App event callers do not pass through the headless loop's
+        // prepare-and-hold path, so retain a defensive decision here. The
+        // preliminary and application-time removal probes serve different
+        // moments: the latter must reflect changes made while an exit waited.
         let checkpointed_pane_exit = match &ev {
             AppEvent::PaneDied {
                 pane_id,
@@ -274,8 +281,9 @@ impl App {
             _ => false,
         };
         // The headless loop prepares and holds checkpointed exits before
-        // applying them, so this only reports a direct caller that skipped
-        // that step; the pane is still removed.
+        // applying them. Keep this warning for direct App callers until pane
+        // exits carry their preparation through every entry point, including
+        // the server's queued replay path.
         if checkpointed_pane_exit && !pane_exit_prepared && !self.pane_exit_checkpoint_settled() {
             tracing::warn!("pane exit reached removal before its session checkpoint settled");
         }

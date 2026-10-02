@@ -113,56 +113,6 @@ platform by AGENTS.md's own rule; mux then stops reaching through
 that left; it can move into `resume.rs` or become `AgentSessionRef::is_id()`.
 (agents)
 
-## STR-007 - Integration facts are spread over five tables
-
-For one target: `AgentDescriptor` (target, source, events, policy), the
-`IntegrationTarget` enum with a hand-written `agent()` (the inverse of
-`descriptor.integration_target`), `INTEGRATION_SPECS` in `registry.rs`, `DirectoryKey`
-and its resolver in `env.rs`, and the `*_INSTALL_NAME`/`*_ASSET`/`*_NAME`
-constants. `spec_for` returns "missing integration spec" at runtime, held by
-`every_target_has_exactly_one_spec` and the descriptor test. Inside a spec,
-`config_files` is a positional slice read as `config(0)`/`config(1)` with a
-runtime error, `hook_timeout: Option<Duration>` is unwrapped with a runtime error
-by shapes that need it, `assets.first()` is "the primary asset" by position, and
-`action_label` equals `target.label()` except for Antigravity.
-`AgentIntegrationPaths` stores a `HashMap<DirectoryKey, Result<..>>` with an
-impossible "was not resolved" arm, and `agent_present` and its test each spell the
-`PiExtension | OmpExtension` special case. Proposal: an exhaustive `const fn
-spec(self)` match, registration check variants carrying their own file names and
-timeouts, a named primary asset, the directory resolver in the spec, and a struct
-with one field per directory. Every `install_*` repeats the same skeleton
-(resolve directory, `check_config_targets`, an `is_dir` "install X first" check
-already answered by `agent_present`, lock, read with default, edit in memory,
-create hook dir, write asset, write config, build the outcome); the deliberate
-ordering is documented once and implemented fourteen times, and Kilo and Grok
-skip `check_config_targets` (Grok writes its hook before preparing its config).
-A generic `install(target)` driven by the spec with edit strategies
-(`MergeJson`, `ManagedTomlBlock`, `OwnedFile`, `PluginList`, plus Claude's
-source-preserving editor and OpenCode's two-config handling) keeps the ordering in
-one place. (agents)
-
-## STR-008 - The manifest loader validates, compiles, then compiles again
-
-`parse_manifest` deserializes, `validate_manifest` walks the gate tree
-(`validate_gate` and `validate_not_gate` are near-copies), then calls
-`compile_manifest`, which walks it again, re-parses every region name
-(`RegionTable::intern` calls `RegionSpec::parse` after `validate_region_name`
-did), and stores the result in `AgentManifest.compiled: Option<..>`
-(`#[serde(skip)]`) that `loaded_manifest` `take()`s. `manifest_gate_from_rule`
-clones every matcher vector of every rule twice. A single `compile(raw) ->
-Result<CompiledManifest, ManifestError>` removes the option, the second walk, the
-clones and the dead arm; the raw rule then survives only as explain evidence
-captured into the compiled rule, so `LoadedManifest` holds one representation
-instead of two vectors indexed by position. Manifest failures are `String` errors
-logged once; a bundled manifest failing is a build bug that should fail
-`brokkr check` rather than degrade an agent to Unknown (the compile test is the
-right gate). `RegionSpec::{AfterLastPromptMarker, BeforeCurrentPromptMarker,
-WholeRecentWithoutCurrentPromptMarker}` are defined by Codex's prompt glyph and
-block markers in `codex_prompt_line`/`codex_block_marker_line` but named as
-generic regions, and `PromptBoxBody`/`LastNonEmptyAbovePromptBox` encode Claude's
-box; name them as what they are, or lift the marker definitions into the manifest
-so a UI change is a manifest edit. (agents)
-
 ## STR-009 - Cut `shepr-protocol -> shepr-config`
 
 The edge exists for `MAX_INPUT_EVENT_BATCH`, `MAX_TERMINAL_GRID_CELLS`,
@@ -742,15 +692,6 @@ the verified per-machine state from preflight to the connectors
 (edges)
 
 ## Tests
-
-## STR-050 - Endpoint worker replies are built in two places
-
-`EndpointWorkers` (`crates/shepr-server/src/server/headless/worker.rs`) owns
-worker admission, launch, completion delivery and turning a completion into a
-reply, but reserving reply tickets, the "worker limit reached" rejection and
-the spawn-failure rejection are still built on `HeadlessServer` in
-`headless/endpoint_requests.rs`. Move them into the worker owner so every
-reply it can produce comes from one place. (wave-4 review)
 
 ## STR-049 - Test layouts mirror accretion
 

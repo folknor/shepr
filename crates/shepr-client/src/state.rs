@@ -117,7 +117,7 @@ impl ClientState {
         &mut self,
         patch: shell::ClientComposedSurfacePatch,
     ) -> io::Result<bool> {
-        if self.choice.frames_frozen() || self.repaint_pending {
+        if self.repaint_pending {
             return Ok(false);
         }
         let rows = if self.draw_host_cursor {
@@ -151,11 +151,8 @@ impl ClientState {
         self.output_writer.flush()
     }
 
-    /// Presents a frame unless pane frames are frozen (see `EndpointChoice::frames_frozen`).
+    /// Presents a frame from the shown endpoint or a committed endpoint move.
     pub(super) fn present_frame(&mut self, frame_data: shepr_protocol::FrameData) {
-        if self.choice.frames_frozen() {
-            return;
-        }
         self.write_frame(frame_data);
     }
 

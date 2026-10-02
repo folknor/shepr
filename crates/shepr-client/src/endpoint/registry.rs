@@ -93,6 +93,8 @@ impl EndpointRegistry {
         viewed: bool,
         now: Instant,
     ) {
+        // Local has no health heartbeat, and synthetic test transports have no reader stamp;
+        // production SSH endpoints use `insert_native` to retain reader-owned activity.
         self.insert_with_activity(endpoint_id, transport, generation, viewed, None, now);
     }
 
@@ -144,26 +146,6 @@ impl EndpointRegistry {
         self.connections
             .get(endpoint_id)
             .is_some_and(|connection| connection.generation == generation)
-    }
-
-    /// Records arrivals for transports without a reader-owned activity stamp. Native
-    /// connections are stamped on the reader thread, so this call intentionally leaves their
-    /// health unchanged when the client loop processes a message.
-    pub(crate) fn received(
-        &mut self,
-        endpoint_id: &ClientEndpointId,
-        generation: u64,
-        now: Instant,
-    ) {
-        if let Some(connection) = self
-            .connections
-            .get_mut(endpoint_id)
-            .filter(|connection| connection.generation == generation)
-            .filter(|connection| connection.read_activity.is_none())
-            && let Some(health) = connection.health.as_mut()
-        {
-            health.received(now);
-        }
     }
 
     pub(crate) fn mark_ready(&mut self, endpoint_id: &ClientEndpointId, generation: u64) {
@@ -418,6 +400,24 @@ impl Drop for EndpointRegistry {
 
 #[cfg(test)]
 impl EndpointRegistry {
+    /// Synthetic transports have no reader thread to stamp arrivals for health tests.
+    pub(crate) fn received(
+        &mut self,
+        endpoint_id: &ClientEndpointId,
+        generation: u64,
+        now: Instant,
+    ) {
+        if let Some(connection) = self
+            .connections
+            .get_mut(endpoint_id)
+            .filter(|connection| connection.generation == generation)
+            .filter(|connection| connection.read_activity.is_none())
+            && let Some(health) = connection.health.as_mut()
+        {
+            health.received(now);
+        }
+    }
+
     pub fn new(local: impl EndpointTransport + 'static, generation: u64) -> Self {
         // clock-io-ok: this test-only constructor stands in for the client launch.
         Self::new_at(local, generation, Instant::now())

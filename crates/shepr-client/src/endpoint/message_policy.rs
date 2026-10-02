@@ -32,8 +32,13 @@ impl PresentationGate {
                 ServerMessage::EndpointWelcome(_)
                 | ServerMessage::EndpointSnapshot(_)
                 | ServerMessage::HealthPong
+                | ServerMessage::SurfaceUpdate(_)
                 | ServerMessage::ServerShutdown { .. },
-            ) => Apply,
+            ) => {
+                // `DecodedServerMessage::Wire` carries the shared protocol enum; pass its
+                // handshake-only and undecoded surface variants through for the loop to reject.
+                Apply
+            }
             DecodedServerMessage::PaneSurfacePatch(_)
             | DecodedServerMessage::Wire(ServerMessage::PaneSurface(_)) => match self.role {
                 Shown => Apply,

@@ -448,38 +448,64 @@ fn capture_workspace(
 // reassigns them, so two layouts can share a fingerprint while their panes
 // hold each other's scrollback. A layout names its history by the digest of
 // the history bytes its own save serialized instead.
-pub(super) fn layout_fingerprint(snapshot: &SessionSnapshot) -> Option<String> {
-    use sha2::{Digest, Sha256};
-    use std::fmt::Write as _;
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) struct LayoutFingerprint([u8; 32]);
 
-    #[derive(Serialize)]
-    struct WorkspaceLayout<'a> {
-        layout: &'a LayoutSnapshot,
-        pane_ids: Vec<u32>,
+impl LayoutFingerprint {
+    pub(super) fn from_bytes(bytes: &[u8]) -> Self {
+        Self(super::io::sha256_bytes(bytes))
     }
+}
 
-    let workspaces: Vec<_> = snapshot
-        .workspaces
-        .iter()
-        .map(|workspace| {
-            let mut pane_ids: Vec<_> = workspace.panes.keys().copied().collect();
-            pane_ids.sort_unstable();
-            WorkspaceLayout {
-                layout: &workspace.layout,
-                pane_ids,
+pub(super) fn layout_fingerprint(snapshot: &SessionSnapshot) -> Option<LayoutFingerprint> {
+    // The encoding uses tagged tree nodes and fixed-width little-endian counts,
+    // IDs, and ratios. Pane IDs are sorted, and other saved fields do not say
+    // which recovery copy's screen history belongs to each pane.
+    let mut encoding = Vec::new();
+    append_fingerprint_count(snapshot.workspaces.len(), &mut encoding)?;
+    for workspace in &snapshot.workspaces {
+        append_layout_fingerprint(&workspace.layout, &mut encoding)?;
+        let mut pane_ids: Vec<_> = workspace.panes.keys().copied().collect();
+        pane_ids.sort_unstable();
+        append_fingerprint_count(pane_ids.len(), &mut encoding)?;
+        for pane_id in pane_ids {
+            encoding.extend_from_slice(&pane_id.to_le_bytes());
+        }
+    }
+    Some(LayoutFingerprint::from_bytes(&encoding))
+}
+
+fn append_fingerprint_count(count: usize, encoding: &mut Vec<u8>) -> Option<()> {
+    encoding.extend_from_slice(&u64::try_from(count).ok()?.to_le_bytes());
+    Some(())
+}
+
+fn append_layout_fingerprint(layout: &LayoutSnapshot, encoding: &mut Vec<u8>) -> Option<()> {
+    match layout {
+        LayoutSnapshot::Pane(pane_id) => {
+            encoding.push(0);
+            encoding.extend_from_slice(&pane_id.to_le_bytes());
+        }
+        LayoutSnapshot::Split {
+            direction,
+            ratio,
+            first,
+            second,
+        } => {
+            if !ratio.is_finite() {
+                return None;
             }
-        })
-        .collect();
-    // This projection contains no maps, and pane IDs are sorted explicitly.
-    // Cwd, names, agent state, theme, and current selections do not identify
-    // which saved screen history belongs to each pane.
-    let bytes = serde_json::to_vec(&workspaces).ok()?;
-    let digest = Sha256::digest(bytes);
-    let mut hex = String::with_capacity(digest.len() * 2);
-    for byte in digest {
-        write!(hex, "{byte:02x}").ok()?;
+            encoding.push(1);
+            encoding.push(match direction {
+                DirectionSnapshot::Horizontal => 0,
+                DirectionSnapshot::Vertical => 1,
+            });
+            encoding.extend_from_slice(&ratio.to_bits().to_le_bytes());
+            append_layout_fingerprint(first, encoding)?;
+            append_layout_fingerprint(second, encoding)?;
+        }
     }
-    Some(hex)
+    Some(())
 }
 
 /// One pane's history text as a save holds it: the pieces its history cache
@@ -631,7 +657,7 @@ pub struct HistoryCarry {
     readers: HashMap<TerminalId, crate::pane::PaneHistoryCache>,
     /// The stamp of the history the last successful save wrote, with the
     /// digest its layout names it by.
-    saved: Option<(HistoryStamp, String)>,
+    saved: Option<(HistoryStamp, super::io::HistoryDigest)>,
     /// The stamp of the history resolved for the save in progress.
     resolved: Option<HistoryStamp>,
 }
@@ -663,7 +689,8 @@ impl HistoryCarry {
     /// (`None`) leaves nothing to skip against.
     pub(super) fn note_saved(&mut self, digest: Option<String>) {
         let resolved = self.resolved.take();
-        self.saved = resolved.zip(digest);
+        self.saved =
+            resolved.zip(digest.and_then(|digest| super::io::HistoryDigest::from_hex(&digest)));
     }
 
     /// The history file may not hold what the last resolution said; the next
@@ -812,7 +839,7 @@ impl PendingHistory {
             && let Some((saved, digest)) = &carry.saved
             && *saved == stamp
         {
-            let digest = digest.clone();
+            let digest = digest.to_hex();
             carry.resolved = Some(stamp);
             return ResolvedHistory::Unchanged(digest);
         }
@@ -1078,6 +1105,9 @@ mod tests {
             crate::pane::PaneRuntime::test_with_scrollback_bytes(20, 3, 4096, b"ONE\r\n"),
         );
         let mut carry = super::HistoryCarry::default();
+        let first = super::super::io::history_digest(b"first").to_hex();
+        let second = super::super::io::history_digest(b"second").to_hex();
+        let third = super::super::io::history_digest(b"third").to_hex();
         let resolve = |carry: &mut super::HistoryCarry, allow: bool| {
             super::capture_pending_history(&workspaces, &runtimes).resolve_for_save(carry, allow)
         };
@@ -1086,13 +1116,13 @@ mod tests {
             resolve(&mut carry, true),
             super::ResolvedHistory::Changed(_)
         ));
-        carry.note_saved(Some("first".into()));
+        carry.note_saved(Some(first.clone()));
         assert!(matches!(
             resolve(&mut carry, true),
-            super::ResolvedHistory::Unchanged(digest) if digest == "first"
+            super::ResolvedHistory::Unchanged(digest) if digest == first
         ));
         // An unchanged save keeps what it can skip against.
-        carry.note_saved(Some("first".into()));
+        carry.note_saved(Some(first.clone()));
         assert!(
             matches!(
                 resolve(&mut carry, false),
@@ -1100,10 +1130,10 @@ mod tests {
             ),
             "a caller that cannot skip always gets the history"
         );
-        carry.note_saved(Some("second".into()));
+        carry.note_saved(Some(second.clone()));
         assert!(matches!(
             resolve(&mut carry, true),
-            super::ResolvedHistory::Unchanged(digest) if digest == "second"
+            super::ResolvedHistory::Unchanged(digest) if digest == second
         ));
         carry.note_saved(None);
         assert!(
@@ -1113,7 +1143,7 @@ mod tests {
             ),
             "a save that wrote no history leaves nothing to skip against"
         );
-        carry.note_saved(Some("third".into()));
+        carry.note_saved(Some(third));
 
         runtimes
             .get(&terminal_id)

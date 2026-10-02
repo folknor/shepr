@@ -382,7 +382,7 @@ fn failed_selection_copy_does_not_send_terminal_input() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
     state.receive_pane_surface(surface());
-    state.selection = Some(shepr_vt::selection::Selection::range(
+    state.mouse_selection.selection = Some(shepr_vt::selection::Selection::range(
         test_pane_id("w1:p1"),
         shepr_vt::Point::new(shepr_vt::AbsRow(0), 0),
         shepr_vt::Point::new(shepr_vt::AbsRow(0), 2),
@@ -557,7 +557,12 @@ fn a_dropped_request_runs_its_rollback_and_sends_nothing() {
                     shepr_protocol::command::PaneWordMotion::NextStart,
                 ),
             ));
-            s.copy_mode.as_mut().expect("copy").copy_after_search = true;
+            s.copy_mode
+                .as_mut()
+                .expect("copy")
+                .search
+                .get_or_insert_with(ClientCopySearch::default)
+                .copy_after_result = true;
         }
         let count = s.ledger.len();
         assert!(count > 0);
@@ -581,12 +586,19 @@ fn a_dropped_request_runs_its_rollback_and_sends_nothing() {
                 ));
             }
             3 => assert!(s.scroll_lanes.is_idle()),
-            4 => assert!(s.word_selection_gesture.is_none()),
+            4 => assert!(s.mouse_selection.word_gesture.is_none()),
             5 | 6 => {
                 assert!(!s.copy_pipeline.in_flight());
                 assert!(s.copy_pipeline.ops_is_empty());
                 assert!(s.copy_pipeline.keys_is_empty());
-                assert!(!s.copy_mode.as_ref().expect("copy").copy_after_search);
+                assert!(
+                    !s.copy_mode
+                        .as_ref()
+                        .expect("copy")
+                        .search
+                        .as_ref()
+                        .is_some_and(|search| search.copy_after_result)
+                );
             }
             _ => {}
         }
@@ -725,7 +737,7 @@ fn a_word_selection_answer_for_a_replaced_gesture_is_ignored() {
         }),
     );
     assert!(!out.repaint);
-    assert!(s.selection.is_none());
+    assert!(s.mouse_selection.selection.is_none());
     assert!(!s.drop_word_selection(&old.into()));
     assert!(s.drop_word_selection(&current.into()));
 }
@@ -767,7 +779,7 @@ fn a_projection_reset_drops_every_request_with_its_feature_state() {
     assert!(!s.copy_pipeline.in_flight());
     assert!(s.copy_pipeline.ops_is_empty());
     assert!(s.copy_pipeline.keys_is_empty());
-    assert!(s.word_selection_gesture.is_none());
+    assert!(s.mouse_selection.word_gesture.is_none());
     assert!(s.overlay.is_none());
     assert!(s.pending_workspace_highlight.is_none());
     assert!(s.visible_endpoint_notice.is_none());

@@ -33,7 +33,7 @@ impl ClientShellState {
         outcome: &mut ClientShellInput,
     ) {
         let row = metrics.absolute_row_at_viewport(shepr_vt::ViewportRow(viewport_row));
-        self.word_selection_gesture = Some(ClientWordSelection {
+        self.mouse_selection.word_gesture = Some(ClientWordSelection {
             pane_id: hit.pane_id.clone(),
             focus_confirmed: self
                 .snapshot
@@ -53,9 +53,7 @@ impl ClientShellState {
     }
 
     fn cancel_word_selection(&mut self) {
-        self.word_selection_gesture = None;
-        self.selection = None;
-        self.stop_selection_autoscroll();
+        self.mouse_selection.clear_range();
     }
 
     fn request_word_selection_row(
@@ -63,7 +61,7 @@ impl ClientShellState {
         row: shepr_vt::AbsRow,
         outcome: &mut ClientShellInput,
     ) {
-        let Some(gesture) = self.word_selection_gesture.as_mut() else {
+        let Some(gesture) = self.mouse_selection.word_gesture.as_mut() else {
             return;
         };
         if gesture.pending.is_some() {
@@ -83,7 +81,7 @@ impl ClientShellState {
             Work::WordSelection { pane_id, row },
             outcome,
         ) {
-            if let Some(gesture) = self.word_selection_gesture.as_mut() {
+            if let Some(gesture) = self.mouse_selection.word_gesture.as_mut() {
                 gesture.pending = Some(id);
             }
         } else {
@@ -97,7 +95,7 @@ impl ClientShellState {
         outcome: &mut ClientShellInput,
         now: std::time::Instant,
     ) {
-        let Some(gesture) = self.word_selection_gesture.as_mut() else {
+        let Some(gesture) = self.mouse_selection.word_gesture.as_mut() else {
             return;
         };
         if gesture.released || gesture.cursor == cursor {
@@ -114,7 +112,7 @@ impl ClientShellState {
         now: std::time::Instant,
     ) {
         self.stop_selection_autoscroll();
-        if let Some(gesture) = self.word_selection_gesture.as_mut() {
+        if let Some(gesture) = self.mouse_selection.word_gesture.as_mut() {
             gesture.released = true;
         }
         // A pending row reply will finish the selection if its bounds are not ready yet.
@@ -122,7 +120,7 @@ impl ClientShellState {
     }
 
     fn update_word_selection(&mut self, outcome: &mut ClientShellInput, now: std::time::Instant) {
-        let Some(gesture) = self.word_selection_gesture.as_ref() else {
+        let Some(gesture) = self.mouse_selection.word_gesture.as_ref() else {
             return;
         };
         let Some((anchor_start, anchor_end)) = gesture.anchor_bounds else {
@@ -140,23 +138,23 @@ impl ClientShellState {
             .unwrap_or((gesture.cursor.1, gesture.cursor.1));
         let start = (gesture.anchor.0, anchor_start).min((gesture.cursor.0, start_col));
         let end = (gesture.anchor.0, anchor_end).max((gesture.cursor.0, end_col));
-        self.selection = Some(shepr_vt::selection::Selection::range(
+        self.mouse_selection.selection = Some(shepr_vt::selection::Selection::range(
             gesture.pane_id.clone(),
             shepr_vt::Point::new(start.0, start.1),
             shepr_vt::Point::new(end.0, end.1),
         ));
         if gesture.released {
             let dragged = gesture.dragged;
-            if let Some(selection) = self.selection.as_mut() {
+            if let Some(selection) = self.mouse_selection.selection.as_mut() {
                 selection.finish();
             }
-            self.word_selection_gesture = None;
+            self.mouse_selection.word_gesture = None;
             if self.config.copy_on_select {
                 self.request_selection_copy(outcome);
                 if dragged {
-                    self.selection = None;
+                    self.mouse_selection.clear_range();
                 } else {
-                    self.selection_highlight_clear_deadline = Some(
+                    self.mouse_selection.highlight_clear_deadline = Some(
                         crate::limits::Deadline::after(
                             now,
                             crate::limits::WORD_SELECTION_HIGHLIGHT_TIMEOUT,
@@ -171,7 +169,8 @@ impl ClientShellState {
 
     pub(super) fn drop_word_selection(&mut self, request: &shepr_protocol::RequestId) -> bool {
         if self
-            .word_selection_gesture
+            .mouse_selection
+            .word_gesture
             .as_ref()
             .is_some_and(|g| g.pending.as_ref() == Some(request))
         {
@@ -192,7 +191,8 @@ impl ClientShellState {
         outcome: &mut ClientShellInput,
     ) -> bool {
         if self
-            .word_selection_gesture
+            .mouse_selection
+            .word_gesture
             .as_ref()
             .is_none_or(|g| g.pending.as_ref() != Some(request))
         {
@@ -223,7 +223,7 @@ impl ClientShellState {
                 return true;
             }
         };
-        let Some(gesture) = self.word_selection_gesture.as_mut() else {
+        let Some(gesture) = self.mouse_selection.word_gesture.as_mut() else {
             return false;
         };
         gesture.pending = None;

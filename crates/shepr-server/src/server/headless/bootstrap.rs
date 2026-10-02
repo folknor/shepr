@@ -100,9 +100,9 @@ pub fn run_server(
 ) -> Result<(), RunServerError> {
     let socket = paths.server_address().socket().to_path_buf();
 
-    // The startup-cwd hint stays in this process's environment; every child
-    // launch path scrubs it instead of the server unsetting it here.
-    let startup_cwd = read_startup_cwd();
+    // AppPaths validated and retained the one-time startup handoff. Pane
+    // launches scrub it from their child environments.
+    let startup_cwd = paths.startup_cwd().map(std::path::Path::to_path_buf);
 
     let data_dir = paths.data_dir();
 
@@ -249,26 +249,6 @@ fn seed_startup_workspace_if_empty(app: &mut app::App, startup_cwd: Option<PathB
     }
 }
 
-/// Read the startup-cwd hint the spawning client left in the environment.
-/// Pane launches and `shepr_platform::child_command` remove the handoff
-/// variable from their child environments.
-fn read_startup_cwd() -> Option<PathBuf> {
-    let var = shepr_core::env::EnvVar::SheprStartupCwd;
-    startup_cwd_from_env_value(shepr_core::env::read_path(var))
-}
-
-/// The startup cwd a handoff read produced. The variable is carried byte for
-/// byte, so only empty (unset) is ever absent; a refusal cannot happen for this
-/// kind, and would only mean no startup workspace.
-fn startup_cwd_from_env_value(
-    value: Result<Option<PathBuf>, shepr_core::env::EnvError>,
-) -> Option<PathBuf> {
-    value.unwrap_or_else(|error| {
-        warn!(%error, "ignoring the startup directory hint");
-        None
-    })
-}
-
 /// Classifies a socket bind failure. A platform busy refusal means another
 /// server owns the path; any other error, including an unrelated `AddrInUse`,
 /// stays an IO failure. The refusal is recorded in the server log as well: a
@@ -371,36 +351,5 @@ mod startup_tests {
                 .expect("stat the socket"),
             "dropping the server removes its socket"
         );
-    }
-
-    fn resolve(raw: &std::ffi::OsStr) -> Option<PathBuf> {
-        startup_cwd_from_env_value(shepr_core::env::resolve_path(
-            shepr_core::env::EnvVar::SheprStartupCwd,
-            Some(raw),
-        ))
-    }
-
-    #[test]
-    fn empty_startup_cwd_is_ignored() {
-        assert_eq!(resolve(std::ffi::OsStr::new("")), None);
-    }
-
-    #[test]
-    fn startup_cwd_value_becomes_path() {
-        assert_eq!(
-            resolve(std::ffi::OsStr::new("/srv/project")),
-            Some(PathBuf::from("/srv/project"))
-        );
-    }
-
-    #[test]
-    fn startup_cwd_is_carried_byte_for_byte() {
-        use std::os::unix::ffi::OsStrExt as _;
-        for raw in [
-            std::ffi::OsStr::from_bytes(b"/srv/caf\xe9"),
-            std::ffi::OsStr::new("/srv/trailing space "),
-        ] {
-            assert_eq!(resolve(raw), Some(PathBuf::from(raw)));
-        }
     }
 }

@@ -25,7 +25,6 @@ mod errors;
 mod events;
 mod fatal_panic;
 mod handshake;
-pub(crate) mod host_replies;
 mod input;
 pub(crate) mod input_wire;
 mod limits;
@@ -220,11 +219,11 @@ fn run_launched_client(
     // first; the terminal is restored before the binary prints anything. A
     // restoration that panics is not retried: the restorer is what failed.
     should_quit.store(true, Ordering::Release);
-    let terminal_restore_failed = terminal_slot.take().is_some_and(|guard| {
-        fatal
-            .guard(|| guard.restore())
-            .is_none_or(|restored| restored.is_err())
-    });
+    if let Some(guard) = terminal_slot.take() {
+        // Each failed restoration step is logged by the restorer. It does not change
+        // whether a lost server session was a failure.
+        let _ = fatal.guard(|| guard.restore());
+    }
     if let Some(rt) = runtime_slot.take() {
         fatal.guard(|| rt.shutdown_timeout(limits::CLIENT_RUNTIME_SHUTDOWN_TIMEOUT));
     }
@@ -254,10 +253,8 @@ fn run_launched_client(
         return Ok(ClientExit::new(None));
     };
     let graceful_shutdown = matches!(&err, ClientError::ServerShutdown { .. });
-    let connection_lost_during_terminal_hangup =
-        terminal_restore_failed && matches!(&err, ClientError::ConnectionLost(_));
     let exit = ClientExit::new(Some(err.to_string()));
-    if graceful_shutdown || connection_lost_during_terminal_hangup {
+    if graceful_shutdown {
         Ok(exit)
     } else {
         Err(ClientRunError::Session(exit))
@@ -928,7 +925,6 @@ impl ClientLoop {
         if !write_stream.accepts(endpoint_id, generation) {
             return Ok(ClientLoopAction::NextEvent);
         }
-        write_stream.received(endpoint_id, generation, now);
         let role = state.choice.role(endpoint_id);
         let move_response = match message.as_ref() {
             DecodedServerMessage::Wire(ServerMessage::ClientShellEndpointResponse {
@@ -1198,7 +1194,7 @@ impl ClientLoop {
                     )
                     .map_err(ClientError::HostTerminal)?;
             }
-            ServerMessage::HealthPong | ServerMessage::EndpointWelcome(_) => {
+            ServerMessage::HealthPong => {
                 return Ok(ClientLoopAction::NextEvent);
             }
             ServerMessage::EndpointSnapshot(snapshot) => {
@@ -1217,21 +1213,21 @@ impl ClientLoop {
                 {
                     pending.receive_snapshot(endpoint_id, generation, &snapshot);
                 }
-                install_client_shell_snapshot(state, endpoint_id, snapshot, role, write_stream)?;
+                install_client_shell_snapshot(state, endpoint_id, snapshot, role, write_stream);
                 write_stream.mark_ready(endpoint_id, generation);
             }
-            ServerMessage::SurfaceUpdate(_) => {
+            ServerMessage::EndpointWelcome(_) | ServerMessage::SurfaceUpdate(_) => {
                 tracing::error!(
                     endpoint = %endpoint_id.storage_key(),
                     generation,
-                    "surface update reached presentation before decoding; failing its connection"
+                    "handshake-only or undecoded surface message reached the client loop; failing its connection"
                 );
                 write_stream.fail(
                     endpoint_id,
                     &io::Error::new(
                         io::ErrorKind::InvalidData,
                         shepr_remote::EndpointFailure::incompatible(
-                            "protocol error: surface update reached presentation before decoding",
+                            "protocol error: unexpected message after endpoint handshake",
                         ),
                     ),
                 );

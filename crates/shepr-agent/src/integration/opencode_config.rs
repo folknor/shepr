@@ -200,15 +200,8 @@ pub(crate) fn cli_plugin_is_configured(config_dir: &Path, plugin_spec: &str) -> 
 }
 
 fn plugin_is_configured(config_path: &Path, key: &str, plugin_spec: &str) -> io::Result<bool> {
-    let content = match fs::read_to_string(config_path) {
-        Ok(content) => content,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
-        Err(error) => {
-            return Err(io::Error::new(
-                error.kind(),
-                format!("cannot read {}: {error}", config_path.display()),
-            ));
-        }
+    let Some(content) = read_if_file(config_path)? else {
+        return Ok(false);
     };
     let root = parse_root(&content, config_path)?;
     let object = root_object(&root, config_path)?;

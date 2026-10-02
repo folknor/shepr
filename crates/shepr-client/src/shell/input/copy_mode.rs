@@ -10,6 +10,12 @@ use crossterm::event::{KeyCode, KeyModifiers};
 /// prunes evicted search matches. The viewport is addressed by scroll offsets,
 /// so these convert.
 impl ClientCopyModeState {
+    /// Whether this stored copy session's pane currently owns focus.
+    /// The caller still decides whether a focused session is active input mode.
+    pub(in crate::shell) fn pane_is_focused(&self, focused_pane_id: Option<&str>) -> bool {
+        focused_pane_id == Some(self.pane_id.as_str())
+    }
+
     /// The row at the top of the pane's viewport.
     pub(super) fn viewport_top(&self) -> shepr_vt::AbsRow {
         let from_origin = self
@@ -216,17 +222,23 @@ impl ClientShellState {
         // Buffered keys depend on a result that will never be applied. Discard them rather
         // than replaying exits, new motions or pane input into a frozen presentation.
         self.copy_pipeline.reset();
-        if let Some(copy) = self.copy_mode.as_mut() {
-            copy.copy_after_search = false;
+        if let Some(search) = self
+            .copy_mode
+            .as_mut()
+            .and_then(|copy_mode| copy_mode.search.as_mut())
+        {
+            search.copy_after_result = false;
         }
         true
     }
 
+    /// Copy accepts input only when its explicit mode is active, no overlay
+    /// intercepts it, and the stored session still belongs to the focused pane.
     pub(super) fn copy_mode_owns_input(&self) -> bool {
         self.mode == ClientShellMode::Copy
             && self.overlay.is_none()
             && self.copy_mode.as_ref().is_some_and(|copy_mode| {
-                self.focused_pane_id().as_deref() == Some(copy_mode.pane_id.as_str())
+                copy_mode.pane_is_focused(self.focused_pane_id().as_deref())
             })
     }
 
@@ -244,7 +256,11 @@ impl ClientShellState {
         let Some(copy_mode) = self.copy_mode.as_ref() else {
             return false;
         };
-        if copy_mode.search_prompt.is_some() {
+        if copy_mode
+            .search
+            .as_ref()
+            .is_some_and(|search| search.prompt.is_some())
+        {
             return false;
         }
         shepr_config::terminal_key_matches_combo(key, self.config.keybinds.prefix)
@@ -256,8 +272,10 @@ impl ClientShellState {
     /// copy session and is ignored.
     pub(super) fn abandon_copy_operation(&mut self) {
         self.reset_copy_pipeline();
-        if let Some(copy_mode) = self.copy_mode.as_mut() {
-            copy_mode.copy_after_search = false;
+        if let Some(copy_mode) = self.copy_mode.as_mut()
+            && let Some(search) = copy_mode.search.as_mut()
+        {
+            search.copy_after_result = false;
         }
     }
 
@@ -320,9 +338,7 @@ impl ClientShellState {
                 )),
                 col: 0,
             });
-        self.selection = None;
-        self.stop_selection_autoscroll();
-        self.selection_highlight_clear_deadline = None;
+        self.mouse_selection.clear();
         self.reset_copy_pipeline();
         let alternate_screen_active = self
             .pane_surface()
@@ -338,15 +354,8 @@ impl ClientShellState {
             max_offset_from_bottom: metrics.max_offset_from_bottom,
             entry_offset_from_bottom: metrics.offset_from_bottom,
             selection: None,
-            search_prompt: None,
-            search_query: TypedText::default(),
-            search_direction: None,
-            search_matches: Vec::new(),
-            search_total: 0,
-            search_current: None,
-            search_current_global: None,
-            search_generation: 0,
-            copy_after_search: false,
+            search: None,
+            operation_generation: 0,
         });
         self.mode = ClientShellMode::Copy;
         true
@@ -364,23 +373,20 @@ impl ClientShellState {
             KeyCode::Esc => {
                 let should_clear = self.copy_mode.as_ref().is_some_and(|copy_mode| {
                     copy_mode.selection.is_some()
-                        || !copy_mode.search_query.is_empty()
-                        || !copy_mode.search_matches.is_empty()
-                        || copy_mode.search_direction.is_some()
+                        || copy_mode.search.as_ref().is_some_and(|search| {
+                            !search.query.is_empty()
+                                || !search.matches.is_empty()
+                                || search.direction.is_some()
+                        })
                 });
                 if should_clear {
                     if let Some(copy_mode) = self.copy_mode.as_mut() {
                         copy_mode.selection = None;
-                        copy_mode.search_query.clear();
-                        copy_mode.search_direction = None;
-                        copy_mode.search_matches.clear();
-                        copy_mode.search_total = 0;
-                        copy_mode.search_current = None;
-                        copy_mode.search_current_global = None;
-                        copy_mode.search_generation = copy_mode.search_generation.saturating_add(1);
-                        copy_mode.copy_after_search = false;
+                        copy_mode.operation_generation =
+                            copy_mode.operation_generation.saturating_add(1);
+                        copy_mode.search = None;
                     }
-                    self.selection = None;
+                    self.mouse_selection.clear();
                 } else {
                     self.exit_copy_mode(false, outcome);
                 }
@@ -569,7 +575,8 @@ impl ClientShellState {
         let Some(prompt) = self
             .copy_mode
             .as_ref()
-            .and_then(|copy_mode| copy_mode.search_prompt.as_ref())
+            .and_then(|copy_mode| copy_mode.search.as_ref())
+            .and_then(|search| search.prompt.as_ref())
         else {
             return false;
         };
@@ -577,20 +584,33 @@ impl ClientShellState {
         match key.code {
             KeyCode::Esc => {
                 if let Some(copy_mode) = self.copy_mode.as_mut() {
-                    copy_mode.search_prompt = None;
+                    let discard_search = if let Some(search) = copy_mode.search.as_mut() {
+                        search.prompt = None;
+                        search.query.is_empty()
+                            && search.direction.is_none()
+                            && search.matches.is_empty()
+                    } else {
+                        false
+                    };
+                    if discard_search {
+                        copy_mode.search = None;
+                    }
                 }
             }
             KeyCode::Enter => {
                 submit = Some((prompt.query.to_string(), prompt.direction));
-                if let Some(copy_mode) = self.copy_mode.as_mut() {
-                    copy_mode.search_prompt = None;
+                if let Some(copy_mode) = self.copy_mode.as_mut()
+                    && let Some(search) = copy_mode.search.as_mut()
+                {
+                    search.prompt = None;
                 }
             }
             _ => {
                 if let Some(prompt) = self
                     .copy_mode
                     .as_mut()
-                    .and_then(|copy_mode| copy_mode.search_prompt.as_mut())
+                    .and_then(|copy_mode| copy_mode.search.as_mut())
+                    .and_then(|search| search.prompt.as_mut())
                 {
                     prompt.query.handle_key(key);
                 }
@@ -604,13 +624,14 @@ impl ClientShellState {
     }
 
     pub(super) fn insert_copy_search_text(&mut self, text: &str) -> bool {
-        if self.mode != ClientShellMode::Copy || self.overlay.is_some() {
+        if !self.copy_mode_owns_input() {
             return false;
         }
         let Some(prompt) = self
             .copy_mode
             .as_mut()
-            .and_then(|copy_mode| copy_mode.search_prompt.as_mut())
+            .and_then(|copy_mode| copy_mode.search.as_mut())
+            .and_then(|search| search.prompt.as_mut())
         else {
             return false;
         };
@@ -622,7 +643,10 @@ impl ClientShellState {
         let Some(copy_mode) = self.copy_mode.as_mut() else {
             return;
         };
-        copy_mode.search_prompt = Some(ClientCopySearchPrompt {
+        copy_mode
+            .search
+            .get_or_insert_with(ClientCopySearch::default)
+            .prompt = Some(ClientCopySearchPrompt {
             direction,
             query: TextEditor::default(),
         });
@@ -632,10 +656,13 @@ impl ClientShellState {
         let Some(copy_mode) = self.copy_mode.as_ref() else {
             return;
         };
-        if copy_mode.search_query.is_empty() {
+        let Some(search) = copy_mode.search.as_ref() else {
+            return;
+        };
+        if search.query.is_empty() {
             return;
         }
-        let Some(direction) = copy_mode.search_direction else {
+        let Some(direction) = search.direction else {
             return;
         };
         let direction = if reverse {
@@ -650,7 +677,8 @@ impl ClientShellState {
         } else {
             direction
         };
-        self.request_copy_search(copy_mode.search_query.clone(), direction, true, outcome);
+        let query = search.query.clone();
+        self.request_copy_search(query, direction, true, outcome);
     }
 
     fn defer_copy_until_search_result(&mut self) -> bool {
@@ -658,7 +686,7 @@ impl ClientShellState {
             return false;
         };
         let pane_id = copy_mode.pane_id.clone();
-        let generation = copy_mode.search_generation;
+        let generation = copy_mode.operation_generation;
         // Only the awaited request counts: a search an earlier session abandoned is still
         // in the ledger, but its answer will be ignored.
         let pending = self
@@ -676,8 +704,13 @@ impl ClientShellState {
                 )
             })
             || self.copy_pipeline.has_queued_search();
-        if pending && let Some(copy_mode) = self.copy_mode.as_mut() {
-            copy_mode.copy_after_search = true;
+        if pending
+            && let Some(search) = self
+                .copy_mode
+                .as_mut()
+                .and_then(|copy_mode| copy_mode.search.as_mut())
+        {
+            search.copy_after_result = true;
         }
         pending
     }
@@ -691,6 +724,11 @@ impl ClientShellState {
     ) {
         if query.is_empty() || self.copy_mode.is_none() {
             return;
+        }
+        if let Some(copy_mode) = self.copy_mode.as_mut() {
+            copy_mode
+                .search
+                .get_or_insert_with(ClientCopySearch::default);
         }
         self.copy_pipeline.push_op(ClientCopyOperation::Search {
             query,
@@ -717,24 +755,27 @@ impl ClientShellState {
         };
         if copy_mode.pane_id != pane_id
             || copy_mode.cursor != origin
-            || copy_mode.search_generation != generation
+            || copy_mode.operation_generation != generation
         {
             return false;
         }
+        let Some(search) = copy_mode.search.as_mut() else {
+            return false;
+        };
         let current = result.current.filter(|index| *index < result.matches.len());
-        copy_mode.search_query = query;
+        search.query = query;
         if !repeat {
-            copy_mode.search_direction = Some(direction);
+            search.direction = Some(direction);
         }
-        copy_mode.search_matches = result.matches;
-        copy_mode.search_total = result.total;
-        copy_mode.search_current = current;
-        copy_mode.search_current_global = result.current_global;
-        let target = current.and_then(|index| copy_mode.search_matches.get(index).copied());
+        search.matches = result.matches;
+        search.total = result.total;
+        search.current = current;
+        search.current_global = result.current_global;
+        let target = current.and_then(|index| search.matches.get(index).copied());
         let copy_after_search = if search_queued {
             false
         } else {
-            std::mem::take(&mut copy_mode.copy_after_search)
+            std::mem::take(&mut search.copy_after_result)
         };
         if let Some(target) = target {
             copy_mode.cursor = target.start;
@@ -794,12 +835,13 @@ impl ClientShellState {
     }
 
     pub(super) fn cancel_deferred_copy_after_search(&mut self, generation: u64) {
-        if let Some(copy_mode) = self
+        if let Some(search) = self
             .copy_mode
             .as_mut()
-            .filter(|copy_mode| copy_mode.search_generation == generation)
+            .filter(|copy_mode| copy_mode.operation_generation == generation)
+            .and_then(|copy_mode| copy_mode.search.as_mut())
         {
-            copy_mode.copy_after_search = false;
+            search.copy_after_result = false;
         }
     }
 
@@ -950,7 +992,7 @@ impl ClientShellState {
         let row = copy_mode.cursor.row;
         if linewise {
             copy_mode.selection = Some(ClientCopySelection::Linewise { anchor_row: row });
-            self.selection = Some(shepr_vt::selection::Selection::line_range(
+            self.mouse_selection.selection = Some(shepr_vt::selection::Selection::line_range(
                 copy_mode.pane_id.clone(),
                 row,
                 row,
@@ -960,13 +1002,15 @@ impl ClientShellState {
             copy_mode.selection = Some(ClientCopySelection::Character {
                 anchor: shepr_vt::Point::new(row, copy_mode.cursor.col),
             });
-            self.selection = Some(shepr_vt::selection::Selection::anchor(
+            self.mouse_selection.selection = Some(shepr_vt::selection::Selection::anchor(
                 copy_mode.pane_id.clone(),
                 shepr_vt::Point::new(row, copy_mode.cursor.col),
             ));
         }
     }
 
+    /// Project the copy selection's anchor and shape onto its current cursor range.
+    /// The VT selection is the visible range; the copy state retains the anchor.
     pub(super) fn sync_copy_selection(&mut self) {
         let Some(copy_mode) = self.copy_mode.as_ref() else {
             return;
@@ -974,7 +1018,7 @@ impl ClientShellState {
         let Some(selection) = copy_mode.selection else {
             return;
         };
-        self.selection = Some(match selection {
+        self.mouse_selection.selection = Some(match selection {
             ClientCopySelection::Character { anchor } => shepr_vt::selection::Selection::range(
                 copy_mode.pane_id.clone(),
                 anchor,
@@ -1036,13 +1080,17 @@ impl ClientShellState {
                     if query.is_empty() {
                         continue;
                     }
-                    copy_mode.search_generation = copy_mode.search_generation.saturating_add(1);
-                    let generation = copy_mode.search_generation;
+                    copy_mode.operation_generation =
+                        copy_mode.operation_generation.saturating_add(1);
+                    let generation = copy_mode.operation_generation;
+                    let search = copy_mode
+                        .search
+                        .get_or_insert_with(ClientCopySearch::default);
                     let previous = repeat
                         .then(|| {
-                            copy_mode
-                                .search_current
-                                .and_then(|index| copy_mode.search_matches.get(index).copied())
+                            search
+                                .current
+                                .and_then(|index| search.matches.get(index).copied())
                                 .filter(|text_match| text_match.start == copy_mode.cursor)
                         })
                         .flatten();
@@ -1071,8 +1119,12 @@ impl ClientShellState {
                 self.copy_pipeline.begin(id);
             } else {
                 self.copy_pipeline.clear_ops();
-                if let Some(copy) = self.copy_mode.as_mut() {
-                    copy.copy_after_search = false;
+                if let Some(search) = self
+                    .copy_mode
+                    .as_mut()
+                    .and_then(|copy_mode| copy_mode.search.as_mut())
+                {
+                    search.copy_after_result = false;
                 }
             }
             return;
@@ -1101,6 +1153,7 @@ impl ClientShellState {
 
     pub(super) fn exit_copy_mode(&mut self, copy: bool, outcome: &mut ClientShellInput) {
         let live_selection = self
+            .mouse_selection
             .selection
             .as_ref()
             .is_some_and(shepr_vt::selection::Selection::is_visible);
@@ -1108,12 +1161,17 @@ impl ClientShellState {
             && !live_selection
             && let Some((pane_id, text_match)) = self.copy_mode.as_ref().and_then(|copy_mode| {
                 copy_mode
-                    .search_current
-                    .and_then(|index| copy_mode.search_matches.get(index).copied())
+                    .search
+                    .as_ref()
+                    .and_then(|search| {
+                        search
+                            .current
+                            .and_then(|index| search.matches.get(index).copied())
+                    })
                     .map(|text_match| (copy_mode.pane_id.clone(), text_match))
             })
         {
-            self.selection = Some(shepr_vt::selection::Selection::range(
+            self.mouse_selection.selection = Some(shepr_vt::selection::Selection::range(
                 pane_id,
                 shepr_vt::Point::new(text_match.start.row, text_match.start.col),
                 shepr_vt::Point::new(text_match.end.row, text_match.end.col),
@@ -1125,14 +1183,14 @@ impl ClientShellState {
         self.reset_copy_pipeline();
         if copy
             && self
+                .mouse_selection
                 .selection
                 .as_ref()
                 .is_some_and(shepr_vt::selection::Selection::is_visible)
         {
             self.request_selection_copy(outcome);
         }
-        self.selection = None;
-        self.selection_highlight_clear_deadline = None;
+        self.mouse_selection.clear();
         self.push_pane_scroll_offset(
             copy_mode.pane_id,
             copy_mode.entry_offset_from_bottom,

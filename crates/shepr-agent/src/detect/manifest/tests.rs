@@ -29,14 +29,13 @@ id = "codex"
 /// behaviour tests never read or change the process-wide bundled set that
 /// other tests in the same process see.
 struct TestManifests {
-    loaded: LoadedManifest,
+    loaded: CompiledManifest,
 }
 
 impl TestManifests {
     fn new(content: &str) -> Self {
-        let manifest = parse_manifest(content).expect("test precondition");
         Self {
-            loaded: loaded_manifest(manifest).expect("test precondition"),
+            loaded: parse_manifest(content).expect("test precondition"),
         }
     }
 
@@ -65,21 +64,18 @@ fn screen_input(screen: &str) -> DetectionInput<'_> {
     }
 }
 
-fn synthetic_loaded(rules: &str) -> LoadedManifest {
-    let manifest = parse_manifest(&rules_manifest(rules)).expect("test precondition");
-    loaded_manifest(manifest).expect("test precondition")
+fn synthetic_loaded(rules: &str) -> CompiledManifest {
+    parse_manifest(&rules_manifest(rules)).expect("test precondition")
 }
 
-fn detect_loaded(loaded: &LoadedManifest, input: DetectionInput<'_>) -> Option<String> {
+fn detect_loaded(loaded: &CompiledManifest, input: DetectionInput<'_>) -> Option<String> {
     let mut texts = RegionTexts::new(input);
     loaded
         .priority_order
         .iter()
         .copied()
-        .find(|&index| {
-            compiled_rule_matches(&loaded.compiled_rules[index], &loaded.regions, &mut texts)
-        })
-        .map(|index| loaded.manifest.rules[index].id.clone())
+        .find(|&index| compiled_rule_matches(&loaded.rules[index], &loaded.regions, &mut texts))
+        .map(|index| loaded.rules[index].id.clone())
 }
 
 #[test]
@@ -132,6 +128,19 @@ regex = ['low']
         detect_loaded(&loaded, screen_input("shared")).as_deref(),
         Some("first_tie")
     );
+    let higher_priority =
+        explain_loaded_manifest(Agent::Codex, screen_input("shared\nhigh"), &loaded);
+    assert_eq!(
+        higher_priority
+            .matched_rule
+            .as_ref()
+            .map(|rule| rule.id.as_str()),
+        Some("high")
+    );
+    assert_eq!(
+        higher_priority.evaluated_rules[2].evidence.contains,
+        vec!["HIGH".to_string()]
+    );
 }
 
 #[test]
@@ -157,15 +166,12 @@ regex = ['z']
 "#,
     );
     assert_eq!(loaded.regions.len(), 2);
-    assert_eq!(
-        loaded.compiled_rules[0].region,
-        loaded.compiled_rules[1].region
-    );
-    let bottom = &loaded.regions[loaded.compiled_rules[0].region];
-    let whole = &loaded.regions[loaded.compiled_rules[2].region];
+    assert_eq!(loaded.rules[0].region_index, loaded.rules[1].region_index);
+    let bottom = &loaded.regions[loaded.rules[0].region_index];
+    let whole = &loaded.regions[loaded.rules[2].region_index];
     assert_eq!(bottom.spec, RegionSpec::BottomNonEmptyLines(2));
     assert_eq!(whole.spec, RegionSpec::WholeRecent);
-    let contains = &loaded.compiled_rules[1].gate.contains[0];
+    let contains = &loaded.rules[1].gate.contains[0];
     assert!(contains.matches("Y"));
     assert!(!contains.matches("x"));
 }
@@ -255,9 +261,8 @@ all = [{ region = "bottom_lines", contains = ["y"] }]
     );
 }
 
-fn bundled_loaded(agent: Agent) -> LoadedManifest {
-    bundled_loaded_manifest(agent, bundled_manifest(agent).expect("test precondition"))
-        .expect("test precondition")
+fn bundled_loaded(agent: Agent) -> CompiledManifest {
+    bundled_manifest(agent).expect("test precondition")
 }
 
 #[test]
@@ -416,14 +421,14 @@ line_regex = ["^exact line$", "^before$"]
 #[test]
 fn bundled_manifests_compile_once_and_are_shared_across_threads() {
     let first = loaded(Agent::Claude).expect("claude has a bundled manifest");
-    assert!(!first.compiled_rules.is_empty());
+    assert!(!first.rules.is_empty());
     std::thread::scope(|scope| {
         for _ in 0..4 {
             scope.spawn(move || {
                 let again = loaded(Agent::Claude).expect("claude has a bundled manifest");
                 assert_eq!(
-                    first.compiled_rules.as_ptr(),
-                    again.compiled_rules.as_ptr(),
+                    first.rules.as_ptr(),
+                    again.rules.as_ptr(),
                     "every caller must share one compiled rule set and its regex search caches"
                 );
             });
@@ -557,32 +562,32 @@ fn screen_regions_extract_structure_without_classifying_agent_state() {
     for (screen, spec, expected) in [
         (
             "before\n› input\nafter\n",
-            "after_last_prompt_marker",
+            "codex_after_last_prompt_marker",
             "after\n",
         ),
         (
             "before\n› input\nafter\n",
-            "before_current_prompt_marker",
+            "codex_before_current_prompt_marker",
             "before\n",
         ),
         (
             "before\n› input\nafter\n",
-            "whole_recent_without_current_prompt_marker",
+            "codex_whole_recent_without_current_prompt_marker",
             "",
         ),
         (
             "no marker\n",
-            "whole_recent_without_current_prompt_marker",
+            "codex_whole_recent_without_current_prompt_marker",
             "no marker\n",
         ),
         (
             "above\n\n───\nbody\n───\nfooter\n",
-            "last_non_empty_above_prompt_box",
+            "claude_last_non_empty_above_prompt_box",
             "above",
         ),
         (
             "above\n───\nbody\n───\nfooter\n",
-            "prompt_box_body",
+            "claude_prompt_box_body",
             "body\n",
         ),
         (
@@ -623,9 +628,7 @@ fn all_bundled_manifests_parse_validate_and_compile() {
         );
         let manifest = parse_bundled_manifest(key, content)
             .unwrap_or_else(|error| panic!("bundled {key} manifest: {error}"));
-        if let Err(error) = loaded_manifest(manifest) {
-            panic!("bundled {key} manifest could not be compiled: {error}");
-        }
+        assert!(!manifest.rules.is_empty(), "bundled {key} has no rules");
     }
     assert!(parse_bundled_manifest("claude", &local_manifest("idle", "x")).is_err());
 }
@@ -835,11 +838,11 @@ fn top_non_empty_lines_uses_top_occurrence_for_repeated_text() {
 #[test]
 fn manifest_validation_rejects_invalid_counted_line_regions() {
     for name in ["bottom_non_empty_lines", "top_non_empty_lines"] {
-        assert!(validate_region_name(&format!("{name}(1)")).is_ok());
-        assert!(validate_region_name(&format!("{name}({})", u16::MAX)).is_ok());
+        assert!(RegionSpec::parse(&format!("{name}(1)")).is_some());
+        assert!(RegionSpec::parse(&format!("{name}({})", u16::MAX)).is_some());
         for count in ["0", "00", "01", "+1", "65536", "999999999999999999999999"] {
             assert!(
-                validate_region_name(&format!("{name}({count})")).is_err(),
+                RegionSpec::parse(&format!("{name}({count})")).is_none(),
                 "{name} accepted invalid count {count}"
             );
         }

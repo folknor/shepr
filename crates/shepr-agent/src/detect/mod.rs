@@ -114,25 +114,20 @@ pub fn identify_agent_in_job(job: &ForegroundJob) -> Option<(Agent, String)> {
         .processes
         .iter()
         .find(|process| process.pid == job.process_group_id)
+        && let Some(identified) = identify_process(process)
     {
-        let candidate = normalized_process_name(process);
-        if let Some(agent) = identify_agent(&candidate)
-            && (agent != Agent::Letta || is_interactive_letta_process(process))
-        {
-            return Some((agent, candidate));
-        }
+        return Some(identified);
     }
 
     let mut best: Option<(ProcessPriority, Agent, String)> = None;
 
     for process in &job.processes {
-        let candidate = normalized_process_name(process);
-        let Some(agent) = identify_agent(&candidate) else {
-            continue;
-        };
-        if agent == Agent::Letta && !is_interactive_letta_process(process) {
+        if process.pid == job.process_group_id {
             continue;
         }
+        let Some((agent, candidate)) = identify_process(process) else {
+            continue;
+        };
         let score = process_priority(process, &candidate);
 
         match &best {
@@ -149,13 +144,9 @@ pub fn identify_agent_in_job(job: &ForegroundJob) -> Option<(Agent, String)> {
 pub fn suspended_agent_processes(child_pid: u32) -> Vec<Agent> {
     let mut agents = Vec::new();
     for process in proc_tree::suspended_processes(child_pid) {
-        let candidate = normalized_process_name(&process);
-        let Some(agent) = identify_agent(&candidate) else {
+        let Some((agent, _)) = identify_process(&process) else {
             continue;
         };
-        if agent == Agent::Letta && !is_interactive_letta_process(&process) {
-            continue;
-        }
         if !agents.contains(&agent) {
             agents.push(agent);
         }
@@ -232,6 +223,15 @@ fn normalized_process_name(process: &ForegroundProcess) -> String {
     }
 
     effective.to_string()
+}
+
+fn identify_process(process: &ForegroundProcess) -> Option<(Agent, String)> {
+    let candidate = normalized_process_name(process);
+    let agent = identify_agent(&candidate)?;
+    if agent == Agent::Letta && !is_interactive_letta_process(process) {
+        return None;
+    }
+    Some((agent, candidate))
 }
 
 /// Node and Bun options that run inline code instead of a script.

@@ -139,9 +139,12 @@ pub(super) struct AgentOscStateTracker {
 impl AgentOscStateTracker {
     /// Collects the title and progress changes the terminal core saw since
     /// the last call. Returns whether the displayed title changed.
-    pub(super) fn apply_terminal_updates(&mut self, terminal: &mut shepr_vt::Terminal) -> bool {
+    pub(super) fn apply_terminal_updates(
+        &mut self,
+        effects: &mut shepr_vt::TerminalEffects,
+    ) -> bool {
         let mut terminal_title_changed = false;
-        if let Some(update) = terminal.take_title_update() {
+        if let Some(update) = effects.title_update.take() {
             let title = match update {
                 shepr_vt::TitleUpdate::Set(title) => Some(sanitize_agent_osc_string(
                     title.as_bytes(),
@@ -154,7 +157,7 @@ impl AgentOscStateTracker {
             self.terminal_title.clone_from(&title);
             self.latest_title = title;
         }
-        if let Some(progress) = terminal.take_progress_update() {
+        if let Some(progress) = effects.progress_update.take() {
             self.latest_progress =
                 Some(sanitize_agent_osc_string(&progress.0, AGENT_OSC_MAX_CHARS));
         }
@@ -521,7 +524,8 @@ mod tests {
 
         fn observe(&mut self, bytes: &[u8]) -> bool {
             self.terminal.write(bytes);
-            self.tracker.apply_terminal_updates(&mut self.terminal)
+            let mut effects = self.terminal.take_effects();
+            self.tracker.apply_terminal_updates(&mut effects)
         }
     }
 

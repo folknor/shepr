@@ -9,6 +9,7 @@ mod config_file;
 mod env;
 mod file_ops;
 mod opencode_config;
+mod registration;
 mod registry;
 mod targets;
 mod types;

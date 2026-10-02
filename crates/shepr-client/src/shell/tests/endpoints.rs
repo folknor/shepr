@@ -2534,11 +2534,11 @@ mod surface_baseline {
             .expect("scroll")
             .history_origin = shepr_vt::AbsRow(100);
         s.receive_pane_surface(future);
-        assert!(s.word_selection_gesture.is_some());
+        assert!(s.mouse_selection.word_gesture.is_some());
         let mut next = snapshot();
         next.revision = 2.into();
         s.set_snapshot(Box::new(next));
-        assert!(s.word_selection_gesture.is_none());
+        assert!(s.mouse_selection.word_gesture.is_none());
         assert_ne!(
             s.copy_mode.as_ref().expect("copy").cursor.row,
             shepr_vt::AbsRow(0)

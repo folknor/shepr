@@ -70,13 +70,18 @@ fn fast_path_blocker(
         // compose. Notices expire (see `tick_transient_banners`), so this only costs for as
         // long as one is on screen.
         Some("client_surface_patch.fallback.endpoint_notice")
-    } else if state.selection.as_ref().is_some_and(|selection| {
-        selection.is_visible()
-            && patch_updates_pane(
-                patch.panes.iter().map(|pane| &pane.pane_id),
-                &selection.pane_id,
-            )
-    }) {
+    } else if state
+        .mouse_selection
+        .selection
+        .as_ref()
+        .is_some_and(|selection| {
+            selection.is_visible()
+                && patch_updates_pane(
+                    patch.panes.iter().map(|pane| &pane.pane_id),
+                    &selection.pane_id,
+                )
+        })
+    {
         Some("client_surface_patch.fallback.selection")
     } else if state.copy_mode.as_ref().is_some_and(|copy_mode| {
         patch_updates_pane(
@@ -301,15 +306,8 @@ mod tests {
             max_offset_from_bottom: 0,
             entry_offset_from_bottom: 0,
             selection: None,
-            search_prompt: None,
-            search_query: TypedText::default(),
-            search_direction: None,
-            search_matches: Vec::new(),
-            search_total: 0,
-            search_current: None,
-            search_current_global: None,
-            search_generation: 0,
-            copy_after_search: false,
+            search: None,
+            operation_generation: 0,
         });
         (state, area)
     }

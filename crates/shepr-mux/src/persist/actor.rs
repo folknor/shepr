@@ -217,7 +217,7 @@ impl PersistState {
                             .resolve_for_save(&mut self.history, self.writer.history_is_current());
                         match resolved {
                             ResolvedHistory::Unchanged(digest) => {
-                                self.writer.save_keeping_history(&snapshot, digest, now)
+                                self.writer.save_keeping_history(&snapshot, &digest, now)
                             }
                             ResolvedHistory::Changed(history) => {
                                 self.writer.save(&snapshot, Some(&history), now)

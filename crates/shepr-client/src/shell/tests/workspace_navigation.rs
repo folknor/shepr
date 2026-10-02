@@ -363,7 +363,9 @@ fn foreign_workspace_preview_blocks_paste_into_hidden_copy_search() {
         .copy_mode
         .as_mut()
         .expect("test precondition")
-        .search_prompt = Some(ClientCopySearchPrompt {
+        .search
+        .get_or_insert_with(ClientCopySearch::default)
+        .prompt = Some(ClientCopySearchPrompt {
         direction: shepr_protocol::command::PaneCopySearchDirection::Forward,
         query: "original".into(),
     });
@@ -382,7 +384,9 @@ fn foreign_workspace_preview_blocks_paste_into_hidden_copy_search() {
         state
             .copy_mode
             .expect("test precondition")
-            .search_prompt
+            .search
+            .expect("test precondition")
+            .prompt
             .expect("test precondition")
             .query,
         "original".into()

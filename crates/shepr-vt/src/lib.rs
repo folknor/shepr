@@ -37,6 +37,7 @@ mod color;
 mod coords;
 mod format;
 mod handler;
+mod history;
 mod limits;
 mod locks;
 mod modes;
@@ -92,6 +93,7 @@ pub use coords::{AbsRow, ScreenRow, ViewportRow};
 
 use self::format::Format;
 use self::handler::{CoreHandler, KeyboardStackDepth};
+use self::history::HistoryCapacity;
 use self::rows::RowOrigin;
 use self::scan::{ScanEvent, Scanner};
 use crate::limits::{
@@ -313,6 +315,25 @@ pub enum TitleUpdate {
     Reset,
 }
 
+/// Effects collected from the terminal since its previous effect drain.
+#[must_use = "terminal effects must be handled or explicitly discarded"]
+pub struct TerminalEffects {
+    /// Replies to write to the child in parser order.
+    pub pty_responses: Vec<PtyResponse>,
+    /// Working-directory reports observed in child output.
+    pub pwd_changes: Vec<WorkingDirectoryReport>,
+    /// Clipboard stores requested by the child.
+    pub clipboard_writes: Vec<Vec<u8>>,
+    /// Sizes of clipboard stores dropped for exceeding the configured limit.
+    pub dropped_clipboard_store_bytes: Vec<usize>,
+    /// The latest uncollected window-title change.
+    pub title_update: Option<TitleUpdate>,
+    /// The latest uncollected OSC 9;4 progress report.
+    pub progress_update: Option<ProgressReport>,
+    /// Whether the child set a default foreground or background since the drain.
+    pub default_color_set: bool,
+}
+
 /// Result of a host-requested clear operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClearScreenOutcome {
@@ -351,7 +372,7 @@ pub struct Terminal {
     /// The latest OSC 9;4 progress payload (after `9;`) not yet collected.
     progress_update: Option<ProgressReport>,
     /// The child set the default foreground or background since the last
-    /// [`Terminal::take_default_color_set`].
+    /// [`Terminal::take_effects`].
     default_color_set: bool,
     /// Monotonic damage counter; [`RenderState`] remembers the last value it saw.
     damage_generation: u64,
@@ -459,7 +480,7 @@ impl Terminal {
     }
 
     /// Feed child output into the terminal. Replies are queued in byte order
-    /// and collected with [`Terminal::take_pty_responses`].
+    /// and collected with [`Terminal::take_effects`].
     ///
     /// Everything vte dispatches to a `Handler` (including the adapter's own
     /// modes, RIS, DECRQM and the voiced-mark printing in `handler.rs`) is
@@ -611,6 +632,20 @@ impl Terminal {
         mem::take(&mut self.responses)
     }
 
+    /// Collect every queued effect at one boundary. The returned value can be
+    /// dropped when the caller intentionally discards all effects.
+    pub fn take_effects(&mut self) -> TerminalEffects {
+        TerminalEffects {
+            pty_responses: mem::take(&mut self.responses),
+            pwd_changes: mem::take(&mut self.pwd_changes),
+            clipboard_writes: mem::take(&mut self.clipboard_writes),
+            dropped_clipboard_store_bytes: mem::take(&mut self.dropped_clipboard_store_bytes),
+            title_update: self.title_update.take(),
+            progress_update: self.progress_update.take(),
+            default_color_set: mem::take(&mut self.default_color_set),
+        }
+    }
+
     fn push_bytes(&mut self, bytes: Vec<u8>) {
         self.responses.push(PtyResponse::Bytes(bytes));
     }
@@ -698,25 +733,6 @@ impl Terminal {
         }
     }
 
-    /// Whether the child set a default foreground or background since the
-    /// last call.
-    pub fn take_default_color_set(&mut self) -> bool {
-        mem::take(&mut self.default_color_set)
-    }
-
-    /// The latest window-title change (OSC 0/2, CSI 23 t, RIS) since the last
-    /// call: `TitleUpdate::Reset` is a reset, `None` means no change. The title is
-    /// exactly what vte parsed (trimmed, not otherwise sanitised).
-    pub fn take_title_update(&mut self) -> Option<TitleUpdate> {
-        self.title_update.take()
-    }
-
-    /// The latest OSC 9;4 progress payload (the text after `9;`) since the
-    /// last call.
-    pub fn take_progress_update(&mut self) -> Option<ProgressReport> {
-        self.progress_update.take()
-    }
-
     /// Whether the child chose a cursor shape (DECSCUSR 1-6 or OSC 50) that
     /// is still in effect.
     pub fn cursor_shape_overridden(&self) -> bool {
@@ -796,34 +812,17 @@ impl Terminal {
     }
 
     fn set_history_lines(&mut self, history_lines: usize) {
-        self.history_lines = history_lines;
-        let queued = crate::lock_auxiliary(&self.events).len();
-        self.term.set_options(term_config(history_lines));
-        // Term::set_options sends only the current title (or reset) through
-        // this listener, synchronously. Term mutation is private to this
-        // &mut Terminal API and no other event producer can reach this queue,
-        // so truncating the tail drops only that synthetic reannouncement,
-        // which is not a title change made by the child.
-        crate::lock_auxiliary(&self.events).truncate(queued);
+        HistoryCapacity::new(
+            &mut self.term,
+            &self.events,
+            &mut self.history_lines,
+            self.max_scrollback,
+        )
+        .set(history_lines);
     }
 
     pub fn set_color_scheme(&mut self, color_scheme: Option<ColorScheme>) -> Option<ColorScheme> {
         mem::replace(&mut self.color_scheme, color_scheme)
-    }
-
-    pub fn take_pwd_changes(&mut self) -> Vec<WorkingDirectoryReport> {
-        mem::take(&mut self.pwd_changes)
-    }
-
-    pub fn take_clipboard_writes(&mut self) -> Vec<Vec<u8>> {
-        mem::take(&mut self.clipboard_writes)
-    }
-
-    /// Returns byte counts for oversized OSC 52 clipboard stores that were
-    /// dropped since the previous collection. The clipboard content is not
-    /// retained.
-    pub fn take_dropped_clipboard_store_bytes(&mut self) -> Vec<usize> {
-        mem::take(&mut self.dropped_clipboard_store_bytes)
     }
 
     /// The live value of a DEC private mode; `false` when the table in
@@ -980,13 +979,13 @@ impl Terminal {
     }
 
     fn restore_scrollback_budget_after_history_purge(&mut self) {
-        if !primary_screen_active(&self.term) || self.term.history_size() != 0 {
-            return;
-        }
-        let history_lines = scrollback_lines(self.max_scrollback, self.term.columns());
-        if history_lines != self.history_lines {
-            self.set_history_lines(history_lines);
-        }
+        HistoryCapacity::new(
+            &mut self.term,
+            &self.events,
+            &mut self.history_lines,
+            self.max_scrollback,
+        )
+        .restore_after_history_purge();
     }
 
     pub fn scroll_viewport_bottom(&mut self) {

@@ -103,10 +103,11 @@ pub struct RuleEvidence {
 /// shared reference, so a detection tick never clones the rule tree, and the
 /// compiled regexes keep their search caches warm across ticks and panes.
 #[derive(Debug)]
-struct LoadedManifest {
-    manifest: AgentManifest,
-    /// One entry per manifest rule, in manifest order.
-    compiled_rules: Vec<CompiledRule>,
+struct CompiledManifest {
+    fallback: ManifestFallback,
+    /// One compiled rule per source rule, in manifest order. Explain evidence
+    /// is retained by each rule's compiled root gate.
+    rules: Vec<CompiledRule>,
     /// Every distinct region any rule or gate reads; gates refer to regions by
     /// index so each region is extracted at most once per detection input.
     regions: Vec<CompiledRegion>,
@@ -118,12 +119,6 @@ struct LoadedManifest {
     unknown_is_stable: bool,
 }
 
-#[derive(Debug)]
-struct CompiledManifest {
-    compiled_rules: Vec<CompiledRule>,
-    regions: Vec<CompiledRegion>,
-}
-
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct AgentManifest {
@@ -132,11 +127,9 @@ pub(crate) struct AgentManifest {
     fallback: ManifestFallback,
     #[serde(default)]
     rules: Vec<ManifestRule>,
-    #[serde(skip)]
-    compiled: Option<CompiledManifest>,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ManifestRule {
     id: String,
@@ -184,7 +177,7 @@ struct ManifestRule {
 /// `all` or `any`); a gate inside `not` may consist of nested `not` gates only.
 /// Gate depth counts the rule's root matcher as level one, up to
 /// `MAX_GATE_DEPTH`.
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ManifestGate {
     /// Region this gate (and its nested gates) reads instead of the enclosing
@@ -208,9 +201,17 @@ struct ManifestGate {
 
 #[derive(Debug)]
 struct CompiledRule {
+    id: String,
+    state: ManifestState,
+    priority: i32,
+    region_name: String,
+    visible_idle: bool,
+    visible_blocker: bool,
+    visible_working: bool,
+    skip_state_update: bool,
     gate: CompiledGate,
     /// Index of the rule's own region, used for `explain` evidence.
-    region: usize,
+    region_index: usize,
     /// Distinct region indices the rule's gate tree reads.
     regions_used: Vec<usize>,
 }
@@ -228,6 +229,7 @@ struct CompiledGate {
 
 #[derive(Debug)]
 struct CompiledContains {
+    original_needle: String,
     lowercase_needle: String,
     prefix: Vec<usize>,
     case_ignorable: &'static Regex,
@@ -252,6 +254,7 @@ impl CompiledContains {
             prefix[index] = matched;
         }
         Ok(Self {
+            original_needle: needle.to_string(),
             lowercase_needle,
             prefix,
             case_ignorable,
@@ -363,19 +366,18 @@ struct CompiledRegion {
 enum RegionSpec {
     /// `whole_recent`: the whole detection snapshot.
     WholeRecent,
-    /// `after_last_prompt_marker`.
-    AfterLastPromptMarker,
-    /// `before_current_prompt_marker`.
-    BeforeCurrentPromptMarker,
-    /// `whole_recent_without_current_prompt_marker`: empty while a current
-    /// prompt exists.
-    WholeRecentWithoutCurrentPromptMarker,
-    /// `prompt_box_body`: lines between the top border of the bottom-most
-    /// `─`-bordered box and the next rule.
-    PromptBoxBody,
-    /// `last_non_empty_above_prompt_box`: the last non-empty line before the
-    /// bottom-most prompt box, or the last non-empty screen line without one.
-    LastNonEmptyAbovePromptBox,
+    /// `codex_after_last_prompt_marker`: text after Codex's last `›` prompt line.
+    CodexAfterLastPromptMarker,
+    /// `codex_before_current_prompt_marker`: text before Codex's current `›` prompt line.
+    CodexBeforeCurrentPromptMarker,
+    /// `codex_whole_recent_without_current_prompt_marker`: empty while a current
+    /// Codex prompt exists.
+    CodexWholeRecentWithoutCurrentPromptMarker,
+    /// `claude_prompt_box_body`: lines inside Claude's bottom-most prompt box.
+    ClaudePromptBoxBody,
+    /// `claude_last_non_empty_above_prompt_box`: the last non-empty line before
+    /// Claude's bottom-most prompt box, or the last non-empty screen line without one.
+    ClaudeLastNonEmptyAbovePromptBox,
     /// `after_last_horizontal_rule`: text after the last `─` rule line.
     AfterLastHorizontalRule,
     /// `osc_title`: the last OSC window title, not the screen.
@@ -393,13 +395,13 @@ impl RegionSpec {
         let trimmed = spec.trim();
         Some(match trimmed {
             "whole_recent" => Self::WholeRecent,
-            "after_last_prompt_marker" => Self::AfterLastPromptMarker,
-            "before_current_prompt_marker" => Self::BeforeCurrentPromptMarker,
-            "whole_recent_without_current_prompt_marker" => {
-                Self::WholeRecentWithoutCurrentPromptMarker
+            "codex_after_last_prompt_marker" => Self::CodexAfterLastPromptMarker,
+            "codex_before_current_prompt_marker" => Self::CodexBeforeCurrentPromptMarker,
+            "codex_whole_recent_without_current_prompt_marker" => {
+                Self::CodexWholeRecentWithoutCurrentPromptMarker
             }
-            "prompt_box_body" => Self::PromptBoxBody,
-            "last_non_empty_above_prompt_box" => Self::LastNonEmptyAbovePromptBox,
+            "claude_prompt_box_body" => Self::ClaudePromptBoxBody,
+            "claude_last_non_empty_above_prompt_box" => Self::ClaudeLastNonEmptyAbovePromptBox,
             "after_last_horizontal_rule" => Self::AfterLastHorizontalRule,
             "osc_title" => Self::OscTitle,
             "osc_progress" => Self::OscProgress,
@@ -420,14 +422,16 @@ impl RegionSpec {
             Self::OscProgress => input.osc_progress,
             Self::WholeRecent => input.screen,
             Self::AfterLastHorizontalRule => after_last_horizontal_rule(input.screen),
-            Self::AfterLastPromptMarker => after_last_prompt_marker(input.screen),
-            Self::BeforeCurrentPromptMarker => before_current_prompt_marker(input.screen),
-            Self::WholeRecentWithoutCurrentPromptMarker => {
-                whole_recent_without_current_prompt_marker(input.screen)
+            Self::CodexAfterLastPromptMarker => codex_after_last_prompt_marker(input.screen),
+            Self::CodexBeforeCurrentPromptMarker => {
+                codex_before_current_prompt_marker(input.screen)
             }
-            Self::PromptBoxBody => prompt_box_body(input.screen).unwrap_or(""),
-            Self::LastNonEmptyAbovePromptBox => {
-                let Some((top_start, _, _)) = prompt_box_bounds(input.screen) else {
+            Self::CodexWholeRecentWithoutCurrentPromptMarker => {
+                codex_whole_recent_without_current_prompt_marker(input.screen)
+            }
+            Self::ClaudePromptBoxBody => claude_prompt_box_body(input.screen).unwrap_or(""),
+            Self::ClaudeLastNonEmptyAbovePromptBox => {
+                let Some((top_start, _, _)) = claude_prompt_box_bounds(input.screen) else {
                     return last_non_empty_line(input.screen);
                 };
                 last_non_empty_line(&input.screen[..top_start.min(input.screen.len())])
@@ -512,14 +516,13 @@ const BUNDLED_MANIFESTS: &[(&str, &str)] = &[
 
 /// Every screen-manifest agent's bundled manifest, compiled once per process
 /// on first use and never replaced.
-static MANIFESTS: OnceLock<Vec<(Agent, Option<LoadedManifest>)>> = OnceLock::new();
+static MANIFESTS: OnceLock<Vec<(Agent, Option<CompiledManifest>)>> = OnceLock::new();
 
-fn manifests() -> &'static [(Agent, Option<LoadedManifest>)] {
+fn manifests() -> &'static [(Agent, Option<CompiledManifest>)] {
     MANIFESTS.get_or_init(|| {
         Agent::screen_manifest_agents()
             .map(|agent| {
-                let loaded = bundled_manifest(agent)
-                    .and_then(|manifest| bundled_loaded_manifest(agent, manifest));
+                let loaded = bundled_manifest(agent);
                 (agent, loaded)
             })
             .collect()
@@ -534,7 +537,7 @@ pub fn compile_bundled_manifests() {
 
 /// The compiled bundled manifest for `agent`, or `None` for an agent without
 /// screen detection or whose bundled manifest failed to compile (logged once).
-fn loaded(agent: Agent) -> Option<&'static LoadedManifest> {
+fn loaded(agent: Agent) -> Option<&'static CompiledManifest> {
     manifests()
         .iter()
         .find(|(candidate, _)| *candidate == agent)
@@ -550,20 +553,17 @@ pub fn detect_with_osc(agent: Agent, input: DetectionInput<'_>) -> AgentDetectio
 
 fn detect_with_manifest(
     input: DetectionInput<'_>,
-    loaded: Option<&LoadedManifest>,
+    loaded: Option<&CompiledManifest>,
 ) -> AgentDetection {
     let Some(loaded) = loaded else {
         return fallback_detection(None);
     };
     let mut texts = RegionTexts::new(input);
     for &index in &loaded.priority_order {
-        let (Some(rule), Some(compiled)) = (
-            loaded.manifest.rules.get(index),
-            loaded.compiled_rules.get(index),
-        ) else {
+        let Some(rule) = loaded.rules.get(index) else {
             continue;
         };
-        if compiled_rule_matches(compiled, &loaded.regions, &mut texts) {
+        if compiled_rule_matches(rule, &loaded.regions, &mut texts) {
             return rule_detection(rule);
         }
     }
@@ -595,7 +595,7 @@ pub fn explain_with_input(agent: Agent, input: DetectionInput<'_>) -> DetectionE
 fn explain_with_manifest(
     agent: Agent,
     input: DetectionInput<'_>,
-    loaded: Option<&LoadedManifest>,
+    loaded: Option<&CompiledManifest>,
 ) -> DetectionExplain {
     let Some(loaded) = loaded else {
         return fallback_explain(agent, None);
@@ -623,11 +623,11 @@ pub fn explain_for_label(agent_label: &str, input: DetectionInput<'_>) -> Detect
     explain_with_input(agent, input)
 }
 
-fn rule_state(rule: &ManifestRule) -> AgentState {
+fn rule_state(rule: &CompiledRule) -> AgentState {
     rule.state.into()
 }
 
-fn rule_detection(rule: &ManifestRule) -> AgentDetection {
+fn rule_detection(rule: &CompiledRule) -> AgentDetection {
     let state = rule_state(rule);
     AgentDetection {
         state,
@@ -639,13 +639,11 @@ fn rule_detection(rule: &ManifestRule) -> AgentDetection {
 }
 
 /// State reported when no rule matched, or when no compiled manifest exists.
-fn fallback_state(manifest: Option<&LoadedManifest>) -> AgentState {
-    manifest.map_or(AgentState::Unknown, |manifest| {
-        manifest.manifest.fallback.into()
-    })
+fn fallback_state(manifest: Option<&CompiledManifest>) -> AgentState {
+    manifest.map_or(AgentState::Unknown, |manifest| manifest.fallback.into())
 }
 
-fn fallback_detection(manifest: Option<&LoadedManifest>) -> AgentDetection {
+fn fallback_detection(manifest: Option<&CompiledManifest>) -> AgentDetection {
     AgentDetection {
         state: fallback_state(manifest),
         skip_state_update: false,
@@ -658,40 +656,32 @@ fn fallback_detection(manifest: Option<&LoadedManifest>) -> AgentDetection {
 fn explain_loaded_manifest(
     agent: Agent,
     input: DetectionInput<'_>,
-    loaded: &LoadedManifest,
+    loaded: &CompiledManifest,
 ) -> DetectionExplain {
     let mut texts = RegionTexts::new(input);
-    let mut matched: Option<&ManifestRule> = None;
-    let mut evaluated_rules = Vec::with_capacity(loaded.manifest.rules.len());
+    let mut matched_rules = Vec::with_capacity(loaded.rules.len());
+    let mut evaluated_rules = Vec::with_capacity(loaded.rules.len());
 
-    for (rule, compiled_rule) in loaded
-        .manifest
-        .rules
-        .iter()
-        .zip(loaded.compiled_rules.iter())
-    {
-        let matched_rule = compiled_rule_matches(compiled_rule, &loaded.regions, &mut texts);
-        let region_text = texts.text(compiled_rule.region);
+    for rule in &loaded.rules {
+        let matched = compiled_rule_matches(rule, &loaded.regions, &mut texts);
+        let region_text = texts.text(rule.region_index);
+        matched_rules.push(matched);
         evaluated_rules.push(EvaluatedRule {
             id: rule.id.clone(),
             priority: rule.priority,
-            region: rule.region.clone(),
+            region: rule.region_name.clone(),
             evidence: rule_evidence(rule, region_text),
             state: rule_state(rule),
-            matched: matched_rule,
+            matched,
         });
-
-        if !matched_rule {
-            continue;
-        }
-
-        match matched {
-            Some(previous) if previous.priority >= rule.priority => {}
-            _ => matched = Some(rule),
-        }
     }
 
-    let Some(rule) = matched else {
+    let matched = loaded
+        .priority_order
+        .iter()
+        .copied()
+        .find(|&index| matched_rules.get(index).copied().unwrap_or(false));
+    let Some(rule) = matched.and_then(|index| loaded.rules.get(index)) else {
         return fallback_explain(agent, Some((loaded, evaluated_rules)));
     };
 
@@ -706,7 +696,7 @@ fn explain_loaded_manifest(
         matched_rule: Some(MatchedRule {
             id: rule.id.clone(),
             priority: rule.priority,
-            region: rule.region.clone(),
+            region: rule.region_name.clone(),
             state: detection.state,
         }),
         screen_detection_skipped: false,
@@ -722,12 +712,10 @@ fn explain_loaded_manifest(
 
 fn fallback_explain(
     agent: Agent,
-    context: Option<(&LoadedManifest, Vec<EvaluatedRule>)>,
+    context: Option<(&CompiledManifest, Vec<EvaluatedRule>)>,
 ) -> DetectionExplain {
     let manifest = context.as_ref().map(|(manifest, _)| *manifest);
-    let manifest_fallback = context
-        .as_ref()
-        .map(|(manifest, _)| manifest.manifest.fallback);
+    let manifest_fallback = context.as_ref().map(|(manifest, _)| manifest.fallback);
     let evaluated_rules = context.map_or_else(Vec::new, |(_, evaluated)| evaluated);
 
     DetectionExplain {
@@ -749,43 +737,7 @@ fn fallback_explain(
     }
 }
 
-fn loaded_manifest(mut manifest: AgentManifest) -> Result<LoadedManifest, String> {
-    let unknown_is_stable = manifest.fallback == ManifestFallback::Unknown
-        || manifest
-            .rules
-            .iter()
-            .any(|rule| rule.state == ManifestState::Unknown);
-    let CompiledManifest {
-        compiled_rules,
-        regions,
-    } = manifest
-        .compiled
-        .take()
-        .ok_or_else(|| "manifest was not compiled before loading".to_string())?;
-    let mut priority_order: Vec<usize> = (0..manifest.rules.len()).collect();
-    // Stable sort: equal priorities keep manifest order, matching the
-    // first-wins tie break in `explain_loaded_manifest`.
-    priority_order.sort_by_key(|&index| std::cmp::Reverse(manifest.rules[index].priority));
-    Ok(LoadedManifest {
-        manifest,
-        compiled_rules,
-        regions,
-        priority_order,
-        unknown_is_stable,
-    })
-}
-
-fn bundled_loaded_manifest(agent: Agent, manifest: AgentManifest) -> Option<LoadedManifest> {
-    match loaded_manifest(manifest) {
-        Ok(loaded) => Some(loaded),
-        Err(err) => {
-            tracing::error!(agent = agent_label(agent), error = %err, "bundled manifest could not be compiled");
-            None
-        }
-    }
-}
-
-fn bundled_manifest(agent: Agent) -> Option<AgentManifest> {
+fn bundled_manifest(agent: Agent) -> Option<CompiledManifest> {
     let id = agent_label(agent);
     BUNDLED_MANIFESTS
         .iter()
@@ -793,7 +745,7 @@ fn bundled_manifest(agent: Agent) -> Option<AgentManifest> {
         .and_then(|(_, content)| match parse_bundled_manifest(id, content) {
             Ok(manifest) => Some(manifest),
             Err(err) => {
-                tracing::error!(agent = id, error = %err, "bundled manifest is invalid");
+                tracing::error!(agent = id, error = %err, "bundled manifest could not be compiled");
                 None
             }
         })
@@ -801,15 +753,15 @@ fn bundled_manifest(agent: Agent) -> Option<AgentManifest> {
 
 /// Parse a bundled manifest and check its identity: the file's `id` must be
 /// the registry key it is filed under.
-fn parse_bundled_manifest(key: &str, content: &str) -> Result<AgentManifest, String> {
-    let manifest = parse_manifest(content)?;
+fn parse_bundled_manifest(key: &str, content: &str) -> Result<CompiledManifest, String> {
+    let manifest = parse_manifest_source(content)?;
     if manifest.id != key {
         return Err(format!(
             "manifest id {} does not match registry key {key}",
             manifest.id
         ));
     }
-    Ok(manifest)
+    compile_manifest(manifest)
 }
 
 pub fn agent_state_label(state: AgentState) -> &'static str {
@@ -913,13 +865,11 @@ pub fn hook_authority_explain_to_json_value(
     value
 }
 
-fn parse_manifest(content: &str) -> Result<AgentManifest, String> {
-    let mut manifest = toml::from_str::<AgentManifest>(content).map_err(|err| err.to_string())?;
-    manifest.compiled = Some(validate_manifest(&manifest)?);
-    Ok(manifest)
+fn parse_manifest_source(content: &str) -> Result<AgentManifest, String> {
+    toml::from_str::<AgentManifest>(content).map_err(|err| err.to_string())
 }
 
-fn validate_manifest(manifest: &AgentManifest) -> Result<CompiledManifest, String> {
+fn compile_manifest(manifest: AgentManifest) -> Result<CompiledManifest, String> {
     if manifest.rules.is_empty() {
         return Err("manifest must contain at least one rule".to_string());
     }
@@ -930,50 +880,26 @@ fn validate_manifest(manifest: &AgentManifest) -> Result<CompiledManifest, Strin
         ));
     }
 
+    let mut unknown_is_stable = manifest.fallback == ManifestFallback::Unknown;
     let mut complexity = ManifestComplexity::default();
-    for rule in &manifest.rules {
-        if rule.id.trim().is_empty() {
-            return Err("manifest rule id must not be empty".to_string());
-        }
-        if rule.visible_idle && rule.state != ManifestState::Idle {
-            return Err(format!(
-                "rule {} uses visible_idle without state = \"idle\"",
-                rule.id
-            ));
-        }
-        if rule.visible_blocker && rule.state != ManifestState::Blocked {
-            return Err(format!(
-                "rule {} uses visible_blocker without state = \"blocked\"",
-                rule.id
-            ));
-        }
-        if rule.visible_working && rule.state != ManifestState::Working {
-            return Err(format!(
-                "rule {} uses visible_working without state = \"working\"",
-                rule.id
-            ));
-        }
-        if rule.skip_state_update {
-            if rule.state != ManifestState::Unknown {
-                return Err(format!(
-                    "rule {} uses skip_state_update without state = \"unknown\"",
-                    rule.id
-                ));
-            }
-            if rule.visible_idle || rule.visible_blocker || rule.visible_working {
-                return Err(format!(
-                    "rule {} uses skip_state_update with visible state evidence",
-                    rule.id
-                ));
-            }
-        }
-        validate_region_name(&rule.region)
-            .map_err(|err| format!("rule {} uses invalid region: {err}", rule.id))?;
-        validate_rule_gate(rule, &mut complexity)
-            .map_err(|err| format!("rule {} has invalid matcher gates: {err}", rule.id))?;
+    let mut regions = RegionTable::default();
+    let mut rules = Vec::with_capacity(manifest.rules.len());
+    for rule in manifest.rules {
+        unknown_is_stable |= rule.state == ManifestState::Unknown;
+        rules.push(compile_rule(rule, &mut regions, &mut complexity)?);
     }
 
-    compile_manifest(manifest)
+    let mut priority_order: Vec<usize> = (0..rules.len()).collect();
+    // Stable sort keeps manifest order within a priority; detection and explain
+    // both select the first matching rule in this shared order.
+    priority_order.sort_by_key(|&index| std::cmp::Reverse(rules[index].priority));
+    Ok(CompiledManifest {
+        fallback: manifest.fallback,
+        rules,
+        regions: regions.regions,
+        priority_order,
+        unknown_is_stable,
+    })
 }
 
 #[derive(Default)]
@@ -982,27 +908,162 @@ struct ManifestComplexity {
     total_matchers: usize,
 }
 
-fn validate_rule_gate(
-    rule: &ManifestRule,
+fn compile_rule(
+    rule: ManifestRule,
+    regions: &mut RegionTable,
     complexity: &mut ManifestComplexity,
-) -> Result<(), String> {
-    validate_gate(&manifest_gate_from_rule(rule), "rule", 0, complexity)
+) -> Result<CompiledRule, String> {
+    if rule.id.trim().is_empty() {
+        return Err("manifest rule id must not be empty".to_string());
+    }
+    if rule.visible_idle && rule.state != ManifestState::Idle {
+        return Err(format!(
+            "rule {} uses visible_idle without state = \"idle\"",
+            rule.id
+        ));
+    }
+    if rule.visible_blocker && rule.state != ManifestState::Blocked {
+        return Err(format!(
+            "rule {} uses visible_blocker without state = \"blocked\"",
+            rule.id
+        ));
+    }
+    if rule.visible_working && rule.state != ManifestState::Working {
+        return Err(format!(
+            "rule {} uses visible_working without state = \"working\"",
+            rule.id
+        ));
+    }
+    if rule.skip_state_update {
+        if rule.state != ManifestState::Unknown {
+            return Err(format!(
+                "rule {} uses skip_state_update without state = \"unknown\"",
+                rule.id
+            ));
+        }
+        if rule.visible_idle || rule.visible_blocker || rule.visible_working {
+            return Err(format!(
+                "rule {} uses skip_state_update with visible state evidence",
+                rule.id
+            ));
+        }
+    }
+
+    let mut regions_used = Vec::new();
+    let rule_id = &rule.id;
+    let gate = compile_gate(
+        GateSource::from_rule(&rule),
+        0,
+        GateRequirement::Positive,
+        "rule",
+        0,
+        regions,
+        complexity,
+        &mut regions_used,
+    )
+    .map_err(|error| format!("rule {rule_id} has invalid matcher gates: {error}"))?;
+
+    Ok(CompiledRule {
+        id: rule.id,
+        state: rule.state,
+        priority: rule.priority,
+        region_name: rule.region,
+        visible_idle: rule.visible_idle,
+        visible_blocker: rule.visible_blocker,
+        visible_working: rule.visible_working,
+        skip_state_update: rule.skip_state_update,
+        region_index: gate.region,
+        gate,
+        regions_used,
+    })
 }
 
-fn validate_gate_region(gate: &ManifestGate, context: &str) -> Result<(), String> {
-    match &gate.region {
-        Some(region) => validate_region_name(region)
-            .map_err(|err| format!("{context} uses invalid region: {err}")),
-        None => Ok(()),
+#[derive(Clone, Copy)]
+struct GateSource<'a> {
+    region: Option<&'a str>,
+    all: &'a [ManifestGate],
+    any: &'a [ManifestGate],
+    not_gate: &'a [ManifestGate],
+    contains: &'a [String],
+    regex: &'a [String],
+    line_regex: &'a [String],
+}
+
+impl<'a> GateSource<'a> {
+    fn from_rule(rule: &'a ManifestRule) -> Self {
+        Self {
+            region: Some(&rule.region),
+            all: &rule.all,
+            any: &rule.any,
+            not_gate: &rule.not_gate,
+            contains: &rule.contains,
+            regex: &rule.regex,
+            line_regex: &rule.line_regex,
+        }
+    }
+
+    fn from_gate(gate: &'a ManifestGate) -> Self {
+        Self {
+            region: gate.region.as_deref(),
+            all: &gate.all,
+            any: &gate.any,
+            not_gate: &gate.not_gate,
+            contains: &gate.contains,
+            regex: &gate.regex,
+            line_regex: &gate.line_regex,
+        }
+    }
+
+    fn has_positive_matcher(self) -> bool {
+        !self.contains.is_empty()
+            || !self.regex.is_empty()
+            || !self.line_regex.is_empty()
+            || !self.all.is_empty()
+            || !self.any.is_empty()
+    }
+
+    fn has_any_matcher(self) -> bool {
+        self.has_positive_matcher() || !self.not_gate.is_empty()
     }
 }
 
-fn validate_gate(
-    gate: &ManifestGate,
+#[derive(Clone, Copy)]
+enum GateRequirement {
+    Positive,
+    Any,
+}
+
+#[derive(Default)]
+struct RegionTable {
+    regions: Vec<CompiledRegion>,
+}
+
+impl RegionTable {
+    fn intern(&mut self, spec: &str) -> Result<usize, String> {
+        let spec = RegionSpec::parse(spec).ok_or_else(|| format!("invalid region {spec:?}"))?;
+        if let Some(index) = self.regions.iter().position(|region| region.spec == spec) {
+            return Ok(index);
+        }
+        if self.regions.len() >= MAX_REGIONS_PER_MANIFEST {
+            return Err(format!(
+                "manifest reads more than {MAX_REGIONS_PER_MANIFEST} distinct regions"
+            ));
+        }
+        self.regions.push(CompiledRegion { spec });
+        Ok(self.regions.len() - 1)
+    }
+}
+
+fn compile_gate(
+    gate: GateSource<'_>,
+    inherited_region: usize,
+    requirement: GateRequirement,
     context: &str,
     depth: usize,
+    table: &mut RegionTable,
     complexity: &mut ManifestComplexity,
-) -> Result<(), String> {
+    regions_used: &mut Vec<usize>,
+) -> Result<CompiledGate, String> {
     if depth >= MAX_GATE_DEPTH {
         return Err(format!("{context} exceeds max gate depth {MAX_GATE_DEPTH}"));
     }
@@ -1010,60 +1071,15 @@ fn validate_gate(
     if complexity.total_gates > MAX_TOTAL_GATES {
         return Err(format!("manifest exceeds max gate count {MAX_TOTAL_GATES}"));
     }
-    validate_gate_region(gate, context)?;
-    validate_matcher_limits(gate, context, complexity)?;
-    if !gate_has_positive_matcher(gate) {
-        return Err(format!("{context} must contain a positive matcher"));
-    }
-    for nested in &gate.all {
-        validate_gate(nested, "all gate", depth + 1, complexity)?;
-    }
-    for nested in &gate.any {
-        validate_gate(nested, "any gate", depth + 1, complexity)?;
-    }
-    for nested in &gate.not_gate {
-        if !gate_has_any_matcher(nested) {
-            return Err(format!("{context} contains an empty not gate"));
-        }
-        validate_not_gate(nested, depth + 1, complexity)?;
-    }
-    Ok(())
-}
 
-fn validate_not_gate(
-    gate: &ManifestGate,
-    depth: usize,
-    complexity: &mut ManifestComplexity,
-) -> Result<(), String> {
-    if depth >= MAX_GATE_DEPTH {
-        return Err(format!("not gate exceeds max gate depth {MAX_GATE_DEPTH}"));
+    let region = match gate.region {
+        Some(spec) => table.intern(spec)?,
+        None => inherited_region,
+    };
+    if !regions_used.contains(&region) {
+        regions_used.push(region);
     }
-    complexity.total_gates += 1;
-    if complexity.total_gates > MAX_TOTAL_GATES {
-        return Err(format!("manifest exceeds max gate count {MAX_TOTAL_GATES}"));
-    }
-    validate_gate_region(gate, "not gate")?;
-    validate_matcher_limits(gate, "not gate", complexity)?;
-    if !gate_has_any_matcher(gate) {
-        return Err("not gate must contain a matcher".to_string());
-    }
-    for nested in &gate.all {
-        validate_gate(nested, "not all gate", depth + 1, complexity)?;
-    }
-    for nested in &gate.any {
-        validate_gate(nested, "not any gate", depth + 1, complexity)?;
-    }
-    for nested in &gate.not_gate {
-        validate_not_gate(nested, depth + 1, complexity)?;
-    }
-    Ok(())
-}
 
-fn validate_matcher_limits(
-    gate: &ManifestGate,
-    context: &str,
-    complexity: &mut ManifestComplexity,
-) -> Result<(), String> {
     let matcher_count = gate.contains.len() + gate.regex.len() + gate.line_regex.len();
     if matcher_count > MAX_MATCHERS_PER_GATE {
         return Err(format!(
@@ -1088,142 +1104,86 @@ fn validate_matcher_limits(
             ));
         }
     }
-    Ok(())
-}
-
-fn gate_has_positive_matcher(gate: &ManifestGate) -> bool {
-    !gate.contains.is_empty()
-        || !gate.regex.is_empty()
-        || !gate.line_regex.is_empty()
-        || !gate.all.is_empty()
-        || !gate.any.is_empty()
-}
-
-fn gate_has_any_matcher(gate: &ManifestGate) -> bool {
-    gate_has_positive_matcher(gate) || !gate.not_gate.is_empty()
-}
-
-fn validate_region_name(spec: &str) -> Result<(), String> {
-    RegionSpec::parse(spec)
-        .map(|_| ())
-        .ok_or_else(|| spec.trim().to_string())
-}
-
-fn manifest_gate_from_rule(rule: &ManifestRule) -> ManifestGate {
-    ManifestGate {
-        // The rule's own region is applied by the compiler as the root region.
-        region: None,
-        all: rule.all.clone(),
-        any: rule.any.clone(),
-        not_gate: rule.not_gate.clone(),
-        contains: rule.contains.clone(),
-        regex: rule.regex.clone(),
-        line_regex: rule.line_regex.clone(),
+    let has_required_matcher = match requirement {
+        GateRequirement::Positive => gate.has_positive_matcher(),
+        GateRequirement::Any => gate.has_any_matcher(),
+    };
+    if !has_required_matcher {
+        return Err(match requirement {
+            GateRequirement::Positive => format!("{context} must contain a positive matcher"),
+            GateRequirement::Any => format!("{context} must contain a matcher"),
+        });
     }
-}
 
-#[derive(Default)]
-struct RegionTable {
-    regions: Vec<CompiledRegion>,
-}
-
-impl RegionTable {
-    fn intern(&mut self, spec: &str) -> Result<usize, String> {
-        let spec = RegionSpec::parse(spec).ok_or_else(|| format!("invalid region {spec:?}"))?;
-        if let Some(index) = self.regions.iter().position(|region| region.spec == spec) {
-            return Ok(index);
-        }
-        if self.regions.len() >= MAX_REGIONS_PER_MANIFEST {
-            return Err(format!(
-                "manifest reads more than {MAX_REGIONS_PER_MANIFEST} distinct regions"
-            ));
-        }
-        self.regions.push(CompiledRegion { spec });
-        Ok(self.regions.len() - 1)
+    let mut all = Vec::with_capacity(gate.all.len());
+    for nested in gate.all {
+        all.push(compile_gate(
+            GateSource::from_gate(nested),
+            region,
+            GateRequirement::Positive,
+            "all gate",
+            depth + 1,
+            table,
+            complexity,
+            regions_used,
+        )?);
     }
-}
+    let mut any = Vec::with_capacity(gate.any.len());
+    for nested in gate.any {
+        any.push(compile_gate(
+            GateSource::from_gate(nested),
+            region,
+            GateRequirement::Positive,
+            "any gate",
+            depth + 1,
+            table,
+            complexity,
+            regions_used,
+        )?);
+    }
+    let mut not_gate = Vec::with_capacity(gate.not_gate.len());
+    for nested in gate.not_gate {
+        not_gate.push(compile_gate(
+            GateSource::from_gate(nested),
+            region,
+            GateRequirement::Any,
+            "not gate",
+            depth + 1,
+            table,
+            complexity,
+            regions_used,
+        )?);
+    }
 
-fn compile_manifest(manifest: &AgentManifest) -> Result<CompiledManifest, String> {
-    let mut table = RegionTable::default();
-    let rules = manifest
-        .rules
+    let contains = gate
+        .contains
         .iter()
-        .map(|rule| {
-            let compile = |table: &mut RegionTable| {
-                let region = table.intern(&rule.region)?;
-                let gate = compile_gate(&manifest_gate_from_rule(rule), region, table)?;
-                let mut regions_used = Vec::new();
-                collect_gate_regions(&gate, &mut regions_used);
-                Ok::<_, String>(CompiledRule {
-                    gate,
-                    region,
-                    regions_used,
-                })
-            };
-            compile(&mut table)
-                .map_err(|err| format!("rule {} could not be compiled: {err}", rule.id))
+        .map(|needle| CompiledContains::new(needle))
+        .collect::<Result<_, _>>()?;
+    let regex = gate
+        .regex
+        .iter()
+        .map(|pattern| {
+            Regex::new(pattern).map_err(|err| format!("invalid regex pattern {pattern:?}: {err}"))
         })
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(CompiledManifest {
-        compiled_rules: rules,
-        regions: table.regions,
-    })
-}
-
-fn compile_gate(
-    gate: &ManifestGate,
-    inherited_region: usize,
-    table: &mut RegionTable,
-) -> Result<CompiledGate, String> {
-    let region = match &gate.region {
-        Some(spec) => table.intern(spec)?,
-        None => inherited_region,
-    };
-    let mut compile_all = |gates: &[ManifestGate]| {
-        gates
-            .iter()
-            .map(|nested| compile_gate(nested, region, table))
-            .collect::<Result<Vec<_>, _>>()
-    };
-    let all = compile_all(&gate.all)?;
-    let any = compile_all(&gate.any)?;
-    let not_gate = compile_all(&gate.not_gate)?;
+        .collect::<Result<_, _>>()?;
+    let line_regex = gate
+        .line_regex
+        .iter()
+        .map(|pattern| {
+            Regex::new(pattern)
+                .map_err(|err| format!("invalid line_regex pattern {pattern:?}: {err}"))
+        })
+        .collect::<Result<_, _>>()?;
     Ok(CompiledGate {
         region,
         all,
         any,
         not_gate,
-        contains: gate
-            .contains
-            .iter()
-            .map(|needle| CompiledContains::new(needle))
-            .collect::<Result<_, _>>()?,
-        regex: gate
-            .regex
-            .iter()
-            .map(|pattern| {
-                Regex::new(pattern)
-                    .map_err(|err| format!("invalid regex pattern {pattern:?}: {err}"))
-            })
-            .collect::<Result<_, _>>()?,
-        line_regex: gate
-            .line_regex
-            .iter()
-            .map(|pattern| {
-                Regex::new(pattern)
-                    .map_err(|err| format!("invalid line_regex pattern {pattern:?}: {err}"))
-            })
-            .collect::<Result<_, _>>()?,
+        contains,
+        regex,
+        line_regex,
     })
-}
-
-fn collect_gate_regions(gate: &CompiledGate, regions: &mut Vec<usize>) {
-    if !regions.contains(&gate.region) {
-        regions.push(gate.region);
-    }
-    for nested in gate.all.iter().chain(&gate.any).chain(&gate.not_gate) {
-        collect_gate_regions(nested, regions);
-    }
 }
 
 /// Per-input region texts, extracted lazily and at most once each. The fixed
@@ -1267,14 +1227,29 @@ fn compiled_rule_matches(
     compiled_gate_matches(&rule.gate, texts)
 }
 
-fn rule_evidence(rule: &ManifestRule, region_text: &str) -> RuleEvidence {
+fn rule_evidence(rule: &CompiledRule, region_text: &str) -> RuleEvidence {
     RuleEvidence {
-        contains: rule.contains.clone(),
-        regex: rule.regex.clone(),
-        line_regex: rule.line_regex.clone(),
-        all_count: rule.all.len(),
-        any_count: rule.any.len(),
-        not_count: rule.not_gate.len(),
+        contains: rule
+            .gate
+            .contains
+            .iter()
+            .map(|matcher| matcher.original_needle.clone())
+            .collect(),
+        regex: rule
+            .gate
+            .regex
+            .iter()
+            .map(|regex| regex.as_str().to_string())
+            .collect(),
+        line_regex: rule
+            .gate
+            .line_regex
+            .iter()
+            .map(|regex| regex.as_str().to_string())
+            .collect(),
+        all_count: rule.gate.all.len(),
+        any_count: rule.gate.any.len(),
+        not_count: rule.gate.not_gate.len(),
         region_bytes: region_text.len(),
         region_preview: bounded_preview(region_text),
     }
@@ -1398,7 +1373,7 @@ fn top_non_empty_lines(content: &str, count: usize) -> &str {
     &content[..line_end_offset(content, line)]
 }
 
-fn after_last_prompt_marker(content: &str) -> &str {
+fn codex_after_last_prompt_marker(content: &str) -> &str {
     let mut after = None;
     for line in content.lines() {
         if codex_prompt_line(line) {
@@ -1408,14 +1383,14 @@ fn after_last_prompt_marker(content: &str) -> &str {
     after.map_or(content, |offset| &content[offset..])
 }
 
-fn before_current_prompt_marker(content: &str) -> &str {
+fn codex_before_current_prompt_marker(content: &str) -> &str {
     let Some(prompt_start) = current_codex_prompt_start(content) else {
         return content;
     };
     &content[..prompt_start.min(content.len())]
 }
 
-fn whole_recent_without_current_prompt_marker(content: &str) -> &str {
+fn codex_whole_recent_without_current_prompt_marker(content: &str) -> &str {
     if current_codex_prompt_start(content).is_some() {
         ""
     } else {
@@ -1455,12 +1430,12 @@ fn codex_block_marker_line(line: &str) -> bool {
         || line.starts_with('\u{2713}')
 }
 
-fn prompt_box_body(content: &str) -> Option<&str> {
-    let (_, top_end, bottom_start) = prompt_box_bounds(content)?;
+fn claude_prompt_box_body(content: &str) -> Option<&str> {
+    let (_, top_end, bottom_start) = claude_prompt_box_bounds(content)?;
     Some(&content[top_end.min(content.len())..bottom_start.min(content.len())])
 }
 
-fn prompt_box_bounds(content: &str) -> Option<(usize, usize, usize)> {
+fn claude_prompt_box_bounds(content: &str) -> Option<(usize, usize, usize)> {
     let mut penultimate_rule = None;
     let mut last_rule = None;
     for line in content.lines() {
@@ -1538,6 +1513,11 @@ fn line_end_offset(content: &str, line: &str) -> usize {
     content[start..]
         .find('\n')
         .map_or(content.len(), |offset| start + offset + 1)
+}
+
+#[cfg(test)]
+fn parse_manifest(content: &str) -> Result<CompiledManifest, String> {
+    compile_manifest(parse_manifest_source(content)?)
 }
 
 #[cfg(test)]

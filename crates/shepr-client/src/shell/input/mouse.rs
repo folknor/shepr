@@ -213,8 +213,7 @@ impl ClientShellState {
     }
 
     pub(super) fn stop_selection_autoscroll(&mut self) {
-        self.selection_autoscroll = None;
-        self.selection_autoscroll_deadline = None;
+        self.mouse_selection.stop_autoscroll();
     }
 
     fn selection_edge_scroll_lines(distance: u16) -> usize {
@@ -229,7 +228,8 @@ impl ClientShellState {
     fn selection_scroll_metrics(&self, hit: &PaneHit) -> Option<shepr_termio::ScrollMetrics> {
         let metrics = hit.scroll?;
         Some(
-            self.selection_autoscroll
+            self.mouse_selection
+                .autoscroll
                 .as_ref()
                 .filter(|autoscroll| autoscroll.pane_id == hit.pane_id)
                 .map_or(metrics, |autoscroll| shepr_termio::ScrollMetrics {
@@ -242,13 +242,14 @@ impl ClientShellState {
     }
 
     fn active_selection_pane(&self) -> Option<PaneHit> {
-        let pane_id = if let Some(gesture) = self.word_selection_gesture.as_ref() {
+        let pane_id = if let Some(gesture) = self.mouse_selection.word_gesture.as_ref() {
             if gesture.released {
                 return None;
             }
             &gesture.pane_id
         } else {
             &self
+                .mouse_selection
                 .selection
                 .as_ref()
                 .filter(|selection| selection.is_in_progress())?
@@ -277,9 +278,9 @@ impl ClientShellState {
         };
         let (viewport_row, col) = selection_cell(column, row, hit.inner_rect);
         let absolute_row = metrics.absolute_row_at_viewport(viewport_row);
-        if self.word_selection_gesture.is_some() {
+        if self.mouse_selection.word_gesture.is_some() {
             self.drag_word_selection((absolute_row, col), outcome, now);
-        } else if let Some(selection) = self.selection.as_mut() {
+        } else if let Some(selection) = self.mouse_selection.selection.as_mut() {
             selection.drag(shepr_vt::Point::new(absolute_row, col));
         }
     }
@@ -294,41 +295,47 @@ impl ClientShellState {
     ) {
         let metrics = self.selection_scroll_metrics(hit);
         let was_dragging = self
+            .mouse_selection
             .selection
             .as_ref()
             .is_some_and(shepr_vt::selection::Selection::is_dragging);
-        let moved_from_anchor = self.selection.as_ref().is_some_and(|selection| {
-            let anchor = selection.anchor_position();
-            let top = metrics.map_or(
-                shepr_vt::AbsRow(0),
-                shepr_termio::ScrollMetrics::viewport_top_row,
-            );
-            let anchor_row = hit
-                .inner_rect
-                .y
-                .saturating_add(anchor.row.viewport_row(top).0)
-                .clamp(
-                    hit.inner_rect.y,
-                    hit.inner_rect.y + hit.inner_rect.height.saturating_sub(1),
+        let moved_from_anchor = self
+            .mouse_selection
+            .selection
+            .as_ref()
+            .is_some_and(|selection| {
+                let anchor = selection.anchor_position();
+                let top = metrics.map_or(
+                    shepr_vt::AbsRow(0),
+                    shepr_termio::ScrollMetrics::viewport_top_row,
                 );
-            let anchor_col = hit.inner_rect.x.saturating_add(anchor.col).clamp(
-                hit.inner_rect.x,
-                hit.inner_rect.x + hit.inner_rect.width.saturating_sub(1),
-            );
-            anchor_row != row || anchor_col != column
-        });
+                let anchor_row = hit
+                    .inner_rect
+                    .y
+                    .saturating_add(anchor.row.viewport_row(top).0)
+                    .clamp(
+                        hit.inner_rect.y,
+                        hit.inner_rect.y + hit.inner_rect.height.saturating_sub(1),
+                    );
+                let anchor_col = hit.inner_rect.x.saturating_add(anchor.col).clamp(
+                    hit.inner_rect.x,
+                    hit.inner_rect.x + hit.inner_rect.width.saturating_sub(1),
+                );
+                anchor_row != row || anchor_col != column
+            });
         self.update_selection_cursor_with_metrics(hit, column, row, metrics, outcome, now);
         let is_dragging = self
-            .word_selection_gesture
+            .mouse_selection
+            .word_gesture
             .as_ref()
             .map_or(was_dragging || moved_from_anchor, |gesture| gesture.dragged);
         if is_dragging {
-            if let Some(selection) = self.selection.as_mut()
+            if let Some(selection) = self.mouse_selection.selection.as_mut()
                 && selection.is_just_click()
             {
                 selection.force_dragging();
             }
-            self.last_pane_click = None;
+            self.mouse_selection.last_pane_click = None;
         }
         if !is_dragging {
             self.stop_selection_autoscroll();
@@ -384,7 +391,7 @@ impl ClientShellState {
             );
             self.push_pane_scroll_offset(hit.pane_id.clone(), offset_from_bottom, outcome);
         }
-        self.selection_autoscroll = Some(ClientSelectionAutoscroll {
+        self.mouse_selection.autoscroll = Some(ClientSelectionAutoscroll {
             pane_id: hit.pane_id.clone(),
             direction,
             last_mouse_column: column,
@@ -393,7 +400,7 @@ impl ClientShellState {
             offset_from_bottom,
             max_offset_from_bottom: metrics.max_offset_from_bottom,
         });
-        self.selection_autoscroll_deadline =
+        self.mouse_selection.autoscroll_deadline =
             Some(now + crate::limits::SELECTION_AUTOSCROLL_INTERVAL);
     }
 
@@ -450,8 +457,8 @@ impl ClientShellState {
         let deadline = self
             .last_composed_at
             .map(|last| last + crate::limits::SELECTION_REPAINT_INTERVAL);
-        self.selection_repaint_deadline = deadline.filter(|deadline| now < *deadline);
-        self.selection_repaint_deadline.is_none()
+        self.mouse_selection.repaint_deadline = deadline.filter(|deadline| now < *deadline);
+        self.mouse_selection.repaint_deadline.is_none()
     }
 
     pub(crate) fn tick_selection_autoscroll(
@@ -460,27 +467,32 @@ impl ClientShellState {
     ) -> ClientShellInput {
         let mut outcome = ClientShellInput::default();
         if self
-            .selection_repaint_deadline
+            .mouse_selection
+            .repaint_deadline
             .is_some_and(|deadline| now >= deadline)
         {
-            self.selection_repaint_deadline = None;
+            self.mouse_selection.repaint_deadline = None;
             outcome.repaint = true;
         }
         if self
-            .selection_autoscroll_deadline
+            .mouse_selection
+            .autoscroll_deadline
             .is_none_or(|deadline| now < deadline)
         {
             return outcome;
         }
-        let Some(mut autoscroll) = self.selection_autoscroll.clone() else {
-            self.selection_autoscroll_deadline = None;
+        let Some(mut autoscroll) = self.mouse_selection.autoscroll.clone() else {
+            self.mouse_selection.autoscroll_deadline = None;
             return outcome;
         };
-        let dragging = self.word_selection_gesture.as_ref().map_or_else(
+        let dragging = self.mouse_selection.word_gesture.as_ref().map_or_else(
             || {
-                self.selection.as_ref().is_some_and(|selection| {
-                    selection.pane_id == autoscroll.pane_id && selection.is_dragging()
-                })
+                self.mouse_selection
+                    .selection
+                    .as_ref()
+                    .is_some_and(|selection| {
+                        selection.pane_id == autoscroll.pane_id && selection.is_dragging()
+                    })
             },
             |gesture| gesture.pane_id == autoscroll.pane_id && gesture.dragged && !gesture.released,
         );
@@ -533,8 +545,8 @@ impl ClientShellState {
             now,
         );
         self.push_pane_scroll_offset(autoscroll.pane_id.clone(), next_offset, &mut outcome);
-        self.selection_autoscroll = Some(autoscroll);
-        self.selection_autoscroll_deadline =
+        self.mouse_selection.autoscroll = Some(autoscroll);
+        self.mouse_selection.autoscroll_deadline =
             Some(now + crate::limits::SELECTION_AUTOSCROLL_INTERVAL);
         outcome.repaint = true;
         outcome
@@ -1312,30 +1324,34 @@ impl ClientShellState {
             }
         }
         if mouse.kind == MouseEventKind::Up(MouseButton::Left)
-            && self.word_selection_gesture.is_some()
+            && self.mouse_selection.word_gesture.is_some()
         {
             self.finish_word_selection(outcome, now);
             outcome.repaint = true;
             return;
         }
-        if mouse.kind == MouseEventKind::Up(MouseButton::Left) && self.selection.is_some() {
+        if mouse.kind == MouseEventKind::Up(MouseButton::Left)
+            && self.mouse_selection.selection.is_some()
+        {
             self.stop_selection_autoscroll();
             let copied = self
+                .mouse_selection
                 .selection
                 .as_mut()
                 .is_some_and(shepr_vt::selection::Selection::finish);
             if copied && self.config.copy_on_select {
                 self.request_selection_copy(outcome);
-                self.selection = None;
+                self.mouse_selection.clear();
             } else if self
+                .mouse_selection
                 .selection
                 .as_ref()
                 .is_some_and(shepr_vt::selection::Selection::is_just_click)
             {
-                self.selection = None;
+                self.mouse_selection.clear_range();
             }
             if copied {
-                self.last_pane_click = None;
+                self.mouse_selection.last_pane_click = None;
             }
             outcome.repaint = true;
             return;
@@ -1455,14 +1471,11 @@ impl ClientShellState {
                 }
             }
             MouseEventKind::Down(MouseButton::Left) => {
-                if self.selection.take().is_some() {
+                let previous_pane_click = self.mouse_selection.last_pane_click.take();
+                if self.mouse_selection.selection.is_some() {
                     outcome.repaint = true;
                 }
-                self.selection_focus_pending = None;
-                self.stop_selection_autoscroll();
-                self.selection_highlight_clear_deadline = None;
-                self.word_selection_gesture = None;
-                let previous_pane_click = self.last_pane_click.take();
+                self.mouse_selection.clear();
                 self.workspace_press = None;
                 // A drag still recorded here lost its release; the press at the top of this
                 // function already settled it (see `settle_chrome_drag`). Split and pane
@@ -1636,9 +1649,10 @@ impl ClientShellState {
                     })
                     .cloned();
                 if let Some(hit) = scrollbar_hit {
+                    // The focused copy pane derives Copy mode from its parked session.
                     self.mode = if self.copy_mode.as_ref().is_some_and(|copy_mode| {
                         copy_mode.pane_id == hit.pane_id
-                            && self.focused_pane_id().as_deref() == Some(hit.pane_id.as_str())
+                            && copy_mode.pane_is_focused(self.focused_pane_id().as_deref())
                     }) {
                         ClientShellMode::Copy
                     } else {
@@ -1748,24 +1762,26 @@ impl ClientShellState {
                                 );
                             } else {
                                 if mouse.modifiers.is_empty() {
-                                    self.last_pane_click = Some(click);
+                                    self.mouse_selection.last_pane_click = Some(click);
                                 }
-                                self.selection_focus_pending = (self.focused_pane_id().as_deref()
-                                    != Some(hit.pane_id.as_str()))
-                                .then(|| hit.pane_id.clone());
+                                self.mouse_selection.focus_pending =
+                                    (self.focused_pane_id().as_deref()
+                                        != Some(hit.pane_id.as_str()))
+                                    .then(|| hit.pane_id.clone());
                                 let (viewport_row, col) =
                                     selection_cell(mouse.column, mouse.row, hit.inner_rect);
                                 let absolute_row = metrics.absolute_row_at_viewport(viewport_row);
-                                self.selection = Some(shepr_vt::selection::Selection::anchor(
-                                    hit.pane_id.clone(),
-                                    shepr_vt::Point::new(absolute_row, col),
-                                ));
+                                self.mouse_selection.selection =
+                                    Some(shepr_vt::selection::Selection::anchor(
+                                        hit.pane_id.clone(),
+                                        shepr_vt::Point::new(absolute_row, col),
+                                    ));
                             }
                         } else {
                             // Selections hold absolute rows. Without the scroll
                             // origin this click cannot be anchored in them; it
                             // only clears the old selection.
-                            self.selection = None;
+                            self.mouse_selection.selection = None;
                         }
                     }
                     self.push_endpoint_command(

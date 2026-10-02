@@ -28,11 +28,6 @@ impl EndpointHealth {
         }
     }
 
-    pub(super) fn received(&mut self, now: Instant) {
-        self.last_received = now;
-        self.ping_sent_at = None;
-    }
-
     pub(super) fn sync_reader_activity(
         &mut self,
         received_at: Option<Instant>,
@@ -91,6 +86,14 @@ impl EndpointHealth {
 
     pub(super) fn ping_sent(&mut self, now: Instant) {
         self.ping_sent_at = Some(now);
+    }
+}
+
+#[cfg(test)]
+impl EndpointHealth {
+    pub(super) fn received(&mut self, now: Instant) {
+        self.last_received = now;
+        self.ping_sent_at = None;
     }
 }
 

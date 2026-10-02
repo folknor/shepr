@@ -12,9 +12,10 @@ pub(crate) const SHUTDOWN_RECONNECT_INITIAL_DELAY: Duration = Duration::from_sec
 /// inexpensive.
 pub(crate) const SHUTDOWN_RECONNECT_MAX_DELAY: Duration = Duration::from_secs(60);
 
-/// Multiplier for ordinary logind reconnect backoff between retries. Doubling
-/// grows quickly after failure while the delay stays capped above.
-pub(crate) const SHUTDOWN_RECONNECT_BACKOFF_MULTIPLIER: u32 = 2;
+/// Growth factor of every retry backoff (`app::Backoff`): session writes,
+/// checkpoints, default workspace creation and logind reconnects. Doubling
+/// grows quickly after failure while each schedule's own cap bounds it.
+pub(crate) const BACKOFF_MULTIPLIER: u32 = 2;
 
 /// Bounded queue capacity for events forwarded from client threads.
 pub(crate) const SERVER_EVENT_CHANNEL_CAPACITY: usize = 64;

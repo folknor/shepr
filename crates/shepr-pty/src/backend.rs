@@ -486,18 +486,23 @@ unsafe fn run_child(plan: &ChildPlan<'_>) -> ! {
         child_exit(EXIT_SETUP_FAILED);
     }
     let mut selected = None;
-    let mut last_failed_candidate = None;
+    // Only the first candidate's failure is reported: it is the directory the
+    // pane was meant to open in, and the one the user can fix. The rest are
+    // fallbacks tried because of it.
+    let mut first_failure = None;
     for (index, dir) in plan.dirs.iter().enumerate() {
         // SAFETY: `dir` points at a NUL-terminated string the fork copied.
         if unsafe { libc::chdir(*dir) } == 0 {
             selected = Some(index);
             break;
         }
-        last_failed_candidate = Some((u32::try_from(index).unwrap_or(u32::MAX), errno()));
+        if first_failure.is_none() {
+            first_failure = Some(errno());
+        }
     }
     let Some(index) = selected else {
-        if let Some((index, errno)) = last_failed_candidate {
-            send_record(status, &launch::chdir_failed_record(index, errno));
+        if let Some(errno) = first_failure {
+            send_record(status, &launch::chdir_failed_record(errno));
         }
         child_exit(EXIT_LAUNCH_FAILED);
     };
@@ -822,13 +827,7 @@ mod tests {
         cmd.cwd(scratch.join("missing"));
         cmd.require_cwd();
         let (mut spawned, records) = spawn_and_read_status(&cmd);
-        assert_eq!(
-            records,
-            [LaunchRecord::ChdirFailed {
-                index: 0,
-                errno: libc::ENOENT,
-            }]
-        );
+        assert_eq!(records, [LaunchRecord::ChdirFailed(libc::ENOENT)]);
         spawned.child.wait().expect("reap the failed launch");
     }
 

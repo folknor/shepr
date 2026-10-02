@@ -234,7 +234,6 @@ impl PaneTerminal {
             .mode_get(shepr_vt::DecMode::SynchronizedOutput);
         core.terminal.write_at(bytes, now);
         let effects = collect_core_effects(&mut core);
-        let default_color_generation = core.default_color_generation;
 
         let synchronized_output = core
             .terminal
@@ -242,35 +241,33 @@ impl PaneTerminal {
         if synchronized_output != synchronized_output_before {
             core.synchronized_output_epoch = core.synchronized_output_epoch.wrapping_add(1);
         }
-        let request_render = !synchronized_output;
         // A synchronized update that never ends is force-flushed by the core
         // after its timeout; schedule a render for then so the pane does not
         // stay frozen until the next PTY read.
-        let render_delay = if synchronized_output {
+        let render_request = if !synchronized_output {
+            RenderRequest::Now
+        } else {
             core.terminal
                 .synchronized_output_deadline()
-                .map(|deadline| {
-                    deadline.saturating_duration_since(now) + SYNCHRONIZED_OUTPUT_FLUSH_MARGIN
+                .map_or(RenderRequest::None, |deadline| {
+                    RenderRequest::After(
+                        deadline.saturating_duration_since(now) + SYNCHRONIZED_OUTPUT_FLUSH_MARGIN,
+                    )
                 })
-        } else {
-            None
         };
         let dropped_clipboard_store_bytes = effects.dropped_clipboard_store_bytes.first().copied();
         drop(core);
         if let Some(bytes) = dropped_clipboard_store_bytes {
             self.report_oversized_clipboard_store(pane_id, bytes);
         }
-        ProcessBytesResult {
-            request_render,
-            render_delay,
+        Ok(ProcessBytesEffects {
+            render_request,
             terminal_title_changed: effects.terminal_title_changed,
             clipboard_writes: effects.clipboard_writes,
             reported_cwd: effects.reported_cwd,
             terminal_responses: effects.terminal_responses,
-            default_color_owner_pending: effects.default_color_owner_pending,
-            default_color_generation,
-            core_poisoned: false,
-        }
+            default_color_generation: effects.default_color_generation,
+        })
     }
 
     /// Records which foreground program overrode a default colour, so the
@@ -278,14 +275,13 @@ impl PaneTerminal {
     ///
     /// Finding the program means scanning `/proc`. The caller releases the
     /// terminal and reply-order locks before this scan, then this
-    /// method takes the terminal lock briefly to store the answer. The
-    /// generation check drops an answer if another OSC colour write arrived
-    /// during the scan.
+    /// generation-checked setter records the owner only if that OSC 10/11
+    /// override is still current.
     pub(in crate::pane) fn resolve_default_color_owner(
         &self,
         pane_id: PaneId,
         child_liveness: &ChildLiveness,
-        generation: u64,
+        generation: DefaultColorGeneration,
     ) {
         let Some(shell_pid) = child_liveness.live_pid() else {
             return;
@@ -300,7 +296,8 @@ impl PaneTerminal {
             self.report_terminal_mutation_failure("default color owner update");
             return;
         };
-        if core.default_color_generation == generation && has_default_color_override(&core.terminal)
+        if core.default_color_generation == generation.0
+            && has_default_color_override(&core.terminal)
         {
             core.transient_default_color_owner_pgid = Some(owner_pgid);
             debug!(
@@ -314,17 +311,14 @@ impl PaneTerminal {
     /// everything the core queued for delivery. The runtime's timeout task
     /// calls this for a child that went quiet inside an update;
     /// The parser does the same before parsing new output.
-    /// Readers and render paths only inspect the terminal. `request_render`
-    /// is set when a frame was flushed.
+    /// Readers and render paths only inspect the terminal. The render request
+    /// is immediate when a frame was flushed.
     pub(crate) fn tick(&self, now: Instant) -> ProcessBytesResult {
         let Ok(mut core) = shepr_vt::lock_terminal_core(&self.core) else {
             // A poisoned core is noticed by the PTY actor (its per-loop
             // `core_poisoned` check, or its next read), which ends the pane;
             // this timer has no loop to stop.
-            return ProcessBytesResult {
-                core_poisoned: true,
-                ..ProcessBytesResult::default()
-            };
+            return Err(shepr_vt::TerminalCorePoisoned);
         };
         let flushed = core.terminal.tick(now);
         if flushed {
@@ -335,7 +329,6 @@ impl PaneTerminal {
             core.synchronized_output_epoch = core.synchronized_output_epoch.wrapping_add(1);
         }
         let effects = collect_core_effects(&mut core);
-        let default_color_generation = core.default_color_generation;
         drop(core);
         // A synchronized update parses its buffered bytes when it flushes, so
         // an oversized OSC 52 store inside one surfaces here, not on a read.
@@ -345,17 +338,18 @@ impl PaneTerminal {
         ) {
             self.report_oversized_clipboard_store(pane_id, bytes);
         }
-        ProcessBytesResult {
-            request_render: flushed,
-            render_delay: None,
+        Ok(ProcessBytesEffects {
+            render_request: if flushed {
+                RenderRequest::Now
+            } else {
+                RenderRequest::None
+            },
             terminal_title_changed: effects.terminal_title_changed,
             clipboard_writes: effects.clipboard_writes,
             reported_cwd: effects.reported_cwd,
             terminal_responses: effects.terminal_responses,
-            default_color_owner_pending: effects.default_color_owner_pending,
-            default_color_generation,
-            core_poisoned: false,
-        }
+            default_color_generation: effects.default_color_generation,
+        })
     }
 
     pub(crate) fn seed_history_ansi(&self, ansi: &str) {
@@ -427,7 +421,7 @@ impl PaneTerminal {
         if synchronized_output_after != synchronized_output_before {
             core.synchronized_output_epoch = core.synchronized_output_epoch.wrapping_add(1);
         }
-        let terminal_responses = drain_terminal_responses(&mut core);
+        let terminal_responses = drain_terminal_responses(core.terminal.take_pty_responses());
 
         terminal_set_scroll_offset_from_bottom(&mut core.terminal, offset_from_bottom);
         if offset_from_bottom > 0 {
@@ -1111,20 +1105,18 @@ impl PaneTerminal {
         pane_id: PaneId,
         bytes: &[u8],
         now: Instant,
-    ) -> ProcessBytesResult {
-        let core = match shepr_vt::lock_terminal_core(&self.core) {
-            Ok(core) => core,
-            Err(shepr_vt::TerminalCorePoisoned) => {
-                // The PTY actor logs and closes the pane for this result. It
-                // also owns the idle-poison path, so logging here would
-                // duplicate the same failure on reader-detected poison.
-                return ProcessBytesResult {
-                    core_poisoned: true,
-                    ..ProcessBytesResult::default()
-                };
-            }
-        };
+    ) -> ProcessBytesEffects {
+        self.try_process_pty_bytes_at(pane_id, bytes, now)
+            .expect("test process requires a healthy terminal core")
+    }
 
+    pub(crate) fn try_process_pty_bytes_at(
+        &self,
+        pane_id: PaneId,
+        bytes: &[u8],
+        now: Instant,
+    ) -> ProcessBytesResult {
+        let core = shepr_vt::lock_terminal_core(&self.core)?;
         self.process_pty_bytes_locked(pane_id, bytes, now, core)
     }
 
@@ -1168,7 +1160,7 @@ impl PaneTerminal {
             .unwrap_or_default()
     }
 
-    pub(crate) fn process_pty_bytes(&self, pane_id: PaneId, bytes: &[u8]) -> ProcessBytesResult {
+    pub(crate) fn process_pty_bytes(&self, pane_id: PaneId, bytes: &[u8]) -> ProcessBytesEffects {
         self.process_pty_bytes_at(pane_id, bytes, Instant::now())
     }
 

@@ -7,11 +7,17 @@ mod status;
 
 use self::discovery::automatic_workspace_label;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum RefBackend {
+    Files,
+    Reftable,
+}
+
 pub use self::{
     discovery::fallback_label_from_cwd,
     status::{
-        GitStatusCacheEntry, GitStatusDiscovery, git_status_cache_key, git_status_discovery,
-        git_status_snapshot_for_cwd, git_status_snapshot_for_discovery,
+        AheadBehindState, GitStatusCacheEntry, GitStatusDiscovery, git_status_cache_key,
+        git_status_discovery, git_status_snapshot_for_cwd, git_status_snapshot_for_discovery,
     },
 };
 pub use runner::{GitCommandError, run_git};

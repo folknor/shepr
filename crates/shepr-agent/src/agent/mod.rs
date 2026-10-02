@@ -951,6 +951,10 @@ impl IntegrationTarget {
         Agent::all().filter_map(Agent::integration_target)
     }
 
+    // This exhaustive inverse supplies const identity and policy access without
+    // searching the descriptor table or introducing a missing-target fallback.
+    // The descriptor audit checks the forward link against this inverse; file
+    // formats, paths and installation strategies live in the integration spec.
     pub const fn agent(self) -> Agent {
         match self {
             Self::Pi => Agent::Pi,

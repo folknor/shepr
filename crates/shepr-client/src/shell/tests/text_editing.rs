@@ -50,7 +50,10 @@ fn editor(state: &mut ClientShellState) -> &mut TextEditor {
                 .copy_mode
                 .as_mut()
                 .expect("copy mode")
-                .search_prompt
+                .search
+                .as_mut()
+                .expect("search state")
+                .prompt
                 .as_mut()
                 .expect("prompt")
                 .query

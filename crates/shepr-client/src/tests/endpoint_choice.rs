@@ -843,26 +843,6 @@ fn every_viewed_connection_gets_the_one_surface_geometry() {
     assert_eq!(f.local.take(), f.target.take());
 }
 #[test]
-fn losing_the_shown_endpoint_freezes_pane_frames_but_chrome_still_presents() {
-    let mut f = Fixture::new();
-    f.client.write_stream.fail(
-        &ClientEndpointId::Local,
-        &io::Error::new(io::ErrorKind::BrokenPipe, "lost"),
-    );
-    f.reconcile();
-    assert!(f.client.state.choice.frames_frozen());
-    f.clear_output();
-    let frame = shepr_protocol::FrameData::from_ratatui_buffer_with_hyperlinks(
-        &ratatui::buffer::Buffer::with_lines(["pane"]),
-        None,
-        &[],
-    );
-    f.client.state.present_frame(frame.clone());
-    assert!(f.output().is_empty());
-    f.client.state.present_chrome(frame);
-    assert!(f.output().contains("pane"));
-}
-#[test]
 fn a_reconnected_local_is_prepared_once_per_connection() {
     let mut f = Fixture::new();
     f.client.write_stream.fail(

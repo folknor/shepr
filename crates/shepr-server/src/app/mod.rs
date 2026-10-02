@@ -66,6 +66,32 @@ impl AppPolicy {
     }
 }
 
+/// Exponential retry spacing shared by session writes, checkpoints, empty
+/// workspace creation, and logind reconnection.
+#[derive(Clone, Copy)]
+pub(crate) struct Backoff {
+    min: Duration,
+    max: Duration,
+}
+
+const BACKOFF_MULTIPLIER: u32 = crate::limits::BACKOFF_MULTIPLIER;
+
+impl Backoff {
+    pub(crate) const fn new(min: Duration, max: Duration) -> Self {
+        Self { min, max }
+    }
+
+    /// Delay after `failures_before` earlier consecutive failures, starting
+    /// at `min` and saturating at `max` without overflowing for a long-lived
+    /// failure streak.
+    pub(crate) fn delay_after(self, failures_before: u32) -> Duration {
+        let factor = BACKOFF_MULTIPLIER
+            .checked_pow(failures_before)
+            .unwrap_or(u32::MAX);
+        self.min.saturating_mul(factor).min(self.max)
+    }
+}
+
 /// Full application: the pure `AppState` plus the runtime concerns it must
 /// not hold - live pane runtimes, the event channels and render signals they
 /// report through, and async I/O.
@@ -83,11 +109,11 @@ pub struct App {
     /// restored session theme remains the fallback until this report arrives.
     live_host_theme_reported: bool,
     /// The next time automatic workspace creation may retry after a failure;
-    /// the loop's deadline wakes it then.
+    /// the loop reads this instant directly when choosing its next wakeup.
     default_workspace_retry_at: Option<Instant>,
-    /// The delay the last failed automatic creation waited out, doubled on
-    /// each consecutive failure up to its cap; `None` after a success.
-    default_workspace_retry_delay: Option<Duration>,
+    /// Consecutive failures feed `Backoff`; this count resets independently
+    /// from the retry instant when a workspace appears.
+    default_workspace_retry_failures: u32,
     /// Panes whose runtime was replaced since the server last synced pane
     /// focus (an agent resume starting its shell). The new runtime has not
     /// been told about focus; `sync_pane_focus` drains this and re-sends the
@@ -310,7 +336,7 @@ impl App {
             ),
             live_host_theme_reported: false,
             default_workspace_retry_at: None,
-            default_workspace_retry_delay: None,
+            default_workspace_retry_failures: 0,
             runtimes_replaced_panes: Vec::new(),
             pending_resume_commands: std::collections::HashMap::new(),
             session_saver: session::SessionSaver::new(persister, save_finished),
@@ -363,7 +389,7 @@ impl App {
     pub(crate) fn create_default_workspace(&mut self, geometry: SpawnGeometry) -> bool {
         if !self.state.workspaces.is_empty() {
             self.default_workspace_retry_at = None;
-            self.default_workspace_retry_delay = None;
+            self.default_workspace_retry_failures = 0;
             return false;
         }
         if self
@@ -379,7 +405,7 @@ impl App {
 
         match self.create_workspace(&cwd, geometry) {
             Ok(_index) => {
-                self.default_workspace_retry_delay = None;
+                self.default_workspace_retry_failures = 0;
                 // Callers include non-mutating API requests and client
                 // connects, so the shell projection is invalidated here.
                 self.state.mark_shell_projection_dirty();
@@ -391,12 +417,11 @@ impl App {
             }
             Err(err) => {
                 tracing::error!(error = %err, "failed to create default workspace");
-                let retry_delay = self
-                    .default_workspace_retry_delay
-                    .map_or(DEFAULT_WORKSPACE_RETRY_MIN, |delay| {
-                        delay.saturating_mul(2).min(DEFAULT_WORKSPACE_RETRY_MAX)
-                    });
-                self.default_workspace_retry_delay = Some(retry_delay);
+                let retry_delay =
+                    Backoff::new(DEFAULT_WORKSPACE_RETRY_MIN, DEFAULT_WORKSPACE_RETRY_MAX)
+                        .delay_after(self.default_workspace_retry_failures);
+                self.default_workspace_retry_failures =
+                    self.default_workspace_retry_failures.saturating_add(1);
                 self.default_workspace_retry_at = Some(self.clock.now + retry_delay);
                 false
             }

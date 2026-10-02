@@ -231,13 +231,15 @@ impl ClientShellState {
             // them in place (see `wire_cells`).
             compose_pane_surface(&mut frame, &surface.frame, layout.pane_surface);
             let has_selection = self
+                .mouse_selection
                 .selection
                 .as_ref()
                 .is_some_and(shepr_vt::selection::Selection::is_visible);
             let has_search = self
                 .copy_mode
                 .as_ref()
-                .is_some_and(|copy_mode| !copy_mode.search_matches.is_empty());
+                .and_then(|copy_mode| copy_mode.search.as_ref())
+                .is_some_and(|search| !search.matches.is_empty());
             // Highlights restyle wire cells in the existing order: noncurrent search matches,
             // selection, the current search match, then the copy cursor.
             if has_selection || has_search {
@@ -257,13 +259,14 @@ impl ClientShellState {
                         && self.copy_mode.as_ref().is_some_and(|copy_mode| {
                             copy_mode.pane_id == hit.pane_id
                                 && self
+                                    .mouse_selection
                                     .selection
                                     .as_ref()
                                     .is_some_and(|selection| selection.pane_id == hit.pane_id)
                         });
                     if !selection_is_stale_copy_projection {
                         shepr_termio::selection_render::render_selection_highlight(
-                            self.selection.as_ref(),
+                            self.mouse_selection.selection.as_ref(),
                             &hit.pane_id,
                             hit.inner_rect,
                             hit.scroll,
@@ -512,7 +515,7 @@ impl ClientShellState {
 
     fn record_composed_frame(&mut self) {
         self.last_composed_at = Some(self.now);
-        self.selection_repaint_deadline = None;
+        self.mouse_selection.repaint_deadline = None;
     }
 }
 
@@ -608,6 +611,9 @@ fn render_client_copy_search_highlights(
     let Some(copy_mode) = copy_mode.filter(|copy_mode| copy_mode.pane_id == hit.pane_id) else {
         return;
     };
+    let Some(search) = copy_mode.search.as_ref() else {
+        return;
+    };
     if hit.inner_rect.is_empty() {
         return;
     }
@@ -621,8 +627,8 @@ fn render_client_copy_search_highlights(
     } else {
         Style::default().fg(palette.text).bg(palette.surface1)
     });
-    for (index, text_match) in copy_mode.search_matches.iter().enumerate() {
-        if (copy_mode.search_current == Some(index)) != current_only
+    for (index, text_match) in search.matches.iter().enumerate() {
+        if (search.current == Some(index)) != current_only
             || text_match.end.row < top
             || text_match.start.row > bottom
         {
@@ -720,15 +726,15 @@ mod tests {
             max_offset_from_bottom: 0,
             entry_offset_from_bottom: 0,
             selection: None,
-            search_prompt: None,
-            search_query: "x".into(),
-            search_direction: None,
-            search_matches: vec![text_range(2, 0, 1), text_range(3, 0, 5)],
-            search_total: 2,
-            search_current: Some(1),
-            search_current_global: Some(1),
-            search_generation: 0,
-            copy_after_search: false,
+            search: Some(ClientCopySearch {
+                query: "x".into(),
+                matches: vec![text_range(2, 0, 1), text_range(3, 0, 5)],
+                total: 2,
+                current: Some(1),
+                current_global: Some(1),
+                ..Default::default()
+            }),
+            operation_generation: 0,
         };
         let palette = Palette::catppuccin();
         let mut frame = FrameData::from_ratatui_buffer_with_hyperlinks(

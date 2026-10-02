@@ -436,11 +436,11 @@ fn oversized_retained_surface_is_clipped_with_its_hits() {
 fn selection_without_a_previous_surface_is_dropped_by_the_next_surface() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
-    state.selection = Some(shepr_vt::selection::Selection::range(
+    state.mouse_selection.selection = Some(shepr_vt::selection::Selection::range(
         test_pane_id("w1:p1"),
         shepr_vt::Point::new(shepr_vt::AbsRow(0), 0),
         shepr_vt::Point::new(shepr_vt::AbsRow(0), 2),
     ));
     state.receive_pane_surface(surface());
-    assert!(state.selection.is_none());
+    assert!(state.mouse_selection.selection.is_none());
 }

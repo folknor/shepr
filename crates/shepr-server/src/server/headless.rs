@@ -231,6 +231,16 @@ impl HeadlessServer {
         self.view_epoch.advance();
     }
 
+    /// Starts request dispatch only while the lifecycle accepts work.
+    /// Stop requests can arrive after a loop batch dequeues an item, so each
+    /// dispatch entry uses this gate before it applies the item.
+    pub(super) fn begin_request_dispatch(&mut self) -> bool {
+        if self.lifecycle.stop_requested() {
+            self.initiate_shutdown();
+        }
+        self.lifecycle.phase() != ShutdownPhase::Stopping
+    }
+
     fn invalidate_pane_viewers(&mut self, pane: shepr_core::layout::PaneId) {
         for id in self.pane_viewers(pane) {
             if let Some(client) = self.clients.get_mut(&id) {
@@ -1029,6 +1039,25 @@ impl HeadlessServer {
     /// Handles a server event, then reports any change in which panes hold
     /// terminal focus. Each arm records shared or client-local view changes.
     fn handle_server_event(&mut self, ev: ServerEvent) {
+        if !self.begin_request_dispatch() {
+            match ev {
+                ServerEvent::ClientShellConnected {
+                    client_id, outbox, ..
+                } => {
+                    self.shutdown_unregistered_clients.insert(client_id, outbox);
+                }
+                ServerEvent::ClientShellEndpointRequest {
+                    client_id,
+                    boot_id,
+                    request_id,
+                    ..
+                } => {
+                    self.reject_endpoint_request_for_shutdown(client_id, boot_id, request_id);
+                }
+                _ => {}
+            }
+            return;
+        }
         if matches!(
             &ev,
             ServerEvent::ClientDetach { client_id }
@@ -1382,17 +1411,7 @@ impl HeadlessServer {
         }
     }
 
-    fn handle_api_request_with_shutdown_check_inner(
-        &mut self,
-        msg: shepr_api::ApiRequestMessage,
-    ) -> bool {
-        if self.lifecycle.stop_requested() {
-            self.initiate_shutdown();
-        }
-        if self.lifecycle.phase() == ShutdownPhase::Stopping {
-            self.reject_api_request_for_shutdown(&msg);
-            return false;
-        }
+    fn dispatch_api_request(&mut self, msg: shepr_api::ApiRequestMessage) -> bool {
         let request_id = msg.request.id.clone();
         let method = msg.request.method.traits().name;
 

@@ -93,38 +93,184 @@ pub(super) fn is_not_regular(error: &std::io::Error) -> bool {
         .is_some_and(<dyn std::error::Error + Send + Sync>::is::<NotRegularFile>)
 }
 
+enum SessionPathState {
+    Absent,
+    Regular(std::fs::Metadata),
+    NotRegular(std::fs::FileType),
+}
+
+/// The inspected target and state of one session or history path.
+///
+/// All persistence operations use this resolver so startup checks, reads,
+/// replacement checks, and metadata stamps classify the same target through
+/// the same bounded symlink walk. Opening still goes through the platform's
+/// nonblocking regular-file open, which checks the object actually opened.
+pub(super) struct SessionPath {
+    target: PathBuf,
+    state: SessionPathState,
+}
+
+impl SessionPath {
+    pub(super) fn resolve(path: &Path) -> std::io::Result<Self> {
+        let mut target = path.to_path_buf();
+        for _ in 0..MAX_SESSION_PATH_SYMLINK_HOPS {
+            let metadata = match std::fs::symlink_metadata(&target) {
+                Ok(metadata) => metadata,
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                    return Ok(Self {
+                        target,
+                        state: SessionPathState::Absent,
+                    });
+                }
+                // Only absence means that the target is missing. An
+                // unsearchable parent or other stat failure leaves it unknown.
+                Err(err) => return Err(err),
+            };
+            if !metadata.file_type().is_symlink() {
+                return Ok(Self::from_metadata(target, metadata));
+            }
+            let link = std::fs::read_link(&target)?;
+            target = if link.is_absolute() {
+                link
+            } else {
+                target.parent().unwrap_or_else(|| Path::new(".")).join(link)
+            };
+        }
+        match std::fs::symlink_metadata(&target) {
+            Ok(metadata) if metadata.file_type().is_symlink() => Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "session or history path still resolves through a symlink after the hop limit",
+            )),
+            Ok(metadata) => Ok(Self::from_metadata(target, metadata)),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(Self {
+                target,
+                state: SessionPathState::Absent,
+            }),
+            Err(err) => Err(err),
+        }
+    }
+
+    fn from_metadata(target: PathBuf, metadata: std::fs::Metadata) -> Self {
+        let state = if metadata.file_type().is_file() {
+            SessionPathState::Regular(metadata)
+        } else {
+            SessionPathState::NotRegular(metadata.file_type())
+        };
+        Self { target, state }
+    }
+
+    pub(super) fn target(&self) -> &Path {
+        &self.target
+    }
+
+    pub(super) fn ensure_replaceable(&self, path: &Path) -> std::io::Result<()> {
+        match &self.state {
+            SessionPathState::NotRegular(file_type) => Err(not_regular(path, *file_type)),
+            SessionPathState::Absent | SessionPathState::Regular(_) => Ok(()),
+        }
+    }
+
+    pub(super) fn regular_metadata(
+        &self,
+        path: &Path,
+    ) -> std::io::Result<Option<&std::fs::Metadata>> {
+        match &self.state {
+            SessionPathState::Absent => Ok(None),
+            SessionPathState::Regular(metadata) => Ok(Some(metadata)),
+            SessionPathState::NotRegular(file_type) => Err(not_regular(path, *file_type)),
+        }
+    }
+
+    fn open_regular(&self, path: &Path) -> std::io::Result<std::fs::File> {
+        self.ensure_replaceable(path)?;
+        shepr_platform::open_regular_file(&self.target)?
+            .map_err(|file_type| not_regular(path, file_type))
+    }
+}
+
 /// Opens `path` for reading only if it resolves to a regular file (see
 /// `shepr_platform::open_regular_file`): a FIFO in its place never blocks a
 /// read, and anything other than a regular file is a [`NotRegularFile`] error.
 pub(super) fn open_regular(path: &Path) -> std::io::Result<std::fs::File> {
-    shepr_platform::open_regular_file(path)?.map_err(|file_type| not_regular(path, file_type))
+    SessionPath::resolve(path)?.open_regular(path)
 }
 
-/// Refuses a path that holds something other than a regular file, before a
-/// save replaces it or a clear removes it: neither may destroy an object it
-/// did not write. Absence is fine. This is a check, not a lock: an object put
-/// there between it and the rename is still replaced.
-fn ensure_replaceable(path: &Path) -> std::io::Result<()> {
-    match std::fs::symlink_metadata(path) {
-        Ok(metadata) if !metadata.is_file() => Err(not_regular(path, metadata.file_type())),
-        Ok(_) => Ok(()),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(err) => Err(err),
+/// SHA-256 of a history file's bytes: how a layout names the history it pairs
+/// with. Its string form is only used at persistence and server boundaries.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct HistoryDigest([u8; 32]);
+
+impl HistoryDigest {
+    pub(super) fn from_bytes(bytes: &[u8]) -> Self {
+        Self(sha256_bytes(bytes))
+    }
+
+    pub(super) fn from_hex(hex: &str) -> Option<Self> {
+        if hex.len() != 64 {
+            return None;
+        }
+        // limits-exempt: a SHA-256 digest is 32 bytes by the hash definition.
+        let mut bytes = [0; 32];
+        for (index, [high, low]) in hex.as_bytes().as_chunks::<2>().0.iter().enumerate() {
+            bytes[index] = (hex_digit(*high)? << 4) | hex_digit(*low)?;
+        }
+        Some(Self(bytes))
+    }
+
+    pub(super) fn to_hex(self) -> String {
+        encode_sha256(&self.0)
     }
 }
 
-/// The hex SHA-256 of a history file's bytes: how a layout names the history
-/// it pairs with.
-pub(super) fn history_digest(json: &[u8]) -> String {
+impl serde::Serialize for HistoryDigest {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&encode_sha256(&self.0))
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for HistoryDigest {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let hex = <String as serde::Deserialize>::deserialize(deserializer)?;
+        Self::from_hex(&hex)
+            .ok_or_else(|| serde::de::Error::custom("expected a 64-digit SHA-256 hex digest"))
+    }
+}
+
+pub(super) fn sha256_bytes(bytes: &[u8]) -> [u8; 32] {
     use sha2::{Digest, Sha256};
+
+    Sha256::digest(bytes).into()
+}
+
+fn encode_sha256(digest: &[u8; 32]) -> String {
     const HEX: &[u8; 16] = b"0123456789abcdef";
-    let digest = Sha256::digest(json);
     let mut hex = String::with_capacity(digest.len() * 2);
-    for byte in digest {
+    for &byte in digest {
         hex.push(char::from(HEX[usize::from(byte >> 4)]));
         hex.push(char::from(HEX[usize::from(byte & 15)]));
     }
     hex
+}
+
+fn hex_digit(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+/// The SHA-256 of a history file's bytes: how a layout names the history it
+/// pairs with.
+pub(super) fn history_digest(json: &[u8]) -> HistoryDigest {
+    HistoryDigest::from_bytes(json)
 }
 
 fn read_history_file(path: &Path) -> std::io::Result<Vec<u8>> {
@@ -148,45 +294,6 @@ pub(super) fn read_session_file(path: &Path) -> std::io::Result<String> {
         ));
     }
     Ok(content)
-}
-
-// Follow symlinks manually so a write through a (possibly dangling) symlink
-// lands on the target. `fs::canonicalize` requires the target to exist, which
-// excludes the dangling-symlink case stow users hit on the very first save.
-fn resolve_write_target(path: &Path) -> std::io::Result<PathBuf> {
-    let mut current = path.to_path_buf();
-    for _ in 0..MAX_SESSION_PATH_SYMLINK_HOPS {
-        let meta = match std::fs::symlink_metadata(&current) {
-            Ok(meta) => meta,
-            // Only absence means "nothing here, write a plain file". Any
-            // other error (an unsearchable ancestor, EIO, ELOOP) means the
-            // path cannot be inspected, so it is returned rather than read
-            // as "not a symlink" and written over.
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(current),
-            Err(err) => return Err(err),
-        };
-        if !meta.file_type().is_symlink() {
-            return Ok(current);
-        }
-        let link = std::fs::read_link(&current)?;
-        current = if link.is_absolute() {
-            link
-        } else {
-            current
-                .parent()
-                .unwrap_or_else(|| Path::new("."))
-                .join(link)
-        };
-    }
-    match std::fs::symlink_metadata(&current) {
-        Ok(meta) if meta.file_type().is_symlink() => Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "session path still resolves through a symlink after the hop limit",
-        )),
-        Ok(_) => Ok(current),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(current),
-        Err(err) => Err(err),
-    }
 }
 
 /// The directory holding `path`; a bare file name lives in `.`.
@@ -335,20 +442,20 @@ struct SavedSession<'a> {
     #[serde(flatten)]
     snapshot: &'a SessionSnapshot,
     #[serde(skip_serializing_if = "Option::is_none")]
-    history_digest: Option<&'a str>,
+    history_digest: Option<&'a HistoryDigest>,
 }
 
 /// The history reference read back from a layout file.
 #[derive(serde::Deserialize)]
 struct SavedHistoryReference {
     #[serde(default)]
-    history_digest: Option<String>,
+    history_digest: Option<HistoryDigest>,
 }
 
 pub(super) fn save_to_path(
     path: &Path,
     snapshot: &SessionSnapshot,
-    history_digest: Option<&str>,
+    history_digest: Option<&HistoryDigest>,
 ) -> std::io::Result<Published> {
     save_json_to_path(
         path,
@@ -372,16 +479,17 @@ fn save_json_to_path<T: serde::Serialize>(path: &Path, snapshot: &T) -> std::io:
 }
 
 fn save_serialized_to_path(path: &Path, json: &[u8]) -> std::io::Result<Published> {
-    let target = resolve_write_target(path)?;
-    ensure_replaceable(&target)?;
-    let directory = containing_directory(&target);
+    let resolved = SessionPath::resolve(path)?;
+    resolved.ensure_replaceable(resolved.target())?;
+    let target = resolved.target();
+    let directory = containing_directory(target);
     let missing_directories = missing_directory_chain(directory)?;
     // The session root may already have been created by DataDirLease before
     // this save runs; that earlier creator must apply the same private mode.
     shepr_platform::create_private_directory_all(directory)?;
     let pending = target.with_extension("json.tmp");
     let mut source = json;
-    let published = publish_private_file(&mut source, &pending, &target, true)?;
+    let published = publish_private_file(&mut source, &pending, target, true)?;
     if matches!(published, Published::Durable) {
         // Publishing synced the leaf directory. Sync each parent that records
         // a newly created directory, stopping at the existing ancestor.
@@ -878,10 +986,11 @@ pub(super) fn save_history_json_to_path(path: &Path, json: &[u8]) -> std::io::Re
 /// would strand the stale target with the old session and turn the next save
 /// into a plain file where the link was.
 pub(super) fn clear_path(path: &Path) -> std::io::Result<()> {
-    let target = resolve_write_target(path)?;
-    ensure_replaceable(&target)?;
-    match std::fs::remove_file(&target) {
-        Ok(()) => shepr_platform::sync_directory(containing_directory(&target)),
+    let resolved = SessionPath::resolve(path)?;
+    resolved.ensure_replaceable(resolved.target())?;
+    let target = resolved.target();
+    match std::fs::remove_file(target) {
+        Ok(()) => shepr_platform::sync_directory(containing_directory(target)),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(err) => Err(err),
     }
@@ -921,10 +1030,10 @@ impl SessionLoad {
 /// state only costs history and is left to the saves.
 pub fn check_session_target(lease: &DataDirLease) -> std::io::Result<()> {
     let path = session_path(lease.directory());
-    // Use the writer's resolver so startup and later saves enforce the same
+    // Use the shared resolver so startup and later saves apply the same
     // symlink hop limit, including dangling links.
-    let target = resolve_write_target(&path)?;
-    ensure_replaceable(&target)
+    let resolved = SessionPath::resolve(&path)?;
+    resolved.ensure_replaceable(resolved.target())
 }
 
 /// The directory a session file is backed up to before a save replaces one
@@ -961,7 +1070,7 @@ pub fn load(lease: &DataDirLease) -> SessionLoad {
         Ok(snapshot) => SessionLoad::Loaded {
             snapshot,
             history_digest: match serde_json::from_str::<SavedHistoryReference>(&content) {
-                Ok(reference) => reference.history_digest,
+                Ok(reference) => reference.history_digest.map(HistoryDigest::to_hex),
                 Err(err) => {
                     warn!(
                         event = "persist.restore", subsystem = "persist",
@@ -998,6 +1107,7 @@ pub fn load_history(
         return None;
     }
     let expected_digest = expected_digest?;
+    let expected_digest = HistoryDigest::from_hex(expected_digest)?;
     let path = session_history_path(lease.directory());
     let content = match read_history_file(&path) {
         Ok(content) => content,
@@ -1044,6 +1154,11 @@ pub fn load_history(
             None
         }
     }
+}
+
+#[cfg(test)]
+fn resolve_write_target(path: &Path) -> std::io::Result<PathBuf> {
+    Ok(SessionPath::resolve(path)?.target)
 }
 
 #[cfg(test)]
@@ -1122,6 +1237,7 @@ mod tests {
         save_history_json_to_path(&session_history_path(lease.directory()), &json)
             .expect("write history");
         let digest = history_digest(&json);
+        let digest_hex = digest.to_hex();
         save_to_path(
             &session_path(lease.directory()),
             &empty_snapshot(),
@@ -1132,7 +1248,7 @@ mod tests {
         let SessionLoad::Loaded { history_digest, .. } = load(&lease) else {
             panic!("the layout loads");
         };
-        assert_eq!(history_digest.as_deref(), Some(digest.as_str()));
+        assert_eq!(history_digest.as_deref(), Some(digest_hex.as_str()));
         let restored = load_history(&lease, history_digest.as_deref()).expect("paired history");
         assert_eq!(
             restored.workspaces[0].panes[&0].ansi,
@@ -1148,11 +1264,11 @@ mod tests {
             .json;
         save_history_json_to_path(&session_history_path(lease.directory()), &other)
             .expect("write history");
-        assert!(load_history(&lease, Some(&digest)).is_none());
+        assert!(load_history(&lease, Some(&digest_hex)).is_none());
     }
 
     fn history_digest_of(text: &str) -> String {
-        history_digest(text.as_bytes())
+        history_digest(text.as_bytes()).to_hex()
     }
 
     #[test]

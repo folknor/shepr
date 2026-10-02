@@ -6,9 +6,28 @@ use std::{collections::HashMap, io::ErrorKind};
 use shepr_core::env::EnvVar;
 
 #[derive(Clone, Debug)]
-struct DirectoryError {
-    kind: ErrorKind,
-    message: String,
+struct DirectoryError(std::sync::Arc<io::Error>);
+
+impl std::fmt::Display for DirectoryError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(self.0.as_ref(), formatter)
+    }
+}
+
+impl std::error::Error for DirectoryError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.0.as_ref())
+    }
+}
+
+fn capture_directory(result: io::Result<PathBuf>) -> CapturedDirectory {
+    result.map_err(|error| DirectoryError(std::sync::Arc::new(error)))
+}
+
+fn captured_directory(result: &CapturedDirectory) -> io::Result<PathBuf> {
+    result
+        .clone()
+        .map_err(|error| io::Error::new(error.0.kind(), error))
 }
 
 type CapturedDirectory = Result<PathBuf, DirectoryError>;
@@ -40,10 +59,8 @@ impl IntegrationEnvironment {
             .iter()
             .copied()
             .map(|variable| {
-                let value = read_path(variable).map_err(|error| DirectoryError {
-                    kind: error.kind(),
-                    message: error.to_string(),
-                });
+                let value =
+                    read_path(variable).map_err(|error| DirectoryError(std::sync::Arc::new(error)));
                 (variable, value)
             })
             .collect();
@@ -53,7 +70,7 @@ impl IntegrationEnvironment {
     fn path(&self, variable: EnvVar) -> io::Result<Option<PathBuf>> {
         match self.paths.get(&variable) {
             Some(Ok(path)) => Ok(path.clone()),
-            Some(Err(error)) => Err(io::Error::new(error.kind, error.message.clone())),
+            Some(Err(error)) => Err(io::Error::new(error.0.kind(), error.clone())),
             None => Err(io::Error::new(
                 ErrorKind::NotFound,
                 format!("integration environment variable {variable} was not resolved"),
@@ -67,6 +84,10 @@ impl IntegrationEnvironment {
     }
 }
 
+// These are physical roots, not integration targets: OpenCode uses both its
+// config and state roots, and OMP must compare its root with Pi's. Specs select
+// captured roots; embedding a resolver per target would duplicate shared roots
+// or let one install re-read an environment that has changed since launch.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) enum DirectoryKey {
     PiExtension,
@@ -102,7 +123,21 @@ pub(crate) enum DirectoryKey {
 /// of these overrides.
 #[derive(Clone, Debug)]
 pub struct AgentIntegrationPaths {
-    directories: HashMap<DirectoryKey, CapturedDirectory>,
+    pi_extension: CapturedDirectory,
+    omp_extension: CapturedDirectory,
+    claude: CapturedDirectory,
+    codex: CapturedDirectory,
+    copilot: CapturedDirectory,
+    devin: CapturedDirectory,
+    droid: CapturedDirectory,
+    kimi: CapturedDirectory,
+    opencode: CapturedDirectory,
+    opencode_state: CapturedDirectory,
+    kilo: CapturedDirectory,
+    cursor: CapturedDirectory,
+    mastracode: CapturedDirectory,
+    antigravity_cli: CapturedDirectory,
+    grok: CapturedDirectory,
     config_update_lock_dir: CapturedDirectory,
 }
 
@@ -113,65 +148,49 @@ impl AgentIntegrationPaths {
 
     fn resolve_with(read_path: impl Fn(EnvVar) -> io::Result<Option<PathBuf>>) -> Self {
         let environment = IntegrationEnvironment::capture(read_path);
-        let config_update_lock_dir =
-            resolve_config_update_lock_dir(&environment).map_err(|error| DirectoryError {
-                kind: error.kind(),
-                message: error.to_string(),
-            });
-        let directories = [
-            (DirectoryKey::PiExtension, pi_extension_dir(&environment)),
-            (DirectoryKey::OmpExtension, omp_extension_dir(&environment)),
-            (DirectoryKey::Claude, claude_dir(&environment)),
-            (DirectoryKey::Codex, codex_dir(&environment)),
-            (DirectoryKey::Copilot, copilot_dir(&environment)),
-            (DirectoryKey::Devin, devin_dir(&environment)),
-            (DirectoryKey::Droid, droid_dir(&environment)),
-            (DirectoryKey::Kimi, kimi_dir(&environment)),
-            (DirectoryKey::Opencode, opencode_dir(&environment)),
-            (
-                DirectoryKey::OpencodeState,
-                opencode_state_dir(&environment),
-            ),
-            (DirectoryKey::Kilo, kilo_dir(&environment)),
-            (DirectoryKey::Cursor, cursor_dir(&environment)),
-            (DirectoryKey::Mastracode, mastracode_dir(&environment)),
-            (
-                DirectoryKey::AntigravityCli,
-                antigravity_cli_dir(&environment),
-            ),
-            (DirectoryKey::Grok, grok_dir(&environment)),
-        ]
-        .into_iter()
-        .map(|(key, result)| {
-            let result = result.map_err(|error| DirectoryError {
-                kind: error.kind(),
-                message: error.to_string(),
-            });
-            (key, result)
-        })
-        .collect();
         Self {
-            directories,
-            config_update_lock_dir,
+            pi_extension: capture_directory(pi_extension_dir(&environment)),
+            omp_extension: capture_directory(omp_extension_dir(&environment)),
+            claude: capture_directory(claude_dir(&environment)),
+            codex: capture_directory(codex_dir(&environment)),
+            copilot: capture_directory(copilot_dir(&environment)),
+            devin: capture_directory(devin_dir(&environment)),
+            droid: capture_directory(droid_dir(&environment)),
+            kimi: capture_directory(kimi_dir(&environment)),
+            opencode: capture_directory(opencode_dir(&environment)),
+            opencode_state: capture_directory(opencode_state_dir(&environment)),
+            kilo: capture_directory(kilo_dir(&environment)),
+            cursor: capture_directory(cursor_dir(&environment)),
+            mastracode: capture_directory(mastracode_dir(&environment)),
+            antigravity_cli: capture_directory(antigravity_cli_dir(&environment)),
+            grok: capture_directory(grok_dir(&environment)),
+            config_update_lock_dir: capture_directory(resolve_config_update_lock_dir(&environment)),
         }
     }
 
     pub(crate) fn directory(&self, key: DirectoryKey) -> io::Result<PathBuf> {
-        match self.directories.get(&key) {
-            Some(Ok(path)) => Ok(path.clone()),
-            Some(Err(error)) => Err(io::Error::new(error.kind, error.message.clone())),
-            None => Err(io::Error::new(
-                ErrorKind::NotFound,
-                format!("integration directory {key:?} was not resolved"),
-            )),
-        }
+        let directory = match key {
+            DirectoryKey::PiExtension => &self.pi_extension,
+            DirectoryKey::OmpExtension => &self.omp_extension,
+            DirectoryKey::Claude => &self.claude,
+            DirectoryKey::Codex => &self.codex,
+            DirectoryKey::Copilot => &self.copilot,
+            DirectoryKey::Devin => &self.devin,
+            DirectoryKey::Droid => &self.droid,
+            DirectoryKey::Kimi => &self.kimi,
+            DirectoryKey::Opencode => &self.opencode,
+            DirectoryKey::OpencodeState => &self.opencode_state,
+            DirectoryKey::Kilo => &self.kilo,
+            DirectoryKey::Cursor => &self.cursor,
+            DirectoryKey::Mastracode => &self.mastracode,
+            DirectoryKey::AntigravityCli => &self.antigravity_cli,
+            DirectoryKey::Grok => &self.grok,
+        };
+        captured_directory(directory)
     }
 
     pub(crate) fn config_update_lock_dir(&self) -> io::Result<PathBuf> {
-        match &self.config_update_lock_dir {
-            Ok(path) => Ok(path.clone()),
-            Err(error) => Err(io::Error::new(error.kind, error.message.clone())),
-        }
+        captured_directory(&self.config_update_lock_dir)
     }
 }
 

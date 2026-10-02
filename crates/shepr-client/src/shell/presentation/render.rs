@@ -149,7 +149,11 @@ pub(super) fn render_mode_bar(
                 // Copy-mode commands, including search prompt controls, have fixed input
                 // bindings and no entries in the configurable keybinding table.
                 let copy_mode = copy_mode?;
-                if let Some(prompt) = copy_mode.search_prompt.as_ref() {
+                if let Some(prompt) = copy_mode
+                    .search
+                    .as_ref()
+                    .and_then(|search| search.prompt.as_ref())
+                {
                     let marker = match prompt.direction {
                         shepr_protocol::command::PaneCopySearchDirection::Forward => "/",
                         shepr_protocol::command::PaneCopySearchDirection::Backward => "?",
@@ -197,17 +201,26 @@ pub(super) fn render_mode_bar(
                 } else {
                     "select"
                 };
-                let match_status = copy_mode
-                    .search_current_global
-                    .map(|current| format!(" {}/{}", current + 1, copy_mode.search_total))
-                    .or_else(|| (!copy_mode.search_query.is_empty()).then(|| " 0/0".to_owned()))
+                let search = copy_mode.search.as_ref();
+                let match_status = search
+                    .and_then(|search| {
+                        search
+                            .current_global
+                            .map(|current| format!(" {}/{}", current + 1, search.total))
+                    })
+                    .or_else(|| {
+                        search
+                            .is_some_and(|search| !search.query.is_empty())
+                            .then(|| " 0/0".to_owned())
+                    })
                     .unwrap_or_default();
-                let (exit_keys, exit_label) =
-                    if copy_mode.search_query.is_empty() && copy_mode.selection.is_none() {
-                        ("q/esc", " exit")
-                    } else {
-                        ("esc", " clear  q exit")
-                    };
+                let (exit_keys, exit_label) = if search.is_none_or(|search| search.query.is_empty())
+                    && copy_mode.selection.is_none()
+                {
+                    ("q/esc", " exit")
+                } else {
+                    ("esc", " clear  q exit")
+                };
                 segments.extend([
                     (" COPY ".to_owned(), mode_style),
                     (" ".to_owned(), base),

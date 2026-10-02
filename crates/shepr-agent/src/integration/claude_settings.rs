@@ -7,7 +7,7 @@ use jsonc_parser::ast::{Array as AstArray, Object as AstObject, Value as AstValu
 use jsonc_parser::common::Ranged;
 use jsonc_parser::cst::{CstInputValue, CstNode, CstObject, CstRootNode};
 use jsonc_parser::{CollectOptions, ParseOptions, json, parse_to_ast};
-use serde_json::{Map, Value, json as serde_json_value};
+use serde_json::{Map, Value};
 
 use crate::agent::resume::AgentSessionStartSource;
 use crate::agent::{Agent, IntegrationHookAction, IntegrationHookEvent};
@@ -286,7 +286,7 @@ fn remove_hook_path_commands(
 
 fn cst_value_uses_hook_path(value: &CstNode, hook_path: &Path) -> bool {
     value.to_serde_value().is_some_and(|value| {
-        ["command", "bash"].iter().any(|field| {
+        super::config_edit::HOOK_COMMAND_FIELDS.iter().any(|field| {
             value
                 .get(*field)
                 .and_then(Value::as_str)
@@ -301,14 +301,11 @@ fn canonical_hook_value(
     action: Option<&str>,
     timeout_seconds: u64,
 ) -> Value {
-    serde_json_value!({
-        "matcher": matcher,
-        "hooks": [{
-            "type": "command",
-            "command": hook_command(hook_path, action),
-            "timeout": timeout_seconds,
-        }],
-    })
+    super::config_edit::command_hook_group(
+        &hook_command(hook_path, action),
+        timeout_seconds,
+        Some(matcher),
+    )
 }
 
 fn canonical_hook_input(

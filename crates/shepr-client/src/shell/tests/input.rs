@@ -774,7 +774,7 @@ fn styled_client_composition_preserves_pane_hyperlinks() {
         shepr_vt::Point::new(shepr_vt::AbsRow(0), 1),
     );
     assert!(selection.finish());
-    state.selection = Some(selection);
+    state.mouse_selection.selection = Some(selection);
     let frame = state.compose(106, 20).expect("composed frame");
     let hit = &state.hits.panes[0];
     let index =

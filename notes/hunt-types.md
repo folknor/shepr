@@ -472,18 +472,16 @@ down. (agents)
 
 ## TYP-022 - Integration install and status failures are prose
 
-Every failure is `io::Error::other(format!(..))` ("directory not found ...
-install X first", "must be a JSON object", "registers the Shepr hook outside
-its managed block", "config has multiple hard links", "changed while Shepr was
-preparing an update", the last smuggled as `ErrorKind::WouldBlock` so
-`install_target_inner` can retry once). `DirectoryError` captures `(kind,
-message)` and rebuilds on every lookup because `io::Error` is not `Clone`.
-`IntegrationStatusKind::Outdated` collapses "asset bytes differ" and
-"registration missing or edited". `logging::integration_action(.., outcome:
-&'static str)` uses `"ok"`/`"error"`. Proposal: `InstallError { ConfigChanged,
-ConfigUnparseable, ConfigShape, ManagedBlockConflict, HardLinked,
-NotRegularFile, TooManySymlinks, AgentDirMissing, Io }` and `Outdated { asset,
-registration }`. (agents)
+The config-changed retry and non-regular reads are typed, and directory errors
+keep their source, but most install failures are still
+`io::Error::other(format!(..))` ("directory not found ... install X first",
+"must be a JSON object", "registers the Shepr hook outside its managed block",
+"config has multiple hard links"). `IntegrationStatusKind::Outdated` collapses
+"asset bytes differ" and "registration missing or edited", and
+`logging::integration_action(.., outcome: &'static str)` uses `"ok"`/`"error"`.
+Proposal: `InstallError { ConfigChanged, ConfigUnparseable, ConfigShape,
+ManagedBlockConflict, HardLinked, NotRegularFile, TooManySymlinks,
+AgentDirMissing, Io }` and `Outdated { asset, registration }`. (agents)
 
 ## TYP-023 - Session start sources are parsed leniently
 
@@ -559,18 +557,6 @@ commit", written right after `mark_launched()`. Proposal: the runtime holds
 `Option<Arc<ChildLiveness>>` (or `PaneChild::{Detached, Process(..)}`) so the
 fixture case lives where it belongs, and `ChildLiveness { pid: Pid, leader:
 ProcessHandle, phase }` whose phase the launch watch also reads. (mux-panes)
-
-## TYP-028 - PTY read results mix a failure with a success payload
-
-`ProcessBytesResult { core_poisoned: bool, .. }` is built as `{ core_poisoned:
-true, ..default() }` and every consumer must check the flag first
-(`PaneReadEffects::read`, `flush_expired_synchronized_output`): that is a
-`Result<CoreEffects, CorePoisoned>`. `default_color_owner_pending: bool` plus
-`default_color_generation: u64` is one `Option<DefaultColorGeneration>`.
-`request_render: bool` plus `render_delay: Option<Duration>` is
-`RenderRequest::{Now, After(Duration), None}`.
-`shepr_pty::actor::PtyReadResult` has the same `core_broken: bool` shape.
-(mux-panes)
 
 ## TYP-029 - The dirty patch snapshot folds three reasons into `None`
 
@@ -715,23 +701,12 @@ Restored(u64)}`. Reported by mux-panes and mux-state.
 
 ## Workspace, persistence and Git
 
-## TYP-038 - Digests and fingerprints are interchangeable `String`s
+## TYP-038 - The server hands the history digest to persist as text
 
-History digest: `io::history_digest -> String`, `SessionLoad::Loaded::history_digest`,
-`load_history(.., expected_digest: Option<&str>)`, `HistoryIntent::Write {
-digest }`, `HistoryIntent::Keep(String)`, `ResolvedHistory::Unchanged(String)`,
-`HistoryCarry::saved`, `WrittenHistory::digest`, `SavedSession::history_digest`,
-`SessionWriter::save -> io::Result<Option<String>>`, `save_keeping_history`.
-Layout fingerprint: `snapshot::layout_fingerprint -> Option<String>`,
-`SnapshotLayoutFingerprint::fingerprint`, `layout_differs_from_latest(..,
-Option<&String>)`. Produced by two separate hex encoders.
-`SnapshotLayoutFingerprint { has_workspaces: true, fingerprint: None }` means
-"unreadable, assume it matters", and `layout_fingerprint` returns `Option` only
-because `serde_json::to_vec` might fail. `SessionWriter::save -> Ok(None)` means
-both "saved, no history" and "retired, wrote nothing". Proposal:
-`HistoryDigest([u8; 32])` and `LayoutFingerprint([u8; 32])` with one hex serde,
-the fingerprint hashing a canonical encoding it writes itself, and `SavedLayout::{
-Empty, Known(LayoutFingerprint), Unknown}`. (mux-state)
+Persist now has `HistoryDigest`, `LayoutFingerprint` and `SavedLayout`, but the
+server-facing entry points kept their string forms: `App::with_paths`
+(`crates/shepr-server/src/app/mod.rs`) passes the loaded digest to
+`load_history` as `&str`. Carry the typed digest across. (mux-state)
 
 ## TYP-039 - Git object ids, ref names and branch names are `String`s
 
@@ -747,35 +722,16 @@ None` means detached, not demanded, or read failed; `repo_name` falls back to th
 literal `"repo"`. Proposal: `Oid`, `FullRefName`, `BranchName` (only from a
 `FullRefName` under `refs/heads/`). (mux-state)
 
-## TYP-040 - Git cache dependencies are anonymous tuples with a poison flag
+## TYP-041 - The Git status cache key is a bare path, and read errors are prose
 
-`type FileStamp = Option<(Option<SystemTime>, u64)>`, `type FileDep = (PathBuf,
-FileStamp, bool, Option<PathBuf>)` (`.2` reusable, `.3` canonical target),
-`type ConfigCtx = (String, Option<BranchConfig>, Vec<FileDep>)`, `type
-RepoContext = (GitWorktreeInfo, bool, Vec<FileDep>, Option<ConfigCtx>)` (`.1`
-reftable). "Do not cache this set" is decided by flipping `.2` on one element
-(`deps.first_mut().2 = false` at three sites, which silently poisons nothing on
-an empty vector; `deps[0].2 &= ..`; a loop setting every `.2 = false`);
-`same_head_and_repository_context` compares `.0`, `.1`, `.2` by hand and leaves
-`.3` out. Proposal: named structs, `Dependencies::{Tracked(Vec<FileDep>),
-Uncacheable}`, `RefBackend::{Files, Reftable}`. (mux-state)
-
-## TYP-041 - The Git status cache entry and key each encode several states
-
-`GitStatusCacheEntry { fingerprint: Option<..>, retry_after: Option<Instant>, ..
-}` encodes negative entry, computed, never computed (`Some(now)` from the
-branch-only path) and failed; the reader distinguishes them with
-`retry_after.is_none_or(|r| r > now)` and the server's
-`GitRefreshScheduler::mark_due` peeks at `fingerprint.is_some()`. The cache key
-`PathBuf` is the canonical checkout root for a repo, the raw resolved cwd for a
-non-repo (`deduplicate_git_refresh_items`), and a placeholder seeded by
-`Workspace::mark_identity_undiscovered`. Proposal: `GitStatusCacheEntry::{Miss {
-retry_after, .. }, Hit { fingerprint, ahead_behind: AheadBehindState::{NotComputed,
-Known, Failed { retry_after }}, .. }}` with `is_miss()`, and `GitStatusKey::{
-Checkout(PathBuf), Outside(PathBuf)}` minted only by discovery. `GitReadError`'s
-payloads are prose (`arguments: args.join(" ")`, `message:
-error.to_string()`); `FileRead` should carry a `FileReadReason` enum.
-(mux-state)
+The cache entry is now `Miss` or `Hit` with an `AheadBehindState`. The cache key
+is still a `PathBuf` that means the canonical checkout root for a repo, the raw
+resolved cwd for a non-repo and a placeholder seeded by
+`Workspace::mark_identity_undiscovered`; a `GitStatusKey::{Checkout, Outside}`
+minted by discovery needs the workspace refresh input to carry it, not just a
+path (the boundary is commented in `app/git_refresh.rs`). `GitReadError`'s
+payloads are prose (`arguments: args.join(" ")`, `message: error.to_string()`);
+`FileRead` should carry a `FileReadReason` enum. (mux-state)
 
 ## TYP-042 - Workspace Git identity is six public fields and an empty-path sentinel
 
@@ -804,19 +760,6 @@ NotRegularFile(kind), TooLarge, Unparseable { line, column, category }}` and a
 `RestoreLoss` value. A not-regular session is refused at startup by
 `check_session_target`, so `load` should never see one; a type would show it.
 Reported by mux-state and server-app.
-
-## TYP-044 - Recovery copies are named and classified by string surgery
-
-`recovery_filename(u128, usize)` and `history_recovery_filename` name copies,
-`recovery_copy_key` and `recovery_timestamp` parse them back by prefix
-(`"session-"`), and `recovery_history_path` strips `"session-"` and prepends
-`"session-history-"`; parsing a history copy with the layout prefix fails only
-because a digit-width check rejects `"history"`. `log_recovery_preserved` and
-`log_recovery_prune_failure` recover the kind by comparing the directory path
-with `snapshot_directory(path)` though every caller knows it. Proposal:
-`RecoveryName { stamp, sequence, kind: Layout | History }` with one
-`to_file_name`/`parse`/`pair`, and `RecoveryKind::{Snapshot, Backup}` carrying
-directory, retention limit and log labels. (mux-state)
 
 ## TYP-045 - Cwds are `PathBuf`s right after `UsableCwd` exists
 
@@ -1338,16 +1281,6 @@ methods and the bridge entry point, but the command builders in
 `sh_output_within` adapts internally. Have the builders return the typed
 values. (edges)
 
-## TYP-076 - Preflight pairs outcomes with machines by position
-
-`preflight()` returns `Vec<PreflightOutcome>` that pairs with `machines` by
-position; `restart_different_builds` and `result_notices` re-zip them and trust
-the caller passed the same slice, while `PreflightOutcome.label` copies the
-machine's label, a second way to identify it. `can_prompt: bool` plus a callback
-"that must not be called when false" goes to both functions. Proposal: the
-outcome owns or borrows its `MachineConfig`, and an `Option<impl FnMut>` or a
-`Prompter` that exists only with a terminal. (edges)
-
 ## TYP-077 - Smaller CLI and remote axes
 
 - `detect::ExplainArgs { pane: Option<String>, file: Option<String>, agent:
@@ -1575,15 +1508,3 @@ non-empty) minted once, held as `Option<Label>` by the stores and by the saved
 schema, would cover restore too and let the render trim go.
 `normalize_reported_agent_label` stays separate: it also canonicalizes agent
 names. (server-app)
-
-## TYP-089 - Closed-set environment values read as free text
-
-`SHEPR_BUILD_PROFILE`, `SHEPR_ENV` and `SHEPR_PANE_ID` are `EnvKind::Text` in
-`shepr-core/src/env.rs`; `src/main.rs` compares to `"1"` and to
-`BuildProfile::current().marker()`. The typed readers (`resolve_flag`,
-`resolve_text`, `resolve_path`, `resolve_os`) assert the kind at runtime and
-`unreachable!` on the `EnvValue` arm although the kind is a compile-time fact of
-the variant. Proposal: a typed `pane_marker() -> Result<PaneMarker, EnvError>`
-read once, and per-kind var enums (`FlagVar`, `TextVar`, `PathVar`, `PresenceVar`,
-`RawVar`) each with one reader, keeping `EnvVar::ALL` as their union. Who decides
-the marker is filed among the consolidations. (foundation)

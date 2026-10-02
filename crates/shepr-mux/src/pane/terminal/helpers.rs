@@ -11,45 +11,40 @@ pub(super) struct CoreEffects {
     /// The child set a default colour: the program that did it is to be
     /// looked up once the terminal, content and reply-order locks are released
     /// ([`PaneTerminal::resolve_default_color_owner`]).
-    pub(super) default_color_owner_pending: bool,
+    pub(super) default_color_generation: Option<DefaultColorGeneration>,
 }
 
 /// Collects every effect the core has queued, whichever write or flush
 /// produced it, and keeps the default-colour owner bookkeeping in step.
 pub(super) fn collect_core_effects(core: &mut PaneTerminalCore) -> CoreEffects {
-    let terminal_responses = drain_terminal_responses(core);
+    let mut terminal_effects = core.terminal.take_effects();
     let terminal_title_changed = core
         .agent_osc_state
-        .apply_terminal_updates(&mut core.terminal);
-    let clipboard_writes = core.terminal.take_clipboard_writes();
-    let dropped_clipboard_store_bytes = core.terminal.take_dropped_clipboard_store_bytes();
-    let reported_cwd = core
-        .terminal
-        .take_pwd_changes()
+        .apply_terminal_updates(&mut terminal_effects);
+    let terminal_responses = drain_terminal_responses(terminal_effects.pty_responses);
+    let clipboard_writes = terminal_effects.clipboard_writes;
+    let dropped_clipboard_store_bytes = terminal_effects.dropped_clipboard_store_bytes;
+    let reported_cwd = terminal_effects
+        .pwd_changes
         .into_iter()
         .filter_map(|report| parse_reported_cwd(&report))
         .next_back();
-    let default_color_owner_pending = note_default_color_change(core);
+    let default_color_generation =
+        note_default_color_change(core, terminal_effects.default_color_set);
     CoreEffects {
         terminal_title_changed,
         clipboard_writes,
         dropped_clipboard_store_bytes,
         reported_cwd,
         terminal_responses,
-        default_color_owner_pending,
+        default_color_generation,
     }
 }
 
 /// Drops queued effects that must never reach the live child or the app
 /// (restored history).
 pub(super) fn discard_core_effects(terminal: &mut shepr_vt::Terminal) {
-    let _ = terminal.take_pty_responses();
-    let _ = terminal.take_clipboard_writes();
-    let _ = terminal.take_dropped_clipboard_store_bytes();
-    let _ = terminal.take_pwd_changes();
-    let _ = terminal.take_title_update();
-    let _ = terminal.take_progress_update();
-    let _ = terminal.take_default_color_set();
+    drop(terminal.take_effects());
 }
 
 pub(super) fn has_default_color_override(terminal: &shepr_vt::Terminal) -> bool {
@@ -63,27 +58,29 @@ pub(super) fn has_default_color_override(terminal: &shepr_vt::Terminal) -> bool 
 
 /// Keeps the default-colour owner in step with the core: forgets it once no
 /// override is left (the child reset it with OSC 110/111, or RIS), and
-/// reports whether the child just set an override whose owner still has to
+/// returns the generation of a newly set override whose owner still has to
 /// be looked up. The lookup scans `/proc`, so the caller does it after
 /// releasing the terminal, content and reply-order locks
 /// ([`PaneTerminal::resolve_default_color_owner`]); `shell_pid` 0 (no
-/// child yet) is handled there.
-pub(super) fn note_default_color_change(core: &mut PaneTerminalCore) -> bool {
-    let set = core.terminal.take_default_color_set();
+/// child yet) is handled there. The returned generation is absent when there
+/// is no owner lookup to perform.
+pub(super) fn note_default_color_change(
+    core: &mut PaneTerminalCore,
+    set: bool,
+) -> Option<DefaultColorGeneration> {
     if set {
         core.default_color_generation = core.default_color_generation.wrapping_add(1);
     }
     if !has_default_color_override(&core.terminal) {
         core.transient_default_color_owner_pgid = None;
-        return false;
+        return None;
     }
-    set
+    set.then_some(DefaultColorGeneration(core.default_color_generation))
 }
 
 /// Collects the core's queued replies, answering OSC colour queries from the
 /// host theme where the pane owns the answer.
-pub(super) fn drain_terminal_responses(core: &mut PaneTerminalCore) -> Vec<Bytes> {
-    let responses = core.terminal.take_pty_responses();
+pub(super) fn drain_terminal_responses(responses: Vec<shepr_vt::PtyResponse>) -> Vec<Bytes> {
     let mut replies = Vec::with_capacity(responses.len());
     for response in responses {
         match response {

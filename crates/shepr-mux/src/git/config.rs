@@ -15,25 +15,97 @@ pub(super) struct BranchConfig {
     full_ref: String,
 }
 
-type FileStamp = Option<(Option<SystemTime>, u64)>;
-pub(super) type FileDep = (PathBuf, FileStamp, bool, Option<PathBuf>);
-pub(super) type ConfigCtx = (String, Option<BranchConfig>, Vec<FileDep>);
-
-pub(super) fn stamp(path: PathBuf, target: Option<PathBuf>) -> FileDep {
-    let meta = std::fs::metadata(&path);
-    let reusable = meta.is_ok() || matches!(&meta, Err(e) if e.kind() == ErrorKind::NotFound);
-    let stamp = meta.ok().map(|m| (m.modified().ok(), m.len()));
-    (path, stamp, reusable, target)
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum FileStamp {
+    Present {
+        modified: Option<SystemTime>,
+        len: u64,
+    },
+    Missing,
+    Unavailable,
 }
 
-pub(super) fn deps_current(deps: &[FileDep]) -> bool {
-    deps.iter().all(|dep| {
-        let target = dep
-            .3
-            .as_ref()
-            .map(|_| canonicalize_best_effort_path(&dep.0));
-        dep.2 && stamp(dep.0.clone(), target) == *dep
-    })
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct FileDependency {
+    path: PathBuf,
+    stamp: FileStamp,
+    canonical_target: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum Dependencies {
+    Tracked(Vec<FileDependency>),
+    Uncacheable,
+}
+
+impl Dependencies {
+    pub(super) fn tracked(dependencies: Vec<FileDependency>) -> Self {
+        if dependencies
+            .iter()
+            .any(|dependency| dependency.stamp == FileStamp::Unavailable)
+        {
+            Self::Uncacheable
+        } else {
+            Self::Tracked(dependencies)
+        }
+    }
+
+    fn push(&mut self, dependency: FileDependency) {
+        match self {
+            Self::Tracked(dependencies) if dependency.stamp != FileStamp::Unavailable => {
+                dependencies.push(dependency);
+            }
+            Self::Tracked(_) => *self = Self::Uncacheable,
+            Self::Uncacheable => {}
+        }
+    }
+
+    pub(super) fn mark_uncacheable(&mut self) {
+        *self = Self::Uncacheable;
+    }
+
+    pub(super) fn extend(&mut self, other: Self) {
+        match (self, other) {
+            (Self::Tracked(current), Self::Tracked(mut added)) => current.append(&mut added),
+            (current, _) => *current = Self::Uncacheable,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ConfigCtx {
+    pub(super) branch: String,
+    pub(super) config: Option<BranchConfig>,
+    pub(super) dependencies: Dependencies,
+}
+
+pub(super) fn stamp(path: PathBuf, canonical_target: Option<PathBuf>) -> FileDependency {
+    let stamp = match std::fs::metadata(&path) {
+        Ok(metadata) => FileStamp::Present {
+            modified: metadata.modified().ok(),
+            len: metadata.len(),
+        },
+        Err(error) if error.kind() == ErrorKind::NotFound => FileStamp::Missing,
+        Err(_) => FileStamp::Unavailable,
+    };
+    FileDependency {
+        path,
+        stamp,
+        canonical_target,
+    }
+}
+
+pub(super) fn deps_current(dependencies: &Dependencies) -> bool {
+    match dependencies {
+        Dependencies::Tracked(dependencies) => dependencies.iter().all(|dependency| {
+            let canonical_target = dependency
+                .canonical_target
+                .as_ref()
+                .map(|_| canonicalize_best_effort_path(&dependency.path));
+            stamp(dependency.path.clone(), canonical_target) == *dependency
+        }),
+        Dependencies::Uncacheable => false,
+    }
 }
 
 fn config_output(cwd: &Path, args: &[&str]) -> Result<Vec<u8>, GitReadError> {
@@ -51,12 +123,12 @@ fn config_output(cwd: &Path, args: &[&str]) -> Result<Vec<u8>, GitReadError> {
 fn config_deps(
     info: &GitWorktreeInfo,
     mut paths: Vec<PathBuf>,
-) -> Result<Vec<FileDep>, GitReadError> {
+) -> Result<Dependencies, GitReadError> {
     paths.extend([
         info.git_common_dir.join("config"),
         info.git_dir.join("config.worktree"),
     ]);
-    let mut deps: Vec<_> = paths.into_iter().map(|path| stamp(path, None)).collect();
+    let mut deps = Dependencies::tracked(paths.into_iter().map(|path| stamp(path, None)).collect());
     let query = ["config", "--includes", "--null", "--show-origin", "--list"];
     let output = config_output(&info.repo_root, &query)?;
     let mut fields = output.split(|byte| *byte == 0);
@@ -102,9 +174,7 @@ fn config_deps(
                 // Git also expands ~user using the host's account database. An
                 // absent target has no file origin to stamp; conservatively query
                 // again rather than duplicate that resolution or cache a miss.
-                if let Some(dep) = deps.first_mut() {
-                    dep.2 = false;
-                }
+                deps.mark_uncacheable();
                 None
             } else if value.is_absolute() {
                 Some(value)
@@ -122,9 +192,7 @@ fn config_deps(
     // stamps are captured: if a config changed between the first query and
     // those stamps, the changed output keeps this answer out of the cache.
     if config_output(&info.repo_root, &query)? != output {
-        for dep in &mut deps {
-            dep.2 = false;
-        }
+        deps.mark_uncacheable();
     }
     Ok(deps)
 }
@@ -175,31 +243,37 @@ pub(super) fn read_config_for_status(
             errors.push(GitReadError::ConfigEnvironment {
                 message: error.to_string(),
             });
-            let mut dep = stamp(info.git_common_dir.join("config"), None);
-            dep.2 = false;
-            return (branch.to_owned(), None, vec![dep]);
+            return ConfigCtx {
+                branch: branch.to_owned(),
+                config: None,
+                dependencies: Dependencies::Uncacheable,
+            };
         }
     };
     let mut deps = match config_deps(info, user_config_paths) {
         Ok(deps) => deps,
         Err(error) => {
             errors.push(error);
-            let mut dep = stamp(info.git_common_dir.join("config"), None);
-            dep.2 = false;
-            return (branch.to_owned(), None, vec![dep]);
+            return ConfigCtx {
+                branch: branch.to_owned(),
+                config: None,
+                dependencies: Dependencies::Uncacheable,
+            };
         }
     };
     let config = match branch_config(info, branch) {
         Ok(config) => config,
         Err(error) => {
             errors.push(error);
-            if let Some(dep) = deps.first_mut() {
-                dep.2 = false;
-            }
+            deps.mark_uncacheable();
             None
         }
     };
-    (branch.to_owned(), config, deps)
+    ConfigCtx {
+        branch: branch.to_owned(),
+        config,
+        dependencies: deps,
+    }
 }
 
 pub(super) fn upstream_full_ref(config: &BranchConfig) -> Option<String> {
@@ -210,7 +284,7 @@ pub(super) fn read_repository_format_value(
     path: &Path,
     section: &str,
     key: &str,
-) -> Result<(Option<String>, Vec<FileDep>), GitReadError> {
+) -> Result<(Option<String>, Dependencies), GitReadError> {
     let cwd = path.parent().ok_or_else(|| GitReadError::FileRead {
         path: path.to_path_buf(),
         message: "config has no parent".into(),
@@ -223,20 +297,21 @@ pub(super) fn read_repository_format_value(
             message: "invalid config name".into(),
         })?;
     let dep = stamp(path.to_path_buf(), None);
-    if !dep.2 {
-        return Err(GitReadError::FileRead {
-            path: path.to_path_buf(),
-            message: "repository config metadata is unavailable".into(),
-        });
-    }
-    if dep.1.is_none() {
-        return Ok((None, vec![dep]));
+    match dep.stamp.clone() {
+        FileStamp::Unavailable => {
+            return Err(GitReadError::FileRead {
+                path: path.to_path_buf(),
+                message: "repository config metadata is unavailable".into(),
+            });
+        }
+        FileStamp::Missing => return Ok((None, Dependencies::tracked(vec![dep]))),
+        FileStamp::Present { .. } => {}
     }
     let query = format!("{section}.{key}");
     let args = ["config", "--file", name, "--no-includes", "--get", &query];
     let output = run_git_output(cwd, &args)?;
     if output.status.code() == Some(1) {
-        return Ok((None, vec![dep]));
+        return Ok((None, Dependencies::tracked(vec![dep])));
     }
     if !output.status.success() {
         return Err(command_failed(cwd, &args, &output));
@@ -245,7 +320,10 @@ pub(super) fn read_repository_format_value(
         cwd: cwd.to_path_buf(),
         arguments: args.join(" "),
     })?;
-    Ok((Some(value.trim().to_owned()), vec![dep]))
+    Ok((
+        Some(value.trim().to_owned()),
+        Dependencies::tracked(vec![dep]),
+    ))
 }
 
 pub(super) fn read_bare(info: &GitWorktreeInfo) -> Result<bool, GitReadError> {

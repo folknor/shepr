@@ -158,7 +158,7 @@ fn terminal_reports_pty_responses_and_pwd_changes() {
     let output = core_replies(&mut terminal).concat();
     assert_eq!(output, b"\x1b[1;1R");
     assert_eq!(
-        terminal.take_pwd_changes(),
+        terminal.take_effects().pwd_changes,
         [WorkingDirectoryReport::Uri(b"file:///tmp/shepr".to_vec())]
     );
 }
@@ -711,10 +711,13 @@ fn clipboard_queries_never_disclose_contents_and_split_writes_complete_once() {
             let mut terminal = Terminal::new(10, 3, 0);
             terminal.write(&bytes[..split]);
             terminal.write(&bytes[split..]);
-            assert_eq!(terminal.take_clipboard_writes(), vec![b"a\0b".to_vec()]);
+            let effects = terminal.take_effects();
+            assert_eq!(effects.clipboard_writes, vec![b"a\0b".to_vec()]);
+            assert!(effects.pty_responses.is_empty());
             terminal.write(b"\x1b]52;c;?\x07\x1b]52;p;YQBi\x07");
-            assert!(terminal.take_clipboard_writes().is_empty());
-            assert!(terminal.take_pty_responses().is_empty());
+            let effects = terminal.take_effects();
+            assert!(effects.clipboard_writes.is_empty());
+            assert!(effects.pty_responses.is_empty());
         }
     }
 }
@@ -728,12 +731,15 @@ fn oversized_osc52_clipboard_store_reports_only_its_byte_count() {
 
     terminal.write(sequence.as_bytes());
 
-    assert!(terminal.take_clipboard_writes().is_empty());
-    assert_eq!(
-        terminal.take_dropped_clipboard_store_bytes(),
-        vec![decoded_bytes]
+    let effects = terminal.take_effects();
+    assert!(effects.clipboard_writes.is_empty());
+    assert_eq!(effects.dropped_clipboard_store_bytes, vec![decoded_bytes]);
+    assert!(
+        terminal
+            .take_effects()
+            .dropped_clipboard_store_bytes
+            .is_empty()
     );
-    assert!(terminal.take_dropped_clipboard_store_bytes().is_empty());
 }
 
 #[test]
@@ -751,8 +757,14 @@ fn oversized_osc_body_is_skipped_and_parser_recovers_at_its_terminator() {
     terminal.write(&vec![b'y'; MAX_OSC_RAW_BYTES * 2]);
     terminal.write(b"\x07after\x1b[5n");
 
-    assert!(terminal.take_pwd_changes().is_empty());
-    assert_eq!(core_replies(&mut terminal), vec![b"\x1b[0n".to_vec()]);
+    let effects = terminal.take_effects();
+    assert!(effects.pwd_changes.is_empty());
+    let replies: Vec<_> = effects
+        .pty_responses
+        .into_iter()
+        .filter_map(PtyResponse::into_core_bytes)
+        .collect();
+    assert_eq!(replies, vec![b"\x1b[0n".to_vec()]);
     assert_eq!(first_rendered_row_text(&terminal), "after");
 }
 
@@ -764,25 +776,31 @@ fn osc52_store_longer_than_the_scanner_retains_is_stored_whole() {
     let encoded = "YWFh".repeat(MAX_OSC_BYTES);
     terminal.write(format!("\x1b]52;c;{encoded}\x07").as_bytes());
 
-    assert_eq!(terminal.take_clipboard_writes(), vec![text]);
+    assert_eq!(terminal.take_effects().clipboard_writes, vec![text]);
 }
 
 #[test]
 fn osc52_writes_complete_for_bel_and_st_without_queries() {
     let mut terminal = Terminal::new(10, 5, 0);
     terminal.write(b"\x1b]52;c;aGVs");
-    assert!(terminal.take_clipboard_writes().is_empty());
+    assert!(terminal.take_effects().clipboard_writes.is_empty());
     terminal.write(b"bG8=\x07");
-    assert_eq!(terminal.take_clipboard_writes(), vec![b"hello".to_vec()]);
+    assert_eq!(
+        terminal.take_effects().clipboard_writes,
+        vec![b"hello".to_vec()]
+    );
 
     terminal.write(b"\x1b]52;c;d29ybGQ=\x1b\\");
-    assert_eq!(terminal.take_clipboard_writes(), vec![b"world".to_vec()]);
+    assert_eq!(
+        terminal.take_effects().clipboard_writes,
+        vec![b"world".to_vec()]
+    );
 
     terminal.write(b"\x1b]52;c;?\x07");
-    assert!(terminal.take_clipboard_writes().is_empty());
+    assert!(terminal.take_effects().clipboard_writes.is_empty());
 
     terminal.write(b"\x1b]52;c;\x07");
-    assert!(terminal.take_clipboard_writes().is_empty());
+    assert!(terminal.take_effects().clipboard_writes.is_empty());
 }
 
 #[test]
@@ -1400,7 +1418,7 @@ fn a_long_title_is_cut_before_alacritty_keeps_or_stacks_it() {
         input.extend_from_slice(b"\x1b[22t");
     }
     terminal.write(&input);
-    let Some(TitleUpdate::Set(title)) = terminal.take_title_update() else {
+    let Some(TitleUpdate::Set(title)) = terminal.take_effects().title_update else {
         panic!("test precondition: a title was set");
     };
     assert!(title.len() <= MAX_TITLE_BYTES);
@@ -1409,7 +1427,7 @@ fn a_long_title_is_cut_before_alacritty_keeps_or_stacks_it() {
 
     // Every pushed copy is the capped title, not the original.
     terminal.write(b"\x1b]2;x\x07\x1b[23t");
-    let Some(TitleUpdate::Set(popped)) = terminal.take_title_update() else {
+    let Some(TitleUpdate::Set(popped)) = terminal.take_effects().title_update else {
         panic!("test precondition: a title was popped");
     };
     assert_eq!(popped, title);
@@ -1418,34 +1436,37 @@ fn a_long_title_is_cut_before_alacritty_keeps_or_stacks_it() {
 #[test]
 fn titles_follow_the_parser_title_stack_and_ris() {
     let mut terminal = Terminal::new(20, 3, 100);
-    assert_eq!(terminal.take_title_update(), None);
+    assert_eq!(terminal.take_effects().title_update, None);
 
     // An OSC ends at any ESC, exactly as the parser sees it: the CSI after it
     // is not part of the title and the later OSC is a title of its own.
     terminal.write(b"\x1b]0;foo\x1b[m text \x1b]2;bar\x07");
     assert_eq!(
-        terminal.take_title_update(),
+        terminal.take_effects().title_update,
         Some(TitleUpdate::Set("bar".to_owned()))
     );
 
     terminal.write(b"\x1b[22t\x1b]2;vim\x07");
     assert_eq!(
-        terminal.take_title_update(),
+        terminal.take_effects().title_update,
         Some(TitleUpdate::Set("vim".to_owned()))
     );
     terminal.write(b"\x1b[23t");
     assert_eq!(
-        terminal.take_title_update(),
+        terminal.take_effects().title_update,
         Some(TitleUpdate::Set("bar".to_owned()))
     );
 
     // Resizing re-announces the title inside alacritty; that is no change.
     terminal.resize(shepr_core::geometry::PaneGeometry::new(30, 5, 0, 0));
     terminal.resize(shepr_core::geometry::PaneGeometry::new(10, 2, 0, 0));
-    assert_eq!(terminal.take_title_update(), None);
+    assert_eq!(terminal.take_effects().title_update, None);
 
     terminal.write(b"\x1bc");
-    assert_eq!(terminal.take_title_update(), Some(TitleUpdate::Reset));
+    assert_eq!(
+        terminal.take_effects().title_update,
+        Some(TitleUpdate::Reset)
+    );
 }
 
 #[test]
@@ -1453,11 +1474,11 @@ fn only_conemu_progress_is_reported_as_progress() {
     let mut terminal = Terminal::new(20, 3, 0);
     terminal.write(b"\x1b]9;4;3;\x07");
     assert_eq!(
-        terminal.take_progress_update(),
+        terminal.take_effects().progress_update,
         Some(ProgressReport(b"4;3;".to_vec()))
     );
     terminal.write(b"\x1b]9;build finished\x07");
-    assert_eq!(terminal.take_progress_update(), None);
+    assert_eq!(terminal.take_effects().progress_update, None);
 }
 
 /// Inside a frame vte replays DECRQM after BSU and before ESU, so it must see
@@ -1523,7 +1544,8 @@ fn host_default_colors_sit_under_child_overrides() {
     );
 
     terminal.write(b"\x1b]11;rgb:44/55/66\x07\x1b]11;?\x07");
-    assert!(terminal.take_default_color_set());
+    let first_effects = terminal.take_effects();
+    assert!(first_effects.default_color_set);
     assert_eq!(
         terminal.default_color_override(DefaultColor::Background),
         Some(child_bg)
@@ -1531,10 +1553,12 @@ fn host_default_colors_sit_under_child_overrides() {
     // A host theme change leaves the child's override alone.
     terminal.set_default_colors(Some(host_fg), Some(RgbColor::default()));
     terminal.write(b"\x1b]111\x07\x1b]11;?\x07");
-    assert!(!terminal.take_default_color_set());
-    let queries: Vec<_> = terminal
-        .take_pty_responses()
+    let reset_effects = terminal.take_effects();
+    assert!(!reset_effects.default_color_set);
+    let queries: Vec<_> = first_effects
+        .pty_responses
         .into_iter()
+        .chain(reset_effects.pty_responses)
         .map(|response| match response {
             PtyResponse::ColorQuery(query) => (query.core_color(), query.child_override()),
             other => panic!("expected colour query, got {other:?}"),

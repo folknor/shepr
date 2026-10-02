@@ -1,6 +1,9 @@
 use std::time::{Duration, Instant};
 
+use super::super::Backoff;
 use crate::limits::{SESSION_SAVE_DEBOUNCE, SESSION_SAVE_RETRY_MAX, SESSION_SAVE_RETRY_MIN};
+
+const RETRY_BACKOFF: Backoff = Backoff::new(SESSION_SAVE_RETRY_MIN, SESSION_SAVE_RETRY_MAX);
 
 /// The debounced save of the live layout, and the backoff shared by every
 /// kind of save.
@@ -43,11 +46,9 @@ impl Autosave {
     /// belongs) does not re-capture and rewrite the whole session four times
     /// a second. Returns the failure count and the delay.
     pub(super) fn record_failure(&mut self, now: Instant) -> (u32, Duration) {
+        let failures_before = self.failures;
         self.failures = self.failures.saturating_add(1);
-        let exponent = self.failures.saturating_sub(1).min(16);
-        let delay = SESSION_SAVE_RETRY_MIN
-            .saturating_mul(1 << exponent)
-            .min(SESSION_SAVE_RETRY_MAX);
+        let delay = RETRY_BACKOFF.delay_after(failures_before);
         let retry = now + delay;
         self.deadline = Some(
             self.deadline

@@ -83,6 +83,74 @@ impl BuildProfile {
     }
 }
 
+/// The relationship between this process and the server named by its pane
+/// markers. Unknown profile markers are refused while reading the marker, so
+/// a pane cannot quietly be treated as an unrelated build.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PaneOwner {
+    NotInPane,
+    SameProfile,
+    OtherProfile,
+}
+
+/// Typed values read once from the two environment markers. The profile also
+/// guides socket selection when a script sets the marker without `SHEPR_ENV`.
+#[derive(Debug, Clone, Copy)]
+struct PaneMarker {
+    in_pane: bool,
+    owner_profile: Option<BuildProfile>,
+}
+
+impl PaneMarker {
+    fn read(diagnostics: &mut Vec<String>) -> Self {
+        let in_pane = match shepr_core::env::read_text(EnvVar::SheprEnv) {
+            Ok(value) => value.as_deref() == Some(shepr_core::env::SHEPR_ENV_IN_PANE),
+            Err(error) => {
+                diagnostics.push(error.to_string());
+                false
+            }
+        };
+        let owner_profile = Self::read_profile(diagnostics);
+        Self {
+            in_pane,
+            owner_profile,
+        }
+    }
+
+    fn read_profile(diagnostics: &mut Vec<String>) -> Option<BuildProfile> {
+        match shepr_core::env::read_text(EnvVar::SheprBuildProfile) {
+            Ok(Some(marker)) => match BuildProfile::from_marker(&marker) {
+                Some(profile) => Some(profile),
+                None => {
+                    diagnostics.push(format!(
+                        "{} must be `release` or `dev`, got `{marker}`",
+                        EnvVar::SheprBuildProfile
+                    ));
+                    None
+                }
+            },
+            Ok(None) => None,
+            Err(error) => {
+                diagnostics.push(error.to_string());
+                None
+            }
+        }
+    }
+
+    fn owner(self, current_profile: BuildProfile) -> PaneOwner {
+        if !self.in_pane {
+            PaneOwner::NotInPane
+        } else if self
+            .owner_profile
+            .is_some_and(|owner| owner != current_profile)
+        {
+            PaneOwner::OtherProfile
+        } else {
+            PaneOwner::SameProfile
+        }
+    }
+}
+
 /// Paths and the local target resolved once at the process boundary and
 /// passed to consumers. Production constructors reject unresolved path inputs
 /// that would put files relative to the working directory.
@@ -95,6 +163,7 @@ pub struct AppPaths {
     runtime_dir: PathBuf,
     home_dir: Option<PathBuf>,
     current_dir: Option<PathBuf>,
+    startup_cwd: Option<PathBuf>,
     server_address: super::ServerAddress,
 }
 
@@ -158,6 +227,12 @@ impl AppPaths {
         self.current_dir.as_deref()
     }
 
+    /// The absolute `SHEPR_STARTUP_CWD` handed to the server, when present.
+    /// The server's own working directory is not a startup handoff.
+    pub fn startup_cwd(&self) -> Option<&Path> {
+        self.startup_cwd.as_deref()
+    }
+
     pub fn server_address(&self) -> &super::ServerAddress {
         &self.server_address
     }
@@ -166,6 +241,23 @@ impl AppPaths {
     /// inherited process environment, for this build's profile.
     pub fn resolve() -> Result<Self, Vec<String>> {
         resolve_paths_from_env(BuildProfile::current(), CurrentDirOrigin::Process)
+    }
+
+    /// Resolve paths for a TUI or its internal client launch. A client launched
+    /// from a pane owned by this build profile is refused before path or config
+    /// loading; `None` represents that refusal.
+    pub fn resolve_for_client() -> Result<Option<Self>, Vec<String>> {
+        let profile = BuildProfile::current();
+        let mut diagnostics = Vec::new();
+        let marker = PaneMarker::read(&mut diagnostics);
+        if !diagnostics.is_empty() {
+            return Err(diagnostics);
+        }
+        if marker.owner(profile) == PaneOwner::SameProfile {
+            return Ok(None);
+        }
+        resolve_paths_from_env_with_marker(profile, CurrentDirOrigin::Process, marker, Vec::new())
+            .map(Some)
     }
 
     /// Resolve paths for the headless server process. The server daemon runs
@@ -196,6 +288,7 @@ impl AppPaths {
             runtime_dir: root.join("runtime"),
             home_dir: home_dir.map(Path::to_path_buf),
             current_dir: current_dir.map(Path::to_path_buf),
+            startup_cwd: None,
             server_address: super::ServerAddress::resolve_paths(&root.join("runtime"), None),
         }
     }
@@ -240,19 +333,21 @@ enum CurrentDirOrigin {
     StartupHandoff,
 }
 
-fn resolve_current_dir(origin: CurrentDirOrigin) -> Result<Option<PathBuf>, String> {
+fn resolve_current_dir(
+    origin: CurrentDirOrigin,
+) -> Result<(Option<PathBuf>, Option<PathBuf>), String> {
     let process = || std::env::current_dir().ok();
     match origin {
-        CurrentDirOrigin::Process => Ok(process()),
+        CurrentDirOrigin::Process => Ok((process(), None)),
         CurrentDirOrigin::StartupHandoff => {
             match shepr_core::env::read_path(EnvVar::SheprStartupCwd) {
-                Ok(Some(path)) if path.is_absolute() => Ok(Some(path)),
+                Ok(Some(path)) if path.is_absolute() => Ok((Some(path.clone()), Some(path))),
                 Ok(Some(path)) => Err(format!(
                     "{} must be an absolute path, got {}",
                     EnvVar::SheprStartupCwd,
                     path.display()
                 )),
-                Ok(None) => Ok(process()),
+                Ok(None) => Ok((process(), None)),
                 Err(error) => Err(error.to_string()),
             }
         }
@@ -264,32 +359,43 @@ fn resolve_paths_from_env(
     current_dir_origin: CurrentDirOrigin,
 ) -> Result<AppPaths, Vec<String>> {
     let mut target_env_diagnostics = Vec::new();
+    let pane_marker = PaneMarker {
+        in_pane: false,
+        owner_profile: PaneMarker::read_profile(&mut target_env_diagnostics),
+    };
+    resolve_paths_from_env_with_marker(
+        profile,
+        current_dir_origin,
+        pane_marker,
+        target_env_diagnostics,
+    )
+}
+
+fn resolve_paths_from_env_with_marker(
+    profile: BuildProfile,
+    current_dir_origin: CurrentDirOrigin,
+    pane_marker: PaneMarker,
+    mut target_env_diagnostics: Vec<String>,
+) -> Result<AppPaths, Vec<String>> {
     let mut socket_override =
         socket_path_override(EnvVar::SheprSocketPath, &mut target_env_diagnostics);
     // A pane names the profile of the server that owns it next to the socket
     // variable it exports. A process of another profile started in that pane
     // would otherwise follow it to the wrong server, so it drops it. With
     // no marker the variable came from a user or a script and applies as given.
-    match shepr_core::env::read_text(EnvVar::SheprBuildProfile) {
-        Ok(Some(marker)) => match BuildProfile::from_marker(&marker) {
-            Some(owner) if owner != profile => {
-                socket_override = None;
-            }
-            Some(_) => {}
-            None => target_env_diagnostics.push(format!(
-                "{} must be `release` or `dev`, got `{marker}`",
-                EnvVar::SheprBuildProfile
-            )),
-        },
-        Ok(None) => {}
-        Err(error) => target_env_diagnostics.push(error.to_string()),
+    if pane_marker
+        .owner_profile
+        .is_some_and(|owner| owner != profile)
+    {
+        socket_override = None;
     }
     if !target_env_diagnostics.is_empty() {
         return Err(target_env_diagnostics);
     }
 
     let home_dir = shepr_core::pathutil::home_dir().map_err(|error| vec![error.to_string()])?;
-    let current_dir = resolve_current_dir(current_dir_origin).map_err(|error| vec![error])?;
+    let (current_dir, startup_cwd) =
+        resolve_current_dir(current_dir_origin).map_err(|error| vec![error])?;
     let config_dir = platform_xdg_dir(
         EnvVar::XdgConfigHome,
         ".config",
@@ -361,6 +467,7 @@ fn resolve_paths_from_env(
                 runtime_dir,
                 home_dir: Some(home_dir),
                 current_dir,
+                startup_cwd,
                 server_address,
             })
         }
@@ -1252,13 +1359,16 @@ sidebar_max_width = 36
         // Without the handoff the server uses its own working directory.
         let paths = AppPaths::resolve_for_server().expect("server paths resolve");
         assert_eq!(paths.current_dir(), process_dir.as_deref());
+        assert_eq!(paths.startup_cwd(), None);
 
         env.set(EnvVar::SheprStartupCwd, &launch);
         let paths = AppPaths::resolve_for_server().expect("server paths resolve");
         assert_eq!(paths.current_dir(), Some(launch.as_path()));
+        assert_eq!(paths.startup_cwd(), Some(launch.as_path()));
         // Only the server reads the handoff; any other process keeps its own.
         let cli = AppPaths::resolve().expect("CLI paths resolve");
         assert_eq!(cli.current_dir(), process_dir.as_deref());
+        assert_eq!(cli.startup_cwd(), None);
 
         // `current` and a relative new_cwd resolve against the launch directory.
         std::fs::create_dir_all(paths.config_dir()).expect("create config dir");

@@ -21,10 +21,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use futures_util::StreamExt;
 use tokio::sync::watch;
 
-use crate::limits::{
-    SHUTDOWN_RECONNECT_BACKOFF_MULTIPLIER, SHUTDOWN_RECONNECT_INITIAL_DELAY,
-    SHUTDOWN_RECONNECT_MAX_DELAY,
-};
+use crate::app::Backoff;
+use crate::limits::{SHUTDOWN_RECONNECT_INITIAL_DELAY, SHUTDOWN_RECONNECT_MAX_DELAY};
 
 /// Watches logind for host shutdown warnings and cancellations. Dropping it
 /// stops the watch and releases any delay inhibitor it holds.
@@ -144,23 +142,32 @@ impl Shared {
 }
 
 async fn monitor(shared: Arc<Shared>, mut checkpoints: watch::Receiver<u64>) {
-    let mut retry = SHUTDOWN_RECONNECT_INITIAL_DELAY;
+    let reconnect_backoff = Backoff::new(
+        SHUTDOWN_RECONNECT_INITIAL_DELAY,
+        SHUTDOWN_RECONNECT_MAX_DELAY,
+    );
+    let mut failures = 0_u32;
     let mut refresh_pending_warning = false;
     // The sender lives in the handle, whose drop also aborts this task; a
     // closed channel only means the abort has not landed yet.
     while checkpoints.has_changed().is_ok() {
         match watch_shutdown(&shared, &mut checkpoints, refresh_pending_warning).await {
             Ok(()) => {
-                retry = SHUTDOWN_RECONNECT_INITIAL_DELAY;
+                failures = 0;
                 refresh_pending_warning = shared.requested.load(Ordering::Acquire);
             }
             Err(err) => {
                 let shutdown_pending = shared.requested.load(Ordering::Acquire);
                 refresh_pending_warning |= shutdown_pending;
-                let retry_delay = if shutdown_pending {
-                    SHUTDOWN_RECONNECT_INITIAL_DELAY
+                // A pending shutdown keeps retries at the initial delay and
+                // restarts the count, so once the warning clears ordinary
+                // absence backs off again from the initial delay.
+                let failures_before = if shutdown_pending { 0 } else { failures };
+                let retry_delay = reconnect_backoff.delay_after(failures_before);
+                failures = if shutdown_pending {
+                    0
                 } else {
-                    retry
+                    failures.saturating_add(1)
                 };
                 // Losing logind while a shutdown is pending may cost the session
                 // checkpoint, so that case warns. Without one pending it is
@@ -192,14 +199,6 @@ async fn monitor(shared: Arc<Shared>, mut checkpoints: watch::Receiver<u64>) {
                 // A lost signal stream leaves cancellation unobservable until
                 // reconnecting, so retry promptly while a warning is pending.
                 tokio::time::sleep(retry_delay).await;
-                // A pending shutdown resets the delay; ordinary absence
-                // backs off.
-                retry = if shutdown_pending {
-                    SHUTDOWN_RECONNECT_INITIAL_DELAY
-                } else {
-                    (retry * SHUTDOWN_RECONNECT_BACKOFF_MULTIPLIER)
-                        .min(SHUTDOWN_RECONNECT_MAX_DELAY)
-                };
             }
         }
     }

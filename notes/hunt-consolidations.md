@@ -82,20 +82,6 @@ minimum host grid is decided by `GridSize::clamped` (one cell),
 budget is filed separately. Owner: core `HostGeometry` with its own grid rule and
 a `CellPx` that owns the pixel bound. Reported by foundation and server-serving.
 
-## CON-006 - Which profile owns this pane, and what is the startup cwd?
-
-`SHEPR_BUILD_PROFILE`: `src/main.rs` `should_block_nested_for_env` treats any
-marker other than the current one as another profile (so `staging` is not
-refused there), while `shepr-config/src/io.rs` `resolve_paths_from_env` refuses
-it as a launch error through the private `BuildProfile::from_marker`. They
-agree only because `main` says "not nested" and resolve then fails.
-`SHEPR_STARTUP_CWD`: `io.rs` `resolve_current_dir` requires it absolute;
-`bootstrap.rs` `read_startup_cwd` reads it again with no check (the env kind is
-`Handoff`, with no absolute rule). Owner: config exposes a
-`PaneOwner::{NotInPane, SameProfile, OtherProfile}` (or a typed `PaneMarker`)
-read once, and the startup cwd is read once into `AppPaths` and passed to
-bootstrap. Reported by foundation and edges.
-
 ## CON-009 - How is a private file published durably and atomically?
 
 `persist/io.rs` `publish_private_file` (private temp, copy, fsync, rename, sync
@@ -108,26 +94,6 @@ symlink policy and the meaning of a failed dir sync differ. Owner: platform
 `publish_file(target, contents, Options { preserve_metadata_from,
 refuse_symlink_target, durability })`; `config_file.rs` is the start of it but is
 named for one consumer. (foundation)
-
-## CON-010 - Does an absent or non-regular config file read as empty?
-
-`registry::read_config_content` (directory at the path is an error),
-`file_ops::read_if_file` (directory reads as absent), `targets::read_json_config`
-(`is_file` then default), `config_file::read_config_snapshot`, and the inline
-`fs::read_to_string` in `opencode_config::plugin_is_configured`. Install and
-status read the same files through different helpers with different answers for
-a non-regular file; they agree only because install's preflight
-`check_config_targets` rejects non-regular files first. Owner: one reader.
-(agents)
-
-## CON-011 - When is a session path a usable regular file?
-
-`check_session_target` (now through the writer's `resolve_write_target` and
-`ensure_replaceable`), `open_regular` (platform helper) and
-`HistoryFileStamp::read` (now refusing a non-file) agree today but are still
-separate answers. Owner: one `SessionPath::resolve(path)
--> Resolved { target, state: Absent | Regular | NotRegular(kind) }` used by the
-check, saves, clears, reads and stamps. (mux-state)
 
 ## CON-012 - Has a file changed since it was stamped?
 
@@ -361,25 +327,6 @@ that the diff walker handles through `invalidated`. A test asserts patch bytes
 equal diff bytes. Owner: one row painter parameterised by a "previous cell at (x,
 y)" source. (terminal)
 
-## CON-032 - Which effects does the terminal queue?
-
-vt keeps seven queues (`responses`, `pwd_changes`, `clipboard_writes`,
-`dropped_clipboard_store_bytes`, `title_update`, `progress_update`,
-`default_color_set`); mux lists them three times: `collect_core_effects`, and two
-identical drop lists `discard_core_effects` (`helpers.rs`) and
-`discard_initial_terminal_effects` (`runtime.rs`). Owner: `Terminal::take_effects()
--> TerminalEffects`, `#[must_use]`, discarded by dropping. (terminal)
-
-## CON-033 - History capacity after a purge
-
-`Terminal::restore_scrollback_budget_after_history_purge` plus
-`set_history_lines`, and `CoreHandler::restore_scrollback_budget_after_history_purge`,
-which inlines its own copy including the trick of truncating the synthetic title
-event `set_options` emits. They agree. The handler cannot call `Terminal`
-methods because `with_handler` destructures twelve fields into it (filed among
-the structure findings). Owner: a `HistoryCapacity` the handler borrows.
-(terminal)
-
 ## CON-035 - Where does an OSC end?
 
 vte decides; `scan.rs::Scanner` mirrors vte's framing to find working directory,
@@ -424,14 +371,6 @@ and `TextEditor::word_boundary`. The first two apply to the same pane text and
 differ; whether that is intended is written nowhere. Reported by terminal,
 client-shell and contracts.
 
-## CON-039 - Should OSC evidence be cleared on an agent change?
-
-`DetectorState::observe_process_probe` computes `should_clear_osc_evidence =
-should_reset_detection && previous_agent.is_some()`, and
-`clear_osc_evidence_for_agent_transition` checks `previous_agent.is_some()`
-again before calling `clear_agent_osc_state`. The helper should just clear.
-(mux-panes)
-
 ## Agents and hooks
 
 ## CON-041 - Who decided this pane's state: hook or screen?
@@ -472,27 +411,6 @@ asset would never send; whether that leniency is deliberate is recorded on one
 side only. Owner: the descriptor's integration policy, with the asset contract
 tests asserting the asset obeys it. (agents)
 
-## CON-044 - What does a target's hook registration look like?
-
-Install (`integration/targets.rs`, one hand-written `install_*` per target) and
-status (`integration/registry.rs`, `RegistrationCheck`, `JsonShape`,
-`hook_registration_is_current`) each decide which events get an entry, which
-carry an action argument, the timeout unit, the matcher and the entry shape,
-held together by the pairwise test `every_target_reads_current_right_after_install`.
-Latent drift: `install_cursor` hard-codes `"sessionStart"` and `Some("session")`
-while status derives from `CURSOR_HOOK_EVENTS`; `install_devin` writes an entry
-for every event including action-less ones while status expects only events with
-an action (agreeing by accident); Copilot is the reverse with two separately
-written rules; Codex and MastraCode installs skip action-less events, Devin and
-Droid do not. Which JSON fields carry a hook command (`["command", "bash"]`) is
-also spelled in `value_uses_hook_path`, `cst_value_uses_hook_path`,
-`collect_hook_path_commands` and `is_matching_direct_command_entry`
-(`direct_command_field()` is a function returning `"bash"`). Owner: one pure
-`expected_registration(hook_path) -> Registration` per target, used by install
-to write and status to compare (as `grok_hook_config` and
-`antigravity_cli_hook_block` already do), and one set of command fields.
-(agents)
-
 ## CON-045 - Which agents have a screen manifest, and which file is it?
 
 `AgentDescriptor.screen_manifest: bool`, the `BUNDLED_MANIFESTS` table in
@@ -513,17 +431,6 @@ glyph. Since the only consumer unions all agents, the per-agent field is a
 global set, and the manifests keep their own copies. Owner: one global
 `TitleActivityGlyphs` set in detection, referenced by the manifests through a
 named class if the rule language grows one. (agents)
-
-## CON-047 - Is this process an interactive agent, and which rule wins?
-
-`agent != Agent::Letta || is_interactive_letta_process(process)` is written in
-the leader branch and the candidate loop of `identify_agent_in_job` and in
-`suspended_agent_processes`; owner: one `identify_process` applying it once.
-Rule winner: `detect_with_manifest` walks `priority_order` (stable sort,
-descending) and stops at the first match, while `explain_loaded_manifest` walks
-manifest order and keeps `previous.priority >= rule.priority`; a comment says
-they agree and only tie-covering tests check it. Owner: explain evaluates every
-rule then picks the winner by walking the same `priority_order`. (agents)
 
 ## CON-049 - Hook asset contracts are spelled in every asset
 
@@ -867,18 +774,17 @@ capture and compares. (server-app)
 
 ## CON-069 - Is a pane exit checkpointed before removal?
 
-`prepare_pane_exit` (production) and the fallback in `handle_internal_event_inner`
-(`prepared_checkpoint.unwrap_or_else(|| self.pane_exit_needs_checkpoint(..))`)
-each also call `prepare_pane_removal_by_id`. In production every `PaneDied` goes
-through `handle_internal_event_with_forwarding`, which always prepares, so the
-fallback serves tests and direct callers and logs a warning when reached
-unsettled. The server's `replaying_checkpointed_pane_exit` field passes a
-parameter through `self` (`handle_scheduled_tasks_headless` sets it,
-`handle_internal_event_with_forwarding` `take()`s it, three early returns clear
-it by hand), and the re-wrapping of `AppEvent::Runtime` for re-queueing is
-written twice in the `PaneDied` arm. Owner: `PaneDied` applicable only as a
-`(event, PreparedPaneExit)` input, and an explicit `Origin::Replay(generation)`
-argument. Reported by server-app and server-serving.
+The two `prepare_pane_removal_by_id` calls serve different moments (before the
+hold and after the checkpoint) and are documented as such, and the runtime
+envelope requeue is one helper. Still open: the server's
+`replaying_checkpointed_pane_exit` field passes a parameter through `self`
+(`handle_scheduled_tasks_headless` sets it, `handle_internal_event_with_forwarding`
+`take()`s it, early returns clear it by hand), and the direct `AppEvent`
+fallback survives for callers outside the prepare-and-hold path. Owner: `PaneDied`
+applicable only as a `(event, PreparedPaneExit)` input, and an explicit
+`Origin::Replay(generation)` argument, which needs the pending queue and
+scheduler in `server/headless.rs` to carry it. Reported by server-app and
+server-serving.
 
 ## App and server loop
 
@@ -1003,34 +909,6 @@ each go id to index to workspace to runtime, `send_pane_focus` uses a linear
 `position`): a `ViewedWorkspace { index, workspace }` resolved once per client
 per pass. (server-serving)
 
-## CON-077 - Is the server stopping?
-
-The stop check (now the lifecycle phase alone) is still evaluated at many
-points per loop path; `handle_api_request_with_shutdown_check_inner` and
-`handle_client_shell_command`
-each do "if stop requested, initiate shutdown, then if stopping, reject".
-`ClientShellSurfaceSet` and `WorkspaceCheckoutRoot` bypass the second check
-because they are dispatched earlier, safe only because `run` never dispatches
-server events once a stop is requested. Owner: one gate at the dispatch entry.
-(server-serving)
-
-## CON-078 - How is an unencodable message handled?
-
-`ClientOutbox::frame` and `ControlSender::send` each implement "encode, warn and
-close on failure". Many `Delivery` results are discarded (`send_to_all_clients`,
-`tell_*` in the `stream_*` functions, `complete_reply`); where `Closed` only means
-"the reap will handle it" consider returning nothing, and `#[must_use]` where it
-matters. (server-serving)
-
-## CON-079 - Retry backoff policies
-
-`Autosave::record_failure` (250 ms doubling to 30 s), `checkpoint_retry_delay`
-(250 ms doubling to 1 s), `App::create_default_workspace` (250 ms doubling to
-30 s, kept as two `Option`s) and the logind reconnect backoff in `server/`; the
-autosave and default-workspace pairs have identical values under different names.
-Mostly duplicated code; a `Backoff { min, max }` value also makes the
-default-workspace retry one field. (server-app)
-
 ## Wire, handshake and surfaces
 
 ## CON-080 - Is this update a patch against unchanged topology, and may it apply?
@@ -1138,20 +1016,6 @@ models of what an SSH refusal proves, kept consistent by prose. Owner: one
 `evidence() -> {NothingLearned, InstallStale, CandidateMismatch, InstallChanged,
 RemoteFault}` on the failure. Preflight and the connectors also resolve each
 machine twice (filed among the structure findings). (edges)
-
-## CON-092 - The restart offer is one engine written twice
-
-`src/preflight.rs` `restart_local` (limit `MAX_LOCAL_OFFERS`, outcome
-`LocalRestart`, text `local_offer`) and `remote/preflight.rs`
-`restart_different_builds` (limit `MAX_RESTART_OFFERS`, outcome `RestartResult`,
-text `remote_offer`). They diverge: "no server left to stop" (local maps
-`NotRunning` straight to `OccupantChanged`, remote re-checks and may offer
-again); a kept or unasked server (remote prints a "left running, run this to
-stop it" notice, local prints nothing); identities (local prints the raw build
-and boot ids from the socket, remote sanitized ones). Owner: one
-`restart_offers(targets, prompter)` in the crate that owns launching, over a
-`RestartTarget { observe, stop }` trait with local and machine implementations;
-`src/preflight.rs` keeps only the wording. (edges)
 
 ## CON-093 - Command lines: producers and parsers are separate copies
 
@@ -1329,36 +1193,6 @@ deadline tuple compared in `endpoint_notice_drawn`, `tick_transient_banners` and
 `EndpointNotice { endpoint, kind }` rendered once, and a `Notices` component
 (visible card, restore queue, seen sets, deadline) with `push`, `dismiss`,
 `drawn`, `tick` and `deadline`. Reported by client-core and client-shell.
-
-## CON-106 - Is copy mode the live mode?
-
-`copy_or_terminal_mode` (copy pane equals focused pane); `route_key_press`'s
-Prefix arm (the same expression inline); `mouse.rs` pane-scrollbar press (copy
-pane equals hit pane and focused equals hit pane); `apply_active_snapshot`
-(promotes Terminal to Copy when the copy pane is focused, demotes otherwise);
-`copy_mode_owns_input` (mode is Copy, no overlay, copy pane focused);
-`insert_copy_search_text` (mode is Copy, no overlay, no focus check). The same
-split exists between `Navigate` and `navigate_workspace_id` (filed as a bug).
-Owner: the mode carries its state (`Mode::Copy(CopySession)` with parked
-sessions held apart, `Mode::Navigate { preview: Option<PinnedLocation> }`) or
-copy mode is derived in one function and never assigned. (client-shell)
-
-## CON-107 - Which state goes with a selection?
-
-Sites ending a selection and the fields each clears: `route_key_press` (two
-branches) and `prepare_committed_text` (selection, autoscroll, highlight
-deadline); `apply_active_snapshot`'s focus-loss branch (all seven); its
-copy-pane-removed and unfocused branches (three); `presented_surface_changed`
-(word gesture plus three); `cancel_word_selection` (not the highlight deadline);
-`tick_selection_highlight` (selection and deadline); `enter_copy_mode`,
-`exit_copy_mode` and the mouse left press (their own subsets). They disagree
-(`selection_focus_pending` survives a key-cleared selection;
-`cancel_word_selection` leaves a deadline armed), harmless only because readers
-re-check `selection.is_some()`. `ClientCopyModeState::selection` plus
-`sync_copy_selection` is a second copy held in step; copy mode's search is seven
-`search_*` fields whose clearing is written in `route_copy_mode_key` and
-`presented_surface_changed`. Owner: a `MouseSelection` struct with `clear()`, copy
-mode driving it, and one `Option<CopySearch>`. (client-shell)
 
 ## CON-108 - What does compose draw over pane cells?
 

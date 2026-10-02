@@ -336,12 +336,11 @@ impl ClientShellState {
             outcome.repaint = true;
             return true;
         }
-        self.word_selection_gesture = None;
-        if self.copy_or_terminal_mode() != ClientShellMode::Copy && self.selection.take().is_some()
-        {
-            self.stop_selection_autoscroll();
-            self.selection_highlight_clear_deadline = None;
-            outcome.repaint = true;
+        self.mouse_selection.word_gesture = None;
+        if self.copy_or_terminal_mode() != ClientShellMode::Copy {
+            let had_selection = self.mouse_selection.selection.is_some();
+            self.mouse_selection.clear_range();
+            outcome.repaint |= had_selection;
         }
         false
     }
@@ -514,12 +513,12 @@ impl ClientShellState {
         {
             return false;
         }
-        if self.mode == ClientShellMode::Copy
-            && self.overlay.is_none()
+        if self.copy_mode_owns_input()
             && self
                 .copy_mode
                 .as_ref()
-                .is_some_and(|copy_mode| copy_mode.search_prompt.is_some())
+                .and_then(|copy_mode| copy_mode.search.as_ref())
+                .is_some_and(|search| search.prompt.is_some())
         {
             return true;
         }
@@ -570,30 +569,25 @@ impl ClientShellState {
         if matches!(key.code, KeyCode::Modifier(_)) {
             return None;
         }
-        self.word_selection_gesture = None;
-        if self.mode != ClientShellMode::Copy
-            && self.copy_or_terminal_mode() != ClientShellMode::Copy
+        self.mouse_selection.word_gesture = None;
+        if self.copy_or_terminal_mode() != ClientShellMode::Copy
             && !self.config.copy_on_select
             && is_retained_selection_copy_key(key)
             && self
+                .mouse_selection
                 .selection
                 .as_ref()
                 .is_some_and(shepr_vt::selection::Selection::is_visible)
         {
             self.request_selection_copy(outcome);
-            self.selection = None;
-            self.stop_selection_autoscroll();
-            self.selection_highlight_clear_deadline = None;
+            self.mouse_selection.clear_range();
             outcome.repaint = true;
             return None;
         }
-        if self.mode != ClientShellMode::Copy
-            && self.copy_or_terminal_mode() != ClientShellMode::Copy
-            && self.selection.take().is_some()
-        {
-            self.stop_selection_autoscroll();
-            self.selection_highlight_clear_deadline = None;
-            outcome.repaint = true;
+        if self.copy_or_terminal_mode() != ClientShellMode::Copy {
+            let had_selection = self.mouse_selection.selection.is_some();
+            self.mouse_selection.clear_range();
+            outcome.repaint |= had_selection;
         }
 
         match self.mode {
@@ -613,7 +607,7 @@ impl ClientShellState {
             }
             ClientShellMode::Prefix => {
                 let return_mode = if self.copy_mode.as_ref().is_some_and(|copy_mode| {
-                    self.focused_pane_id().as_deref() == Some(copy_mode.pane_id.as_str())
+                    copy_mode.pane_is_focused(self.focused_pane_id().as_deref())
                 }) {
                     ClientShellMode::Copy
                 } else {
@@ -653,7 +647,8 @@ impl ClientShellState {
                 if self
                     .copy_mode
                     .as_ref()
-                    .is_none_or(|copy_mode| copy_mode.search_prompt.is_none())
+                    .and_then(|copy_mode| copy_mode.search.as_ref())
+                    .is_none_or(|search| search.prompt.is_none())
                     && shepr_config::terminal_key_matches_combo(key, self.config.keybinds.prefix)
                 {
                     self.mode = ClientShellMode::Prefix;
@@ -666,10 +661,14 @@ impl ClientShellState {
         }
     }
 
+    /// Return the copy session's mode when leaving a temporary mode. This does
+    /// not decide whether copy currently owns input; `copy_mode_owns_input` does.
     pub(super) fn copy_or_terminal_mode(&self) -> ClientShellMode {
-        if self.copy_mode.as_ref().is_some_and(|copy_mode| {
-            self.focused_pane_id().as_deref() == Some(copy_mode.pane_id.as_str())
-        }) {
+        if self
+            .copy_mode
+            .as_ref()
+            .is_some_and(|copy_mode| copy_mode.pane_is_focused(self.focused_pane_id().as_deref()))
+        {
             ClientShellMode::Copy
         } else {
             ClientShellMode::Terminal
@@ -842,7 +841,7 @@ impl ClientShellState {
             self.cycle_pane(true, outcome);
         } else {
             if !preserve_navigate {
-                self.mode = ClientShellMode::Terminal;
+                self.mode = self.copy_or_terminal_mode();
             }
             self.record_binding(binding, outcome);
             // Navigate mode was left just above, but a close dialog opened from
@@ -935,6 +934,7 @@ impl ClientShellState {
             mode: self.mode,
             overlay: self.overlay.as_ref().map(ClientShellOverlay::kind),
             retained_selection: self
+                .mouse_selection
                 .selection
                 .as_ref()
                 .is_some_and(shepr_vt::selection::Selection::is_visible),
@@ -1103,15 +1103,8 @@ mod tests {
             max_offset_from_bottom: 0,
             entry_offset_from_bottom: 0,
             selection: None,
-            search_prompt: None,
-            search_query: TypedText::default(),
-            search_direction: None,
-            search_matches: Vec::new(),
-            search_total: 0,
-            search_current: None,
-            search_current_global: None,
-            search_generation: 0,
-            copy_after_search: false,
+            search: None,
+            operation_generation: 0,
         }
     }
 
@@ -1256,7 +1249,7 @@ mod tests {
             anchor: shepr_vt::Point::new(shepr_vt::AbsRow(0), 0),
         });
         state.copy_mode = Some(copy_mode);
-        state.selection = Some(shepr_vt::selection::Selection::anchor(
+        state.mouse_selection.selection = Some(shepr_vt::selection::Selection::anchor(
             test_pane_id(),
             shepr_vt::Point::new(shepr_vt::AbsRow(0), 0),
         ));
@@ -1285,7 +1278,7 @@ mod tests {
                 .as_ref()
                 .is_some_and(|copy_mode| copy_mode.selection.is_none())
         );
-        assert!(state.selection.is_none());
+        assert!(state.mouse_selection.selection.is_none());
         assert!(state.copy_pipeline.keys_is_empty());
     }
 }

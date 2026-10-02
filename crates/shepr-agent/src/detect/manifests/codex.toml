@@ -21,7 +21,7 @@ regex = ['(?:^| )[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏](?: |$)']
 id = "transcript_viewer"
 state = "unknown"
 priority = 1000
-region = "after_last_prompt_marker"
+region = "codex_after_last_prompt_marker"
 skip_state_update = true
 contains = ["↑/↓ to scroll", "pgup/pgdn to", "home/end to jump", "q to quit"]
 any = [
@@ -53,7 +53,7 @@ regex = ['Skip\s+until\s+next\s+version', 'Press enter to continue\s*\z']
 id = "live_strong_blocker"
 state = "blocked"
 priority = 900
-region = "after_last_prompt_marker"
+region = "codex_after_last_prompt_marker"
 visible_blocker = true
 any = [
   { contains = ["press enter to confirm or esc to cancel"] },
@@ -67,7 +67,7 @@ any = [
 id = "weak_blocker"
 state = "blocked"
 priority = 600
-region = "whole_recent_without_current_prompt_marker"
+region = "codex_whole_recent_without_current_prompt_marker"
 # Sparkles can replace the space after ›. A later response marker makes that prompt stale.
 not = [{ regex = ['(?m)^›[⠁⠂⠄⠈⠐⠠⡀⢀][^\n]*(?:\n(?:[^•■✗✓\n][^\n]*)?)*\z'] }]
 any = [
@@ -81,7 +81,7 @@ any = [
 id = "screen_working_fallback"
 state = "working"
 priority = 500
-region = "before_current_prompt_marker"
+region = "codex_before_current_prompt_marker"
 visible_working = true
 # Support animated and reduced-motion status, including dynamic activity labels.
 # The interrupt hint can be remapped, unbound, or hidden, and queued inputs can

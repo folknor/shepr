@@ -240,9 +240,9 @@ pub(super) fn install_client_shell_snapshot(
     snapshot: Box<shepr_protocol::ClientShellSnapshot>,
     role: endpoint::ConnectionRole,
     endpoints: &mut endpoint::EndpointRegistry,
-) -> Result<(), ClientError> {
+) {
     let Some(connection) = endpoints.connection(endpoint_id) else {
-        return Ok(());
+        return;
     };
     let generation = connection.generation.get();
     state
@@ -267,7 +267,6 @@ pub(super) fn install_client_shell_snapshot(
     ) {
         state.present_chrome(frame);
     }
-    Ok(())
 }
 
 pub(super) fn finish_client_shell_input(
@@ -324,9 +323,6 @@ pub(super) fn finish_client_shell_input(
             ClientMessage::ClientShellHostTheme { update } => {
                 state.record_host_theme_update(update);
                 endpoints.send_viewed(&request);
-            }
-            ClientMessage::ClientShellResize { .. } => {
-                resize_views(state, endpoints);
             }
             // Pane input and host focus reach only the shown endpoint. A target learns of host
             // focus at its commit, and a released endpoint was sent focus-loss with its release.

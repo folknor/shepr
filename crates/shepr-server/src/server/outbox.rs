@@ -26,6 +26,20 @@ use std::sync::{Arc, Condvar, Mutex};
 use tokio::sync::Notify;
 use tracing::{debug, warn};
 
+fn encode_message_or_close<M: serde::Serialize>(
+    queue: &OutboxQueue,
+    message: &M,
+) -> Option<Vec<u8>> {
+    match shepr_protocol::encode_message(message) {
+        Ok(bytes) => Some(bytes),
+        Err(error) => {
+            warn!(%error, "failed to encode client message; closing the client");
+            queue.close_connection();
+            None
+        }
+    }
+}
+
 /// What happened to a message offered to a client.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Delivery {
@@ -143,14 +157,7 @@ impl ClientOutbox {
         if !self.attached || !self.queue.lock_state().writer_alive {
             return None;
         }
-        match shepr_protocol::encode_message(message) {
-            Ok(bytes) => Some(bytes),
-            Err(error) => {
-                warn!(%error, "failed to encode client message; closing the client");
-                self.close();
-                None
-            }
-        }
+        encode_message_or_close(&self.queue, message)
     }
 }
 
@@ -163,7 +170,8 @@ impl Drop for ClientOutbox {
 }
 
 /// The reader thread's handle on a connection's queue: control sends (the
-/// health pong) and close. Each clone counts as a sender, so the writer
+/// health pong), which close the connection on overflow or an encode
+/// failure. Each clone counts as a sender, so the writer
 /// thread keeps draining while the reader holds one after the outbox is gone.
 #[derive(Debug)]
 pub(crate) struct ControlSender {
@@ -190,24 +198,16 @@ impl ControlSender {
 
     /// Queues a message under the control lane's policy; overflow and an
     /// encode failure both close the connection.
+    #[must_use = "a closed client connection is reaped by the server loop"]
     pub(crate) fn send(&self, message: &ServerMessage) -> Delivery {
-        let framed = match shepr_protocol::encode_message(message) {
-            Ok(framed) => framed,
-            Err(error) => {
-                warn!(%error, "failed to encode client control message; closing the client");
-                self.close();
-                return Delivery::Closed;
-            }
+        let Some(framed) = encode_message_or_close(&self.queue, message) else {
+            return Delivery::Closed;
         };
         if self.queue.send_control(framed).is_ok() {
             Delivery::Queued
         } else {
             Delivery::Closed
         }
-    }
-
-    pub(crate) fn close(&self) {
-        self.queue.close_connection();
     }
 }
 
@@ -545,14 +545,12 @@ impl ClientOutbox {
     }
 
     /// Holds a ready reply behind any earlier one until the next release.
-    pub(crate) fn hold_reply(&mut self, message: &ServerMessage) -> Delivery {
+    /// Encoding or held-budget failure closes the queue for the loop to reap.
+    pub(crate) fn hold_reply(&mut self, message: &ServerMessage) {
         let Some(bytes) = self.frame(message) else {
-            return Delivery::Closed;
+            return;
         };
-        match self.push_reply(Some(bytes), None) {
-            Some(_) => Delivery::Queued,
-            None => Delivery::Closed,
-        }
+        let _ = self.push_reply(Some(bytes), None);
     }
 
     /// Reserves the place of a reply a worker will complete, holding
@@ -564,18 +562,19 @@ impl ClientOutbox {
     }
 
     /// Fills a reserved entry and drops its refusal. A completion for an
-    /// entry already resolved (at shutdown) is ignored.
-    pub(crate) fn complete_reply(&mut self, seq: ReplySeq, message: &ServerMessage) -> Delivery {
+    /// entry already resolved (at shutdown) is ignored; encoding or held
+    /// budget failure closes the queue for the loop to reap.
+    pub(crate) fn complete_reply(&mut self, seq: ReplySeq, message: &ServerMessage) {
         let Some(index) = self
             .replies
             .entries
             .iter()
             .position(|entry| entry.seq == seq && entry.ready.is_none())
         else {
-            return Delivery::Queued;
+            return;
         };
         let Some(bytes) = self.frame(message) else {
-            return Delivery::Closed;
+            return;
         };
         let refusal_bytes = self.replies.entries[index]
             .refusal
@@ -587,13 +586,12 @@ impl ClientOutbox {
             .saturating_sub(refusal_bytes)
             .saturating_add(bytes.len());
         if !self.admission(self.replies.entries.len(), total) {
-            return Delivery::Closed;
+            return;
         }
         let entry = &mut self.replies.entries[index];
         entry.refusal = None;
         entry.ready = Some(bytes);
         self.replies.held_bytes = total;
-        Delivery::Queued
     }
 
     /// Answers every reply still waiting on a worker with its shutdown
@@ -608,10 +606,10 @@ impl ClientOutbox {
 
     /// Moves the ready prefix of held replies onto the control lane, in
     /// order, under `mode`. Stops at the first entry without a reply, and,
-    /// within budget, at the first reply the lane has no room for. `Closed`
-    /// when the outbox is closed (the reap removes the client); `Queued`
-    /// otherwise, including when a reply waits for room.
-    pub(crate) fn release_replies(&mut self, mode: ReleaseMode) -> Delivery {
+    /// within budget, at the first reply the lane has no room for. A closed
+    /// queue wakes the loop to reap the client; a reply waiting for room also
+    /// wakes it when the writer drains the lane.
+    pub(crate) fn release_replies(&mut self, mode: ReleaseMode) {
         while let Some(entry) = self.replies.entries.front_mut() {
             let Some(bytes) = entry.ready.take() else {
                 break;
@@ -634,7 +632,6 @@ impl ClientOutbox {
                 }
             }
         }
-        self.liveness()
     }
 }
 
@@ -666,9 +663,9 @@ impl ClientOutbox {
         self.told.window_title.as_ref() == Some(title)
     }
 
-    pub(crate) fn tell_mouse_capture(&mut self, enabled: bool, sgr_pixels: bool) -> Delivery {
+    pub(crate) fn tell_mouse_capture(&mut self, enabled: bool, sgr_pixels: bool) {
         if self.told.mouse_capture == Some((enabled, sgr_pixels)) {
-            return self.liveness();
+            return;
         }
         let result = self.send(&ServerMessage::MouseCapture {
             enabled,
@@ -677,18 +674,16 @@ impl ClientOutbox {
         if result == Delivery::Queued {
             self.told.mouse_capture = Some((enabled, sgr_pixels));
         }
-        result
     }
 
-    pub(crate) fn tell_keyboard_report_all(&mut self, enabled: bool) -> Delivery {
+    pub(crate) fn tell_keyboard_report_all(&mut self, enabled: bool) {
         if self.told.keyboard_report_all == Some(enabled) {
-            return self.liveness();
+            return;
         }
         let result = self.send(&ServerMessage::ClientShellKeyboardReportAll { enabled });
         if result == Delivery::Queued {
             self.told.keyboard_report_all = Some(enabled);
         }
-        result
     }
 
     pub(crate) fn tell_window_title(&mut self, title: Option<String>) -> Delivery {
@@ -1106,9 +1101,10 @@ mod tests {
     fn held_reply_count_over_the_bound_closes_the_outbox() {
         let mut outbox = queued_outbox();
         for _ in 0..MAX_HELD_ENDPOINT_REPLIES {
-            assert_eq!(outbox.hold_reply(&title("held")), Delivery::Queued);
+            outbox.hold_reply(&title("held"));
+            assert!(!outbox.is_closed());
         }
-        assert_eq!(outbox.hold_reply(&title("overflow")), Delivery::Closed);
+        outbox.hold_reply(&title("overflow"));
         assert!(outbox.is_closed());
     }
 
@@ -1121,8 +1117,9 @@ mod tests {
                 assert!(outbox.reserve_reply(&message).is_some());
                 assert!(outbox.reserve_reply(&message).is_none());
             } else {
-                assert_eq!(outbox.hold_reply(&message), Delivery::Queued);
-                assert_eq!(outbox.hold_reply(&message), Delivery::Closed);
+                outbox.hold_reply(&message);
+                assert!(!outbox.is_closed());
+                outbox.hold_reply(&message);
             }
             assert!(outbox.is_closed());
         }
@@ -1168,11 +1165,9 @@ mod tests {
     fn a_reply_past_the_whole_lane_closes_instead_of_waiting_forever() {
         let bytes = shepr_protocol::encode_message(&title("reply")).expect("frame");
         let mut outbox = ClientOutbox::from_queue(test_queue(2, bytes.len() - 1));
-        assert_eq!(outbox.hold_reply(&title("reply")), Delivery::Queued);
-        assert_eq!(
-            outbox.release_replies(ReleaseMode::WithinBudget),
-            Delivery::Closed
-        );
+        outbox.hold_reply(&title("reply"));
+        assert!(!outbox.is_closed());
+        outbox.release_replies(ReleaseMode::WithinBudget);
         assert!(outbox.is_closed());
     }
 
@@ -1239,10 +1234,7 @@ mod tests {
     fn shutdown_release_admits_replies_ahead_of_the_shutdown_notice() {
         let mut outbox = queued_outbox();
         outbox.hold_reply(&title("reply"));
-        assert_eq!(
-            outbox.release_replies(ReleaseMode::Shutdown),
-            Delivery::Queued
-        );
+        outbox.release_replies(ReleaseMode::Shutdown);
         assert_eq!(outbox.send(&title("shutdown")), Delivery::Queued);
         for expected in ["reply", "shutdown"] {
             let Some(ClientWriteItem::Control(bytes)) = outbox.queue.recv() else {

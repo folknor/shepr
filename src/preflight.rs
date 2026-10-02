@@ -16,9 +16,10 @@ use std::os::fd::AsRawFd as _;
 use shepr_api::RuntimeStatus;
 use shepr_api::server_stop::ServerStopError;
 use shepr_config::MachineConfig;
-use shepr_remote::{DifferentBuildServer, MachineCheck, PreflightOutcome, RestartResult};
-
-use crate::limits::MAX_LOCAL_OFFERS;
+use shepr_remote::{
+    DifferentBuildServer, MachineCheck, PreflightOutcome, RemoteStop, RestartDecision,
+    RestartResult,
+};
 
 /// Authenticates the machines that need it, then offers to restart each running
 /// server of another build: the local one first, then the machines'. Every
@@ -35,47 +36,59 @@ pub(crate) fn run(config: &shepr_config::ValidatedClientConfig, paths: &shepr_co
     let can_prompt = std::io::stdin().is_terminal() && std::io::stderr().is_terminal();
     let machines = config.machines();
     let ssh = shepr_remote::MachineSshPreflight::new(paths);
+    let mut before_authentication = |machine: &MachineConfig| {
+        crate::cli::print_notice(&prompt_notice(machine));
+    };
+    let authentication_prompt: Option<&mut dyn FnMut(&MachineConfig)> = if can_prompt {
+        Some(&mut before_authentication)
+    } else {
+        None
+    };
     let mut outcomes = if machines.is_empty() {
         Vec::new()
     } else {
-        shepr_remote::preflight(machines, &ssh, can_prompt, |machine| {
-            crate::cli::print_notice(&prompt_notice(machine));
-        })
+        shepr_remote::preflight(machines, &ssh, authentication_prompt)
     };
 
+    let mut decide_local = |status: &RuntimeStatus| {
+        if confirm(&local_offer(status)) {
+            crate::cli::print_notice(&"shepr: stopping the local server.");
+            RestartDecision::Restart
+        } else {
+            RestartDecision::Keep
+        }
+    };
+    let local_decision: Option<&mut dyn FnMut(&RuntimeStatus) -> RestartDecision> = if can_prompt {
+        Some(&mut decide_local)
+    } else {
+        None
+    };
     let local = restart_local(
-        can_prompt,
         || local_server_status(paths),
         |boot_id| shepr_api::server_stop::stop_active_server(paths, Some(boot_id)),
-        |status| {
-            let consent = confirm(&local_offer(status));
-            if consent {
-                crate::cli::print_notice(&"shepr: stopping the local server.");
-            }
-            consent
-        },
+        local_decision,
     );
-    shepr_remote::restart_different_builds(
-        machines,
-        &mut outcomes,
-        &ssh,
-        can_prompt,
-        |machine, server| {
-            if confirm(&remote_offer(machine, server)) {
-                crate::cli::print_notice(&format!(
-                    "shepr: stopping the server on machine {}.",
-                    machine.label
-                ));
-                shepr_remote::RestartDecision::Restart
-            } else {
-                shepr_remote::RestartDecision::Keep
-            }
-        },
-    );
+    let mut decide_remote = |machine: &MachineConfig, server: &DifferentBuildServer| {
+        if confirm(&remote_offer(machine, server)) {
+            crate::cli::print_notice(&format!(
+                "shepr: stopping the server on machine {}.",
+                machine.label
+            ));
+            RestartDecision::Restart
+        } else {
+            RestartDecision::Keep
+        }
+    };
+    let remote_decision: Option<&mut shepr_remote::RestartDecider<'_>> = if can_prompt {
+        Some(&mut decide_remote)
+    } else {
+        None
+    };
+    shepr_remote::restart_different_builds(&mut outcomes, &ssh, remote_decision);
 
     for notice in local_notice(&local)
         .into_iter()
-        .chain(result_notices(machines, &outcomes, can_prompt))
+        .chain(result_notices(&outcomes, can_prompt))
     {
         crate::cli::print_notice(&notice);
     }
@@ -171,85 +184,51 @@ fn remote_offer(machine: &MachineConfig, server: &DifferentBuildServer) -> Strin
     )
 }
 
-/// How the offer to restart the local server ended.
-#[derive(Debug, PartialEq, Eq)]
-enum LocalRestart {
-    /// No server of another build is running.
-    NotNeeded,
-    /// There was no terminal to ask on, so the server was left running.
-    NoTerminal,
-    /// The operator kept the server running.
-    Declined,
-    /// The server was stopped; the launch that follows starts one of this build.
-    Stopped,
-    /// The observed server was already gone; the launch that follows starts
-    /// one of this build.
-    NoServer,
-    /// A different boot answered; no stop was sent to that replacement server.
-    OccupantChanged,
-    /// The stop failed; the server may still be running.
-    Failed(String),
-}
-
 /// Offers to restart the local server when it is a different build.
 ///
 /// `probe` reads the running server's status (`None` when nothing answers),
 /// `stop` stops the instance with the given boot identity and no other, and
-/// `decide` is the operator's consent, asked only with a terminal. A stop that
+/// `decide` is the operator's consent when present. A stop that
 /// finds a different boot has met a new occupant: the server is probed again,
-/// and a still-different one is offered again, up to [`MAX_LOCAL_OFFERS`] times.
+/// and a still-different one is offered again, up to the local offer limit.
 fn restart_local(
-    can_prompt: bool,
     mut probe: impl FnMut() -> Option<RuntimeStatus>,
     mut stop: impl FnMut(&str) -> Result<(), ServerStopError>,
-    mut decide: impl FnMut(&RuntimeStatus) -> bool,
-) -> LocalRestart {
-    let is_different = |status: &RuntimeStatus| !shepr_protocol::is_this_build(&status.build_id);
-    let Some(mut observed) = probe().filter(is_different) else {
-        return LocalRestart::NotNeeded;
-    };
-    if !can_prompt {
-        return LocalRestart::NoTerminal;
-    }
-    for offer in 1..=MAX_LOCAL_OFFERS {
-        if !decide(&observed) {
-            return LocalRestart::Declined;
-        }
-        match stop(&observed.boot_id) {
-            Ok(()) => return LocalRestart::Stopped,
-            Err(ServerStopError::NotRunning { .. }) => return LocalRestart::NoServer,
-            Err(error) if error.is_boot_mismatch() => match probe() {
-                None => return LocalRestart::NoServer,
-                Some(next) if is_different(&next) && offer < MAX_LOCAL_OFFERS => {
-                    observed = next;
-                }
-                Some(_) => return LocalRestart::OccupantChanged,
-            },
-            Err(error) => return LocalRestart::Failed(error.to_string()),
-        }
-    }
-    LocalRestart::OccupantChanged
+    decide: Option<&mut dyn FnMut(&RuntimeStatus) -> RestartDecision>,
+) -> RestartResult {
+    RestartResult::offer(
+        crate::limits::MAX_LOCAL_OFFERS,
+        decide,
+        &mut probe,
+        |status| !shepr_protocol::is_this_build(&status.build_id),
+        |status| match stop(&status.boot_id) {
+            Ok(()) => Ok(RemoteStop::Stopped),
+            Err(ServerStopError::NotRunning { .. }) => Ok(RemoteStop::NoServer),
+            Err(error) if error.is_boot_mismatch() => Ok(RemoteStop::BootChanged),
+            Err(error) => Err(error.to_string()),
+        },
+    )
 }
 
 /// What the operator is told about the local server's restart. A server that
 /// was kept running, or that no one could be asked about, is reported by the
 /// launch that follows, with the stop command.
-fn local_notice(local: &LocalRestart) -> Option<String> {
+fn local_notice(local: &RestartResult) -> Option<String> {
     match local {
-        LocalRestart::NotNeeded | LocalRestart::NoTerminal | LocalRestart::Declined => None,
-        LocalRestart::Stopped => Some(
+        RestartResult::NotNeeded | RestartResult::NoTerminal | RestartResult::Declined => None,
+        RestartResult::Stopped => Some(
             "shepr: stopped the local server of a different build; one of this build starts now."
                 .to_owned(),
         ),
-        LocalRestart::NoServer => Some(
+        RestartResult::NoServer => Some(
             "shepr: the local server of a different build had already stopped; one of this build starts now."
                 .to_owned(),
         ),
-        LocalRestart::OccupantChanged => Some(
+        RestartResult::OccupantChanged => Some(
             "shepr: the local server changed while it was being stopped; no stop was sent to a new occupant."
                 .to_owned(),
         ),
-        LocalRestart::Failed(error) => {
+        RestartResult::Failed(error) => {
             Some(format!("shepr: could not stop the local server: {error}"))
         }
     }
@@ -279,35 +258,32 @@ fn remote_stop_command(machine: &MachineConfig, server: &DifferentBuildServer) -
 /// left to the client, which shows their state and retries; everything the
 /// operator can act on is printed, including a machine that cannot be served
 /// and a server of another build that was left running.
-fn result_notices(
-    machines: &[MachineConfig],
-    outcomes: &[PreflightOutcome],
-    can_prompt: bool,
-) -> Vec<String> {
+fn result_notices(outcomes: &[PreflightOutcome], can_prompt: bool) -> Vec<String> {
     let mut notices = Vec::new();
-    for (machine, outcome) in machines.iter().zip(outcomes) {
+    for outcome in outcomes {
+        let machine = &outcome.machine;
         if let Some(Err(error)) = &outcome.authentication {
             notices.push(format!(
                 "shepr: authentication for machine {} failed: {error}. The client keeps retrying it.",
-                outcome.label
+                machine.label
             ));
         }
-        notices.extend(restart_notice(machine, outcome));
+        notices.extend(restart_notice(outcome));
         match (&outcome.check, &outcome.authentication) {
             (MachineCheck::NeedsAuthentication(_), None) if !can_prompt => {
                 notices.push(format!(
                     "shepr: machine {} needs authentication, but there is no terminal to prompt on; run shepr from an interactive terminal.",
-                    outcome.label
+                    machine.label
                 ));
             }
             (MachineCheck::NeedsAuthentication(diagnostic), Some(Ok(()))) => {
                 notices.push(format!(
                     "shepr: machine {} still refuses the client's connection after ssh authenticated: {diagnostic}. The client keeps retrying it.",
-                    outcome.label
+                    machine.label
                 ));
             }
             (MachineCheck::HostKey(diagnostic), _) => {
-                let mut notice = format!("shepr: machine {}: {diagnostic}", outcome.label);
+                let mut notice = format!("shepr: machine {}: {diagnostic}", machine.label);
                 for hint in shepr_remote::machine_ssh_error_hint(diagnostic, machine.ssh.as_str()) {
                     notice.push('\n');
                     notice.push_str(&hint);
@@ -316,14 +292,14 @@ fn result_notices(
             }
             (MachineCheck::Incompatible(diagnostic), _) => notices.push(format!(
                 "shepr: machine {} cannot be used: {diagnostic}. {}",
-                outcome.label,
+                machine.label,
                 diagnostic.disposition().client_action()
             )),
             (MachineCheck::Failed(diagnostic), _) => {
                 let client_action = diagnostic.disposition().client_action();
                 let mut notice = format!(
                     "shepr: machine {} could not be checked: {diagnostic}. {client_action}",
-                    outcome.label
+                    machine.label
                 );
                 for hint in shepr_remote::machine_ssh_error_hint(diagnostic, machine.ssh.as_str()) {
                     notice.push('\n');
@@ -339,9 +315,10 @@ fn result_notices(
 
 /// What came of the restart offer for one machine, with what to do when its
 /// server of another build was left running.
-fn restart_notice(machine: &MachineConfig, outcome: &PreflightOutcome) -> Option<String> {
+fn restart_notice(outcome: &PreflightOutcome) -> Option<String> {
     let restart = outcome.restart.as_ref()?;
-    let label = &outcome.label;
+    let machine = &outcome.machine;
+    let label = &machine.label;
     let server = match &outcome.check {
         MachineCheck::DifferentBuild(server) => Some(server),
         _ => None,
@@ -355,6 +332,7 @@ fn restart_notice(machine: &MachineConfig, outcome: &PreflightOutcome) -> Option
         ))
     };
     let notice = match restart {
+        RestartResult::NotNeeded => return None,
         RestartResult::NoTerminal => format!(
             "{} Run shepr from an interactive terminal to be offered a restart.",
             left_running()?
@@ -402,7 +380,7 @@ mod tests {
         authentication: Option<Result<(), String>>,
     ) -> PreflightOutcome {
         PreflightOutcome {
-            label: machine.label.clone(),
+            machine: machine.clone(),
             check,
             authentication,
             restart: None,
@@ -464,7 +442,7 @@ mod tests {
                 None,
             ),
         ];
-        let notices = result_notices(&machines, &outcomes, true);
+        let notices = result_notices(&outcomes, true);
         assert_eq!(notices.len(), 3, "{notices:?}");
         assert!(notices[0].contains("refused") && notices[0].contains("failed"));
         assert!(notices[1].contains("hostkey") && notices[1].contains("known_hosts"));
@@ -492,7 +470,7 @@ mod tests {
             ),
         ];
 
-        let notices = result_notices(&machines, &outcomes, true);
+        let notices = result_notices(&outcomes, true);
         assert_eq!(notices.len(), 2, "{notices:?}");
         assert!(
             notices[0].contains("Bad configuration option"),
@@ -518,7 +496,7 @@ mod tests {
             MachineCheck::NeedsAuthentication(diagnostic("Permission denied (publickey)")),
             Some(Ok(())),
         )];
-        let notices = result_notices(&machines, &outcomes, true);
+        let notices = result_notices(&outcomes, true);
         assert_eq!(notices.len(), 1, "{notices:?}");
         assert!(notices[0].contains("still refuses"), "{notices:?}");
     }
@@ -531,8 +509,8 @@ mod tests {
             MachineCheck::NeedsAuthentication(diagnostic("Permission denied (publickey)")),
             None,
         )];
-        assert!(result_notices(&machines, &outcomes, true).is_empty());
-        let notices = result_notices(&machines, &outcomes, false);
+        assert!(result_notices(&outcomes, true).is_empty());
+        let notices = result_notices(&outcomes, false);
         assert_eq!(notices.len(), 1);
         assert!(notices[0].contains("no terminal"), "{notices:?}");
     }
@@ -541,7 +519,7 @@ mod tests {
         let machines = [machine("build")];
         let mut outcomes = [outcome(&machines[0], check, None)];
         outcomes[0].restart = Some(restart);
-        result_notices(&machines, &outcomes, true)
+        result_notices(&outcomes, true)
     }
 
     #[test]
@@ -676,31 +654,39 @@ mod tests {
             }
         }
 
-        fn run(&mut self, can_prompt: bool) -> LocalRestart {
+        fn run(&mut self, can_prompt: bool) -> RestartResult {
             let probes = std::cell::RefCell::new(std::mem::take(&mut self.probes));
             let stops = std::cell::RefCell::new(std::mem::take(&mut self.stops));
             let answers = std::cell::RefCell::new(std::mem::take(&mut self.answers));
             let asked = std::cell::RefCell::new(Vec::new());
             let stopped = std::cell::RefCell::new(Vec::new());
-            let result = restart_local(
-                can_prompt,
-                || {
-                    let mut probes = probes.borrow_mut();
-                    if probes.is_empty() {
-                        None
-                    } else {
-                        probes.remove(0)
-                    }
-                },
-                |boot| {
-                    stopped.borrow_mut().push(boot.to_owned());
-                    stops.borrow_mut().remove(0)
-                },
-                |status| {
+            let result = {
+                let mut decide = |status: &RuntimeStatus| {
                     asked.borrow_mut().push(status.boot_id.clone());
-                    answers.borrow_mut().remove(0)
-                },
-            );
+                    if answers.borrow_mut().remove(0) {
+                        RestartDecision::Restart
+                    } else {
+                        RestartDecision::Keep
+                    }
+                };
+                let prompt: Option<&mut dyn FnMut(&RuntimeStatus) -> RestartDecision> =
+                    if can_prompt { Some(&mut decide) } else { None };
+                restart_local(
+                    || {
+                        let mut probes = probes.borrow_mut();
+                        if probes.is_empty() {
+                            None
+                        } else {
+                            probes.remove(0)
+                        }
+                    },
+                    |boot| {
+                        stopped.borrow_mut().push(boot.to_owned());
+                        stops.borrow_mut().remove(0)
+                    },
+                    prompt,
+                )
+            };
             self.asked = asked.into_inner();
             self.stopped = stopped.into_inner();
             result
@@ -711,7 +697,7 @@ mod tests {
     fn a_local_server_of_this_build_or_none_needs_no_restart() {
         for probe in [None, Some(status(shepr_protocol::BUILD_ID, "1-1"))] {
             let mut script = LocalScript::new(vec![probe], vec![], vec![]);
-            assert_eq!(script.run(true), LocalRestart::NotNeeded);
+            assert_eq!(script.run(true), RestartResult::NotNeeded);
             assert!(script.asked.is_empty());
         }
     }
@@ -723,7 +709,7 @@ mod tests {
             vec![Ok(())],
             vec![true],
         );
-        assert_eq!(script.run(true), LocalRestart::Stopped);
+        assert_eq!(script.run(true), RestartResult::Stopped);
         assert_eq!(script.asked, ["1-1"]);
         // The stop names the boot that was observed.
         assert_eq!(script.stopped, ["1-1"]);
@@ -736,14 +722,14 @@ mod tests {
             vec![],
             vec![false],
         );
-        assert_eq!(script.run(true), LocalRestart::Declined);
+        assert_eq!(script.run(true), RestartResult::Declined);
         assert!(script.stopped.is_empty());
     }
 
     #[test]
     fn without_a_terminal_the_local_server_is_left_alone_unasked() {
         let mut script = LocalScript::new(vec![Some(status(other_build(), "1-1"))], vec![], vec![]);
-        assert_eq!(script.run(false), LocalRestart::NoTerminal);
+        assert_eq!(script.run(false), RestartResult::NoTerminal);
         assert!(script.asked.is_empty());
         assert!(script.stopped.is_empty());
     }
@@ -758,7 +744,7 @@ mod tests {
             vec![Err(boot_mismatch()), Ok(())],
             vec![true, true],
         );
-        assert_eq!(script.run(true), LocalRestart::Stopped);
+        assert_eq!(script.run(true), RestartResult::Stopped);
         assert_eq!(script.asked, ["1-1", "2-2"]);
         assert_eq!(script.stopped, ["1-1", "2-2"]);
     }
@@ -767,9 +753,9 @@ mod tests {
     fn a_local_occupant_that_no_longer_needs_a_restart_ends_the_offer() {
         for after in [None, Some(status(shepr_protocol::BUILD_ID, "2-2"))] {
             let expected = if after.is_none() {
-                LocalRestart::NoServer
+                RestartResult::NoServer
             } else {
-                LocalRestart::OccupantChanged
+                RestartResult::OccupantChanged
             };
             let mut script = LocalScript::new(
                 vec![Some(status(other_build(), "1-1")), after],
@@ -792,8 +778,8 @@ mod tests {
             vec![Err(boot_mismatch()), Err(boot_mismatch())],
             vec![true, true],
         );
-        assert_eq!(script.run(true), LocalRestart::OccupantChanged);
-        assert_eq!(script.asked.len(), MAX_LOCAL_OFFERS);
+        assert_eq!(script.run(true), RestartResult::OccupantChanged);
+        assert_eq!(script.asked.len(), crate::limits::MAX_LOCAL_OFFERS);
     }
 
     #[test]
@@ -807,9 +793,9 @@ mod tests {
             })],
             vec![true],
         );
-        assert_eq!(script.run(true), LocalRestart::NoServer);
+        assert_eq!(script.run(true), RestartResult::NoServer);
         assert_eq!(script.stopped, ["1-1"]);
-        let notice = local_notice(&LocalRestart::NoServer).expect("a notice");
+        let notice = local_notice(&RestartResult::NoServer).expect("a notice");
         assert!(notice.contains("already stopped"), "{notice}");
     }
 
@@ -820,21 +806,21 @@ mod tests {
             vec![Err(ServerStopError::Protocol("refused".into()))],
             vec![true],
         );
-        assert_eq!(script.run(true), LocalRestart::Failed("refused".into()));
-        let notice = local_notice(&LocalRestart::Failed("refused".into())).expect("a notice");
+        assert_eq!(script.run(true), RestartResult::Failed("refused".into()));
+        let notice = local_notice(&RestartResult::Failed("refused".into())).expect("a notice");
         assert!(notice.contains("refused"), "{notice}");
     }
 
     #[test]
     fn the_local_notices_leave_kept_servers_to_the_launch() {
         for kept in [
-            LocalRestart::NotNeeded,
-            LocalRestart::NoTerminal,
-            LocalRestart::Declined,
+            RestartResult::NotNeeded,
+            RestartResult::NoTerminal,
+            RestartResult::Declined,
         ] {
             assert_eq!(local_notice(&kept), None);
         }
-        assert!(local_notice(&LocalRestart::Stopped).is_some());
-        assert!(local_notice(&LocalRestart::OccupantChanged).is_some());
+        assert!(local_notice(&RestartResult::Stopped).is_some());
+        assert!(local_notice(&RestartResult::OccupantChanged).is_some());
     }
 }

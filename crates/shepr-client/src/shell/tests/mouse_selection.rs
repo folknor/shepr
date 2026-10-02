@@ -8,12 +8,12 @@ fn selection_repaint_cadence_keeps_one_deadline_and_flushes_when_input_stops() {
     state.last_composed_at = Some(now);
     for elapsed in [1, 4, 8, 12, 15] {
         assert!(!state.request_selection_drag_repaint(now + ms(elapsed)));
-        assert_eq!(state.selection_repaint_deadline, Some(now + ms(16)));
+        assert_eq!(state.mouse_selection.repaint_deadline, Some(now + ms(16)));
     }
     assert_eq!(state.next_timer_deadline(), Some(now + ms(16)));
     assert!(!state.tick_selection_autoscroll(now + ms(15)).repaint);
     assert!(state.tick_selection_autoscroll(now + ms(16)).repaint);
-    assert!(state.selection_repaint_deadline.is_none());
+    assert!(state.mouse_selection.repaint_deadline.is_none());
     assert!(!state.tick_selection_autoscroll(now + ms(17)).repaint);
 }
 
@@ -30,16 +30,16 @@ fn selection_repaint_cadence_allows_immediate_paint_when_due() {
     assert!(state.request_selection_drag_repaint(now));
     state.last_composed_at = Some(now);
     assert!(state.request_selection_drag_repaint(now + std::time::Duration::from_millis(16)));
-    assert!(state.selection_repaint_deadline.is_none());
+    assert!(state.mouse_selection.repaint_deadline.is_none());
 }
 
 #[test]
 fn selection_repaint_cadence_does_not_leave_work_after_another_composition() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     let now = std::time::Instant::now();
-    state.selection_repaint_deadline = Some(now);
+    state.mouse_selection.repaint_deadline = Some(now);
     state.compose(106, 20).expect("frame");
-    assert!(state.selection_repaint_deadline.is_none());
+    assert!(state.mouse_selection.repaint_deadline.is_none());
     assert!(!state.tick_selection_autoscroll(now).repaint);
 }
 
@@ -60,7 +60,7 @@ fn a_pane_without_scroll_metrics_takes_no_selection() {
     };
     let press = state.handle_raw_events(vec![RawInputEvent::Mouse(mouse)]);
     assert!(
-        state.selection.is_none(),
+        state.mouse_selection.selection.is_none(),
         "viewport rows are not absolute rows without the scroll origin"
     );
     assert!(
@@ -74,7 +74,7 @@ fn a_pane_without_scroll_metrics_takes_no_selection() {
     mouse.kind = MouseEventKind::Drag(MouseButton::Left);
     mouse.column += 2;
     state.handle_raw_events(vec![RawInputEvent::Mouse(mouse)]);
-    assert!(state.selection.is_none());
+    assert!(state.mouse_selection.selection.is_none());
 }
 
 #[test]
@@ -94,7 +94,7 @@ fn selection_release_copies_latest_position_before_deferred_paint() {
     mouse.kind = MouseEventKind::Drag(MouseButton::Left);
     mouse.column += 2;
     state.handle_raw_events(vec![RawInputEvent::Mouse(mouse)]);
-    state.selection_repaint_deadline = Some(std::time::Instant::now());
+    state.mouse_selection.repaint_deadline = Some(std::time::Instant::now());
     mouse.kind = MouseEventKind::Up(MouseButton::Left);
     let release = state.handle_raw_events(vec![RawInputEvent::Mouse(mouse)]);
     assert!(release.repaint);
@@ -109,7 +109,7 @@ fn selection_release_copies_latest_position_before_deferred_paint() {
                     })
     ));
     state.compose(106, 20).expect("release frame");
-    assert!(state.selection_repaint_deadline.is_none());
+    assert!(state.mouse_selection.repaint_deadline.is_none());
 }
 
 #[test]
@@ -264,6 +264,7 @@ fn client_double_click_selects_word_and_copies_only_after_release() {
             assert!(actions.is_empty(), "holding the second press must not copy");
             assert!(
                 state
+                    .mouse_selection
                     .selection
                     .as_ref()
                     .expect("test precondition")
@@ -274,6 +275,7 @@ fn client_double_click_selects_word_and_copies_only_after_release() {
             );
             assert!(
                 state
+                    .mouse_selection
                     .selection
                     .as_ref()
                     .expect("test precondition")
@@ -283,6 +285,7 @@ fn client_double_click_selects_word_and_copies_only_after_release() {
         }
         assert!(
             state
+                .mouse_selection
                 .selection
                 .as_ref()
                 .expect("test precondition")
@@ -290,6 +293,7 @@ fn client_double_click_selects_word_and_copies_only_after_release() {
         );
         assert_eq!(
             state
+                .mouse_selection
                 .selection
                 .as_ref()
                 .expect("test precondition")
@@ -315,18 +319,19 @@ fn client_double_click_selects_word_and_copies_only_after_release() {
             assert!(
                 state.tick_selection_highlight(
                     state
-                        .selection_highlight_clear_deadline
+                        .mouse_selection
+                        .highlight_clear_deadline
                         .expect("test precondition")
                 )
             );
-            assert!(state.selection.is_none());
+            assert!(state.mouse_selection.selection.is_none());
         } else {
             assert!(actions.is_empty(), "manual selection must not auto-copy");
             state.tick_selection_highlight(
                 std::time::Instant::now() + std::time::Duration::from_secs(1),
             );
             assert!(
-                state.selection.is_some(),
+                state.mouse_selection.selection.is_some(),
                 "manual selection must not expire"
             );
         }
@@ -398,7 +403,10 @@ fn word_row_reply(state: &mut ClientShellState, id: &str, text: &str) -> Vec<Cli
 fn start_word_drag(state: &mut ClientShellState) -> String {
     word_drag_mouse(state, MouseEventKind::Down(MouseButton::Left), 0, 8);
     word_drag_mouse(state, MouseEventKind::Up(MouseButton::Left), 0, 8);
-    assert!(state.selection.is_none(), "plain clicks must not select");
+    assert!(
+        state.mouse_selection.selection.is_none(),
+        "plain clicks must not select"
+    );
     let second = word_drag_mouse(state, MouseEventKind::Down(MouseButton::Left), 0, 8);
     assert!(second.actions.iter().any(|action| matches!(action, ClientShellAction::Endpoint { request, .. }
         if matches!(&request.command, EndpointCommand::PaneSelectionRead(params)
@@ -410,7 +418,7 @@ fn start_word_drag(state: &mut ClientShellState) -> String {
 fn mismatched_boot_word_row_result_cancels_the_pending_gesture() {
     let mut state = word_drag_state(false);
     let request_id = start_word_drag(&mut state);
-    assert!(state.word_selection_gesture.is_some());
+    assert!(state.mouse_selection.word_gesture.is_some());
     // The first click also asked to focus the pane; that unrelated request
     // stays pending and is not part of this assertion.
     state.ledger.retain(|id| id == &request_id);
@@ -426,7 +434,7 @@ fn mismatched_boot_word_row_result_cancels_the_pending_gesture() {
 
     assert!(outcome.repaint);
     assert!(state.ledger.is_empty());
-    assert!(state.word_selection_gesture.is_none());
+    assert!(state.mouse_selection.word_gesture.is_none());
     assert!(state.visible_endpoint_notice.is_none());
 }
 
@@ -441,7 +449,7 @@ fn disconnecting_a_pending_word_row_read_does_not_show_an_interrupted_action_not
     state.mark_endpoint_disconnected(&crate::endpoint::ClientEndpointId::Local);
 
     assert!(state.ledger.is_empty());
-    assert!(state.word_selection_gesture.is_none());
+    assert!(state.mouse_selection.word_gesture.is_none());
     assert!(state.visible_endpoint_notice.is_none());
 }
 
@@ -464,6 +472,7 @@ fn double_click_drag_selects_whole_words_in_both_directions() {
         );
         assert_eq!(
             state
+                .mouse_selection
                 .selection
                 .as_ref()
                 .expect("test precondition")
@@ -478,6 +487,7 @@ fn double_click_drag_selects_whole_words_in_both_directions() {
     );
     assert!(
         state
+            .mouse_selection
             .selection
             .as_ref()
             .expect("test precondition")
@@ -562,7 +572,7 @@ fn double_click_drag_ignores_row_reply_after_typing_or_new_click() {
             word_drag_mouse(&mut state, MouseEventKind::Up(MouseButton::Left), 0, 0);
         }
         assert!(word_row_reply(&mut state, &row_id, "delta echo foxtrot").is_empty());
-        assert!(state.selection.is_none());
+        assert!(state.mouse_selection.selection.is_none());
     }
 }
 
@@ -575,10 +585,11 @@ fn double_click_drag_survives_focus_lag_after_anchor_reply() {
     lagging.focused_pane_id = None;
     lagging.panes[0].focused = false;
     state.set_snapshot(Box::new(lagging));
-    assert!(state.selection.is_some());
+    assert!(state.mouse_selection.selection.is_some());
     word_drag_mouse(&mut state, MouseEventKind::Drag(MouseButton::Left), 0, 14);
     assert_eq!(
         state
+            .mouse_selection
             .selection
             .as_ref()
             .expect("test precondition")
@@ -624,13 +635,17 @@ fn drag_in_unfocused_pane_survives_snapshots_until_focus_moves_after_landing() {
     // Snapshots produced before the click's PaneFocus lands (a title spinner,
     // say) still name the old pane; they must not cancel the drag.
     state.set_snapshot(Box::new(focused_on("w1:p2")));
-    assert!(state.selection.is_some(), "focus lag cancelled the drag");
+    assert!(
+        state.mouse_selection.selection.is_some(),
+        "focus lag cancelled the drag"
+    );
     state.handle_raw_events(vec![mouse(
         MouseEventKind::Drag(MouseButton::Left),
         pane.inner_rect.x + 2,
     )]);
     assert_eq!(
         state
+            .mouse_selection
             .selection
             .as_ref()
             .expect("drag continues")
@@ -639,11 +654,11 @@ fn drag_in_unfocused_pane_survives_snapshots_until_focus_moves_after_landing() {
     );
 
     state.set_snapshot(Box::new(focused_on("w1:p1")));
-    assert!(state.selection.is_some());
-    assert!(state.selection_focus_pending.is_none());
+    assert!(state.mouse_selection.selection.is_some());
+    assert!(state.mouse_selection.focus_pending.is_none());
     // Once focus has landed, moving it away again ends the selection.
     state.set_snapshot(Box::new(focused_on("w1:p2")));
-    assert!(state.selection.is_none());
+    assert!(state.mouse_selection.selection.is_none());
 }
 
 #[test]
@@ -659,7 +674,7 @@ fn selection_in_focused_pane_still_ends_when_focus_moves() {
         row: pane.inner_rect.y,
         modifiers: KeyModifiers::empty(),
     })]);
-    assert!(state.selection_focus_pending.is_none());
+    assert!(state.mouse_selection.focus_pending.is_none());
     let mut moved = snapshot();
     let mut other = moved.panes[0].clone();
     other.pane_id = test_pane_id("w1:p2");
@@ -667,7 +682,7 @@ fn selection_in_focused_pane_still_ends_when_focus_moves() {
     moved.panes.push(other);
     moved.focused_pane_id = Some(test_pane_id("w1:p2"));
     state.set_snapshot(Box::new(moved));
-    assert!(state.selection.is_none());
+    assert!(state.mouse_selection.selection.is_none());
 }
 
 #[test]
@@ -685,7 +700,7 @@ fn double_click_drag_invalidates_cached_boundaries_outside_selected_cells() {
         changed.frame.cells[14].symbol = " ".into();
         state.receive_pane_surface(changed);
         assert!(
-            state.selection.is_none(),
+            state.mouse_selection.selection.is_none(),
             "unchanged selected cells do not validate cached boundaries outside the selection"
         );
         assert!(
@@ -698,7 +713,7 @@ fn double_click_drag_invalidates_cached_boundaries_outside_selected_cells() {
                 .actions
                 .is_empty()
         );
-        assert!(state.selection.is_none());
+        assert!(state.mouse_selection.selection.is_none());
     }
 }
 
@@ -721,8 +736,11 @@ fn reconnect_word_selection_tracks_content_changes() {
         assert!(state.activate_endpoint_projection(&endpoint_id));
         state.receive_pane_surface(next_surface);
 
-        assert_eq!(state.selection.is_some(), !content_changed);
-        assert_eq!(state.word_selection_gesture.is_some(), !content_changed);
+        assert_eq!(state.mouse_selection.selection.is_some(), !content_changed);
+        assert_eq!(
+            state.mouse_selection.word_gesture.is_some(),
+            !content_changed
+        );
     }
 }
 
@@ -758,7 +776,7 @@ fn double_click_release_ignores_reply_after_focus_or_content_changes() {
             word_row_reply(&mut state, &initial, "alpha bravo charlie").is_empty(),
             "a stale released gesture must not copy"
         );
-        assert!(state.selection.is_none());
+        assert!(state.mouse_selection.selection.is_none());
     }
 }
 
@@ -785,10 +803,10 @@ fn double_click_drag_resize_cancels_pending_word_lookup() {
         state.receive_pane_surface(resized);
         assert!(word_row_reply(&mut state, &pending, "alpha bravo charlie extra").is_empty());
         assert!(
-            state.selection.is_none(),
+            state.mouse_selection.selection.is_none(),
             "a late reply must not restore a resized selection"
         );
-        assert!(state.selection_autoscroll.is_none());
+        assert!(state.mouse_selection.autoscroll.is_none());
     }
 }
 
@@ -806,7 +824,8 @@ fn double_click_drag_autoscroll_keeps_absolute_word_anchor() {
     word_drag_mouse(&mut state, MouseEventKind::Drag(MouseButton::Left), 0, 14);
     let tick = state.tick_selection_autoscroll(
         state
-            .selection_autoscroll_deadline
+            .mouse_selection
+            .autoscroll_deadline
             .expect("test precondition"),
     );
     word_row_reply(
@@ -816,6 +835,7 @@ fn double_click_drag_autoscroll_keeps_absolute_word_anchor() {
     );
     assert_eq!(
         state
+            .mouse_selection
             .selection
             .as_ref()
             .expect("test precondition")
@@ -825,12 +845,13 @@ fn double_click_drag_autoscroll_keeps_absolute_word_anchor() {
     word_drag_mouse(&mut state, MouseEventKind::Up(MouseButton::Left), 0, 14);
     assert!(
         state
+            .mouse_selection
             .selection
             .as_ref()
             .expect("test precondition")
             .is_finalized()
     );
-    assert!(state.selection_autoscroll.is_none());
+    assert!(state.mouse_selection.autoscroll.is_none());
 }
 
 #[test]
@@ -878,8 +899,12 @@ fn pane_content_updates_preserve_live_ranges_until_geometry_or_screen_changes() 
         pane.inner_rect.y + 1,
     )]);
 
-    assert!(drag.repaint || state.selection_repaint_deadline.is_some());
-    let selection = state.selection.as_ref().expect("visible selection");
+    assert!(drag.repaint || state.mouse_selection.repaint_deadline.is_some());
+    let selection = state
+        .mouse_selection
+        .selection
+        .as_ref()
+        .expect("visible selection");
     assert!(selection.is_visible());
     assert_eq!(
         selection.ordered_cells(),
@@ -891,6 +916,7 @@ fn pane_content_updates_preserve_live_ranges_until_geometry_or_screen_changes() 
     state.receive_pane_surface(replaced_surface);
     assert_eq!(
         state
+            .mouse_selection
             .selection
             .as_ref()
             .expect("test precondition")
@@ -920,6 +946,7 @@ fn pane_content_updates_preserve_live_ranges_until_geometry_or_screen_changes() 
     ));
     assert!(
         state
+            .mouse_selection
             .selection
             .as_ref()
             .expect("test precondition")
@@ -927,6 +954,7 @@ fn pane_content_updates_preserve_live_ranges_until_geometry_or_screen_changes() 
     );
     assert_eq!(
         state
+            .mouse_selection
             .selection
             .as_ref()
             .expect("test precondition")
@@ -937,7 +965,7 @@ fn pane_content_updates_preserve_live_ranges_until_geometry_or_screen_changes() 
     for (surface_revision, content_revision, width, alternate_screen_active) in
         [(5, 6, 4, false), (6, 8, 3, false)]
     {
-        state.selection = Some(shepr_vt::selection::Selection::anchor(
+        state.mouse_selection.selection = Some(shepr_vt::selection::Selection::anchor(
             test_pane_id("w1:p1"),
             shepr_vt::Point::new(shepr_vt::AbsRow(12), 0),
         ));
@@ -946,7 +974,7 @@ fn pane_content_updates_preserve_live_ranges_until_geometry_or_screen_changes() 
         changed_surface.panes[0].inner_rect.width = width;
         changed_surface.panes[0].alternate_screen_active = alternate_screen_active;
         state.receive_pane_surface(changed_surface);
-        assert!(state.selection.is_none());
+        assert!(state.mouse_selection.selection.is_none());
     }
 }
 

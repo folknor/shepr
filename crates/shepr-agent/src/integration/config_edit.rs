@@ -63,23 +63,24 @@ pub(crate) fn ensure_command_hook(
         return Ok(());
     }
 
+    entries.push(command_hook_group(command, timeout, matcher));
+    Ok(())
+}
+
+pub(super) fn command_hook_group(command: &str, timeout: u64, matcher: Option<&str>) -> Value {
     let mut entry = Map::new();
     if let Some(matcher) = matcher {
         entry.insert("matcher".to_string(), Value::String(matcher.to_string()));
     }
     entry.insert(
         "hooks".to_string(),
-        json!([
-            {
-                "type": "command",
-                "command": command,
-                "timeout": timeout,
-            }
-        ]),
+        json!([{
+            "type": "command",
+            "command": command,
+            "timeout": timeout,
+        }]),
     );
-
-    entries.push(Value::Object(entry));
-    Ok(())
+    Value::Object(entry)
 }
 
 /// The description MastraCode's flat hook entries carry; status matches it.
@@ -160,13 +161,16 @@ pub(crate) fn ensure_direct_command_hook(
     Ok(())
 }
 
+pub(super) const HOOK_COMMAND_FIELDS: &[&str] = &["command", "bash"];
+
 pub(crate) fn direct_command_field() -> &'static str {
     "bash"
 }
 
 pub(crate) fn is_matching_direct_command_entry(entry: &Value, command: &str) -> bool {
-    entry.get("command").and_then(Value::as_str) == Some(command)
-        || entry.get("bash").and_then(Value::as_str) == Some(command)
+    HOOK_COMMAND_FIELDS
+        .iter()
+        .any(|field| entry.get(*field).and_then(Value::as_str) == Some(command))
 }
 
 // Cursor hooks.json uses the minimal shape `{ "command": "..." }` documented at
@@ -252,17 +256,12 @@ pub(crate) fn remove_hook_path_commands_preserving(
 }
 
 fn value_uses_hook_path(value: &Value, hook_path: &Path) -> bool {
-    ["command", "bash"].iter().any(|field| {
+    HOOK_COMMAND_FIELDS.iter().any(|field| {
         value
             .get(*field)
             .and_then(Value::as_str)
             .is_some_and(|command| is_hook_command_for_path(command, hook_path))
     })
-}
-
-pub(crate) fn is_matching_command_hook(hook: &Value, command: &str) -> bool {
-    hook.get("type").and_then(Value::as_str) == Some("command")
-        && hook.get("command").and_then(Value::as_str) == Some(command)
 }
 
 /// Enable `features.hooks` in a Codex `config.toml`, preserving source layout
@@ -294,7 +293,11 @@ pub(crate) fn build_codex_config_with_hooks(content: &str) -> io::Result<String>
     Ok(document.to_string())
 }
 
-pub(crate) fn build_kimi_config_with_hooks(content: &str, hook_path: &Path) -> io::Result<String> {
+pub(super) fn build_kimi_config_with_timeout(
+    content: &str,
+    hook_path: &Path,
+    timeout: Duration,
+) -> io::Result<String> {
     let unmarked_content = remove_kimi_config_block(content)?;
     // Only the marked block is safe to rewrite without reformatting user TOML.
     if kimi_config_uses_hook_path(&unmarked_content, hook_path)? {
@@ -308,14 +311,18 @@ pub(crate) fn build_kimi_config_with_hooks(content: &str, hook_path: &Path) -> i
         result.push('\n');
     }
 
-    result.push_str(&kimi_integration_block(hook_path)?);
+    result.push_str(&kimi_integration_block(hook_path, timeout));
     result
         .parse::<DocumentMut>()
         .map_err(|error| io::Error::other(format!("could not build Kimi config.toml: {error}")))?;
     Ok(result)
 }
 
-pub(crate) fn kimi_config_block_is_current(content: &str, hook_path: &Path) -> io::Result<bool> {
+pub(super) fn kimi_config_block_with_timeout_is_current(
+    content: &str,
+    hook_path: &Path,
+    timeout: Duration,
+) -> io::Result<bool> {
     let unmarked_content = match remove_kimi_config_block(content) {
         Ok(content) => content,
         Err(_) => return Ok(false),
@@ -324,7 +331,7 @@ pub(crate) fn kimi_config_block_is_current(content: &str, hook_path: &Path) -> i
         return Ok(false);
     }
 
-    let expected = kimi_integration_block(hook_path)?;
+    let expected = kimi_integration_block(hook_path, timeout);
     let mut actual = String::new();
     let mut in_block = false;
     let mut found_block = false;
@@ -364,9 +371,8 @@ fn kimi_config_uses_hook_path(content: &str, hook_path: &Path) -> io::Result<boo
         }))
 }
 
-fn kimi_integration_block(hook_path: &Path) -> io::Result<String> {
-    let events = super::registry::integration_hook_events(Target::Kimi);
-    let timeout = super::registry::integration_hook_timeout(Target::Kimi)?;
+fn kimi_integration_block(hook_path: &Path, timeout: Duration) -> String {
+    let events = Target::Kimi.hook_events();
     let mut block = String::from(KIMI_CONFIG_BLOCK_BEGIN);
     block.push('\n');
     for hook in events {
@@ -383,7 +389,7 @@ fn kimi_integration_block(hook_path: &Path) -> io::Result<String> {
     }
     block.push_str(KIMI_CONFIG_BLOCK_END);
     block.push('\n');
-    Ok(block)
+    block
 }
 
 pub(crate) fn kimi_hook_table(
@@ -485,4 +491,9 @@ pub(crate) fn join_toml_lines(lines: &[String], trailing_newline: bool) -> Strin
         result.push('\n');
     }
     result
+}
+
+#[cfg(test)]
+pub(crate) fn build_kimi_config_with_hooks(content: &str, hook_path: &Path) -> io::Result<String> {
+    build_kimi_config_with_timeout(content, hook_path, super::HOOK_TIMEOUT)
 }

@@ -71,46 +71,14 @@ impl HeadlessServer {
             }
             match self.app.prepare_workspace_checkout_root(params) {
                 Ok((cwd, home)) => {
-                    if !self.workers.can_admit() {
-                        self.queue_endpoint_reply(
-                            client_id,
-                            &crate::server::client_commands::response_message(
-                                boot_id,
-                                request_id,
-                                Err(EndpointError::Rejected(
-                                    "checkout root worker limit reached; retry later".to_owned(),
-                                )),
-                            ),
-                        );
-                        return;
-                    }
-                    let shutdown_message = crate::server::client_commands::error_message(
-                        boot_id.clone(),
-                        request_id.clone(),
-                        EndpointError::ShuttingDown,
-                    );
-                    let Some(ticket) = self.reserve_endpoint_reply(client_id, &shutdown_message)
-                    else {
-                        return;
-                    };
-                    if let Err(error) = self.workers.checkout_root(
-                        ticket,
+                    worker::EndpointWorkers::dispatch_checkout_root(
+                        self,
+                        client_id,
                         boot_id.clone(),
                         request_id.clone(),
                         cwd,
                         home,
-                    ) {
-                        self.complete_endpoint_reply(
-                            ticket,
-                            &crate::server::client_commands::response_message(
-                                boot_id,
-                                request_id,
-                                Err(EndpointError::Rejected(format!(
-                                    "failed to start checkout root worker: {error}"
-                                ))),
-                            ),
-                        );
-                    }
+                    );
                 }
                 Err(error) => self.queue_endpoint_reply(
                     client_id,
@@ -149,12 +117,6 @@ impl HeadlessServer {
         client_id: ClientId,
         command: EndpointCommand,
     ) -> Result<EndpointReply, EndpointError> {
-        if self.lifecycle.stop_requested() {
-            self.initiate_shutdown();
-        }
-        if self.lifecycle.phase() == ShutdownPhase::Stopping {
-            return Err(EndpointError::ShuttingDown);
-        }
         let traits = command.traits();
 
         let mut changed = self.drain_all_internal_events_with_forwarding();
