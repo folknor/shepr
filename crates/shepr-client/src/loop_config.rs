@@ -50,14 +50,6 @@ impl ClientSettings {
     }
 }
 
-pub(super) struct ClientLoopConfig {
-    pub(super) settings: ClientSettings,
-    pub(super) host_escape_disambiguation_active: bool,
-    pub(super) initial_host_input: Vec<u8>,
-    pub(super) paths: shepr_config::AppPaths,
-    pub(super) local_mismatch_guidance: std::sync::Arc<str>,
-}
-
 #[cfg(test)]
 impl ClientSettings {
     pub(super) fn from_config(config: &shepr_config::ValidatedClientConfig) -> Self {

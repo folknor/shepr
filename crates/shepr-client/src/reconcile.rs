@@ -1,8 +1,15 @@
-use super::*;
+use crate::client_loop::ClientLoop;
+use crate::errors::LoopExit;
+use crate::shell::ClientShellState;
+use crate::shell_runtime::{cancel_endpoint_commands, clear_endpoint_host_effects, view_geometry};
+use crate::state::ClientState;
+use crate::{endpoint, shell};
 use endpoint::{
     Lost,
     view::{self, HostBaseline, StartOutcome},
 };
+use std::io;
+use tracing::warn;
 
 /// Shows an endpoint notice and presents the chrome. It decides nothing about what is shown:
 /// the choice already says that.
@@ -17,7 +24,7 @@ impl ClientLoop {
     /// move, starting a move, the move's navigation, its commit, and turning off every viewed
     /// connection nobody wants. Failures come first, so a target lost at its deadline reads
     /// as an interrupted switch rather than a timeout.
-    pub(super) fn reconcile(&mut self, now: std::time::Instant) -> Result<(), ClientError> {
+    pub(super) fn reconcile(&mut self, now: std::time::Instant) -> Result<(), LoopExit> {
         for failure in self.write_stream.take_failures() {
             // `record_failure` removed the connection as it queued this failure, and no
             // connection of another generation can have replaced it yet: a connection is only
@@ -33,7 +40,7 @@ impl ClientLoop {
                 .local_failure_policy
                 .ends_client_for(failure.endpoint_id.policy())
             {
-                return Err(ClientError::ConnectionLost(io::Error::new(
+                return Err(LoopExit::ConnectionLost(io::Error::new(
                     failure.kind,
                     failure.failure,
                 )));
@@ -128,7 +135,7 @@ impl ClientLoop {
         &mut self,
         failure: &endpoint::EndpointTransportFailure,
         now: std::time::Instant,
-    ) -> Result<(), ClientError> {
+    ) -> Result<(), LoopExit> {
         let id = &failure.endpoint_id;
         let notice = failure.failure.disconnect_notice();
         let diagnostic = failure.failure.diagnostic();

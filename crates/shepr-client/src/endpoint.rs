@@ -1,12 +1,12 @@
 mod choice;
 pub(crate) mod commands;
+pub(crate) mod connection_io;
 mod health;
 mod local_failure;
 mod message_policy;
 mod registry;
 mod supervisor;
 pub mod view;
-mod writer;
 
 pub use choice::*;
 pub(crate) use local_failure::*;
@@ -16,7 +16,6 @@ pub use registry::{EndpointRegistry, EndpointTransport};
 pub use shepr_config::MachineLabel;
 pub(crate) use supervisor::*;
 pub use view::{HostBaseline, StartOutcome};
-pub(crate) use writer::{EndpointReadActivity, NativeEndpointTransport};
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ClientEndpointId {

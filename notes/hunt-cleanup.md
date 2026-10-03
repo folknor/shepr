@@ -63,7 +63,17 @@ raw reports are in the commit that precedes this file's.
 - `crates/shepr-mux/src/git/runner.rs` spells `"SSH_ASKPASS"` as a literal
   where `ChildEnv::SshAskpass` exists.
 
-(wave-7 and wave-9 reviews, wave-9 adjudication)
+- Nothing tests that dropping an unactivated `EndpointConnectionIo`
+  (`crates/shepr-client/src/endpoint/connection_io.rs`) ends its reader thread,
+  and every stale supervised attempt now spawns a reader that relies on it.
+- `handshake.rs` keeps a test-only `handshake_error` shim forwarding to
+  `HandshakeError::class` for the supervisor tests.
+- Client launch samples `launch_now` twice (`prepare` and `into_loop`), so
+  machine supervisors are stamped earlier than Local; HEAD used one sample.
+- A Local or supervised reader-spawn failure now shows `<cause>` as the
+  endpoint status where HEAD prefixed it.
+
+(wave-7, wave-9 and wave-10 reviews, wave-9 adjudication)
 
 ## Test-only twins and test seams in production
 

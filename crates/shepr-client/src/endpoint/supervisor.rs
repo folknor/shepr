@@ -5,9 +5,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use super::{
-    ClientEndpointId, ClientEndpointStatus, EndpointFailureStatus, NativeEndpointTransport,
-};
+use super::{ClientEndpointId, ClientEndpointStatus, EndpointFailureStatus};
 use crate::events::ClientLoopEvent;
 pub(crate) use crate::limits::MAX_RETRY_DELAY;
 use crate::limits::{
@@ -34,8 +32,7 @@ pub(crate) enum EndpointSupervisorEvent {
     Connected {
         endpoint_id: ClientEndpointId,
         generation: u64,
-        reader: shepr_platform::ipc::LocalStream,
-        writer: NativeEndpointTransport,
+        connection: crate::endpoint::connection_io::EndpointConnectionIo,
         connector: Option<OwnedConnector>,
     },
 }
@@ -59,14 +56,12 @@ impl EndpointSupervisorEvent {
             Self::Connected {
                 endpoint_id,
                 generation,
-                reader,
-                writer,
+                connection,
                 ..
             } => Self::Connected {
                 endpoint_id,
                 generation,
-                reader,
-                writer,
+                connection,
                 connector,
             },
         }
@@ -273,10 +268,17 @@ impl EndpointSupervisors {
                 // its event. A panicking attempt loses it, but a panic ends
                 // the whole client (see `fatal_panic`), so the join error
                 // below only has to report the attempt without one.
+                let reader_event_tx = event_tx.clone();
                 let result = tokio::task::spawn_blocking(move || {
                     let mut target = target;
-                    let result =
-                        connect_once(&mut target, options, endpoint_id, generation, deadline);
+                    let result = connect_once(
+                        &mut target,
+                        options,
+                        endpoint_id,
+                        generation,
+                        deadline,
+                        &reader_event_tx,
+                    );
                     (target.into_saved_connector(), result)
                 })
                 .await;
@@ -435,6 +437,7 @@ fn connect_once(
     endpoint_id: ClientEndpointId,
     generation: u64,
     deadline: Instant,
+    event_tx: &tokio::sync::mpsc::Sender<ClientLoopEvent>,
 ) -> Result<EndpointSupervisorEvent, std::io::Error> {
     match target {
         AttemptTarget::Local {
@@ -465,6 +468,7 @@ fn connect_once(
                 endpoint_id,
                 generation,
                 deadline,
+                event_tx,
             )
         }
         AttemptTarget::Ssh { connector } => connector.connect(deadline, |connected| {
@@ -475,6 +479,7 @@ fn connect_once(
                 endpoint_id.clone(),
                 generation,
                 deadline,
+                event_tx,
             )
         }),
     }
@@ -508,13 +513,14 @@ fn establish(
     endpoint_id: ClientEndpointId,
     generation: u64,
     deadline: Instant,
+    event_tx: &tokio::sync::mpsc::Sender<ClientLoopEvent>,
 ) -> Result<EndpointSupervisorEvent, std::io::Error> {
     // The link carries the SSH bridge's lifetime and diagnostics, or Local's mismatch guidance.
     let (ssh_bridge, mismatch_guidance) = match link {
         EndpointLink::Local { mismatch_guidance } => (None, Some(mismatch_guidance)),
         EndpointLink::Ssh(bridge) => (Some(bridge), None),
     };
-    let attached = crate::transport::attach_endpoint_stream(
+    let attached = crate::endpoint::connection_io::attach_endpoint_stream(
         stream,
         options.geometry,
         options.mouse_capture,
@@ -524,142 +530,19 @@ fn establish(
         Some(deadline),
         mismatch_guidance,
         ssh_bridge,
-    )
-    .map_err(|failure| match failure {
-        crate::transport::EndpointAttachFailure::Handshake(error) => error,
-        crate::transport::EndpointAttachFailure::Setup(error) => std::io::Error::new(
-            error.kind(),
-            shepr_remote::EndpointFailure::local_setup(error.to_string()),
-        ),
-    })?;
+    )?;
+    let connection = crate::endpoint::connection_io::EndpointConnectionIo::start(
+        attached,
+        event_tx,
+        endpoint_id.clone(),
+        generation,
+    )?;
     Ok(EndpointSupervisorEvent::Connected {
         endpoint_id,
         generation,
-        reader: attached.reader,
-        writer: attached.writer,
+        connection,
         connector: None,
     })
-}
-
-/// Classifies a failed handshake for the endpoint status. The launch's first Local handshake
-/// runs before any supervisor attempt and goes through here too, so both report alike.
-/// `mismatch_guidance` is the Local endpoint's way out of a build mismatch;
-/// a configured machine has none here, its bridge reports its own.
-pub(crate) fn handshake_error(
-    error: crate::ClientError,
-    mismatch_guidance: Option<&str>,
-) -> std::io::Error {
-    use crate::ClientError;
-    use shepr_protocol::FramingError;
-    use shepr_remote::EndpointFailure;
-    let (kind, failure) =
-        match error {
-            ClientError::EndpointSetup(error) | ClientError::HostTerminal(error) => (
-                error.kind(),
-                EndpointFailure::local_setup(error.to_string()),
-            ),
-            ClientError::ConnectionFailed(error)
-            | ClientError::ConnectionLost(error)
-            | ClientError::Protocol(FramingError::Io(error))
-            | ClientError::Preamble(shepr_protocol::preamble::PreambleError::Io(error)) => {
-                (error.kind(), EndpointFailure::from_error(&error))
-            }
-            ClientError::HandshakeRejected {
-                error:
-                    error @ (shepr_protocol::HandshakeRefusal::ConnectionLimit(_)
-                    | shepr_protocol::HandshakeRefusal::ServerStarting),
-            } => (
-                std::io::ErrorKind::ConnectionAborted,
-                EndpointFailure::retry(error.to_string()),
-            ),
-            ClientError::HandshakeRejected { error } => (
-                std::io::ErrorKind::Unsupported,
-                EndpointFailure::incompatible(error.to_string()),
-            ),
-            ClientError::Preamble(shepr_protocol::preamble::PreambleError::DifferentBuild(
-                peer,
-            )) if mismatch_guidance.is_some() => (
-                std::io::ErrorKind::Unsupported,
-                EndpointFailure::incompatible(local_build_mismatch(
-                    &peer.build_id.to_string(),
-                    mismatch_guidance.unwrap_or_default(),
-                )),
-            ),
-            ClientError::Preamble(
-                error @ shepr_protocol::preamble::PreambleError::DifferentBuild(_),
-            ) => (
-                std::io::ErrorKind::Unsupported,
-                EndpointFailure::incompatible(error.to_string()),
-            ),
-            ClientError::Preamble(shepr_protocol::preamble::PreambleError::UnexpectedEof)
-            | ClientError::Protocol(FramingError::UnexpectedEof) => (
-                std::io::ErrorKind::UnexpectedEof,
-                EndpointFailure::retry("connection closed before the endpoint finished connecting"),
-            ),
-            ClientError::Preamble(error) => (
-                std::io::ErrorKind::InvalidData,
-                EndpointFailure::incompatible(error.to_string()),
-            ),
-            ClientError::UnexpectedWelcome => (
-                std::io::ErrorKind::InvalidData,
-                EndpointFailure::incompatible(ClientError::UnexpectedWelcome.to_string()),
-            ),
-            ClientError::Protocol(error) => (
-                std::io::ErrorKind::InvalidData,
-                EndpointFailure::incompatible(error.to_string()),
-            ),
-            ClientError::ServerShutdown { reason } => (
-                std::io::ErrorKind::ConnectionAborted,
-                EndpointFailure::server_shutdown(reason),
-            ),
-            // The panic latch ends the client; this arm only keeps the match exhaustive.
-            ClientError::Panicked => (
-                std::io::ErrorKind::Other,
-                EndpointFailure::local_setup(ClientError::Panicked.to_string()),
-            ),
-        };
-    std::io::Error::new(kind, failure.with_context(HANDSHAKE_CONTEXT))
-}
-
-/// Applies Local's launch guidance and the SSH bridge's stderr to the same classified handshake
-/// result for both initial and supervised attachment.
-pub(crate) fn classify_handshake_error(
-    error: crate::ClientError,
-    mismatch_guidance: Option<&str>,
-    ssh_bridge: Option<&shepr_remote::MachineSshBridge>,
-) -> std::io::Error {
-    let error = handshake_error(error, mismatch_guidance);
-    // An SSH endpoint that closes before Welcome usually means ssh itself failed. The bridge
-    // holds the real stderr; prefer it so diagnosis and attention classification use its cause.
-    if error.kind() == std::io::ErrorKind::UnexpectedEof
-        && let Some(failure) = ssh_bridge
-            .and_then(shepr_remote::MachineSshBridge::reported_failure)
-            .map(|failure| {
-                let kind = failure.kind();
-                let diagnostic = shepr_remote::EndpointFailure::from_error(&failure)
-                    .with_context(HANDSHAKE_CONTEXT);
-                std::io::Error::new(kind, diagnostic)
-            })
-    {
-        failure
-    } else {
-        error
-    }
-}
-
-/// The shell status line and machine notice title supply the endpoint label;
-/// keep only the failing phase here so it is not repeated in the displayed error.
-const HANDSHAKE_CONTEXT: &str = "handshake failed";
-
-/// The Local endpoint's build-mismatch diagnostic, on one line for the
-/// endpoint status: both builds, then the guidance the launch
-/// check prints when no configured machines keep the client running.
-fn local_build_mismatch(running: &str, guidance: &str) -> String {
-    format!(
-        "build mismatch: the Local server runs shepr build {running}; this client is build {}. {}",
-        shepr_protocol::BUILD_ID,
-        guidance.replace('\n', " ")
-    )
 }
 
 /// Endpoint reconnect backoff: doubling from `INITIAL_RETRY_DELAY` to the
@@ -701,6 +584,7 @@ impl EndpointSupervisors {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::handshake::handshake_error;
 
     fn machine() -> shepr_config::MachineConfig {
         shepr_config::MachineConfig {
@@ -961,7 +845,7 @@ mod tests {
     #[test]
     fn handshake_network_failures_retry_but_incompatibility_needs_attention() {
         let timeout = handshake_error(
-            crate::ClientError::ConnectionLost(std::io::Error::new(
+            crate::errors::HandshakeError::ConnectionLost(std::io::Error::new(
                 std::io::ErrorKind::TimedOut,
                 "timed out",
             )),
@@ -969,7 +853,7 @@ mod tests {
         );
         assert!(!shepr_remote::SshFailureDiagnostic::from_error(&timeout).needs_attention());
         let rejected = handshake_error(
-            crate::ClientError::HandshakeRejected {
+            crate::errors::HandshakeError::HandshakeRejected {
                 error: shepr_protocol::HandshakeRefusal::InvalidSurface(
                     shepr_protocol::SurfaceRefusal::CellTooLarge,
                 ),
@@ -983,7 +867,7 @@ mod tests {
     #[test]
     fn a_full_server_refusal_is_retried_and_names_the_limit() {
         let full = handshake_error(
-            crate::ClientError::HandshakeRejected {
+            crate::errors::HandshakeError::HandshakeRejected {
                 error: shepr_protocol::HandshakeRefusal::ConnectionLimit(
                     shepr_protocol::LimitExceeded::new(
                         shepr_protocol::Limit::new(shepr_protocol::LimitKind::ConnectionCount, 64),
@@ -1004,7 +888,7 @@ mod tests {
     #[test]
     fn a_starting_server_refusal_is_retried() {
         let starting = handshake_error(
-            crate::ClientError::HandshakeRejected {
+            crate::errors::HandshakeError::HandshakeRejected {
                 error: shepr_protocol::HandshakeRefusal::ServerStarting,
             },
             None,
@@ -1016,20 +900,20 @@ mod tests {
     #[test]
     fn early_end_of_stream_and_shutdown_during_handshake_are_transient() {
         let eof = handshake_error(
-            crate::ClientError::Protocol(shepr_protocol::FramingError::UnexpectedEof),
+            crate::errors::HandshakeError::Protocol(shepr_protocol::FramingError::UnexpectedEof),
             None,
         );
         assert_eq!(eof.kind(), std::io::ErrorKind::UnexpectedEof);
         assert!(!shepr_remote::SshFailureDiagnostic::from_error(&eof).needs_attention());
         let shutdown = handshake_error(
-            crate::ClientError::ServerShutdown {
+            crate::errors::HandshakeError::ServerShutdown {
                 reason: shepr_protocol::ShutdownReason::Stopping,
             },
             None,
         );
         assert!(!shepr_remote::SshFailureDiagnostic::from_error(&shutdown).needs_attention());
         let malformed = handshake_error(
-            crate::ClientError::Protocol(shepr_protocol::FramingError::LimitExceeded(
+            crate::errors::HandshakeError::Protocol(shepr_protocol::FramingError::LimitExceeded(
                 shepr_protocol::LimitExceeded::new(
                     shepr_protocol::Limit::new(shepr_protocol::LimitKind::MessageBytes, 1),
                     2,
@@ -1045,7 +929,7 @@ mod tests {
     #[test]
     fn a_welcome_that_does_not_decode_needs_attention() {
         let error = handshake_error(
-            crate::ClientError::Protocol(shepr_protocol::FramingError::Codec(
+            crate::errors::HandshakeError::Protocol(shepr_protocol::FramingError::Codec(
                 shepr_protocol::codec::CodecError::InvalidUtf8,
             )),
             None,
@@ -1056,14 +940,16 @@ mod tests {
         assert!(diagnostic.to_string().contains("handshake failed"));
     }
 
-    fn different_build() -> crate::ClientError {
-        crate::ClientError::Preamble(shepr_protocol::preamble::PreambleError::DifferentBuild(
-            shepr_protocol::preamble::PeerBuild {
-                build_id: "00000000deadbeef"
-                    .parse()
-                    .expect("canonical build fingerprint"),
-            },
-        ))
+    fn different_build() -> crate::errors::HandshakeError {
+        crate::errors::HandshakeError::Preamble(
+            shepr_protocol::preamble::PreambleError::DifferentBuild(
+                shepr_protocol::preamble::PeerBuild {
+                    build_id: "00000000deadbeef"
+                        .parse()
+                        .expect("canonical build fingerprint"),
+                },
+            ),
+        )
     }
 
     /// With configured machines the launch check's refusal cannot fail the launch,

@@ -1,4 +1,6 @@
-use super::*;
+use crate::endpoint;
+use shepr_protocol::surface_reuse::DecodedClientServerMessage;
+use std::io;
 
 /// Internal events for the client event loop.
 pub(super) struct ParsedHostInput {

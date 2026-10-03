@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use tracing::{debug, warn};
 
-use super::ClientLoopEvent;
+use crate::events::ClientLoopEvent;
 use crate::limits::{DEFAULT_CELL_HEIGHT_PX, DEFAULT_CELL_WIDTH_PX, TERMINAL_RESIZE_POLL_INTERVAL};
 use crate::state::{HostWriteAction, HostWritePurpose, host_write_failure_action};
 

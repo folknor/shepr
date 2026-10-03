@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use shepr_termio::input::raw_input::RawInputFramer;
 use tokio::sync::mpsc;
 
-use super::{ClientLoopEvent, ParsedHostInput};
+use crate::events::{ClientLoopEvent, ParsedHostInput};
 use crate::limits::HOST_INPUT_READ_CHUNK_BYTES;
 use crate::terminal_geometry::SharedHostGeometry;
 use crate::terminal_setup::HostMouseInputProbe;

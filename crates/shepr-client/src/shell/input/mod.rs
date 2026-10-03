@@ -299,7 +299,7 @@ impl ClientShellState {
     /// under; it decides whether text key presses can hold input leases.
     pub(crate) fn handle_host_input(
         &mut self,
-        inputs: Vec<crate::ParsedHostInput>,
+        inputs: Vec<crate::events::ParsedHostInput>,
         host_reports_all_keys: bool,
         now: std::time::Instant,
     ) -> ClientShellInput {

@@ -1,4 +1,10 @@
-use super::*;
+use crate::errors::LoopExit;
+use crate::state::ClientState;
+use crate::terminal_geometry::{query_host_terminal_appearance, query_host_terminal_theme};
+use crate::{endpoint, shell};
+use shepr_protocol::ClientMessage;
+use std::io;
+use tracing::warn;
 
 pub(super) fn cancel_endpoint_commands(
     shell: &mut shell::ClientShellState,
@@ -64,7 +70,7 @@ pub(super) fn dispatch_client_shell_actions(
     prefers_osc52_clipboard: bool,
     shell: &mut shell::ClientShellState,
     now: std::time::Instant,
-) -> Result<shell::Repaint, ClientError> {
+) -> Result<shell::Repaint, LoopExit> {
     let mut repaint = shell::Repaint::Unchanged;
     let mut actions = std::collections::VecDeque::from(actions);
     while let Some(action) = actions.pop_front() {
@@ -102,7 +108,7 @@ pub(super) fn dispatch_client_shell_actions(
                         error.kind(),
                     ) {
                         crate::state::HostWriteAction::Fatal => {
-                            return Err(ClientError::HostTerminal(error));
+                            return Err(LoopExit::HostTerminal(error));
                         }
                         crate::state::HostWriteAction::Retry
                         | crate::state::HostWriteAction::Continue
@@ -196,7 +202,7 @@ pub(super) fn resize_views(state: &mut ClientState, endpoints: &mut endpoint::En
 
 pub(super) fn sync_client_shell_keyboard_report_all(
     state: &mut ClientState,
-) -> Result<(), ClientError> {
+) -> Result<(), LoopExit> {
     let result = state.host_modes.sync_shell_keyboard_report_all(
         &mut state.output_writer,
         state.shell.host_keyboard_report_all_requested(),
@@ -208,7 +214,7 @@ pub(super) fn sync_client_shell_keyboard_report_all(
 /// after one fails, so a failed mouse reset still clears report-all and the title. Each result
 /// passes through the shared policy: a transient failure queues a retry, while a permanent
 /// stateful-mode failure ends the client after all resets have been attempted.
-pub(super) fn clear_endpoint_host_effects(state: &mut ClientState) -> Result<(), ClientError> {
+pub(super) fn clear_endpoint_host_effects(state: &mut ClientState) -> Result<(), LoopExit> {
     state.host_modes.clear_mouse_endpoint_request();
     let mouse = state.host_modes.apply_mouse(
         &mut state.output_writer,
@@ -274,7 +280,7 @@ pub(super) fn finish_client_shell_input(
     endpoints: &mut endpoint::EndpointRegistry,
     endpoint_commands: &mut endpoint::commands::EndpointCommands,
     now: std::time::Instant,
-) -> Result<ShellInputDisposition, ClientError> {
+) -> Result<ShellInputDisposition, LoopExit> {
     if outcome.detach {
         // A failed send is recorded against the endpoint. The registry remembers a sent
         // Detach, so its Drop on the way out only flushes this connection.
@@ -293,11 +299,10 @@ pub(super) fn finish_client_shell_input(
         state.request_repaint();
     }
     if outcome.query_host_appearance {
-        query_host_terminal_appearance(&mut state.output_writer)
-            .map_err(ClientError::HostTerminal)?;
+        query_host_terminal_appearance(&mut state.output_writer).map_err(LoopExit::HostTerminal)?;
     }
     if outcome.query_host_theme {
-        query_host_terminal_theme(&mut state.output_writer).map_err(ClientError::HostTerminal)?;
+        query_host_terminal_theme(&mut state.output_writer).map_err(LoopExit::HostTerminal)?;
     }
     sync_client_shell_keyboard_report_all(state)?;
     let dispatch_repaint = dispatch_client_shell_actions(

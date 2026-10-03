@@ -97,7 +97,7 @@ message = "take the clock as a parameter; mark the entry point that supplies the
 name = "client-clock-is-injected"
 pattern = '\b(?:Instant|SystemTime)::now\b'
 paths = ["crates/shepr-client/src/**/*.rs"]
-exclude = ["crates/shepr-client/src/lib.rs", "**/tests.rs", "**/tests/**", "**/*_tests.rs"]
+exclude = ["crates/shepr-client/src/client_loop.rs", "crates/shepr-client/src/launch.rs", "**/tests.rs", "**/tests/**", "**/*_tests.rs"]
 skip_after = '^[ \t]*#\[cfg\(test\)\]'
 region = "code"
 allow_marker = "clock-io-ok"
@@ -109,7 +109,7 @@ message = "pass time from the client loop or IO owner; mark elapsed real IO read
 [[textlint]]
 name = "client-loop-clock-is-sampled"
 pattern = '\b(?:Instant|SystemTime)::now\b'
-paths = ["crates/shepr-client/src/lib.rs"]
+paths = ["crates/shepr-client/src/client_loop.rs", "crates/shepr-client/src/launch.rs"]
 skip_after = '^[ \t]*#\[cfg\(test\)\]'
 region = "code"
 allow_marker = "client-clock-sample-ok"

@@ -1,4 +1,4 @@
-use super::*;
+use std::io;
 
 /// Writes clipboard bytes from the server to the host clipboard.
 /// The server sends bytes decoded from OSC 52 by its terminal parser.

@@ -4,9 +4,9 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use super::ClientEndpointId;
+use super::connection_io::{EndpointReadActivity, NativeEndpointTransport};
 use super::health::{EndpointHealth, HealthAction};
 use super::view::ViewSerialAllocator;
-use super::writer::{EndpointReadActivity, NativeEndpointTransport};
 use crate::limits::ENDPOINT_DETACH_FLUSH_TIMEOUT;
 use shepr_protocol::ClientMessage;
 

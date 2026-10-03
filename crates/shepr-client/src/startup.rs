@@ -1,4 +1,5 @@
-use super::*;
+use crate::errors::{ClientExit, ClientRunError};
+use crate::launch::run_launched_client;
 
 /// Runs the thin client and enters the main event loop.
 ///

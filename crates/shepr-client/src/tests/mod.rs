@@ -1,6 +1,9 @@
 use super::*;
+use crate::events::{ClientLoopEvent, ParsedHostInput};
+use shepr_protocol::surface_reuse::DecodedClientServerMessage;
 use shepr_test_fixtures::*;
 use shepr_test_support::IsolatedEnv;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// A public pane id from its canonical spelling (`<workspace>:p<number>`).
 /// Test ids go through the parser a server's ids go through, so a test cannot
@@ -249,7 +252,7 @@ fn host_modes_restore_color_scheme_reports_when_enabled() {
 
 #[test]
 fn client_error_display_connection_failed() {
-    let err = ClientError::ConnectionFailed(io::Error::new(
+    let err = crate::errors::HandshakeError::ConnectionFailed(io::Error::new(
         io::ErrorKind::ConnectionRefused,
         "connection refused",
     ));
@@ -268,7 +271,7 @@ fn client_error_display_connection_failed() {
 
 #[test]
 fn client_error_display_host_terminal_does_not_claim_server_connection_failed() {
-    let err = ClientError::HostTerminal(io::Error::new(
+    let err = LoopExit::HostTerminal(io::Error::new(
         io::ErrorKind::BrokenPipe,
         "terminal output was closed",
     ));
@@ -284,7 +287,7 @@ fn client_error_display_host_terminal_does_not_claim_server_connection_failed() 
 
 #[test]
 fn client_error_display_handshake_rejected() {
-    let err = ClientError::HandshakeRejected {
+    let err = crate::errors::HandshakeError::HandshakeRejected {
         error: shepr_protocol::HandshakeRefusal::InvalidSurface(
             shepr_protocol::SurfaceRefusal::TooManyCells,
         ),
@@ -302,7 +305,7 @@ fn client_error_display_handshake_rejected() {
 
 #[test]
 fn client_error_display_server_shutdown() {
-    let err = ClientError::ServerShutdown {
+    let err = LoopExit::ServerShutdown {
         reason: shepr_protocol::ShutdownReason::Stopping,
     };
     assert_eq!(err.to_string(), "server is shutting down");
@@ -310,7 +313,7 @@ fn client_error_display_server_shutdown() {
 
 #[test]
 fn client_error_display_connection_lost() {
-    let err = ClientError::ConnectionLost(io::Error::new(io::ErrorKind::BrokenPipe, "broken pipe"));
+    let err = LoopExit::ConnectionLost(io::Error::new(io::ErrorKind::BrokenPipe, "broken pipe"));
     let msg = err.to_string();
     assert!(
         msg.contains("lost connection to server"),

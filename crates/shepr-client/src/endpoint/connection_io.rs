@@ -1,56 +1,57 @@
-use super::*;
+mod writer;
+pub(crate) use writer::{EndpointReadActivity, NativeEndpointTransport};
+
+use crate::errors::{ClientRunError, endpoint_setup_launch_error};
+use crate::events::ClientLoopEvent;
+use crate::{endpoint, handshake};
 use shepr_platform::ipc::LocalStream;
 use shepr_protocol::ServerMessage;
+use std::io;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tracing::debug;
+use tracing::warn;
 
-pub(super) struct AttachedEndpoint {
-    pub(super) reader: LocalStream,
-    pub(super) writer: endpoint::NativeEndpointTransport,
+pub(crate) struct AcceptedEndpoint {
+    stream: LocalStream,
+    lifetime: Box<dyn Send>,
 }
 
-pub(super) enum EndpointAttachFailure {
-    Handshake(io::Error),
-    Setup(io::Error),
-}
-
-pub(super) enum LocalAttachFailure {
+pub(crate) enum LocalAttachFailure {
     Connection(io::Error),
     Handshake(io::Error),
     Setup(io::Error),
 }
 
 impl LocalAttachFailure {
-    pub(super) fn initial_failure(&self) -> Option<shepr_remote::EndpointFailure> {
+    pub(crate) fn initial_failure(&self) -> Option<shepr_remote::EndpointFailure> {
         match self {
             Self::Connection(_) => None,
-            Self::Handshake(error) => Some(shepr_remote::EndpointFailure::from_error(error)),
-            Self::Setup(error) => Some(shepr_remote::EndpointFailure::local_setup(
-                error.to_string(),
-            )),
+            Self::Handshake(error) | Self::Setup(error) => {
+                Some(shepr_remote::EndpointFailure::from_error(error))
+            }
         }
     }
 
-    pub(super) fn into_launch_error(self) -> ClientRunError {
+    pub(crate) fn into_launch_error(self) -> ClientRunError {
         match self {
             Self::Connection(error) => ClientRunError::Launch(io::Error::new(
                 error.kind(),
-                ClientError::ConnectionFailed(error),
+                format!("endpoint connection setup failed: {error}"),
             )),
             Self::Handshake(error) => ClientRunError::Launch(error),
-            Self::Setup(error) => {
-                ClientRunError::Launch(io::Error::other(ClientError::EndpointSetup(error)))
-            }
+            Self::Setup(error) => endpoint_setup_launch_error(&error),
         }
     }
 }
 
-pub(super) fn attach_local_endpoint(
+pub(crate) fn attach_local_endpoint(
     path: &std::path::Path,
     geometry: shepr_protocol::TerminalGeometry,
     mouse_capture: bool,
     surface_active: bool,
     mismatch_guidance: &str,
-) -> Result<AttachedEndpoint, LocalAttachFailure> {
+) -> Result<AcceptedEndpoint, LocalAttachFailure> {
     let stream = shepr_platform::ipc::connect_trusted_local_stream(path)
         .map_err(LocalAttachFailure::Connection)?;
     attach_endpoint_stream(
@@ -63,13 +64,10 @@ pub(super) fn attach_local_endpoint(
         Some(mismatch_guidance),
         None,
     )
-    .map_err(|failure| match failure {
-        EndpointAttachFailure::Handshake(error) => LocalAttachFailure::Handshake(error),
-        EndpointAttachFailure::Setup(error) => LocalAttachFailure::Setup(error),
-    })
+    .map_err(LocalAttachFailure::Handshake)
 }
 
-pub(super) fn attach_endpoint_stream(
+pub(crate) fn attach_endpoint_stream(
     mut stream: LocalStream,
     geometry: shepr_protocol::TerminalGeometry,
     mouse_capture: bool,
@@ -78,7 +76,7 @@ pub(super) fn attach_endpoint_stream(
     deadline: Option<std::time::Instant>,
     mismatch_guidance: Option<&str>,
     ssh_bridge: Option<shepr_remote::MachineSshBridge>,
-) -> Result<AttachedEndpoint, EndpointAttachFailure> {
+) -> io::Result<AcceptedEndpoint> {
     if let Err(error) = handshake::do_handshake_for_endpoint(
         &mut stream,
         geometry,
@@ -87,73 +85,104 @@ pub(super) fn attach_endpoint_stream(
         endpoint_policy,
         deadline,
     ) {
-        return Err(EndpointAttachFailure::Handshake(
-            endpoint::classify_handshake_error(error, mismatch_guidance, ssh_bridge.as_ref()),
+        return Err(handshake::classify_handshake_error(
+            error,
+            mismatch_guidance,
+            ssh_bridge.as_ref(),
         ));
     }
-    let reader = stream.try_clone().map_err(EndpointAttachFailure::Setup)?;
     let lifetime: Box<dyn Send> = match ssh_bridge {
         Some(bridge) => Box::new(bridge),
         None => Box::new(()),
     };
-    let writer = endpoint::NativeEndpointTransport::with_lifetime(stream, lifetime)
-        .map_err(EndpointAttachFailure::Setup)?;
-    Ok(AttachedEndpoint { reader, writer })
+    Ok(AcceptedEndpoint { stream, lifetime })
 }
 
-pub(super) fn spawn_endpoint_reader(
+/// Owns both halves of one accepted connection, for launch and supervised attaches alike.
+/// The reader thread is spawned at assembly but publishes nothing until `activate`, which
+/// runs once the generation is accepted and right before the writer is registered, so no
+/// message reaches the loop ahead of its connection. Dropping it unactivated ends the reader.
+pub(crate) struct EndpointConnectionIo {
+    writer: NativeEndpointTransport,
+    start_reader: std::sync::mpsc::Sender<()>,
+}
+
+impl EndpointConnectionIo {
+    pub(crate) fn start(
+        accepted: AcceptedEndpoint,
+        event_tx: &tokio::sync::mpsc::Sender<ClientLoopEvent>,
+        endpoint_id: endpoint::ClientEndpointId,
+        generation: u64,
+    ) -> io::Result<Self> {
+        let assemble = || -> io::Result<Self> {
+            let reader = accepted.stream.try_clone()?;
+            let writer =
+                NativeEndpointTransport::with_lifetime(accepted.stream, accepted.lifetime)?;
+            let (start_reader, wait) = std::sync::mpsc::channel();
+            spawn_endpoint_reader(reader, event_tx, &writer, endpoint_id, generation, wait)?;
+            Ok(Self {
+                writer,
+                start_reader,
+            })
+        };
+        // Acceptance already succeeded. Every failure from here is local setup, regardless
+        // of its IO kind; launch and retry callers use this same classified result.
+        assemble().map_err(|error| {
+            io::Error::new(
+                error.kind(),
+                shepr_remote::EndpointFailure::local_setup(error.to_string()),
+            )
+        })
+    }
+
+    pub(crate) fn activate(self) -> NativeEndpointTransport {
+        self.start_reader.send(()).ok();
+        self.writer
+    }
+}
+
+fn spawn_endpoint_reader(
     reader: LocalStream,
     event_tx: &tokio::sync::mpsc::Sender<ClientLoopEvent>,
-    transport: &endpoint::NativeEndpointTransport,
+    transport: &NativeEndpointTransport,
     endpoint_id: endpoint::ClientEndpointId,
     generation: u64,
-    surface_decoder: shepr_protocol::surface_reuse::Decoder,
-) -> Result<(), ClientError> {
+    wait: std::sync::mpsc::Receiver<()>,
+) -> io::Result<()> {
     let event_tx = event_tx.clone();
     let stopped = transport.stop_handle();
     let read_activity = transport.read_activity();
     std::thread::Builder::new()
         .name("endpoint-reader".into())
         .spawn(move || {
+            if wait.recv().is_err() {
+                return;
+            }
             server_reader_thread(
                 reader,
                 &event_tx,
                 &stopped,
                 &read_activity,
-                endpoint_id,
+                &endpoint_id,
                 generation,
-                surface_decoder,
+                shepr_protocol::surface_reuse::Decoder::default(),
             );
-        })
-        .map_err(ClientError::EndpointSetup)?;
+        })?;
     Ok(())
 }
 
 /// Reads complete frames while retaining partial-read progress across nonblocking polls.
-pub(super) fn server_reader_thread(
+fn server_reader_thread(
     mut stream: LocalStream,
     event_tx: &tokio::sync::mpsc::Sender<ClientLoopEvent>,
     transport_stopped: &Arc<AtomicBool>,
-    read_activity: &endpoint::EndpointReadActivity,
-    endpoint_id: endpoint::ClientEndpointId,
+    read_activity: &EndpointReadActivity,
+    endpoint_id: &endpoint::ClientEndpointId,
     generation: u64,
     mut surface_decoder: shepr_protocol::surface_reuse::Decoder,
 ) {
-    if let Err(error) = stream.set_nonblocking(true) {
-        report_disconnect(
-            event_tx,
-            ClientLoopEvent::ServerDisconnected {
-                endpoint_id,
-                generation,
-                error: io::Error::new(
-                    error.kind(),
-                    shepr_remote::EndpointFailure::local_setup(error.to_string()),
-                ),
-            },
-        );
-        return;
-    }
-
+    // The reader is a clone of the writer's stream, sharing one file description, which
+    // the writer set nonblocking during assembly; no setup remains here.
     let mut stream = EndpointReader {
         stream: &mut stream,
         stopped: transport_stopped,
@@ -308,6 +337,7 @@ impl io::Read for EndpointReader<'_> {
 mod tests {
     use super::*;
     use crate::endpoint::EndpointTransport as _;
+    use shepr_protocol::ClientMessage;
     use std::io::{Read as _, Write as _};
     use std::time::{Duration, Instant};
 
@@ -381,6 +411,44 @@ mod tests {
         assert!(surface_error.to_string().contains("projection revision 2"));
     }
 
+    #[tokio::test]
+    async fn an_assembled_reader_waits_for_connection_acceptance() {
+        let scratch = shepr_test_support::ScratchDir::new("reader-activation");
+        let path = scratch.join("s.sock");
+        let listener =
+            shepr_platform::ipc::bind_private_local_listener(&path).expect("test listener");
+        let client = shepr_platform::ipc::connect_local_stream(&path).expect("test client");
+        let mut peer = listener.accept().expect("test peer").0;
+        let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(4);
+        let connection = EndpointConnectionIo::start(
+            AcceptedEndpoint {
+                stream: client,
+                lifetime: Box::new(()),
+            },
+            &event_tx,
+            endpoint::ClientEndpointId::Local,
+            7,
+        )
+        .expect("test connection assembly");
+        shepr_protocol::write_message(&mut peer, &ServerMessage::HealthPong).expect("test frame");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), event_rx.recv())
+                .await
+                .is_err(),
+            "an unaccepted reader cannot publish",
+        );
+        let mut writer = connection.activate();
+        let event = tokio::time::timeout(Duration::from_secs(3), event_rx.recv())
+            .await
+            .expect("reader activation is bounded")
+            .expect("activated reader publishes");
+        assert!(matches!(
+            event,
+            ClientLoopEvent::ServerMessage { generation: 7, .. }
+        ));
+        writer.disconnect();
+    }
+
     #[test]
     fn upload_cancellation_preserves_pending_endpoint_download() {
         let scratch = shepr_test_support::ScratchDir::new("cancel");
@@ -391,8 +459,8 @@ mod tests {
         std::fs::remove_file(path).expect("test precondition");
         drop(listener);
         let mut reader_stream = client.try_clone().expect("test precondition");
-        let mut writer = endpoint::NativeEndpointTransport::with_lifetime(client, ())
-            .expect("test precondition");
+        let mut writer =
+            NativeEndpointTransport::with_lifetime(client, ()).expect("test precondition");
         let stopped = writer.stop_handle();
         struct ForwardedInput(std::sync::mpsc::Sender<Vec<u8>>);
         impl io::Write for ForwardedInput {

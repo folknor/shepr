@@ -4,16 +4,16 @@ use shepr_platform::ipc::{LocalStream, LocalStreamDeadlineReader};
 use shepr_protocol::endpoint::{EndpointClientHello, EndpointServerWelcome};
 use shepr_protocol::{ClientMessage, ServerMessage, TerminalGeometry};
 
-use super::ClientError;
+use crate::errors::HandshakeError;
 use crate::limits::Deadline;
 
 /// Retains the preamble cause; the handshake failure classifier decides the
 /// endpoint disposition.
-fn preamble_error(error: shepr_protocol::preamble::PreambleError) -> ClientError {
-    ClientError::Preamble(error)
+fn preamble_error(error: shepr_protocol::preamble::PreambleError) -> HandshakeError {
+    HandshakeError::Preamble(error)
 }
 
-/// Performs the client→server handshake for launch and supervised attaches,
+/// Performs the client-to-server handshake for launch and supervised attaches,
 /// the endpoint policy selecting its read timeout.
 ///
 /// The connection opens with the raw build-identity preamble in both
@@ -32,10 +32,10 @@ pub(crate) fn do_handshake_for_endpoint(
     surface_active: bool,
     endpoint_policy: crate::endpoint::EndpointPolicy,
     deadline: Option<std::time::Instant>,
-) -> Result<(), ClientError> {
+) -> Result<(), HandshakeError> {
     stream
         .set_nonblocking(false)
-        .map_err(ClientError::EndpointSetup)?;
+        .map_err(HandshakeError::EndpointSetup)?;
 
     let hello = ClientMessage::EndpointHello(EndpointClientHello {
         geometry,
@@ -72,31 +72,144 @@ pub(crate) fn do_handshake_for_endpoint(
     // after acceptance, it sends its notice after the welcome.
     let welcome = match welcome {
         ServerMessage::ServerShutdown { reason } => {
-            return Err(ClientError::ServerShutdown { reason });
+            return Err(HandshakeError::ServerShutdown { reason });
         }
         welcome => welcome,
     };
 
     let ServerMessage::EndpointWelcome(welcome) = welcome else {
-        return Err(ClientError::UnexpectedWelcome);
+        return Err(HandshakeError::UnexpectedWelcome);
     };
     match welcome {
         EndpointServerWelcome::Accepted => {
             info!("endpoint handshake succeeded");
             Ok(())
         }
-        EndpointServerWelcome::Refused(error) => Err(ClientError::HandshakeRejected { error }),
+        EndpointServerWelcome::Refused(error) => Err(HandshakeError::HandshakeRejected { error }),
     }
 }
 
 /// Keeps the IO cause at the write boundary and identifies hello encoding
 /// failures as local setup.
-fn hello_write_error(error: shepr_protocol::FramingError) -> ClientError {
+fn hello_write_error(error: shepr_protocol::FramingError) -> HandshakeError {
     match error {
-        shepr_protocol::FramingError::Io(error) => ClientError::ConnectionFailed(error),
+        shepr_protocol::FramingError::Io(error) => HandshakeError::ConnectionFailed(error),
         // Encoding the hello failed: a local defect, not a connection problem.
-        error => ClientError::EndpointSetup(std::io::Error::other(error)),
+        error => HandshakeError::EndpointSetup(std::io::Error::other(error)),
     }
+}
+
+impl HandshakeError {
+    /// Classifies a failed handshake for the endpoint status. The launch's first Local
+    /// handshake runs before any supervisor attempt and goes through here too, so both report
+    /// alike. `mismatch_guidance` is the Local endpoint's way out of a build mismatch;
+    /// a configured machine has none here, its bridge reports its own.
+    pub(crate) fn class(self, mismatch_guidance: Option<&str>) -> std::io::Error {
+        use shepr_protocol::FramingError;
+        use shepr_remote::EndpointFailure;
+        let (kind, failure) = match self {
+            HandshakeError::EndpointSetup(error) => (
+                error.kind(),
+                EndpointFailure::local_setup(error.to_string()),
+            ),
+            HandshakeError::ConnectionFailed(error)
+            | HandshakeError::ConnectionLost(error)
+            | HandshakeError::Protocol(FramingError::Io(error))
+            | HandshakeError::Preamble(shepr_protocol::preamble::PreambleError::Io(error)) => {
+                (error.kind(), EndpointFailure::from_error(&error))
+            }
+            HandshakeError::HandshakeRejected {
+                error:
+                    error @ (shepr_protocol::HandshakeRefusal::ConnectionLimit(_)
+                    | shepr_protocol::HandshakeRefusal::ServerStarting),
+            } => (
+                std::io::ErrorKind::ConnectionAborted,
+                EndpointFailure::retry(error.to_string()),
+            ),
+            HandshakeError::HandshakeRejected { error } => (
+                std::io::ErrorKind::Unsupported,
+                EndpointFailure::incompatible(error.to_string()),
+            ),
+            HandshakeError::Preamble(shepr_protocol::preamble::PreambleError::DifferentBuild(
+                peer,
+            )) if mismatch_guidance.is_some() => (
+                std::io::ErrorKind::Unsupported,
+                EndpointFailure::incompatible(local_build_mismatch(
+                    &peer.build_id.to_string(),
+                    mismatch_guidance.unwrap_or_default(),
+                )),
+            ),
+            HandshakeError::Preamble(
+                error @ shepr_protocol::preamble::PreambleError::DifferentBuild(_),
+            ) => (
+                std::io::ErrorKind::Unsupported,
+                EndpointFailure::incompatible(error.to_string()),
+            ),
+            HandshakeError::Preamble(shepr_protocol::preamble::PreambleError::UnexpectedEof)
+            | HandshakeError::Protocol(FramingError::UnexpectedEof) => (
+                std::io::ErrorKind::UnexpectedEof,
+                EndpointFailure::retry("connection closed before the endpoint finished connecting"),
+            ),
+            HandshakeError::Preamble(error) => (
+                std::io::ErrorKind::InvalidData,
+                EndpointFailure::incompatible(error.to_string()),
+            ),
+            HandshakeError::UnexpectedWelcome => (
+                std::io::ErrorKind::InvalidData,
+                EndpointFailure::incompatible(HandshakeError::UnexpectedWelcome.to_string()),
+            ),
+            HandshakeError::Protocol(error) => (
+                std::io::ErrorKind::InvalidData,
+                EndpointFailure::incompatible(error.to_string()),
+            ),
+            HandshakeError::ServerShutdown { reason } => (
+                std::io::ErrorKind::ConnectionAborted,
+                EndpointFailure::server_shutdown(reason),
+            ),
+        };
+        std::io::Error::new(kind, failure.with_context(HANDSHAKE_CONTEXT))
+    }
+}
+
+/// Applies Local's launch guidance and the SSH bridge's stderr to the same classified handshake
+/// result for both initial and supervised attachment.
+pub(crate) fn classify_handshake_error(
+    error: crate::errors::HandshakeError,
+    mismatch_guidance: Option<&str>,
+    ssh_bridge: Option<&shepr_remote::MachineSshBridge>,
+) -> std::io::Error {
+    let error = error.class(mismatch_guidance);
+    // An SSH endpoint that closes before Welcome usually means ssh itself failed. The bridge
+    // holds the real stderr; prefer it so diagnosis and attention classification use its cause.
+    if error.kind() == std::io::ErrorKind::UnexpectedEof
+        && let Some(failure) = ssh_bridge
+            .and_then(shepr_remote::MachineSshBridge::reported_failure)
+            .map(|failure| {
+                let kind = failure.kind();
+                let diagnostic = shepr_remote::EndpointFailure::from_error(&failure)
+                    .with_context(HANDSHAKE_CONTEXT);
+                std::io::Error::new(kind, diagnostic)
+            })
+    {
+        failure
+    } else {
+        error
+    }
+}
+
+/// The shell status line and machine notice title supply the endpoint label;
+/// keep only the failing phase here so it is not repeated in the displayed error.
+const HANDSHAKE_CONTEXT: &str = "handshake failed";
+
+/// The Local endpoint's build-mismatch diagnostic, on one line for the
+/// endpoint status: both builds, then the guidance the launch
+/// check prints when no configured machines keep the client running.
+fn local_build_mismatch(running: &str, guidance: &str) -> String {
+    format!(
+        "build mismatch: the Local server runs shepr build {running}; this client is build {}. {}",
+        shepr_protocol::BUILD_ID,
+        guidance.replace('\n', " ")
+    )
 }
 
 /// The handshake under Local's endpoint policy, for tests.
@@ -107,7 +220,7 @@ pub(super) fn do_handshake(
     mouse_capture: bool,
     surface_active: bool,
     deadline: Option<std::time::Instant>,
-) -> Result<(), ClientError> {
+) -> Result<(), HandshakeError> {
     do_handshake_for_endpoint(
         stream,
         geometry,
@@ -116,6 +229,14 @@ pub(super) fn do_handshake(
         crate::endpoint::EndpointPolicy::Local,
         deadline,
     )
+}
+
+#[cfg(test)]
+pub(crate) fn handshake_error(
+    error: HandshakeError,
+    mismatch_guidance: Option<&str>,
+) -> std::io::Error {
+    error.class(mismatch_guidance)
 }
 
 #[cfg(test)]
@@ -137,7 +258,7 @@ mod tests {
         (client, server)
     }
 
-    fn handshake_against_shutdown() -> ClientError {
+    fn handshake_against_shutdown() -> HandshakeError {
         let (mut client, mut server) = socket_pair("shutdown-endpoint");
         let peer = std::thread::spawn(move || {
             use std::io::Write as _;
@@ -164,7 +285,10 @@ mod tests {
 
     /// Runs a handshake against a peer that answers with the build preamble and
     /// then `welcome_frames`, raw.
-    fn handshake_against_welcome(name: &str, welcome_frames: Vec<u8>) -> Result<(), ClientError> {
+    fn handshake_against_welcome(
+        name: &str,
+        welcome_frames: Vec<u8>,
+    ) -> Result<(), HandshakeError> {
         use std::io::Write as _;
         let (mut client, mut server) = socket_pair(name);
         let peer = std::thread::spawn(move || {
@@ -221,9 +345,9 @@ mod tests {
             frames.extend_from_slice(&payload);
             assert!(matches!(
                 handshake_against_welcome(name, frames),
-                Err(ClientError::Protocol(shepr_protocol::FramingError::Codec(
-                    _
-                )))
+                Err(HandshakeError::Protocol(
+                    shepr_protocol::FramingError::Codec(_)
+                ))
             ));
         }
     }
@@ -235,7 +359,7 @@ mod tests {
         ));
         let frames = shepr_protocol::encode_message(&welcome).expect("test precondition");
         match handshake_against_welcome("welcome-refused", frames) {
-            Err(ClientError::HandshakeRejected { error }) => {
+            Err(HandshakeError::HandshakeRejected { error }) => {
                 assert_eq!(error, shepr_protocol::HandshakeRefusal::ExpectedHello);
             }
             other => panic!("expected a rejection, got {other:?}"),
@@ -245,7 +369,7 @@ mod tests {
     #[test]
     fn shutdown_in_place_of_welcome_is_reported_as_a_shutdown() {
         match handshake_against_shutdown() {
-            ClientError::ServerShutdown { reason } => {
+            HandshakeError::ServerShutdown { reason } => {
                 assert_eq!(reason, shepr_protocol::ShutdownReason::Stopping);
             }
             other => panic!("{other}"),
@@ -254,7 +378,7 @@ mod tests {
 
     /// Runs a handshake against a peer that answers with `server_opening` raw
     /// bytes and then hangs up.
-    fn handshake_against_opening(name: &str, server_opening: Vec<u8>) -> ClientError {
+    fn handshake_against_opening(name: &str, server_opening: Vec<u8>) -> HandshakeError {
         use std::io::Write as _;
         let (mut client, mut server) = socket_pair(name);
         let peer = std::thread::spawn(move || {
@@ -296,7 +420,7 @@ mod tests {
         let maximum_elapsed = deadline.saturating_duration_since(started) + Duration::from_secs(1);
         assert!(elapsed < maximum_elapsed, "deadline ignored: {elapsed:?}");
         match error {
-            ClientError::Preamble(shepr_protocol::preamble::PreambleError::Io(error)) => {
+            HandshakeError::Preamble(shepr_protocol::preamble::PreambleError::Io(error)) => {
                 assert_eq!(error.kind(), io::ErrorKind::TimedOut);
             }
             other => panic!("expected a timeout, got {other}"),
@@ -318,7 +442,7 @@ mod tests {
         let peer_id = String::from_utf8_lossy(&opening[id_start..]).into_owned();
         opening.extend_from_slice(&[0xff; 16]);
         match handshake_against_opening("preamble-other-build", opening) {
-            ClientError::Preamble(error) => {
+            HandshakeError::Preamble(error) => {
                 let error = error.to_string();
                 assert!(error.contains(&format!("build {peer_id}")), "{error}");
                 assert!(error.contains("different shepr build"), "{error}");
@@ -334,7 +458,7 @@ mod tests {
             shepr_protocol::encode_frame(&ServerMessage::HealthPong).expect("test precondition");
         opening.resize(opening.len().max(shepr_protocol::preamble::PREAMBLE_LEN), 0);
         match handshake_against_opening("preamble-missing", opening) {
-            ClientError::Preamble(error) => {
+            HandshakeError::Preamble(error) => {
                 assert!(error.to_string().contains("preamble"), "{error}");
             }
             other => panic!("expected a missing-preamble error, got {other}"),
@@ -351,7 +475,7 @@ mod tests {
             match hello_write_error(shepr_protocol::FramingError::Io(io::Error::new(
                 kind, "write",
             ))) {
-                ClientError::ConnectionFailed(error) => assert_eq!(error.kind(), kind),
+                HandshakeError::ConnectionFailed(error) => assert_eq!(error.kind(), kind),
                 other => panic!("{other}"),
             }
         }
@@ -362,7 +486,7 @@ mod tests {
                     2,
                 ),
             )),
-            ClientError::EndpointSetup(_)
+            HandshakeError::EndpointSetup(_)
         ));
     }
 }

@@ -60,15 +60,22 @@ impl std::fmt::Display for ClientRunError {
 // Display includes nested causes, so leave the source chain empty to avoid repeating them.
 impl std::error::Error for ClientRunError {}
 
-/// Errors that can occur during client operation.
+/// The launch failure for an endpoint transport that could not be set up: a configured
+/// machine's connector, or the first Local connection's reader and writer.
+pub(crate) fn endpoint_setup_launch_error(error: &io::Error) -> ClientRunError {
+    ClientRunError::Launch(io::Error::new(
+        error.kind(),
+        format!("failed to set up configured endpoint transport: {error}"),
+    ))
+}
+
+/// Failures while exchanging the preamble, hello and welcome.
 #[derive(Debug)]
-pub enum ClientError {
-    /// A configured endpoint transport could not be prepared for this launch.
+pub(crate) enum HandshakeError {
+    /// Preparing the stream or encoding the local hello failed.
     EndpointSetup(io::Error),
     /// A connection could not be prepared or established.
     ConnectionFailed(io::Error),
-    /// A host terminal write failed while updating terminal modes or output.
-    HostTerminal(io::Error),
     /// Server rejected our handshake.
     HandshakeRejected {
         error: shepr_protocol::HandshakeRefusal,
@@ -85,69 +92,72 @@ pub enum ClientError {
     ConnectionLost(io::Error),
     /// Protocol error (framing, deserialization).
     Protocol(shepr_protocol::FramingError),
-    /// A panic somewhere in the client; the loop stops at once and the run
-    /// reports the panic's own diagnostic instead of this.
-    Panicked,
 }
 
-impl std::fmt::Display for ClientError {
+impl std::fmt::Display for HandshakeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ClientError::EndpointSetup(err) => {
+            HandshakeError::EndpointSetup(err) => {
                 write!(f, "failed to set up configured endpoint transport: {err}")
             }
-            ClientError::ConnectionFailed(err) => {
+            HandshakeError::ConnectionFailed(err) => {
                 write!(f, "endpoint connection setup failed: {err}")
             }
-            ClientError::HostTerminal(err) => write!(f, "host terminal error: {err}"),
-            ClientError::HandshakeRejected { error } => {
+            HandshakeError::HandshakeRejected { error } => {
                 write!(f, "server rejected handshake: {error}")
             }
-            ClientError::Preamble(
+            HandshakeError::Preamble(
                 error @ shepr_protocol::preamble::PreambleError::DifferentBuild(_),
             ) => {
                 // The preamble error already names the mismatch and both builds.
                 write!(f, "{error}")
             }
-            ClientError::Preamble(error) => write!(f, "protocol error: {error}"),
-            ClientError::UnexpectedWelcome => {
+            HandshakeError::Preamble(error) => write!(f, "protocol error: {error}"),
+            HandshakeError::UnexpectedWelcome => {
                 write!(f, "protocol error: expected endpoint welcome")
             }
-            ClientError::ServerShutdown { reason } => {
+            HandshakeError::ServerShutdown { reason } => {
                 write!(f, "{reason}")
             }
-            ClientError::ConnectionLost(err) => write!(f, "lost connection to server: {err}"),
-            ClientError::Protocol(err) => write!(f, "protocol error: {err}"),
-            ClientError::Panicked => write!(f, "internal error: the client panicked"),
+            HandshakeError::ConnectionLost(err) => write!(f, "lost connection to server: {err}"),
+            HandshakeError::Protocol(err) => write!(f, "protocol error: {err}"),
         }
     }
 }
 
 // Display includes nested causes, so leave the source chain empty to avoid repeating them.
-impl std::error::Error for ClientError {}
+impl std::error::Error for HandshakeError {}
 
-/// The diagnostic an endpoint shows when its transport could not be set up after the
-/// connection was accepted (a stream clone or a reader thread that could not start).
-pub(crate) fn endpoint_setup_failure(error: &ClientError) -> shepr_remote::EndpointFailure {
-    match error {
-        // A connection failure can carry a network or remote result, so its kind
-        // decides nothing; setup after acceptance only ever fails locally.
-        ClientError::ConnectionFailed(error) => shepr_remote::EndpointFailure::from_error(error),
-        ClientError::EndpointSetup(error) => {
-            shepr_remote::EndpointFailure::local_setup(error.to_string())
+impl From<shepr_protocol::FramingError> for HandshakeError {
+    fn from(err: shepr_protocol::FramingError) -> Self {
+        match err {
+            shepr_protocol::FramingError::UnexpectedEof => HandshakeError::ConnectionLost(
+                io::Error::new(io::ErrorKind::UnexpectedEof, "server closed connection"),
+            ),
+            shepr_protocol::FramingError::Io(err) => HandshakeError::ConnectionLost(err),
+            err => HandshakeError::Protocol(err),
         }
-        error => shepr_remote::EndpointFailure::local_setup(error.to_string()),
     }
 }
 
-impl From<shepr_protocol::FramingError> for ClientError {
-    fn from(err: shepr_protocol::FramingError) -> Self {
-        match err {
-            shepr_protocol::FramingError::UnexpectedEof => ClientError::ConnectionLost(
-                io::Error::new(io::ErrorKind::UnexpectedEof, "server closed connection"),
-            ),
-            shepr_protocol::FramingError::Io(err) => ClientError::ConnectionLost(err),
-            err => ClientError::Protocol(err),
+/// An established client loop's reason for ending.
+#[derive(Debug)]
+pub(crate) enum LoopExit {
+    HostTerminal(io::Error),
+    ServerShutdown {
+        reason: shepr_protocol::ShutdownReason,
+    },
+    ConnectionLost(io::Error),
+    Panicked,
+}
+
+impl std::fmt::Display for LoopExit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::HostTerminal(error) => write!(f, "host terminal error: {error}"),
+            Self::ServerShutdown { reason } => write!(f, "{reason}"),
+            Self::ConnectionLost(error) => write!(f, "lost connection to server: {error}"),
+            Self::Panicked => write!(f, "internal error: the client panicked"),
         }
     }
 }

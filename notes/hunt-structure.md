@@ -424,54 +424,6 @@ the unreachable error. `apply_scroll` round-trips modifiers through `u8`, and
 
 ## Client core
 
-## STR-039 - `lib.rs` is the loop, the launch, the finalization and the dispatcher
-
-About 1300 production lines: `run_launched_client` (connect, handshake, panic
-installation, terminal setup, runtime, finalization, exit classification),
-`run_client_loop` (twelve arguments behind a clippy `expect`), `ClientLoop::new`
-(ten arguments) and `handle_server_message` (about 320 lines). `ClientLoop`
-handlers destructure `self` in every method because the move's state (`choice`)
-lives in `ClientState` while the registry and command lanes live in
-`ClientLoop`. Suggested: `launch.rs` (ordered launch phases returning one
-`Launched` value, plus finalization; `ClientLoopConfig` goes, it is created with
-placeholder fields overwritten after terminal setup); an `endpoints` owner
-(registry, supervisors, command lanes, choice, view serial and request-id
-allocator, implementing the move protocol now spread across `choice.rs`,
-`preparing.rs`, `view.rs`, `registry.rs`, `reconcile.rs` and `lib.rs`);
-`dispatch.rs` with the presentation gate as its first step; and a presenter owned
-by `ClientState`. `shell_runtime.rs` is not the runtime of the shell but the
-loop's glue (request cancellation, input routing, action dispatch, the waiting
-notice, `view_geometry`, `resize_views`, keyboard sync, host effect clearing, the
-disconnect notice table, snapshot installation, outcome finishing); it,
-`transport.rs`, `reconcile.rs`, `events.rs` and `clipboard_forwarding.rs` all
-`use super::*` and share `lib.rs`'s namespace. (client-core)
-
-## STR-040 - One connection's I/O is split across two modules and assembled two ways
-
-The writer (`endpoint/writer.rs`, `NativeEndpointTransport`) and the reader
-(`transport.rs` at the crate root, `server_reader_thread`) live apart; the reader
-is spawned from the writer's internals (`stop_handle()`, `read_activity()`); the
-surface decoder is created at two sites; launch assembles a connection with
-`start_endpoint_transport` while the supervisor's `establish` builds the writer on
-the attempt thread and `EndpointSupervisorEvent::Connected` carries the raw reader
-stream back for `handle_endpoint_supervisor` to spawn on the loop thread, with its
-own failure branch duplicating the `Status` arm. An
-`EndpointConnectionIo::start(stream, lifetime, endpoint, generation)` built inside
-the attempt gives one assembly path and one place for the reader-spawn failure.
-(client-core)
-
-## STR-041 - `ClientError` serves three roles, and launch validation runs after the terminal is taken
-
-`ClientError` is the launch connect error, the handshake outcome and the loop's
-exit reason; `handshake_error` must handle `HostTerminal`, `EndpointSetup` and
-`Panicked`, which a handshake can never produce, and `run_launched_client`
-classifies the loop's exit by variant. Split into `HandshakeError` (with a
-`class()`), `LoopExit` and launch errors. `EndpointSupervisors::new` returns
-`connector.launch_fatal_setup_error()` inside `run_client_loop`, after raw mode,
-the alternate screen and the stdin and resize threads are up, so a launch-fatal
-configuration problem is found after the terminal was taken; it belongs with the
-other launch checks before `setup_terminal`. (client-core)
-
 ## Client shell
 
 ## STR-042 - `ClientShellState` still owns the endpoint, presentation, mode and copy state
@@ -547,6 +499,17 @@ would check the token, and the `opened_since` orphan guard in `dropped_entry`
   endpoint error banner.
 
 (client-shell)
+
+## STR-039 - The client move protocol has no owner, and ClientLoop is open
+
+`lib.rs` is now launch, loop and dispatch modules with no production glob
+imports. Still open: the endpoint move protocol is spread across
+`endpoint/choice.rs`, `preparing.rs`, `view.rs`, `registry.rs`, `reconcile.rs`
+and `dispatch.rs` with no one owner, and every `ClientLoop` field is
+`pub(crate)` so `reconcile.rs` and `dispatch.rs` can reach in;
+`ClientLoop::new` takes ten positional arguments. (The presenter staying in
+`ClientState` was declined with its reason at the code: host-mode writes and
+pane patches share one blit baseline.) (client-core)
 
 ## Edges
 

@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
-use super::EndpointTransport;
+use crate::endpoint::EndpointTransport;
 use crate::limits::{
     ENDPOINT_IO_POLL_INTERVAL, ENDPOINT_WRITE_TIMEOUT, MAX_BATCH_BYTES, MAX_QUEUED_BATCHES,
     MAX_QUEUED_BYTES,
@@ -29,7 +29,7 @@ pub(crate) struct EndpointReadObservation {
 }
 
 impl EndpointReadActivity {
-    pub(super) fn new(started_at: Instant) -> Self {
+    pub(crate) fn new(started_at: Instant) -> Self {
         Self {
             started_at,
             stamp: AtomicU64::new(0),
@@ -389,11 +389,11 @@ mod tests {
             })();
             done.send(result).expect("test precondition");
         });
-        let mut registry = super::super::EndpointRegistry::new(transport, 1);
+        let mut registry = crate::endpoint::EndpointRegistry::new(transport, 1);
         let input = paste("queued input".to_owned());
         assert_eq!(
-            registry.send_to(&super::super::ClientEndpointId::Local, &input),
-            super::super::EndpointSendOutcome::Sent
+            registry.send_to(&crate::endpoint::ClientEndpointId::Local, &input),
+            crate::endpoint::EndpointSendOutcome::Sent
         );
         drop(registry);
         let (first, second) = received

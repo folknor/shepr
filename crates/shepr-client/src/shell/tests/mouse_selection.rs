@@ -1087,7 +1087,7 @@ fn pane_pixel_mouse_preserves_pane_relative_pixel_coordinates() {
     assert_eq!(framed.len(), 1);
     let framed = framed.pop().expect("one framed pixel mouse");
     let outcome = state.handle_host_input(
-        vec![crate::ParsedHostInput {
+        vec![crate::events::ParsedHostInput {
             event: framed.event,
             pixel_mouse: Some(shepr_termio::input::mouse::HostPixels { x, y, geometry }),
         }],

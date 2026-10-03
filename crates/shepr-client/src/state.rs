@@ -1,4 +1,8 @@
-use super::*;
+use crate::errors::LoopExit;
+use crate::loop_config::ClientSettings;
+use crate::{endpoint, shell, terminal_geometry, terminal_setup};
+use shepr_termio::blit as render_ansi;
+use std::io;
 use std::io::Write as _;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -25,6 +29,10 @@ fn merge_palette_colors(
 }
 
 /// State tracking for the thin client.
+///
+/// It holds the host modes and the presentation state together: a host-mode write can
+/// invalidate the same blit baseline as a pane patch or a shell composition, and the dirty
+/// and pending-patch transitions here coordinate all three.
 pub(super) struct ClientState {
     /// Stateful semantic-frame encoder used when the server sends FrameData.
     pub(super) blit_encoder: render_ansi::BlitEncoder,
@@ -97,7 +105,7 @@ impl ClientState {
         &mut self,
         operation: &'static str,
         result: io::Result<()>,
-    ) -> Result<(), ClientError> {
+    ) -> Result<(), LoopExit> {
         let action = self.mode_write_failure.observe(
             HostWritePurpose::TerminalMode,
             operation,
@@ -108,7 +116,7 @@ impl ClientState {
             return Ok(());
         };
         match action {
-            HostWriteAction::Fatal => Err(ClientError::HostTerminal(error)),
+            HostWriteAction::Fatal => Err(LoopExit::HostTerminal(error)),
             HostWriteAction::Retry => {
                 self.retry_host_modes = true;
                 Ok(())
