@@ -51,7 +51,9 @@ enum HookReportKind {
 /// are different answers: a parked one waits for process evidence, a
 /// rejected one is dropped for the logged reason. The API still answers a
 /// hook with success either way, since hooks are fire-and-forget and an
-/// out-of-order or superseded report is routine, not a caller error.
+/// out-of-order or superseded report is routine, not a caller error. The
+/// terminal's ownership keeps the last such outcome itself, so `detect
+/// explain` shows it without this log.
 fn admit_hook_outcome(
     pane_id: shepr_core::layout::PaneId,
     kind: HookReportKind,

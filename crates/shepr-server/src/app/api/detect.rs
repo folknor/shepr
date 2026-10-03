@@ -1,6 +1,7 @@
 use shepr_api::error::{ApiError, ApiErrorCode, ApiResult};
 use shepr_api::schema::{
     DetectionCapture, DetectionExplanation, PaneTarget, ResponseResult, ScreenDetectionSkipReason,
+    UnappliedHookReport,
 };
 
 use crate::app::App;
@@ -51,6 +52,7 @@ impl App {
     /// the live detector reads. A pane whose effective state comes from hook
     /// authority skips screen detection unless a visible blocker overrides the
     /// hook report, so it answers with that source instead of rule evidence.
+    /// Either answer carries the pane's last parked or rejected hook report.
     pub(super) fn handle_detect_explain(&mut self, target: &PaneTarget) -> ApiResult {
         let (ws_idx, pane_id) = self.json_pane(&target.pane_id)?;
         let Some(terminal) = self
@@ -68,6 +70,11 @@ impl App {
         let Some(pane) = self.lookup_runtime(ws_idx, pane_id) else {
             return Err(self.detect_terminal_unavailable_error(ws_idx, pane_id, &target.pane_id));
         };
+        let now = self.clock.now;
+        let last_unapplied_hook_report = terminal
+            .ownership()
+            .last_unapplied_hook_report()
+            .map(|report| UnappliedHookReport::from_ownership(report, now));
         let owner = terminal.ownership().state_owner();
         if let Some(authority) = terminal.ownership().hook_authority().filter(|_| {
             matches!(
@@ -87,7 +94,8 @@ impl App {
                 terminal.ownership().state(),
                 authority.origin.source().as_str(),
                 skip_reason,
-            );
+            )
+            .with_last_unapplied_hook_report(last_unapplied_hook_report);
             return success(ResponseResult::DetectExplain { explain });
         }
         let Some(agent) = terminal
@@ -114,7 +122,8 @@ impl App {
             },
         );
         success(ResponseResult::DetectExplain {
-            explain: explain.into(),
+            explain: DetectionExplanation::from(explain)
+                .with_last_unapplied_hook_report(last_unapplied_hook_report),
         })
     }
 
@@ -370,6 +379,89 @@ mod tests {
                 "{response}"
             );
         }
+    }
+
+    fn report_codex_state(
+        app: &mut App,
+        pane_id: shepr_core::layout::PaneId,
+        session_ref: Option<shepr_agent::resume::AgentSessionRef>,
+        seq: u64,
+    ) {
+        app.state
+            .handle_state_event(crate::app::events::StateEvent::HookStateReported {
+                pane_id,
+                sample: shepr_detect::ownership::HookClockSample {
+                    monotonic: std::time::Instant::now(),
+                    wall: std::time::SystemTime::now(),
+                },
+                origin: shepr_agent::ReportOrigin::parse("shepr:codex", "codex")
+                    .expect("test origin"),
+                state: AgentState::Working,
+                seq: Some(seq),
+                session_ref,
+            });
+    }
+
+    #[tokio::test]
+    async fn explain_shows_the_last_rejected_hook_report_until_one_applies() {
+        let (mut app, pane_id) = app_with_pane("detect-explain-rejected");
+        let terminal_id = app.state.workspaces[0].panes()[&pane_id]
+            .attached_terminal_id
+            .clone();
+        app.state
+            .terminals
+            .get_mut(&terminal_id)
+            .expect("test precondition")
+            .set_detected_state(Some(Agent::Codex), AgentState::Idle);
+        app.terminal_runtimes.insert(
+            terminal_id,
+            shepr_mux::pane::PaneRuntime::test_with_screen_bytes(80, 24, b""),
+        );
+        let pane = app
+            .public_pane_id(0, pane_id)
+            .expect("test precondition")
+            .to_string();
+
+        // Codex state reports must name their session; this one does not.
+        report_codex_state(&mut app, pane_id, None, 7);
+        let response = request(
+            &mut app,
+            "explain_rejected",
+            AppMethod::DetectExplain(PaneTarget {
+                pane_id: pane.clone(),
+            }),
+        );
+        let explain = &response["result"]["explain"];
+        assert_eq!(explain["agent"], "codex", "{response}");
+        let report = &explain["last_unapplied_hook_report"];
+        assert_eq!(report["hook_source"], "shepr:codex", "{response}");
+        assert_eq!(report["seq"], 7, "{response}");
+        assert_eq!(
+            report["report"],
+            serde_json::json!({ "kind": "state", "state": "working" }),
+            "{response}"
+        );
+        assert_eq!(
+            report["outcome"],
+            serde_json::json!({ "kind": "rejected", "reason": "missing_session" }),
+            "{response}"
+        );
+
+        report_codex_state(
+            &mut app,
+            pane_id,
+            shepr_agent::resume::AgentSessionRef::id("codex-session"),
+            8,
+        );
+        let response = request(
+            &mut app,
+            "explain_applied",
+            AppMethod::DetectExplain(PaneTarget { pane_id: pane }),
+        );
+        assert!(
+            response["result"]["explain"]["last_unapplied_hook_report"].is_null(),
+            "{response}"
+        );
     }
 
     #[tokio::test]

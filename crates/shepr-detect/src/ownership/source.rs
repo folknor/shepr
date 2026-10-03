@@ -60,6 +60,7 @@ impl AgentOwnership {
             }
             HookSourceEffects::ProcessObserved(Some((session, pending))) => {
                 self.checkpoint_candidate = None;
+                self.resolve_parked_hook_report(session.source());
                 self.persisted_agent_session = Some(session);
                 if let Some(pending) = pending {
                     self.hook_authority = Some(pending.authority);
@@ -92,7 +93,7 @@ impl AgentOwnership {
                 seq,
                 sample,
             } => self
-                .transition_report(origin, state, session_ref, seq, sample)
+                .admit_state_report(origin, state, session_ref, seq, sample)
                 .into_mutation(),
             HookEvent::Start {
                 origin,
@@ -101,7 +102,7 @@ impl AgentOwnership {
                 session_start_source,
                 sample,
             } => self
-                .transition_start(&origin, session_ref, seq, session_start_source, sample)
+                .admit_session_start(&origin, session_ref, seq, session_start_source, sample)
                 .into_mutation(),
             HookEvent::Detection {
                 agent,

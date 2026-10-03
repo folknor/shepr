@@ -3654,3 +3654,134 @@ fn hook_ledger_uses_injected_clock_pair_and_tolerates_small_wall_reversal() {
         }
     ));
 }
+
+fn codex_origin() -> ReportOrigin {
+    ReportOrigin::parse("shepr:codex", "codex").expect("test origin")
+}
+
+#[test]
+fn a_rejected_report_is_kept_until_a_later_one_from_its_source_applies() {
+    let mut terminal = test_terminal();
+    let t0 = Instant::now();
+    let sample = HookClockSample::from(t0);
+
+    // Codex state reports must name their session.
+    let outcome =
+        terminal.report_hook_outcome_at(codex_origin(), AgentState::Working, None, Some(3), sample);
+    assert_eq!(
+        outcome,
+        HookOutcome::Rejected(HookRejection::MissingSession)
+    );
+    assert_eq!(
+        terminal.last_unapplied_hook_report(),
+        Some(&UnappliedHookReport {
+            origin: codex_origin(),
+            kind: HookReportKind::State(AgentState::Working),
+            seq: Some(3),
+            session_ref: None,
+            received: sample,
+            disposition: UnappliedHookDisposition::Rejected(HookRejection::MissingSession),
+        })
+    );
+
+    let session = shepr_agent::resume::AgentSessionRef::id("codex-session");
+    let applied = terminal.report_hook_outcome_at(
+        codex_origin(),
+        AgentState::Working,
+        session.clone(),
+        Some(5),
+        HookClockSample::from(t0 + Duration::from_millis(1)),
+    );
+    assert!(matches!(applied, HookOutcome::Applied(_)), "{applied:?}");
+    assert_eq!(terminal.last_unapplied_hook_report(), None);
+
+    // A straggler behind the applied sequence is recorded with what it was.
+    let straggler_sample = HookClockSample::from(t0 + Duration::from_millis(2));
+    let straggler = terminal.report_hook_outcome_at(
+        codex_origin(),
+        AgentState::Idle,
+        session.clone(),
+        Some(4),
+        straggler_sample,
+    );
+    assert_eq!(straggler, HookOutcome::Rejected(HookRejection::OutOfOrder));
+    let last = terminal
+        .last_unapplied_hook_report()
+        .expect("the straggler is recorded");
+    assert_eq!(last.kind, HookReportKind::State(AgentState::Idle));
+    assert_eq!(last.seq, Some(4));
+    assert_eq!(last.session_ref, session);
+    assert_eq!(last.received, straggler_sample);
+    assert_eq!(
+        last.disposition,
+        UnappliedHookDisposition::Rejected(HookRejection::OutOfOrder)
+    );
+}
+
+#[test]
+fn an_applied_report_from_another_source_keeps_the_rejection() {
+    let mut terminal = test_terminal();
+    let t0 = Instant::now();
+    terminal.report_hook_outcome_at(
+        codex_origin(),
+        AgentState::Working,
+        None,
+        Some(1),
+        HookClockSample::from(t0),
+    );
+    let session_path = test_session_path("other-source.jsonl");
+    terminal.set_detected_state(Some(Agent::Pi), AgentState::Idle);
+    let pi = ReportOrigin::parse("shepr:pi", "pi").expect("test origin");
+    let outcome = terminal.report_session_start_outcome_at(
+        &pi,
+        shepr_agent::resume::AgentSessionRef::path(session_path),
+        Some(1),
+        ReportedSessionStart::Known(AgentSessionStartSource::Startup),
+        t0 + Duration::from_millis(1),
+    );
+    assert!(matches!(outcome, HookOutcome::Applied(_)), "{outcome:?}");
+    assert_eq!(
+        terminal
+            .last_unapplied_hook_report()
+            .map(|last| last.disposition),
+        Some(UnappliedHookDisposition::Rejected(
+            HookRejection::MissingSession
+        ))
+    );
+}
+
+#[test]
+fn a_parked_start_is_recorded_until_process_evidence_promotes_it() {
+    let mut terminal = test_terminal();
+    let t0 = Instant::now();
+    let kimi = ReportOrigin::parse("shepr:kimi", "kimi").expect("test origin");
+    let start = ReportedSessionStart::Known(AgentSessionStartSource::Startup);
+
+    let outcome = terminal.report_session_start_outcome_at(
+        &kimi,
+        shepr_agent::resume::AgentSessionRef::id("kimi-root"),
+        Some(10),
+        start,
+        t0,
+    );
+    assert_eq!(outcome, HookOutcome::Parked);
+    let parked = terminal
+        .last_unapplied_hook_report()
+        .expect("the parked start is recorded");
+    assert_eq!(parked.kind, HookReportKind::SessionStart(start));
+    assert_eq!(parked.disposition, UnappliedHookDisposition::Parked);
+    assert!(terminal.persisted_agent_session().is_none());
+
+    terminal.set_detected_state_with_screen_signals_at(
+        Some(Agent::Kimi),
+        AgentState::Idle,
+        false,
+        false,
+        t0 + Duration::from_millis(1),
+    );
+    assert!(
+        terminal.persisted_agent_session().is_some(),
+        "process evidence promotes the parked start"
+    );
+    assert_eq!(terminal.last_unapplied_hook_report(), None);
+}

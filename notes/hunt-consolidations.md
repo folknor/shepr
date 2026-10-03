@@ -54,7 +54,10 @@ Still open: the client still hashes a topology signature and sends child lists,
 and the server reverse-maps them (`split_path_for_children` in shepr-core
 `layout.rs`); a server-minted layout epoch would let the client send
 `(workspace, path, epoch, ratio)`, which needs protocol, server API and
-workspace topology changes. (client-shell, server-serving)
+workspace topology changes. It also carries the half of BUG-061 the pane tree
+does not close: the drag resolves its path with `split_path_for_children` per
+event. `notes/spec-data-model.md` landing 1 adds the `SplitPath` type this
+would address by. (client-shell, server-serving)
 
 ## CON-015 - What does a pane's exit mean, and does it get a checkpoint?
 
@@ -72,36 +75,60 @@ Signalled(sig)}`. (foundation)
 
 ## Terminal emulation and input
 
-## CON-022 - Does a mouse report use pixels or cells, and is pixel mouse eligible?
+## CON-022 - Is pixel mouse eligible, and who decides?
 
-Client `mouse.rs` sends pixels when `hit.sgr_pixel_mouse && hit.pixel_width >
-0`; server `pane_input::downgrade_ineligible_pixel_mouse` downgrades unless the
-client geometry equals the runtime grid and pixel extent;
-`apply_client_pane_input_event` maps `Pixels` only if
-`runtime.sgr_pixel_mouse_enabled()`; mux `encode_mouse_event` maps cells to
-pixels through `cell_pitch` under 1016 and back otherwise; the server's connect
-and resize arms decide `pixel_mouse && observed.is_known()`; the
-`ClientShellPaneInput` arm uses `client.pixel_mouse &&
-outbox.told_sgr_pixels()` (the outbox's dedupe memo as an authority);
-`stream_host_mouse_capture_mode` uses `client.pixel_mouse &&
-runtime.sgr_pixel_mouse_enabled()`; protocol's `TerminalGeometry` and
-`ProtocolCellSize` decide again. They agree only because each re-checks the same
-mode bit, each under its own lock. Owner: pixel mode as one value on the connection,
-recomputed when its inputs change, and one function next to the mouse protocol
-type that takes the pane's pixel extent and the report. Reported by terminal and
-server-serving.
+The connection carries one `pixel_mouse` bool (`TerminalGeometry::exact()`,
+recomputed on connect and on `ShellResize`). Still open, the remaining
+deciders: the client's `effective_sgr_pixel_mouse` (`terminal_setup.rs`) and
+`pane_mouse_position` (hit extent above zero); the server's `ShellPaneInput`
+arm adds `client.outbox.told_sgr_pixels()`, the outbox dedupe memo, as an
+authority (and `forget_presentation()` clears it, downgrading until the next
+`tell_mouse_capture`); `stream_host_mouse_capture_mode` ANDs
+`client.pixel_mouse` with the focused runtime's mode and ignores the pane's
+extent; `pane_input::downgrade_ineligible_pixel_mouse` is the real gate (grid
+and `PanePixelSize` equal, coordinates in range); mux `encode_mouse_event`
+maps cells to pixels through its own `cell_pitch`. The pane mode bit is also
+mirrored three ways (`PaneTerminal::sgr_pixel_mouse_enabled`, the `PaneRead`
+field copied into `PaneSurfacePane.sgr_pixel_mouse`, and
+`InputModes::sgr_pixel_mouse_enabled`). The result is safe but wasteful: a
+client whose cell differs from the geometry-source client's is told to capture
+pixels, sends them, and is always downgraded to cells. Owner: eligibility as
+one function next to the mouse protocol type, taking the connection bool, the
+pane extent and the report, used by the capture stream (per client and pane),
+the admission gate and the encoder; the memo stops being an authority. Shares
+its fix with CON-023. The spec found the mode bit read four ways (the dirty
+snapshot too, and `InputModes` holds it twice), and that surface activation
+also clears the outbox memo and deliberately does not re-tell until the
+replay, so pixel reports in that window are all downgraded. Spec:
+`notes/spec-pixel-geometry.md` landings 2 and 3 (every client is published the
+pane's one extent and captures pixels when its host cell is exact, the focused
+pane is in 1016 with a known extent, and it shows the pane at the PTY's grid).
+(terminal, server-serving)
 
 ## CON-023 - How big is a pane in pixels?
 
-vt `PaneGeometry::text_area_px()` (drives `CSI 14 t`, the 2048 report and
-`width_px()/height_px()`); server `client_shell.rs` `inner_rect.width *
-HostCellSize.width_px` with `(0, 0)` as unknown, published as
-`PaneSurfacePane.pixel_width/height`; mux `cell_pitch` (`width_px() / cols`, at
-least 1). They agree only while the pane's cell equals the client's and the grid
-equals `inner_rect`; with several clients of different cell sizes, the server
-publishes per-client extents while the child was told the geometry-source
-client's. Owner: `PaneGeometry`, with the wire carrying `Option<PixelExtent>`
-from it. (terminal)
+`shepr-core` `PaneGeometry::text_area_px()` (clamped to `u16`; drives the PTY
+winsize, `CSI 14 t`, the 2048 report, vt `width_px()/height_px()` and mux
+`PaneRuntime::pixel_size()` as `PanePixelSize`); server
+`pane_surface.rs::render_pane_surface` computes `inner_rect` times the
+rendering client's `HostCellSize`, unclamped, with `(0, 0)` as unknown,
+published as `PaneSurfacePane.pixel_width/height`; mux `encode_mouse_event`'s
+`cell_pitch` divides `width_px()` by cols again. With several clients of
+different cell sizes the child is told the geometry-source client's extent
+while each client is published its own, so the admission gate has to reject
+the mismatch; an oversized pane compares unequal through the clamp and always
+downgrades. Owner: `PaneGeometry` publishes the pane's extent once
+(`Option<PanePixelSize>`, clamped one way) and the wire carries that rather
+than a per-client product; the mux pitch derives from the same value. Spec:
+`notes/spec-pixel-geometry.md` (`PaneGeometry::pixel_extent()`, landing 3).
+(terminal, server-serving)
+
+## CON-114 - Pane surface patch admission has two rules
+
+The shared admission accepts any pane metadata, while the client adds a
+stricter `pane_geometry_matches` (`shell/presentation/surfaces.rs`). Spec:
+`notes/spec-pixel-geometry.md` landing 3 narrows the client's check so a patch
+carrying an extent change is not refused. (spec E)
 
 ## CON-035 - Where does an OSC end?
 
@@ -120,7 +147,7 @@ correct; the terminal hunter asks only that the two be named apart
 Separately, `PaneTerminal::render_into` and `collect_dirty_patch_snapshot`
 return early while mode 2026 is set, and the server checks
 `synchronized_output_active()` or `synchronized_output_state()` before calling
-them (`ui/surface.rs`, `retained_surface.rs`, `client_shell.rs`): a deliberate
+them (`ui/surface.rs`, `retained_surface.rs`, `pane_surface.rs`): a deliberate
 double check today because `render_into` returning `()` cannot say whether it
 drew. Owner: a typed draw result (`Drawn | Deferred | Unreadable`) read once under
 one lock. Reported by terminal and mux-panes.
@@ -189,15 +216,29 @@ types would enforce it. (mux-state, server-app, server-serving)
 pane to terminal index. Still open: `find_pane` in
 `crates/shepr-server/src/app/ids.rs` walks workspaces for the position and
 `PaneState`, and attachment is recorded both on the workspace pane and in the
-index (the reason the index alone cannot answer is at the code). (server-app,
-mux-panes)
+index (the reason the index alone cannot answer is at the code). Spec:
+`notes/spec-data-model.md` landing 4 deletes the index (records own their
+terminals) and keeps lookup by pane as a deliberate walk, one hash probe per
+workspace. (server-app, mux-panes)
 
-## CON-076 - Two delivery paths still resolve the viewed workspace themselves
+## CON-076 - Several render and delivery steps still resolve the viewed workspace themselves
 
-Both render paths use one `projection_due` rule and a `ViewedWorkspace`
-resolved once per client. Still open: delivery preflight and shared-surface
-counting in `crates/shepr-server/src/server/headless/render.rs` resolve the
-workspace separately. (server-serving)
+Both render paths use one `projection_due` rule and `ViewedWorkspace`. Still
+open: within one pass, `surface_deliverable`, the shared-surface key counting
+(`pane_surface_render_key`) and `render_client_full` in
+`crates/shepr-server/src/server/headless/render.rs` each resolve the client's
+viewed workspace again (`shell_target_for_client` or
+`ViewedWorkspace::for_location`), as do `sync_immediate_pty_sources` and
+`any_shell_surface_contains_pane`, each through a linear `workspace_index`
+scan. Geometry settlement also resolves every client's view once per
+workspace. Resolving once per client per pass and passing the view down removes
+the repeats. Spec: `notes/spec-app-loop.md` (`SurfaceTarget`). (server-serving)
+
+## CON-113 - Whether this boot persists is recorded three times
+
+`AppPolicy`, the saver's `SavePolicy` and `HostShutdownFreeze::persist_session`
+each hold it, kept in step by hand. Spec: `notes/spec-app-loop.md` deletes
+`AppPolicy` and leaves `SavePolicy` the one record. (spec B)
 
 ## Persistence and session saves
 

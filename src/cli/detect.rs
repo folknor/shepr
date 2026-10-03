@@ -8,7 +8,8 @@ use clap::ArgMatches;
 
 use shepr_api::schema::{
     DetectionCapture, DetectionExplanation, DetectionStateSource, ErrorBody, ErrorResponse, Method,
-    PaneTarget, Request, ResponseResult, SuccessResponse,
+    PaneTarget, Request, ResponseResult, SuccessResponse, UnappliedHookOutcome,
+    UnappliedHookReport, UnappliedHookReportKind,
 };
 
 use super::matches::{try_flag, try_string};
@@ -157,6 +158,10 @@ fn print_explain_output(
     Ok(())
 }
 
+#[expect(
+    clippy::large_enum_variant,
+    reason = "one short-lived value per CLI invocation, destructured by value in both callers"
+)]
 #[derive(serde::Deserialize)]
 #[serde(untagged)]
 enum DetectResponse {
@@ -228,6 +233,36 @@ pub(super) fn explain_file(
     .into())
 }
 
+/// One line saying what became of the report, which report it was and how
+/// long ago the server admitted it.
+fn unapplied_hook_report_text(report: &UnappliedHookReport) -> String {
+    let outcome = match report.outcome {
+        UnappliedHookOutcome::Parked => "parked until process evidence".to_owned(),
+        UnappliedHookOutcome::Rejected { reason } => format!("rejected ({reason})"),
+    };
+    let kind = match report.report {
+        UnappliedHookReportKind::State { state } => format!("state report ({state})"),
+        UnappliedHookReportKind::SessionStart {
+            start_source: Some(source),
+        } => format!("session start ({source})"),
+        UnappliedHookReportKind::SessionStart { start_source: None } => "session start".to_owned(),
+    };
+    let seq = report
+        .seq
+        .map_or_else(String::new, |seq| format!(" seq={seq}"));
+    let session = report
+        .session_ref
+        .as_ref()
+        .map_or_else(String::new, |session_ref| {
+            format!(" session={}", session_ref.value_str())
+        });
+    let age = std::time::Duration::from_millis(report.age_ms).as_secs_f64();
+    format!(
+        "{outcome}: {kind} from {}{seq}{session}, {age:.1}s ago",
+        report.hook_source
+    )
+}
+
 pub(super) fn print_explain_text(explain: &DetectionExplanation, verbose: bool) {
     println!("agent: {}", explain.agent);
     println!("state: {}", explain.state);
@@ -257,6 +292,12 @@ pub(super) fn print_explain_text(explain: &DetectionExplanation, verbose: bool) 
         &explain.skipped_update_reason
     {
         println!("skipped_update_reason: matched_rule:{rule_id}");
+    }
+    if let Some(report) = &explain.last_unapplied_hook_report {
+        println!(
+            "last_unapplied_hook_report: {}",
+            unapplied_hook_report_text(report)
+        );
     }
     if !verbose {
         return;
@@ -443,6 +484,37 @@ mod tests {
         let state = fields.remove("state").expect("state field");
         fields.insert("renamed_state".into(), state);
         assert!(decode_response(response).is_err());
+    }
+
+    #[test]
+    fn unapplied_hook_reports_render_their_outcome_report_and_age() {
+        let mut report: UnappliedHookReport = serde_json::from_value(serde_json::json!({
+            "hook_source": "shepr:codex",
+            "agent": "codex",
+            "report": { "kind": "state", "state": "idle" },
+            "seq": 4,
+            "session_ref": { "kind": "id", "value": "codex-session" },
+            "received_unix_ms": 1_700_000_000_000_u64,
+            "age_ms": 3_240,
+            "outcome": { "kind": "rejected", "reason": "out_of_order" },
+        }))
+        .expect("decode report");
+        assert_eq!(
+            unapplied_hook_report_text(&report),
+            "rejected (out_of_order): state report (idle) from shepr:codex seq=4 \
+             session=codex-session, 3.2s ago"
+        );
+
+        report.report = UnappliedHookReportKind::SessionStart {
+            start_source: Some(shepr_api::schema::ReportedStartSource::Startup),
+        };
+        report.seq = None;
+        report.session_ref = None;
+        report.outcome = UnappliedHookOutcome::Parked;
+        assert_eq!(
+            unapplied_hook_report_text(&report),
+            "parked until process evidence: session start (startup) from shepr:codex, 3.2s ago"
+        );
     }
 
     #[test]

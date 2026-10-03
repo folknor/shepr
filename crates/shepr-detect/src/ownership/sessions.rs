@@ -24,7 +24,13 @@ impl AgentOwnership {
         session_start_source: ReportedSessionStart,
         sample: impl Into<HookClockSample>,
     ) -> HookOutcome {
-        let outcome = self.transition_start(origin, session_ref, seq, session_start_source, sample);
+        let outcome = self.admit_session_start(
+            origin,
+            session_ref,
+            seq,
+            session_start_source,
+            sample.into(),
+        );
         self.check_hook_invariants();
         outcome
     }

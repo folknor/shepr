@@ -53,7 +53,10 @@ pub enum HookOutcome {
     Rejected(HookRejection),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Why a hook report was dropped. The snake_case spelling is the detect
+/// explain payload's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum HookRejection {
     MissingSession,
     InvalidSession,
@@ -68,6 +71,58 @@ pub enum HookRejection {
     MissingSequence,
     OutOfOrder,
     ProcessRequired,
+}
+
+impl std::fmt::Display for HookRejection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::MissingSession => "missing_session",
+            Self::InvalidSession => "invalid_session",
+            Self::ReplacedSession => "replaced_session",
+            Self::ProcessExited => "process_exited",
+            Self::DetectedAgentConflict => "detected_agent_conflict",
+            Self::OwnerConflict => "owner_conflict",
+            Self::LifecycleGate => "lifecycle_gate",
+            Self::RetiredSession => "retired_session",
+            Self::CrossTalk => "cross_talk",
+            Self::UnrecognizedStart => "unrecognized_start",
+            Self::MissingSequence => "missing_sequence",
+            Self::OutOfOrder => "out_of_order",
+            Self::ProcessRequired => "process_required",
+        })
+    }
+}
+
+/// Which hook report an admission outcome answered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HookReportKind {
+    /// A state report naming `AgentState`.
+    State(AgentState),
+    /// A session start report, with the start source it carried.
+    SessionStart(ReportedSessionStart),
+}
+
+/// What became of a hook report that did not apply.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnappliedHookDisposition {
+    /// Held until process evidence for its agent arrives.
+    Parked,
+    Rejected(HookRejection),
+}
+
+/// The pane's most recent hook report that was parked or rejected, kept so
+/// detect explain can say why a report changed nothing. A later applied
+/// report from the same source clears it, as does process evidence promoting
+/// a parked report of that source; a later unapplied report replaces it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnappliedHookReport {
+    pub origin: ReportOrigin,
+    pub kind: HookReportKind,
+    pub seq: Option<u64>,
+    pub session_ref: Option<shepr_agent::resume::AgentSessionRef>,
+    /// The server's clock pair when the report was admitted.
+    pub received: HookClockSample,
+    pub disposition: UnappliedHookDisposition,
 }
 
 impl HookOutcome {
@@ -147,6 +202,9 @@ pub struct AgentOwnership {
     last_agent_state_change_seq: Option<u64>,
     process_evidence: AgentProcessEvidence,
     checkpoint_candidate: Option<CheckpointCandidate>,
+    /// Diagnostic only: the last report that changed nothing and why. No
+    /// arbitration reads it.
+    last_unapplied_hook_report: Option<UnappliedHookReport>,
     /// The pane's ending was applied (`transition_pane_exit`). Detector
     /// observations still queued for it change nothing after that: the
     /// child can outlive a failed reader, and a late release would clear the

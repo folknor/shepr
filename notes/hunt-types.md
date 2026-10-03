@@ -78,16 +78,6 @@ returns are raw `u64`; and the wire fields `content_revision` and
 `state_change_seq` are `u64`. (contracts, client-core, client-shell,
 server-serving)
 
-## TYP-024 - The server collapses typed hook outcomes again
-
-`HookOutcome::{Applied, Parked, Rejected}` with typed rejection reasons now
-comes out of the ownership transitions (`crates/shepr-detect/src/ownership/mod.rs`),
-with outcome-preserving entry points in mux `terminal/state/hooks.rs`. Still
-open: server admission does not consume `report_hook_outcome_at` and
-`report_session_start_outcome_at`, so rejection and parking still collapse to
-an unchanged state update; API responses and detect explain say nothing about
-an ignored report. (mux-panes)
-
 ## TYP-026 - AppEvent still carries both transport and reducer roles
 
 Runtimes send a pane-free `RuntimeEvent` through an envelope that cannot be
@@ -111,10 +101,18 @@ Core and protocol geometry fields are private with typed accessors, client
 resize and cell reports carry geometry types, and the server events carry
 `HostGeometry`. Still open: `HostCellSize` (`crates/shepr-term/src/host.rs`)
 and the server connection storage (`clients.rs`) keep zero-valued axes;
-`ClientMouseGeometry`, the pane-surface pixel fields (protocol `input.rs` and
-surfaces) and the vt mouse adapters keep primitive extents; a raw `CellPx` is
-publicly constructible for refusal diagnostics. (foundation, terminal,
-contracts, client-core, server-serving, server-app)
+`ClientMouseGeometry`, the pane-surface pixel fields
+(`PaneSurfacePane.pixel_width/height`), mux `PanePixelSize` (public `u32`
+fields) and the vt mouse adapters keep primitive extents; a raw `CellPx` is
+publicly constructible for refusal diagnostics. The pane pixel extent part
+shares its fix with CON-022 and CON-023. Spec: `notes/spec-pixel-geometry.md`
+landing 1 (`HostCell::{Unknown, Estimated, Exact}` in shepr-core, an
+`Option<PanePixelExtent>` nonzero by type, a bounded `CellPx`, raw reports as a
+separate `CellReport`). Landing 1 also replaces the zero-means-no-cell
+constructors `PaneGeometry::new`, `HostGeometry::new` and
+`TerminalGeometry::new` (about 140 test constructor calls); the owner decided
+to keep that part.
+(foundation, terminal, contracts, client-core, server-serving, server-app)
 
 ## TYP-003 - WorkspacePane still derefs to PaneState with public fields
 
@@ -122,7 +120,9 @@ Pane public numbers are a nonzero `PanePublicNumber`, commit consumes the same
 `PreparedSplit` used for launch, and `PublicPaneId::new` cannot panic. Still
 open: `WorkspacePane` keeps its `Deref` to `PaneState` and public
 `pane_state` and `public_number` fields, and the workspace next-number field
-is public (typed). (mux-state)
+is public (typed). Spec: `notes/spec-data-model.md` landing 3 (a private
+`PaneRecord` with no `Deref` replaces both types; the next number moves into
+`PaneTree`). (mux-state)
 
 ## TYP-004 - App handlers still carry workspace positions as usize
 
@@ -133,7 +133,7 @@ and outcome structs in shepr-server (`pane_info`, `workspace_info`,
 resolve a `WorkspaceId` to a `usize` index and re-check it with `.get(ws_idx)`;
 an `AppState::workspace(&WorkspaceId) -> Option<WorkspaceRef>` would keep the
 id. The distinction is documented in `crates/shepr-server/src/app/state.rs`.
-(contracts, server-app)
+Spec: `notes/spec-data-model.md` landing 4. (contracts, server-app)
 
 ## TYP-002 - `PaneId::raw()` and saved pane keys share `u32`
 
@@ -144,11 +144,10 @@ pane_id.raw()` in tracing fields (mux `pane/runtime.rs`, `teardown.rs`,
 in thread names (`shepr-pty-{}`, `shepr-pane-{}-teardown`), and as snapshot
 keys. The snapshot keys everything by that `u32`
 (`WorkspaceSnapshot::panes: HashMap<u32, PaneSnapshot>`,
-`LayoutSnapshot::Pane(u32)`, `focused`/`root_pane: Option<u32>`,
+`LayoutSnapshot::Pane(u32)`, plain `u32` `focused` and `root_pane`,
 `WorkspaceHistorySnapshot::panes`, `SessionHistory::workspaces:
 Vec<Vec<(u32, HistoryText)>>`, `HistoryStamp::panes`), and workspace positions
-as `usize` (`type PaneKey = (usize, u32)`, the server's
-`PreservedLayout::terminal_ids: HashMap<(usize, u32), TerminalId>`,
+as `usize` (`SavedPaneRef`, the server's `PreservedLayout::terminal_ids`,
 `SessionSnapshot::active: Option<usize>`, `remap_saved_index`). Restore juggles
 `id_map: HashMap<u32, PaneId>`, `reverse_id_map`, `numbers: HashMap<u32,
 usize>` and `public_pane_ids_by_old_raw` in one function.
@@ -162,7 +161,11 @@ tuple; `TileLayout::from_saved(SavedNode, SavedPaneKey) -> (TileLayout, Remap)`
 allocating live ids itself. `raw` then becomes crate-private to `shepr-core`.
 `PaneId` and its process-global allocator live in `shepr_core::layout`, and pty
 imports it from there only for log lines and thread names; an `ids` module would
-read better. Reported by foundation, mux-state and server-app.
+read better. The snapshot half (raw ids as saved keys, restore's id-map
+juggling, `from_saved`'s comment-enforced remapping) closes with
+`notes/spec-data-model.md` landing 3, which saves panes by public number inside
+their layout leaf; the logging and `Display` half stays. Reported by
+foundation, mux-state and server-app.
 
 ## Agent identity and state
 
@@ -401,8 +404,8 @@ mux-state.
   `PaneSurfaceRenderKey = (Option<WorkspaceId>, u16, u16, u32, u32)`, the
   retained layout cache key `(usize, u16, u16)`.
 - `Told.mouse_capture: Option<(bool, bool)>` and `tell_mouse_capture(enabled,
-  sgr_pixels)`: a `MouseCaptureMode`.
-- `downgrade_ineligible_pixel_mouse(.., runtime_pixels: Option<(u32, u32)>)`.
+  sgr_pixels)`: a `MouseCaptureMode` (`HostMouseCapture { Off, Cells, Pixels }`
+  in `notes/spec-pixel-geometry.md` landing 3).
 - `ClientShellState.outer_terminal_focus: Option<bool>` compared against
   `Some(true)` at five sites.
 - `host_terminal_appearance: Option<HostAppearance>` plus
@@ -422,7 +425,8 @@ mux-state.
 - `GitRefreshScheduler`'s `git_refresh_in_flight`,
   `git_refresh_due_after_in_flight` and `git_identity_refresh_requested`, three
   bools for one refresh state.
-- `App::create_default_workspace`'s retry kept as two `Option`s.
+- `App::create_default_workspace`'s retry kept as two `Option`s
+  (`CreationRetry` in `notes/spec-app-loop.md` landing 4).
 - `PaneSurfacePatch.surface_revision` and `PaneSurfaceFrame.surface_revision`
   set to `SurfaceRevision::new(0)` by the producer and overwritten by
   `ClientRenderState`: a draft type without the field.
@@ -431,7 +435,6 @@ mux-state.
 - `completion_backlog` uses `UnboundedSender::strong_count()` as a semaphore.
 - `PaneInputError::{Backpressure(&'static str), Closed(&'static str),
   Other(String)}`, where the label is a closed `InputKind` set.
-- `App::hostname: String` from `hostname().unwrap_or_default()`.
 
 Reported by server-serving and server-app.
 
