@@ -16,6 +16,7 @@ shepr-agent = { path = "../shepr-agent" }
 shepr-config = { path = "../shepr-config" }
 shepr-core = { path = "../shepr-core" }
 shepr-detect = { path = "../shepr-detect" }
+shepr-git = { path = "../shepr-git" }
 shepr-paths = { path = "../shepr-paths" }
 shepr-platform = { path = "../shepr-platform" }
 shepr-protocol = { path = "../shepr-protocol" }
@@ -28,7 +29,7 @@ tokio = { workspace = true, features = ["net"] }
 tracing = { workspace = true }
 
 [dev-dependencies]
-# The symlink-loop test checks the exact Linux errno value.
+# Tests check exact Linux errno values and make a FIFO.
 libc = { workspace = true }
 # Tests parse host key sequences into the keys panes encode.
 shepr-termio = { path = "../shepr-termio" }

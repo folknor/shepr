@@ -36,11 +36,7 @@ pub fn fallback_label_from_cwd(cwd: &Path) -> String {
     shepr_core::workspace_label::workspace_label_from_cwd(cwd, None, home.as_deref())
 }
 
-pub(crate) fn git_worktree_info(cwd: &Path) -> Option<GitWorktreeInfo> {
-    git_worktree_info_with_errors(cwd, &mut Vec::new())
-}
-
-/// Existing mux callers keep their `Option` plus accumulated-error boundary;
+/// Status callers keep their `Option` plus accumulated-error boundary;
 /// this adapter delegates repository classification to the shared discovery.
 pub(super) fn git_worktree_info_with_errors(
     cwd: &Path,
@@ -431,7 +427,7 @@ pub(super) fn git_trimmed_stdout(
     }
 }
 
-/// Runs one Git probe through the mux runner, typing its failure for the
+/// Runs one Git probe through the runner, typing its failure for the
 /// status refresh.
 pub(super) fn run_git_output(cwd: &Path, args: &[&str]) -> Result<Output, GitReadError> {
     use super::GitCommandError;
@@ -642,6 +638,11 @@ pub(super) fn read_ref_oid_for_full_ref(
     }
 }
 
+#[cfg(test)]
+pub(crate) fn git_worktree_info(cwd: &Path) -> Option<GitWorktreeInfo> {
+    git_worktree_info_with_errors(cwd, &mut Vec::new())
+}
+
 /// Inside a Git checkout the label is the checkout root's name; the home
 /// directory is never consulted, so none is resolved.
 #[cfg(test)]
@@ -729,7 +730,7 @@ mod tests {
     use std::path::Path;
 
     use super::*;
-    use crate::git::test_support::{
+    use crate::test_support::{
         add_linked_worktree, git_written_fixture, temp_test_dir, write_git_dir,
     };
 
@@ -1154,7 +1155,7 @@ mod tests {
     fn bare_source_and_linked_checkout_labels_use_each_checkout_root() {
         let _env = shepr_test_support::IsolatedEnv::new();
         let (_, bare, checkout) =
-            crate::git::test_support::create_bare_repo_with_linked_worktree("bare-linked-labels");
+            crate::test_support::create_bare_repo_with_linked_worktree("bare-linked-labels");
 
         let bare_info = git_worktree_info(&bare).expect("test precondition");
         let checkout_info = git_worktree_info(&checkout).expect("test precondition");

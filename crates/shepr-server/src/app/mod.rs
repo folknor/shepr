@@ -272,13 +272,14 @@ impl App {
         // here. The scheduler starts due immediately and discovers every
         // workspace whose resolved cwd differs from its cached identity.
 
+        let git_refresh = git_refresh::GitRefreshScheduler::new(clock.now, event_tx.clone());
         let mut app = Self {
             state,
             clock,
             terminal_runtimes: shepr_mux::pane::PaneRuntimeRegistry::new(),
             event_tx,
             event_rx,
-            git_refresh: git_refresh::GitRefreshScheduler::new(clock.now),
+            git_refresh,
             resume_schedule: resume_schedule::ResumeSchedule::new(
                 PENDING_AGENT_RESUME_THEME_WAIT,
                 config.session().startup_per_agent_delay,
@@ -645,12 +646,18 @@ mod tests {
     }
 
     #[test]
-    fn git_refresh_deadline_is_suppressed_while_in_flight() {
+    fn git_refresh_is_not_due_while_in_flight() {
         let mut app = test_app();
         app.state.test_push_workspace(Workspace::test_new("one"));
         app.git_refresh.git_refresh_in_flight = true;
+        let now = Instant::now();
+        app.start_git_status_refresh_if_due(now);
 
-        assert_eq!(app.git_refresh_deadline(), None);
+        assert_eq!(app.git_refresh.refresh_due_at(), None);
+        // The loop still wakes to check the worker, at a time past `now`.
+        let deadline = app.git_refresh_deadline().expect("lost-refresh check");
+        assert!(deadline > now);
+        assert!(app.git_refresh.git_refresh_in_flight);
     }
 
     #[test]
@@ -659,8 +666,7 @@ mod tests {
         app.git_refresh.git_refresh_in_flight = true;
 
         let changed = app.handle_internal_event_with_view_change(AppEvent::GitStatusRefreshed {
-            results: Vec::new(),
-            cache_updates: Vec::new(),
+            outcome: shepr_git::RefreshOutcome::empty(),
         });
 
         assert!(!changed);
@@ -675,8 +681,7 @@ mod tests {
         app.git_refresh.next_git_remote_status_refresh = previous_refresh;
 
         app.handle_internal_event(AppEvent::GitStatusRefreshed {
-            results: Vec::new(),
-            cache_updates: Vec::new(),
+            outcome: shepr_git::RefreshOutcome::empty(),
         });
 
         assert!(!app.git_refresh.git_refresh_in_flight);
@@ -694,18 +699,22 @@ mod tests {
             .expect("test precondition");
 
         app.handle_internal_event(AppEvent::GitStatusRefreshed {
-            results: vec![shepr_mux::git::WorkspaceGitStatus {
-                workspace_id,
-                resolved_identity_cwd: resolved_identity_cwd.clone(),
-                status_cache_key: shepr_mux::git::GitStatusKey::Checkout(resolved_identity_cwd),
-                auto_label: "one".into(),
-                branch: shepr_mux::git::WorkspaceBranch::Named("render-dirty-test".into()),
-                ahead_behind: Some(shepr_mux::git::AheadBehind {
-                    ahead: 1,
-                    behind: 0,
-                }),
-            }],
-            cache_updates: Vec::new(),
+            outcome: shepr_git::RefreshOutcome {
+                statuses: vec![shepr_mux::git::WorkspaceGitStatus {
+                    owner: workspace_id,
+                    status: shepr_git::GitStatus {
+                        cwd: resolved_identity_cwd.clone(),
+                        key: shepr_git::GitStatusKey::Checkout(resolved_identity_cwd),
+                        label: "one".into(),
+                        branch: shepr_git::GitBranch::Named("render-dirty-test".into()),
+                        ahead_behind: Some(shepr_git::AheadBehind {
+                            ahead: 1,
+                            behind: 0,
+                        }),
+                    },
+                }],
+                new_read_errors: Vec::new(),
+            },
         });
 
         assert!(app.render_dirty.is_pending());

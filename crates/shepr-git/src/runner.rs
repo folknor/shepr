@@ -1,7 +1,7 @@
 //! The one way shepr runs Git: a short read-only probe with a deadline, no
 //! terminal, no prompts and no repository selection inherited from the
-//! caller's environment. Mux Git status and server workspace checkout probes
-//! go through [`run_git`]; what the output means stays with them.
+//! caller's environment. Status, discovery and every other Git probe go
+//! through [`run_git`]; what the output means stays with each caller.
 
 use std::ffi::OsStr;
 use std::io::{self, Read};

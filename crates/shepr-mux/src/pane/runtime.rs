@@ -1948,8 +1948,7 @@ mod tests {
         let pane_id = shepr_test_fixtures::fixed_pane_id(42);
 
         tx.try_send(AppEvent::GitStatusRefreshed {
-            results: Vec::new(),
-            cache_updates: Vec::new(),
+            outcome: shepr_git::RefreshOutcome::empty(),
         })
         .expect("test precondition");
 

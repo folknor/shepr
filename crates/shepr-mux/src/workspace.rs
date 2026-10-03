@@ -1,11 +1,12 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use crate::git::{AheadBehind, WorkspaceBranch, WorkspaceGitStatus, fallback_label_from_cwd};
+use crate::git::{AheadBehind, GitBranch, GitStatus, GitStatusKey};
 use crate::limits::FIRST_WORKSPACE_NUMBER;
 use crate::pane::{PaneRuntimeRegistry, PaneState};
 use crate::terminal::TerminalState;
 use shepr_core::layout::{PaneId, TileLayout};
+use shepr_git::fallback_label_from_cwd;
 use shepr_protocol::{PublicPaneId, TerminalId, WorkspaceId};
 
 /// Whether a pane mutation changed the surface its clients render.
@@ -153,18 +154,18 @@ impl WorkspaceIdAllocator {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum GitIdentity {
     Undiscovered { fallback_label: String },
-    Admitted(WorkspaceGitStatus),
+    Admitted(GitStatus),
 }
 
 impl GitIdentity {
     fn label(&self) -> &str {
         match self {
             Self::Undiscovered { fallback_label } => fallback_label,
-            Self::Admitted(status) => &status.auto_label,
+            Self::Admitted(status) => &status.label,
         }
     }
 
-    fn branch(&self) -> Option<&WorkspaceBranch> {
+    fn branch(&self) -> Option<&GitBranch> {
         match self {
             Self::Admitted(status) => Some(&status.branch),
             Self::Undiscovered { .. } => None,
@@ -320,39 +321,33 @@ impl Workspace {
     }
 
     pub fn matches_identity_cwd(&self, cwd: &Path) -> bool {
-        matches!(&self.git_identity, GitIdentity::Admitted(status)
-            if status.resolved_identity_cwd == cwd)
+        matches!(&self.git_identity, GitIdentity::Admitted(status) if status.cwd == cwd)
     }
 
-    pub fn git_status_key_for_cwd(&self, cwd: &Path) -> Option<&crate::git::GitStatusKey> {
+    pub fn git_status_key_for_cwd(&self, cwd: &Path) -> Option<&GitStatusKey> {
         match &self.git_identity {
-            GitIdentity::Admitted(status) if self.matches_identity_cwd(cwd) => {
-                Some(&status.status_cache_key)
-            }
+            GitIdentity::Admitted(status) if self.matches_identity_cwd(cwd) => Some(&status.key),
             GitIdentity::Undiscovered { .. } | GitIdentity::Admitted(_) => None,
         }
     }
 
-    /// Admit a worker result only while its workspace and cwd are current.
-    /// The return value describes visible change, including the custom label
-    /// override, rather than changes to discovery bookkeeping.
-    pub fn admit_git_status(
+    /// Applies a Git status the refresh answered for this workspace, only
+    /// while the cwd it was read for is still `current_cwd`. The caller has
+    /// already matched the answer to this workspace. The return value
+    /// describes visible change, including the custom label override, rather
+    /// than changes to discovery bookkeeping.
+    pub fn apply_git_status(
         &mut self,
-        status: WorkspaceGitStatus,
+        status: GitStatus,
         current_cwd: Option<&Path>,
     ) -> SurfaceChange {
-        if self.id != status.workspace_id
-            || current_cwd != Some(status.resolved_identity_cwd.as_path())
-        {
+        if current_cwd != Some(status.cwd.as_path()) {
             return SurfaceChange::Unchanged;
         }
         let next = GitIdentity::Admitted(status);
         let changed = self.display_label(&self.git_identity) != self.display_label(&next)
-            || self
-                .git_identity
-                .branch()
-                .and_then(WorkspaceBranch::as_deref)
-                != next.branch().and_then(WorkspaceBranch::as_deref)
+            || self.git_identity.branch().and_then(GitBranch::as_deref)
+                != next.branch().and_then(GitBranch::as_deref)
             || self.git_identity.ahead_behind() != next.ahead_behind();
         self.git_identity = next;
         if changed {
@@ -473,13 +468,11 @@ impl Workspace {
             .unwrap_or_else(|| identity.label())
     }
 
-    pub fn branch(&self) -> Option<String> {
-        self.branch_state()
-            .and_then(WorkspaceBranch::as_deref)
-            .map(str::to_owned)
+    pub fn branch(&self) -> Option<&str> {
+        self.branch_state().and_then(GitBranch::as_deref)
     }
 
-    pub fn branch_state(&self) -> Option<&WorkspaceBranch> {
+    pub fn branch_state(&self) -> Option<&GitBranch> {
         self.git_identity.branch()
     }
 
@@ -1082,29 +1075,6 @@ mod tests {
     }
 
     #[test]
-    fn linked_worktree_auto_label_uses_checkout_root() {
-        let _env = shepr_test_support::IsolatedEnv::new();
-        let (_, _, checkout) =
-            crate::git::test_support::create_repo_with_linked_worktree("linked-auto-label");
-
-        let (snapshot, _) = crate::git::git_status_snapshot_for_cwd(&checkout, None);
-        let status = snapshot.into_workspace_status(
-            shepr_protocol::WorkspaceId::from_number(1).expect("id"),
-            checkout.clone(),
-            crate::git::GitStatusKey::Outside(PathBuf::new()),
-        );
-
-        assert_eq!(
-            status.auto_label,
-            checkout
-                .file_name()
-                .expect("test precondition")
-                .to_str()
-                .expect("test precondition")
-        );
-    }
-
-    #[test]
     fn display_name_reads_cached_identity_without_rechecking_filesystem() {
         let root = crate::test_support::ScratchDir::new("label-cache");
         let cwd = root.join("deep/nested");
@@ -1113,17 +1083,13 @@ mod tests {
         let mut ws = Workspace::test_new("ignored");
         ws.custom_name = None;
         ws.identity_cwd = cwd.clone();
-        let status = crate::git::WorkspaceGitStatusSnapshot {
+        let status = shepr_git::GitStatusSnapshot {
             repo_root: Some(PathBuf::from("/cached-repo")),
-            branch: WorkspaceBranch::Detached,
+            branch: GitBranch::Detached,
             ahead_behind: None,
         }
-        .into_workspace_status(
-            ws.id,
-            cwd.clone(),
-            crate::git::GitStatusKey::Checkout(cwd.clone()),
-        );
-        ws.admit_git_status(status, Some(&cwd));
+        .into_status(cwd.clone(), GitStatusKey::Checkout(cwd.clone()));
+        ws.apply_git_status(status, Some(&cwd));
 
         std::fs::remove_dir_all(root).expect("remove cwd after cache admission");
 
@@ -1145,17 +1111,13 @@ mod tests {
         ws.custom_name = None;
         ws.identity_cwd = PathBuf::from("/old/workspace");
         let cwd = PathBuf::from("/new/repo");
-        let status = crate::git::WorkspaceGitStatusSnapshot {
+        let status = shepr_git::GitStatusSnapshot {
             repo_root: Some(cwd.clone()),
-            branch: WorkspaceBranch::Detached,
+            branch: GitBranch::Detached,
             ahead_behind: None,
         }
-        .into_workspace_status(
-            ws.id,
-            cwd.clone(),
-            crate::git::GitStatusKey::Checkout(cwd.clone()),
-        );
-        ws.admit_git_status(status, Some(&cwd));
+        .into_status(cwd.clone(), GitStatusKey::Checkout(cwd.clone()));
+        ws.apply_git_status(status, Some(&cwd));
         let terminals = HashMap::from([(
             terminal_id.clone(),
             TerminalState::new(terminal_id, PathBuf::from("/new/repo/deep")),
@@ -1240,27 +1202,24 @@ mod tests {
         let _env = shepr_test_support::IsolatedEnv::new();
         let mut ws = Workspace::test_new("custom");
         let cwd = ws.identity_cwd.clone();
-        let status = WorkspaceGitStatus {
-            workspace_id: ws.id,
-            resolved_identity_cwd: cwd.clone(),
-            status_cache_key: crate::git::GitStatusKey::Checkout(PathBuf::from("/checkout")),
-            auto_label: "automatic".into(),
-            branch: WorkspaceBranch::Detached,
+        let status = GitStatus {
+            cwd: cwd.clone(),
+            key: GitStatusKey::Checkout(PathBuf::from("/checkout")),
+            label: "automatic".into(),
+            branch: GitBranch::Detached,
             ahead_behind: None,
         };
 
         assert_eq!(
-            ws.admit_git_status(status, Some(&cwd)),
+            ws.apply_git_status(status, Some(&cwd)),
             SurfaceChange::Unchanged
         );
         assert_eq!(ws.display_name(), "custom");
         assert_eq!(
             ws.git_status_key_for_cwd(&cwd),
-            Some(&crate::git::GitStatusKey::Checkout(PathBuf::from(
-                "/checkout"
-            )))
+            Some(&GitStatusKey::Checkout(PathBuf::from("/checkout")))
         );
-        assert_eq!(ws.branch_state(), Some(&WorkspaceBranch::Detached));
+        assert_eq!(ws.branch_state(), Some(&GitBranch::Detached));
         ws.custom_name = None;
         assert_eq!(ws.display_name(), "automatic");
     }
@@ -1270,22 +1229,21 @@ mod tests {
         let _env = shepr_test_support::IsolatedEnv::new();
         let mut ws = Workspace::test_new("custom");
         let cwd = ws.identity_cwd.clone();
-        let mut status = WorkspaceGitStatus {
-            workspace_id: ws.id,
-            resolved_identity_cwd: cwd.clone(),
-            status_cache_key: crate::git::GitStatusKey::Outside(cwd.clone()),
-            auto_label: "automatic".into(),
-            branch: WorkspaceBranch::Detached,
+        let mut status = GitStatus {
+            cwd: cwd.clone(),
+            key: GitStatusKey::Outside(cwd.clone()),
+            label: "automatic".into(),
+            branch: GitBranch::Detached,
             ahead_behind: None,
         };
-        ws.admit_git_status(status.clone(), Some(&cwd));
-        status.branch = WorkspaceBranch::ReadFailed;
+        ws.apply_git_status(status.clone(), Some(&cwd));
+        status.branch = GitBranch::ReadFailed;
 
         assert_eq!(
-            ws.admit_git_status(status, Some(&cwd)),
+            ws.apply_git_status(status, Some(&cwd)),
             SurfaceChange::Unchanged
         );
-        assert_eq!(ws.branch_state(), Some(&WorkspaceBranch::ReadFailed));
+        assert_eq!(ws.branch_state(), Some(&GitBranch::ReadFailed));
         assert_eq!(ws.branch(), None);
     }
 
@@ -1295,15 +1253,14 @@ mod tests {
         ws.custom_name = None;
         ws.identity_cwd = PathBuf::from("/shepr-test/repo/sub");
         let cwd = ws.identity_cwd.clone();
-        let status = WorkspaceGitStatus {
-            workspace_id: ws.id,
-            resolved_identity_cwd: cwd.clone(),
-            status_cache_key: crate::git::GitStatusKey::Outside(cwd.clone()),
-            auto_label: "repo".into(),
-            branch: WorkspaceBranch::Named("main".into()),
+        let status = GitStatus {
+            cwd: cwd.clone(),
+            key: GitStatusKey::Outside(cwd.clone()),
+            label: "repo".into(),
+            branch: GitBranch::Named("main".into()),
             ahead_behind: None,
         };
-        ws.admit_git_status(status, Some(&cwd));
+        ws.apply_git_status(status, Some(&cwd));
 
         ws.mark_identity_undiscovered();
 

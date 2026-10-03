@@ -35,14 +35,14 @@ impl App {
     /// Does the blocking discovery work for `workspace.checkout_root`.
     pub(crate) fn checkout_root_for_worker(
         cwd: &Path,
-    ) -> Result<Option<shepr_protocol::RemotePath>, shepr_mux::git::GitReadError> {
+    ) -> Result<Option<shepr_protocol::RemotePath>, shepr_git::GitReadError> {
         checkout_root(cwd)
     }
 }
 
 fn checkout_root(
     cwd: &Path,
-) -> Result<Option<shepr_protocol::RemotePath>, shepr_mux::git::GitReadError> {
+) -> Result<Option<shepr_protocol::RemotePath>, shepr_git::GitReadError> {
     match std::fs::metadata(cwd) {
         Ok(metadata) if metadata.is_dir() => {}
         Ok(_) => return Ok(None),
@@ -55,14 +55,14 @@ fn checkout_root(
             return Ok(None);
         }
         Err(error) => {
-            return Err(shepr_mux::git::GitReadError::FileRead {
+            return Err(shepr_git::GitReadError::FileRead {
                 path: cwd.to_path_buf(),
-                reason: shepr_mux::git::FileReadReason::from(&error),
+                reason: shepr_git::FileReadReason::from(&error),
             });
         }
     }
     // Admission and sidebar refresh use one discovery policy for this answer.
-    let Some(root) = shepr_mux::git::discover_checkout_root(cwd)? else {
+    let Some(root) = shepr_git::discover_checkout_root(cwd)? else {
         return Ok(None);
     };
     Ok(Some(root.into()))
@@ -111,7 +111,7 @@ mod tests {
         let repo = scratch.path().join("repo");
         let nested = repo.join("a").join("b");
         std::fs::create_dir_all(&nested).expect("test precondition");
-        let init = shepr_mux::git::run_git(&repo, &["init", "--quiet"]).expect("test precondition");
+        let init = shepr_git::run_git(&repo, &["init", "--quiet"]).expect("test precondition");
         assert!(init.status.success(), "git init failed");
 
         let root = checkout_root_of(&nested)

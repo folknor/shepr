@@ -1,29 +1,41 @@
+//! Git status as one subsystem: checkout discovery, the command runner with
+//! its environment and deadline policy, config dependency tracking, the
+//! status computation, the refresh algorithm and the cache it reads and
+//! commits to, and the long-lived worker thread that owns that cache.
+//!
+//! Callers hand the worker targets (a cwd, the checkout key they last
+//! admitted for it, and an owner value of their own) and get back one status
+//! per target with the read errors the refresh saw first. Nothing here knows
+//! what an owner is or how often a refresh is due: associating results with
+//! their owners and scheduling refreshes stay with the caller.
+
 use std::path::PathBuf;
 
 mod config;
 mod discovery;
 mod identity;
+mod limits;
+mod refresh;
 mod runner;
 mod status;
+mod worker;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum RefBackend {
+pub(crate) enum RefBackend {
     Files,
     Reftable,
 }
 
 pub use self::{
     discovery::{discover_checkout_root, fallback_label_from_cwd},
-    status::{
-        AheadBehindState, GitStatusCache, GitStatusCacheEntry, GitStatusCacheView,
-        GitStatusDiscovery, git_status_cache_key, git_status_discovery,
-        git_status_snapshot_for_cwd, git_status_snapshot_for_discovery,
-    },
+    refresh::{GitRefresher, RefreshOutcome, RefreshTarget, RefreshedStatus},
+    worker::GitStatusWorker,
 };
 pub use runner::{GitCommandError, run_git};
 
 /// Discovery distinguishes a checkout from a cwd for which no repository was found.
-/// Undiscovered workspaces have no key until the worker supplies one.
+/// A caller that has admitted no status for a cwd has no key for it, and the
+/// refresh discovers one.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum GitStatusKey {
     Checkout(PathBuf),
@@ -119,7 +131,7 @@ impl std::hash::Hash for GitConfigEnvironmentError {
     }
 }
 
-/// A Git command or repository read failed while deriving workspace information.
+/// A Git command or repository read failed while deriving a cwd's Git status.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum GitReadError {
     /// The Git executable could not be started.
@@ -227,14 +239,14 @@ pub struct AheadBehind {
 
 /// The result of reading HEAD, distinct from whether a repository was found.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum WorkspaceBranch {
+pub enum GitBranch {
     OutsideRepository,
     Detached,
     Named(String),
     ReadFailed,
 }
 
-impl WorkspaceBranch {
+impl GitBranch {
     /// The branch text drawn by consumers that do not display read failures.
     pub fn as_deref(&self) -> Option<&str> {
         match self {
@@ -244,43 +256,39 @@ impl WorkspaceBranch {
     }
 }
 
+/// One cwd's Git answer: the key of the checkout it was read under, the
+/// automatic label derived from the cwd and that checkout, the HEAD outcome
+/// and the ahead/behind counts against the upstream.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WorkspaceGitStatus {
-    pub workspace_id: shepr_protocol::WorkspaceId,
-    pub resolved_identity_cwd: PathBuf,
-    pub status_cache_key: GitStatusKey,
-    pub auto_label: String,
-    pub branch: WorkspaceBranch,
+pub struct GitStatus {
+    pub cwd: PathBuf,
+    pub key: GitStatusKey,
+    pub label: String,
+    pub branch: GitBranch,
     pub ahead_behind: Option<AheadBehind>,
 }
 
+/// A checkout's status before it is bound to one cwd: every cwd in the same
+/// checkout shares it, and each derives its own label from it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct WorkspaceGitStatusSnapshot {
+pub struct GitStatusSnapshot {
     pub repo_root: Option<PathBuf>,
-    pub branch: WorkspaceBranch,
+    pub branch: GitBranch,
     pub ahead_behind: Option<AheadBehind>,
 }
 
-impl WorkspaceGitStatusSnapshot {
-    pub fn into_workspace_status(
-        self,
-        workspace_id: shepr_protocol::WorkspaceId,
-        resolved_identity_cwd: PathBuf,
-        status_cache_key: GitStatusKey,
-    ) -> WorkspaceGitStatus {
-        let auto_label = match self.repo_root.as_deref() {
-            Some(repo_root) => shepr_core::workspace_label::workspace_label_from_cwd(
-                &resolved_identity_cwd,
-                Some(repo_root),
-                None,
-            ),
-            None => fallback_label_from_cwd(&resolved_identity_cwd),
+impl GitStatusSnapshot {
+    pub fn into_status(self, cwd: PathBuf, key: GitStatusKey) -> GitStatus {
+        let label = match self.repo_root.as_deref() {
+            Some(repo_root) => {
+                shepr_core::workspace_label::workspace_label_from_cwd(&cwd, Some(repo_root), None)
+            }
+            None => fallback_label_from_cwd(&cwd),
         };
-        WorkspaceGitStatus {
-            workspace_id,
-            resolved_identity_cwd,
-            status_cache_key,
-            auto_label,
+        GitStatus {
+            cwd,
+            key,
+            label,
             branch: self.branch,
             ahead_behind: self.ahead_behind,
         }
@@ -291,4 +299,4 @@ impl WorkspaceGitStatusSnapshot {
 mod config_tests;
 
 #[cfg(test)]
-pub mod test_support;
+mod test_support;

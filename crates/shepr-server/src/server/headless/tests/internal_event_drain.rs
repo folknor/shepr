@@ -10,8 +10,7 @@ fn headless_internal_event_drain_is_bounded_per_tick() {
             .app
             .event_tx
             .try_send(AppEvent::GitStatusRefreshed {
-                results: Vec::new(),
-                cache_updates: Vec::new(),
+                outcome: shepr_git::RefreshOutcome::empty(),
             })
             .expect("test precondition");
     }
@@ -31,8 +30,7 @@ fn unchanged_git_status_drain_clears_in_flight_without_rendering() {
         .app
         .event_tx
         .try_send(AppEvent::GitStatusRefreshed {
-            results: Vec::new(),
-            cache_updates: Vec::new(),
+            outcome: shepr_git::RefreshOutcome::empty(),
         })
         .expect("test precondition");
 
@@ -85,8 +83,7 @@ async fn full_internal_event_queue_eventually_applies_working_to_idle_transition
             .app
             .event_tx
             .try_send(AppEvent::GitStatusRefreshed {
-                results: Vec::new(),
-                cache_updates: Vec::new(),
+                outcome: shepr_git::RefreshOutcome::empty(),
             })
             .expect("test precondition");
     }

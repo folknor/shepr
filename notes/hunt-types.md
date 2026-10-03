@@ -419,9 +419,9 @@ mux-state.
 - `ShutdownLifecycle { phase, freeze: Option<HostShutdownFreeze> }`, with
   `freeze` meaningful only in some phases and re-checked by
   `frozen_session_policy` and `frozen_warning_generation`.
-- `GitRefreshScheduler`'s `git_refresh_in_flight`, `due_after_in_flight`,
-  `git_identity_refresh_requested` and `last_git_remote_status_refresh = now -
-  the refresh interval` as the due-now sentinel.
+- `GitRefreshScheduler`'s `git_refresh_in_flight`,
+  `git_refresh_due_after_in_flight` and `git_identity_refresh_requested`, three
+  bools for one refresh state.
 - `App::create_default_workspace`'s retry kept as two `Option`s.
 - `PaneSurfacePatch.surface_revision` and `PaneSurfaceFrame.surface_revision`
   set to `SurfaceRevision::new(0)` by the producer and overwritten by

@@ -6,7 +6,7 @@ use std::thread;
 use tokio::sync::mpsc;
 
 pub(super) type CheckoutRootRunner = Arc<
-    dyn Fn(PathBuf) -> Result<Option<shepr_protocol::RemotePath>, shepr_mux::git::GitReadError>
+    dyn Fn(PathBuf) -> Result<Option<shepr_protocol::RemotePath>, shepr_git::GitReadError>
         + Send
         + Sync,
 >;
@@ -17,7 +17,7 @@ pub(super) enum WorkerCompletion {
         boot_id: shepr_protocol::BootId,
         request_id: shepr_protocol::RequestId,
         home: Option<shepr_protocol::RemotePath>,
-        result: Result<Option<shepr_protocol::RemotePath>, shepr_mux::git::GitReadError>,
+        result: Result<Option<shepr_protocol::RemotePath>, shepr_git::GitReadError>,
     },
 }
 

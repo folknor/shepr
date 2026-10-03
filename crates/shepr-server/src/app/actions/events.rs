@@ -82,22 +82,21 @@ fn admit_hook_outcome(
 // ---------------------------------------------------------------------------
 
 impl AppState {
+    /// Applies each refreshed status to the workspace it was asked for. A
+    /// status whose workspace is gone is dropped.
     pub(crate) fn apply_workspace_git_statuses(
         &mut self,
         results: Vec<(WorkspaceGitStatus, Option<std::path::PathBuf>)>,
     ) -> bool {
         let mut changed = false;
         for (result, resolved_identity_cwd) in results {
-            let Some(ws_idx) = self
-                .workspaces
-                .iter()
-                .position(|ws| ws.id == result.workspace_id)
+            let Some(workspace) = self.workspaces.iter_mut().find(|ws| ws.id == result.owner)
             else {
                 continue;
             };
 
-            changed |= self.workspaces[ws_idx]
-                .admit_git_status(result, resolved_identity_cwd.as_deref())
+            changed |= workspace
+                .apply_git_status(result.status, resolved_identity_cwd.as_deref())
                 .is_changed();
         }
         changed

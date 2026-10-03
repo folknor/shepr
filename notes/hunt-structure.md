@@ -111,13 +111,14 @@ idempotence invariant being load-bearing; one per-tick context replaces most of
 `ScreenScanGate`, `ScreenReadRequest`, `ScreenPublishContext`,
 `DetectionScreenReadInput` and `ScreenDetectionPublishInput`. (mux-panes)
 
-## Workspace, Git and persistence
+## Workspace and persistence
 
 ## STR-024 - `Workspace` is a bag of public fields, and its pane tree is kept consistent at runtime
 
-`Workspace` exposes `id`, `custom_name`, `identity_cwd`, the six Git caches and
+`Workspace` exposes `id`, `custom_name`, `identity_cwd` and
 `next_public_pane_number` as `pub` and the tree fields as `pub(crate)` so persist
-can read and fill them; the server writes Git fields directly; there is no place
+can read and fill them (its Git identity is private and changes only through
+`apply_git_status`); there is no place
 its invariants are enforced except `valid_panes` on restore. `layout:
 TileLayout`, `panes: HashMap<PaneId, WorkspacePane>` and `root_pane` must name the
 same panes; `has_consistent_panes` re-proves it (a `Vec` and a `HashSet`) in
@@ -146,32 +147,6 @@ chrome math on core's `Rect` with a small border bitset, in core, and the ratatu
 adapter in the server; mux loses its ratatui dependency except what `pane/`
 needs. (mux-state)
 
-## STR-027 - Git status is one subsystem split across a crate boundary through its cache
-
-mux `git/` has the runner, discovery, config dependency tracking and status; the
-server's `app/git_refresh.rs` has the scheduler, the cache map, deduplication by
-key, pruning, read-error dedup, the worker body and panic containment; the server's
-`app/api/checkout_root.rs` runs its own `git rev-parse`;
-`AppState::apply_workspace_git_statuses` writes the workspace's Git fields. The
-cache travels through `AppEvent::GitStatusRefreshed` and back, and its fields are
-public because the server reads them. Proposal: a `shepr-git` crate (runner,
-discovery, config, status, and a `GitStatusCache` owning `refresh(targets)` and
-retention), with the cache on a long-lived worker so it never crosses the event
-channel; mux keeps only the identity value types and
-`Workspace::apply_git_status(result) -> bool`; the app keeps only scheduling.
-Reported by mux-state and server-app.
-
-Stale in part: checkout-root handling already uses `discover_checkout_root`,
-and retention and read-error dedup already sit in mux's private
-`GitStatusCache`. Decided: `shepr-git` below mux owns its key, result and error
-vocabulary, discovery, runner, refresh algorithm and cache (mux re-exports what
-workspaces need), on a long-lived worker that takes targets and refresh intent
-and returns results, importing no `Workspace` or server event. Pin explicit
-invalidation and clearing (today `mark_due` and `clear`), completion after a
-failed or panicking refresh, and coherent cache commits (a caught panic must not
-leave a half-mutated persistent cache). AGENTS.md's Git ownership sentence
-changes with it.
-
 ## STR-028 - Persistence orchestration lives in the server, and `persist/` files do several jobs each
 
 `App::with_paths` sequences load, history gating, restore, loss and protection
@@ -191,7 +166,7 @@ server-app.
 
 ## STR-029 - Constants and logging are crate-wide grab-bags
 
-mux `limits.rs` mixes Git timeouts, detection cadences, history chunking,
+mux `limits.rs` mixes detection cadences, history chunking,
 copy-mode word separators, OSC bounds, snapshot cadence and pane teardown signals
 (`FIRST_WORKSPACE_NUMBER` restates `WorkspaceId`'s zero rule); mux `logging.rs` is
 half pane (taking `pane_id: u32`) and half persist, while `writer.rs` emits its

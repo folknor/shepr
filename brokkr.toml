@@ -206,6 +206,7 @@ exclude = [
     "crates/shepr-client/src/fatal_panic.rs",
     "crates/shepr-client/src/terminal_setup.rs",
     "crates/shepr-core/src/env.rs",
+    "crates/shepr-git/src/refresh.rs",
     "crates/shepr-integration/src/config_file/tests.rs",
     "crates/shepr-integration/src/env.rs",
     "crates/shepr-integration/src/opencode_config.rs",
@@ -217,7 +218,6 @@ exclude = [
     "crates/shepr-platform/src/resize_signal_tests.rs",
     "crates/shepr-pty/src/actor.rs",
     "crates/shepr-pty/src/command.rs",
-    "crates/shepr-server/src/app/git_refresh.rs",
     "crates/shepr-server/src/server/headless/tests/already_running.rs",
     "crates/shepr-server/src/server/headless/tests/server_stop.rs",
     "crates/shepr-test-support/src/fixture.rs",
@@ -698,6 +698,7 @@ packages = [
     "shepr-core",
     "shepr-daemon",
     "shepr-detect",
+    "shepr-git",
     "shepr-integration",
     "shepr-launch",
     "shepr-mux",
@@ -943,12 +944,21 @@ from = "shepr-client"
 allow = ["base64", "crossterm", "ctrlc", "ratatui", "serde", "serde_json", "shepr-config", "shepr-core", "shepr-launch", "shepr-paths", "shepr-platform", "shepr-protocol", "shepr-remote", "shepr-surface", "shepr-term", "shepr-termio", "tokio", "toml", "tracing", "unicode-segmentation", "unicode-width"]
 kinds = ["normal"]
 
-# Git command environment and deadline policy are owned by mux, which uses the
-# platform crate only for its low-level child command constructor.
+# Git status as one subsystem: discovery, the command runner with its
+# environment and deadline policy, config dependency tracking, the status
+# computation, the refresh algorithm, its cache and the worker thread that owns
+# it. It uses the platform crate only for its low-level child command
+# constructor, and knows nothing of workspaces, pane state or server events.
+[[dependency_rule]]
+name = "shepr-git-layer"
+from = "shepr-git"
+allow = ["shepr-core", "shepr-platform", "tracing"]
+kinds = ["normal"]
+
 [[dependency_rule]]
 name = "shepr-mux-layer"
 from = "shepr-mux"
-allow = ["bytes", "crossterm", "ratatui", "regex", "serde", "serde_json", "sha2", "shepr-agent", "shepr-config", "shepr-core", "shepr-detect", "shepr-paths", "shepr-platform", "shepr-protocol", "shepr-pty", "shepr-surface", "shepr-term", "shepr-vt", "tokio", "tracing", "unicode-width"]
+allow = ["bytes", "crossterm", "ratatui", "regex", "serde", "serde_json", "sha2", "shepr-agent", "shepr-config", "shepr-core", "shepr-detect", "shepr-git", "shepr-paths", "shepr-platform", "shepr-protocol", "shepr-pty", "shepr-surface", "shepr-term", "shepr-vt", "tokio", "tracing", "unicode-width"]
 kinds = ["normal"]
 
 # The client binary launches the server executable as a sibling process and
@@ -972,5 +982,5 @@ kinds = ["normal"]
 [[dependency_rule]]
 name = "shepr-server-layer"
 from = "shepr-server"
-allow = ["base64", "bytes", "crossterm", "ctrlc", "futures-util", "libc", "ratatui", "serde", "serde_json", "shepr-agent", "shepr-api", "shepr-config", "shepr-core", "shepr-detect", "shepr-integration", "shepr-mux", "shepr-paths", "shepr-platform", "shepr-protocol", "shepr-pty", "shepr-surface", "shepr-term", "shepr-vt", "tokio", "tracing", "unicode-width", "zbus"]
+allow = ["base64", "bytes", "crossterm", "ctrlc", "futures-util", "libc", "ratatui", "serde", "serde_json", "shepr-agent", "shepr-api", "shepr-config", "shepr-core", "shepr-detect", "shepr-git", "shepr-integration", "shepr-mux", "shepr-paths", "shepr-platform", "shepr-protocol", "shepr-pty", "shepr-surface", "shepr-term", "shepr-vt", "tokio", "tracing", "unicode-width", "zbus"]
 kinds = ["normal"]

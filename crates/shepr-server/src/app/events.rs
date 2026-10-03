@@ -89,19 +89,23 @@ impl App {
         Some(workspace.resolved_identity_cwd_from_root_pane(root_pane_cwd))
     }
 
+    /// The server side of a Git refresh: completes the scheduled refresh,
+    /// logs the read errors the worker saw first, and applies each status to
+    /// the workspace it was asked for, while that workspace still resolves to
+    /// the cwd the status was read for.
     fn handle_git_status_refreshed(
         &mut self,
-        results: Vec<shepr_mux::git::WorkspaceGitStatus>,
-        cache_updates: Vec<(
-            shepr_mux::git::GitStatusKey,
-            shepr_mux::git::GitStatusCacheEntry,
-        )>,
+        outcome: shepr_git::RefreshOutcome<shepr_protocol::WorkspaceId>,
     ) -> bool {
-        self.git_refresh.finish(self.clock.now, cache_updates);
-        let results = results
+        self.git_refresh.finish(self.clock.now);
+        for error in &outcome.new_read_errors {
+            tracing::warn!(%error, "git status read failed");
+        }
+        let results = outcome
+            .statuses
             .into_iter()
             .map(|result| {
-                let resolved_identity_cwd = self.live_workspace_identity_cwd(&result.workspace_id);
+                let resolved_identity_cwd = self.live_workspace_identity_cwd(&result.owner);
                 (result, resolved_identity_cwd)
             })
             .collect();
@@ -236,13 +240,8 @@ impl App {
             return false;
         }
 
-        if let AppEvent::GitStatusRefreshed {
-            results,
-            cache_updates,
-        } = ev
-        {
-            let changed = self.handle_git_status_refreshed(results, cache_updates);
-            return changed;
+        if let AppEvent::GitStatusRefreshed { outcome } = ev {
+            return self.handle_git_status_refreshed(outcome);
         }
         if let AppEvent::PaneLaunchSettled {
             pane_id,
@@ -814,8 +813,7 @@ mod runtime_generation_tests {
         // Runtime payloads have no pane identity and cannot contain envelopes.
         assert!(
             shepr_mux::events::RuntimeEvent::try_from(AppEvent::GitStatusRefreshed {
-                results: Vec::new(),
-                cache_updates: Vec::new()
+                outcome: shepr_git::RefreshOutcome::empty(),
             })
             .is_err()
         );
@@ -829,8 +827,7 @@ mod runtime_generation_tests {
         assert!(shepr_mux::events::RuntimeEvent::try_from(envelope).is_err());
         assert!(
             app.admit_runtime_event(AppEvent::GitStatusRefreshed {
-                results: Vec::new(),
-                cache_updates: Vec::new(),
+                outcome: shepr_git::RefreshOutcome::empty(),
             })
             .is_some()
         );

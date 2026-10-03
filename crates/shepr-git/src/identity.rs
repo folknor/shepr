@@ -1,9 +1,7 @@
-//! Validated Git names. `pub` because `GitHeadIdentity` and
-//! `GitUpstreamIdentity`, reachable through `GitStatusCacheEntry`, carry them;
-//! only this crate constructs or reads them.
+//! Validated Git names, constructed and read only inside this crate.
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct Oid(String);
+pub(crate) struct Oid(String);
 
 impl Oid {
     pub(crate) fn parse(value: &str) -> Option<Self> {
@@ -20,7 +18,7 @@ impl Oid {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct FullRefName(String);
+pub(crate) struct FullRefName(String);
 
 impl FullRefName {
     pub(crate) fn parse(value: &str) -> Option<Self> {
@@ -50,7 +48,7 @@ impl FullRefName {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct BranchName(String);
+pub(crate) struct BranchName(String);
 
 impl BranchName {
     pub(crate) fn as_str(&self) -> &str {

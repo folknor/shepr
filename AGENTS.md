@@ -209,7 +209,14 @@ orientation, and nothing checks them:
   and the remote-host side of the SSH bridge, which ensures its local server
   through `shepr-launch`. It classifies OpenSSH output into launch's failure
   vocabulary at its boundary and keeps discovery evidence to itself.
-- `shepr-mux`: terminals, panes, workspaces, Git state, events and persistence.
+- `shepr-git`: Git status as one subsystem: checkout discovery, the Git
+  command runner with its environment and deadline policy, config dependency
+  tracking, the status computation, the refresh algorithm and its cache, and
+  the long-lived worker thread that owns that cache. It takes targets (a cwd,
+  a known checkout key and an opaque owner) and returns statuses and read
+  errors; it knows nothing of workspaces, server events or refresh cadence.
+- `shepr-mux`: terminals, panes, workspaces (each holding the Git status last
+  applied to it), events and persistence.
 - `shepr-server`: application state, UI and serving.
 - `shepr-client`: endpoint management and TUI presentation.
 - `shepr-daemon`: the `shepr-server` executable, a thin `main` over
@@ -349,7 +356,7 @@ every agent integration reports through it.
   `cfg!` branches for other platforms. libc, `/proc` and helper-program
   plumbing lives in the flat `crates/shepr-platform/src/` crate (`lib.rs` plus
   self-contained submodules). Git command environment and deadline policy lives
-  in `shepr-mux`, and the logind shutdown monitor and session checkpoint
+  in `shepr-git`, and the logind shutdown monitor and session checkpoint
   lifecycle live in `shepr-server`. `shepr-platform` classifies pane exit
   reasons and whether they require a final session checkpoint. There is no
   per-OS layer and no shims standing in for other platforms.

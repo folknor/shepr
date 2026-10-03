@@ -30,6 +30,18 @@ status and are retried as ordinary failures. (edges)
 
 ## Latent defects
 
+## BUG-067 - A Git worker thread that hangs after disconnecting stalls Git refresh
+
+`GitStatusWorker` (`crates/shepr-git/src/worker.rs`) never joins a thread that
+has not finished, so a worker that drops its receiver and then blocks forever
+(for example in a destructor of a queued command) no longer blocks the app
+thread. But the scheduler's in-flight refresh is only cleared once that thread
+finishes and `take_lost_refresh` reports the loss, so in that case Git status
+stops refreshing until the server restarts. A bound on how long an accepted
+refresh may stay unpublished, after which the scheduler abandons it, would
+close this. Pathological: nothing in shepr blocks there today.
+(wave-8 review)
+
 ## BUG-066 - Server overlay glyph repair is weaker than the client compositor's
 
 `shepr_surface::glyph_repair` holds two repair operations that share the blank
@@ -75,9 +87,9 @@ signal, avoids the locks. (server-serving)
 `start_pending_agent_resumes` runs every loop iteration and starts with a scan
 of all terminals and a `retain` over `pending_resume_commands`; per client per
 frame, `compute_surface_for`, `render_panes` and `surface_cursor` each resolve
-the target `WorkspaceId` by linear scan; `Workspace::display_name()` and
-`branch()` clone a `String` per read on projection and title paths. Reported
-by server-app and mux-state.
+the target `WorkspaceId` by linear scan; `Workspace::display_name()` clones a
+`String` per read on projection and title paths. Reported by server-app and
+mux-state.
 
 ## BUG-061 - `has_consistent_panes` runs on every drag-resize event
 

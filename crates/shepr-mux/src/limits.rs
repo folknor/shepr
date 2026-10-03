@@ -6,14 +6,6 @@ use std::time::Duration;
 /// numbers are one-based; zero spells no workspace ID.
 pub(crate) const FIRST_WORKSPACE_NUMBER: usize = 1;
 
-/// How long one Git probe may run before it is killed. This bounds hung Git
-/// reads so they cannot stall workspace and sidebar updates.
-pub(crate) const GIT_COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
-
-/// Polling interval while waiting for a Git probe and its output readers. The
-/// interval keeps exit detection responsive without a busy loop.
-pub(crate) const GIT_PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(5);
-
 /// Consecutive process misses required before dropping an identified agent;
 /// transient /proc gaps must not erase its state.
 pub(crate) const AGENT_MISS_CONFIRMATION_ATTEMPTS: u8 = 6;
@@ -100,13 +92,6 @@ pub(crate) const AGENT_OSC_MAX_CHARS: usize = 256;
 /// Maximum debug payload characters logged from an OSC body; enough context
 /// for diagnosis without allowing a large log entry.
 pub(crate) const MAX_OSC_DEBUG_CHARS: usize = 512;
-
-/// Maximum bytes read from one loose Git ref file; far above any real ref,
-/// it bounds the read of a corrupt or hostile file.
-pub(crate) const MAX_GIT_REF_FILE_BYTES: usize = 64 * 1024;
-/// Retry delay after Git status refresh fails, avoiding repeated filesystem
-/// and subprocess work for a broken or unavailable checkout.
-pub(crate) const GIT_STATUS_RETRY_DELAY: Duration = Duration::from_secs(30);
 
 /// Interval between layout snapshots; this gives recovery points without
 /// writing a new file for every save.

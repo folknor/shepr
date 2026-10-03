@@ -56,7 +56,7 @@ pub(super) fn add_linked_worktree(common_dir: &Path, name: &str, checkout: &Path
     );
 }
 
-pub fn create_repo_with_linked_worktree(name: &str) -> (PathBuf, PathBuf, PathBuf) {
+pub(crate) fn create_repo_with_linked_worktree(name: &str) -> (PathBuf, PathBuf, PathBuf) {
     let base = temp_test_dir(name);
     let repo = base.join("shepr");
     let checkout = base.join("testr56");

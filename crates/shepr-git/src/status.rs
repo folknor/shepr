@@ -4,8 +4,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use super::{
-    AheadBehind, FileReadReason, GitReadError, GitStatusKey, WorkspaceBranch,
-    WorkspaceGitStatusSnapshot,
+    AheadBehind, FileReadReason, GitBranch, GitReadError, GitStatusKey, GitStatusSnapshot,
 };
 
 use super::identity::{BranchName, FullRefName, Oid};
@@ -17,13 +16,13 @@ use super::{
     discovery::{
         GitWorktreeInfo, SymbolicHeadProbe, canonicalize_best_effort_path,
         git_ref_storage_is_reftable, git_rev_parse_verify_with_errors, git_symbolic_head_full,
-        git_trimmed_stdout, git_worktree_info, git_worktree_info_with_errors, read_git_ref_file,
+        git_trimmed_stdout, git_worktree_info_with_errors, read_git_ref_file,
         read_ref_oid_for_full_ref,
     },
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum GitStatusCacheEntry {
+pub(crate) enum GitStatusCacheEntry {
     Miss {
         retry_after: Instant,
         repo_root: Option<PathBuf>,
@@ -37,14 +36,14 @@ pub enum GitStatusCacheEntry {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AheadBehindState {
+pub(crate) enum AheadBehindState {
     NotComputed,
     Known(AheadBehind),
     Failed { retry_after: Instant },
 }
 
 impl GitStatusCacheEntry {
-    pub fn is_miss(&self) -> bool {
+    pub(crate) fn is_miss(&self) -> bool {
         matches!(self, Self::Miss { .. })
     }
 
@@ -73,18 +72,18 @@ impl GitStatusCacheEntry {
         }
     }
 
-    pub fn snapshot(&self) -> WorkspaceGitStatusSnapshot {
+    pub(crate) fn snapshot(&self) -> GitStatusSnapshot {
         match self {
             Self::Miss {
                 repo_root,
                 read_errors,
                 ..
-            } => WorkspaceGitStatusSnapshot {
+            } => GitStatusSnapshot {
                 repo_root: repo_root.clone(),
                 branch: if repo_root.is_none() && read_errors.is_empty() {
-                    WorkspaceBranch::OutsideRepository
+                    GitBranch::OutsideRepository
                 } else {
-                    WorkspaceBranch::ReadFailed
+                    GitBranch::ReadFailed
                 },
                 ahead_behind: None,
             },
@@ -92,11 +91,11 @@ impl GitStatusCacheEntry {
                 fingerprint,
                 ahead_behind,
                 ..
-            } => WorkspaceGitStatusSnapshot {
+            } => GitStatusSnapshot {
                 repo_root: Some(fingerprint.repository_context.info.repo_root.clone()),
                 // Preserve HEAD outcome at admission; presentation chooses
                 // whether to draw anything besides a named branch.
-                branch: workspace_branch(fingerprint),
+                branch: head_branch(fingerprint),
                 ahead_behind: match ahead_behind {
                     AheadBehindState::Known(ahead_behind) => Some(*ahead_behind),
                     AheadBehindState::NotComputed | AheadBehindState::Failed { .. } => None,
@@ -105,53 +104,49 @@ impl GitStatusCacheEntry {
         }
     }
 
-    pub fn read_errors(&self) -> &[GitReadError] {
+    pub(crate) fn read_errors(&self) -> &[GitReadError] {
         match self {
             Self::Miss { read_errors, .. } | Self::Hit { read_errors, .. } => read_errors,
         }
     }
 }
 
-fn workspace_branch(fingerprint: &GitStatusFingerprint) -> WorkspaceBranch {
+fn head_branch(fingerprint: &GitStatusFingerprint) -> GitBranch {
     fingerprint
         .branch_name()
-        .map_or(WorkspaceBranch::Detached, |name| {
-            WorkspaceBranch::Named(name.to_owned())
+        .map_or(GitBranch::Detached, |name| {
+            GitBranch::Named(name.to_owned())
         })
 }
 
-/// The cached Git answers for the workspaces in one server process. It owns
+/// The cached Git answers for the checkouts one refresher has visited. It owns
 /// both cache-entry retention and the lifetime of deduplicated read errors.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct GitStatusCache {
+pub(crate) struct GitStatusCache {
     entries: HashMap<GitStatusKey, GitStatusCacheEntry>,
     reported_read_errors: HashSet<GitReadError>,
 }
 
 impl GitStatusCache {
-    pub fn clear(&mut self) {
+    pub(crate) fn get(&self, key: &GitStatusKey) -> Option<&GitStatusCacheEntry> {
+        self.entries.get(key)
+    }
+
+    pub(crate) fn clear(&mut self) {
         self.entries.clear();
         self.reported_read_errors.clear();
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
-    }
-
-    pub fn refresh_view(&self) -> GitStatusCacheView {
-        GitStatusCacheView {
-            entries: self.entries.clone(),
-        }
-    }
-
-    pub fn mark_due(&mut self) {
+    /// Drops every cached miss, so the next refresh looks again at each cwd
+    /// that had no readable repository instead of waiting out its retry delay.
+    pub(crate) fn mark_due(&mut self) {
         self.entries.retain(|_, entry| !entry.is_miss());
     }
 
     /// Applies one completed refresh. Entries that were not visited are
     /// released once the refresh produced at least one cache update; error
     /// deduplication follows the retained entries that still carry each cause.
-    pub fn apply_refresh(
+    pub(crate) fn apply_refresh(
         &mut self,
         cache_updates: Vec<(GitStatusKey, GitStatusCacheEntry)>,
     ) -> Vec<GitReadError> {
@@ -180,23 +175,10 @@ impl GitStatusCache {
     }
 }
 
-/// Immutable cache entries copied to one refresh worker. Reporting history
-/// stays with the server-owned cache and is not carried across that boundary.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct GitStatusCacheView {
-    entries: HashMap<GitStatusKey, GitStatusCacheEntry>,
-}
-
-impl GitStatusCacheView {
-    pub fn get(&self, key: &GitStatusKey) -> Option<&GitStatusCacheEntry> {
-        self.entries.get(key)
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GitStatusFingerprint {
-    pub head: GitHeadIdentity,
-    pub upstream: Option<GitUpstreamIdentity>,
+pub(crate) struct GitStatusFingerprint {
+    pub(crate) head: GitHeadIdentity,
+    pub(crate) upstream: Option<GitUpstreamIdentity>,
     repository_context: RepoContext,
 }
 
@@ -248,10 +230,10 @@ fn repo_context_for_info(
 }
 
 /// Repository discovery captured with the cache key, so a refresh can group
-/// workspaces by checkout and pass the same discovery result into status
+/// targets by checkout and pass the same discovery result into status
 /// computation instead of walking the checkout again.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GitStatusDiscovery {
+pub(crate) struct GitStatusDiscovery {
     cwd: PathBuf,
     cache_key: GitStatusKey,
     info: Option<GitWorktreeInfo>,
@@ -259,12 +241,12 @@ pub struct GitStatusDiscovery {
 }
 
 impl GitStatusDiscovery {
-    pub fn cache_key(&self) -> &GitStatusKey {
+    pub(crate) fn cache_key(&self) -> &GitStatusKey {
         &self.cache_key
     }
 }
 
-pub fn git_status_discovery(cwd: &Path) -> GitStatusDiscovery {
+pub(crate) fn git_status_discovery(cwd: &Path) -> GitStatusDiscovery {
     let mut read_errors = Vec::new();
     let mut info = git_worktree_info_with_errors(cwd, &mut read_errors);
     let cache_key = info.as_ref().map_or_else(
@@ -286,7 +268,7 @@ pub fn git_status_discovery(cwd: &Path) -> GitStatusDiscovery {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum GitHeadIdentity {
+pub(crate) enum GitHeadIdentity {
     Branch {
         full_ref: FullRefName,
         short_name: BranchName,
@@ -298,28 +280,23 @@ pub enum GitHeadIdentity {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GitUpstreamIdentity {
-    pub remote: String,
-    pub merge_ref: FullRefName,
-    pub full_ref: FullRefName,
-    pub oid: Option<Oid>,
+pub(crate) struct GitUpstreamIdentity {
+    pub(crate) remote: String,
+    pub(crate) merge_ref: FullRefName,
+    pub(crate) full_ref: FullRefName,
+    pub(crate) oid: Option<Oid>,
 }
 
-pub fn git_status_cache_key(cwd: &Path) -> Option<GitStatusKey> {
-    git_worktree_info(cwd)
-        .map(|info| GitStatusKey::Checkout(canonicalize_best_effort_path(&info.repo_root)))
-}
-
-pub fn git_status_snapshot_for_cwd(
+pub(crate) fn git_status_snapshot_for_cwd(
     cwd: &Path,
     cached: Option<&GitStatusCacheEntry>,
-) -> (WorkspaceGitStatusSnapshot, Option<GitStatusCacheEntry>) {
+) -> (GitStatusSnapshot, Option<GitStatusCacheEntry>) {
     git_status_snapshot(cwd, cached, None)
 }
 
-pub fn git_status_snapshot_for_discovery(
+pub(crate) fn git_status_snapshot_for_discovery(
     discovery: GitStatusDiscovery,
-) -> (WorkspaceGitStatusSnapshot, Option<GitStatusCacheEntry>) {
+) -> (GitStatusSnapshot, Option<GitStatusCacheEntry>) {
     let cwd = discovery.cwd.clone();
     git_status_snapshot(&cwd, None, Some(discovery))
 }
@@ -328,7 +305,7 @@ fn git_status_snapshot(
     cwd: &Path,
     cached: Option<&GitStatusCacheEntry>,
     discovery: Option<GitStatusDiscovery>,
-) -> (WorkspaceGitStatusSnapshot, Option<GitStatusCacheEntry>) {
+) -> (GitStatusSnapshot, Option<GitStatusCacheEntry>) {
     // One sample anchors both retry comparisons and deadlines recorded below;
     // a subprocess must not move the cache decision partway through a snapshot.
     let now = Instant::now();
@@ -346,12 +323,12 @@ fn git_status_snapshot(
         None => cached_context.or_else(|| repo_context(cwd, &mut read_errors)),
     };
     let Some(repository_context) = repository_context else {
-        let snapshot = WorkspaceGitStatusSnapshot {
+        let snapshot = GitStatusSnapshot {
             repo_root: None,
             branch: if read_errors.is_empty() {
-                WorkspaceBranch::OutsideRepository
+                GitBranch::OutsideRepository
             } else {
-                WorkspaceBranch::ReadFailed
+                GitBranch::ReadFailed
             },
             ahead_behind: None,
         };
@@ -366,9 +343,9 @@ fn git_status_snapshot(
     };
     let repo_root = repository_context.info.repo_root.clone();
     let Some(fingerprint) = fingerprint(repository_context, &mut read_errors) else {
-        let snapshot = WorkspaceGitStatusSnapshot {
+        let snapshot = GitStatusSnapshot {
             repo_root: Some(repo_root.clone()),
-            branch: WorkspaceBranch::ReadFailed,
+            branch: GitBranch::ReadFailed,
             ahead_behind: None,
         };
         return (
@@ -380,7 +357,7 @@ fn git_status_snapshot(
             }),
         );
     };
-    let branch = workspace_branch(&fingerprint);
+    let branch = head_branch(&fingerprint);
 
     if let Some(GitStatusCacheEntry::Hit {
         fingerprint: cached_fingerprint,
@@ -389,7 +366,7 @@ fn git_status_snapshot(
         ..
     }) = cached.filter(|entry| entry.can_reuse_fingerprint(&fingerprint, now))
     {
-        let snapshot = WorkspaceGitStatusSnapshot {
+        let snapshot = GitStatusSnapshot {
             repo_root: Some(repo_root.clone()),
             branch: branch.clone(),
             ahead_behind: match ahead_behind {
@@ -420,7 +397,7 @@ fn git_status_snapshot(
         }
         None => AheadBehindState::NotComputed,
     };
-    let snapshot = WorkspaceGitStatusSnapshot {
+    let snapshot = GitStatusSnapshot {
         repo_root: Some(repo_root.clone()),
         branch: branch.clone(),
         ahead_behind: match ahead_behind {
@@ -616,15 +593,28 @@ fn parse_git_ahead_behind_output(stdout: &str) -> Option<AheadBehind> {
 }
 
 #[cfg(test)]
+impl GitStatusCache {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
+#[cfg(test)]
 pub(super) fn git_status_fingerprint(cwd: &Path) -> Option<GitStatusFingerprint> {
     let mut read_errors = Vec::new();
     fingerprint(repo_context(cwd, &mut read_errors)?, &mut read_errors)
 }
 
 #[cfg(test)]
+fn git_status_cache_key(cwd: &Path) -> Option<GitStatusKey> {
+    super::discovery::git_worktree_info(cwd)
+        .map(|info| GitStatusKey::Checkout(canonicalize_best_effort_path(&info.repo_root)))
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
-    use crate::git::test_support::{git_written_fixture, temp_test_dir, write_fake_tracked_repo};
+    use crate::test_support::{git_written_fixture, temp_test_dir, write_fake_tracked_repo};
     use std::time::Duration;
 
     #[test]
@@ -637,9 +627,57 @@ mod tests {
         };
         let mut cache = GitStatusCache::default();
         cache.apply_refresh(vec![(GitStatusKey::Outside(path.clone()), entry)]);
-        let view = cache.refresh_view();
-        assert!(view.get(&GitStatusKey::Outside(path.clone())).is_some());
-        assert!(view.get(&GitStatusKey::Checkout(path)).is_none());
+        assert!(cache.get(&GitStatusKey::Outside(path.clone())).is_some());
+        assert!(cache.get(&GitStatusKey::Checkout(path)).is_none());
+    }
+
+    #[test]
+    fn read_failures_are_reported_once_per_distinct_cause() {
+        let now = Instant::now();
+        let path = PathBuf::from("/repo");
+        let error = GitReadError::Spawn {
+            cwd: path.clone(),
+            reason: crate::GitIoError::from(&std::io::Error::from(std::io::ErrorKind::NotFound)),
+        };
+        let cache_entry = || GitStatusCacheEntry::Miss {
+            retry_after: now + Duration::from_secs(30),
+            repo_root: None,
+            read_errors: vec![error.clone()],
+        };
+        let mut cache = GitStatusCache::default();
+        assert_eq!(
+            cache.apply_refresh(vec![(GitStatusKey::Outside(path.clone()), cache_entry())]),
+            vec![error.clone()]
+        );
+        assert!(
+            cache
+                .apply_refresh(vec![(GitStatusKey::Outside(path), cache_entry())])
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn mark_due_drops_cached_misses_and_keeps_hits() {
+        let _env = shepr_test_support::IsolatedEnv::new();
+        let miss_dir = temp_test_dir("mark-due-miss");
+        let repo = temp_test_dir("mark-due-hit");
+        write_fake_tracked_repo(&repo);
+        let (_, miss) = git_status_snapshot_for_cwd(&miss_dir, None);
+        let (_, hit) = git_status_snapshot_for_cwd(&repo, None);
+        let miss_key = GitStatusKey::Outside(miss_dir);
+        let hit_key = GitStatusKey::Checkout(repo);
+        let mut cache = GitStatusCache::default();
+        cache.apply_refresh(vec![
+            (miss_key.clone(), miss.expect("non-Git cache entry")),
+            (hit_key.clone(), hit.expect("repository cache entry")),
+        ]);
+
+        cache.mark_due();
+
+        assert!(cache.get(&miss_key).is_none());
+        assert!(cache.get(&hit_key).is_some());
+        cache.clear();
+        assert!(cache.is_empty());
     }
 
     #[test]
@@ -666,15 +704,9 @@ mod tests {
             }],
         };
 
-        assert_eq!(
-            outside.snapshot().branch,
-            WorkspaceBranch::OutsideRepository
-        );
-        assert_eq!(failed_head.snapshot().branch, WorkspaceBranch::ReadFailed);
-        assert_eq!(
-            failed_discovery.snapshot().branch,
-            WorkspaceBranch::ReadFailed
-        );
+        assert_eq!(outside.snapshot().branch, GitBranch::OutsideRepository);
+        assert_eq!(failed_head.snapshot().branch, GitBranch::ReadFailed);
+        assert_eq!(failed_discovery.snapshot().branch, GitBranch::ReadFailed);
     }
 
     #[test]
@@ -756,7 +788,7 @@ mod tests {
 
         let branch_len = snapshot.branch.as_deref().map(str::len);
         assert!(
-            snapshot.branch == WorkspaceBranch::ReadFailed,
+            snapshot.branch == GitBranch::ReadFailed,
             "oversized Git HEAD produced branch with {branch_len:?} bytes"
         );
     }
@@ -790,7 +822,7 @@ mod tests {
 
         let (snapshot, update) = git_status_snapshot_for_cwd(&root, None);
 
-        assert_eq!(snapshot.branch, WorkspaceBranch::Detached);
+        assert_eq!(snapshot.branch, GitBranch::Detached);
         assert!(
             snapshot.repo_root.is_some(),
             "a detached HEAD is still a repo"
@@ -1059,17 +1091,13 @@ mod tests {
     fn linked_worktree_refresh_keeps_checkout_name_as_auto_label() {
         let _env = shepr_test_support::IsolatedEnv::new();
         let (_, _, checkout) =
-            crate::git::test_support::create_repo_with_linked_worktree("linked-refresh-label");
+            crate::test_support::create_repo_with_linked_worktree("linked-refresh-label");
 
         let (snapshot, _) = git_status_snapshot_for_cwd(&checkout, None);
-        let status = snapshot.into_workspace_status(
-            shepr_protocol::WorkspaceId::from_number(1).expect("id"),
-            checkout.clone(),
-            GitStatusKey::Outside(PathBuf::new()),
-        );
+        let status = snapshot.into_status(checkout.clone(), GitStatusKey::Outside(PathBuf::new()));
 
         assert_eq!(
-            status.auto_label,
+            status.label,
             checkout
                 .file_name()
                 .expect("test precondition")

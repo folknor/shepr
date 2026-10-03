@@ -834,7 +834,9 @@ impl HeadlessServer {
                     workspace_id: *workspace_id,
                     new_workspace_cwd,
                     label: workspace.label.clone(),
-                    branch: state.and_then(shepr_mux::workspace::Workspace::branch),
+                    branch: state
+                        .and_then(shepr_mux::workspace::Workspace::branch)
+                        .map(str::to_owned),
                     git_ahead_behind: state
                         .and_then(shepr_mux::workspace::Workspace::git_ahead_behind)
                         .map(|counts| (counts.ahead, counts.behind)),

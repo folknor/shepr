@@ -1373,6 +1373,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "shepr-git"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "shepr-core",
+ "shepr-platform",
+ "shepr-test-support",
+ "tracing",
+]
+
+[[package]]
 name = "shepr-integration"
 version = "0.1.0"
 dependencies = [
@@ -1421,6 +1432,7 @@ dependencies = [
  "shepr-config",
  "shepr-core",
  "shepr-detect",
+ "shepr-git",
  "shepr-paths",
  "shepr-platform",
  "shepr-protocol",
@@ -1517,6 +1529,7 @@ dependencies = [
  "shepr-config",
  "shepr-core",
  "shepr-detect",
+ "shepr-git",
  "shepr-integration",
  "shepr-mux",
  "shepr-paths",

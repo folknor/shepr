@@ -797,8 +797,7 @@ fn headless_api_request_drains_all_pending_internal_events_before_reading_state(
             .app
             .event_tx
             .try_send(AppEvent::GitStatusRefreshed {
-                results: Vec::new(),
-                cache_updates: Vec::new(),
+                outcome: shepr_git::RefreshOutcome::empty(),
             })
             .expect("test precondition");
     }
@@ -2462,15 +2461,19 @@ async fn each_kind_of_change_sends_a_new_projection_through_its_real_path() {
     let cwd = server.app.state.workspaces[0].identity_cwd.clone();
     assert!(
         server.handle_internal_event_with_forwarding(AppEvent::GitStatusRefreshed {
-            results: vec![shepr_mux::git::WorkspaceGitStatus {
-                workspace_id: workspace_state_id,
-                resolved_identity_cwd: cwd.clone(),
-                status_cache_key: shepr_mux::git::GitStatusKey::Checkout(cwd),
-                auto_label: "focus-reporting".into(),
-                branch: shepr_mux::git::WorkspaceBranch::Named("feature".into()),
-                ahead_behind: None,
-            }],
-            cache_updates: Vec::new(),
+            outcome: shepr_git::RefreshOutcome {
+                statuses: vec![shepr_mux::git::WorkspaceGitStatus {
+                    owner: workspace_state_id,
+                    status: shepr_git::GitStatus {
+                        cwd: cwd.clone(),
+                        key: shepr_git::GitStatusKey::Checkout(cwd),
+                        label: "focus-reporting".into(),
+                        branch: shepr_git::GitBranch::Named("feature".into()),
+                        ahead_behind: None,
+                    },
+                }],
+                new_read_errors: Vec::new(),
+            },
         })
     );
     assert_eq!(
@@ -4874,29 +4877,24 @@ fn unchanged_git_refresh_does_not_request_headless_render() {
     let mut workspace = shepr_mux::workspace::Workspace::test_new("one");
     let workspace_id = workspace.id;
     let cwd = workspace.identity_cwd.clone();
-    workspace.admit_git_status(
-        shepr_mux::git::WorkspaceGitStatus {
-            workspace_id,
-            resolved_identity_cwd: cwd.clone(),
-            status_cache_key: shepr_mux::git::GitStatusKey::Outside(cwd.clone()),
-            auto_label: "cached".into(),
-            branch: shepr_mux::git::WorkspaceBranch::OutsideRepository,
-            ahead_behind: None,
-        },
-        Some(&cwd),
-    );
+    let status = shepr_git::GitStatus {
+        cwd: cwd.clone(),
+        key: shepr_git::GitStatusKey::Outside(cwd.clone()),
+        label: "cached".into(),
+        branch: shepr_git::GitBranch::OutsideRepository,
+        ahead_behind: None,
+    };
+    workspace.apply_git_status(status.clone(), Some(&cwd));
     server.app.state.test_push_workspace(workspace);
 
     let changed = server.handle_internal_event_with_forwarding(AppEvent::GitStatusRefreshed {
-        results: vec![shepr_mux::git::WorkspaceGitStatus {
-            workspace_id,
-            resolved_identity_cwd: cwd.clone(),
-            status_cache_key: shepr_mux::git::GitStatusKey::Outside(cwd),
-            auto_label: "cached".into(),
-            branch: shepr_mux::git::WorkspaceBranch::OutsideRepository,
-            ahead_behind: None,
-        }],
-        cache_updates: Vec::new(),
+        outcome: shepr_git::RefreshOutcome {
+            statuses: vec![shepr_mux::git::WorkspaceGitStatus {
+                owner: workspace_id,
+                status,
+            }],
+            new_read_errors: Vec::new(),
+        },
     });
 
     assert!(!changed);
@@ -4912,15 +4910,19 @@ fn changed_git_refresh_requests_headless_render() {
     server.app.state.test_push_workspace(workspace);
 
     let changed = server.handle_internal_event_with_forwarding(AppEvent::GitStatusRefreshed {
-        results: vec![shepr_mux::git::WorkspaceGitStatus {
-            workspace_id,
-            resolved_identity_cwd: cwd.clone(),
-            status_cache_key: shepr_mux::git::GitStatusKey::Checkout(cwd),
-            auto_label: "one".into(),
-            branch: shepr_mux::git::WorkspaceBranch::Named("changed".into()),
-            ahead_behind: None,
-        }],
-        cache_updates: Vec::new(),
+        outcome: shepr_git::RefreshOutcome {
+            statuses: vec![shepr_mux::git::WorkspaceGitStatus {
+                owner: workspace_id,
+                status: shepr_git::GitStatus {
+                    cwd: cwd.clone(),
+                    key: shepr_git::GitStatusKey::Checkout(cwd),
+                    label: "one".into(),
+                    branch: shepr_git::GitBranch::Named("changed".into()),
+                    ahead_behind: None,
+                },
+            }],
+            new_read_errors: Vec::new(),
+        },
     });
 
     assert!(changed);

@@ -1,0 +1,18 @@
+[package]
+name = "shepr-git"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+shepr-core = { path = "../shepr-core" }
+shepr-platform = { path = "../shepr-platform" }
+tracing = { workspace = true }
+
+[dev-dependencies]
+# The symlink-loop test checks the exact Linux errno value.
+libc = { workspace = true }
+shepr-test-support = { path = "../shepr-test-support" }
+
+[lints]
+workspace = true

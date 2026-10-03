@@ -6,7 +6,6 @@
 
 use std::time::Instant;
 
-use crate::git::{GitStatusCacheEntry, WorkspaceGitStatus};
 use shepr_agent::Agent;
 use shepr_core::layout::PaneId;
 
@@ -56,10 +55,11 @@ pub enum AppEvent {
         pane_id: PaneId,
         cwd: crate::UsableCwd,
     },
-    /// Background git status refresh completed for workspaces.
+    /// The Git status worker answered one refresh: a status per workspace it
+    /// was asked about (none if the refresh panicked) and the read errors it
+    /// saw first. The worker's cache stays on its own thread.
     GitStatusRefreshed {
-        results: Vec<WorkspaceGitStatus>,
-        cache_updates: Vec<(crate::git::GitStatusKey, GitStatusCacheEntry)>,
+        outcome: shepr_git::RefreshOutcome<shepr_protocol::WorkspaceId>,
     },
 }
 
