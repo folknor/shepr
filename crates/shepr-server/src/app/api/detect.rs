@@ -72,12 +72,12 @@ impl App {
         if let Some(authority) = terminal.ownership().hook_authority().filter(|_| {
             matches!(
                 owner,
-                shepr_agent::ownership::EffectiveStateSource::FullLifecycleHook
-                    | shepr_agent::ownership::EffectiveStateSource::Hook
+                shepr_detect::ownership::EffectiveStateSource::FullLifecycleHook
+                    | shepr_detect::ownership::EffectiveStateSource::Hook
             )
         }) {
             let skip_reason =
-                if owner == shepr_agent::ownership::EffectiveStateSource::FullLifecycleHook {
+                if owner == shepr_detect::ownership::EffectiveStateSource::FullLifecycleHook {
                     ScreenDetectionSkipReason::FullLifecycleHookAuthority
                 } else {
                     ScreenDetectionSkipReason::HookAuthority
@@ -105,9 +105,9 @@ impl App {
         };
 
         let capture = detection_capture(pane);
-        let explain = shepr_agent::detect::manifest::explain_with_input(
+        let explain = shepr_detect::manifest::explain_with_input(
             agent,
-            shepr_agent::detect::manifest::DetectionInput {
+            shepr_detect::manifest::DetectionInput {
                 screen: &capture.screen,
                 osc_title: &capture.osc_title,
                 osc_progress: &capture.osc_progress,
@@ -143,7 +143,7 @@ impl App {
 mod tests {
     use crate::app::App;
     use crate::test_support::*;
-    use shepr_agent::detect::{Agent, AgentState};
+    use shepr_agent::{Agent, AgentState};
     use shepr_api::schema::{AppMethod, AppRequest, PaneTarget};
 
     fn app_with_pane(name: &str) -> (App, shepr_core::layout::PaneId) {
@@ -386,13 +386,13 @@ mod tests {
         // Full lifecycle authority needs a live detected agent and an anchored
         // session, exactly as a real hook-owned pane has.
         let scratch = ScratchDir::new("detect-explain-omp-session");
-        let session_ref = shepr_agent::agent::resume::AgentSessionRef::path(
+        let session_ref = shepr_agent::resume::AgentSessionRef::path(
             scratch.join("session.jsonl").display().to_string(),
         )
         .expect("test precondition");
         terminal.set_detected_state(Some(Agent::Omp), AgentState::Idle);
         terminal.ownership_mut().set_persisted_agent_session(
-            shepr_agent::agent::resume::PersistedAgentSession::from_report(
+            shepr_agent::resume::PersistedAgentSession::from_report(
                 "shepr:omp",
                 "omp",
                 session_ref.clone(),
@@ -401,11 +401,11 @@ mod tests {
         );
         terminal
             .set_hook_report_at(
-                shepr_agent::agent::ReportOrigin::parse("shepr:omp", "omp").expect("test origin"),
+                shepr_agent::ReportOrigin::parse("shepr:omp", "omp").expect("test origin"),
                 AgentState::Working,
                 Some(session_ref),
                 Some(1),
-                shepr_agent::ownership::HookClockSample {
+                shepr_detect::ownership::HookClockSample {
                     monotonic: std::time::Instant::now(),
                     wall: std::time::SystemTime::now(),
                 },

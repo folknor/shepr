@@ -460,13 +460,13 @@ async fn capture_follows_live_cwd_arbitration_and_keeps_it_after_exit() {
         assert!(std::time::Instant::now() < deadline, "the shell launches");
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     };
-    while (shepr_agent::detect::process_cwd(pid).as_ref() != Some(&new)
+    while (shepr_platform::process_cwd(pid).as_ref() != Some(&new)
         || runtime.cwd().as_ref() != Some(&old))
         && std::time::Instant::now() < deadline
     {
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
-    assert_eq!(shepr_agent::detect::process_cwd(pid,), Some(new.clone()));
+    assert_eq!(shepr_platform::process_cwd(pid,), Some(new.clone()));
     assert_eq!(
         runtime.cwd(),
         Some(old.clone()),
@@ -495,12 +495,10 @@ async fn capture_follows_live_cwd_arbitration_and_keeps_it_after_exit() {
             .signal(shepr_platform::Signal::Kill)
     );
     let exit_deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while shepr_agent::detect::process_cwd(pid).is_some()
-        && std::time::Instant::now() < exit_deadline
-    {
+    while shepr_platform::process_cwd(pid).is_some() && std::time::Instant::now() < exit_deadline {
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
-    assert!(shepr_agent::detect::process_cwd(pid,).is_none());
+    assert!(shepr_platform::process_cwd(pid,).is_none());
     let after = capture_from_state_with_runtimes(&state, &runtimes);
     assert_eq!(
         after.workspaces[0]
@@ -757,25 +755,22 @@ fn capture_contract_tracks_hook_authority_agent_session() {
         .terminals
         .get_mut(&terminal_id)
         .expect("test precondition");
-    terminal.set_detected_state(
-        Some(shepr_agent::detect::Agent::Pi),
-        shepr_agent::detect::AgentState::Idle,
-    );
+    terminal.set_detected_state(Some(shepr_agent::Agent::Pi), shepr_agent::AgentState::Idle);
     terminal.ownership_mut().set_persisted_agent_session(
-        shepr_agent::agent::resume::PersistedAgentSession::new(
-            shepr_agent::agent::AgentSource::parse("shepr:pi").expect("bundled source"),
-            shepr_agent::agent::Agent::Pi,
-            shepr_agent::agent::resume::AgentSessionRef::path(session_path.clone())
+        shepr_agent::resume::PersistedAgentSession::new(
+            shepr_agent::AgentSource::parse("shepr:pi").expect("bundled source"),
+            shepr_agent::Agent::Pi,
+            shepr_agent::resume::AgentSessionRef::path(session_path.clone())
                 .expect("test precondition"),
         )
         .expect("test session is valid"),
     );
     terminal.set_hook_report_at(
-        shepr_agent::agent::ReportOrigin::parse("shepr:pi", "pi").expect("test origin"),
-        shepr_agent::detect::AgentState::Working,
-        shepr_agent::agent::resume::AgentSessionRef::path(session_path.clone()),
+        shepr_agent::ReportOrigin::parse("shepr:pi", "pi").expect("test origin"),
+        shepr_agent::AgentState::Working,
+        shepr_agent::resume::AgentSessionRef::path(session_path.clone()),
         Some(20),
-        shepr_agent::ownership::HookClockSample {
+        shepr_detect::ownership::HookClockSample {
             monotonic: std::time::Instant::now(),
             wall: std::time::SystemTime::now(),
         },
@@ -791,7 +786,7 @@ fn capture_contract_tracks_hook_authority_agent_session() {
     assert_eq!(agent_session.agent().label(), "pi");
     assert_eq!(
         agent_session.session_ref().kind(),
-        shepr_agent::agent::resume::AgentSessionRefKind::Path
+        shepr_agent::resume::AgentSessionRefKind::Path
     );
     assert_eq!(agent_session.session_ref().value_str(), session_path);
 }
@@ -810,10 +805,10 @@ fn capture_contract_preserves_restored_agent_session() {
         .expect("test precondition")
         .ownership_mut()
         .set_persisted_agent_session(
-            shepr_agent::agent::resume::PersistedAgentSession::new(
-                shepr_agent::agent::AgentSource::parse("shepr:opencode").expect("bundled source"),
-                shepr_agent::agent::Agent::OpenCode,
-                shepr_agent::agent::resume::AgentSessionRef::id("opencode-session")
+            shepr_agent::resume::PersistedAgentSession::new(
+                shepr_agent::AgentSource::parse("shepr:opencode").expect("bundled source"),
+                shepr_agent::Agent::OpenCode,
+                shepr_agent::resume::AgentSessionRef::id("opencode-session")
                     .expect("test precondition"),
             )
             .expect("test session is valid"),
@@ -829,7 +824,7 @@ fn capture_contract_preserves_restored_agent_session() {
     assert_eq!(agent_session.agent().label(), "opencode");
     assert_eq!(
         agent_session.session_ref().kind(),
-        shepr_agent::agent::resume::AgentSessionRefKind::Id
+        shepr_agent::resume::AgentSessionRefKind::Id
     );
     assert_eq!(agent_session.session_ref().value_str(), "opencode-session");
 }

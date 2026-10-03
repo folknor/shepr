@@ -481,7 +481,7 @@ mod tests {
                 pane_id: "w1:p1"
                     .parse()
                     .map_err(|_| std::io::Error::other("invalid test pane id"))?,
-                agent: Some(shepr_agent::agent::Agent::Codex),
+                agent: Some(shepr_agent::Agent::Codex),
                 terminal_title: None,
                 terminal_title_stripped: None,
                 agent_status: crate::AgentStatus::Working,

@@ -4,8 +4,9 @@ pub(super) use crate::limits::{
     AGENT_STARTUP_GRACE_WINDOW, STABLE_VISIBLE_SIGNAL_REFRESH,
 };
 
-use shepr_agent::detect::manifest::screen_unknown_is_stable;
-use shepr_agent::detect::{Agent, AgentState, Detection, PresentedAgentState};
+use shepr_agent::{Agent, AgentState, PresentedAgentState};
+use shepr_detect::Detection;
+use shepr_detect::manifest::screen_unknown_is_stable;
 
 #[derive(Debug, Default)]
 pub(super) struct PendingIdleConfirmation {
@@ -245,8 +246,7 @@ pub(super) fn detection_update_for_publish_with_osc(
     // Screen text has no indication of which rows came from the current
     // process. If restore seeds saved rows into the active screen, its caller
     // must preserve that provenance before state matching.
-    let detection =
-        shepr_agent::detect::detect_agent_with_osc(agent, content, osc_title, osc_progress);
+    let detection = shepr_detect::detect_agent_with_osc(agent, content, osc_title, osc_progress);
     detection.detection()
 }
 

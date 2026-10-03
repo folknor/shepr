@@ -1,5 +1,5 @@
 use super::{App, CheckpointGeneration};
-use shepr_agent::detect::{Agent, AgentState};
+use shepr_agent::{Agent, AgentState};
 use shepr_core::layout::PaneId;
 use shepr_mux::events::AppEvent;
 use std::time::Instant;
@@ -16,25 +16,25 @@ pub(crate) enum StateEvent {
     StateChanged {
         pane_id: PaneId,
         agent: Option<Agent>,
-        detection: shepr_agent::detect::Detection,
+        detection: shepr_detect::Detection,
         process_exited: bool,
         observed_at: Instant,
     },
     HookStateReported {
         pane_id: PaneId,
-        sample: shepr_agent::ownership::HookClockSample,
-        origin: shepr_agent::agent::ReportOrigin,
+        sample: shepr_detect::ownership::HookClockSample,
+        origin: shepr_agent::ReportOrigin,
         state: AgentState,
         seq: Option<u64>,
-        session_ref: Option<shepr_agent::agent::resume::AgentSessionRef>,
+        session_ref: Option<shepr_agent::resume::AgentSessionRef>,
     },
     AgentSessionReported {
         pane_id: PaneId,
-        sample: shepr_agent::ownership::HookClockSample,
-        origin: shepr_agent::agent::ReportOrigin,
+        sample: shepr_detect::ownership::HookClockSample,
+        origin: shepr_agent::ReportOrigin,
         seq: Option<u64>,
-        session_ref: Option<shepr_agent::agent::resume::AgentSessionRef>,
-        session_start_source: shepr_agent::agent::resume::ReportedSessionStart,
+        session_ref: Option<shepr_agent::resume::AgentSessionRef>,
+        session_start_source: shepr_agent::resume::ReportedSessionStart,
     },
     TerminalCwdReported {
         pane_id: PaneId,
@@ -574,7 +574,7 @@ mod runtime_generation_tests {
         };
         assert!(!runtime_authority(&app));
         let now = app.clock.now;
-        let sample = shepr_agent::ownership::HookClockSample {
+        let sample = shepr_detect::ownership::HookClockSample {
             monotonic: now,
             wall: app.clock.wall_now,
         };
@@ -583,8 +583,8 @@ mod runtime_generation_tests {
         app.state.update_terminal_state(pane_id, |terminal| {
             let ownership = terminal.ownership_mut();
             let _ = ownership.set_detected_state_with_screen_signals_at(
-                Some(shepr_agent::agent::Agent::Omp),
-                shepr_agent::detect::AgentState::Idle,
+                Some(shepr_agent::Agent::Omp),
+                shepr_agent::AgentState::Idle,
                 false,
                 false,
                 now,
@@ -592,17 +592,17 @@ mod runtime_generation_tests {
             // Only a full-lifecycle source (Omp, not Codex) pauses detection,
             // and it owns the state only once a session anchors it.
             ownership.set_persisted_agent_session(
-                shepr_agent::agent::resume::PersistedAgentSession::from_report(
+                shepr_agent::resume::PersistedAgentSession::from_report(
                     "shepr:omp",
                     "omp",
-                    shepr_agent::agent::resume::AgentSessionRef::id("session").expect("session"),
+                    shepr_agent::resume::AgentSessionRef::id("session").expect("session"),
                 )
                 .expect("official identity"),
             );
             let _ = ownership.set_hook_report_at(
-                shepr_agent::agent::ReportOrigin::parse("shepr:omp", "omp").expect("test origin"),
-                shepr_agent::detect::AgentState::Idle,
-                shepr_agent::agent::resume::AgentSessionRef::id("session"),
+                shepr_agent::ReportOrigin::parse("shepr:omp", "omp").expect("test origin"),
+                shepr_agent::AgentState::Idle,
+                shepr_agent::resume::AgentSessionRef::id("session"),
                 None,
                 sample,
             );
@@ -636,10 +636,10 @@ mod runtime_generation_tests {
             .terminal_id(pane_id)
             .expect("terminal")
             .clone();
-        let session = shepr_agent::agent::resume::PersistedAgentSession::from_report(
+        let session = shepr_agent::resume::PersistedAgentSession::from_report(
             "shepr:codex",
             "codex",
-            shepr_agent::agent::resume::AgentSessionRef::id("killed-agent").expect("session"),
+            shepr_agent::resume::AgentSessionRef::id("killed-agent").expect("session"),
         )
         .expect("official identity");
         let now = app.clock.now;
@@ -649,7 +649,7 @@ mod runtime_generation_tests {
             .set_persisted_agent_session(session.clone());
         terminal
             .ownership_mut()
-            .set_detected_agent_process_at(shepr_agent::agent::Agent::Codex, now);
+            .set_detected_agent_process_at(shepr_agent::Agent::Codex, now);
         let runtime = shepr_mux::pane::PaneRuntime::test_with_screen_bytes(20, 5, b"");
         let generation = runtime.generation();
         app.insert_test_runtime(pane_id, runtime);
@@ -659,11 +659,8 @@ mod runtime_generation_tests {
             event: Box::new(
                 AppEvent::StateChanged {
                     pane_id,
-                    agent: Some(shepr_agent::agent::Agent::Codex),
-                    detection: shepr_agent::detect::Detection::new(
-                        shepr_agent::detect::AgentState::Idle,
-                        false,
-                    ),
+                    agent: Some(shepr_agent::Agent::Codex),
+                    detection: shepr_detect::Detection::new(shepr_agent::AgentState::Idle, false),
                     process_exited: true,
                     observed_at: now,
                 }
@@ -711,10 +708,10 @@ mod runtime_generation_tests {
             .terminal_id(pane_id)
             .expect("terminal")
             .clone();
-        let session = shepr_agent::agent::resume::PersistedAgentSession::from_report(
+        let session = shepr_agent::resume::PersistedAgentSession::from_report(
             "shepr:codex",
             "codex",
-            shepr_agent::agent::resume::AgentSessionRef::id("restored").expect("session"),
+            shepr_agent::resume::AgentSessionRef::id("restored").expect("session"),
         )
         .expect("persisted identity");
         let terminal = app.state.terminals.get_mut(&terminal_id).expect("terminal");
@@ -808,7 +805,7 @@ mod runtime_generation_tests {
             app.admit_runtime_event(AppEvent::StateChanged {
                 pane_id,
                 agent: Some(Agent::Codex),
-                detection: shepr_agent::detect::Detection::new(AgentState::Working, false),
+                detection: shepr_detect::Detection::new(AgentState::Working, false),
                 process_exited: false,
                 observed_at: app.clock.now,
             })
@@ -867,7 +864,7 @@ mod runtime_generation_tests {
             AppEvent::StateChanged {
                 pane_id,
                 agent: Some(Agent::Codex),
-                detection: shepr_agent::detect::Detection::new(AgentState::Working, false),
+                detection: shepr_detect::Detection::new(AgentState::Working, false),
                 process_exited: false,
                 observed_at: app.clock.now,
             },

@@ -1,6 +1,6 @@
 use super::*;
 use crate::test_support::*;
-use shepr_agent::detect::{Agent, AgentState};
+use shepr_agent::{Agent, AgentState};
 use shepr_core::layout::Direction;
 use shepr_mux::workspace::Workspace;
 use std::time::Instant;
@@ -21,12 +21,12 @@ fn app_with_workspaces(names: &[&str]) -> AppState {
 fn report_hook_state(
     state: &mut AppState,
     pane_id: shepr_core::layout::PaneId,
-    origin: shepr_agent::agent::ReportOrigin,
+    origin: shepr_agent::ReportOrigin,
     reported_state: AgentState,
     seq: Option<u64>,
-    session_ref: Option<shepr_agent::agent::resume::AgentSessionRef>,
+    session_ref: Option<shepr_agent::resume::AgentSessionRef>,
 ) -> StateUpdate {
-    let sample = shepr_agent::ownership::HookClockSample {
+    let sample = shepr_detect::ownership::HookClockSample {
         monotonic: state.clock_now,
         wall: std::time::SystemTime::now(),
     };
@@ -434,7 +434,7 @@ fn state_changed_updates_pane() {
     state.handle_app_event(AppEvent::StateChanged {
         pane_id,
         agent: Some(Agent::Pi),
-        detection: shepr_agent::detect::Detection::new(AgentState::Working, false),
+        detection: shepr_detect::Detection::new(AgentState::Working, false),
         process_exited: false,
         observed_at: std::time::Instant::now(),
     });
@@ -465,7 +465,7 @@ fn state_changed_events_advance_the_agent_state_change_sequence() {
         app.handle_app_event(AppEvent::StateChanged {
             pane_id,
             agent: Some(Agent::Pi),
-            detection: shepr_agent::detect::Detection::new(state, false),
+            detection: shepr_detect::Detection::new(state, false),
             process_exited: false,
             observed_at: Instant::now(),
         });
@@ -489,7 +489,7 @@ fn agent_state_change_sequence_ignores_idle_unknown_presentation_changes() {
     let state_changed = |state| AppEvent::StateChanged {
         pane_id,
         agent: Some(Agent::Pi),
-        detection: shepr_agent::detect::Detection::new(state, false),
+        detection: shepr_detect::Detection::new(state, false),
         process_exited: false,
         observed_at: Instant::now(),
     };
@@ -546,22 +546,22 @@ fn visible_blocker_overrides_hook_working() {
     state.handle_app_event(AppEvent::StateChanged {
         pane_id: bg_pane_id,
         agent: Some(Agent::Codex),
-        detection: shepr_agent::detect::Detection::new(AgentState::Idle, false),
+        detection: shepr_detect::Detection::new(AgentState::Idle, false),
         process_exited: false,
         observed_at: std::time::Instant::now(),
     });
     report_hook_state(
         &mut state,
         bg_pane_id,
-        shepr_agent::agent::ReportOrigin::parse("shepr:codex", "codex").expect("test origin"),
+        shepr_agent::ReportOrigin::parse("shepr:codex", "codex").expect("test origin"),
         AgentState::Working,
         Some(1),
-        shepr_agent::agent::resume::AgentSessionRef::id("codex-session"),
+        shepr_agent::resume::AgentSessionRef::id("codex-session"),
     );
     state.handle_app_event(AppEvent::StateChanged {
         pane_id: bg_pane_id,
         agent: Some(Agent::Codex),
-        detection: shepr_agent::detect::Detection::new(AgentState::Blocked, true),
+        detection: shepr_detect::Detection::new(AgentState::Blocked, true),
 
         process_exited: false,
         observed_at: std::time::Instant::now(),
@@ -593,17 +593,17 @@ fn reserved_native_state_report_does_not_override_screen_state() {
     state.handle_app_event(AppEvent::StateChanged {
         pane_id,
         agent: Some(Agent::Claude),
-        detection: shepr_agent::detect::Detection::new(AgentState::Working, false),
+        detection: shepr_detect::Detection::new(AgentState::Working, false),
         process_exited: false,
         observed_at: std::time::Instant::now(),
     });
     report_hook_state(
         &mut state,
         pane_id,
-        shepr_agent::agent::ReportOrigin::parse("shepr:claude", "claude").expect("test origin"),
+        shepr_agent::ReportOrigin::parse("shepr:claude", "claude").expect("test origin"),
         AgentState::Blocked,
         Some(1),
-        shepr_agent::agent::resume::AgentSessionRef::id("claude-session"),
+        shepr_agent::resume::AgentSessionRef::id("claude-session"),
     );
     let terminal = state
         .terminals
@@ -616,7 +616,7 @@ fn reserved_native_state_report_does_not_override_screen_state() {
     state.handle_app_event(AppEvent::StateChanged {
         pane_id,
         agent: Some(Agent::Claude),
-        detection: shepr_agent::detect::Detection::new(AgentState::Idle, false),
+        detection: shepr_detect::Detection::new(AgentState::Idle, false),
         process_exited: false,
         observed_at: std::time::Instant::now(),
     });
@@ -646,17 +646,17 @@ fn devin_state_report_refreshes_session_without_overriding_screen_state() {
     state.handle_app_event(AppEvent::StateChanged {
         pane_id,
         agent: Some(Agent::Devin),
-        detection: shepr_agent::detect::Detection::new(AgentState::Idle, false),
+        detection: shepr_detect::Detection::new(AgentState::Idle, false),
         process_exited: false,
         observed_at: std::time::Instant::now(),
     });
     report_hook_state(
         &mut state,
         pane_id,
-        shepr_agent::agent::ReportOrigin::parse("shepr:devin", "devin").expect("test origin"),
+        shepr_agent::ReportOrigin::parse("shepr:devin", "devin").expect("test origin"),
         AgentState::Working,
         Some(1),
-        shepr_agent::agent::resume::AgentSessionRef::id("devin-session"),
+        shepr_agent::resume::AgentSessionRef::id("devin-session"),
     );
 
     let terminal = state
@@ -680,7 +680,7 @@ fn session_ref_only_update_marks_session_dirty_without_visible_update() {
     state.handle_app_event(AppEvent::StateChanged {
         pane_id,
         agent: Some(Agent::Claude),
-        detection: shepr_agent::detect::Detection::new(AgentState::Working, false),
+        detection: shepr_detect::Detection::new(AgentState::Working, false),
         process_exited: false,
         observed_at: std::time::Instant::now(),
     });
@@ -691,10 +691,10 @@ fn session_ref_only_update_marks_session_dirty_without_visible_update() {
     let update = report_hook_state(
         &mut state,
         pane_id,
-        shepr_agent::agent::ReportOrigin::official(Agent::Claude).expect("Claude integration"),
+        shepr_agent::ReportOrigin::official(Agent::Claude).expect("Claude integration"),
         AgentState::Blocked,
         Some(20),
-        shepr_agent::agent::resume::AgentSessionRef::id("claude-session"),
+        shepr_agent::resume::AgentSessionRef::id("claude-session"),
     );
 
     assert_eq!(update, StateUpdate::Unchanged);

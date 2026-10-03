@@ -1,12 +1,12 @@
 use std::path::PathBuf;
 use std::time::Instant;
 
-use shepr_agent::detect::AgentState;
+use shepr_agent::AgentState;
 use shepr_protocol::TerminalId;
 
 pub use names::Label;
-use shepr_agent::ownership::AgentOwnership;
-pub use shepr_agent::ownership::{EffectiveStateChange, HookAuthority, HookClockSample};
+use shepr_detect::ownership::AgentOwnership;
+pub use shepr_detect::ownership::{EffectiveStateChange, HookAuthority, HookClockSample};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct TerminalTitleChange {
@@ -20,9 +20,9 @@ pub struct TerminalTitleChange {
 pub enum AgentResumeState {
     #[default]
     None,
-    Planned(shepr_agent::agent::resume::AgentResumePlan),
+    Planned(shepr_agent::resume::AgentResumePlan),
     Launching {
-        plan: shepr_agent::agent::resume::AgentResumePlan,
+        plan: shepr_agent::resume::AgentResumePlan,
         command: Option<bytes::Bytes>,
     },
 }
@@ -36,10 +36,7 @@ impl AgentResumeState {
         matches!(self, Self::Launching { .. })
     }
 
-    pub fn candidate(
-        &self,
-        has_runtime: bool,
-    ) -> Option<&shepr_agent::agent::resume::AgentResumePlan> {
+    pub fn candidate(&self, has_runtime: bool) -> Option<&shepr_agent::resume::AgentResumePlan> {
         match self {
             Self::Planned(plan) if !has_runtime => Some(plan),
             _ => None,
@@ -190,7 +187,7 @@ fn copy_io_error(error: &std::io::Error) -> std::io::Error {
 /// state and the pane's [`AgentOwnership`].
 ///
 /// One-to-one with a pane-backed PTY. Agent arbitration lives in
-/// `shepr_agent::ownership`; this type only holds the machine.
+/// `shepr_detect::ownership`; this type only holds the machine.
 pub struct TerminalState {
     pub id: TerminalId,
     cwd: PathBuf,
@@ -220,7 +217,7 @@ impl TerminalState {
     pub fn agent_resume(&self) -> &AgentResumeState {
         &self.agent_resume
     }
-    pub fn plan_agent_resume(&mut self, plan: shepr_agent::agent::resume::AgentResumePlan) {
+    pub fn plan_agent_resume(&mut self, plan: shepr_agent::resume::AgentResumePlan) {
         self.agent_resume = AgentResumeState::Planned(plan);
     }
     pub fn begin_agent_resume_launch(&mut self, command: bytes::Bytes) {

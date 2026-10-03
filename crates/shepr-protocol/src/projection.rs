@@ -49,7 +49,7 @@ pub struct ClientShellAgent {
     /// The bundled agent the pane runs, if any. The server accepts hook
     /// reports only from shepr's own integrations, each of which names a
     /// bundled agent, so there is no free-label agent to project.
-    pub agent: Option<shepr_agent::agent::Agent>,
+    pub agent: Option<shepr_agent::Agent>,
     pub terminal_title: Option<String>,
     pub terminal_title_stripped: Option<String>,
     pub agent_status: AgentStatus,

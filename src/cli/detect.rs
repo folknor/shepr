@@ -217,9 +217,9 @@ pub(super) fn explain_file(
             ),
         )
     })?;
-    Ok(shepr_agent::detect::manifest::explain_for_label(
+    Ok(shepr_detect::manifest::explain_for_label(
         agent_label,
-        shepr_agent::detect::manifest::DetectionInput {
+        shepr_detect::manifest::DetectionInput {
             screen: &capture.screen,
             osc_title: &capture.osc_title,
             osc_progress: &capture.osc_progress,
@@ -253,7 +253,7 @@ pub(super) fn print_explain_text(explain: &DetectionExplanation, verbose: bool) 
     if let DetectionStateSource::HookAuthority { skip_reason, .. } = &explain.state_source {
         println!("screen_detection_skip_reason: {skip_reason}");
     }
-    if let Some(shepr_agent::detect::manifest::SkippedUpdateReason::MatchedRule { rule_id }) =
+    if let Some(shepr_detect::manifest::SkippedUpdateReason::MatchedRule { rule_id }) =
         &explain.skipped_update_reason
     {
         println!("skipped_update_reason: matched_rule:{rule_id}");
@@ -422,9 +422,9 @@ mod tests {
 
     #[test]
     fn renamed_explanation_fields_are_a_decode_error() {
-        let explain: DetectionExplanation = shepr_agent::detect::manifest::explain_for_label(
+        let explain: DetectionExplanation = shepr_detect::manifest::explain_for_label(
             "codex",
-            shepr_agent::detect::manifest::DetectionInput {
+            shepr_detect::manifest::DetectionInput {
                 screen: "",
                 osc_title: "",
                 osc_progress: "",

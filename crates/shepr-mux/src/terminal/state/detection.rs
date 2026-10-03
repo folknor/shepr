@@ -21,7 +21,7 @@ impl TerminalState {
 
     pub fn with_pending_agent_resume_plan(
         mut self,
-        plan: shepr_agent::agent::resume::AgentResumePlan,
+        plan: shepr_agent::resume::AgentResumePlan,
     ) -> Self {
         self.agent_resume = AgentResumeState::Planned(plan);
         self
@@ -42,7 +42,7 @@ impl TerminalState {
         &mut self,
         error: super::PaneStartFailure,
         now: Instant,
-    ) -> shepr_agent::ownership::AgentOwnershipMutation {
+    ) -> shepr_detect::ownership::AgentOwnershipMutation {
         self.agent_resume = AgentResumeState::None;
         self.restore_error = Some(error);
         if self.ownership.detected_agent().is_some() {
@@ -54,6 +54,6 @@ impl TerminalState {
                 now,
             );
         }
-        shepr_agent::ownership::AgentOwnershipMutation::default()
+        shepr_detect::ownership::AgentOwnershipMutation::default()
     }
 }

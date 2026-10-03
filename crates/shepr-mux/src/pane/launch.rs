@@ -16,7 +16,7 @@ fn scrubbed_pane_names() -> impl Iterator<Item = RegisteredEnv> {
             )
         })
         .chain(
-            shepr_agent::agent::AGENTS
+            shepr_agent::AGENTS
                 .iter()
                 .flat_map(|agent| agent.session_markers.iter().copied())
                 .map(RegisteredEnv::from),

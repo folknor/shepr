@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::terminal::TerminalState;
-use shepr_agent::detect::PresentedAgentState;
+use shepr_agent::PresentedAgentState;
 use shepr_protocol::TerminalId;
 
 use super::Workspace;
@@ -30,7 +30,7 @@ impl Workspace {
 
 #[cfg(test)]
 mod tests {
-    use shepr_agent::detect::AgentState;
+    use shepr_agent::AgentState;
     use shepr_core::layout::{Direction, PaneId};
 
     use super::*;

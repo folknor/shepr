@@ -280,7 +280,7 @@ pub struct PaneSnapshot {
     pub agent_session: Option<PaneAgentSessionSnapshot>,
 }
 
-pub type PaneAgentSessionSnapshot = shepr_agent::agent::resume::PersistedAgentSession;
+pub type PaneAgentSessionSnapshot = shepr_agent::resume::PersistedAgentSession;
 
 // Agent labels and session formats can disappear between builds. A bad saved
 // session must not discard the pane or unrelated workspaces.
@@ -1352,7 +1352,7 @@ mod tests {
 
     #[test]
     fn invalid_live_hook_authority_falls_back_to_persisted_agent_session() {
-        use shepr_agent::agent::resume::AgentSessionRef;
+        use shepr_agent::resume::AgentSessionRef;
         for (source, label, live_ref) in [
             (
                 "shepr:codex",
@@ -1371,19 +1371,18 @@ mod tests {
                 .terminal_id(pane_id)
                 .expect("test terminal")
                 .clone();
-            let saved_ref = shepr_agent::agent::resume::AgentSessionRef::id("saved-session")
+            let saved_ref = shepr_agent::resume::AgentSessionRef::id("saved-session")
                 .expect("test session ref");
             let mut terminal = TerminalState::new(terminal_id.clone(), PathBuf::from("/"));
             terminal.seed_hook_authority_for_test(Some(crate::terminal::state::HookAuthority {
-                origin: shepr_agent::agent::ReportOrigin::parse(source, label)
-                    .expect("test origin"),
-                state: shepr_agent::detect::AgentState::Working,
+                origin: shepr_agent::ReportOrigin::parse(source, label).expect("test origin"),
+                state: shepr_agent::AgentState::Working,
                 reported_at: std::time::Instant::now(),
                 session_ref: Some(live_ref),
             }));
-            let expected = shepr_agent::agent::resume::PersistedAgentSession::new(
-                shepr_agent::agent::AgentSource::new(shepr_agent::agent::IntegrationTarget::Claude),
-                shepr_agent::agent::Agent::Claude,
+            let expected = shepr_agent::resume::PersistedAgentSession::new(
+                shepr_agent::AgentSource::new(shepr_agent::IntegrationTarget::Claude),
+                shepr_agent::Agent::Claude,
                 saved_ref.clone(),
             )
             .expect("test session is valid");

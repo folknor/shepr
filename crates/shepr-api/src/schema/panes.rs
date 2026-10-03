@@ -1,6 +1,6 @@
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
-use shepr_agent::agent::resume::{AgentSessionStartSource, UnrecognizedAgentSessionStartSource};
+use shepr_agent::resume::{AgentSessionStartSource, UnrecognizedAgentSessionStartSource};
 
 use super::common::PaneAgentState;
 

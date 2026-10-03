@@ -1252,11 +1252,11 @@ dependencies = [
  "clap",
  "serde",
  "serde_json",
- "shepr-agent",
  "shepr-api",
  "shepr-client",
  "shepr-config",
  "shepr-core",
+ "shepr-detect",
  "shepr-platform",
  "shepr-protocol",
  "shepr-remote",
@@ -1271,18 +1271,9 @@ dependencies = [
 name = "shepr-agent"
 version = "0.1.0"
 dependencies = [
- "jsonc-parser",
- "libc",
- "regex",
  "serde",
  "serde_json",
  "shepr-core",
- "shepr-platform",
- "shepr-pty",
- "shepr-test-support",
- "toml",
- "toml_edit",
- "tracing",
 ]
 
 [[package]]
@@ -1293,6 +1284,7 @@ dependencies = [
  "serde_json",
  "shepr-agent",
  "shepr-config",
+ "shepr-detect",
  "shepr-platform",
  "shepr-protocol",
  "shepr-test-support",
@@ -1358,6 +1350,39 @@ dependencies = [
 ]
 
 [[package]]
+name = "shepr-detect"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "regex",
+ "serde",
+ "shepr-agent",
+ "shepr-core",
+ "shepr-platform",
+ "shepr-pty",
+ "shepr-test-support",
+ "toml",
+ "tracing",
+]
+
+[[package]]
+name = "shepr-integration"
+version = "0.1.0"
+dependencies = [
+ "jsonc-parser",
+ "libc",
+ "regex",
+ "serde_json",
+ "shepr-agent",
+ "shepr-core",
+ "shepr-platform",
+ "shepr-test-support",
+ "toml",
+ "toml_edit",
+ "tracing",
+]
+
+[[package]]
 name = "shepr-mux"
 version = "0.1.0"
 dependencies = [
@@ -1372,6 +1397,7 @@ dependencies = [
  "shepr-agent",
  "shepr-config",
  "shepr-core",
+ "shepr-detect",
  "shepr-platform",
  "shepr-protocol",
  "shepr-pty",
@@ -1454,6 +1480,8 @@ dependencies = [
  "shepr-client",
  "shepr-config",
  "shepr-core",
+ "shepr-detect",
+ "shepr-integration",
  "shepr-mux",
  "shepr-platform",
  "shepr-protocol",

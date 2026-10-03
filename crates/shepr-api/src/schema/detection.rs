@@ -1,8 +1,8 @@
 //! Typed diagnostic payloads for screen rules and hook authority.
 
 use serde::{Deserialize, Serialize};
-use shepr_agent::detect::AgentState;
-use shepr_agent::detect::manifest::{DetectionExplain, FallbackReason, SkippedUpdateReason};
+use shepr_agent::AgentState;
+use shepr_detect::manifest::{DetectionExplain, FallbackReason, SkippedUpdateReason};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -181,9 +181,9 @@ mod tests {
 
     #[test]
     fn screen_and_hook_explanations_round_trip_as_typed_payloads() {
-        let screen: DetectionExplanation = shepr_agent::detect::manifest::explain_for_label(
+        let screen: DetectionExplanation = shepr_detect::manifest::explain_for_label(
             "codex",
-            shepr_agent::detect::manifest::DetectionInput {
+            shepr_detect::manifest::DetectionInput {
                 screen: "press enter to confirm or esc to cancel",
                 osc_title: "",
                 osc_progress: "",
@@ -206,9 +206,9 @@ mod tests {
 
     #[test]
     fn unknown_agent_label_has_a_closed_fallback_reason() {
-        let explain: DetectionExplanation = shepr_agent::detect::manifest::explain_for_label(
+        let explain: DetectionExplanation = shepr_detect::manifest::explain_for_label(
             "not-yet-known",
-            shepr_agent::detect::manifest::DetectionInput {
+            shepr_detect::manifest::DetectionInput {
                 screen: "",
                 osc_title: "",
                 osc_progress: "",

@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
-use shepr_agent::detect::{Agent, AgentState};
+use shepr_agent::{Agent, AgentState};
 use shepr_core::layout::{Direction, PaneId};
 use shepr_mux::pane::{PaneRuntime, PaneRuntimeRegistry, PaneState};
 use shepr_mux::terminal::{EffectiveStateChange, TerminalState};
@@ -347,9 +347,9 @@ pub(crate) fn test_workspace_id(id: &str) -> shepr_protocol::WorkspaceId {
 pub(crate) fn test_codex_plan(
     identity: &str,
     argv: Vec<String>,
-) -> shepr_agent::agent::resume::AgentResumePlan {
-    use shepr_agent::agent::resume::{AgentSessionRef, PersistedAgentSession};
-    use shepr_agent::agent::{AgentSource, IntegrationTarget};
+) -> shepr_agent::resume::AgentResumePlan {
+    use shepr_agent::resume::{AgentSessionRef, PersistedAgentSession};
+    use shepr_agent::{AgentSource, IntegrationTarget};
     let session_id = identity.rsplit('\0').next().unwrap_or(identity);
     let session = PersistedAgentSession::new(
         AgentSource::new(IntegrationTarget::Codex),
@@ -359,7 +359,7 @@ pub(crate) fn test_codex_plan(
     .expect("test session is a Codex session");
     let mut argv = argv.into_iter();
     let program = argv.next().expect("test resume command has an executable");
-    shepr_agent::agent::resume::AgentResumePlan::for_command(&session, program, argv.collect())
+    shepr_agent::resume::AgentResumePlan::for_command(&session, program, argv.collect())
         .expect("test resume command has a nonempty executable")
 }
 

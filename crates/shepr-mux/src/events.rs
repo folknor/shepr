@@ -7,7 +7,7 @@
 use std::time::Instant;
 
 use crate::git::{GitStatusCacheEntry, WorkspaceGitStatus};
-use shepr_agent::detect::Agent;
+use shepr_agent::Agent;
 use shepr_core::layout::PaneId;
 
 /// An event from a background task to the main loop.
@@ -43,7 +43,7 @@ pub enum AppEvent {
     StateChanged {
         pane_id: PaneId,
         agent: Option<Agent>,
-        detection: shepr_agent::detect::Detection,
+        detection: shepr_detect::Detection,
         process_exited: bool,
         observed_at: Instant,
     },
@@ -83,7 +83,7 @@ pub enum RuntimeEvent {
     /// Fallback detector state changed in a pane.
     StateChanged {
         agent: Option<Agent>,
-        detection: shepr_agent::detect::Detection,
+        detection: shepr_detect::Detection,
         process_exited: bool,
         observed_at: Instant,
     },

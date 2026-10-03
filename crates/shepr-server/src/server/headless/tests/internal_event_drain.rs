@@ -1,5 +1,5 @@
 use super::*;
-use shepr_agent::detect::{Agent, AgentState};
+use shepr_agent::{Agent, AgentState};
 use shepr_mux::events::AppEvent;
 
 #[test]
@@ -62,7 +62,7 @@ async fn full_internal_event_queue_eventually_applies_working_to_idle_transition
         AppEvent::StateChanged {
             pane_id,
             agent: Some(Agent::Pi),
-            detection: shepr_agent::detect::Detection::new(AgentState::Working, false),
+            detection: shepr_detect::Detection::new(AgentState::Working, false),
             process_exited: false,
             observed_at: now,
         },
@@ -98,7 +98,7 @@ async fn full_internal_event_queue_eventually_applies_working_to_idle_transition
         AppEvent::StateChanged {
             pane_id,
             agent: Some(Agent::Pi),
-            detection: shepr_agent::detect::Detection::new(AgentState::Idle, false),
+            detection: shepr_detect::Detection::new(AgentState::Idle, false),
             process_exited: false,
             observed_at: now,
         },

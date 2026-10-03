@@ -81,7 +81,7 @@ server-serving)
 ## TYP-024 - The server collapses typed hook outcomes again
 
 `HookOutcome::{Applied, Parked, Rejected}` with typed rejection reasons now
-comes out of the ownership transitions (`crates/shepr-agent/src/ownership/mod.rs`),
+comes out of the ownership transitions (`crates/shepr-detect/src/ownership/mod.rs`),
 with outcome-preserving entry points in mux `terminal/state/hooks.rs`. Still
 open: server admission does not consume `report_hook_outcome_at` and
 `report_session_start_outcome_at`, so rejection and parking still collapse to
@@ -169,14 +169,14 @@ read better. Reported by foundation, mux-state and server-app.
 ## TYP-016 - Agent state still has three mirror spellings
 
 Protocol `AgentStatus` and API `PaneAgentState` are now aliases of the shared
-presented and detection states. Still open: `ManifestState` in shepr-agent
+presented and detection states. Still open: `ManifestState` in shepr-detect
 manifests, the hook action names that overlap three state names, and the
 `DetectionState` mirror in `crates/shepr-api/src/schema/detection.rs`.
 (agents, contracts)
 
 ## TYP-020 - CLI requests return untyped JSON
 
-Detect explain is now typed from shepr-agent through the server and the CLI
+Detect explain is now typed from shepr-detect through the server and the CLI
 printer. Still open: the shared `cli::send_request` returns
 `serde_json::Value`, and each CLI command probes `response.get("error")` before
 decoding its own result. Reported by agents, contracts, edges and server-app.

@@ -49,7 +49,7 @@ Decided: move the bridge relay, its watchdog and the SSH attempt timing into
 remote, keeping the heartbeat cadence and bridge expiry related through one
 shared connection-health constant with the assertion in remote. The
 suspend-aware `CLOCK_BOOTTIME` clock stays in platform. `ChildExitReason`
-stays in platform (shepr-agent ownership consumes it, and AGENTS.md assigns
+stays in platform (shepr-detect ownership consumes it, and AGENTS.md assigns
 exit classification there); platform stays flat; `config_file.rs`'s
 ownership, permission and xattr primitives stay in platform. Last of the crate
 waves.
@@ -112,35 +112,6 @@ server-app and contracts.
 
 Stale in part: `shepr_vt::InputModes` exists and the runtime key path already
 takes it under one core lock. The remaining separation is decided under STR-004.
-
-## STR-006 - shepr-agent is three crates
-
-Identity (`agent/mod.rs`, `agent/resume.rs` types: tiny and pure, needed by
-config, the client sidebar, mux and server), detection (regex engine over screen
-text plus a `/proc` prober, server-only), and integration (a config-file editor
-with `toml_edit`, `jsonc-parser`, flock locks, atomic replace and 16 bundled
-assets, server-only and launch-time only). Because they share a crate the client
-binary's graph includes the editor and the engine, and config depends on all of
-it for one enum and one shell-name predicate. Suggested: `shepr-agent` (identity,
-descriptor, report origin, session ref, state), `shepr-detect` (manifests, rule
-engine, process identification over platform `/proc` readers), and
-`shepr-integration` (installer and assets), the descriptor staying the single
-table. `/proc` plumbing (`detect/proc_tree.rs`: stat parsing, task and children
-walking, cmdline, cwd readlink, budgets and the `FOREGROUND_*` limits) moves to
-platform by AGENTS.md's own rule; mux then stops reaching through
-`shepr_agent::detect::` for it. `AgentSessionRefKind` lives in core for consumers
-that left; it can move into `resume.rs` or become `AgentSessionRef::is_id()`.
-(agents)
-
-Decided: `shepr-agent` (identity, descriptor table, report origin and session
-vocabulary, `AgentState`, label normalization: `report.rs` must stop calling
-into detection), `shepr-detect` (manifests, rule engine, process recognition
-over platform `/proc` readers, and ownership arbitration as its own module,
-usable without the engine), `shepr-integration` (installer and assets). The
-root binary keeps detection for `detect explain --file`, and the api detect
-explain types come from `shepr-detect`; the payoff is the integration editor
-and assets leaving the client and config graphs, and config depending on
-identity only. Installer assets stay out of the identity descriptor.
 
 ## STR-010 - shepr-config does four unrelated jobs
 

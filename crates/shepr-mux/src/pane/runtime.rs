@@ -550,7 +550,7 @@ mod tests {
         );
         assert_eq!(arbiter.ending(), None);
     }
-    use shepr_agent::detect::Agent;
+    use shepr_agent::Agent;
     use shepr_pty::PtyCommand;
     use shepr_test_support::fixture::{self, Held, Signal, Step};
 
@@ -952,7 +952,7 @@ mod tests {
             .spawn()
             .expect("spawn process in cwd");
         let pid = shepr_platform::Pid::new(child.id()).expect("fixture pid");
-        let expected_cwd = shepr_agent::detect::process_cwd(pid)
+        let expected_cwd = shepr_platform::process_cwd(pid)
             .expect("resolve process cwd before restricting traversal");
         std::fs::set_permissions(&private, std::fs::Permissions::from_mode(0o000))
             .expect("make cwd path untraversable");
@@ -1527,7 +1527,7 @@ mod tests {
         );
         let pid = shepr_platform::Pid::new(child.0.id()).expect("fixture pid");
         assert_eq!(
-            shepr_agent::detect::process_cwd(pid),
+            shepr_platform::process_cwd(pid),
             Some(deleted.clone()),
             "test precondition: process starts in the selected cwd"
         );
@@ -1535,7 +1535,7 @@ mod tests {
             shepr_platform::ProcessHandle::open(pid).expect("fixture process handle"),
         )));
         std::fs::remove_dir(&deleted).expect("unlink process cwd");
-        let deleted_link = shepr_agent::detect::process_cwd(pid).expect("read unlinked cwd");
+        let deleted_link = shepr_platform::process_cwd(pid).expect("read unlinked cwd");
         assert!(deleted_link.to_string_lossy().ends_with(" (deleted)"));
 
         *shepr_core::locks::lock_auxiliary(&runtime.cwd.remembered) = Some(PersistedCwd {
@@ -1619,7 +1619,7 @@ mod tests {
                 .expect("spawn process in cwd"),
         );
         let pid = shepr_platform::Pid::new(child.0.id()).expect("fixture pid");
-        let shell_cwd = shepr_agent::detect::process_cwd(pid).expect("read shell cwd");
+        let shell_cwd = shepr_platform::process_cwd(pid).expect("read shell cwd");
         assert_eq!(shell_cwd, physical);
         runtime.child_liveness = Arc::new(ChildLiveness::running_with_handle(Arc::new(
             shepr_platform::ProcessHandle::open(pid).expect("fixture process handle"),
@@ -1814,8 +1814,8 @@ mod tests {
         );
     }
 
-    fn foreground_process(pid: u32, name: &str) -> shepr_agent::detect::ForegroundProcess {
-        shepr_agent::detect::ForegroundProcess {
+    fn foreground_process(pid: u32, name: &str) -> shepr_platform::ForegroundProcess {
+        shepr_platform::ForegroundProcess {
             pid: test_pid(pid),
             name: name.to_string(),
             argv: None,
@@ -1832,7 +1832,7 @@ mod tests {
 
     #[test]
     fn identifiable_foreground_leader_wins_over_other_job_members() {
-        let job = shepr_agent::detect::ForegroundJob {
+        let job = shepr_platform::ForegroundJob {
             process_group_id: test_pgid(99),
             processes: vec![
                 foreground_process(99, "codex"),
@@ -1851,11 +1851,11 @@ mod tests {
 
     #[test]
     fn unidentified_leader_job_falls_through_to_foreground_job() {
-        let leader_job = shepr_agent::detect::ForegroundJob {
+        let leader_job = shepr_platform::ForegroundJob {
             process_group_id: test_pgid(99),
             processes: vec![foreground_process(99, "some_vm")],
         };
-        let foreground_job = shepr_agent::detect::ForegroundJob {
+        let foreground_job = shepr_platform::ForegroundJob {
             process_group_id: test_pgid(99),
             processes: vec![
                 foreground_process(99, "some_vm"),
@@ -1965,7 +1965,7 @@ mod tests {
             ),
             StateChangedUpdate {
                 agent: Some(Agent::Pi),
-                detection: shepr_agent::detect::Detection::Idle { visible: false },
+                detection: shepr_detect::Detection::Idle { visible: false },
                 process_exited: false,
                 observed_at: std::time::Instant::now(),
             },
@@ -2004,7 +2004,7 @@ mod tests {
             *event,
             crate::events::RuntimeEvent::StateChanged {
                 agent: Some(Agent::Pi),
-                detection: shepr_agent::detect::Detection::Idle { visible: false },
+                detection: shepr_detect::Detection::Idle { visible: false },
                 process_exited: false,
                 observed_at: _,
             }

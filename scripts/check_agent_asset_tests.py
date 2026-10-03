@@ -23,7 +23,7 @@ import sys
 
 from _brokkr_config import ROOT
 
-ASSETS = ROOT / "crates" / "shepr-agent" / "src" / "integration" / "assets"
+ASSETS = ROOT / "crates" / "shepr-integration" / "src" / "assets"
 
 PASS = re.compile(r"^\s*(\d+) pass\s*$", re.MULTILINE)
 FAIL = re.compile(r"^\s*(\d+) fail\s*$", re.MULTILINE)

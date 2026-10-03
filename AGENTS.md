@@ -24,9 +24,9 @@ Kept:
 - Terminal core: `alacritty_terminal` for emulation, a small libc PTY layer
   (`crates/shepr-pty/src/`), PTY hosting
 - Workspaces, panes, layout, the agent sidebar
-- Agent detection from bundled manifests (`crates/shepr-agent/src/detect/manifests/*.toml`),
+- Agent detection from bundled manifests (`crates/shepr-detect/src/manifests/*.toml`),
   compiled into the binary
-- Agent integrations (`crates/shepr-agent/src/integration/`): hooks installed into each agent's
+- Agent integrations (`crates/shepr-integration/src/`): hooks installed into each agent's
   own config that report state and session IDs back to shepr. The server
   accepts a report only from these integrations, each under its own
   `shepr:<agent>` source naming its agent; any other source is refused. A
@@ -155,14 +155,21 @@ orientation, and nothing checks them:
 - `shepr-vt`: terminal emulation and read formatting.
 - `shepr-pty`: PTY process launch and IO, using `shepr-platform` for fd plumbing, socket admission and process identities.
 - `shepr-test-support`: shared environment isolation, scratch directories and hook asset capture for tests.
-- `shepr-agent`: detection manifests and agent integrations.
+- `shepr-agent`: agent identity: the descriptor table, report origins,
+  session and resume vocabulary, `AgentState` and label normalization.
+- `shepr-detect`: detection manifests and their rule engine, agent process
+  recognition over `shepr-platform`'s `/proc` readers, and per-pane ownership
+  arbitration between screen detection and integration reports.
+- `shepr-integration`: the agent integration installer and its bundled hook
+  assets; only the server links it.
 - `shepr-config`: configuration parsing and validation.
 - `shepr-protocol`: compact wire types and codec; it uses `shepr-core` for
   shared grid and input-batch resource budgets that config also borrows, and
   `shepr-agent` for the agent identity the client projection carries.
 - `shepr-api`: JSON API schema and client, and the server socket: its listener
   tells JSON requests from TUI connections and hands the latter to the server's
-  client protocol.
+  client protocol. Its detect explain schema is built on `shepr-detect`'s
+  explanation types.
 - `shepr-termio`: terminal input encoding and parsing, the fixed key binding
   tables the client's modes and overlays route by, copy-mode keys and text
   helpers, scrolling, selection rendering, frame blitting and host terminal
@@ -172,7 +179,8 @@ orientation, and nothing checks them:
 - `shepr-server`: application state, UI and serving.
 - `shepr-client`: endpoint management and TUI presentation.
 - `shepr-daemon`: the `shepr-server` executable, a thin `main` over
-  `shepr-server` (the one package the client binary never links).
+  `shepr-server`, kept apart so the client binary links none of the
+  server-only crates.
 
 `shepr-test-fixtures` (dev-only) sits above config, protocol, pty and termio,
 so only crates above those can take it.

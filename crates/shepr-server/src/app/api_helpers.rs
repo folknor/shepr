@@ -10,18 +10,16 @@ pub(super) fn pane_not_found(pane_id: &str) -> ApiError {
 
 pub(super) fn detect_state_from_api(
     state: shepr_api::schema::PaneAgentState,
-) -> shepr_agent::detect::AgentState {
+) -> shepr_agent::AgentState {
     state
 }
 
-pub(super) fn pane_agent_status(
-    state: shepr_agent::detect::AgentState,
-) -> shepr_api::schema::AgentStatus {
+pub(super) fn pane_agent_status(state: shepr_agent::AgentState) -> shepr_api::schema::AgentStatus {
     presented_agent_status(state.presentation_state())
 }
 
 pub(super) fn presented_agent_status(
-    state: shepr_agent::detect::PresentedAgentState,
+    state: shepr_agent::PresentedAgentState,
 ) -> shepr_api::schema::AgentStatus {
     state
 }
@@ -37,7 +35,7 @@ pub(super) fn normalized_user_label(label: Option<String>) -> Option<String> {
 #[cfg(test)]
 mod agent_status_tests {
     use super::pane_agent_status;
-    use shepr_agent::detect::AgentState;
+    use shepr_agent::AgentState;
     use shepr_api::schema::AgentStatus;
 
     #[test]

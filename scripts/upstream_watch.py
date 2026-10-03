@@ -46,13 +46,16 @@ BASELINE = ROOT / "scripts" / "upstream_baseline.txt"
 # (upstream prefix, shepr prefix). Longest upstream prefix wins. A path under an
 # upstream prefix maps to the same relative path under the shepr prefix.
 MAPPING = [
-    ("src/integration/assets/", "crates/shepr-agent/src/integration/assets/"),
-    ("src/integration/", "crates/shepr-agent/src/integration/"),
-    ("src/detect/manifests/", "crates/shepr-agent/src/detect/manifests/"),
-    ("src/detect/", "crates/shepr-agent/src/detect/"),
+    ("src/integration/assets/", "crates/shepr-integration/src/assets/"),
+    # Upstream's module roots are the shepr crates' lib.rs.
+    ("src/integration/mod.rs", "crates/shepr-integration/src/lib.rs"),
+    ("src/integration/", "crates/shepr-integration/src/"),
+    ("src/detect/manifests/", "crates/shepr-detect/src/manifests/"),
+    ("src/detect/mod.rs", "crates/shepr-detect/src/lib.rs"),
+    ("src/detect/", "crates/shepr-detect/src/"),
     # Upstream's published copies of the manifests, one file per agent under
     # the same names as the bundled ones.
-    ("distribution/agent-detection/", "crates/shepr-agent/src/detect/manifests/"),
+    ("distribution/agent-detection/", "crates/shepr-detect/src/manifests/"),
     ("src/pane/agent_detection.rs", "crates/shepr-mux/src/pane/agent_detection.rs"),
     ("src/server/autodetect.rs", "src/autodetect.rs"),
     # Host terminal input framing: escape disambiguation, split mouse reports,
@@ -68,13 +71,13 @@ MAPPING = [
 # counterpart at all.
 LOOSE = [
     ("distribution/agent-detection/index.toml", None, "upstream's publish catalog; shepr publishes nothing"),
-    ("scripts/agent_detection_manifest_check.py", "crates/shepr-agent/src/detect/", "manifest validation and its tests"),
-    ("scripts/test_agent_detection_manifest_check.py", "crates/shepr-agent/src/detect/", "manifest validation and its tests"),
-    ("scripts/test_hermes_integration_asset.py", "crates/shepr-agent/src/integration/", "asset tests"),
-    ("tests/auto_detect.rs", "crates/shepr-agent/src/detect/", "detection tests"),
-    ("src/detect.rs", "crates/shepr-agent/src/detect/", "detection entry point"),
-    ("src/integration.rs", "crates/shepr-agent/src/integration/", "integration entry point"),
-    ("src/agent", "crates/shepr-agent/src/agent/", "agent list, resume definitions"),
+    ("scripts/agent_detection_manifest_check.py", "crates/shepr-detect/src/", "manifest validation and its tests"),
+    ("scripts/test_agent_detection_manifest_check.py", "crates/shepr-detect/src/", "manifest validation and its tests"),
+    ("scripts/test_hermes_integration_asset.py", "crates/shepr-integration/src/", "asset tests"),
+    ("tests/auto_detect.rs", "crates/shepr-detect/src/", "detection tests"),
+    ("src/detect.rs", "crates/shepr-detect/src/", "detection entry point"),
+    ("src/integration.rs", "crates/shepr-integration/src/", "integration entry point"),
+    ("src/agent", "crates/shepr-agent/src/", "agent list, resume definitions"),
     ("src/terminal/state.rs", "crates/shepr-mux/src/terminal/state/", "hook authority, sessions"),
     ("src/app/actions.rs", "crates/shepr-server/src/app/", "hook-lifecycle tests"),
 ]
@@ -200,7 +203,7 @@ def fork_point(do_fetch: bool, limit: int = 300) -> int:
     """
     ensure_clone(do_fetch)
     manifests = "src/detect/manifests/"
-    mine_dir = ROOT / "crates/shepr-agent/src/detect/manifests"
+    mine_dir = ROOT / "crates/shepr-detect/src/manifests"
     mine = {p.name: p.read_text().splitlines() for p in mine_dir.glob("*.toml")}
     revs = git("rev-list", f"--max-count={limit}", "HEAD", "--", manifests).split()
     cache: dict[tuple[str, str], int] = {}

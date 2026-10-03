@@ -1,5 +1,5 @@
 /// Agent identity shared with detection, integrations, resume and presentation.
-pub use shepr_agent::agent::Agent as ConfigAgent;
+pub use shepr_agent::Agent as ConfigAgent;
 
 /// Parse canonical agent names and declared aliases without process-name normalization.
 pub(crate) fn parse_config_agent(value: &str) -> Option<ConfigAgent> {

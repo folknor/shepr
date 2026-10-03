@@ -376,10 +376,7 @@ async fn headless_api_reads_latest_title() {
         .get_mut(&terminal_id)
         .expect("test precondition")
         .ownership_mut()
-        .set_detected_agent_process_at(
-            shepr_agent::detect::Agent::Claude,
-            std::time::Instant::now(),
-        );
+        .set_detected_agent_process_at(shepr_agent::Agent::Claude, std::time::Instant::now());
     let runtime = shepr_mux::pane::PaneRuntime::test_with_screen_bytes(80, 24, b"");
     runtime.test_process_pty_bytes(b"\x1b]0;\xe2\xa0\x8b task\x07");
     server
@@ -1343,8 +1340,8 @@ async fn client_shell_snapshot_presents_unknown_agent_as_idle() {
         .get_mut(&terminal_id)
         .expect("terminal")
         .set_detected_state(
-            Some(shepr_agent::detect::Agent::Pi),
-            shepr_agent::detect::AgentState::Unknown,
+            Some(shepr_agent::Agent::Pi),
+            shepr_agent::AgentState::Unknown,
         );
 
     let (writer, control_rx, _render_rx) = test_client_writer();
@@ -2437,11 +2434,8 @@ async fn each_kind_of_change_sends_a_new_projection_through_its_real_path() {
         pane_id,
         AppEvent::StateChanged {
             pane_id,
-            agent: Some(shepr_agent::detect::Agent::Pi),
-            detection: shepr_agent::detect::Detection::new(
-                shepr_agent::detect::AgentState::Working,
-                false,
-            ),
+            agent: Some(shepr_agent::Agent::Pi),
+            detection: shepr_detect::Detection::new(shepr_agent::AgentState::Working, false),
             process_exited: false,
             observed_at: Instant::now(),
         },
@@ -6192,11 +6186,8 @@ async fn unchanged_internal_events_leave_projection_and_sources_clean() {
             server,
             AppEvent::StateChanged {
                 pane_id,
-                agent: Some(shepr_agent::detect::Agent::Codex),
-                detection: shepr_agent::detect::Detection::new(
-                    shepr_agent::detect::AgentState::Working,
-                    false,
-                ),
+                agent: Some(shepr_agent::Agent::Codex),
+                detection: shepr_detect::Detection::new(shepr_agent::AgentState::Working, false),
                 process_exited: false,
                 observed_at: server.app.clock.now,
             },

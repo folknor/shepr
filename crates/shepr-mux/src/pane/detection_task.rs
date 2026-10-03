@@ -133,7 +133,7 @@ impl DetectionTask {
         if !self.live(pid) {
             return None;
         }
-        let foreground_pgid = shepr_agent::detect::foreground_process_group_id(pid);
+        let foreground_pgid = shepr_platform::foreground_process_group_id(pid);
         if !self.live(pid) {
             return None;
         }

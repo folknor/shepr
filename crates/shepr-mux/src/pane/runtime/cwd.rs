@@ -246,7 +246,7 @@ impl PaneRuntime {
     pub fn foreground_cwd(&self) -> Option<std::path::PathBuf> {
         self.child_liveness
             .observe(|pid| {
-                let foreground_pgid = shepr_agent::detect::foreground_process_group_id(pid);
+                let foreground_pgid = shepr_platform::foreground_process_group_id(pid);
                 let leader_cwd =
                     foreground_pgid.and_then(|group| readlink_process_cwd(group.leader_pid()));
 

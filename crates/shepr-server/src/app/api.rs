@@ -274,7 +274,7 @@ pub(super) mod test_support {
 mod tests {
     use super::*;
     use crate::test_support::*;
-    use shepr_agent::detect::{Agent, AgentState};
+    use shepr_agent::{Agent, AgentState};
     use shepr_protocol::PublicPaneId;
 
     #[test]
@@ -464,12 +464,11 @@ mod tests {
         let observed_at = std::time::Instant::now();
         terminal
             .set_hook_report_at(
-                shepr_agent::agent::ReportOrigin::parse("shepr:codex", "codex")
-                    .expect("test origin"),
+                shepr_agent::ReportOrigin::parse("shepr:codex", "codex").expect("test origin"),
                 AgentState::Working,
-                shepr_agent::agent::resume::AgentSessionRef::id("codex-session"),
+                shepr_agent::resume::AgentSessionRef::id("codex-session"),
                 Some(1),
-                shepr_agent::ownership::HookClockSample {
+                shepr_detect::ownership::HookClockSample {
                     monotonic: observed_at + std::time::Duration::from_secs(1),
                     wall: std::time::SystemTime::now(),
                 },
@@ -484,7 +483,7 @@ mod tests {
             AppEvent::StateChanged {
                 pane_id,
                 agent: Some(Agent::Codex),
-                detection: shepr_agent::detect::Detection::new(AgentState::Idle, false),
+                detection: shepr_detect::Detection::new(AgentState::Idle, false),
                 process_exited: true,
                 observed_at,
             },

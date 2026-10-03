@@ -17,7 +17,7 @@ impl TerminalState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use shepr_agent::detect::Agent;
+    use shepr_agent::Agent;
 
     #[test]
     fn border_label_prefers_manual_label_over_agent_label() {

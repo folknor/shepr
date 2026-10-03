@@ -7,7 +7,7 @@ use crate::pane::PaneRuntime;
 use crate::pane::PaneState;
 use crate::terminal::{Label, PaneStartFailure, TerminalState};
 use crate::workspace::Workspace;
-use shepr_agent::detect::AgentState;
+use shepr_agent::AgentState;
 use shepr_core::layout::{Direction, Node, PaneId, TileLayout};
 use shepr_protocol::{TerminalId, WorkspaceId};
 
@@ -20,11 +20,11 @@ use super::{
 
 struct AgentRestoreState<'a> {
     enabled: bool,
-    resumed_sessions: &'a mut HashSet<shepr_agent::agent::resume::AgentResumeKey>,
+    resumed_sessions: &'a mut HashSet<shepr_agent::resume::AgentResumeKey>,
 }
 
 struct PaneRestoreStartup<'a> {
-    restore_plan: Option<shepr_agent::agent::resume::AgentResumePlan>,
+    restore_plan: Option<shepr_agent::resume::AgentResumePlan>,
     initial_history_ansi: Option<&'a str>,
     duplicate_agent_session: bool,
 }
@@ -195,7 +195,7 @@ enum RestoredPaneStart {
     Running { duplicate_agent_session: bool },
     /// The pane waits for the event loop to type its agent's resume command
     /// into a fresh shell.
-    PendingResume(shepr_agent::agent::resume::AgentResumePlan),
+    PendingResume(shepr_agent::resume::AgentResumePlan),
     /// Nothing could be started (the reason is shown in the pane). The pane
     /// keeps its saved state verbatim so the next start can try again.
     Unavailable(PaneStartFailure),
@@ -561,7 +561,7 @@ fn restore_workspace(
     history: Option<&WorkspaceHistorySnapshot>,
     plan_context: &RestorePlanContext,
     history_carry: &mut HistoryCarry,
-    resumed_agent_sessions: &mut HashSet<shepr_agent::agent::resume::AgentResumeKey>,
+    resumed_agent_sessions: &mut HashSet<shepr_agent::resume::AgentResumeKey>,
 ) -> Option<RestoredWorkspace> {
     let WorkspaceRestorePlan {
         snapshot: snap,
@@ -751,18 +751,18 @@ fn pane_restore_startup<'a>(
 fn restore_plan_for_snapshot(
     session: &PaneAgentSessionSnapshot,
     resume_agents_on_restore: bool,
-) -> Option<shepr_agent::agent::resume::AgentResumePlan> {
+) -> Option<shepr_agent::resume::AgentResumePlan> {
     if !resume_agents_on_restore {
         return None;
     }
     let persisted = persisted_agent_session_from_snapshot(session)?;
-    shepr_agent::agent::resume::plan(&persisted)
+    shepr_agent::resume::plan(&persisted)
 }
 
 fn persisted_agent_session_from_snapshot(
     session: &PaneAgentSessionSnapshot,
-) -> Option<shepr_agent::agent::resume::PersistedAgentSession> {
-    shepr_agent::agent::resume::PersistedAgentSession::new(
+) -> Option<shepr_agent::resume::PersistedAgentSession> {
+    shepr_agent::resume::PersistedAgentSession::new(
         *session.source(),
         session.agent(),
         session.session_ref().clone(),
@@ -772,7 +772,7 @@ fn persisted_agent_session_from_snapshot(
 fn restored_terminal_agent_session(
     session: Option<&PaneAgentSessionSnapshot>,
     duplicate_agent_session: bool,
-) -> Option<shepr_agent::agent::resume::PersistedAgentSession> {
+) -> Option<shepr_agent::resume::PersistedAgentSession> {
     if duplicate_agent_session {
         return None;
     }
@@ -891,8 +891,8 @@ fn restore(
 fn take_restore_plan_for_snapshot(
     session: &PaneAgentSessionSnapshot,
     resume_agents_on_restore: bool,
-    resumed_agent_sessions: &mut HashSet<shepr_agent::agent::resume::AgentResumeKey>,
-) -> Option<shepr_agent::agent::resume::AgentResumePlan> {
+    resumed_agent_sessions: &mut HashSet<shepr_agent::resume::AgentResumeKey>,
+) -> Option<shepr_agent::resume::AgentResumePlan> {
     restore_plan_for_snapshot(session, resume_agents_on_restore)
         .filter(|plan| resumed_agent_sessions.insert(plan.key().clone()))
 }
@@ -915,11 +915,11 @@ mod tests {
 
     fn persisted_test_session(
         source: &str,
-        agent: shepr_agent::agent::Agent,
-        session_ref: shepr_agent::agent::resume::AgentSessionRef,
-    ) -> shepr_agent::agent::resume::PersistedAgentSession {
-        shepr_agent::agent::resume::PersistedAgentSession::new(
-            shepr_agent::agent::AgentSource::parse(source).expect("bundled test source"),
+        agent: shepr_agent::Agent,
+        session_ref: shepr_agent::resume::AgentSessionRef,
+    ) -> shepr_agent::resume::PersistedAgentSession {
+        shepr_agent::resume::PersistedAgentSession::new(
+            shepr_agent::AgentSource::parse(source).expect("bundled test source"),
             agent,
             session_ref,
         )
@@ -996,8 +996,8 @@ mod tests {
         let pane = workspace.panes.get_mut(&0).expect("saved pane");
         pane.agent_session = Some(persisted_test_session(
             "shepr:codex",
-            shepr_agent::agent::Agent::Codex,
-            shepr_agent::agent::resume::AgentSessionRef::id("planned-session").expect("session id"),
+            shepr_agent::Agent::Codex,
+            shepr_agent::resume::AgentSessionRef::id("planned-session").expect("session id"),
         ));
         let mut duplicate = pane.clone();
         duplicate.public_number =
@@ -1150,8 +1150,8 @@ mod tests {
             pane.label = Some(Label::new("keep me").expect("test label"));
             pane.agent_session = Some(persisted_test_session(
                 "shepr:codex",
-                shepr_agent::agent::Agent::Codex,
-                shepr_agent::agent::resume::AgentSessionRef::id("codex-session")
+                shepr_agent::Agent::Codex,
+                shepr_agent::resume::AgentSessionRef::id("codex-session")
                     .expect("test precondition"),
             ));
             if missing_cwd {
@@ -1631,8 +1631,8 @@ mod tests {
         let pi_session_path = test_session_path("pi-session.jsonl");
         let session = persisted_test_session(
             "shepr:pi",
-            shepr_agent::agent::Agent::Pi,
-            shepr_agent::agent::resume::AgentSessionRef::path(pi_session_path.clone())
+            shepr_agent::Agent::Pi,
+            shepr_agent::resume::AgentSessionRef::path(pi_session_path.clone())
                 .expect("test precondition"),
         );
 
@@ -1645,13 +1645,11 @@ mod tests {
         );
 
         assert!(
-            shepr_agent::agent::resume::PersistedAgentSession::new(
-                shepr_agent::agent::AgentSource::parse("shepr:claude").expect("bundled source"),
-                shepr_agent::agent::Agent::Claude,
-                shepr_agent::agent::resume::AgentSessionRef::path(test_session_path(
-                    "claude-session",
-                ))
-                .expect("test precondition"),
+            shepr_agent::resume::PersistedAgentSession::new(
+                shepr_agent::AgentSource::parse("shepr:claude").expect("bundled source"),
+                shepr_agent::Agent::Claude,
+                shepr_agent::resume::AgentSessionRef::path(test_session_path("claude-session",))
+                    .expect("test precondition"),
             )
             .is_none()
         );
@@ -1662,8 +1660,8 @@ mod tests {
         let pi_session_path = test_session_path("pi-session.jsonl");
         let session = persisted_test_session(
             "shepr:pi",
-            shepr_agent::agent::Agent::Pi,
-            shepr_agent::agent::resume::AgentSessionRef::path(pi_session_path.clone())
+            shepr_agent::Agent::Pi,
+            shepr_agent::resume::AgentSessionRef::path(pi_session_path.clone())
                 .expect("test precondition"),
         );
         let mut resumed = HashSet::new();
@@ -1681,11 +1679,9 @@ mod tests {
     fn pane_restore_startup_suppresses_history_for_native_agent_resume() {
         let session = persisted_test_session(
             "shepr:pi",
-            shepr_agent::agent::Agent::Pi,
-            shepr_agent::agent::resume::AgentSessionRef::path(test_session_path(
-                "pi-session.jsonl",
-            ))
-            .expect("test precondition"),
+            shepr_agent::Agent::Pi,
+            shepr_agent::resume::AgentSessionRef::path(test_session_path("pi-session.jsonl"))
+                .expect("test precondition"),
         );
         let history = super::super::snapshot::PaneHistorySnapshot {
             ansi: "RESTORED_HISTORY\r\n".into(),
@@ -1707,11 +1703,9 @@ mod tests {
     fn pane_restore_startup_suppresses_history_for_duplicate_native_agent_session() {
         let session = persisted_test_session(
             "shepr:pi",
-            shepr_agent::agent::Agent::Pi,
-            shepr_agent::agent::resume::AgentSessionRef::path(test_session_path(
-                "pi-session.jsonl",
-            ))
-            .expect("test precondition"),
+            shepr_agent::Agent::Pi,
+            shepr_agent::resume::AgentSessionRef::path(test_session_path("pi-session.jsonl"))
+                .expect("test precondition"),
         );
         let history = super::super::snapshot::PaneHistorySnapshot {
             ansi: "RESTORED_HISTORY\r\n".into(),
@@ -1736,11 +1730,9 @@ mod tests {
     fn pane_restore_startup_keeps_history_without_native_agent_resume() {
         let session = persisted_test_session(
             "shepr:pi",
-            shepr_agent::agent::Agent::Pi,
-            shepr_agent::agent::resume::AgentSessionRef::path(test_session_path(
-                "pi-session.jsonl",
-            ))
-            .expect("test precondition"),
+            shepr_agent::Agent::Pi,
+            shepr_agent::resume::AgentSessionRef::path(test_session_path("pi-session.jsonl"))
+                .expect("test precondition"),
         );
         let history = super::super::snapshot::PaneHistorySnapshot {
             ansi: "RESTORED_HISTORY\r\n".into(),
@@ -1763,9 +1755,8 @@ mod tests {
     fn restore_rehydrates_agent_session_metadata() {
         let session = persisted_test_session(
             "shepr:codex",
-            shepr_agent::agent::Agent::Codex,
-            shepr_agent::agent::resume::AgentSessionRef::id("codex-session")
-                .expect("test precondition"),
+            shepr_agent::Agent::Codex,
+            shepr_agent::resume::AgentSessionRef::id("codex-session").expect("test precondition"),
         );
 
         let preserved = restored_terminal_agent_session(Some(&session), false)
@@ -1779,11 +1770,9 @@ mod tests {
     fn restore_does_not_rehydrate_duplicate_agent_session_metadata() {
         let session = persisted_test_session(
             "shepr:pi",
-            shepr_agent::agent::Agent::Pi,
-            shepr_agent::agent::resume::AgentSessionRef::path(test_session_path(
-                "pi-session.jsonl",
-            ))
-            .expect("test precondition"),
+            shepr_agent::Agent::Pi,
+            shepr_agent::resume::AgentSessionRef::path(test_session_path("pi-session.jsonl"))
+                .expect("test precondition"),
         );
         let mut resumed = HashSet::new();
         assert!(take_restore_plan_for_snapshot(&session, true, &mut resumed).is_some());
@@ -1840,8 +1829,8 @@ mod tests {
             failed.label = Some(Label::new("keep my pane").expect("test label"));
             failed.agent_session = Some(persisted_test_session(
                 "shepr:opencode",
-                shepr_agent::agent::Agent::OpenCode,
-                shepr_agent::agent::resume::AgentSessionRef::id("keep-my-session")
+                shepr_agent::Agent::OpenCode,
+                shepr_agent::resume::AgentSessionRef::id("keep-my-session")
                     .expect("test precondition"),
             ));
             let (events, mut events_rx) = mpsc::channel(32);
@@ -1978,8 +1967,8 @@ mod tests {
                         label: Some(Label::new("reviewer").expect("test label")),
                         agent_session: Some(persisted_test_session(
                             "shepr:opencode",
-                            shepr_agent::agent::Agent::OpenCode,
-                            shepr_agent::agent::resume::AgentSessionRef::id("opencode-session")
+                            shepr_agent::Agent::OpenCode,
+                            shepr_agent::resume::AgentSessionRef::id("opencode-session")
                                 .expect("test precondition"),
                         )),
                     },
@@ -2134,8 +2123,8 @@ mod tests {
             label: Some(Label::new("planner").expect("test label")),
             agent_session: Some(persisted_test_session(
                 "shepr:codex",
-                shepr_agent::agent::Agent::Codex,
-                shepr_agent::agent::resume::AgentSessionRef::id("codex-session")
+                shepr_agent::Agent::Codex,
+                shepr_agent::resume::AgentSessionRef::id("codex-session")
                     .expect("test precondition"),
             )),
         };
@@ -2230,8 +2219,8 @@ mod tests {
                         label: None,
                         agent_session: Some(persisted_test_session(
                             "shepr:codex",
-                            shepr_agent::agent::Agent::Codex,
-                            shepr_agent::agent::resume::AgentSessionRef::id("codex-session")
+                            shepr_agent::Agent::Codex,
+                            shepr_agent::resume::AgentSessionRef::id("codex-session")
                                 .expect("test precondition"),
                         )),
                     },

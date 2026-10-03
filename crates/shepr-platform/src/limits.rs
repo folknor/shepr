@@ -104,3 +104,38 @@ pub(super) const PEER_REJECTION_WARNING_INTERVAL: Duration = Duration::from_secs
 /// Writes between re-stats of the log path. The recheck notices a deleted or
 /// replaced log file without a stat on every write.
 pub(super) const PATH_RECHECK_AFTER_WRITES: u8 = 16;
+
+/// Upper bound on the number of processes visited while resolving a pane's
+/// foreground process-group tree. Foreground-job detection reads `/proc/<pid>/stat`
+/// and task/children files for every visited process on a repeated cadence,
+/// so an unbounded walk lets accumulated descendants or unreaped zombies
+/// under the pane shell grow the server's read-syscall rate and CPU without limit
+/// at a constant pane count; the walk runs per pane per tick, so its cost
+/// multiplies by the number of panes. The foreground-group leader's subtree and
+/// the pane shell's descendants advance round-robin under a shared candidate
+/// ceiling, with independent per-root work budgets, so a pathologically large
+/// accumulation on either side cannot starve the other. Discovery is best effort
+/// once a budget is exhausted.
+pub(super) const FOREGROUND_TREE_SCAN_LIMIT: usize = 512;
+
+/// Number of `/proc/<pid>/task` entries a root's subtree may consume, bounding how
+/// far one process's thread count can multiply the walk's work.
+pub(super) const FOREGROUND_TASK_ENTRY_LIMIT: usize = 2_048;
+
+/// Number of `/proc/<pid>/task/<tid>/children` bytes a root's subtree may read,
+/// stopping a parent that accumulates unreaped children from growing read work
+/// without limit.
+pub(super) const FOREGROUND_CHILD_BYTE_LIMIT: usize = 128 * 1024;
+
+/// Aggregate number of child pids a root's subtree may parse and enqueue, bounding
+/// the walk's pending queues and allocations.
+pub(super) const FOREGROUND_CHILD_PID_LIMIT: usize = 2_048;
+
+/// Bytes read from one `/proc/.../children` file per syscall. A fixed chunk
+/// amortizes reads without allocating in proportion to the entire child list.
+pub(super) const PROC_CHILDREN_READ_BUFFER_BYTES: usize = 4096;
+
+/// Bytes of one `/proc/<pid>/cmdline` the foreground probe reads. A longer argv
+/// is not returned at all, so one process with a huge command line cannot turn
+/// every detection probe into an unbounded procfs read and allocation.
+pub(super) const PROCESS_CMDLINE_BYTE_LIMIT: usize = 16 * 1024;

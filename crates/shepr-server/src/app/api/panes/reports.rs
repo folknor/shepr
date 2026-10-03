@@ -1,5 +1,5 @@
 use super::*;
-use shepr_agent::agent::resume::ReportedSessionStart;
+use shepr_agent::resume::ReportedSessionStart;
 
 impl App {
     pub(crate) fn handle_pane_report_agent(
@@ -74,8 +74,8 @@ impl App {
 
     /// The server clock a hook report is admitted at, as the event path
     /// samples it for queued reports.
-    fn hook_clock_sample(&self) -> shepr_agent::ownership::HookClockSample {
-        shepr_agent::ownership::HookClockSample {
+    fn hook_clock_sample(&self) -> shepr_detect::ownership::HookClockSample {
+        shepr_detect::ownership::HookClockSample {
             monotonic: self.clock.now,
             wall: self.clock.wall_now,
         }
@@ -89,21 +89,21 @@ impl App {
         path: Option<String>,
     ) -> Result<
         (
-            shepr_agent::agent::ReportOrigin,
-            Option<shepr_agent::agent::resume::AgentSessionRef>,
+            shepr_agent::ReportOrigin,
+            Option<shepr_agent::resume::AgentSessionRef>,
         ),
         shepr_api::error::ApiError,
     > {
-        let origin = match shepr_agent::agent::ReportOrigin::parse(source_text, agent_text) {
+        let origin = match shepr_agent::ReportOrigin::parse(source_text, agent_text) {
             Ok(origin) => origin,
-            Err(shepr_agent::agent::ReportOriginError::EmptyAgent) => return invalid_agent(),
-            Err(shepr_agent::agent::ReportOriginError::UnsupportedSource) => {
+            Err(shepr_agent::ReportOriginError::EmptyAgent) => return invalid_agent(),
+            Err(shepr_agent::ReportOriginError::UnsupportedSource) => {
                 return failure(
                     ApiErrorCode::InvalidAgent,
                     "report source is not a bundled shepr integration",
                 );
             }
-            Err(shepr_agent::agent::ReportOriginError::MismatchedAgent) => {
+            Err(shepr_agent::ReportOriginError::MismatchedAgent) => {
                 return failure(
                     ApiErrorCode::InvalidAgent,
                     "report source does not match agent label",
@@ -117,10 +117,10 @@ impl App {
 
 /// Raw JSON options stop here. A supplied reference must select one kind.
 fn parse_origin_session_ref(
-    origin: &shepr_agent::agent::ReportOrigin,
+    origin: &shepr_agent::ReportOrigin,
     id: Option<String>,
     path: Option<String>,
-) -> Result<Option<shepr_agent::agent::resume::AgentSessionRef>, shepr_api::error::ApiError> {
+) -> Result<Option<shepr_agent::resume::AgentSessionRef>, shepr_api::error::ApiError> {
     if id.is_some() && path.is_some() {
         return failure(
             ApiErrorCode::InvalidRequest,
@@ -128,8 +128,7 @@ fn parse_origin_session_ref(
         );
     }
     let supplied = id.is_some() || path.is_some();
-    let session_ref =
-        shepr_agent::agent::resume::session_ref_for_agent_report(origin.agent(), id, path);
+    let session_ref = shepr_agent::resume::session_ref_for_agent_report(origin.agent(), id, path);
     if supplied && session_ref.is_none() {
         return failure(
             ApiErrorCode::InvalidRequest,
@@ -145,7 +144,7 @@ fn parse_report_session_ref(
     agent_label: &str,
     id: Option<String>,
     path: Option<String>,
-) -> Result<Option<shepr_agent::agent::resume::AgentSessionRef>, shepr_api::error::ApiError> {
+) -> Result<Option<shepr_agent::resume::AgentSessionRef>, shepr_api::error::ApiError> {
     let (_, session) = App::parse_agent_report_identity(source, agent_label, id, path)?;
     Ok(session)
 }
@@ -242,7 +241,7 @@ mod tests {
 
         assert_eq!(
             session_ref.kind(),
-            shepr_agent::agent::resume::AgentSessionRefKind::Path
+            shepr_agent::resume::AgentSessionRefKind::Path
         );
         assert_eq!(session_ref.value_str(), "/sessions/pi.jsonl");
     }
@@ -252,20 +251,20 @@ mod tests {
         let _environment = IsolatedEnv::new();
         let scratch = ScratchDir::new("agent-report-handler-mutation");
         let asset = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../shepr-agent/src/integration/assets/claude/shepr-agent-state.sh");
+            .join("../shepr-integration/src/assets/claude/shepr-agent-state.sh");
         let source = std::fs::read_to_string(&asset).expect("read Claude integration asset");
         let broken = source.replacen("\"agent\": \"claude\"", "\"agent\": \"codex\"", 1);
         assert_ne!(broken, source, "mutation probe must change the asset");
         let broken_path = scratch.join("broken-claude-state.sh");
         std::fs::write(&broken_path, broken).expect("write broken asset copy in scratch");
 
-        let detected = shepr_agent::ownership::HookClockSample {
+        let detected = shepr_detect::ownership::HookClockSample {
             monotonic: std::time::Instant::now(),
             wall: std::time::SystemTime::now(),
         };
         let mut app = crate::agent_report_test_support::AgentReportHarness::new(
             scratch.path(),
-            shepr_agent::agent::Agent::Claude,
+            shepr_agent::Agent::Claude,
             detected,
         )
         .expect("build report handler App");
@@ -277,7 +276,7 @@ mod tests {
         let error = app
             .apply_request(
                 request,
-                shepr_agent::ownership::HookClockSample {
+                shepr_detect::ownership::HookClockSample {
                     monotonic: detected.monotonic + std::time::Duration::from_millis(1),
                     wall: detected.wall + std::time::Duration::from_millis(1),
                 },

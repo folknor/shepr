@@ -419,7 +419,7 @@ mod tests {
     use crate::limits::SESSION_SAVE_DEBOUNCE;
     use crate::test_support::IsolatedEnv;
     use crate::test_support::*;
-    use shepr_agent::detect::{Agent, AgentState};
+    use shepr_agent::{Agent, AgentState};
     use shepr_config::ServerConfig;
     use shepr_mux::workspace::Workspace;
     use shepr_protocol::command::{
@@ -545,7 +545,7 @@ mod tests {
                 AppEvent::StateChanged {
                     pane_id,
                     agent,
-                    detection: shepr_agent::detect::Detection::new(AgentState::Idle, false),
+                    detection: shepr_detect::Detection::new(AgentState::Idle, false),
                     process_exited,
                     observed_at: app.clock.now,
                 },
@@ -1234,7 +1234,7 @@ mod tests {
 
     #[tokio::test]
     async fn detector_release_before_pane_exit_keeps_checkpoint_resume_identity() {
-        use shepr_agent::agent::resume::{AgentSessionRef, PersistedAgentSession};
+        use shepr_agent::resume::{AgentSessionRef, PersistedAgentSession};
         let _env = crate::test_support::IsolatedEnv::new();
         let mut server = crate::server::headless::tests::test_headless_server();
         server.app = test_app();
@@ -1325,9 +1325,9 @@ mod tests {
         App,
         shepr_core::layout::PaneId,
         shepr_protocol::TerminalId,
-        shepr_agent::agent::resume::PersistedAgentSession,
+        shepr_agent::resume::PersistedAgentSession,
     ) {
-        use shepr_agent::agent::resume::{AgentSessionRef, PersistedAgentSession};
+        use shepr_agent::resume::{AgentSessionRef, PersistedAgentSession};
         let mut app = test_app();
         let geometry = app.headless_spawn_geometry();
         assert!(app.create_default_workspace(geometry));

@@ -133,7 +133,7 @@ impl PaneTerminal {
         }
 
         let Some((shell_pid, foreground_job)) =
-            child_liveness.observe(|pid| (pid, shepr_agent::detect::foreground_job(pid)))
+            child_liveness.observe(|pid| (pid, shepr_platform::foreground_job(pid)))
         else {
             return false;
         };

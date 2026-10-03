@@ -17,6 +17,8 @@ shepr-agent = { path = "../shepr-agent" }
 shepr-api = { path = "../shepr-api" }
 shepr-config = { path = "../shepr-config" }
 shepr-core = { path = "../shepr-core" }
+shepr-detect = { path = "../shepr-detect" }
+shepr-integration = { path = "../shepr-integration" }
 shepr-mux = { path = "../shepr-mux" }
 shepr-platform = { path = "../shepr-platform" }
 shepr-protocol = { path = "../shepr-protocol" }

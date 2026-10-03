@@ -11,4 +11,4 @@ pub struct PaneTarget {
     pub pane_id: String,
 }
 
-pub use shepr_agent::detect::AgentState as PaneAgentState;
+pub use shepr_agent::AgentState as PaneAgentState;

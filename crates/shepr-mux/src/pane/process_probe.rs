@@ -17,7 +17,8 @@ use super::agent_detection::{
 use super::launch::LaunchKind;
 use super::terminal::PaneTerminal;
 use crate::UsableCwd;
-use shepr_agent::detect::{Agent, AgentState, Detection};
+use shepr_agent::{Agent, AgentState};
+use shepr_detect::Detection;
 use shepr_platform::{Pgid, Pid};
 
 #[derive(Debug, Clone, Copy)]
@@ -90,7 +91,7 @@ pub(super) enum ProcessCwd {
 
 impl ProcessCwd {
     pub(super) fn read(pid: Pid) -> Self {
-        match shepr_agent::detect::process_cwd(pid) {
+        match shepr_platform::process_cwd(pid) {
             Some(path) if crate::workspace::process_cwd_is_deleted(&path) => Self::Deleted,
             Some(path) if path.is_absolute() => Self::Live(path),
             _ => Self::Unavailable,
@@ -120,15 +121,12 @@ pub(super) fn usable_process_cwd(pid: Pid) -> Option<UsableCwd> {
 #[derive(Clone, Copy)]
 pub(super) enum Foreground<'a> {
     Shell,
-    Job(&'a shepr_agent::detect::ForegroundJob),
+    Job(&'a shepr_platform::ForegroundJob),
     Unknown,
 }
 
 impl<'a> Foreground<'a> {
-    pub(super) fn from_job(
-        job: Option<&'a shepr_agent::detect::ForegroundJob>,
-        shell_pid: Pid,
-    ) -> Self {
+    pub(super) fn from_job(job: Option<&'a shepr_platform::ForegroundJob>, shell_pid: Pid) -> Self {
         match job {
             Some(job) if job.processes.iter().any(|process| process.pid == shell_pid) => {
                 Self::Shell
@@ -147,7 +145,7 @@ pub(super) fn foreground_member_cwd_different_from_shell(
     shell_pid: Pid,
     shell_cwd: Option<&std::path::PathBuf>,
 ) -> Option<std::path::PathBuf> {
-    let job = shepr_agent::detect::foreground_job(shell_pid)?;
+    let job = shepr_platform::foreground_job(shell_pid)?;
     // This is a fallback when the group leader cwd is unreadable. Even a
     // shell group can contain a nested shell with a different cwd; skipping
     // the pane shell here is candidate selection, not job classification.
@@ -1111,7 +1109,7 @@ impl DetectorState {
 }
 
 fn process_probe_result(
-    job: &shepr_agent::detect::ForegroundJob,
+    job: &shepr_platform::ForegroundJob,
     pid: Pid,
     agent: Agent,
     process_name: String,
@@ -1130,18 +1128,18 @@ fn process_probe_result(
 pub(super) fn probe_foreground_process_from_jobs(
     pid: Pid,
     foreground_pgid: Option<Pgid>,
-    leader_job: Option<&shepr_agent::detect::ForegroundJob>,
-    foreground_job: impl FnOnce() -> Option<shepr_agent::detect::ForegroundJob>,
+    leader_job: Option<&shepr_platform::ForegroundJob>,
+    foreground_job: impl FnOnce() -> Option<shepr_platform::ForegroundJob>,
 ) -> ProcessProbeResult {
     if let Some(job) = leader_job
-        && let Some((agent, process_name)) = shepr_agent::detect::identify_agent_in_job(job)
+        && let Some((agent, process_name)) = shepr_detect::identify_agent_in_job(job)
     {
         return process_probe_result(job, pid, agent, process_name);
     }
 
     let foreground_job = foreground_job();
     if let Some(job) = foreground_job.as_ref() {
-        let identified = shepr_agent::detect::identify_agent_in_job(job);
+        let identified = shepr_detect::identify_agent_in_job(job);
         return ProcessProbeResult {
             process_group_id: Some(job.process_group_id),
             foreground_is_pane_shell: Foreground::from_job(Some(job), pid).is_shell(),
@@ -1172,12 +1170,12 @@ pub(super) fn probe_foreground_process(
         pid,
         foreground_pgid,
         foreground_pgid
-            .and_then(shepr_agent::detect::foreground_group_leader_job)
+            .and_then(shepr_platform::foreground_group_leader_job)
             .as_ref(),
-        || shepr_agent::detect::foreground_job(pid),
+        || shepr_platform::foreground_job(pid),
     );
     if probe.foreground_is_pane_shell() {
-        probe.suspended_agents = shepr_agent::detect::suspended_agent_processes(pid);
+        probe.suspended_agents = shepr_detect::suspended_agent_processes(pid);
     }
     probe
 }

@@ -148,7 +148,7 @@ pub fn run_server(
     // Compile the bundled detection manifests off the tokio loop, before App
     // restores PTYs whose detection workers consult them, and after logging
     // starts, so a bundled manifest that fails to compile reaches the log.
-    shepr_agent::detect::manifest::compile_bundled_manifests();
+    shepr_detect::manifest::compile_bundled_manifests();
     // Everything a pane launch would otherwise do on its first spawn that may
     // block (the launch status listener, the passwd lookup, resolving this
     // binary's path), done before any pane is restored or created.
@@ -231,11 +231,11 @@ fn spawn_integration_install() {
         info!("agent integration installation skipped; only release servers own agent configs");
         return;
     }
-    let paths = shepr_agent::integration::AgentIntegrationPaths::resolve();
+    let paths = shepr_integration::AgentIntegrationPaths::resolve();
     if let Err(error) = std::thread::Builder::new()
         .name("integration-install".into())
         .spawn(move || {
-            shepr_agent::integration::install_present_integrations(&paths);
+            shepr_integration::install_present_integrations(&paths);
         })
     {
         warn!(%error, "could not start the agent integration install");

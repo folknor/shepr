@@ -17,11 +17,11 @@ use std::time::{Duration, Instant, SystemTime};
 
 use crate::agent_report_test_support::AgentReportHarness;
 use serde_json::Value;
-use shepr_agent::agent::resume::{AgentSessionRef, PersistedAgentSession};
-use shepr_agent::agent::{Agent, AgentSource, ReportOrigin};
-use shepr_agent::detect::AgentState;
-use shepr_agent::ownership::HookClockSample;
+use shepr_agent::AgentState;
+use shepr_agent::resume::{AgentSessionRef, PersistedAgentSession};
+use shepr_agent::{Agent, AgentSource, ReportOrigin};
 use shepr_api::schema::Request;
+use shepr_detect::ownership::HookClockSample;
 use shepr_test_support::{IsolatedEnv, ScratchDir, capture_hook, command_in_scratch};
 
 const PANE_ID: &str = "w1:p1";
@@ -150,7 +150,7 @@ const BUN_ASSETS: &[AssetContract] = &[
 fn every_bundled_agent_asset_replays_through_server_report_validation() {
     let _environment = IsolatedEnv::new();
     let scratch = ScratchDir::new("agent-integration-contract");
-    let integration = Path::new(env!("CARGO_MANIFEST_DIR")).join("../shepr-agent/src/integration");
+    let integration = Path::new(env!("CARGO_MANIFEST_DIR")).join("../shepr-integration/src");
     let assets = integration.join("assets");
 
     assert_asset_coverage(&assets);

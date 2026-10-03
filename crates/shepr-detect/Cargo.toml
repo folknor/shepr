@@ -1,0 +1,22 @@
+[package]
+name = "shepr-detect"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+regex = { workspace = true }
+serde = { workspace = true }
+shepr-agent = { path = "../shepr-agent" }
+shepr-core = { path = "../shepr-core" }
+shepr-platform = { path = "../shepr-platform" }
+toml = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+libc = { workspace = true }
+shepr-pty = { path = "../shepr-pty" }
+shepr-test-support = { path = "../shepr-test-support" }
+
+[lints]
+workspace = true

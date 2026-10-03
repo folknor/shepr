@@ -17,6 +17,7 @@ mod limits;
 pub mod logging;
 mod owned_runtime;
 mod private_file;
+mod proc_tree;
 mod process;
 mod process_identity;
 pub mod publish_file;
@@ -46,6 +47,10 @@ pub use host::{
 };
 pub use owned_runtime::{release_remote_ssh_config_dir, release_single_use_socket_lock};
 pub use private_file::{create_private_file, open_regular_file, sync_directory};
+pub use proc_tree::{
+    ForegroundJob, ForegroundProcess, foreground_group_leader_job, foreground_job,
+    foreground_process_group_id, process_cwd, suspended_processes,
+};
 pub use process::{
     Pgid, Pid, ProcStat, ProcState, ProcessHandle, SessionId, Signal, reap_pidfd,
     session_member_handles, session_members, wait_for_process_exits,

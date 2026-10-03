@@ -369,7 +369,7 @@ fn hex_value(byte: u8) -> Option<u8> {
 }
 
 fn foreground_job_is_shell(
-    job: &shepr_agent::detect::ForegroundJob,
+    job: &shepr_platform::ForegroundJob,
     shell_pid: shepr_platform::Pid,
 ) -> bool {
     super::process_probe::Foreground::from_job(Some(job), shell_pid).is_shell()
@@ -380,7 +380,7 @@ fn foreground_job_is_shell(
 pub(super) fn current_transient_default_color_owner(
     shell_pid: shepr_platform::Pid,
 ) -> Option<shepr_platform::Pgid> {
-    let job = shepr_agent::detect::foreground_job(shell_pid)?;
+    let job = shepr_platform::foreground_job(shell_pid)?;
     match super::process_probe::Foreground::from_job(Some(&job), shell_pid) {
         super::process_probe::Foreground::Job(job) => Some(job.process_group_id),
         super::process_probe::Foreground::Shell | super::process_probe::Foreground::Unknown => None,
@@ -391,7 +391,7 @@ pub(super) fn should_restore_host_terminal_theme(
     owner_pgid: shepr_platform::Pgid,
     shell_pid: shepr_platform::Pid,
     alternate_screen: bool,
-    foreground_job: Option<&shepr_agent::detect::ForegroundJob>,
+    foreground_job: Option<&shepr_platform::ForegroundJob>,
 ) -> bool {
     if alternate_screen {
         return false;
@@ -414,7 +414,7 @@ pub(super) fn restore_host_terminal_theme_if_needed(
     pane_id: PaneId,
     shell_pid: shepr_platform::Pid,
     alternate_screen: bool,
-    foreground_job: Option<&shepr_agent::detect::ForegroundJob>,
+    foreground_job: Option<&shepr_platform::ForegroundJob>,
 ) -> bool {
     let Some(owner_pgid) = core.transient_default_color_owner_pgid else {
         return false;
@@ -497,12 +497,12 @@ mod tests {
         }
     }
 
-    fn shell_job(shell_pid: u32) -> shepr_agent::detect::ForegroundJob {
-        shepr_agent::detect::ForegroundJob {
+    fn shell_job(shell_pid: u32) -> shepr_platform::ForegroundJob {
+        shepr_platform::ForegroundJob {
             process_group_id: shepr_platform::Pgid::led_by(
                 shepr_platform::Pid::new(shell_pid).expect("test shell pid"),
             ),
-            processes: vec![shepr_agent::detect::ForegroundProcess {
+            processes: vec![shepr_platform::ForegroundProcess {
                 pid: shepr_platform::Pid::new(shell_pid).expect("test shell pid"),
                 name: "zsh".to_string(),
                 argv: Some(vec!["zsh".to_string()]),
@@ -949,9 +949,9 @@ mod tests {
             shepr_platform::Pgid::new(42).expect("owner group"),
             shepr_platform::Pid::new(7).expect("shell pid"),
             false,
-            Some(&shepr_agent::detect::ForegroundJob {
+            Some(&shepr_platform::ForegroundJob {
                 process_group_id: shepr_platform::Pgid::new(42).expect("test group"),
-                processes: vec![shepr_agent::detect::ForegroundProcess {
+                processes: vec![shepr_platform::ForegroundProcess {
                     pid: shepr_platform::Pid::new(42).expect("test pid"),
                     name: "droid".to_string(),
                     argv: Some(vec!["droid".to_string()]),

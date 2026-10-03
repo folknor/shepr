@@ -11,7 +11,7 @@ struct PendingAgentResumeCandidate {
     pane_id: shepr_core::layout::PaneId,
     terminal_id: shepr_protocol::TerminalId,
     cwd: std::path::PathBuf,
-    plan: shepr_agent::agent::resume::AgentResumePlan,
+    plan: shepr_agent::resume::AgentResumePlan,
     /// The PTY geometry the resumed shell starts at: its content grid and the
     /// pixel size of one cell of the geometry the workspace was last applied.
     geometry: shepr_core::geometry::PaneGeometry,
@@ -145,7 +145,7 @@ impl App {
         pane_id: shepr_core::layout::PaneId,
     ) -> Option<(
         &shepr_mux::terminal::TerminalState,
-        &shepr_agent::agent::resume::AgentResumePlan,
+        &shepr_agent::resume::AgentResumePlan,
         &std::path::Path,
     )> {
         let pane = workspace.panes().get(&pane_id)?;
@@ -214,7 +214,7 @@ impl App {
         pane_id: shepr_core::layout::PaneId,
         terminal_id: &shepr_protocol::TerminalId,
         cwd: &std::path::Path,
-        plan: &shepr_agent::agent::resume::AgentResumePlan,
+        plan: &shepr_agent::resume::AgentResumePlan,
         geometry: shepr_core::geometry::PaneGeometry,
         now: Instant,
     ) -> AttemptOutcome {
@@ -555,11 +555,10 @@ mod tests {
                 // disappeared; a live pane never reports a missing one.
                 *terminal = shepr_mux::terminal::TerminalState::new(terminal.id.clone(), missing);
             }
-            let session = shepr_agent::agent::resume::PersistedAgentSession::new(
-                shepr_agent::agent::AgentSource::parse("shepr:codex").expect("bundled source"),
-                shepr_agent::agent::Agent::Codex,
-                shepr_agent::agent::resume::AgentSessionRef::id("resume-test")
-                    .expect("test precondition"),
+            let session = shepr_agent::resume::PersistedAgentSession::new(
+                shepr_agent::AgentSource::parse("shepr:codex").expect("bundled source"),
+                shepr_agent::Agent::Codex,
+                shepr_agent::resume::AgentSessionRef::id("resume-test").expect("test precondition"),
             )
             .expect("test session is valid");
             terminal
@@ -575,8 +574,8 @@ mod tests {
             let _ = terminal
                 .ownership_mut()
                 .set_detected_state_with_screen_signals_at(
-                    Some(shepr_agent::detect::Agent::Codex),
-                    shepr_agent::detect::AgentState::Idle,
+                    Some(shepr_agent::Agent::Codex),
+                    shepr_agent::AgentState::Idle,
                     false,
                     false,
                     app.clock.now,

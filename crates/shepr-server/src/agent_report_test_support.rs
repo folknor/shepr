@@ -13,9 +13,9 @@
 
 use std::path::Path;
 
-use shepr_agent::ownership::HookClockSample;
 use shepr_api::error::{ApiError, ApiErrorCode};
 use shepr_api::schema::{Method, Request};
+use shepr_detect::ownership::HookClockSample;
 use shepr_mux::pane::PaneState;
 use shepr_mux::terminal::TerminalState;
 use shepr_mux::workspace::{Workspace, WorkspacePane};
@@ -36,7 +36,7 @@ impl AgentReportHarness {
     /// observation that normally precedes an agent's hook reports.
     pub(crate) fn new(
         root: &Path,
-        agent: shepr_agent::agent::Agent,
+        agent: shepr_agent::Agent,
         at: HookClockSample,
     ) -> Result<Self, String> {
         let paths = shepr_config::AppPaths::rooted_at(root, Some(root), Some(root));

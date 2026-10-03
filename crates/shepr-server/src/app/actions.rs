@@ -1,8 +1,8 @@
 //! Pure state mutations on AppState.
 //! These don't need channels, async, or PTY runtime.
 
-use shepr_agent::ownership::{AgentOwnershipMutation, EffectiveStateChange};
 use shepr_core::layout::PaneId;
+use shepr_detect::ownership::{AgentOwnershipMutation, EffectiveStateChange};
 use shepr_mux::events::AppEvent;
 use shepr_mux::git::WorkspaceGitStatus;
 use shepr_mux::workspace::{

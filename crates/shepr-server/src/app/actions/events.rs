@@ -55,18 +55,18 @@ enum HookReportKind {
 fn admit_hook_outcome(
     pane_id: shepr_core::layout::PaneId,
     kind: HookReportKind,
-    source: &shepr_agent::agent::AgentSource,
-    outcome: shepr_agent::ownership::HookOutcome,
+    source: &shepr_agent::AgentSource,
+    outcome: shepr_detect::ownership::HookOutcome,
 ) -> Option<AgentOwnershipMutation> {
     match &outcome {
-        shepr_agent::ownership::HookOutcome::Applied(_) => {}
-        shepr_agent::ownership::HookOutcome::Parked => tracing::debug!(
+        shepr_detect::ownership::HookOutcome::Applied(_) => {}
+        shepr_detect::ownership::HookOutcome::Parked => tracing::debug!(
             pane = pane_id.raw(),
             ?kind,
             %source,
             "hook report parked until process evidence"
         ),
-        shepr_agent::ownership::HookOutcome::Rejected(reason) => tracing::debug!(
+        shepr_detect::ownership::HookOutcome::Rejected(reason) => tracing::debug!(
             pane = pane_id.raw(),
             ?kind,
             %source,
