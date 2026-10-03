@@ -19,6 +19,7 @@ mod owned_runtime;
 mod private_file;
 mod process;
 mod process_identity;
+pub mod publish_file;
 mod random;
 mod remote_bridge;
 mod remote_bridge_io;
@@ -53,7 +54,7 @@ pub use remote_bridge_io::{
 };
 pub use ssh_paths::UnsafeSshRuntimeDirectory;
 pub use ssh_paths::{
-    RemoteSshConfigPaths, SshRuntimeError, create_remote_ssh_config_dir,
+    RemoteSshConfigPaths, SshControlKey, SshRuntimeError, create_remote_ssh_config_dir,
     remote_bridge_endpoint_path, remote_ssh_config_file_path, remote_ssh_config_paths,
     shared_ssh_control_path, ssh_control_path_under, validate_remote_bridge_endpoint_path,
     validate_ssh_runtime_dir,

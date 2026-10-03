@@ -698,10 +698,13 @@ mod tests {
 
     #[test]
     fn retained_resolution_uses_the_typed_baseline_identity() {
-        let mut app = app::App::new(&shepr_config::ServerConfig::default(), app::AppPolicy::Test);
+        let mut app = app::App::new(
+            &shepr_config::ServerConfig::default(),
+            app::AppPolicy::Suspended,
+        );
         let workspace = shepr_mux::workspace::Workspace::test_new("typed-baseline");
         let pane_id = workspace.root_pane();
-        app.state.workspaces.push(workspace);
+        app.state.test_push_workspace(workspace);
         let workspace_id = app.state.workspaces[0].id;
         let wire_workspace_id =
             shepr_protocol::WorkspaceId::from_number(999).expect("test workspace id");
@@ -763,14 +766,17 @@ mod tests {
 
     #[test]
     fn retained_scrollbar_does_not_invent_a_gutter_at_the_pane_border() {
-        let mut app = app::App::new(&shepr_config::ServerConfig::default(), app::AppPolicy::Test);
+        let mut app = app::App::new(
+            &shepr_config::ServerConfig::default(),
+            app::AppPolicy::Suspended,
+        );
         app.state.settings.pane_borders = shepr_config::PaneBordersConfig::Always;
         app.state.settings.pane_scrollbars = true;
         app.state.settings.pane_outer_borders = true;
         let workspace = shepr_mux::workspace::Workspace::test_new("narrow-scrollbar");
         let workspace_id = workspace.id;
         let pane_id = workspace.root_pane();
-        app.state.workspaces.push(workspace);
+        app.state.test_push_workspace(workspace);
         let area = Rect::new(0, 0, 6, 5);
         let layout = app.state.pane_geometry_in(area).visible_panes(
             app.state.workspaces[0].layout(),
@@ -837,10 +843,13 @@ mod tests {
 
     #[test]
     fn retained_layout_is_reused_for_recipients_with_the_same_workspace_and_size() {
-        let mut app = app::App::new(&shepr_config::ServerConfig::default(), app::AppPolicy::Test);
+        let mut app = app::App::new(
+            &shepr_config::ServerConfig::default(),
+            app::AppPolicy::Suspended,
+        );
         let workspace = shepr_mux::workspace::Workspace::test_new("retained-layout-cache");
         let workspace_id = workspace.id;
-        app.state.workspaces.push(workspace);
+        app.state.test_push_workspace(workspace);
         let mut cache = HashMap::new();
 
         let (first_panes, first_len) = {

@@ -5,6 +5,11 @@ impl App {
         &self,
         pane_id: shepr_core::layout::PaneId,
     ) -> Option<(usize, &shepr_mux::pane::PaneState)> {
+        // The terminal index rejects unknown and retired panes without a
+        // workspace walk. A live lookup still needs the current workspace
+        // position and PaneState: the terminal index stores neither, and
+        // workspace reordering changes positions without changing attachment.
+        self.state.terminal_of(pane_id)?;
         self.state
             .workspaces
             .iter()
@@ -44,19 +49,8 @@ impl App {
             .position(|workspace| workspace.id == *public_id)
     }
 
-    /// Resolves a public pane id (`<workspace_id>:p<n>`) to (workspace index,
-    /// pane).
-    ///
-    /// Only the canonical text parses. Raw internal pane ids (`p_<raw>`) are
-    /// not accepted: they restart every process, so after a server restart
-    /// they would name a different pane.
-    pub(crate) fn parse_pane_id(&self, id: &str) -> Option<(usize, shepr_core::layout::PaneId)> {
-        let public_id = id.parse::<shepr_protocol::PublicPaneId>().ok()?;
-        self.resolve_pane_id(&public_id)
-    }
-
-    /// [`Self::parse_pane_id`] for an id that is already typed: the resolver
-    /// endpoint handlers use, so a typed id is never spelled and parsed again.
+    /// Resolves a typed public pane id (`<workspace_id>:p<n>`) to (workspace
+    /// index, pane).
     pub(crate) fn resolve_pane_id(
         &self,
         public_id: &shepr_protocol::PublicPaneId,
@@ -76,9 +70,10 @@ mod tests {
     fn test_app_with_workspaces(names: &[&str]) -> super::App {
         let mut app = super::App::new(
             &shepr_config::ServerConfig::default(),
-            crate::app::AppPolicy::Test,
+            crate::app::AppPolicy::Suspended,
         );
-        app.state.workspaces = names.iter().map(|name| Workspace::test_new(name)).collect();
+        app.state
+            .test_set_workspaces(names.iter().map(|name| Workspace::test_new(name)).collect());
         app.state.ensure_test_terminals();
         app.state.set_bookmark_index(Some(0));
         app
@@ -87,7 +82,9 @@ mod tests {
     #[test]
     fn public_ids_resolve() {
         let mut app = test_app_with_workspaces(&["a", "b"]);
-        let second = app.state.workspaces[1].test_split(shepr_core::layout::Direction::Horizontal);
+        let second = app
+            .state
+            .test_split_workspace(1, shepr_core::layout::Direction::Horizontal);
         app.state.ensure_test_terminals();
         let ws_id = app.state.workspaces[1].id;
 
@@ -129,13 +126,22 @@ mod tests {
                 "workspace id {id:?}"
             );
         }
+        // Only the canonical text parses. Raw internal pane ids (`p_<raw>`)
+        // restart every process, so after a server restart they would name a
+        // different pane.
         for id in [
             format!("p_{}", root.raw()),
             format!("p_1_{}", root.raw()),
             format!("{ws_id}-1"),
             "1:p1".to_string(),
         ] {
-            assert_eq!(app.parse_pane_id(&id), None, "pane id {id:?}");
+            assert_eq!(
+                id.parse::<shepr_protocol::PublicPaneId>()
+                    .ok()
+                    .and_then(|id| app.resolve_pane_id(&id)),
+                None,
+                "pane id {id:?}"
+            );
         }
     }
 }

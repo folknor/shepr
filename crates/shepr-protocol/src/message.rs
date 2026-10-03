@@ -94,7 +94,7 @@ pub enum NoticeKind {
 pub struct SessionRestoreNotice {
     pub loss: SessionRestoreLoss,
     /// Where the original session file is kept.
-    pub backup_dir: String,
+    pub backup_dir: crate::RemotePath,
 }
 
 /// What a restore lost. Every variant loses something, so a notice can only

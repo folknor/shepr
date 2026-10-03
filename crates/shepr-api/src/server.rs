@@ -16,8 +16,7 @@ use crate::schema::{
 };
 use crate::{ApiRequestMessage, ApiRequestSender};
 use shepr_platform::ipc::{
-    LocalStream, LocalStreamDeadlineReader, SocketFileIdentity, SocketStartupLock, StreamFailure,
-    bind_private_socket, classify_stream_error, remove_socket_file_if_owned, socket_file_identity,
+    LocalStream, LocalStreamDeadlineReader, SocketStartupLock, StreamFailure, classify_stream_error,
 };
 
 const ORDINARY_REQUEST_TIMEOUT_MESSAGE: &str =
@@ -34,7 +33,7 @@ pub use client_protocol::{
 pub struct ServerHandle {
     thread: Option<std::thread::JoinHandle<()>>,
     path: PathBuf,
-    identity: SocketFileIdentity,
+    socket_file: shepr_platform::ipc::OwnedSocketFile,
     running: Arc<AtomicBool>,
     gate: ClientGate,
     // Declared last so it is released only after `drop` has removed the
@@ -81,7 +80,7 @@ impl ServerHandle {
     }
 
     pub fn remove_socket_file_if_owned(&self) -> std::io::Result<()> {
-        remove_socket_file_if_owned(&self.path, &self.identity)
+        self.socket_file.remove_if_still_ours()
     }
 
     /// Unblocks the listener's `accept` with a throwaway connection. Skipped
@@ -89,7 +88,7 @@ impl ServerHandle {
     /// or replaced by another server), since connecting would then reach
     /// somebody else. Returns whether the wake-up connection was made.
     fn wake_listener(&self) -> bool {
-        let ours = socket_file_identity(&self.path).is_ok_and(|found| found == self.identity);
+        let ours = self.socket_file.is_still_ours();
         if !ours {
             return false;
         }
@@ -109,7 +108,9 @@ pub fn start_server(
     paths: &shepr_config::AppPaths,
 ) -> Result<ServerHandle, shepr_platform::ipc::BindError> {
     let path = paths.server_address().socket().to_path_buf();
-    let (listener, startup_lock, identity) = bind_private_socket(&path)?;
+    let (listener, socket_file, startup_lock) =
+        shepr_platform::ipc::bind_owned_private_socket(paths.server_address().socket_path())?
+            .into_parts();
     info!(path = %path.display(), "server socket listening");
     let running = Arc::new(AtomicBool::new(true));
     let gate = ClientGate::default();
@@ -126,7 +127,7 @@ pub fn start_server(
     Ok(ServerHandle {
         thread: Some(thread),
         path,
-        identity,
+        socket_file,
         running,
         gate,
         _startup_lock: startup_lock,
@@ -554,6 +555,7 @@ fn error_response_json(
 mod tests {
     use super::*;
     use crate::schema::{AppMethod, Method};
+    use shepr_platform::ipc::{bind_private_socket, remove_socket_file_if_owned};
     use shepr_test_support::ScratchDir;
     use std::io::{BufRead, BufReader, Read};
     use std::sync::atomic::AtomicUsize;
@@ -750,7 +752,11 @@ mod tests {
     #[test]
     fn dropping_the_handle_stops_the_listener_thread() {
         let path = unique_test_path("listener-drop");
-        let (listener, startup_lock, identity) = bind_private_socket(&path).expect("bind");
+        let socket_path = shepr_platform::ipc::SocketPath::new(path.clone()).expect("socket path");
+        let (listener, socket_file, startup_lock) =
+            shepr_platform::ipc::bind_owned_private_socket(&socket_path)
+                .expect("bind")
+                .into_parts();
         let running = Arc::new(AtomicBool::new(true));
         let gate = ClientGate::default();
         let (tx, _rx) = mpsc::channel(1);
@@ -766,7 +772,7 @@ mod tests {
         let handle = ServerHandle {
             thread: Some(thread),
             path: path.clone(),
-            identity,
+            socket_file,
             running,
             gate,
             _startup_lock: startup_lock,

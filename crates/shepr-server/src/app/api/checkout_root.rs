@@ -23,22 +23,26 @@ impl App {
     pub(crate) fn prepare_workspace_checkout_root(
         &self,
         params: &WorkspaceCheckoutRootParams,
-    ) -> Result<(std::path::PathBuf, Option<String>), shepr_protocol::command::EndpointError> {
+    ) -> Result<
+        (std::path::PathBuf, Option<shepr_protocol::RemotePath>),
+        shepr_protocol::command::EndpointError,
+    > {
         let cwd = super::cwd::launch_cwd(&params.cwd)?;
-        let home = self
-            .paths
-            .home_dir()
-            .and_then(|home| home.to_str().map(str::to_owned));
+        let home = self.paths.home_dir().map(shepr_protocol::RemotePath::from);
         Ok((cwd, home))
     }
 
     /// Does the blocking discovery work for `workspace.checkout_root`.
-    pub(crate) fn checkout_root_for_worker(cwd: &Path) -> Result<Option<String>, String> {
+    pub(crate) fn checkout_root_for_worker(
+        cwd: &Path,
+    ) -> Result<Option<shepr_protocol::RemotePath>, shepr_mux::git::GitReadError> {
         checkout_root(cwd)
     }
 }
 
-fn checkout_root(cwd: &Path) -> Result<Option<String>, String> {
+fn checkout_root(
+    cwd: &Path,
+) -> Result<Option<shepr_protocol::RemotePath>, shepr_mux::git::GitReadError> {
     match std::fs::metadata(cwd) {
         Ok(metadata) if metadata.is_dir() => {}
         Ok(_) => return Ok(None),
@@ -50,18 +54,18 @@ fn checkout_root(cwd: &Path) -> Result<Option<String>, String> {
         {
             return Ok(None);
         }
-        Err(error) => return Err(format!("cannot stat {}: {error}", cwd.display())),
+        Err(error) => {
+            return Err(shepr_mux::git::GitReadError::FileRead {
+                path: cwd.to_path_buf(),
+                reason: shepr_mux::git::FileReadReason::from(&error),
+            });
+        }
     }
     // Admission and sidebar refresh use one discovery policy for this answer.
-    let Some(root) =
-        shepr_mux::git::discover_checkout_root(cwd).map_err(|error| error.to_string())?
-    else {
+    let Some(root) = shepr_mux::git::discover_checkout_root(cwd)? else {
         return Ok(None);
     };
-    root.into_os_string()
-        .into_string()
-        .map(Some)
-        .map_err(|_| "Git checkout root path is not UTF-8".to_owned())
+    Ok(Some(root.into()))
 }
 
 #[cfg(test)]
@@ -72,18 +76,16 @@ mod tests {
     fn app() -> App {
         App::new(
             &shepr_config::ServerConfig::default(),
-            crate::app::AppPolicy::Test,
+            crate::app::AppPolicy::Suspended,
         )
     }
 
     /// The prepare and worker halves, as the server loop runs them.
-    fn checkout_root_of(cwd: &Path) -> Result<Option<String>, String> {
+    fn checkout_root_of(cwd: &Path) -> Result<Option<shepr_protocol::RemotePath>, String> {
         let (cwd, _home) = app()
-            .prepare_workspace_checkout_root(&WorkspaceCheckoutRootParams {
-                cwd: cwd.display().to_string(),
-            })
+            .prepare_workspace_checkout_root(&WorkspaceCheckoutRootParams { cwd: cwd.into() })
             .map_err(|error| error.to_string())?;
-        App::checkout_root_for_worker(&cwd)
+        App::checkout_root_for_worker(&cwd).map_err(|error| error.to_string())
     }
 
     #[test]
@@ -116,7 +118,7 @@ mod tests {
             .expect("a checkout root answer")
             .expect("a checkout root");
         assert_eq!(
-            std::fs::canonicalize(root).expect("root exists"),
+            std::fs::canonicalize(root.as_path()).expect("root exists"),
             std::fs::canonicalize(&repo).expect("repo exists")
         );
     }

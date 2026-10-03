@@ -17,9 +17,12 @@ impl App {
                 change.is_changed(),
             )),
             Err(shepr_mux::pane::PaneClearError::AlternateScreenActive) => {
-                rejected("the pane is on the alternate screen")
+                Err(EndpointError::AlternateScreen(target.pane_id).into())
             }
-            Err(err) => rejected(format!("the pane could not be cleared: {err}")),
+            Err(err) => Err(EndpointError::ResourceFailure(format!(
+                "the pane could not be cleared: {err}"
+            ))
+            .into()),
         }
     }
 
@@ -62,7 +65,7 @@ impl App {
         let selection =
             shepr_vt::selection::Selection::range(pane_id, params.anchor, params.cursor);
         let Some(text) = runtime.read().extract_selection(&selection) else {
-            return Err(EndpointError::Rejected(
+            return Err(EndpointError::Unavailable(
                 "selection text is unavailable".to_owned(),
             ));
         };
@@ -110,7 +113,9 @@ impl App {
         let target = match runtime.read().copy_motion(params.cursor, motion) {
             Ok(target) => target,
             Err(shepr_mux::pane::TerminalCopyMotionError::RowUnavailable) => {
-                return rejected("terminal row is unavailable");
+                return Err(
+                    EndpointError::Unavailable("terminal row is unavailable".into()).into(),
+                );
             }
         };
         Handled::reply(EndpointReply::PaneCopyMotion {
@@ -131,7 +136,9 @@ impl App {
             return Err(pane_missing(&params.pane_id).into());
         };
         if params.query.len() > MAX_QUERY_BYTES {
-            return rejected("copy search query is too large");
+            return Err(
+                EndpointError::InvalidArgument("copy search query is too large".into()).into(),
+            );
         }
         let previous = params
             .previous

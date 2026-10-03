@@ -29,7 +29,7 @@ use crate::endpoint::ClientEndpointId;
 fn pending_request() -> (ClientShellState, Vec<ClientShellAction>) {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
-    state.receive_pane_surface(surface());
+    state.receive_pane_surface_from(surface(), state.active_snapshot_generation.unwrap_or(1));
     submit_request(state)
 }
 
@@ -53,7 +53,7 @@ fn cancelled_scroll_rolls_back_queued_target_even_without_a_presented_snapshot()
         let mut state =
             ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
         state.set_snapshot(Box::new(snapshot()));
-        state.receive_pane_surface(surface());
+        state.receive_pane_surface_from(surface(), state.active_snapshot_generation.unwrap_or(1));
         let pane_id = test_pane_id("w1:p1");
         let mut first = ClientShellInput::default();
         state.push_pane_scroll_offset(pane_id, 3, &mut first);
@@ -88,7 +88,7 @@ fn cancelled_scroll_rolls_back_queued_target_even_without_a_presented_snapshot()
 fn mismatched_boot_scroll_result_rolls_back_queued_scroll_state() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
-    state.receive_pane_surface(surface());
+    state.receive_pane_surface_from(surface(), state.active_snapshot_generation.unwrap_or(1));
     let pane_id = test_pane_id("w1:p1");
     let mut first = ClientShellInput::default();
     state.push_pane_scroll_offset(pane_id, 3, &mut first);
@@ -116,7 +116,7 @@ fn mismatched_boot_scroll_result_rolls_back_queued_scroll_state() {
 fn disconnecting_a_pending_scroll_does_not_show_an_interrupted_action_notice() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
-    state.receive_pane_surface(surface());
+    state.receive_pane_surface_from(surface(), state.active_snapshot_generation.unwrap_or(1));
     let pane_id = test_pane_id("w1:p1");
     let mut first = ClientShellInput::default();
     state.push_pane_scroll_offset(pane_id, 3, &mut first);
@@ -414,7 +414,7 @@ fn an_expired_command_is_settled_even_when_its_connection_was_lost_first() {
 fn failed_selection_copy_does_not_send_terminal_input() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
-    state.receive_pane_surface(surface());
+    state.receive_pane_surface_from(surface(), state.active_snapshot_generation.unwrap_or(1));
     state.mouse_selection.selection = Some(shepr_vt::selection::Selection::range(
         test_pane_id("w1:p1"),
         shepr_vt::Point::new(shepr_vt::AbsRow(0), 0),
@@ -500,7 +500,7 @@ fn server_errors_become_unavailable_or_rejected_notices() {
 fn ready_shell() -> ClientShellState {
     let mut s = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     s.set_snapshot(Box::new(snapshot()));
-    s.receive_pane_surface(surface());
+    s.receive_pane_surface_from(surface(), s.active_snapshot_generation.unwrap_or(1));
     s.compose(106, 20).expect("compose");
     s
 }
@@ -671,7 +671,11 @@ fn an_ignored_answer_still_reports_its_server_error() {
     s.reset_copy_pipeline();
     let current = s.handle_input_bytes(b"w");
     let current = request_id(&current.actions).to_owned();
-    answer(&mut s, &another, Ok(EndpointReply::Done));
+    answer(
+        &mut s,
+        &another,
+        Ok(super::copy_search_result(Vec::new(), None)),
+    );
     assert!(
         !s.notices
             .timeout_suppressed(crate::shell::overlays::notices::NoticeCode::Command(
@@ -729,7 +733,7 @@ fn a_scroll_answer_does_not_bring_back_a_target_a_surface_already_showed() {
         *metrics =
             shepr_vt::ScrollMetrics::new(3, 20, metrics.viewport_rows, metrics.history_origin);
     }
-    s.receive_pane_surface(shown);
+    s.receive_pane_surface_from(shown, s.active_snapshot_generation.unwrap_or(1));
     assert!(s.scroll_lanes.target(&test_pane_id("w1:p1")).is_none());
     answer(&mut s, &id, Ok(scroll_reply(3)));
     assert!(s.scroll_lanes.is_idle());

@@ -30,7 +30,10 @@ use shepr_remote::{
 /// and keeps retrying. Host keys are never accepted; a machine whose key is
 /// unknown or changed is named so the operator can fix it. A server left
 /// running is reported with what to do about it.
-pub(crate) fn run(config: &shepr_config::ValidatedClientConfig, paths: &shepr_config::AppPaths) {
+pub(crate) fn run(
+    config: &shepr_config::ValidatedClientConfig,
+    paths: &shepr_config::AppPaths,
+) -> Vec<shepr_remote::MachineSshConnector> {
     // Questions go to stderr and answers come from stdin, and ssh prompts use
     // the terminal too, so asking needs both to be a terminal.
     let can_prompt = std::io::stdin().is_terminal() && std::io::stderr().is_terminal();
@@ -92,6 +95,7 @@ pub(crate) fn run(config: &shepr_config::ValidatedClientConfig, paths: &shepr_co
     {
         crate::cli::print_notice(&notice);
     }
+    ssh.into_connectors(machines)
 }
 
 /// The status of a running local server of any build, when this client can

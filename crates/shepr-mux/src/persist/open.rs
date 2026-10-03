@@ -93,11 +93,8 @@ pub fn open_session(
     let mut history_carry = HistoryCarry::default();
 
     if options.policy == SessionOpenPolicy::Persist {
-        let backup_dir = || {
-            session_backup_directory(lease.directory())
-                .display()
-                .to_string()
-        };
+        let backup_dir =
+            || shepr_protocol::RemotePath::from(session_backup_directory(lease.directory()));
         match load(&lease) {
             SessionLoad::Missing => {}
             SessionLoad::Unusable(failure) => {

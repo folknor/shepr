@@ -6,44 +6,6 @@ use shepr_protocol::{
 };
 use std::time::Instant;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ViewSerial(u64);
-
-impl ViewSerial {
-    fn new(value: u64) -> Self {
-        Self(value)
-    }
-}
-
-impl std::fmt::Display for ViewSerial {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        std::fmt::Display::fmt(&self.0, formatter)
-    }
-}
-
-#[derive(Debug)]
-pub struct ViewSerialAllocator {
-    next: u64,
-}
-
-impl Default for ViewSerialAllocator {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl ViewSerialAllocator {
-    pub fn new() -> Self {
-        Self { next: 1 }
-    }
-
-    pub fn allocate(&mut self) -> ViewSerial {
-        let serial = ViewSerial::new(self.next);
-        self.next = self.next.saturating_add(1);
-        serial
-    }
-}
-
 /// What a newly viewed connection is told about the host before its on request.
 pub struct HostBaseline<'a> {
     /// The one surface geometry every endpoint renders.
@@ -148,7 +110,6 @@ pub fn start_move<'a>(
     endpoints: &mut EndpointRegistry,
     shell: &mut ClientShellState,
     baseline: impl FnOnce(&ClientShellState) -> HostBaseline<'a>,
-    serial: &mut ViewSerialAllocator,
     now: Instant,
 ) -> StartOutcome {
     let Some(pending) = shell.endpoints.choice.pending_start() else {
@@ -184,7 +145,6 @@ pub fn start_move<'a>(
         boot_id,
         minimum_revision,
     };
-    let _view_serial = serial.allocate();
     let request = RequestId::allocate();
     shell
         .endpoints
@@ -243,7 +203,7 @@ pub fn commit_move(
     endpoints: &mut EndpointRegistry,
     shell: &mut ClientShellState,
     host_focused: bool,
-) -> Result<Option<Committed>, String> {
+) -> Result<Option<Committed>, super::choice::MoveFailure> {
     let Some(preparing) = shell.endpoints.choice.preparing() else {
         return Ok(None);
     };
@@ -266,12 +226,12 @@ pub fn commit_move(
         &lease.boot_id,
         surface.projection_revision,
     ) {
-        return Err("endpoint move lost its coherent snapshot/surface pair".into());
+        return Err(super::choice::MoveFailure::LostPair);
     }
     let target = lease.endpoint_id.clone();
     let previous = shell.endpoints.choice.live().cloned();
     if !shell.endpoint_usable(&target) || !shell.activate_endpoint_projection(&target) {
-        return Err("endpoint projection is unavailable".into());
+        return Err(super::choice::MoveFailure::ProjectionUnavailable);
     }
     shell.receive_pane_surface_from(surface, lease.generation);
     let committed = Some(Committed {
@@ -294,13 +254,8 @@ pub fn release_unwanted(
     choice: &EndpointChoice,
     endpoints: &mut EndpointRegistry,
     shell: &ClientShellState,
-    serial: &mut ViewSerialAllocator,
 ) -> usize {
-    endpoints.release_unwanted_views(
-        |id| choice.wants_view(id),
-        |id| shell.endpoint_boot_id(id),
-        serial,
-    )
+    endpoints.release_unwanted_views(|id| choice.wants_view(id), |id| shell.endpoint_boot_id(id))
 }
 
 #[cfg(test)]
@@ -318,13 +273,7 @@ mod tests {
             ),
             theme,
         };
-        start_move(
-            &mut f.client.write_stream,
-            shell,
-            baseline,
-            &mut f.client.next_view_serial,
-            f.now,
-        )
+        start_move(&mut f.client.write_stream, shell, baseline, f.now)
     }
     #[test]
     fn turn_on_sends_geometry_then_theme_then_the_request_and_no_focus() {
@@ -485,7 +434,6 @@ mod tests {
                 &f.client.state.shell.endpoints.choice,
                 &mut f.client.write_stream,
                 &f.client.state.shell,
-                &mut f.client.next_view_serial
             ),
             1
         );

@@ -463,7 +463,7 @@ mod tests {
             focused_pane_id: Some("w1:p1".into()),
             workspaces: vec![ClientShellWorkspace {
                 workspace_id: "w1".into(),
-                new_workspace_cwd: "/tmp".into(),
+                new_workspace_cwd: Some("/tmp".into()),
                 label: "shell".into(),
                 branch: Some("main".into()),
                 git_ahead_behind: None,

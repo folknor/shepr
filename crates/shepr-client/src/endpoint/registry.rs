@@ -6,7 +6,6 @@ use std::time::Instant;
 use super::ClientEndpointId;
 use super::connection_io::{EndpointReadActivity, NativeEndpointTransport};
 use super::health::{EndpointHealth, HealthAction};
-use super::view::ViewSerialAllocator;
 use crate::limits::ENDPOINT_DETACH_FLUSH_TIMEOUT;
 use shepr_protocol::ClientMessage;
 
@@ -38,6 +37,18 @@ pub(crate) struct EndpointTransportFailure {
     pub(crate) generation: u64,
     pub(crate) kind: io::ErrorKind,
     pub(crate) failure: shepr_remote::EndpointFailure,
+}
+
+impl std::fmt::Display for EndpointTransportFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.failure)
+    }
+}
+
+impl std::error::Error for EndpointTransportFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.failure)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -263,7 +274,6 @@ impl EndpointRegistry {
         &mut self,
         wanted: impl Fn(&ClientEndpointId) -> bool,
         boot_id_of: impl Fn(&ClientEndpointId) -> Option<&'a shepr_protocol::BootId>,
-        serial: &mut ViewSerialAllocator,
     ) -> usize {
         let mut failures = Vec::new();
         let mut released = 0;
@@ -276,7 +286,6 @@ impl EndpointRegistry {
             };
             connection.viewed = false;
             released += 1;
-            let _view_serial = serial.allocate();
             let request_id = shepr_protocol::RequestId::allocate();
             let request = super::view::surface_interest_request(boot, request_id, false);
             // A transport that failed the focus-loss is a lost connection; its server drops the
@@ -988,16 +997,11 @@ mod tests {
         for (id, transport) in ids.iter().zip(&transports) {
             registry.insert(id.clone(), transport.clone(), 7, true, Instant::now());
         }
-        let mut serial = ViewSerialAllocator::new();
         assert_eq!(
-            registry.release_unwanted_views(
-                |id| id == &ids[3],
-                |id| (id != &ids[2]).then_some(&boot),
-                &mut serial
-            ),
+            registry
+                .release_unwanted_views(|id| id == &ids[3], |id| (id != &ids[2]).then_some(&boot),),
             2
         );
-        assert_eq!(serial.allocate().to_string(), "3");
         for index in 0..2 {
             assert!(!registry.viewed(&ids[index]));
             assert!(matches!(

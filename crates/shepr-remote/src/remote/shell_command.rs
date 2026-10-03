@@ -39,11 +39,11 @@ impl AccountShellCommand {
 impl RemoteExecutable {
     /// The remote CLI invocation as a script for `RemoteSsh::sh_output`.
     pub(super) fn command_as_posix_script(&self, arguments: &[&str]) -> PosixScript {
-        PosixScript::new(self.command(arguments))
+        self.command(arguments)
     }
 
     /// The bridge launch as the command sshd hands the account shell.
     pub(super) fn bridge_command_as_account_shell(&self) -> AccountShellCommand {
-        AccountShellCommand::from_account_shell_text(self.bridge_command())
+        self.bridge_command()
     }
 }

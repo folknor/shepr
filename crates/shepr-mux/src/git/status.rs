@@ -3,7 +3,10 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use super::{AheadBehind, GitReadError, WorkspaceBranch, WorkspaceGitStatusSnapshot};
+use super::{
+    AheadBehind, FileReadReason, GitReadError, GitStatusKey, WorkspaceBranch,
+    WorkspaceGitStatusSnapshot,
+};
 
 use super::identity::{BranchName, FullRefName, Oid};
 use super::{
@@ -121,7 +124,7 @@ fn workspace_branch(fingerprint: &GitStatusFingerprint) -> WorkspaceBranch {
 /// both cache-entry retention and the lifetime of deduplicated read errors.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct GitStatusCache {
-    entries: HashMap<PathBuf, GitStatusCacheEntry>,
+    entries: HashMap<GitStatusKey, GitStatusCacheEntry>,
     reported_read_errors: HashSet<GitReadError>,
 }
 
@@ -150,7 +153,7 @@ impl GitStatusCache {
     /// deduplication follows the retained entries that still carry each cause.
     pub fn apply_refresh(
         &mut self,
-        cache_updates: Vec<(PathBuf, GitStatusCacheEntry)>,
+        cache_updates: Vec<(GitStatusKey, GitStatusCacheEntry)>,
     ) -> Vec<GitReadError> {
         let mut newly_reported_errors = Vec::new();
         let mut refreshed_keys = HashSet::with_capacity(cache_updates.len());
@@ -181,11 +184,11 @@ impl GitStatusCache {
 /// stays with the server-owned cache and is not carried across that boundary.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct GitStatusCacheView {
-    entries: HashMap<PathBuf, GitStatusCacheEntry>,
+    entries: HashMap<GitStatusKey, GitStatusCacheEntry>,
 }
 
 impl GitStatusCacheView {
-    pub fn get(&self, key: &Path) -> Option<&GitStatusCacheEntry> {
+    pub fn get(&self, key: &GitStatusKey) -> Option<&GitStatusCacheEntry> {
         self.entries.get(key)
     }
 }
@@ -250,13 +253,13 @@ fn repo_context_for_info(
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GitStatusDiscovery {
     cwd: PathBuf,
-    cache_key: PathBuf,
+    cache_key: GitStatusKey,
     info: Option<GitWorktreeInfo>,
     read_errors: Vec<GitReadError>,
 }
 
 impl GitStatusDiscovery {
-    pub fn cache_key(&self) -> &Path {
+    pub fn cache_key(&self) -> &GitStatusKey {
         &self.cache_key
     }
 }
@@ -265,14 +268,14 @@ pub fn git_status_discovery(cwd: &Path) -> GitStatusDiscovery {
     let mut read_errors = Vec::new();
     let mut info = git_worktree_info_with_errors(cwd, &mut read_errors);
     let cache_key = info.as_ref().map_or_else(
-        || cwd.to_path_buf(),
-        |info| canonicalize_best_effort_path(&info.repo_root),
+        || GitStatusKey::Outside(cwd.to_path_buf()),
+        |info| GitStatusKey::Checkout(canonicalize_best_effort_path(&info.repo_root)),
     );
     if let Some(info) = &mut info {
         // git_worktree_info_with_errors best-effort canonicalizes git_dir and
         // git_common_dir; only repo_root keeps the walk spelling. The .git
         // dependency is built from this key, so rebuilds from it use the same paths.
-        info.repo_root = cache_key.clone();
+        info.repo_root = cache_key.as_path().to_path_buf();
     }
     GitStatusDiscovery {
         cwd: cwd.to_path_buf(),
@@ -302,8 +305,9 @@ pub struct GitUpstreamIdentity {
     pub oid: Option<Oid>,
 }
 
-pub fn git_status_cache_key(cwd: &Path) -> Option<PathBuf> {
-    git_worktree_info(cwd).map(|info| canonicalize_best_effort_path(&info.repo_root))
+pub fn git_status_cache_key(cwd: &Path) -> Option<GitStatusKey> {
+    git_worktree_info(cwd)
+        .map(|info| GitStatusKey::Checkout(canonicalize_best_effort_path(&info.repo_root)))
 }
 
 pub fn git_status_snapshot_for_cwd(
@@ -519,7 +523,7 @@ fn read_head_identity_from_files(
         let Some(full_ref) = FullRefName::parse(full_ref) else {
             read_errors.push(GitReadError::FileRead {
                 path: info.git_dir.join("HEAD"),
-                message: "HEAD contains an invalid ref name".into(),
+                reason: FileReadReason::InvalidRefName,
             });
             return None;
         };
@@ -535,7 +539,7 @@ fn read_head_identity_from_files(
     let Some(oid) = Oid::parse(head) else {
         read_errors.push(GitReadError::FileRead {
             path: info.git_dir.join("HEAD"),
-            message: "detached HEAD is not a complete object ID".into(),
+            reason: FileReadReason::InvalidObjectId,
         });
         return None;
     };
@@ -596,7 +600,7 @@ fn git_ahead_behind_between(
         None => {
             read_errors.push(GitReadError::InvalidOutput {
                 cwd: repo_root.to_path_buf(),
-                arguments: "rev-list --left-right --count".into(),
+                arguments: vec!["rev-list".into(), "--left-right".into(), "--count".into()],
                 output: stdout,
             });
             None
@@ -624,6 +628,21 @@ mod tests {
     use std::time::Duration;
 
     #[test]
+    fn checkout_and_outside_keys_do_not_alias() {
+        let path = PathBuf::from("/repo");
+        let entry = GitStatusCacheEntry::Miss {
+            retry_after: Instant::now(),
+            repo_root: None,
+            read_errors: Vec::new(),
+        };
+        let mut cache = GitStatusCache::default();
+        cache.apply_refresh(vec![(GitStatusKey::Outside(path.clone()), entry)]);
+        let view = cache.refresh_view();
+        assert!(view.get(&GitStatusKey::Outside(path.clone())).is_some());
+        assert!(view.get(&GitStatusKey::Checkout(path)).is_none());
+    }
+
+    #[test]
     fn cached_misses_preserve_outside_repository_and_failed_read_distinction() {
         let retry_after = Instant::now();
         let outside = GitStatusCacheEntry::Miss {
@@ -641,7 +660,9 @@ mod tests {
             repo_root: None,
             read_errors: vec![GitReadError::FileRead {
                 path: PathBuf::from("/checkout/.git"),
-                message: "denied".into(),
+                reason: FileReadReason::from(&std::io::Error::from(
+                    std::io::ErrorKind::PermissionDenied,
+                )),
             }],
         };
 
@@ -669,7 +690,9 @@ mod tests {
 
         assert_eq!(
             git_status_cache_key(&root),
-            Some(std::fs::canonicalize(&root).expect("test precondition"))
+            Some(GitStatusKey::Checkout(
+                std::fs::canonicalize(&root).expect("test precondition")
+            ))
         );
     }
 
@@ -1042,7 +1065,7 @@ mod tests {
         let status = snapshot.into_workspace_status(
             shepr_protocol::WorkspaceId::from_number(1).expect("id"),
             checkout.clone(),
-            PathBuf::new(),
+            GitStatusKey::Outside(PathBuf::new()),
         );
 
         assert_eq!(

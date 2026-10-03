@@ -2,8 +2,7 @@
 //!
 //! The endpoint path answers with `EndpointError`, the wire error of the
 //! client protocol, and never touches the JSON API's `ApiError`: every app
-//! refusal is `Rejected` with a message for the user, and the other variants
-//! belong to the server loop.
+//! refusal carries a typed category and preserves a message for the user.
 
 use crate::app::App;
 use shepr_core::layout::PaneId;
@@ -272,34 +271,26 @@ impl Handled {
     }
 }
 
-/// An app refusal with a message for the user.
-pub(crate) fn rejected<T>(message: impl Into<String>) -> Result<T, HandlerError> {
-    Err(HandlerError {
-        error: EndpointError::Rejected(message.into()),
-        effects: EndpointEffects::default(),
-    })
-}
-
 pub(crate) fn endpoint_rejected<T>(message: impl Into<String>) -> Result<T, EndpointError> {
-    Err(EndpointError::Rejected(message.into()))
+    Err(EndpointError::InvalidArgument(message.into()))
 }
 
-pub(crate) fn rejected_with_effects(
+pub(crate) fn internal_with_effects(
     message: impl Into<String>,
     effects: EndpointEffects,
 ) -> HandlerResult {
     Err(HandlerError {
-        error: EndpointError::Rejected(message.into()),
+        error: EndpointError::Internal(message.into()),
         effects,
     })
 }
 
 pub(crate) fn workspace_missing(workspace_id: &WorkspaceId) -> EndpointError {
-    EndpointError::Rejected(format!("workspace {workspace_id} not found"))
+    EndpointError::WorkspaceGone(*workspace_id)
 }
 
 pub(crate) fn pane_missing(pane_id: &PublicPaneId) -> EndpointError {
-    EndpointError::Rejected(format!("pane {pane_id} not found"))
+    EndpointError::PaneGone(*pane_id)
 }
 
 impl App {
@@ -352,9 +343,5 @@ mod tests {
             shepr_protocol::PanePublicNumber::new(2).expect("nonzero literal"),
         );
         assert_eq!(pane_missing(&pane).to_string(), "pane w9:p2 not found");
-        assert!(matches!(
-            rejected::<()>("no"),
-            Err(error) if error.error == EndpointError::Rejected("no".into())
-        ));
     }
 }

@@ -22,9 +22,9 @@ impl Default for TerminalTheme {
 
 pub const HOST_COLOR_QUERY_SEQUENCE: &str = shepr_vt::seq::HOST_COLOR_QUERY_SEQUENCE;
 pub const HOST_COLOR_SCHEME_QUERY_SEQUENCE: &str = shepr_vt::seq::COLOR_SCHEME_QUERY;
-pub const HOST_COLOR_SCHEME_REPORT_ENABLE_SEQUENCE: &str =
+pub const HOST_COLOR_SCHEME_REPORT_ENABLE_SEQUENCE: shepr_vt::seq::DecModeSequence =
     shepr_vt::seq::HOST_COLOR_SCHEME_REPORT_ENABLE_SEQUENCE;
-pub const HOST_COLOR_SCHEME_REPORT_DISABLE_SEQUENCE: &str =
+pub const HOST_COLOR_SCHEME_REPORT_DISABLE_SEQUENCE: shepr_vt::seq::DecModeSequence =
     shepr_vt::seq::HOST_COLOR_SCHEME_REPORT_DISABLE_SEQUENCE;
 
 impl TerminalTheme {

@@ -4041,7 +4041,7 @@ fn default_color_changes_ask_for_an_owner_only_while_an_override_stands() {
 fn primary_history_is_unavailable_on_the_alternate_screen() {
     let terminal = shepr_vt::Terminal::new(20, 3, 100_000);
     let pane = std::sync::Arc::new(PaneTerminal::new(terminal));
-    let source = PaneHistorySource(std::sync::Arc::clone(&pane));
+    let source = PaneHistorySource::new(std::sync::Arc::clone(&pane));
     let mut cache = PaneHistoryCache::default();
     let pane_id = shepr_test_fixtures::fixed_pane_id(1);
     pane.process_pty_bytes(pane_id, b"history one\r\nhistory two\r\nprompt");

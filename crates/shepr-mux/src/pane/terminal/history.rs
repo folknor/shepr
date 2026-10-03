@@ -214,29 +214,47 @@ pub struct HistoryPiece {
 /// event loop: it holds the terminal, and reading it happens wherever the
 /// reader runs.
 #[derive(Clone)]
-pub struct PaneHistorySource(pub(crate) Arc<PaneTerminal>);
+pub struct PaneHistorySource {
+    terminal: Arc<PaneTerminal>,
+}
+
+/// Why a primary-history refresh could not be completed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HistoryUnavailable {
+    AlternateScreen,
+    CorePoisoned,
+    RetainedRowUnavailable,
+}
+
+struct HistoryPart<'a> {
+    text: &'a Arc<str>,
+    content_end: Option<usize>,
+    open: bool,
+}
 
 impl PaneHistorySource {
+    pub(crate) fn new(terminal: Arc<PaneTerminal>) -> Self {
+        Self { terminal }
+    }
+
     /// Brings `cache` up to date with the pane's primary-screen history,
-    /// formatting only what it does not already hold. `false`, with the
+    /// formatting only what it does not already hold. Returns an error, with the
     /// cache left as it was, while the alternate screen is active (the
     /// inactive primary grid cannot be read, and a full-screen program's
     /// frame is not history) or when the terminal cannot be read.
-    pub fn refresh(&self, cache: &mut PaneHistoryCache) -> bool {
-        let mut updated = if std::ptr::eq(Weak::as_ptr(&cache.terminal), Arc::as_ptr(&self.0)) {
-            cache.duplicate()
-        } else {
-            PaneHistoryCache {
-                terminal: Arc::downgrade(&self.0),
-                ..PaneHistoryCache::default()
-            }
-        };
-        if self.0.read_primary_history_inner(&mut updated).is_some() {
-            *cache = updated;
-            true
-        } else {
-            false
-        }
+    pub fn refresh(&self, cache: &mut PaneHistoryCache) -> Result<(), HistoryUnavailable> {
+        let mut updated =
+            if std::ptr::eq(Weak::as_ptr(&cache.terminal), Arc::as_ptr(&self.terminal)) {
+                cache.duplicate()
+            } else {
+                PaneHistoryCache {
+                    terminal: Arc::downgrade(&self.terminal),
+                    ..PaneHistoryCache::default()
+                }
+            };
+        self.terminal.read_primary_history_inner(&mut updated)?;
+        *cache = updated;
+        Ok(())
     }
 }
 
@@ -388,11 +406,19 @@ impl PaneHistoryCache {
     /// What the whole read is made of, oldest first: the chunks, then the
     /// tail. Each is its text as formatted, its content end and whether it
     /// stops inside a logical line.
-    fn parts(&self) -> impl Iterator<Item = (&Arc<str>, Option<usize>, bool)> {
+    fn parts(&self) -> impl Iterator<Item = HistoryPart<'_>> {
         self.chunks
             .iter()
-            .map(|chunk| (&chunk.text, chunk.content_end, chunk.open.is_some()))
-            .chain(std::iter::once((&self.tail, self.tail_content_end, false)))
+            .map(|chunk| HistoryPart {
+                text: &chunk.text,
+                content_end: chunk.content_end,
+                open: chunk.open.is_some(),
+            })
+            .chain(std::iter::once(HistoryPart {
+                text: &self.tail,
+                content_end: self.tail_content_end,
+                open: false,
+            }))
     }
 
     /// The index in [`parts`] of the last part that has content, where the
@@ -414,17 +440,21 @@ impl PaneHistoryCache {
         let Some(last) = self.last_content() else {
             return false;
         };
-        self.parts()
-            .take(last + 1)
-            .enumerate()
-            .any(|(index, (text, content_end, _))| {
+        self.parts().take(last + 1).enumerate().any(
+            |(
+                index,
+                HistoryPart {
+                    text, content_end, ..
+                },
+            )| {
                 let full: &str = text;
                 let exposed = match content_end {
                     Some(end) if index == last => full.get(..end).unwrap_or(full),
                     _ => full,
                 };
                 !exposed.trim().is_empty()
-            })
+            },
+        )
     }
 
     /// Names the exposed text: equal revisions mean the same text. It is never
@@ -449,7 +479,15 @@ impl PaneHistoryCache {
         let mut pieces = Vec::with_capacity(last + 1);
         // Whether the piece before the next one ended a logical line.
         let mut line_ended = true;
-        for (index, (text, content_end, open)) in self.parts().take(last + 1).enumerate() {
+        for (
+            index,
+            HistoryPart {
+                text,
+                content_end,
+                open,
+            },
+        ) in self.parts().take(last + 1).enumerate()
+        {
             let full: &str = text;
             let text = match content_end {
                 Some(end) if index == last && end < full.len() => {
@@ -523,12 +561,18 @@ fn format_chunk(
 }
 
 impl PaneTerminal {
-    fn read_primary_history_inner(&self, cache: &mut PaneHistoryCache) -> Option<()> {
+    fn read_primary_history_inner(
+        &self,
+        cache: &mut PaneHistoryCache,
+    ) -> Result<(), HistoryUnavailable> {
         loop {
-            let core = self.core.lock().ok()?;
+            let core = self
+                .core
+                .lock()
+                .map_err(|_| HistoryUnavailable::CorePoisoned)?;
             let terminal = &core.terminal;
             if terminal.active_screen() != shepr_vt::ActiveScreen::Primary {
-                return None;
+                return Err(HistoryUnavailable::AlternateScreen);
             }
             let bounds = HistoryBounds::of(terminal);
             cache.settle(core.history_epoch, &bounds);
@@ -549,7 +593,8 @@ impl PaneTerminal {
                     end,
                     &AnsiCarry::default(),
                     open_end,
-                )?;
+                )
+                .ok_or(HistoryUnavailable::RetainedRowUnavailable)?;
                 cache.push_front(HistoryChunk {
                     start: bounds.origin,
                     end,
@@ -574,10 +619,12 @@ impl PaneTerminal {
                 let open_end = terminal
                     .screen_row_for_absolute(end.saturating_sub(1))
                     .and_then(|y| terminal.screen_row_wrap(y))
-                    .map(|wrap| wrap.soft_wrapped)?;
+                    .map(|wrap| wrap.soft_wrapped)
+                    .ok_or(HistoryUnavailable::RetainedRowUnavailable)?;
                 let carry = cache.open_carry();
                 let resumed = !carry.is_fresh();
-                let formatted = format_chunk(terminal, next, end, &carry, open_end)?;
+                let formatted = format_chunk(terminal, next, end, &carry, open_end)
+                    .ok_or(HistoryUnavailable::RetainedRowUnavailable)?;
                 cache.push_back(HistoryChunk {
                     start: next,
                     end,
@@ -597,14 +644,14 @@ impl PaneTerminal {
             // The cache reaches the screen; the screen is read now, under
             // this hold, up to the last row with content or the cursor.
             let Ok(range) = terminal_recent_read_range(terminal, usize::MAX) else {
-                return None;
+                return Err(HistoryUnavailable::RetainedRowUnavailable);
             };
-            let Some((_, end, _)) = range else {
+            let Some(RecentReadRange { end, .. }) = range else {
                 // Nothing to read at all: the read is empty, whatever the
                 // cache held.
                 cache.clear();
                 drop(core);
-                return Some(());
+                return Ok(());
             };
             let carry = cache.open_carry();
             let (tail, content_end) = match terminal.screen_row_for_absolute(next) {
@@ -615,19 +662,19 @@ impl PaneTerminal {
                     let Some(formatted) = format_chunk(terminal, next, last, &carry, false) else {
                         // The caller discards this partial refresh, including
                         // any chunks settled or formatted earlier in the read.
-                        return None;
+                        return Err(HistoryUnavailable::RetainedRowUnavailable);
                     };
                     (formatted.text, formatted.content_end)
                 }
                 // A line the last chunk left open has no rows left to end it.
                 _ if !carry.is_fresh() => {
-                    return None;
+                    return Err(HistoryUnavailable::RetainedRowUnavailable);
                 }
                 _ => (String::new(), None),
             };
             drop(core);
             cache.set_tail(tail, content_end);
-            return Some(());
+            return Ok(());
         }
     }
 }
@@ -639,7 +686,7 @@ impl PaneHistorySource {
     ///
     /// [`refresh`]: Self::refresh
     pub fn read(&self, cache: &mut PaneHistoryCache) -> Option<String> {
-        self.refresh(cache).then(|| cache.text())
+        self.refresh(cache).ok().map(|()| cache.text())
     }
 }
 
@@ -679,7 +726,7 @@ mod tests {
         // The smallest history keeps a thousand lines; the rounds below
         // write several times that.
         let pane = terminal(12, 4, 2048);
-        let source = PaneHistorySource(Arc::clone(&pane));
+        let source = PaneHistorySource::new(Arc::clone(&pane));
         let mut cache = PaneHistoryCache::default();
         for round in 0..300 {
             let mut output = String::new();
@@ -711,7 +758,7 @@ mod tests {
     #[test]
     fn a_resize_starts_the_cache_over() {
         let pane = terminal(20, 4, 4096);
-        let source = PaneHistorySource(Arc::clone(&pane));
+        let source = PaneHistorySource::new(Arc::clone(&pane));
         let mut cache = PaneHistoryCache::default();
         for line in 0..20 {
             write(&pane, format!("line {line}\r\n").as_bytes());
@@ -729,7 +776,7 @@ mod tests {
     #[test]
     fn the_alternate_screen_hides_history_and_keeps_the_cache() {
         let pane = terminal(20, 4, 4096);
-        let source = PaneHistorySource(Arc::clone(&pane));
+        let source = PaneHistorySource::new(Arc::clone(&pane));
         let mut cache = PaneHistoryCache::default();
         for line in 0..20 {
             write(&pane, format!("line {line}\r\n").as_bytes());
@@ -761,8 +808,8 @@ mod tests {
             write(&second, format!("second {line}\r\n").as_bytes());
         }
         let mut cache = PaneHistoryCache::default();
-        PaneHistorySource(Arc::clone(&first)).read(&mut cache);
-        let read = PaneHistorySource(Arc::clone(&second)).read(&mut cache);
+        PaneHistorySource::new(Arc::clone(&first)).read(&mut cache);
+        let read = PaneHistorySource::new(Arc::clone(&second)).read(&mut cache);
         assert_eq!(read, whole_read(&second));
         assert!(read.is_some_and(|text| !text.contains("first")));
     }
@@ -806,7 +853,7 @@ mod tests {
     #[test]
     fn a_line_longer_than_a_chunk_is_read_in_pieces_that_join_exactly() {
         let pane = terminal(12, 4, DEEP_HISTORY_BYTES);
-        let source = PaneHistorySource(Arc::clone(&pane));
+        let source = PaneHistorySource::new(Arc::clone(&pane));
         let mut cache = PaneHistoryCache::default();
         write(&pane, b"before\r\n");
         assert_eq!(source.read(&mut cache), whole_read(&pane));
@@ -849,7 +896,7 @@ mod tests {
     #[test]
     fn eviction_through_the_pieces_of_a_long_line_keeps_reads_exact() {
         let pane = terminal(12, 4, DEEP_HISTORY_BYTES);
-        let source = PaneHistorySource(Arc::clone(&pane));
+        let source = PaneHistorySource::new(Arc::clone(&pane));
         let mut cache = PaneHistoryCache::default();
         write(&pane, long_styled_line(30_000).as_bytes());
         write(&pane, b"\r\n");
@@ -903,7 +950,7 @@ mod tests {
     #[test]
     fn default_blank_runs_before_between_and_after_content_read_exactly() {
         let pane = terminal(12, 4, VERY_DEEP_HISTORY_BYTES);
-        let source = PaneHistorySource(Arc::clone(&pane));
+        let source = PaneHistorySource::new(Arc::clone(&pane));
         let mut cache = PaneHistoryCache::default();
 
         // Nothing but blank lines: the read is empty.
@@ -941,7 +988,7 @@ mod tests {
     #[test]
     fn painted_and_hyperlinked_blank_rows_are_content() {
         let pane = terminal(12, 4, VERY_DEEP_HISTORY_BYTES);
-        let source = PaneHistorySource(Arc::clone(&pane));
+        let source = PaneHistorySource::new(Arc::clone(&pane));
         let mut cache = PaneHistoryCache::default();
         write(&pane, b"top\r\n");
         assert_eq!(source.read(&mut cache), whole_read(&pane));
@@ -978,7 +1025,7 @@ mod tests {
     #[test]
     fn blank_continuations_of_wrapped_lines_read_exactly() {
         let pane = terminal(12, 4, VERY_DEEP_HISTORY_BYTES);
-        let source = PaneHistorySource(Arc::clone(&pane));
+        let source = PaneHistorySource::new(Arc::clone(&pane));
         let mut cache = PaneHistoryCache::default();
         // Fill exactly one window of rows with one line, then one character
         // more, erased: the row that continues the line is blank, and the
@@ -1013,7 +1060,7 @@ mod tests {
         // in every alignment.
         for offset in [0, 1, 5, 11] {
             let pane = terminal(12, 4, VERY_DEEP_HISTORY_BYTES);
-            let source = PaneHistorySource(Arc::clone(&pane));
+            let source = PaneHistorySource::new(Arc::clone(&pane));
             let mut cache = PaneHistoryCache::default();
             write_blank_lines(&pane, offset);
             for round in 0..6 {
@@ -1034,7 +1081,7 @@ mod tests {
     fn evicting_the_last_content_leaves_blank_chunks_and_no_text() {
         // The smallest history keeps a thousand lines.
         let pane = terminal(12, 4, 2048);
-        let source = PaneHistorySource(Arc::clone(&pane));
+        let source = PaneHistorySource::new(Arc::clone(&pane));
         let mut cache = PaneHistoryCache::default();
         write(&pane, b"only content\r\n");
         assert_eq!(source.read(&mut cache), whole_read(&pane));
@@ -1090,7 +1137,7 @@ mod tests {
     #[test]
     fn a_long_run_of_small_saves_keeps_a_bounded_chunk_count_and_reads_exactly() {
         let pane = terminal(12, 4, VERY_DEEP_HISTORY_BYTES);
-        let source = PaneHistorySource(Arc::clone(&pane));
+        let source = PaneHistorySource::new(Arc::clone(&pane));
         let mut cache = PaneHistoryCache::default();
         let saves = 1_500;
         for round in 0..saves {
@@ -1132,7 +1179,7 @@ mod tests {
         // The smallest history keeps a thousand lines, so the origin walks
         // through merged chunks a few rows per save.
         let pane = terminal(12, 4, 2048);
-        let source = PaneHistorySource(Arc::clone(&pane));
+        let source = PaneHistorySource::new(Arc::clone(&pane));
         let mut cache = PaneHistoryCache::default();
         let mut inside_merged = 0;
         for round in 0..1_500 {
@@ -1258,7 +1305,7 @@ mod tests {
     #[test]
     fn an_alternate_screen_save_keeps_the_trimmed_primary_read() {
         let pane = terminal(12, 4, VERY_DEEP_HISTORY_BYTES);
-        let source = PaneHistorySource(Arc::clone(&pane));
+        let source = PaneHistorySource::new(Arc::clone(&pane));
         let mut cache = PaneHistoryCache::default();
         write(&pane, b"head\r\n");
         write_blank_lines(&pane, BLANK_RUN);
@@ -1284,7 +1331,7 @@ mod tests {
     #[test]
     fn an_unreadable_replacement_terminal_leaves_the_previous_cache_untouched() {
         let pane = terminal(20, 4, 4096);
-        let source = PaneHistorySource(Arc::clone(&pane));
+        let source = PaneHistorySource::new(Arc::clone(&pane));
         let mut cache = PaneHistoryCache::default();
         write(&pane, b"history before replacement\r\n");
         let previous = source.read(&mut cache).expect("primary screen is readable");
@@ -1301,7 +1348,10 @@ mod tests {
         .join();
         assert!(poisoned.is_err());
 
-        assert!(!PaneHistorySource(replacement).refresh(&mut cache));
+        assert_eq!(
+            PaneHistorySource::new(replacement).refresh(&mut cache),
+            Err(HistoryUnavailable::CorePoisoned)
+        );
         assert_eq!(cache.text(), previous);
         assert_eq!(cache.revision(), revision);
     }

@@ -26,7 +26,13 @@ impl App {
     /// never the scrolled viewport.
     pub(super) fn handle_detect_capture(&mut self, target: &PaneTarget) -> ApiResult {
         let Ok(public_id) = target.pane_id.parse::<shepr_protocol::PublicPaneId>() else {
-            return Err(pane_not_found(&target.pane_id));
+            return Err(ApiError::new(
+                ApiErrorCode::InvalidPaneId,
+                format!(
+                    "invalid pane id {:?}; expected w<workspace>:p<pane>",
+                    target.pane_id
+                ),
+            ));
         };
         let Some((ws_idx, pane_id)) = self.resolve_pane_id(&public_id) else {
             return Err(pane_not_found(&target.pane_id));
@@ -46,9 +52,7 @@ impl App {
     /// authority skips screen detection unless a visible blocker overrides the
     /// hook report, so it answers with that source instead of rule evidence.
     pub(super) fn handle_detect_explain(&mut self, target: &PaneTarget) -> ApiResult {
-        let Some((ws_idx, pane_id)) = self.parse_pane_id(&target.pane_id) else {
-            return Err(pane_not_found(&target.pane_id));
-        };
+        let (ws_idx, pane_id) = self.json_pane(&target.pane_id)?;
         let Some(terminal) = self
             .state
             .workspaces
@@ -145,9 +149,10 @@ mod tests {
     fn app_with_pane(name: &str) -> (App, shepr_core::layout::PaneId) {
         let mut app = App::new(
             &shepr_config::ServerConfig::default(),
-            crate::app::AppPolicy::Test,
+            crate::app::AppPolicy::Suspended,
         );
-        app.state.workspaces = vec![shepr_mux::workspace::Workspace::test_new(name)];
+        app.state
+            .test_set_workspaces(vec![shepr_mux::workspace::Workspace::test_new(name)]);
         app.state.ensure_test_terminals();
         let pane_id = app.state.workspaces[0].root_pane();
         (app, pane_id)
@@ -315,7 +320,12 @@ mod tests {
                 }),
             ] {
                 let response = request(&mut app, "unknown", method);
-                assert_eq!(response["error"]["code"], "pane_not_found", "{name}");
+                let expected = if name == "pi" {
+                    "invalid_pane_id"
+                } else {
+                    "pane_not_found"
+                };
+                assert_eq!(response["error"]["code"], expected, "{name}");
             }
         }
     }
@@ -390,9 +400,8 @@ mod tests {
             .expect("test precondition"),
         );
         terminal
-            .set_hook_authority_at(
-                "shepr:omp",
-                "omp",
+            .set_hook_report_at(
+                shepr_agent::agent::ReportOrigin::parse("shepr:omp", "omp").expect("test origin"),
                 AgentState::Working,
                 Some(session_ref),
                 Some(1),

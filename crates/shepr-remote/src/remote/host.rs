@@ -38,7 +38,7 @@ pub fn run_remote_client_bridge(
             )
         })?;
 
-    shepr_platform::forward_remote_bridge_stdio(stream)
+    shepr_platform::forward_remote_bridge_stdio(stream.into_local_stream())
 }
 
 /// Starts the server when none is listening, through the launcher the local

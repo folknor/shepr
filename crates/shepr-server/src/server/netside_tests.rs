@@ -144,6 +144,7 @@ async fn two_headless_servers_switch_endpoints_without_a_lease() {
         now,
     );
     shell.set_machines(&[machine]);
+    shell.endpoint_connected(&ClientEndpointId::Local, SOURCE_GENERATION);
     shell.set_endpoint_snapshot_for_generation(
         &ClientEndpointId::Local,
         SOURCE_GENERATION,
@@ -166,7 +167,6 @@ async fn two_headless_servers_switch_endpoints_without_a_lease() {
         false,
         now,
     );
-    let mut serial = view::ViewSerialAllocator::new();
     headless_tests::dispatch_lifecycle_messages(
         &mut source_server,
         source_client_id,
@@ -219,13 +219,7 @@ async fn two_headless_servers_switch_endpoints_without_a_lease() {
         while control.try_recv().is_ok() {}
         shell.endpoint_choice_mut().select(to.clone(), None);
         assert_eq!(
-            view::start_move(
-                &mut endpoints,
-                &mut shell,
-                |_| baseline(),
-                &mut serial,
-                Instant::now()
-            ),
+            view::start_move(&mut endpoints, &mut shell, |_| baseline(), Instant::now()),
             StartOutcome::Started
         );
         // Nothing reaches the endpoint on screen when the move starts, so its server keeps
@@ -348,7 +342,7 @@ async fn two_headless_servers_switch_endpoints_without_a_lease() {
             Some(true)
         );
         assert_eq!(
-            view::release_unwanted(shell.endpoint_choice(), &mut endpoints, &shell, &mut serial),
+            view::release_unwanted(shell.endpoint_choice(), &mut endpoints, &shell),
             1
         );
         let messages = std::mem::take(&mut *previous_sent.lock().expect("messages"));

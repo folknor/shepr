@@ -102,26 +102,24 @@ fn remove_managed_config_directory(path: &Path) {
 /// bridge sockets with their lock sidecars, and temporary ssh config
 /// directories.
 pub(super) enum TeardownResource {
-    Socket {
-        path: PathBuf,
-        identity: shepr_platform::ipc::SocketFileIdentity,
-    },
+    Socket(shepr_platform::ipc::OwnedSocketFile),
     Directory(PathBuf),
 }
 
 impl TeardownResource {
     pub(super) fn remove(&self) {
         match self {
-            Self::Socket { path, identity } => {
+            Self::Socket(file) => {
+                let path = file.path();
                 // Absent or replaced by another owner's socket already count as
                 // done inside `remove_socket_file_if_owned`.
-                if let Err(error) = shepr_platform::ipc::remove_socket_file_if_owned(path, identity)
-                {
+                if let Err(error) = file.remove_if_still_ours() {
                     tracing::warn!(
                         %error,
                         socket = %path.display(),
                         "could not remove ssh bridge socket at exit"
                     );
+                    return;
                 }
                 shepr_platform::release_single_use_socket_lock(path);
             }
@@ -351,8 +349,12 @@ impl RemoteSsh {
     /// Runs `script` under `/bin/sh` on the remote host, giving the
     /// connection `timeout` instead of the round-trip budget. For a command that
     /// legitimately runs longer than one round trip, such as a server stop.
-    pub(super) fn sh_output_within(&self, script: &str, timeout: Duration) -> io::Result<Output> {
-        self.sh_output_with_timeout(&PosixScript::new(script), timeout, false)
+    pub(super) fn sh_output_within(
+        &self,
+        script: &PosixScript,
+        timeout: Duration,
+    ) -> io::Result<Output> {
+        self.sh_output_with_timeout(script, timeout, false)
     }
 
     fn sh_output_with_timeout(
@@ -361,7 +363,7 @@ impl RemoteSsh {
         timeout: Duration,
         authentication_candidate: bool,
     ) -> io::Result<Output> {
-        let script = posix_remote_output_command(script.as_str());
+        let script = posix_remote_output_command(script);
         let mut child = self
             .command()
             .arg(AccountShellCommand::posix_script_stdin().as_str())
@@ -372,7 +374,7 @@ impl RemoteSsh {
             .map_err(|error| crate::local_setup_error("could not start local ssh", error))?;
 
         let write_result = if let Some(mut stdin) = child.stdin.take() {
-            stdin.write_all(script.as_bytes())
+            stdin.write_all(script.as_str().as_bytes())
         } else {
             Err(io::Error::new(
                 io::ErrorKind::BrokenPipe,
@@ -528,10 +530,8 @@ pub(super) fn ssh_command() -> Command {
 ///
 /// Production uses the private profile runtime directory under the validated
 /// XDG runtime root, so an isolated environment never reaches a user's live
-/// master. Tests that only render config text name a short
-/// directory nothing binds in: OpenSSH's staging name leaves room only for a
-/// directory as short as a real `/run/user/<uid>`, which no test scratch
-/// directory is.
+/// master. Construction requires the profile runtime directory to pass the
+/// ownership, permission and path checks.
 #[derive(Clone, Copy)]
 pub(super) struct SshControlDir<'a> {
     path: &'a Path,
@@ -569,15 +569,23 @@ pub(super) fn write_managed_ssh_config(
     control_dir: SshControlDir<'_>,
 ) -> io::Result<ManagedSshConfig> {
     let config_file = app_paths.client_config_file();
-    let runtime_dir = ensure_ssh_runtime_dir(app_paths)?;
+    let runtime_dir = control_dir.path;
     let paths: shepr_platform::RemoteSshConfigPaths =
         shepr_platform::remote_ssh_config_paths(app_paths.home_dir());
     let control_path = Some(shepr_platform::ssh_control_path_under(
         control_dir.path,
         &config_file,
-        target.as_str(),
+        target.control_key(),
     )?);
 
+    write_managed_ssh_config_at(runtime_dir, &paths, control_path)
+}
+
+fn write_managed_ssh_config_at(
+    runtime_dir: &Path,
+    paths: &shepr_platform::RemoteSshConfigPaths,
+    control_path: Option<PathBuf>,
+) -> io::Result<ManagedSshConfig> {
     let dir = ManagedSshConfigDirectory::new(
         shepr_platform::create_remote_ssh_config_dir(runtime_dir)
             .map_err(crate::ssh_runtime_error)?,
@@ -636,14 +644,6 @@ impl RemoteSsh {
             managed_config,
             attempt_deadline: None,
         }
-    }
-}
-
-#[cfg(test)]
-impl<'a> SshControlDir<'a> {
-    /// A directory taken as given, for tests that never bind the socket.
-    pub(super) fn unchecked(path: &'a Path) -> Self {
-        Self { path }
     }
 }
 

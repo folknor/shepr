@@ -385,11 +385,11 @@ impl ClientShellState {
                     action,
                 )?;
                 let target = agents.get(index)?;
-                if target.endpoint_id != *self.endpoints.presented() {
+                if target.endpoint != *self.endpoints.presented() {
                     return None;
                 }
-                let target_endpoint_id = target.endpoint_id.clone();
-                let pane_id = target.pane_id;
+                let target_endpoint_id = target.endpoint.clone();
+                let pane_id = target.pane_id()?;
                 // Relative moves can land on a row scrolled out of the sidebar;
                 // bring it into view, as a numbered pick already names a shown one.
                 if matches!(
@@ -397,9 +397,9 @@ impl ClientShellState {
                     KeybindAction::PreviousAgent | KeybindAction::NextAgent
                 ) && !self
                     .hits
-                    .agents
+                    .agent_hits
                     .iter()
-                    .any(|(_, visible_pane_id)| *visible_pane_id == pane_id)
+                    .any(|hit| hit.location.pane_id() == Some(pane_id))
                 {
                     let body_height = self.hits.agent_body.height;
                     self.reveal_endpoint_agent(&target_endpoint_id, &pane_id, body_height);

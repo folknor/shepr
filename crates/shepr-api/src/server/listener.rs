@@ -441,8 +441,11 @@ mod tests {
     ) -> (shepr_test_support::ScratchDir, super::super::ServerHandle) {
         let scratch = shepr_test_support::ScratchDir::new("merged-listener");
         let path = scratch.join("server.sock");
-        let (listener, lock, identity) =
-            shepr_platform::ipc::bind_private_socket(&path).expect("bind");
+        let socket_path = shepr_platform::ipc::SocketPath::new(path.clone()).expect("socket path");
+        let (listener, socket_file, lock) =
+            shepr_platform::ipc::bind_owned_private_socket(&socket_path)
+                .expect("bind")
+                .into_parts();
         let running = Arc::new(AtomicBool::new(true));
         let gate = dispatch.gate.clone();
         let thread = start_listener_with_dispatch(
@@ -461,7 +464,7 @@ mod tests {
         let handle = super::super::ServerHandle {
             thread: Some(thread),
             path,
-            identity,
+            socket_file,
             running,
             gate,
             _startup_lock: lock,

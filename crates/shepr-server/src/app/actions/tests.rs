@@ -9,7 +9,7 @@ fn app_with_workspaces(names: &[&str]) -> AppState {
     let mut state = AppState::test_new();
     for name in names {
         let ws = Workspace::test_new(name);
-        state.workspaces.push(ws);
+        state.test_push_workspace(ws);
     }
     state.ensure_test_terminals();
     if !state.workspaces.is_empty() {
@@ -18,10 +18,32 @@ fn app_with_workspaces(names: &[&str]) -> AppState {
     state
 }
 
+fn report_hook_state(
+    state: &mut AppState,
+    pane_id: shepr_core::layout::PaneId,
+    origin: shepr_agent::agent::ReportOrigin,
+    reported_state: AgentState,
+    seq: Option<u64>,
+    session_ref: Option<shepr_agent::agent::resume::AgentSessionRef>,
+) -> StateUpdate {
+    let sample = shepr_agent::ownership::HookClockSample {
+        monotonic: state.clock_now,
+        wall: std::time::SystemTime::now(),
+    };
+    state.handle_state_event(crate::app::events::StateEvent::HookStateReported {
+        pane_id,
+        sample,
+        origin,
+        state: reported_state,
+        seq,
+        session_ref,
+    })
+}
+
 fn app_from_state(state: AppState) -> crate::app::App {
     let mut app = crate::app::App::new(
         &shepr_config::ServerConfig::default(),
-        crate::app::AppPolicy::Test,
+        crate::app::AppPolicy::Suspended,
     );
     app.state = state;
     app.state
@@ -51,7 +73,7 @@ fn toggle_focused_zoom(state: &mut AppState) {
 #[test]
 fn pane_removal_command_returns_the_removed_container_scope() {
     let mut state = app_with_workspaces(&["one"]);
-    let second_pane = state.workspaces[0].test_split(Direction::Horizontal);
+    let second_pane = state.test_split_workspace(0, Direction::Horizontal);
     state.ensure_test_terminals();
     let first_pane = state.workspaces[0].root_pane();
 
@@ -164,7 +186,7 @@ fn apply_workspace_git_statuses_updates_matching_workspace() {
         WorkspaceGitStatus {
             workspace_id: first_id,
             resolved_identity_cwd: first_cwd.clone(),
-            status_cache_key: first_cwd.clone(),
+            status_cache_key: shepr_mux::git::GitStatusKey::Checkout(first_cwd.clone()),
             auto_label: "one".into(),
             branch: shepr_mux::git::WorkspaceBranch::Named("main".into()),
             ahead_behind: Some(shepr_mux::git::AheadBehind {
@@ -197,7 +219,7 @@ fn apply_workspace_git_statuses_ignores_stale_cwd() {
         WorkspaceGitStatus {
             workspace_id,
             resolved_identity_cwd: cwd.clone(),
-            status_cache_key: cwd.clone(),
+            status_cache_key: shepr_mux::git::GitStatusKey::Checkout(cwd.clone()),
             auto_label: "one".into(),
             branch: shepr_mux::git::WorkspaceBranch::Named("old".into()),
             ahead_behind: Some(shepr_mux::git::AheadBehind {
@@ -215,7 +237,9 @@ fn apply_workspace_git_statuses_ignores_stale_cwd() {
         WorkspaceGitStatus {
             workspace_id,
             resolved_identity_cwd: std::path::PathBuf::from("/definitely/not/current"),
-            status_cache_key: std::path::PathBuf::from("/definitely/not/current"),
+            status_cache_key: shepr_mux::git::GitStatusKey::Checkout(std::path::PathBuf::from(
+                "/definitely/not/current",
+            )),
             auto_label: "stale".into(),
             branch: shepr_mux::git::WorkspaceBranch::Named("main".into()),
             ahead_behind: Some(shepr_mux::git::AheadBehind {
@@ -248,7 +272,7 @@ fn apply_workspace_git_statuses_clears_missing_git_status() {
         WorkspaceGitStatus {
             workspace_id,
             resolved_identity_cwd: cwd.clone(),
-            status_cache_key: cwd.clone(),
+            status_cache_key: shepr_mux::git::GitStatusKey::Checkout(cwd.clone()),
             auto_label: "one".into(),
             branch: shepr_mux::git::WorkspaceBranch::Named("main".into()),
             ahead_behind: Some(shepr_mux::git::AheadBehind {
@@ -263,7 +287,7 @@ fn apply_workspace_git_statuses_clears_missing_git_status() {
         WorkspaceGitStatus {
             workspace_id,
             resolved_identity_cwd: cwd.clone(),
-            status_cache_key: cwd.clone(),
+            status_cache_key: shepr_mux::git::GitStatusKey::Outside(cwd.clone()),
             auto_label: "one".into(),
             branch: shepr_mux::git::WorkspaceBranch::OutsideRepository,
             ahead_behind: None,
@@ -526,14 +550,14 @@ fn visible_blocker_overrides_hook_working() {
         process_exited: false,
         observed_at: std::time::Instant::now(),
     });
-    state.handle_app_event(AppEvent::HookStateReported {
-        pane_id: bg_pane_id,
-        origin: shepr_agent::agent::ReportOrigin::parse("shepr:codex", "codex")
-            .expect("test origin"),
-        state: AgentState::Working,
-        seq: Some(1),
-        session_ref: None,
-    });
+    report_hook_state(
+        &mut state,
+        bg_pane_id,
+        shepr_agent::agent::ReportOrigin::parse("shepr:codex", "codex").expect("test origin"),
+        AgentState::Working,
+        Some(1),
+        None,
+    );
     state.handle_app_event(AppEvent::StateChanged {
         pane_id: bg_pane_id,
         agent: Some(Agent::Codex),
@@ -573,14 +597,14 @@ fn reserved_native_state_report_does_not_override_screen_state() {
         process_exited: false,
         observed_at: std::time::Instant::now(),
     });
-    state.handle_app_event(AppEvent::HookStateReported {
+    report_hook_state(
+        &mut state,
         pane_id,
-        origin: shepr_agent::agent::ReportOrigin::parse("shepr:claude", "claude")
-            .expect("test origin"),
-        state: AgentState::Blocked,
-        seq: Some(1),
-        session_ref: shepr_agent::agent::resume::AgentSessionRef::id("claude-session"),
-    });
+        shepr_agent::agent::ReportOrigin::parse("shepr:claude", "claude").expect("test origin"),
+        AgentState::Blocked,
+        Some(1),
+        shepr_agent::agent::resume::AgentSessionRef::id("claude-session"),
+    );
     let terminal = state
         .terminals
         .get(&terminal_id)
@@ -626,14 +650,14 @@ fn devin_state_report_refreshes_session_without_overriding_screen_state() {
         process_exited: false,
         observed_at: std::time::Instant::now(),
     });
-    state.handle_app_event(AppEvent::HookStateReported {
+    report_hook_state(
+        &mut state,
         pane_id,
-        origin: shepr_agent::agent::ReportOrigin::parse("shepr:devin", "devin")
-            .expect("test origin"),
-        state: AgentState::Working,
-        seq: Some(1),
-        session_ref: shepr_agent::agent::resume::AgentSessionRef::id("devin-session"),
-    });
+        shepr_agent::agent::ReportOrigin::parse("shepr:devin", "devin").expect("test origin"),
+        AgentState::Working,
+        Some(1),
+        shepr_agent::agent::resume::AgentSessionRef::id("devin-session"),
+    );
 
     let terminal = state
         .terminals
@@ -656,23 +680,25 @@ fn hidden_custom_session_ref_only_update_marks_session_dirty_without_visible_upd
     let first_session = test_dir.path().join("one.jsonl").display().to_string();
     let second_session = test_dir.path().join("two.jsonl").display().to_string();
 
-    let first_update = state.handle_app_event(AppEvent::HookStateReported {
+    let first_update = report_hook_state(
+        &mut state,
         pane_id,
-        origin: shepr_agent::agent::ReportOrigin::parse("custom:pi", "pi").expect("test origin"),
-        state: AgentState::Working,
-        seq: Some(20),
-        session_ref: shepr_agent::agent::resume::AgentSessionRef::path(first_session),
-    });
+        shepr_agent::agent::ReportOrigin::parse("custom:pi", "pi").expect("test origin"),
+        AgentState::Working,
+        Some(20),
+        shepr_agent::agent::resume::AgentSessionRef::path(first_session),
+    );
     assert_eq!(first_update, StateUpdate::Changed);
     state.session_dirty = false;
 
-    let second_update = state.handle_app_event(AppEvent::HookStateReported {
+    let second_update = report_hook_state(
+        &mut state,
         pane_id,
-        origin: shepr_agent::agent::ReportOrigin::parse("custom:pi", "pi").expect("test origin"),
-        state: AgentState::Working,
-        seq: Some(21),
-        session_ref: shepr_agent::agent::resume::AgentSessionRef::path(second_session),
-    });
+        shepr_agent::agent::ReportOrigin::parse("custom:pi", "pi").expect("test origin"),
+        AgentState::Working,
+        Some(21),
+        shepr_agent::agent::resume::AgentSessionRef::path(second_session),
+    );
 
     assert_eq!(second_update, StateUpdate::Unchanged);
     assert!(state.session_dirty);
@@ -740,7 +766,7 @@ fn cwd_report_for_missing_pane_is_ignored() {
 #[test]
 fn toggle_zoom_works() {
     let mut state = app_with_workspaces(&["test"]);
-    state.workspaces[0].test_split(Direction::Horizontal);
+    state.test_split_workspace(0, Direction::Horizontal);
 
     assert!(!state.workspaces[0].zoomed());
     toggle_focused_zoom(&mut state);
@@ -772,7 +798,7 @@ fn toggle_zoom_single_pane_noop() {
 fn pane_focus_direction_changes_focus_while_zoomed_through_endpoint() {
     let mut state = app_with_workspaces(&["test"]);
     let root = state.workspaces[0].root_pane();
-    let right = state.workspaces[0].test_split(Direction::Horizontal);
+    let right = state.test_split_workspace(0, Direction::Horizontal);
     state.workspaces[0].focus_pane(root);
     state.workspaces[0].set_zoomed(true);
     let mut app = app_from_state(state);
@@ -803,7 +829,7 @@ fn pane_focus_direction_changes_focus_while_zoomed_through_endpoint() {
 fn pane_swap_direction_focuses_the_named_source_even_when_another_pane_had_focus() {
     let mut state = app_with_workspaces(&["test"]);
     let root = state.workspaces[0].root_pane();
-    let right = state.workspaces[0].test_split(Direction::Horizontal);
+    let right = state.test_split_workspace(0, Direction::Horizontal);
     state.workspaces[0].focus_pane(right);
     let mut app = app_from_state(state);
     let pane_id = app.public_pane_id(0, root).expect("test precondition");
@@ -829,7 +855,7 @@ fn pane_swap_direction_focuses_the_named_source_even_when_another_pane_had_focus
 fn pane_swap_direction_mutates_hidden_layout_while_zoomed_through_endpoint() {
     let mut state = app_with_workspaces(&["test"]);
     let root = state.workspaces[0].root_pane();
-    let right = state.workspaces[0].test_split(Direction::Horizontal);
+    let right = state.test_split_workspace(0, Direction::Horizontal);
     state.workspaces[0].focus_pane(root);
     state.workspaces[0].set_zoomed(true);
     let mut app = app_from_state(state);
@@ -856,7 +882,7 @@ fn pane_swap_direction_mutates_hidden_layout_while_zoomed_through_endpoint() {
 #[test]
 fn close_pane_removes_from_workspace() {
     let mut state = app_with_workspaces(&["test"]);
-    let closed = state.workspaces[0].test_split(Direction::Horizontal);
+    let closed = state.test_split_workspace(0, Direction::Horizontal);
     state.ensure_test_terminals();
     assert_eq!(state.workspaces[0].panes().len(), 2);
     let plan = state
@@ -917,7 +943,7 @@ fn pane_process_exit_publish_marks_agent_idle_before_pane_removal() {
 #[test]
 fn close_pane_removes_unattached_terminal_state() {
     let mut state = app_with_workspaces(&["test"]);
-    let pane_id = state.workspaces[0].test_split(Direction::Horizontal);
+    let pane_id = state.test_split_workspace(0, Direction::Horizontal);
     state.ensure_test_terminals();
     let terminal_id = state
         .terminal_id_for_pane(0, pane_id)

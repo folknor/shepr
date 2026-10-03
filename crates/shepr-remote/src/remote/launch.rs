@@ -11,12 +11,13 @@ pub(super) const REMOTE_OUTPUT_READY_MARKER: &str = "shepr-remote-output-ready";
 /// `ServerStopExit::BootMismatch` when another boot answers the stop request or
 /// appears while the named boot shuts down, or `ServerStopExit::NoServer` when
 /// the observed server was already gone by the time its stop request ran.
-pub fn stop_remote_server(
-    paths: &shepr_config::AppPaths,
-    target: &SshTarget,
+///
+/// `ssh` is the machine's preflight transport; the stop's own timeout replaces
+/// any attempt deadline it carries.
+pub(crate) fn stop_remote_server_with_ssh(
+    ssh: &RemoteSsh,
     server: &DifferentBuildServer,
 ) -> io::Result<RemoteStop> {
-    let ssh = RemoteSsh::new(target.clone(), paths)?;
     let args = RemoteCliCommand::ServerStop {
         expected_boot: &server.boot_id,
     }
@@ -56,21 +57,21 @@ pub enum RemoteStop {
 }
 
 impl RemoteExecutable {
-    pub(super) fn command(&self, args: &[&str]) -> String {
+    pub(super) fn command(&self, args: &[&str]) -> PosixScript {
         let arguments = shepr_core::shell_quote::join_argv(args.iter().copied());
-        if arguments.is_empty() {
+        PosixScript::new(if arguments.is_empty() {
             self.shell_word().to_owned()
         } else {
             format!("{} {arguments}", self.shell_word())
-        }
+        })
     }
 
-    pub(super) fn status_client_command(&self) -> String {
+    pub(super) fn status_client_command(&self) -> PosixScript {
         let args = RemoteCliCommand::ClientStatus.args();
         self.command(&args)
     }
 
-    pub(super) fn bridge_command(&self) -> String {
+    pub(super) fn bridge_command(&self) -> AccountShellCommand {
         let args = RemoteCliCommand::ClientBridge.args();
         // sshd hands this string to the user's account shell, which need not be POSIX
         // (xonsh, fish, nushell). Run the script under /bin/sh (discovery feeds its
@@ -92,16 +93,19 @@ impl RemoteExecutable {
 ///
 /// Scripts fed to `/bin/sh -s` end with a newline; it is trimmed so the status
 /// suffix does not start a line with `;`, which is a shell syntax error.
-pub(super) fn posix_remote_output_command(command: &str) -> String {
-    let command = command.trim_end();
-    format!(
+pub(super) fn posix_remote_output_command(command: &PosixScript) -> PosixScript {
+    let command = command.as_str().trim_end();
+    PosixScript::new(format!(
         "echo; echo {REMOTE_OUTPUT_READY_MARKER}; {command}; shepr_exit_status=$?; if [ $shepr_exit_status -eq {SSH_OWN_FAILURE_EXIT_CODE} ]; then exit {REMAPPED_REMOTE_255_EXIT_CODE}; fi; exit $shepr_exit_status"
-    )
+    ))
 }
 
 /// Runs a POSIX script under `/bin/sh` regardless of the remote account shell.
-pub(super) fn posix_shell_command(script: &str) -> String {
-    format!("/bin/sh -c {}", shell_quote(script))
+pub(super) fn posix_shell_command(script: &PosixScript) -> AccountShellCommand {
+    AccountShellCommand::from_account_shell_text(format!(
+        "/bin/sh -c {}",
+        shell_quote(script.as_str())
+    ))
 }
 
 pub fn shell_quote(value: &str) -> String {
@@ -164,7 +168,7 @@ mod shell_command_tests {
             .stdin
             .take()
             .expect("shell stdin is piped")
-            .write_all(script.as_bytes())
+            .write_all(script.as_str().as_bytes())
             .expect("write probe script");
         let output = child.wait_with_output().expect("wait for POSIX shell");
         assert!(

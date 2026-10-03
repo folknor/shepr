@@ -2,7 +2,7 @@ use std::{
     collections::VecDeque,
     io::{Read, Write},
     os::fd::{AsRawFd, OwnedFd, RawFd},
-    sync::{Arc, Mutex, mpsc as std_mpsc},
+    sync::{Arc, Mutex},
 };
 
 use bytes::Bytes;
@@ -452,12 +452,12 @@ pub struct PtyIoActor;
 
 impl PtyIoActor {
     pub fn spawn(config: PtyIoActorConfig) -> std::io::Result<PtyIoActorHandle> {
-        Self::spawn_inner(config, None)
+        Self::spawn_inner(config, SystemPtyIo)
     }
 
-    fn spawn_inner(
+    fn spawn_inner<I: PtyIo + Send + 'static>(
         config: PtyIoActorConfig,
-        poll_observer: Option<std_mpsc::Sender<()>>,
+        io: I,
     ) -> std::io::Result<PtyIoActorHandle> {
         fd::set_cloexec(config.master_fd.as_raw_fd())?;
         fd::set_nonblocking(config.master_fd.as_raw_fd())?;
@@ -484,11 +484,8 @@ impl PtyIoActor {
             on_reader_exit: Some(config.on_reader_exit),
             core_broken: config.core_broken,
             exit_reason: ReaderExit::ShutdownRequested,
-            poll_observer,
-            resize_pty: Box::new(resize_pty),
+            io,
             resize_failure_logged: false,
-            poll_pty_and_wake: fd::poll_pty_and_wake,
-            drain_wake_fd: fd::drain_wake_fd,
         };
         std::thread::Builder::new()
             .name(format!("shepr-pty-{}", config.pane_id.raw()))
@@ -499,7 +496,41 @@ impl PtyIoActor {
     }
 }
 
-struct PtyIoActorRunner {
+trait PtyIo {
+    fn poll(
+        &mut self,
+        pty: RawFd,
+        wake: RawFd,
+        writable: bool,
+        timeout: i32,
+    ) -> std::io::Result<fd::PtyWakeReadiness>;
+    fn drain(&mut self, wake: RawFd) -> std::io::Result<()>;
+    fn resize(&mut self, pty: RawFd, resize: PtyResize) -> std::io::Result<()>;
+}
+
+struct SystemPtyIo;
+
+impl PtyIo for SystemPtyIo {
+    fn poll(
+        &mut self,
+        pty: RawFd,
+        wake: RawFd,
+        writable: bool,
+        timeout: i32,
+    ) -> std::io::Result<fd::PtyWakeReadiness> {
+        fd::poll_pty_and_wake(pty, wake, writable, timeout)
+    }
+
+    fn drain(&mut self, wake: RawFd) -> std::io::Result<()> {
+        fd::drain_wake_fd(wake)
+    }
+
+    fn resize(&mut self, pty: RawFd, resize: PtyResize) -> std::io::Result<()> {
+        resize_pty(pty, resize)
+    }
+}
+
+struct PtyIoActorRunner<I: PtyIo> {
     pane_id: PaneId,
     file: std::fs::File,
     inbox: Arc<Mutex<PtyIoInbox>>,
@@ -516,12 +547,9 @@ struct PtyIoActorRunner {
     /// which is what a loop that leaves on the shutdown flag reports; every
     /// other way out raises it first.
     exit_reason: ReaderExit,
-    poll_observer: Option<std_mpsc::Sender<()>>,
-    resize_pty: Box<dyn FnMut(RawFd, PtyResize) -> std::io::Result<()> + Send>,
+    io: I,
     /// Whether a resize failure was already reported at warn level.
     resize_failure_logged: bool,
-    poll_pty_and_wake: fn(RawFd, RawFd, bool, i32) -> std::io::Result<fd::PtyWakeReadiness>,
-    drain_wake_fd: fn(RawFd) -> std::io::Result<()>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -563,7 +591,7 @@ fn exit_for_pty_error(error: &std::io::Error) -> ReaderExit {
     }
 }
 
-impl PtyIoActorRunner {
+impl<I: PtyIo> PtyIoActorRunner<I> {
     fn raise_exit(&mut self, exit: ReaderExit) {
         if exit.severity() > self.exit_reason.severity() {
             self.exit_reason = exit;
@@ -606,24 +634,19 @@ impl PtyIoActorRunner {
                 self.handle_write_failure(&err);
                 break;
             }
-            if let Some(poll_observer) = &self.poll_observer {
-                // A test hook; a test that stopped listening wants no more
-                // poll notices, so a closed receiver is not an error.
-                poll_observer.send(()).ok();
-            }
-
             // The poll helper retries EINTR. A hard poll or wake-drain error
             // stops reads while the child may still be alive, so report an
             // IO failure that makes the mux remove this pane and tear it down.
-            match (self.poll_pty_and_wake)(
+            let writable = self.has_writable_work();
+            match self.io.poll(
                 self.file.as_raw_fd(),
                 self.wake_read_fd.as_raw_fd(),
-                self.has_writable_work(),
+                writable,
                 ACTOR_IDLE_POLL_MS,
             ) {
                 Ok(readiness) => {
                     if readiness.wake_ready
-                        && let Err(err) = (self.drain_wake_fd)(self.wake_read_fd.as_raw_fd())
+                        && let Err(err) = self.io.drain(self.wake_read_fd.as_raw_fd())
                     {
                         error!(
                             pane = self.pane_id.raw(),
@@ -717,7 +740,7 @@ impl PtyIoActorRunner {
             };
             (pending.order, pending.resize)
         };
-        let result = (self.resize_pty)(self.file.as_raw_fd(), resize);
+        let result = self.io.resize(self.file.as_raw_fd(), resize);
 
         let mut inbox = crate::locks::lock_auxiliary(&self.inbox);
         if inbox
@@ -987,12 +1010,65 @@ impl PtyReadResult {
 }
 
 #[cfg(test)]
+use std::sync::mpsc as std_mpsc;
+
+#[cfg(test)]
+struct TestPtyIo {
+    poll_observer: Option<std_mpsc::Sender<()>>,
+    resize_pty: Box<dyn FnMut(RawFd, PtyResize) -> std::io::Result<()> + Send>,
+    poll_pty_and_wake: fn(RawFd, RawFd, bool, i32) -> std::io::Result<fd::PtyWakeReadiness>,
+    drain_wake_fd: fn(RawFd) -> std::io::Result<()>,
+}
+
+#[cfg(test)]
+impl Default for TestPtyIo {
+    fn default() -> Self {
+        Self {
+            poll_observer: None,
+            resize_pty: Box::new(resize_pty),
+            poll_pty_and_wake: fd::poll_pty_and_wake,
+            drain_wake_fd: fd::drain_wake_fd,
+        }
+    }
+}
+
+#[cfg(test)]
+impl PtyIo for TestPtyIo {
+    fn poll(
+        &mut self,
+        pty: RawFd,
+        wake: RawFd,
+        writable: bool,
+        timeout: i32,
+    ) -> std::io::Result<fd::PtyWakeReadiness> {
+        if let Some(observer) = &self.poll_observer {
+            observer.send(()).ok();
+        }
+        (self.poll_pty_and_wake)(pty, wake, writable, timeout)
+    }
+
+    fn drain(&mut self, wake: RawFd) -> std::io::Result<()> {
+        (self.drain_wake_fd)(wake)
+    }
+
+    fn resize(&mut self, pty: RawFd, resize: PtyResize) -> std::io::Result<()> {
+        (self.resize_pty)(pty, resize)
+    }
+}
+
+#[cfg(test)]
 impl PtyIoActor {
     fn spawn_with_poll_observer(
         config: PtyIoActorConfig,
         poll_observer: std_mpsc::Sender<()>,
     ) -> std::io::Result<PtyIoActorHandle> {
-        Self::spawn_inner(config, Some(poll_observer))
+        Self::spawn_inner(
+            config,
+            TestPtyIo {
+                poll_observer: Some(poll_observer),
+                ..TestPtyIo::default()
+            },
+        )
     }
 }
 
@@ -1053,7 +1129,9 @@ mod tests {
         (handle, peer, read_rx)
     }
 
-    fn actor_test_parts(on_read: ReadCallback) -> (PtyIoActorRunner, PtyIoActorHandle, UnixStream) {
+    fn actor_test_parts(
+        on_read: ReadCallback,
+    ) -> (PtyIoActorRunner<TestPtyIo>, PtyIoActorHandle, UnixStream) {
         let (actor_socket, peer) = UnixStream::pair().expect("socket pair");
         actor_socket
             .set_nonblocking(true)
@@ -1082,16 +1160,13 @@ mod tests {
             on_reader_exit: None,
             core_broken: Box::new(|| false),
             exit_reason: ReaderExit::ShutdownRequested,
-            poll_observer: None,
-            resize_pty: Box::new(resize_pty),
+            io: TestPtyIo::default(),
             resize_failure_logged: false,
-            poll_pty_and_wake: fd::poll_pty_and_wake,
-            drain_wake_fd: fd::drain_wake_fd,
         };
         (runner, handle, peer)
     }
 
-    fn actor_runner_for_unit_test() -> (PtyIoActorRunner, UnixStream) {
+    fn actor_runner_for_unit_test() -> (PtyIoActorRunner<TestPtyIo>, UnixStream) {
         let (runner, _handle, peer) = actor_test_parts(Box::new(|_| PtyReadResult::empty()));
         (runner, peer)
     }
@@ -1439,7 +1514,7 @@ mod tests {
                 .send(reason)
                 .expect("reader exit receiver stays alive");
         }));
-        runner.poll_pty_and_wake = |_, _, _, _| {
+        runner.io.poll_pty_and_wake = |_, _, _, _| {
             Ok(fd::PtyWakeReadiness {
                 pty_read_ready: true,
                 pty_error: true,
@@ -1483,7 +1558,8 @@ mod tests {
                 .send(reason)
                 .expect("reader exit receiver stays alive");
         }));
-        runner.poll_pty_and_wake = |_, _, _, _| Err(std::io::Error::other("injected poll failure"));
+        runner.io.poll_pty_and_wake =
+            |_, _, _, _| Err(std::io::Error::other("injected poll failure"));
 
         runner.run();
 
@@ -1502,13 +1578,13 @@ mod tests {
                 .send(reason)
                 .expect("reader exit receiver stays alive");
         }));
-        runner.poll_pty_and_wake = |_, _, _, _| {
+        runner.io.poll_pty_and_wake = |_, _, _, _| {
             Ok(fd::PtyWakeReadiness {
                 wake_ready: true,
                 ..Default::default()
             })
         };
-        runner.drain_wake_fd = |_| Err(std::io::Error::other("injected wake drain failure"));
+        runner.io.drain_wake_fd = |_| Err(std::io::Error::other("injected wake drain failure"));
 
         runner.run();
 
@@ -1842,7 +1918,7 @@ mod tests {
     #[test]
     fn resize_writes_terminal_responses_after_applying_resize() {
         let (mut runner, handle, mut peer) = actor_test_parts(Box::new(|_| PtyReadResult::empty()));
-        runner.resize_pty = Box::new(|_, _| Ok(()));
+        runner.io.resize_pty = Box::new(|_, _| Ok(()));
         handle.write_terminal_response(|| Some(Bytes::from_static(b"earlier")));
         handle.resize(
             shepr_core::geometry::PaneGeometry::new(100, 40, 9, 18),
@@ -1862,7 +1938,7 @@ mod tests {
     fn failed_resize_is_not_retried_and_its_replies_keep_their_place() {
         let (mut runner, handle, mut peer) = actor_test_parts(Box::new(|_| PtyReadResult::empty()));
         let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        runner.resize_pty = Box::new({
+        runner.io.resize_pty = Box::new({
             let calls = Arc::clone(&calls);
             move |_, _| {
                 calls.fetch_add(1, Ordering::AcqRel);
@@ -1899,7 +1975,7 @@ mod tests {
     fn resize_is_applied_while_earlier_input_waits_on_an_unread_pty() {
         let (mut runner, handle, _peer) = actor_test_parts(Box::new(|_| PtyReadResult::empty()));
         let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        runner.resize_pty = Box::new({
+        runner.io.resize_pty = Box::new({
             let calls = Arc::clone(&calls);
             move |_, _| {
                 calls.fetch_add(1, Ordering::AcqRel);

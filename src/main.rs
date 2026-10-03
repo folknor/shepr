@@ -168,12 +168,13 @@ fn launch_tui(
     init_client_logging(paths)?;
     // Prompts and restart offers must run before the client takes the
     // terminal: it connects to machines with BatchMode and cannot answer one.
-    preflight::run(loaded_config, paths);
+    let connectors = preflight::run(loaded_config, paths);
     let client = autodetect::auto_detect_launch(
         loaded_config,
         paths,
         shepr_remote::local_server::SERVER_READY_TIMEOUT,
-        shepr_client::run_client,
+        connectors,
+        shepr_client::run_client_with_connectors,
     )
     .map_err(CliError::Launch)?;
     cli::finish_client(client).map(ProcessExit::from_cli_code)

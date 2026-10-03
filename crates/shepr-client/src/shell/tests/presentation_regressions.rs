@@ -3,8 +3,7 @@ use crate::shell::endpoints::ClientEndpointFocusTarget;
 use crate::shell::overlays::notices::ClientEndpointNoticeKind;
 use crate::shell::overlays::text_editor::TextEditor;
 use crate::shell::state::{
-    ClientNavigatorTarget, ClientShellAction, ClientShellConfig, ClientShellInput,
-    ClientShellOverlay, ClientShellState,
+    ClientShellAction, ClientShellConfig, ClientShellInput, ClientShellOverlay, ClientShellState,
 };
 use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use shepr_config::{ClientConfig, SidebarCollapsedModeConfig};
@@ -69,8 +68,8 @@ fn unavailable_view_respects_a_collapsed_single_endpoint_sidebar() {
             .hits
             .workspaces
             .iter()
-            .any(|hit| hit.endpoint_id.is_local()
-                && hit.workspace_id == crate::tests::test_workspace_id("w1"))
+            .any(|hit| hit.location.endpoint.is_local()
+                && hit.location.workspace_id() == Some(crate::tests::test_workspace_id("w1")))
     );
     assert!(state.hits.machines.is_empty());
 }
@@ -80,10 +79,10 @@ fn client_presentation_regression_removed_navigator_target_accepts_visible_fallb
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
     state.open_navigator_overlay();
-    let removed_target = ClientNavigatorTarget::Pane {
-        endpoint_id: state.active_endpoint_id().clone(),
-        pane_id: test_pane_id("w1:p1"),
-    };
+    let removed_target = crate::shell::navigation::location::Location::pane(
+        state.active_endpoint_id().clone(),
+        test_pane_id("w1:p1"),
+    );
     let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_mut() else {
         panic!("expected navigator");
     };
@@ -121,10 +120,10 @@ fn client_presentation_regression_removed_navigator_target_accepts_visible_fallb
     ));
     assert_eq!(
         expected,
-        ClientNavigatorTarget::Workspace {
-            endpoint_id: state.active_endpoint_id().clone(),
-            workspace_id: test_workspace_id("w1"),
-        }
+        crate::shell::navigation::location::Location::workspace(
+            state.active_endpoint_id().clone(),
+            test_workspace_id("w1"),
+        )
     );
 }
 
@@ -132,7 +131,7 @@ fn client_presentation_regression_removed_navigator_target_accepts_visible_fallb
 fn client_presentation_regression_help_scrolls_to_its_last_entry_in_a_narrow_terminal() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
-    state.receive_pane_surface(surface());
+    state.receive_pane_surface_from(surface(), state.active_snapshot_generation.unwrap_or(1));
     let groups = shepr_termio::input::keybind_help_groups(
         &state.config.keybinds.keybinds,
         state.config.keybinds.prefix,

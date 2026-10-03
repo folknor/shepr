@@ -41,7 +41,6 @@ pub(crate) struct ClientLoop {
     pub(crate) write_stream: endpoint::EndpointRegistry,
     pub(crate) supervisors: endpoint::EndpointSupervisors,
     pub(crate) endpoint_commands: endpoint::commands::EndpointCommands,
-    pub(crate) next_view_serial: endpoint::view::ViewSerialAllocator,
     pub(crate) reported_cell_size: Arc<AtomicCellSize>,
     pub(crate) event_tx: tokio::sync::mpsc::Sender<ClientLoopEvent>,
     pub(crate) event_rx: tokio::sync::mpsc::Receiver<ClientLoopEvent>,
@@ -114,7 +113,6 @@ impl ClientLoop {
             write_stream,
             supervisors,
             endpoint_commands: endpoint::commands::EndpointCommands::default(),
-            next_view_serial: endpoint::view::ViewSerialAllocator::new(),
             reported_cell_size,
             event_tx,
             event_rx,
@@ -464,10 +462,7 @@ mod client_timer_tests {
         now: Instant,
         write_stream: endpoint::EndpointRegistry,
     ) -> (ClientLoop, tokio::sync::mpsc::Sender<ClientLoopEvent>) {
-        use shepr_test_fixtures::ValidatedClientConfigFixture as _;
-
-        let config = shepr_config::ValidatedClientConfig::test_default();
-        let supervisors = endpoint::EndpointSupervisors::new(config.paths(), &[], now)
+        let supervisors = endpoint::EndpointSupervisors::new(Vec::new(), now)
             .expect("test precondition: no configured supervisors");
         let (event_tx, event_rx) = tokio::sync::mpsc::channel(1);
         (

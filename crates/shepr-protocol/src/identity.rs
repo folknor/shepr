@@ -209,13 +209,7 @@ impl RequestId {
     /// Allocates a distinct identity across all request lanes in this client process.
     pub fn allocate() -> Self {
         static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-        let value = NEXT
-            .try_update(
-                std::sync::atomic::Ordering::Relaxed,
-                std::sync::atomic::Ordering::Relaxed,
-                |value| value.checked_add(1),
-            )
-            .expect("request identity sequence exhausted");
+        let value = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Self(value.to_string())
     }
 

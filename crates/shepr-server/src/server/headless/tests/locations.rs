@@ -20,7 +20,7 @@ fn server_with_workspaces(names: &[&str]) -> (HeadlessServer, Vec<shepr_core::la
         .iter()
         .map(shepr_mux::workspace::Workspace::root_pane)
         .collect::<Vec<_>>();
-    server.app.state.workspaces = workspaces;
+    server.app.state.test_set_workspaces(workspaces);
     for pane_id in &panes {
         server.app.insert_test_runtime(
             *pane_id,
@@ -72,7 +72,7 @@ async fn a_location_change_invalidates_only_that_clients_projection() {
     assert!(control_8.try_recv().is_err());
     let session_generation = server.shell_session_generation;
     let projected = |server: &HeadlessServer, client_id: u64| {
-        let shell = server.clients[&client_id].shell_state();
+        let shell = server.clients[&ClientId::test_new(client_id)].shell_state();
         (
             shell.location.generation(),
             shell.projected_location_generation,
@@ -121,7 +121,10 @@ async fn a_location_change_invalidates_only_that_clients_projection() {
 async fn a_rejected_focus_command_moves_nobody() {
     let (mut server, _panes) = server_with_workspaces(&["first", "second"]);
     let (_control, _render) = connect(&mut server, 7);
-    let before = server.clients[&7].shell_state().location.clone();
+    let before = server.clients[&ClientId::test_new(7)]
+        .shell_state()
+        .location
+        .clone();
     let gone = WorkspaceId::from_number(9_999).expect("nonzero number");
     let bookmark = server.app.state.bookmark;
 
@@ -131,8 +134,13 @@ async fn a_rejected_focus_command_moves_nobody() {
         EndpointCommand::WorkspaceFocus(WorkspaceTarget { workspace_id: gone }),
     );
 
-    assert!(matches!(result, Err(EndpointError::Rejected(_))));
-    assert_eq!(server.clients[&7].shell_state().location, before);
+    assert!(matches!(result, Err(EndpointError::WorkspaceGone(id)) if id == gone));
+    assert_eq!(
+        server.clients[&ClientId::test_new(7)]
+            .shell_state()
+            .location,
+        before
+    );
     assert_eq!(server.app.state.bookmark, bookmark);
     shutdown_test_runtimes(&mut server);
 }
@@ -199,7 +207,13 @@ async fn a_client_whose_workspace_vanished_lands_by_remembered_index_across_a_mo
     // Client 7 views b (index 1), and so does the bookmark.
     assert!(server.place_test_client_on_workspace(ClientId::test_new(7), &b));
     server.app.state.set_bookmark_index(Some(1));
-    assert_eq!(server.clients[&7].shell_state().location.index(), 1);
+    assert_eq!(
+        server.clients[&ClientId::test_new(7)]
+            .shell_state()
+            .location
+            .index(),
+        1
+    );
 
     // Client 8 moves a to the end: the order is b, c, a, and b is at index 0.
     assert!(
@@ -214,7 +228,9 @@ async fn a_client_whose_workspace_vanished_lands_by_remembered_index_across_a_mo
         .is_ok()
     );
     assert_eq!(server.workspace_order(), vec![b, c, a]);
-    let location = &server.clients[&7].shell_state().location;
+    let location = &server.clients[&ClientId::test_new(7)]
+        .shell_state()
+        .location;
     assert_eq!(location.focused_workspace_id(), Some(&b));
     assert_eq!(
         location.index(),
@@ -337,21 +353,25 @@ async fn automatic_creation_is_controlled_by_the_trigger_when_it_presents_a_surf
     shutdown_test_runtimes(&mut server);
 }
 
+/// A live connection whose shell surface is inactive, so it presents nothing.
+fn non_presenting_client(activity: u64) -> ClientConnection {
+    ClientConnection::with_shell(
+        crate::server::clients::ClientShellState::with_surface_active(false),
+        shepr_core::geometry::GridSize::clamped(120, 40),
+        shepr_termio::host_term::cell_size::HostCellSize::default(),
+        crate::server::clients::ActivityStamp::from(activity),
+        crate::server::outbox::ClientOutbox::test_pair().0,
+    )
+}
+
 #[tokio::test]
 async fn automatic_creation_falls_back_to_the_lowest_id_presenting_client() {
     let mut server = test_headless_server();
     let _high = presenting_client(&mut server, 5, (90, 28));
     let _low = presenting_client(&mut server, 3, (70, 20));
-    // The trigger holds a connection that presents nothing (no writer).
-    server.insert_test_client(
-        9,
-        ClientConnection::new(
-            (120, 40),
-            shepr_termio::host_term::cell_size::HostCellSize::default(),
-            9,
-            crate::server::outbox::ClientOutbox::detached(),
-        ),
-    );
+    // The trigger holds a connection that presents nothing (its surface is
+    // inactive).
+    server.insert_test_client(9, non_presenting_client(9));
 
     assert!(server.create_automatic_workspace(Some(ClientId::test_new(9))));
 
@@ -374,18 +394,9 @@ async fn automatic_creation_falls_back_to_the_lowest_id_presenting_client() {
 #[tokio::test]
 async fn automatic_creation_with_no_presenting_client_is_headless_with_no_controller() {
     let mut server = test_headless_server();
-    // An active connection that cannot present (no writer) triggers the
-    // creation: the workspace is sized for the headless area, with no
-    // controller.
-    server.insert_test_client(
-        4,
-        ClientConnection::new(
-            (120, 40),
-            shepr_termio::host_term::cell_size::HostCellSize::default(),
-            4,
-            crate::server::outbox::ClientOutbox::detached(),
-        ),
-    );
+    // A connection whose surface is inactive triggers the creation: the
+    // workspace is sized for the headless area, with no controller.
+    server.insert_test_client(4, non_presenting_client(4));
 
     assert!(server.create_automatic_workspace(Some(ClientId::test_new(4))));
 
@@ -440,10 +451,10 @@ async fn workspace_create_sizes_the_first_pty_for_the_requester_and_navigates_it
     let grid = runtime.grid_size();
     assert_eq!(
         runtime.pixel_size(),
-        Some((
-            u32::from(grid.cols.get()) * 9,
-            u32::from(grid.rows.get()) * 18
-        )),
+        Some(shepr_mux::pane::PanePixelSize {
+            width: u32::from(grid.cols.get()) * 9,
+            height: u32::from(grid.rows.get()) * 18,
+        }),
         "the first window size carries the requester's cell size"
     );
     assert_eq!(location_of(&server, 7), Some(created));
@@ -502,5 +513,28 @@ async fn pane_replies_name_the_requested_target() {
         server.shell_target_for_client(ClientId::test_new(7)),
         Some(*second_pane.workspace_id())
     );
+    shutdown_test_runtimes(&mut server);
+}
+
+#[tokio::test]
+async fn a_session_generation_change_owes_projection_without_a_view_epoch_change() {
+    let (mut server, _panes) = server_with_workspaces(&["first"]);
+    let (_control, _render) = connect(&mut server, 7);
+    server.render_now();
+    let client_id = ClientId::test_new(7);
+    let epoch = server.view_epoch;
+    assert!(server.clients[&client_id].render_state.is_settled_at(epoch));
+    assert!(
+        !server.clients[&client_id]
+            .shell_state()
+            .projection_due(server.shell_session_generation)
+    );
+
+    server.shell_session_generation.advance();
+
+    assert_eq!(server.view_epoch, epoch);
+    let plan = server.render_plan(false);
+    assert!(plan.full.contains(&client_id));
+    assert!(!plan.patch.contains(&client_id));
     shutdown_test_runtimes(&mut server);
 }

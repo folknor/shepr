@@ -1794,9 +1794,14 @@ mod tests {
             !backup.try_exists().expect("test stat"),
             "an interrupted copy must not look complete"
         );
-        assert_eq!(
-            std::fs::read(backup.with_extension("pending")).expect("test precondition"),
-            b"partial"
+        // Unwinding drops the prepared file, which removes its staging name; a real
+        // crash would leave the prefix there, still not a recovery file.
+        assert!(
+            !backup
+                .with_extension("pending")
+                .try_exists()
+                .expect("test stat"),
+            "an unwound copy removes its staging file"
         );
         assert!(
             recovery_files(writer.path.parent().expect("test precondition"))

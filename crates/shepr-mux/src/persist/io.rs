@@ -413,25 +413,16 @@ fn missing_directory_chain(directory: &Path) -> std::io::Result<Vec<PathBuf>> {
 }
 
 /// A save whose new content is in place at the target path.
-#[derive(Debug)]
-pub(super) enum Published {
-    /// The content and its directory entry are on disk.
-    Durable,
-    /// The rename happened, so readers already see the new content, but a
-    /// later directory sync failed and a crash could still bring back the
-    /// previous file. The save is not a failure to undo: the new content is
-    /// the best copy there is, and follow-up work may proceed.
-    NotDurable(std::io::Error),
-}
+pub(super) use shepr_platform::publish_file::Published;
 
 /// Publishes `source` at `target` through a private (0600) temporary at
-/// `pending`: write, fsync the file, rename, fsync the directory. A crash
+/// `pending`: write, fsync the file, publish, fsync the directory. A crash
 /// leaves either the previous file or the complete new one, never a truncated
 /// one. Before creating the temporary, a leftover file from an interrupted
 /// publish is removed. The caller must hold the data directory lease so this
 /// cannot remove another live writer's temporary.
 ///
-/// With `replace` false an existing `target` is refused with `AlreadyExists`,
+/// With `replace` false an existing `target` is atomically refused with `AlreadyExists`,
 /// and a published target is withdrawn again when the directory sync fails,
 /// so that mode only ever returns `Published::Durable` or an error.
 /// With `replace` true the target is overwritten, and a completed rename is
@@ -448,47 +439,25 @@ pub(super) fn publish_private_file(
     target: &Path,
     replace: bool,
 ) -> std::io::Result<Published> {
-    let directory = containing_directory(target);
+    use shepr_platform::publish_file::{Durability, PreparedFile, PublishOptions};
     remove_stale_temporary(pending)?;
-    let mut output = shepr_platform::create_private_file(pending)?;
-    let mut published = false;
-    let result = (|| {
-        if !replace {
-            // This refusal is a guard, not an atomic no-clobber: the rename
-            // below overwrites whatever appears at `target` after this check.
-            // That is sufficient because the data directory lease admits one
-            // writer, so nothing else creates `target` in between. A taken
-            // recovery name is a leftover from an earlier interrupted save.
-            match std::fs::symlink_metadata(target) {
-                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-                Err(err) => return Err(err),
-                Ok(_) => {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::AlreadyExists,
-                        "publish target already exists",
-                    ));
-                }
-            }
-        }
-        std::io::copy(source, &mut output)?;
-        output.sync_all()?;
-        drop(output);
-        std::fs::rename(pending, target)?;
-        published = true;
-        shepr_platform::sync_directory(directory)
-    })();
-    match result {
-        Ok(()) => Ok(Published::Durable),
-        Err(err) if !published => {
-            remove_after_failed_publish(pending);
-            Err(err)
-        }
-        Err(err) if replace => Ok(Published::NotDurable(err)),
-        Err(err) => {
-            remove_after_failed_publish(target);
-            Err(err)
-        }
-    }
+    PreparedFile::prepare_at(
+        target,
+        pending,
+        source,
+        &PublishOptions {
+            preserve_metadata_from: None,
+            refuse_symlink_target: false,
+            durability: if replace {
+                Durability::Directory
+            } else {
+                Durability::DirectoryOrWithdraw
+            },
+            replace,
+            mode: 0o600,
+        },
+    )?
+    .commit()
 }
 
 /// Best-effort removal of a file a failed publish left behind. The publish

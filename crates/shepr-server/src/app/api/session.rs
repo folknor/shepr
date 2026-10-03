@@ -20,8 +20,8 @@ pub(crate) struct SnapshotPane {
     pub(crate) pane_id: PublicPaneId,
     pub(crate) workspace_id: WorkspaceId,
     pub(crate) label: Option<String>,
-    pub(crate) cwd: Option<String>,
-    pub(crate) foreground_cwd: Option<String>,
+    pub(crate) cwd: Option<shepr_protocol::RemotePath>,
+    pub(crate) foreground_cwd: Option<shepr_protocol::RemotePath>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -72,14 +72,14 @@ impl App {
             label: terminal.manual_label().map(str::to_owned),
             cwd: ws
                 .cwd_for_pane(pane_id, &self.state.terminals, &self.terminal_runtimes)
-                .map(|cwd| cwd.display().to_string()),
+                .map(shepr_protocol::RemotePath::from),
             // Runs on the server main loop once per pane for every session
             // snapshot the client shells are projected from, so the runtime
             // accessor behind it must stay a few /proc reads and never wait on
             // the PTY actor thread.
             foreground_cwd: ws
                 .foreground_cwd_for_pane(pane_id, &self.terminal_runtimes)
-                .map(|cwd| cwd.display().to_string()),
+                .map(shepr_protocol::RemotePath::from),
         })
     }
 }
@@ -91,10 +91,11 @@ mod tests {
     use shepr_mux::workspace::Workspace;
 
     fn app_with_two_panes() -> crate::app::App {
-        let mut app = crate::app::App::new(&ServerConfig::default(), crate::app::AppPolicy::Test);
+        let mut app =
+            crate::app::App::new(&ServerConfig::default(), crate::app::AppPolicy::Suspended);
         let mut workspace = Workspace::test_new("snapshot");
         workspace.test_split(shepr_core::layout::Direction::Horizontal);
-        app.state.workspaces = vec![workspace];
+        app.state.test_set_workspaces(vec![workspace]);
         app.state.ensure_test_terminals();
         app.state.set_bookmark_index(Some(0));
         app

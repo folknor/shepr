@@ -8,10 +8,33 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use sha2::{Digest as _, Sha256};
-use shepr_core::socket_path::SocketPath;
+pub use shepr_core::socket_path::SocketPath;
 
 pub type LocalListener = std::os::unix::net::UnixListener;
 pub type LocalStream = std::os::unix::net::UnixStream;
+
+/// A connected server whose peer uid was checked before any protocol write.
+#[derive(Debug)]
+pub struct TrustedServerStream(LocalStream);
+
+impl TrustedServerStream {
+    /// Transfer the admitted connection into an existing stream transport.
+    pub fn into_local_stream(self) -> LocalStream {
+        self.0
+    }
+}
+
+impl std::ops::Deref for TrustedServerStream {
+    type Target = LocalStream;
+    fn deref(&self) -> &LocalStream {
+        &self.0
+    }
+}
+impl std::ops::DerefMut for TrustedServerStream {
+    fn deref_mut(&mut self) -> &mut LocalStream {
+        &mut self.0
+    }
+}
 
 pub enum LocalStreamReadCount {
     Data(usize),
@@ -312,6 +335,67 @@ pub struct SocketFileIdentity {
     ino: u64,
 }
 
+/// Cleanup authority for exactly the inode this process bound. The path and
+/// inode identity cannot be accidentally paired with another socket's.
+#[derive(Clone, Debug)]
+pub struct OwnedSocketFile {
+    path: SocketPath,
+    identity: SocketFileIdentity,
+}
+impl OwnedSocketFile {
+    pub fn path(&self) -> &Path {
+        self.path.as_path()
+    }
+    pub fn is_still_ours(&self) -> bool {
+        socket_file_identity(self.path()).is_ok_and(|identity| identity == self.identity)
+    }
+    pub fn remove_if_still_ours(&self) -> io::Result<()> {
+        remove_socket_file_if_owned(self.path(), &self.identity)
+    }
+}
+
+/// Listener and cleanup authority acquired together under the lifetime lock.
+/// Splitting transfers the listener to its serving thread while the owner
+/// keeps cleanup authority and the lock through its final save.
+pub struct BoundSocket {
+    listener: LocalListener,
+    file: OwnedSocketFile,
+    lock: SocketStartupLock,
+}
+impl BoundSocket {
+    pub fn into_parts(self) -> (LocalListener, OwnedSocketFile, SocketStartupLock) {
+        (self.listener, self.file, self.lock)
+    }
+    pub fn remove_if_still_ours(self) -> io::Result<()> {
+        drop(self.listener);
+        self.file.remove_if_still_ours()
+    }
+}
+
+pub fn bind_owned_private_socket(path: &SocketPath) -> Result<BoundSocket, BindError> {
+    let (listener, lock, identity) = bind_private_socket(path.as_path())?;
+    Ok(BoundSocket {
+        listener,
+        lock,
+        file: OwnedSocketFile {
+            path: path.clone(),
+            identity,
+        },
+    })
+}
+
+pub fn bind_owned_single_use_private_socket(path: &SocketPath) -> Result<BoundSocket, BindError> {
+    let (listener, lock, identity) = bind_single_use_private_socket(path.as_path())?;
+    Ok(BoundSocket {
+        listener,
+        lock,
+        file: OwnedSocketFile {
+            path: path.clone(),
+            identity,
+        },
+    })
+}
+
 /// An exclusive, nonblocking lock for a server socket's startup and lifetime.
 ///
 /// [`bind_private_socket`] takes it before preparing the path; keep it until
@@ -320,7 +404,7 @@ pub struct SocketFileIdentity {
 /// is [`bind_single_use_private_socket`], whose owner removes the sidecar.
 pub struct SocketStartupLock {
     _lock: FlockLock,
-    socket_path: PathBuf,
+    socket_path: SocketPath,
 }
 
 impl Drop for SocketStartupLock {
@@ -329,7 +413,7 @@ impl Drop for SocketStartupLock {
             event = "ipc.socket_lock",
             subsystem = "ipc",
             outcome = "released",
-            path = %self.socket_path.display(),
+            path = %self.socket_path.as_path().display(),
             "server socket startup lock released"
         );
     }
@@ -416,6 +500,7 @@ pub(crate) fn flock_exclusive(file: &fs::File, blocking: bool) -> io::Result<()>
 /// socket's parent directory without counting against the socket path limit
 /// (`shepr_core::socket_path`).
 fn acquire_socket_startup_lock(socket_path: &Path) -> Result<SocketStartupLock, BindError> {
+    let checked_socket_path = SocketPath::new(socket_path.to_path_buf())?;
     socket_parent(socket_path)?;
     let lock_path = socket_startup_lock_path(socket_path);
     let lock = match acquire_flock_lock(&lock_path, false) {
@@ -441,7 +526,7 @@ fn acquire_socket_startup_lock(socket_path: &Path) -> Result<SocketStartupLock, 
     );
     Ok(SocketStartupLock {
         _lock: lock,
-        socket_path: socket_path.to_path_buf(),
+        socket_path: checked_socket_path,
     })
 }
 
@@ -514,6 +599,7 @@ pub fn bind_single_use_private_socket(
 /// Creates, locks and owner-marks the sidecar of a single-use socket path.
 /// A sidecar created here and then not locked is removed again.
 fn acquire_single_use_socket_lock(socket_path: &Path) -> Result<SocketStartupLock, BindError> {
+    let checked_socket_path = SocketPath::new(socket_path.to_path_buf())?;
     let parent = socket_parent(socket_path)?;
     super::create_private_directory_all(parent)?;
     let entry = match super::owned_runtime::OwnedRuntimeEntry::create_socket(socket_path) {
@@ -533,7 +619,7 @@ fn acquire_single_use_socket_lock(socket_path: &Path) -> Result<SocketStartupLoc
     );
     Ok(SocketStartupLock {
         _lock: FlockLock { _file: file },
-        socket_path: socket_path.to_path_buf(),
+        socket_path: checked_socket_path,
     })
 }
 
@@ -664,7 +750,7 @@ pub fn connect_local_stream_within(path: &Path, timeout: Duration) -> io::Result
 /// socket. A foreign or unverifiable owner is a `PermissionDenied` error that
 /// names the socket; every connect error of [`connect_local_stream`] is passed
 /// through unchanged.
-pub fn connect_trusted_local_stream(path: &Path) -> io::Result<LocalStream> {
+pub fn connect_trusted_local_stream(path: &Path) -> io::Result<TrustedServerStream> {
     connect_trusted_local_stream_within(path, super::limits::LOCAL_CONNECT_TIMEOUT)
 }
 
@@ -673,10 +759,10 @@ pub fn connect_trusted_local_stream(path: &Path) -> io::Result<LocalStream> {
 pub fn connect_trusted_local_stream_within(
     path: &Path,
     timeout: Duration,
-) -> io::Result<LocalStream> {
+) -> io::Result<TrustedServerStream> {
     let stream = connect_local_stream_within(path, timeout)?;
     match peer_is_same_effective_user(&stream) {
-        Ok(true) => Ok(stream),
+        Ok(true) => Ok(TrustedServerStream(stream)),
         Ok(false) => Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             format!(

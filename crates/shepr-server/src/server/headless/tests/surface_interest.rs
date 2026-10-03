@@ -254,10 +254,17 @@ async fn background_surface_activation_preserves_focused_viewer_geometry() {
         Some(shared_workspace_id)
     );
     assert_eq!(
-        server.clients[&7].shell_state().outer_terminal_focus,
+        server.clients[&ClientId::test_new(7)]
+            .shell_state()
+            .outer_terminal_focus,
         Some(true)
     );
-    assert_eq!(server.clients[&8].shell_state().outer_terminal_focus, None);
+    assert_eq!(
+        server.clients[&ClientId::test_new(8)]
+            .shell_state()
+            .outer_terminal_focus,
+        None
+    );
     assert_eq!(
         server.app.test_runtime(pane_id).current_size(),
         focused_size,
@@ -273,11 +280,15 @@ async fn background_surface_activation_preserves_focused_viewer_geometry() {
         focused: false,
     }));
     assert_eq!(
-        server.clients[&7].shell_state().outer_terminal_focus,
+        server.clients[&ClientId::test_new(7)]
+            .shell_state()
+            .outer_terminal_focus,
         Some(true)
     );
     assert_eq!(
-        server.clients[&8].shell_state().outer_terminal_focus,
+        server.clients[&ClientId::test_new(8)]
+            .shell_state()
+            .outer_terminal_focus,
         Some(false)
     );
     assert_eq!(
@@ -329,7 +340,9 @@ async fn focused_surface_reassertion_reclaims_workspace_geometry() {
         .expect("focused surface reassertion response");
 
     assert_eq!(
-        server.clients[&8].shell_state().outer_terminal_focus,
+        server.clients[&ClientId::test_new(8)]
+            .shell_state()
+            .outer_terminal_focus,
         Some(true)
     );
     assert_eq!(server.app.test_runtime(pane_id).current_size(), (35, 99));
@@ -347,7 +360,7 @@ async fn navigation_reapplies_geometry_for_the_workspace_left_behind() {
     let first_pane = first.root_pane();
     let second = shepr_mux::workspace::Workspace::test_new("second");
     let second_pane = second.root_pane();
-    server.app.state.workspaces = vec![first, second];
+    server.app.state.test_set_workspaces(vec![first, second]);
     server.app.state.ensure_test_terminals();
     server.app.insert_test_runtime(
         first_pane,
@@ -404,11 +417,19 @@ async fn unchanged_geometry_application_does_not_force_surface_recompute() {
     let (control, _render) = connect_test_shell(&mut server, 7, 80, 23);
     let _ = client_shell_snapshot(&control);
     server.render_now();
-    assert!(!server.clients[&7].render_state.requires_recompute());
+    assert!(
+        !server.clients[&ClientId::test_new(7)]
+            .render_state
+            .requires_recompute()
+    );
     let applied_size = server.app.test_runtime(pane_id).current_size();
 
     assert!(!server.reapply_controlled_shell_workspace_geometry(false));
-    assert!(!server.clients[&7].render_state.requires_recompute());
+    assert!(
+        !server.clients[&ClientId::test_new(7)]
+            .render_state
+            .requires_recompute()
+    );
     assert_eq!(
         server.app.test_runtime(pane_id).current_size(),
         applied_size

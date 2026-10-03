@@ -24,7 +24,12 @@ pub(crate) fn auto_detect_launch<T>(
     config: &shepr_config::ValidatedClientConfig,
     paths: &shepr_config::AppPaths,
     server_ready_timeout: Duration,
-    run_client: impl FnOnce(&shepr_config::ValidatedClientConfig, &shepr_config::AppPaths) -> T,
+    connectors: Vec<shepr_remote::MachineSshConnector>,
+    run_client: impl FnOnce(
+        &shepr_config::ValidatedClientConfig,
+        &shepr_config::AppPaths,
+        Vec<shepr_remote::MachineSshConnector>,
+    ) -> T,
 ) -> Result<T, shepr_remote::local_server::LaunchError> {
     let socket_path = paths.server_address().socket().to_path_buf();
     tracing::info!(path = %socket_path.display(), "auto-detect launch starting");
@@ -47,7 +52,7 @@ pub(crate) fn auto_detect_launch<T>(
         crate::cli::print_notice(&local_startup_notice(&error));
     }
 
-    Ok(run_client(config, paths))
+    Ok(run_client(config, paths, connectors))
 }
 
 /// Rejects a TUI launch with no usable terminal geometry before preflight can

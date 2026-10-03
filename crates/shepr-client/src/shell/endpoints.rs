@@ -1,5 +1,6 @@
 use crate::endpoint::{ClientEndpointId, ClientEndpointStatus, EndpointFailureStatus};
 use crate::shell::ledger::DropReason;
+use crate::shell::navigation::location::Location;
 use crate::shell::presentation::surfaces::PaneSurfaces;
 use crate::shell::state::ClientShellState;
 use shepr_protocol::ClientShellSnapshot;
@@ -53,7 +54,7 @@ impl std::ops::DerefMut for Endpoints {
 #[derive(Clone, Debug)]
 pub(crate) struct EndpointSnapshot {
     snapshot: Arc<ClientShellSnapshot>,
-    generation: Option<u64>,
+    generation: u64,
 }
 
 /// A live presentation always has a snapshot. A disconnected presentation keeps its
@@ -122,9 +123,7 @@ impl EndpointState {
                 connected: true,
                 generation,
                 ..
-            } if generation.is_none() || *generation == snapshot.generation => {
-                Self::Online(snapshot)
-            }
+            } if *generation == Some(snapshot.generation) => Self::Online(snapshot),
             Self::Connecting {
                 connected,
                 generation,
@@ -150,7 +149,7 @@ impl ClientShellEndpoint {
     }
 
     pub(crate) fn snapshot_generation(&self) -> Option<u64> {
-        self.state.last().and_then(|last| last.generation)
+        self.state.last().map(|last| last.generation)
     }
 }
 
@@ -158,9 +157,11 @@ pub(in crate::shell) struct MachineHit {
     pub(in crate::shell) rect: Rect,
     pub(in crate::shell) status_badge: Rect,
     pub(in crate::shell) collapse_toggle: Rect,
-    pub(in crate::shell) endpoint_id: ClientEndpointId,
+    pub(in crate::shell) location: Location,
 }
 
+/// A focus operation after endpoint selection has supplied its endpoint context. Shell
+/// destinations themselves use `Location`, which always carries that endpoint.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ClientEndpointFocusTarget {
     Workspace(shepr_protocol::WorkspaceId),
@@ -296,7 +297,9 @@ impl ClientShellState {
         let Some(snapshot) = endpoint.shared_snapshot() else {
             return false;
         };
-        let generation = endpoint.snapshot_generation();
+        let Some(generation) = endpoint.snapshot_generation() else {
+            return false;
+        };
         let agent_body_height = self.hits.agent_body.height;
         let switching_endpoint = endpoint_id != self.endpoints.presented();
         let agent_scroll = self.agent_scroll;
@@ -314,7 +317,7 @@ impl ClientShellState {
         }
         let pending_agent_reveal = self
             .pending_agent_reveal
-            .take_if(|(target_endpoint, _)| target_endpoint == endpoint_id);
+            .take_if(|target| &target.endpoint == endpoint_id);
         if switching_endpoint {
             self.surfaces = PaneSurfaces::default();
         }
@@ -323,8 +326,10 @@ impl ClientShellState {
             // The aggregate agent list belongs to the client, not one endpoint.
             self.agent_scroll = agent_scroll;
         }
-        if let Some((_, pane_id)) = pending_agent_reveal {
-            self.reveal_endpoint_agent(endpoint_id, &pane_id, agent_body_height);
+        if let Some(target) = pending_agent_reveal
+            && let Some(pane_id) = target.pane_id()
+        {
+            self.reveal_endpoint_agent(&target.endpoint, &pane_id, agent_body_height);
         }
         true
     }
@@ -368,7 +373,7 @@ impl ClientShellState {
             .is_some_and(|endpoint| {
                 endpoint
                     .snapshot_generation()
-                    .is_none_or(|snapshot_generation| snapshot_generation == generation)
+                    .is_some_and(|snapshot_generation| snapshot_generation == generation)
                     && endpoint.snapshot().is_some_and(|snapshot| {
                         snapshot.boot_id == *boot_id && snapshot.revision == revision
                     })
@@ -384,10 +389,7 @@ impl ClientShellState {
             .endpoints
             .iter()
             .find(|endpoint| &endpoint.endpoint_id == endpoint_id)?;
-        if endpoint
-            .snapshot_generation()
-            .is_some_and(|snapshot_generation| snapshot_generation != generation)
-        {
+        if endpoint.snapshot_generation() != Some(generation) {
             return None;
         }
         endpoint
@@ -420,13 +422,13 @@ impl ClientShellState {
         generation: u64,
         snapshot: impl Into<Arc<ClientShellSnapshot>>,
     ) {
-        self.cache_endpoint_snapshot_at_generation(endpoint_id, Some(generation), snapshot.into());
+        self.cache_endpoint_snapshot_at_generation(endpoint_id, generation, snapshot.into());
     }
 
     fn cache_endpoint_snapshot_at_generation(
         &mut self,
         endpoint_id: &ClientEndpointId,
-        generation: Option<u64>,
+        generation: u64,
         snapshot: Arc<ClientShellSnapshot>,
     ) {
         let Some(index) = self
@@ -436,7 +438,7 @@ impl ClientShellState {
         else {
             return;
         };
-        if self.endpoints[index].snapshot_generation() == generation
+        if self.endpoints[index].snapshot_generation() == Some(generation)
             && self.endpoints[index].snapshot().is_some_and(|previous| {
                 previous.boot_id == snapshot.boot_id && previous.revision > snapshot.revision
             })
@@ -501,7 +503,7 @@ impl ClientShellState {
             .and_then(|endpoint| {
                 endpoint
                     .shared_snapshot()
-                    .map(|snapshot| (snapshot, endpoint.snapshot_generation()))
+                    .zip(endpoint.snapshot_generation())
             })
         else {
             return;
@@ -543,10 +545,59 @@ pub(in crate::shell) fn local_endpoint() -> ClientShellEndpoint {
         endpoint_id: ClientEndpointId::Local,
         state: EndpointState::Connecting {
             last: None,
-            connected: true,
+            connected: false,
             generation: None,
         },
         agent_recency: HashMap::new(),
+    }
+}
+
+#[cfg(test)]
+impl ClientShellState {
+    pub fn set_snapshot(&mut self, snapshot: Box<ClientShellSnapshot>) {
+        let endpoint_id = self.endpoints.presented().clone();
+        self.set_endpoint_snapshot(&endpoint_id, snapshot);
+    }
+
+    pub(crate) fn cache_endpoint_snapshot(
+        &mut self,
+        endpoint_id: &ClientEndpointId,
+        snapshot: impl Into<Arc<ClientShellSnapshot>>,
+    ) {
+        let generation = self
+            .endpoints
+            .iter()
+            .find(|endpoint| &endpoint.endpoint_id == endpoint_id)
+            .and_then(|endpoint| {
+                endpoint.snapshot_generation().or(match &endpoint.state {
+                    EndpointState::Connecting { generation, .. } => *generation,
+                    _ => None,
+                })
+            })
+            .unwrap_or(1);
+        if self.endpoints.iter().any(|endpoint| {
+            &endpoint.endpoint_id == endpoint_id
+                && endpoint.endpoint_id.is_local()
+                && matches!(
+                    endpoint.state,
+                    EndpointState::Connecting {
+                        generation: None,
+                        ..
+                    }
+                )
+        }) {
+            self.endpoint_connected(endpoint_id, generation);
+        }
+        self.cache_endpoint_snapshot_at_generation(endpoint_id, generation, snapshot.into());
+    }
+
+    pub fn set_endpoint_snapshot(
+        &mut self,
+        endpoint_id: &ClientEndpointId,
+        snapshot: Box<ClientShellSnapshot>,
+    ) {
+        self.cache_endpoint_snapshot(endpoint_id, snapshot);
+        self.apply_cached_endpoint_snapshot(endpoint_id);
     }
 }
 
@@ -593,28 +644,6 @@ impl ClientShellState {
     pub(crate) fn active_endpoint_id(&self) -> &ClientEndpointId {
         self.endpoints.presented()
     }
-
-    pub fn set_snapshot(&mut self, snapshot: Box<ClientShellSnapshot>) {
-        let endpoint_id = self.endpoints.presented().clone();
-        self.set_endpoint_snapshot(&endpoint_id, snapshot);
-    }
-
-    pub(crate) fn cache_endpoint_snapshot(
-        &mut self,
-        endpoint_id: &ClientEndpointId,
-        snapshot: impl Into<Arc<ClientShellSnapshot>>,
-    ) {
-        self.cache_endpoint_snapshot_at_generation(endpoint_id, None, snapshot.into());
-    }
-
-    pub fn set_endpoint_snapshot(
-        &mut self,
-        endpoint_id: &ClientEndpointId,
-        snapshot: Box<ClientShellSnapshot>,
-    ) {
-        self.cache_endpoint_snapshot(endpoint_id, snapshot);
-        self.apply_cached_endpoint_snapshot(endpoint_id);
-    }
 }
 
 #[cfg(test)]
@@ -624,7 +653,7 @@ mod tests {
     fn snapshot(generation: u64) -> EndpointSnapshot {
         EndpointSnapshot {
             snapshot: Arc::new(crate::shell::tests::snapshot()),
-            generation: Some(generation),
+            generation,
         }
     }
 
@@ -690,7 +719,7 @@ mod tests {
             state.cache(snapshot(2));
             assert_eq!(state.status(), ClientEndpointStatus::from(status));
             assert!(state.stale());
-            assert_eq!(state.last().expect("retained snapshot").generation, Some(2));
+            assert_eq!(state.last().expect("retained snapshot").generation, 2);
         }
     }
 }

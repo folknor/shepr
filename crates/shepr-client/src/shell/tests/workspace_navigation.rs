@@ -62,7 +62,7 @@ fn pane_scrollbar_click_clears_a_workspace_preview_when_leaving_navigation() {
         width: 1,
         height: 2,
     });
-    state.receive_pane_surface(pane_surface);
+    state.receive_pane_surface_from(pane_surface, state.active_snapshot_generation.unwrap_or(1));
     state.compose(100, 28).expect("pane frame");
     enter_navigation(&mut state);
     preview_key(&mut state, b"\x1b[B");
@@ -111,7 +111,13 @@ fn workspace_rect(state: &ClientShellState, endpoint: &ClientEndpointId, workspa
         .hits
         .workspaces
         .iter()
-        .find(|hit| &hit.endpoint_id == endpoint && hit.workspace_id.to_string() == workspace)
+        .find(|hit| {
+            &hit.location.endpoint == endpoint
+                && hit
+                    .location
+                    .workspace_id()
+                    .is_some_and(|id| id.to_string() == workspace)
+        })
         .map(|hit| hit.rect)
         .expect("visible workspace")
 }
@@ -132,7 +138,10 @@ fn local_navigation_highlight_stays_visible_with_terminal_theme() {
             };
             let mut state = ClientShellState::new(config);
             state.set_snapshot(Box::new(workspaces(3)));
-            state.receive_pane_surface(surface());
+            state.receive_pane_surface_from(
+                surface(),
+                state.active_snapshot_generation.unwrap_or(1),
+            );
             state.chrome.set_collapsed(compact);
             state.compose(100, 28).expect("test precondition");
             enter_navigation(&mut state);
@@ -382,7 +391,7 @@ fn foreign_workspace_preview_blocks_paste_into_hidden_copy_search() {
         2,
         shepr_vt::AbsRow(0),
     ));
-    state.receive_pane_surface(pane_surface);
+    state.receive_pane_surface_from(pane_surface, state.active_snapshot_generation.unwrap_or(1));
     state.compose(100, 28).expect("test precondition");
     assert!(state.enter_copy_mode(&mut ClientShellInput::default()));
     enter_navigation(&mut state);
@@ -524,7 +533,7 @@ fn active_preview_is_not_retargeted_by_deletion_or_reboot() {
             7,
             Box::new(local.clone()),
         );
-        state.receive_pane_surface(surface());
+        state.receive_pane_surface_from(surface(), state.active_snapshot_generation.unwrap_or(1));
         state.compose(100, 28).expect("test precondition");
         enter_navigation(&mut state);
         preview_key(&mut state, b"\x1b[B");
@@ -660,7 +669,7 @@ fn local_navigation_state(compact: bool) -> ClientShellState {
     state.config.palette = Palette::terminal();
     state.chrome.set_collapsed(compact);
     state.set_snapshot(Box::new(workspaces(3)));
-    state.receive_pane_surface(surface());
+    state.receive_pane_surface_from(surface(), state.active_snapshot_generation.unwrap_or(1));
     state.compose(100, 28).expect("test precondition");
     state
 }
@@ -707,6 +716,18 @@ fn assert_local_highlight(state: &mut ClientShellState, selected_id: &str) {
     }
 }
 
+/// The reply a server gives a successful workspace focus.
+fn workspace_focus_reply(workspace_id: &str) -> EndpointReply {
+    EndpointReply::WorkspaceInfo {
+        workspace: shepr_protocol::command::WorkspaceInfo {
+            workspace_id: test_workspace_id(workspace_id),
+            label: workspace_id.into(),
+            pane_count: 1,
+            agent_status: shepr_protocol::AgentStatus::Idle,
+        },
+    }
+}
+
 fn set_local_focus(state: &mut ClientShellState, workspace_id: &str, revision: u64) {
     let mut snapshot = workspaces(3);
     snapshot.revision = shepr_protocol::ProjectionRevision::new(revision);
@@ -714,7 +735,7 @@ fn set_local_focus(state: &mut ClientShellState, workspace_id: &str, revision: u
     state.set_snapshot(Box::new(snapshot));
     let mut frame = surface();
     frame.projection_revision = shepr_protocol::ProjectionRevision::new(revision);
-    state.receive_pane_surface(frame);
+    state.receive_pane_surface_from(frame, state.active_snapshot_generation.unwrap_or(1));
 }
 
 #[test]
@@ -741,12 +762,15 @@ fn accepted_local_navigation_keeps_highlight_until_authoritative_focus() {
             assert_local_highlight(&mut state, "w3");
             state.invalidate_pane_surface();
             assert_local_highlight(&mut state, "w3");
-            state.receive_pane_surface(surface());
+            state.receive_pane_surface_from(
+                surface(),
+                state.active_snapshot_generation.unwrap_or(1),
+            );
             if response_first {
                 state.handle_endpoint_result(
                     &crate::tests::test_boot_id("boot-1"),
                     &request_id,
-                    Ok(EndpointReply::Done),
+                    Ok(workspace_focus_reply("w3")),
                 );
                 assert_local_highlight(&mut state, "w3");
             }
@@ -758,7 +782,7 @@ fn accepted_local_navigation_keeps_highlight_until_authoritative_focus() {
                 state.handle_endpoint_result(
                     &crate::tests::test_boot_id("boot-1"),
                     &request_id,
-                    Ok(EndpointReply::Done),
+                    Ok(workspace_focus_reply("w3")),
                 );
             }
             set_local_focus(&mut state, "w2", 4);
@@ -795,7 +819,7 @@ fn failed_local_navigation_releases_only_its_own_highlight() {
         state.handle_endpoint_result(
             &crate::tests::test_boot_id("boot-1"),
             request_id.as_str(),
-            Ok(EndpointReply::Done),
+            Ok(workspace_focus_reply("w3")),
         );
         assert_local_highlight(&mut state, "w1");
     }
@@ -818,7 +842,7 @@ fn pending_navigation_highlight_does_not_survive_identity_changes() {
         state.handle_endpoint_result(
             &crate::tests::test_boot_id("boot-1"),
             request_id.as_str(),
-            Ok(EndpointReply::Done),
+            Ok(workspace_focus_reply("w3")),
         );
         assert_local_highlight(&mut state, "w3");
         let mut snapshot = workspaces(3);
@@ -837,7 +861,7 @@ fn pending_navigation_highlight_does_not_survive_identity_changes() {
             }
             "generation" => state.set_endpoint_snapshot_for_generation(
                 &ClientEndpointId::Local,
-                1,
+                2,
                 Box::new(snapshot),
             ),
             "deleted" => {
@@ -864,7 +888,7 @@ fn pending_navigation_highlight_does_not_survive_identity_changes() {
             .expect("test precondition")
             .boot_id
             .clone();
-        state.receive_pane_surface(frame);
+        state.receive_pane_surface_from(frame, state.active_snapshot_generation.unwrap_or(1));
         assert_local_highlight(&mut state, "w1");
     }
 }
@@ -892,8 +916,10 @@ fn navigation_highlight_yields_to_new_intent() {
     assert_local_highlight(&mut state, "w3");
     let mut focus = ClientShellInput::default();
     state.focus_or_activate(
-        ClientEndpointId::Local,
-        ClientEndpointFocusTarget::Workspace(shepr_test_fixtures::id("w2")),
+        crate::shell::navigation::location::Location::workspace(
+            ClientEndpointId::Local,
+            shepr_test_fixtures::id("w2"),
+        ),
         &mut focus,
     );
     assert!(state.pending_workspace_highlight.is_none());
@@ -1010,7 +1036,7 @@ fn coalesced_navigation_focus_does_not_leave_a_permanent_highlight() {
     state.handle_endpoint_result(
         &crate::tests::test_boot_id("boot-1"),
         &request_id,
-        Ok(EndpointReply::Done),
+        Ok(workspace_focus_reply("w3")),
     );
     // Another client can focus the original workspace before the server projects
     // either change, so a successful request need not produce a new snapshot.

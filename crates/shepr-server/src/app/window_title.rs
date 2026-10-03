@@ -107,8 +107,9 @@ mod tests {
     use shepr_mux::workspace::Workspace;
 
     fn test_app() -> App {
-        let mut app = App::new(&ServerConfig::default(), crate::app::AppPolicy::Test);
-        app.state.workspaces = vec![Workspace::test_new("herd")];
+        let mut app = App::new(&ServerConfig::default(), crate::app::AppPolicy::Suspended);
+        app.state
+            .test_set_workspaces(vec![Workspace::test_new("herd")]);
         app.state.ensure_test_terminals();
         app
     }

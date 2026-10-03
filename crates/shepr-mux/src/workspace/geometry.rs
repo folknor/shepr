@@ -11,7 +11,9 @@ use ratatui::{
     widgets::{Block, Borders},
 };
 
-use shepr_core::layout::{PaneId, PaneInfo as LayoutPaneInfo, TileLayout};
+use shepr_core::layout::{
+    NavDirection, PaneId, PaneInfo as LayoutPaneInfo, TileLayout, rect_distance_in_direction,
+};
 
 /// The layout model's rect as the one ratatui draws into. Both are plain
 /// cell coordinates, so the conversion copies the fields. These are free
@@ -37,6 +39,12 @@ pub fn layout_rect(rect: Rect) -> shepr_core::geometry::Rect {
 }
 
 /// Layout position with the chrome and content geometry added for a view.
+/// Construction settles the border-only inner rect. The screen mode and
+/// scrollback belong to the surface consumer, so it must settle the gutter
+/// with `content_layout` before using this as terminal content geometry.
+/// A chrome-only type followed by a finalized content type would enforce
+/// that ordering; it requires the surface and retained-surface consumers to
+/// adopt the finalization step together.
 #[derive(Clone)]
 pub struct PaneChromeInfo {
     pub id: PaneId,
@@ -101,36 +109,14 @@ pub fn pane_inner_rect(area: Rect, borders: Borders) -> Rect {
     }
 }
 
-fn ranges_overlap(a_start: u16, a_len: u16, b_start: u16, b_len: u16) -> bool {
-    a_start < b_start.saturating_add(b_len) && b_start < a_start.saturating_add(a_len)
-}
-
-fn pane_to_right<'a>(
+fn touching_neighbor<'a>(
     info: &LayoutPaneInfo,
     panes: &'a [LayoutPaneInfo],
+    direction: NavDirection,
 ) -> Option<&'a LayoutPaneInfo> {
-    let right = info.rect.x.saturating_add(info.rect.width);
     panes.iter().find(|other| {
         other.id != info.id
-            && other.rect.x == right
-            && ranges_overlap(
-                info.rect.y,
-                info.rect.height,
-                other.rect.y,
-                other.rect.height,
-            )
-    })
-}
-
-fn pane_below<'a>(
-    info: &LayoutPaneInfo,
-    panes: &'a [LayoutPaneInfo],
-) -> Option<&'a LayoutPaneInfo> {
-    let bottom = info.rect.y.saturating_add(info.rect.height);
-    panes.iter().find(|other| {
-        other.id != info.id
-            && other.rect.y == bottom
-            && ranges_overlap(info.rect.x, info.rect.width, other.rect.x, other.rect.width)
+            && rect_distance_in_direction(info.rect, other.rect, direction) == Some(0)
     })
 }
 
@@ -150,12 +136,12 @@ pub fn apply_pane_chrome(
     let outer_top = panes.iter().map(|info| info.rect.y).min().unwrap_or(0);
     let outer_right = panes
         .iter()
-        .map(|info| info.rect.x.saturating_add(info.rect.width))
+        .map(|info| u32::from(info.rect.x) + u32::from(info.rect.width))
         .max()
         .unwrap_or(0);
     let outer_bottom = panes
         .iter()
-        .map(|info| info.rect.y.saturating_add(info.rect.height))
+        .map(|info| u32::from(info.rect.y) + u32::from(info.rect.height))
         .max()
         .unwrap_or(0);
     panes
@@ -163,10 +149,10 @@ pub fn apply_pane_chrome(
         .cloned()
         .map(|layout_info| {
             let right_neighbor = multi_pane
-                .then(|| pane_to_right(&layout_info, panes))
+                .then(|| touching_neighbor(&layout_info, panes, NavDirection::Right))
                 .flatten();
             let below_neighbor = multi_pane
-                .then(|| pane_below(&layout_info, panes))
+                .then(|| touching_neighbor(&layout_info, panes, NavDirection::Down))
                 .flatten();
             let mut info = PaneChromeInfo::from(layout_info);
 
@@ -198,15 +184,16 @@ pub fn apply_pane_chrome(
                     if info.rect.y == outer_top {
                         borders.remove(Borders::TOP);
                     }
-                    if info.rect.x.saturating_add(info.rect.width) == outer_right {
+                    if u32::from(info.rect.x) + u32::from(info.rect.width) == outer_right {
                         borders.remove(Borders::RIGHT);
                     }
-                    if info.rect.y.saturating_add(info.rect.height) == outer_bottom {
+                    if u32::from(info.rect.y) + u32::from(info.rect.height) == outer_bottom {
                         borders.remove(Borders::BOTTOM);
                     }
                 }
                 borders
             };
+            info.inner_rect = pane_inner_rect(info.rect, info.borders);
             info
         })
         .collect()
@@ -294,7 +281,7 @@ impl PaneGeometry {
         vec![PaneChromeInfo {
             id: zoomed_pane,
             rect: self.area,
-            inner_rect: self.area,
+            inner_rect: pane_inner_rect(self.area, borders),
             scrollbar_rect: None,
             borders,
             is_focused: true,
@@ -378,6 +365,50 @@ mod tests {
             pane_outer_borders: true,
             pane_scrollbars: scrollbars,
         }
+    }
+
+    #[test]
+    fn chrome_adjacency_uses_wide_ends_at_coordinate_limits() {
+        // Use literal rectangles: Rect::new clamps away overflowing ends.
+        let rect = |x, y, width, height| shepr_core::geometry::Rect {
+            x,
+            y,
+            width,
+            height,
+        };
+        let pane = |rect| LayoutPaneInfo {
+            id: PaneId::alloc(),
+            rect,
+            is_focused: false,
+        };
+        // A start at MAX cannot touch an edge mathematically beyond MAX.
+        for (direction, from, to) in [
+            (
+                NavDirection::Right,
+                rect(u16::MAX - 5, 0, 10, 10),
+                rect(u16::MAX, 0, 1, 10),
+            ),
+            (
+                NavDirection::Down,
+                rect(0, u16::MAX - 5, 10, 10),
+                rect(0, u16::MAX, 10, 1),
+            ),
+        ] {
+            let from = pane(from);
+            let to = pane(to);
+            assert!(touching_neighbor(&from, &[to], direction).is_none());
+        }
+        // A cross-axis interval beginning at MAX still has real overlap.
+        let from = pane(rect(0, u16::MAX, 10, 1));
+        let to = pane(rect(10, u16::MAX, 10, 1));
+        let panes = [from.clone(), to.clone()];
+        assert_eq!(
+            touching_neighbor(&from, &panes, NavDirection::Right).map(|pane| pane.id),
+            Some(to.id)
+        );
+        let chrome =
+            apply_pane_chrome(&panes, shepr_config::PaneBordersConfig::Always, false, true);
+        assert!(!chrome[0].borders.contains(Borders::RIGHT));
     }
 
     #[test]

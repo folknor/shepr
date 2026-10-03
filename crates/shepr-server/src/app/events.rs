@@ -92,7 +92,10 @@ impl App {
     fn handle_git_status_refreshed(
         &mut self,
         results: Vec<shepr_mux::git::WorkspaceGitStatus>,
-        cache_updates: Vec<(std::path::PathBuf, shepr_mux::git::GitStatusCacheEntry)>,
+        cache_updates: Vec<(
+            shepr_mux::git::GitStatusKey,
+            shepr_mux::git::GitStatusCacheEntry,
+        )>,
     ) -> bool {
         self.git_refresh.finish(self.clock.now, cache_updates);
         let results = results
@@ -112,11 +115,9 @@ impl App {
     /// Check the producer before publication, checkpointing, or forwarding.
     /// A discarded resume attempt can finish after a successor runtime starts.
     ///
-    /// Only events produced without a pane runtime (API reports and the Git
-    /// worker) are admitted bare; every runtime-produced kind must arrive in
-    /// its runtime's envelope. Tests are held to the same rule and build the
-    /// envelope (`App::from_pane_runtime`): a test-only path past this check
-    /// would let an untagged event skip the generation check again.
+    /// Only events produced without a pane runtime (the Git worker) are
+    /// admitted bare; every runtime-produced kind must arrive in its runtime's
+    /// envelope. API reports go directly through `handle_state_event`.
     pub(crate) fn admit_runtime_event(&self, ev: AppEvent) -> Option<AppEvent> {
         match ev {
             AppEvent::Runtime {
@@ -128,9 +129,7 @@ impl App {
                 runtime.filter(|runtime| runtime.generation() == generation)?;
                 Some(event.into_app_event(pane_id))
             }
-            AppEvent::HookStateReported { .. }
-            | AppEvent::AgentSessionReported { .. }
-            | AppEvent::GitStatusRefreshed { .. } => Some(ev),
+            AppEvent::GitStatusRefreshed { .. } => Some(ev),
             _ => None,
         }
     }
@@ -308,13 +307,7 @@ impl App {
                     }
                 }
             }
-        } else if let Some(event) = StateEvent::from_app_event(
-            ev,
-            shepr_agent::ownership::HookClockSample {
-                monotonic: self.clock.now,
-                wall: self.clock.wall_now,
-            },
-        ) {
+        } else if let Some(event) = StateEvent::from_app_event(ev) {
             state_changed =
                 self.state.handle_state_event(event) != super::actions::StateUpdate::Unchanged;
         }
@@ -440,9 +433,10 @@ mod pane_exit_event_tests {
     fn app_with_workspaces(names: &[&str]) -> App {
         let mut app = App::new(
             &shepr_config::ServerConfig::default(),
-            crate::app::AppPolicy::Test,
+            crate::app::AppPolicy::Suspended,
         );
-        app.state.workspaces = names.iter().map(|name| Workspace::test_new(name)).collect();
+        app.state
+            .test_set_workspaces(names.iter().map(|name| Workspace::test_new(name)).collect());
         app.state.ensure_test_terminals();
         if !app.state.workspaces.is_empty() {
             app.state.set_bookmark_index(Some(0));
@@ -454,19 +448,22 @@ mod pane_exit_event_tests {
         let runtime = shepr_mux::pane::PaneRuntime::test_with_screen_bytes(20, 5, b"");
         let generation = runtime.generation();
         app.insert_test_runtime(pane_id, runtime);
-        app.handle_internal_event_after_checkpoint(AppEvent::Runtime {
-            pane_id,
-            generation,
-            event: Box::new(
-                AppEvent::PaneDied {
-                    pane_id,
-                    exit_reason: shepr_platform::ChildExitReason::Exited,
-                    ended_at: std::time::Instant::now(),
-                }
-                .try_into()
-                .expect("runtime payload"),
-            ),
-        });
+        crate::server::headless::HeadlessServer::replay_test_exit_for_app(
+            app,
+            AppEvent::Runtime {
+                pane_id,
+                generation,
+                event: Box::new(
+                    AppEvent::PaneDied {
+                        pane_id,
+                        exit_reason: shepr_platform::ChildExitReason::Exited,
+                        ended_at: std::time::Instant::now(),
+                    }
+                    .try_into()
+                    .expect("runtime payload"),
+                ),
+            },
+        );
     }
 
     #[test]
@@ -507,7 +504,7 @@ mod pane_exit_event_tests {
     #[test]
     fn pane_exit_keeps_a_workspace_that_still_has_a_pane() {
         let mut app = app_with_workspaces(&["test"]);
-        let second_id = app.state.workspaces[0].test_split(Direction::Horizontal);
+        let second_id = app.state.test_split_workspace(0, Direction::Horizontal);
         app.state.ensure_test_terminals();
 
         report_pane_exit(&mut app, second_id);
@@ -555,11 +552,11 @@ mod runtime_generation_tests {
         let _env = IsolatedEnv::new();
         let mut app = App::new(
             &shepr_config::ServerConfig::default(),
-            crate::app::AppPolicy::Test,
+            crate::app::AppPolicy::Suspended,
         );
         let workspace = shepr_mux::workspace::Workspace::test_new("authority");
         let pane_id = workspace.root_pane();
-        app.state.workspaces = vec![workspace];
+        app.state.test_set_workspaces(vec![workspace]);
         app.state.ensure_test_terminals();
         let terminal_id = app.state.workspaces[0]
             .terminal_id(pane_id)
@@ -629,11 +626,11 @@ mod runtime_generation_tests {
         let _env = IsolatedEnv::new();
         let mut app = App::new(
             &shepr_config::ServerConfig::default(),
-            crate::app::AppPolicy::Test,
+            crate::app::AppPolicy::Suspended,
         );
         let workspace = shepr_mux::workspace::Workspace::test_new("kill-ordering");
         let pane_id = workspace.root_pane();
-        app.state.workspaces = vec![workspace];
+        app.state.test_set_workspaces(vec![workspace]);
         app.state.ensure_test_terminals();
         let terminal_id = app.state.workspaces[0]
             .terminal_id(pane_id)
@@ -704,11 +701,11 @@ mod runtime_generation_tests {
         let _env = IsolatedEnv::new();
         let mut app = App::new(
             &shepr_config::ServerConfig::default(),
-            crate::app::AppPolicy::Test,
+            crate::app::AppPolicy::Suspended,
         );
         let workspace = shepr_mux::workspace::Workspace::test_new("restored");
         let pane_id = workspace.root_pane();
-        app.state.workspaces = vec![workspace];
+        app.state.test_set_workspaces(vec![workspace]);
         app.state.ensure_test_terminals();
         let terminal_id = app.state.workspaces[0]
             .terminal_id(pane_id)
@@ -785,11 +782,11 @@ mod runtime_generation_tests {
     fn runtime_admission_rejects_bare_and_non_runtime_payloads() {
         let mut app = App::new(
             &shepr_config::ServerConfig::default(),
-            crate::app::AppPolicy::Test,
+            crate::app::AppPolicy::Suspended,
         );
         let workspace = shepr_mux::workspace::Workspace::test_new("admission");
         let pane_id = workspace.root_pane();
-        app.state.workspaces = vec![workspace];
+        app.state.test_set_workspaces(vec![workspace]);
         app.state.ensure_test_terminals();
         let runtime = shepr_mux::pane::PaneRuntime::test_with_screen_bytes(20, 5, b"");
         let generation = runtime.generation();
@@ -847,11 +844,11 @@ mod runtime_generation_tests {
         let _env = IsolatedEnv::new();
         let mut app = App::new(
             &shepr_config::ServerConfig::default(),
-            crate::app::AppPolicy::Test,
+            crate::app::AppPolicy::Suspended,
         );
         let workspace = shepr_mux::workspace::Workspace::test_new("restored");
         let pane_id = workspace.root_pane();
-        app.state.workspaces = vec![workspace];
+        app.state.test_set_workspaces(vec![workspace]);
         app.state.ensure_test_terminals();
         let runtime = shepr_mux::pane::PaneRuntime::test_with_screen_bytes(20, 5, b"");
         let generation = runtime.generation();

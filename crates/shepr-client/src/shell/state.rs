@@ -15,9 +15,8 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use crate::shell::input::scroll_lanes::ScrollLanes;
-use crate::shell::navigation::workspace_navigation::{
-    PendingWorkspaceHighlight, WorkspaceNavigationTarget,
-};
+use crate::shell::navigation::location::{Location, PinnedLocation};
+use crate::shell::navigation::workspace_navigation::PendingWorkspaceHighlight;
 use crate::shell::overlays::text_editor::TextEditor;
 use crate::shell::presentation::surfaces::PaneSurfaces;
 use ratatui::layout::Rect;
@@ -133,9 +132,7 @@ pub(in crate::shell) struct ShellHitMap {
     pub(in crate::shell) workspace_max_scroll: usize,
     pub(in crate::shell) panes: Vec<PaneHit>,
     pub(in crate::shell) pane_splits: Vec<PaneSplitHit>,
-    pub(in crate::shell) agents: Vec<(Rect, shepr_protocol::PublicPaneId)>,
-    pub(in crate::shell) endpoint_agents:
-        Vec<(Rect, ClientEndpointId, shepr_protocol::PublicPaneId)>,
+    pub(in crate::shell) agent_hits: Vec<AgentHit>,
     pub(in crate::shell) agent_body: Rect,
     pub(in crate::shell) agent_scrollbar: Rect,
     pub(in crate::shell) agent_scroll_metrics: Option<shepr_termio::scroll::ListScroll>,
@@ -154,7 +151,7 @@ pub(in crate::shell) struct ShellHitMap {
     pub(in crate::shell) overlay_cancel: Rect,
     pub(in crate::shell) navigator_popup: Rect,
     pub(in crate::shell) navigator_search: Rect,
-    pub(in crate::shell) navigator_rows: Vec<(Rect, ClientNavigatorTarget)>,
+    pub(in crate::shell) navigator_rows: Vec<(Rect, Location)>,
     pub(in crate::shell) navigator_scrollbar: Rect,
     pub(in crate::shell) navigator_scroll_metrics: Option<shepr_termio::scroll::ListScroll>,
     pub(in crate::shell) help_popup: Rect,
@@ -214,6 +211,12 @@ impl PaneHit {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(in crate::shell) struct AgentHit {
+    pub(in crate::shell) rect: Rect,
+    pub(in crate::shell) location: Location,
+}
+
 /// Effects committed by the last successful composition. Patches must preserve both
 /// the cells painted over pane output and compose's replacement of the pane cursor.
 #[derive(Default)]
@@ -241,8 +244,7 @@ pub(in crate::shell) struct ClientPaneMouseGesture {
 }
 
 pub(in crate::shell) struct ClientWorkspacePress {
-    pub(in crate::shell) endpoint_id: ClientEndpointId,
-    pub(in crate::shell) workspace_id: shepr_protocol::WorkspaceId,
+    pub(in crate::shell) location: Location,
     pub(in crate::shell) start_column: u16,
     pub(in crate::shell) start_row: u16,
 }
@@ -290,8 +292,7 @@ pub(in crate::shell) enum ClientChromeDrag {
 
 pub(in crate::shell) struct WorkspaceHit {
     pub(in crate::shell) rect: Rect,
-    pub(in crate::shell) endpoint_id: ClientEndpointId,
-    pub(in crate::shell) workspace_id: shepr_protocol::WorkspaceId,
+    pub(in crate::shell) location: Location,
 }
 
 /// One command bound for the active endpoint, with the id its answer comes
@@ -421,7 +422,7 @@ pub(in crate::shell) enum ClientShellOverlayKind {
 #[derive(Debug)]
 pub(in crate::shell) enum ClientRenameTarget {
     NewWorkspace {
-        cwd: Option<String>,
+        cwd: Option<shepr_protocol::RemotePath>,
         suggested_name: String,
         label_lookup: Option<shepr_protocol::RequestId>,
     },
@@ -442,21 +443,6 @@ pub(in crate::shell) struct ClientRenameOverlay {
 
 pub(in crate::shell) type ClientNavigatorFilter = shepr_protocol::AgentStatus;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(in crate::shell) enum ClientNavigatorTarget {
-    Machine {
-        endpoint_id: ClientEndpointId,
-    },
-    Workspace {
-        endpoint_id: ClientEndpointId,
-        workspace_id: shepr_protocol::WorkspaceId,
-    },
-    Pane {
-        endpoint_id: ClientEndpointId,
-        pane_id: shepr_protocol::PublicPaneId,
-    },
-}
-
 #[derive(Clone, Debug)]
 pub(in crate::shell) struct ClientNavigatorRow {
     pub(in crate::shell) depth: u8,
@@ -467,14 +453,14 @@ pub(in crate::shell) struct ClientNavigatorRow {
     pub(in crate::shell) status: Option<shepr_protocol::AgentStatus>,
     pub(in crate::shell) stale: bool,
     pub(in crate::shell) current: bool,
-    pub(in crate::shell) target: ClientNavigatorTarget,
+    pub(in crate::shell) target: Location,
 }
 
 #[derive(Debug)]
 pub(in crate::shell) struct ClientNavigatorOverlay {
     pub(in crate::shell) query: TextEditor,
     pub(in crate::shell) search_focused: bool,
-    pub(in crate::shell) selected: Option<ClientNavigatorTarget>,
+    pub(in crate::shell) selected: Option<Location>,
     pub(in crate::shell) scroll: usize,
     pub(in crate::shell) filter: Option<ClientNavigatorFilter>,
 }
@@ -672,11 +658,12 @@ pub(in crate::shell) enum ClientCopyOperation {
     },
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(in crate::shell) struct ClientCopySearchResult {
     pub(in crate::shell) matches: Vec<shepr_protocol::command::PaneTextRange>,
-    pub(in crate::shell) total: u64,
-    pub(in crate::shell) current: Option<usize>,
-    pub(in crate::shell) current_global: Option<u64>,
+    pub(in crate::shell) total: usize,
+    /// Both indexes identify the same match in the returned window and full result set.
+    pub(in crate::shell) current: Option<shepr_protocol::command::PaneCopySearchPosition>,
 }
 
 /// One live search lifecycle: prompt, query, result projection and deferred-copy intent.
@@ -685,19 +672,13 @@ pub(in crate::shell) struct ClientCopySearch {
     pub(in crate::shell) prompt: Option<ClientCopySearchPrompt>,
     pub(in crate::shell) query: TypedText,
     pub(in crate::shell) direction: Option<shepr_protocol::command::PaneCopySearchDirection>,
-    pub(in crate::shell) matches: Vec<shepr_protocol::command::PaneTextRange>,
-    pub(in crate::shell) total: u64,
-    pub(in crate::shell) current: Option<usize>,
-    pub(in crate::shell) current_global: Option<u64>,
+    pub(in crate::shell) results: ClientCopySearchResult,
     pub(in crate::shell) copy_after_result: bool,
 }
 
 impl ClientCopySearch {
     pub(in crate::shell) fn clear_results(&mut self) {
-        self.matches.clear();
-        self.total = 0;
-        self.current = None;
-        self.current_global = None;
+        self.results = ClientCopySearchResult::default();
         self.copy_after_result = false;
     }
 }
@@ -766,8 +747,7 @@ pub struct ClientShellState {
     pub(in crate::shell) workspace_press: Option<ClientWorkspacePress>,
     pub(in crate::shell) workspace_scroll: usize,
     pub(in crate::shell) agent_scroll: usize,
-    pub(in crate::shell) pending_agent_reveal:
-        Option<(ClientEndpointId, shepr_protocol::PublicPaneId)>,
+    pub(in crate::shell) pending_agent_reveal: Option<Location>,
     pub(in crate::shell) reveal_focused_workspace: bool,
     pub(in crate::shell) last_composition: LastComposition,
     pub(in crate::shell) last_composed_size: Option<(u16, u16)>,
@@ -780,7 +760,7 @@ pub struct ClientShellState {
     /// stays focused, so focus alone cannot say whether copy input is active.
     pub(in crate::shell) mode: ClientShellMode,
     /// Navigation remains active when no workspace target exists, so the preview is optional.
-    pub(in crate::shell) navigate_workspace_id: Option<WorkspaceNavigationTarget>,
+    pub(in crate::shell) navigate_workspace_id: Option<PinnedLocation>,
     pub(in crate::shell) pending_workspace_highlight: Option<PendingWorkspaceHighlight>,
     pub(in crate::shell) reveal_navigation_workspace: bool,
     pub(in crate::shell) overlay: Option<ClientShellOverlay>,
@@ -808,24 +788,37 @@ fn prune_evicted_search_matches(copy_mode: &mut ClientCopyModeState) {
         return;
     };
     let origin = copy_mode.scroll.history_origin;
-    let before = search.matches.len();
-    let current = search
-        .current
-        .and_then(|index| search.matches.get(index).copied());
-    let current_global = search.current_global;
-    search.matches.retain(|found| found.start.row >= origin);
-    let removed = before - search.matches.len();
+    let before = search.results.matches.len();
+    let current = search.results.current.and_then(|position| {
+        search
+            .results
+            .matches
+            .get(position.window_index)
+            .copied()
+            .map(|found| (found, position.global_index))
+    });
+    search
+        .results
+        .matches
+        .retain(|found| found.start.row >= origin);
+    let removed = before - search.results.matches.len();
     if removed == 0 {
         return;
     }
-    let removed = u64::try_from(removed).unwrap_or(u64::MAX);
-    search.total = search.total.saturating_sub(removed);
-    search.current =
-        current.and_then(|current| search.matches.iter().position(|found| *found == current));
-    search.current_global = match search.current {
-        Some(_) => current_global.map(|global| global.saturating_sub(removed)),
-        None => None,
-    };
+    search.results.total = search.results.total.saturating_sub(removed);
+    search.results.current = current.and_then(|(current, global_index)| {
+        search
+            .results
+            .matches
+            .iter()
+            .position(|found| *found == current)
+            .map(
+                |window_index| shepr_protocol::command::PaneCopySearchPosition {
+                    window_index,
+                    global_index: global_index.saturating_sub(removed),
+                },
+            )
+    });
 }
 
 impl ClientShellState {
@@ -957,7 +950,8 @@ impl ClientShellState {
             return;
         }
         if self.hits.workspaces.iter().any(|hit| {
-            hit.endpoint_id == *self.endpoints.presented() && hit.workspace_id == *workspace_id
+            hit.location.endpoint == *self.endpoints.presented()
+                && hit.location.workspace_id() == Some(*workspace_id)
         }) {
             return;
         }
@@ -1056,7 +1050,7 @@ impl ClientShellState {
     pub(in crate::shell) fn apply_active_snapshot(
         &mut self,
         snapshot: Arc<ClientShellSnapshot>,
-        generation: Option<u64>,
+        generation: u64,
     ) {
         let active_boot_key = Some(ClientEndpointBootKey::new(
             self.endpoints.presented(),
@@ -1064,7 +1058,7 @@ impl ClientShellState {
         ));
         let endpoint_boot_changed =
             self.snapshot.is_some() && self.active_boot_key != active_boot_key;
-        let generation_changed = self.active_snapshot_generation != generation;
+        let generation_changed = self.active_snapshot_generation != Some(generation);
         if !endpoint_boot_changed
             && !generation_changed
             && self.snapshot.as_ref().is_some_and(|current| {
@@ -1078,7 +1072,7 @@ impl ClientShellState {
         if generation_changed {
             self.surfaces.snapshot_generation_changed(generation);
         }
-        self.active_snapshot_generation = generation;
+        self.active_snapshot_generation = Some(generation);
         self.active_boot_key = active_boot_key;
         let boot_changed = endpoint_boot_changed
             || self
@@ -1227,7 +1221,7 @@ impl ClientShellState {
     /// (the reader enforces order and the shell mirrors it) and is presented once it
     /// pairs with that connection's snapshot, which may arrive after it.
     pub(crate) fn receive_pane_surface_from(&mut self, surface: PaneSurfaceFrame, generation: u64) {
-        self.receive_tagged_pane_surface(surface, Some(generation));
+        self.receive_tagged_pane_surface(surface, generation);
     }
 
     pub(in crate::shell) fn receive_tagged_pane_surface(
@@ -1240,8 +1234,8 @@ impl ClientShellState {
         // the baseline must not replace a newer connection's baseline.
         let newest = self
             .active_snapshot_generation
-            .max(self.surfaces.baseline_generation().flatten());
-        if generation < newest {
+            .max(self.surfaces.baseline_generation());
+        if Some(generation) < newest {
             tracing::warn!(
                 ?generation,
                 ?newest,
@@ -1257,14 +1251,16 @@ impl ClientShellState {
     /// runs the presentation effects. The effects never read `self.surfaces`, so it is
     /// moved out around them; a panic in between leaves `Empty`, a valid state.
     fn pair_surfaces(&mut self) {
+        let Some(generation) = self.active_snapshot_generation else {
+            return;
+        };
         let Some(snapshot) = self.snapshot.as_ref() else {
             return;
         };
-        if let Pairing::Presented { previous } = self.surfaces.pair(
-            &snapshot.boot_id,
-            snapshot.revision,
-            self.active_snapshot_generation,
-        ) {
+        if let Pairing::Presented { previous } =
+            self.surfaces
+                .pair(&snapshot.boot_id, snapshot.revision, generation)
+        {
             let before = self.pane_facts_before(previous.as_ref());
             let surfaces = std::mem::take(&mut self.surfaces);
             if let Some(surface) = surfaces.paired() {

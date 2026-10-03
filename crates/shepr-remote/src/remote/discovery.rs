@@ -353,7 +353,7 @@ pub(super) fn remote_client_status(
     // a diagnostic the operator needs to see.
     // limits-exempt: a shell exit status chosen for the remote command contract, not a bound.
     let candidate_missing = crate::RemoteExit::CandidateMissing.code();
-    let status_command = PosixScript::new(remote_shepr.status_client_command());
+    let status_command = remote_shepr.status_client_command();
     let command = PosixScript::new(format!(
         "test -x {} || exit {candidate_missing}; {}",
         remote_shepr.shell_word(),

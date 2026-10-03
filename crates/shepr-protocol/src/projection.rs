@@ -26,7 +26,7 @@ pub struct ClientShellSnapshot {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClientShellWorkspace {
     pub workspace_id: WorkspaceId,
-    pub new_workspace_cwd: String,
+    pub new_workspace_cwd: Option<RemotePath>,
     pub label: String,
     pub branch: Option<String>,
     /// The pair stays compact at the projection boundary; the sidebar is the only reader.
@@ -38,8 +38,8 @@ pub struct ClientShellWorkspace {
 pub struct ClientShellPane {
     pub pane_id: PublicPaneId,
     pub label: Option<String>,
-    pub cwd: Option<String>,
-    pub foreground_cwd: Option<String>,
+    pub cwd: Option<RemotePath>,
+    pub foreground_cwd: Option<RemotePath>,
     pub right_click_passthrough: bool,
 }
 

@@ -308,7 +308,7 @@ mod tests {
     fn test_app() -> App {
         App::new(
             &shepr_config::ServerConfig::default(),
-            crate::app::AppPolicy::Test,
+            crate::app::AppPolicy::Suspended,
         )
     }
 
@@ -353,10 +353,12 @@ mod tests {
     async fn resumes_whose_directory_is_gone_settle_as_placeholders() {
         let config: shepr_config::ServerConfig =
             toml::from_str("[session]\nstartup_per_agent_delay_ms = 0").expect("test precondition");
-        let mut app = App::new(&config, crate::app::AppPolicy::Test);
-        app.state.workspaces = (0..4)
-            .map(|_| shepr_mux::workspace::Workspace::test_new("restore"))
-            .collect();
+        let mut app = App::new(&config, crate::app::AppPolicy::Suspended);
+        app.state.test_set_workspaces(
+            (0..4)
+                .map(|_| shepr_mux::workspace::Workspace::test_new("restore"))
+                .collect(),
+        );
         app.state.set_bookmark_index(Some(0));
         app.state
             .test_record_all_workspace_areas(Rect::new(0, 0, 100, 30));
@@ -401,10 +403,10 @@ mod tests {
             .terminal_id(pending_pane)
             .cloned()
             .expect("test precondition");
-        app.state.workspaces = vec![
+        app.state.test_set_workspaces(vec![
             shepr_mux::workspace::Workspace::test_new("idle"),
             pending_workspace,
-        ];
+        ]);
         app.state.set_bookmark_index(Some(0));
         app.state.ensure_test_terminals();
 
@@ -474,7 +476,7 @@ mod tests {
             .terminal_id(pane_id)
             .cloned()
             .expect("test precondition");
-        app.state.workspaces = vec![workspace];
+        app.state.test_set_workspaces(vec![workspace]);
         app.state.set_bookmark_index(Some(0));
         app.state
             .test_record_all_workspace_areas(Rect::new(0, 0, 100, 30));
@@ -534,7 +536,7 @@ mod tests {
                 .terminal_id(pane_id)
                 .expect("test precondition")
                 .clone();
-            app.state.workspaces = vec![workspace];
+            app.state.test_set_workspaces(vec![workspace]);
             app.state.set_bookmark_index(Some(0));
             app.state.ensure_test_terminals();
             if missing_shell {
@@ -624,7 +626,7 @@ mod tests {
             .terminal_id(pane_id)
             .cloned()
             .expect("test precondition");
-        app.state.workspaces = vec![workspace];
+        app.state.test_set_workspaces(vec![workspace]);
         app.state.ensure_test_terminals();
         let plan =
             crate::test_support::test_codex_plan("resume-cwd-race", long_running_test_argv());
@@ -671,7 +673,7 @@ mod tests {
             .terminal_id(pane_id)
             .cloned()
             .expect("test precondition");
-        app.state.workspaces = vec![workspace];
+        app.state.test_set_workspaces(vec![workspace]);
         app.state.set_bookmark_index(Some(0));
         app.state.ensure_test_terminals();
         app.state
@@ -709,13 +711,13 @@ mod tests {
         let source = runtime.read().history_source();
         let mut history = shepr_mux::pane::PaneHistoryCache::default();
         for _ in 0..20 {
-            if source.refresh(&mut history) && history.text().contains(marker) {
+            if source.refresh(&mut history).is_ok() && history.text().contains(marker) {
                 break;
             }
             tokio::time::sleep(std::time::Duration::from_millis(25)).await;
         }
         assert!(
-            source.refresh(&mut history),
+            source.refresh(&mut history).is_ok(),
             "runtime should expose terminal history"
         );
         assert!(
@@ -737,7 +739,7 @@ mod tests {
             .terminal_id(pane_id)
             .cloned()
             .expect("test precondition");
-        app.state.workspaces = vec![workspace];
+        app.state.test_set_workspaces(vec![workspace]);
         app.state
             .test_record_all_workspace_areas(ratatui::layout::Rect::new(0, 0, 100, 30));
         app.state.set_bookmark_index(Some(0));
@@ -776,7 +778,8 @@ mod tests {
             .terminal_id(hidden_pane)
             .cloned()
             .expect("test precondition");
-        app.state.workspaces = vec![active_workspace, hidden_workspace];
+        app.state
+            .test_set_workspaces(vec![active_workspace, hidden_workspace]);
         app.state
             .test_record_all_workspace_areas(ratatui::layout::Rect::new(0, 0, 100, 30));
         app.state.set_bookmark_index(Some(0));
@@ -826,7 +829,7 @@ mod tests {
             .terminal_id(hidden_pane)
             .cloned()
             .expect("test precondition");
-        app.state.workspaces = vec![workspace];
+        app.state.test_set_workspaces(vec![workspace]);
         app.state
             .test_record_all_workspace_areas(ratatui::layout::Rect::new(0, 0, 100, 30));
         app.state.set_bookmark_index(Some(0));
@@ -869,7 +872,8 @@ mod tests {
             .cloned()
             .expect("test precondition");
         let current_workspace = shepr_mux::workspace::Workspace::test_new("current");
-        app.state.workspaces = vec![previous_workspace, current_workspace];
+        app.state
+            .test_set_workspaces(vec![previous_workspace, current_workspace]);
         app.state
             .test_record_all_workspace_areas(ratatui::layout::Rect::new(0, 0, 80, 24));
         app.state.set_bookmark_index(Some(1));
@@ -918,7 +922,7 @@ mod tests {
             .cloned()
             .expect("test precondition");
         let area = ratatui::layout::Rect::new(0, 0, 100, 30);
-        app.state.workspaces = vec![workspace];
+        app.state.test_set_workspaces(vec![workspace]);
         app.state.test_record_all_workspace_areas(area);
         app.state.set_bookmark_index(Some(0));
         app.state.ensure_test_terminals();

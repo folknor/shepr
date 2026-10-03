@@ -1,13 +1,13 @@
 //! Internal app events delivered via channel.
 //!
 //! Pane launch coordinators (each launch's settlement and the pane's death),
-//! detectors, hook reports and the Git refresh send events to the main loop
-//! through this channel. No polling needed.
+//! detectors and the Git refresh send events to the main loop through this
+//! channel. No polling needed.
 
 use std::time::Instant;
 
 use crate::git::{GitStatusCacheEntry, WorkspaceGitStatus};
-use shepr_agent::detect::{Agent, AgentState};
+use shepr_agent::detect::Agent;
 use shepr_core::layout::PaneId;
 
 /// An event from a background task to the main loop.
@@ -47,22 +47,6 @@ pub enum AppEvent {
         process_exited: bool,
         observed_at: Instant,
     },
-    /// Hook-authoritative agent state was reported for a pane.
-    HookStateReported {
-        pane_id: PaneId,
-        origin: shepr_agent::agent::ReportOrigin,
-        state: AgentState,
-        seq: Option<u64>,
-        session_ref: Option<shepr_agent::agent::resume::AgentSessionRef>,
-    },
-    /// Agent session identity was reported without state authority.
-    AgentSessionReported {
-        pane_id: PaneId,
-        origin: shepr_agent::agent::ReportOrigin,
-        seq: Option<u64>,
-        session_ref: Option<shepr_agent::agent::resume::AgentSessionRef>,
-        session_start_source: shepr_agent::agent::resume::ReportedSessionStart,
-    },
     /// A pane child emitted a valid OSC 52 clipboard write. The main loop
     /// re-emits it to the clients viewing `pane_id`.
     ClipboardWrite { pane_id: PaneId, content: Vec<u8> },
@@ -75,7 +59,7 @@ pub enum AppEvent {
     /// Background git status refresh completed for workspaces.
     GitStatusRefreshed {
         results: Vec<WorkspaceGitStatus>,
-        cache_updates: Vec<(std::path::PathBuf, GitStatusCacheEntry)>,
+        cache_updates: Vec<(crate::git::GitStatusKey, GitStatusCacheEntry)>,
     },
 }
 

@@ -1,10 +1,3 @@
-//! Mutex handling for PTY bookkeeping.
+//! PTY bookkeeping shares core's poison-recovery policy.
 
-use std::sync::{Mutex, MutexGuard};
-
-pub(crate) fn lock_auxiliary<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    match mutex.lock() {
-        Ok(guard) => guard,
-        Err(poisoned) => poisoned.into_inner(),
-    }
-}
+pub(crate) use shepr_core::locks::lock_auxiliary;

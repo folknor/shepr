@@ -76,7 +76,7 @@ pub(crate) fn snapshot(id: &ClientEndpointId, revision: u64) -> Box<ClientShellS
         focused_pane_id: Some(test_pane_id("w1:p1")),
         workspaces: vec![shepr_protocol::ClientShellWorkspace {
             workspace_id: test_workspace_id("w1"),
-            new_workspace_cwd: "/repo".into(),
+            new_workspace_cwd: Some("/repo".into()),
             label: id.display_label().into(),
             branch: None,
             git_ahead_behind: None,
@@ -153,6 +153,7 @@ impl Fixture {
         state.shell.set_machines(&machines);
         let output = Output::default();
         state.output_writer = Box::new(output.clone());
+        state.shell.endpoint_connected(&ClientEndpointId::Local, 1);
         state.shell.set_endpoint_snapshot_for_generation(
             &ClientEndpointId::Local,
             1,
@@ -165,13 +166,16 @@ impl Fixture {
         let size = state.shell.surface_size(100, 30);
         state
             .shell
-            .receive_pane_surface(surface(&ClientEndpointId::Local, 1, size, "SOURCE"));
+            .receive_pane_surface_from(surface(&ClientEndpointId::Local, 1, size, "SOURCE"), 1);
         let local = RecordingTransport::default();
         let target = RecordingTransport::default();
         let mut registry = EndpointRegistry::new_at(local.clone(), 1, now);
         registry.insert(remote(), target.clone(), 7, false, now);
-        let supervisors = endpoint::EndpointSupervisors::new(config.paths(), &machines, now)
-            .expect("supervisors");
+        let supervisors = endpoint::EndpointSupervisors::new(
+            endpoint::EndpointSupervisors::fresh_connectors(config.paths(), &machines),
+            now,
+        )
+        .expect("supervisors");
         let (tx, rx) = tokio::sync::mpsc::channel(1);
         let client = ClientLoop::new(
             state,

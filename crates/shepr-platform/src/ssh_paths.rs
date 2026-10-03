@@ -169,6 +169,19 @@ pub(super) fn with_name_token(name: &str, token: u64) -> String {
     }
 }
 
+/// An opaque destination identity used only to scope an SSH control socket.
+/// It carries bytes rather than SSH syntax: destination validation belongs to
+/// the caller, and this lower layer only hashes the identity.
+#[derive(Clone, Copy)]
+pub struct SshControlKey<'a>(&'a [u8]);
+
+impl<'a> SshControlKey<'a> {
+    pub fn from_identity_bytes(identity: &'a [u8]) -> Self {
+        Self(identity)
+    }
+}
+
+/// The target bytes are an opaque identity for hashing, never command text.
 /// Shared OpenSSH sockets outlive individual helpers. Keep them in the
 /// private runtime directory so isolated environments cannot reach a user's live
 /// master, and reject a directory belonging to another uid, a symlink, or a
@@ -176,7 +189,7 @@ pub(super) fn with_name_token(name: &str, token: u64) -> String {
 pub fn shared_ssh_control_path(
     runtime_dir: &Path,
     namespace: &Path,
-    target: &str,
+    target: SshControlKey<'_>,
 ) -> Result<PathBuf, SshRuntimeError> {
     validate_ssh_runtime_dir(runtime_dir)?;
     ssh_control_path_under(runtime_dir, namespace, target).map_err(SshRuntimeError::Io)
@@ -192,7 +205,7 @@ pub fn shared_ssh_control_path(
 pub fn ssh_control_path_under(
     runtime_dir: &Path,
     namespace: &Path,
-    target: &str,
+    target: SshControlKey<'_>,
 ) -> std::io::Result<PathBuf> {
     use sha2::{Digest, Sha256};
     use std::fmt::Write as _;
@@ -214,7 +227,7 @@ pub fn ssh_control_path_under(
     let mut hash = Sha256::new();
     hash.update(namespace.as_os_str().as_bytes());
     hash.update([0]);
-    hash.update(target.as_bytes());
+    hash.update(target.0);
     // %C additionally scopes the socket to OpenSSH's resolved destination,
     // port and jump host, rather than merely the spelling of an alias.
     // Keep 64 bits of namespace/target hash plus OpenSSH's 160-bit %C. What
@@ -313,8 +326,12 @@ mod tests {
     #[test]
     fn ssh_control_path_rejects_percent_tokens_in_runtime_directory() {
         for runtime_dir in [Path::new("/run/%h"), Path::new("/run/%%")] {
-            let error = ssh_control_path_under(runtime_dir, Path::new("/config/one"), "host")
-                .expect_err("OpenSSH would reinterpret percent sequences in ControlPath");
+            let error = ssh_control_path_under(
+                runtime_dir,
+                Path::new("/config/one"),
+                super::SshControlKey::from_identity_bytes(b"host"),
+            )
+            .expect_err("OpenSSH would reinterpret percent sequences in ControlPath");
             assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
             assert!(error.to_string().contains("percent sequences"));
         }

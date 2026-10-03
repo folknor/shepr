@@ -1,7 +1,7 @@
 use crate::shell::state::ClientShellAction;
 
 use crate::endpoint::ClientEndpointId;
-use crate::shell::endpoints::ClientEndpointFocusTarget;
+use crate::shell::navigation::location::Location;
 use crate::shell::state::{ClientShellInput, ClientShellState, ClientWorkspacePress};
 use crate::shell::{EndpointNotice, EndpointNoticeKind};
 
@@ -14,22 +14,25 @@ impl ClientShellState {
             .workspaces
             .iter()
             .find(|hit| {
-                hit.endpoint_id == *self.endpoints.presented()
+                hit.location.endpoint == *self.endpoints.presented()
                     && crate::shell::input::hit_test::contains(hit.rect, point)
             })
-            .map(|hit| hit.workspace_id)
+            .and_then(|hit| hit.location.workspace_id())
     }
 
     pub(in crate::shell) fn endpoint_workspace_is_draggable(
         &self,
         press: &ClientWorkspacePress,
     ) -> bool {
-        press.endpoint_id == *self.endpoints.presented()
+        press.location.endpoint == *self.endpoints.presented()
             && self.snapshot.as_deref().is_some_and(|snapshot| {
+                let Some(workspace_id) = press.location.workspace_id() else {
+                    return false;
+                };
                 snapshot
                     .workspaces
                     .iter()
-                    .any(|workspace| workspace.workspace_id == press.workspace_id)
+                    .any(|workspace| workspace.workspace_id == workspace_id)
             })
     }
 
@@ -38,11 +41,7 @@ impl ClientShellState {
         press: ClientWorkspacePress,
         outcome: &mut ClientShellInput,
     ) {
-        self.focus_or_activate(
-            press.endpoint_id,
-            ClientEndpointFocusTarget::Workspace(press.workspace_id),
-            outcome,
-        );
+        self.focus_or_activate(press.location, outcome);
     }
 
     pub(in crate::shell) fn handle_endpoint_machine_click(
@@ -58,7 +57,7 @@ impl ClientShellState {
         else {
             return false;
         };
-        let endpoint_id = hit.endpoint_id.clone();
+        let endpoint_id = hit.location.endpoint.clone();
         let collapse_toggle = crate::shell::input::hit_test::contains(hit.collapse_toggle, point);
         if collapse_toggle {
             if !self.collapsed_endpoints.remove(&endpoint_id) {
@@ -92,20 +91,16 @@ impl ClientShellState {
         point: (u16, u16),
         outcome: &mut ClientShellInput,
     ) -> bool {
-        let Some((endpoint_id, pane_id)) = self
+        let Some(location) = self
             .hits
-            .endpoint_agents
+            .agent_hits
             .iter()
-            .find(|(rect, _, _)| crate::shell::input::hit_test::contains(*rect, point))
-            .map(|(_, endpoint_id, pane_id)| (endpoint_id.clone(), pane_id))
+            .find(|hit| crate::shell::input::hit_test::contains(hit.rect, point))
+            .map(|hit| hit.location.clone())
         else {
             return false;
         };
-        self.focus_or_activate(
-            endpoint_id,
-            ClientEndpointFocusTarget::Pane(*pane_id),
-            outcome,
-        );
+        self.focus_or_activate(location, outcome);
         true
     }
 
@@ -134,8 +129,8 @@ impl ClientShellState {
                 .as_deref()
                 .and_then(|snapshot| snapshot.focused_workspace_id.as_ref());
             let current = workspaces.iter().position(|target| {
-                target.endpoint_id == *self.endpoints.presented()
-                    && Some(&target.workspace_id) == focused
+                target.location.endpoint == *self.endpoints.presented()
+                    && target.location.workspace_id().as_ref() == focused
             });
             let delta = if action == KeybindAction::PreviousWorkspace {
                 -1
@@ -150,11 +145,7 @@ impl ClientShellState {
                 return true;
             };
             let target = &workspaces[next];
-            self.focus_or_activate(
-                target.endpoint_id.clone(),
-                ClientEndpointFocusTarget::Workspace(target.workspace_id),
-                outcome,
-            );
+            self.focus_or_activate(target.location.clone(), outcome);
             return true;
         }
         if matches!(
@@ -177,13 +168,12 @@ impl ClientShellState {
             ) else {
                 return true;
             };
-            let target_endpoint_id = agents[next].endpoint_id.clone();
-            let target_pane_id = agents[next].pane_id;
-            if self.focus_or_activate(
-                target_endpoint_id.clone(),
-                ClientEndpointFocusTarget::Pane(target_pane_id),
-                outcome,
-            ) {
+            let target = agents[next].clone();
+            let target_endpoint_id = target.endpoint.clone();
+            let Some(target_pane_id) = target.pane_id() else {
+                return true;
+            };
+            if self.focus_or_activate(target.clone(), outcome) {
                 if target_endpoint_id == *self.endpoints.presented() {
                     self.reveal_endpoint_agent(
                         &target_endpoint_id,
@@ -191,7 +181,7 @@ impl ClientShellState {
                         self.hits.agent_body.height,
                     );
                 } else {
-                    self.pending_agent_reveal = Some((target_endpoint_id, target_pane_id));
+                    self.pending_agent_reveal = Some(target);
                 }
                 outcome.repaint = true;
             }
@@ -226,12 +216,13 @@ impl ClientShellState {
 
     pub(in crate::shell) fn focus_or_activate(
         &mut self,
-        endpoint_id: ClientEndpointId,
-        target: ClientEndpointFocusTarget,
+        location: Location,
         outcome: &mut ClientShellInput,
     ) -> bool {
         self.pending_workspace_highlight = None;
         self.pending_agent_reveal = None;
+        let target = location.focus_target();
+        let endpoint_id = location.endpoint;
         if !self.endpoint_can_select(&endpoint_id) {
             self.receive_endpoint_unavailable(&EndpointNotice::new(
                 endpoint_id,
@@ -244,7 +235,7 @@ impl ClientShellState {
         // prepare an unavailable endpoint, or retarget a move already in progress.
         outcome.actions.push(ClientShellAction::ActivateEndpoint {
             endpoint_id,
-            target: Some(target),
+            target,
         });
         true
     }
@@ -252,6 +243,7 @@ impl ClientShellState {
 
 #[cfg(test)]
 mod tests {
+    use crate::shell::navigation::location::Location;
     use crate::shell::state::ClientShellAction;
     use crate::shell::state::ClientShellConfig;
     use ratatui::layout::Rect;
@@ -269,7 +261,7 @@ mod tests {
             rect: Rect::new(0, 0, 10, 1),
             status_badge: Rect::default(),
             collapse_toggle: Rect::new(0, 0, 1, 1),
-            endpoint_id: ClientEndpointId::Local,
+            location: Location::machine(ClientEndpointId::Local),
         });
         let mut outcome = ClientShellInput::default();
 

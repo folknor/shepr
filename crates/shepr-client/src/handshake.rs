@@ -232,14 +232,6 @@ pub(super) fn do_handshake(
 }
 
 #[cfg(test)]
-pub(crate) fn handshake_error(
-    error: HandshakeError,
-    mismatch_guidance: Option<&str>,
-) -> std::io::Error {
-    error.class(mismatch_guidance)
-}
-
-#[cfg(test)]
 mod tests {
     use super::*;
     use std::io;

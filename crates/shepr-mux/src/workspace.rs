@@ -314,7 +314,7 @@ impl Workspace {
             if status.resolved_identity_cwd == cwd)
     }
 
-    pub fn git_status_key_for_cwd(&self, cwd: &Path) -> Option<&Path> {
+    pub fn git_status_key_for_cwd(&self, cwd: &Path) -> Option<&crate::git::GitStatusKey> {
         match &self.git_identity {
             GitIdentity::Admitted(status) if self.matches_identity_cwd(cwd) => {
                 Some(&status.status_cache_key)
@@ -1054,7 +1054,7 @@ mod tests {
         let status = snapshot.into_workspace_status(
             shepr_protocol::WorkspaceId::from_number(1).expect("id"),
             checkout.clone(),
-            PathBuf::new(),
+            crate::git::GitStatusKey::Outside(PathBuf::new()),
         );
 
         assert_eq!(
@@ -1081,7 +1081,11 @@ mod tests {
             branch: WorkspaceBranch::Detached,
             ahead_behind: None,
         }
-        .into_workspace_status(ws.id, cwd.clone(), cwd.clone());
+        .into_workspace_status(
+            ws.id,
+            cwd.clone(),
+            crate::git::GitStatusKey::Checkout(cwd.clone()),
+        );
         ws.admit_git_status(status, Some(&cwd));
 
         std::fs::remove_dir_all(root).expect("remove cwd after cache admission");
@@ -1109,7 +1113,11 @@ mod tests {
             branch: WorkspaceBranch::Detached,
             ahead_behind: None,
         }
-        .into_workspace_status(ws.id, cwd.clone(), cwd.clone());
+        .into_workspace_status(
+            ws.id,
+            cwd.clone(),
+            crate::git::GitStatusKey::Checkout(cwd.clone()),
+        );
         ws.admit_git_status(status, Some(&cwd));
         let terminals = HashMap::from([(
             terminal_id.clone(),
@@ -1197,7 +1205,7 @@ mod tests {
         let status = WorkspaceGitStatus {
             workspace_id: ws.id,
             resolved_identity_cwd: cwd.clone(),
-            status_cache_key: PathBuf::from("/checkout"),
+            status_cache_key: crate::git::GitStatusKey::Checkout(PathBuf::from("/checkout")),
             auto_label: "automatic".into(),
             branch: WorkspaceBranch::Detached,
             ahead_behind: None,
@@ -1210,7 +1218,9 @@ mod tests {
         assert_eq!(ws.display_name(), "custom");
         assert_eq!(
             ws.git_status_key_for_cwd(&cwd),
-            Some(Path::new("/checkout"))
+            Some(&crate::git::GitStatusKey::Checkout(PathBuf::from(
+                "/checkout"
+            )))
         );
         assert_eq!(ws.branch_state(), Some(&WorkspaceBranch::Detached));
         ws.custom_name = None;
@@ -1225,7 +1235,7 @@ mod tests {
         let mut status = WorkspaceGitStatus {
             workspace_id: ws.id,
             resolved_identity_cwd: cwd.clone(),
-            status_cache_key: cwd.clone(),
+            status_cache_key: crate::git::GitStatusKey::Outside(cwd.clone()),
             auto_label: "automatic".into(),
             branch: WorkspaceBranch::Detached,
             ahead_behind: None,
@@ -1250,7 +1260,7 @@ mod tests {
         let status = WorkspaceGitStatus {
             workspace_id: ws.id,
             resolved_identity_cwd: cwd.clone(),
-            status_cache_key: cwd.clone(),
+            status_cache_key: crate::git::GitStatusKey::Outside(cwd.clone()),
             auto_label: "repo".into(),
             branch: WorkspaceBranch::Named("main".into()),
             ahead_behind: None,

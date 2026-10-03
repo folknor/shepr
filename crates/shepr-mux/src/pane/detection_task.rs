@@ -235,7 +235,12 @@ mod tests {
             pane_id: shepr_test_fixtures::fixed_pane_id(1),
             handles: DetectionHandles {
                 terminal: Arc::new(PaneTerminal::new(shepr_vt::Terminal::new(80, 24, 0))),
-                child_liveness: Arc::new(ChildLiveness::running_unhandled(std::process::id())),
+                child_liveness: Arc::new(ChildLiveness::running_with_handle(Arc::new(
+                    shepr_platform::ProcessHandle::open(
+                        shepr_platform::Pid::new(std::process::id()).expect("test pid"),
+                    )
+                    .expect("current process handle"),
+                ))),
                 lifecycle_authority: Arc::new(AtomicBool::new(false)),
                 reset: Arc::new(Notify::new()),
                 events: EventSender::runtime(

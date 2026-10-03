@@ -581,7 +581,7 @@ fn remote_path_discovery_uses_path_binary() {
         remote_executable_from_path_discovery("/usr/bin/shepr\n").expect("path binary");
 
     assert_eq!(
-        remote_shepr.bridge_command(),
+        remote_shepr.bridge_command().as_str(),
         format!(
             "/bin/sh -c 'echo; echo shepr-remote-output-ready; /usr/bin/shepr remote-client-bridge; shepr_exit_status=$?; if [ $shepr_exit_status -eq {SSH_OWN_FAILURE_EXIT_CODE} ]; then exit {REMAPPED_REMOTE_255_EXIT_CODE}; fi; exit $shepr_exit_status'"
         )

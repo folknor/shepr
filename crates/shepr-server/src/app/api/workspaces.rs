@@ -6,7 +6,7 @@ use shepr_protocol::command::{
 
 use super::super::api_helpers::normalized_user_label;
 use super::endpoint::{
-    EndpointEffects, Handled, HandlerError, HandlerResult, rejected_with_effects, workspace_missing,
+    EndpointEffects, Handled, HandlerError, HandlerResult, internal_with_effects, workspace_missing,
 };
 
 impl App {
@@ -36,7 +36,7 @@ impl App {
         let outcome = self
             .create_workspace_outcome(&cwd, geometry)
             .map_err(|err| {
-                EndpointError::Rejected(format!("the workspace could not be created: {err}"))
+                EndpointError::ResourceFailure(format!("the workspace could not be created: {err}"))
             })?;
         let index = outcome.workspace_index;
         if let Some(label) = normalized_user_label(params.label)
@@ -47,7 +47,7 @@ impl App {
         }
         let effects = EndpointEffects::from(&outcome);
         let Some(workspace_id) = self.public_workspace_id(index) else {
-            return rejected_with_effects("the new workspace is unavailable", effects);
+            return internal_with_effects("the new workspace is unavailable", effects);
         };
         Handled::navigating_with_effects(EndpointReply::Done, workspace_id, effects)
     }
@@ -122,7 +122,7 @@ mod tests {
     use shepr_termio::host_term::cell_size::HostCellSize;
 
     fn app() -> App {
-        let mut app = App::new(&ServerConfig::default(), crate::app::AppPolicy::Test);
+        let mut app = App::new(&ServerConfig::default(), crate::app::AppPolicy::Suspended);
         app.set_test_shell(super::super::test_support::exiting_test_command());
         app
     }
@@ -145,7 +145,8 @@ mod tests {
         use super::super::test_support::shutdown_test_runtimes;
 
         let mut app = app();
-        app.state.workspaces = vec![Workspace::test_new("spaces")];
+        app.state
+            .test_set_workspaces(vec![Workspace::test_new("spaces")]);
         app.state.ensure_test_terminals();
         let followed = app.state.workspaces[0].id;
 
@@ -199,7 +200,10 @@ mod tests {
         use super::super::test_support::shutdown_test_runtimes;
 
         let mut app = app();
-        app.state.workspaces = vec![Workspace::test_new("first"), Workspace::test_new("source")];
+        app.state.test_set_workspaces(vec![
+            Workspace::test_new("first"),
+            Workspace::test_new("source"),
+        ]);
         app.state.ensure_test_terminals();
         // The bookmark is on another workspace: creation follows the named one.
         app.state.set_bookmark_index(Some(0));
@@ -256,7 +260,7 @@ mod tests {
 
         let captured = app
             .handle_workspace_create(
-                create(WorkspaceCreateSource::Cwd(source_cwd.display().to_string())),
+                create(WorkspaceCreateSource::Cwd(source_cwd.clone().into())),
                 &ctx,
             )
             .expect("an explicit cwd creates");
@@ -301,7 +305,10 @@ mod tests {
         );
         assert_eq!(
             runtime.pixel_size(),
-            Some((100 * 9, 30 * 18)),
+            Some(shepr_mux::pane::PanePixelSize {
+                width: 100 * 9,
+                height: 30 * 18
+            }),
             "the first window size already has pixel dimensions"
         );
         // Recorded at creation, before any geometry pass has run.
@@ -312,11 +319,11 @@ mod tests {
     #[test]
     fn workspace_move_reorders_workspaces_and_moves_nobody() {
         let mut app = app();
-        app.state.workspaces = vec![
+        app.state.test_set_workspaces(vec![
             Workspace::test_new("one"),
             Workspace::test_new("two"),
             Workspace::test_new("three"),
-        ];
+        ]);
         let moved_id = app.public_workspace_id(0).expect("test precondition");
 
         let handled = app
@@ -338,7 +345,8 @@ mod tests {
     #[test]
     fn workspace_move_noop_leaves_order_unchanged_and_missing_anchor_is_refused() {
         let mut app = app();
-        app.state.workspaces = vec![Workspace::test_new("one"), Workspace::test_new("two")];
+        app.state
+            .test_set_workspaces(vec![Workspace::test_new("one"), Workspace::test_new("two")]);
         let moved_id = app.public_workspace_id(0).expect("test precondition");
 
         app.handle_workspace_move(&WorkspaceMoveParams {
@@ -365,12 +373,12 @@ mod tests {
     #[test]
     fn stale_client_workspace_move_follows_live_anchor_and_refuses_deleted_anchor() {
         let mut app = app();
-        app.state.workspaces = vec![
+        app.state.test_set_workspaces(vec![
             Workspace::test_new("source"),
             Workspace::test_new("middle"),
             Workspace::test_new("anchor"),
             Workspace::test_new("last"),
-        ];
+        ]);
         let command = WorkspaceMoveParams {
             workspace_id: app.public_workspace_id(0).expect("source"),
             before_workspace_id: app.public_workspace_id(2),
@@ -383,6 +391,7 @@ mod tests {
         assert_eq!(app.state.workspaces[3].display_name(), "anchor");
         // Another client then closes the anchor. No other workspace substitutes.
         app.state.workspaces.remove(3);
+        app.state.test_reindex_panes();
         let order = app
             .state
             .workspaces
@@ -405,7 +414,8 @@ mod tests {
         let mut app = app();
         let mut closing = Workspace::test_new("closing");
         closing.test_split(shepr_core::layout::Direction::Horizontal);
-        app.state.workspaces = vec![closing, Workspace::test_new("survivor")];
+        app.state
+            .test_set_workspaces(vec![closing, Workspace::test_new("survivor")]);
         app.state.ensure_test_terminals();
         let workspace_id = app.public_workspace_id(0).expect("test precondition");
 
@@ -421,7 +431,8 @@ mod tests {
     #[test]
     fn workspace_focus_navigates_on_success_even_with_nothing_to_mutate() {
         let mut app = app();
-        app.state.workspaces = vec![Workspace::test_new("one"), Workspace::test_new("two")];
+        app.state
+            .test_set_workspaces(vec![Workspace::test_new("one"), Workspace::test_new("two")]);
         app.state.session_dirty = false;
         let target = app.public_workspace_id(1).expect("test precondition");
 
@@ -454,9 +465,10 @@ mod tests {
     #[test]
     fn a_gone_workspace_is_refused_by_every_workspace_command() {
         let mut app = app();
-        app.state.workspaces = vec![Workspace::test_new("only")];
+        app.state
+            .test_set_workspaces(vec![Workspace::test_new("only")]);
         let gone = WorkspaceId::from_number(99).expect("nonzero number");
-        let refusal = EndpointError::Rejected(format!("workspace {gone} not found"));
+        let refusal = EndpointError::WorkspaceGone(gone);
 
         assert_eq!(
             app.handle_workspace_focus(&WorkspaceTarget { workspace_id: gone })
@@ -493,7 +505,8 @@ mod tests {
     #[test]
     fn workspace_info_for_a_stale_index_is_none() {
         let mut app = app();
-        app.state.workspaces = vec![Workspace::test_new("one")];
+        app.state
+            .test_set_workspaces(vec![Workspace::test_new("one")]);
 
         assert!(app.workspace_info(0).is_some());
         assert!(app.workspace_info(1).is_none());
@@ -503,7 +516,8 @@ mod tests {
     fn workspace_rename_uses_the_shared_dirty_schedule() {
         let mut app = app();
         app.persist_for_test();
-        app.state.workspaces = vec![Workspace::test_new("before")];
+        app.state
+            .test_set_workspaces(vec![Workspace::test_new("before")]);
         let workspace_id = app.public_workspace_id(0).expect("test precondition");
         let sample = crate::app::AppClock {
             now: app.clock.now + std::time::Duration::from_secs(2),

@@ -106,13 +106,6 @@ impl HostShutdownCheckpoint {
     pub(super) fn cancel(&mut self) {
         *self = Self::Idle;
     }
-
-    #[cfg(test)]
-    pub(super) fn expedite_retry(&mut self) {
-        if let Self::Requested { retry_at, .. } = self {
-            *retry_at = None;
-        }
-    }
 }
 
 #[cfg(test)]

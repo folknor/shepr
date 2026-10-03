@@ -21,30 +21,6 @@ file's.
 
 ## Platform, process and files
 
-## CON-009 - How is a private file published durably and atomically?
-
-`persist/io.rs` `publish_private_file` (private temp, copy, fsync, rename, sync
-dir, `Published::{Durable, NotDurable}`, no symlink check at the target);
-`machine/ssh_metadata.rs` `store_private_json_with_directory_sync` (refuses a
-symlink or non-file target, its own temp naming with `unpredictable_token` and a
-sequence, dir sync failure only logged); `integration/atomic_replace.rs` with
-platform's `config_file.rs` (copying owner, ACL xattrs and mode). Temp naming,
-symlink policy and the meaning of a failed dir sync differ. Owner: platform
-`publish_file(target, contents, Options { preserve_metadata_from,
-refuse_symlink_target, durability })`; `config_file.rs` is the start of it but is
-named for one consumer. (foundation)
-
-## CON-027 - A few VT spellings still bypass the shared builders
-
-`crates/shepr-vt/src/seq.rs` now holds one spelling for underline, colour
-parameters and replies, focus, DSR, and DEC and kitty mode builders, used by vt
-and the termio blitter and host side. Still open: mux `osc_rgb_response`
-(`crates/shepr-mux/src/pane/terminal/helpers.rs`) keeps its own target mapping
-and formatter instead of `query.reply(color, ReplyForm::St)`;
-`crates/shepr-client/src/terminal_setup.rs` writes focus, paste, line-wrap and
-alternate-screen modes through crossterm; and some fixed startup constants still
-spell DEC modes as literals. (terminal)
-
 ## CON-051 - The detection task does not stop on the arbitrated ending
 
 `ChildLiveness::observe` covers seven observation paths, and the server
@@ -53,14 +29,6 @@ child alive. Still open: `DetectionTask` (`crates/shepr-mux/src/pane/detection_t
 stops through child liveness or cancellation, not when the exit arbiter has
 decided; wiring that needs a cancellation from the arbiter, not an arbiter lock
 at every tick checkpoint. (mux-panes)
-
-## CON-056 - Pane chrome is built with provisional content fields
-
-Content and gutter layout are one `PaneChromeInfo::content_layout` used by spawn
-sizing, UI geometry, resume geometry and retained surfaces, with one scrollbar
-visibility rule. Still open: `PaneChromeInfo` is constructed with provisional
-`inner_rect` and scrollbar fields until the screen mode is known, which callers
-overwrite. (mux-state, server-app, server-serving)
 
 ## CON-069 - A prepared pane exit is still two arguments
 
@@ -87,14 +55,6 @@ and the server reverse-maps them (`split_path_for_children` in shepr-core
 `layout.rs`); a server-minted layout epoch would let the client send
 `(workspace, path, epoch, ratio)`, which needs protocol, server API and
 workspace topology changes. (client-shell, server-serving)
-
-## CON-013 - The socket path type is thrown away after the check
-
-`SocketPath` in `crates/shepr-core/src/socket_path.rs` owns the length check
-and the platform connect uses it, but `resolve_paths_checked`
-(`crates/shepr-config/src/address.rs`) validates and drops it, so `AppPaths`
-and `ServerAddress` still hold a plain `PathBuf`. Carry `SocketPath` there so
-the check is a type fact. (wave-3 review)
 
 ## CON-015 - What does a pane's exit mean, and does it get a checkpoint?
 
@@ -214,68 +174,44 @@ helpers in `crates/shepr-mux/src/pane/agent_detection.rs` (free functions on
 `core.detection_content_seq` directly. The counter types are filed among the
 types. Reported by mux-panes, terminal and server-serving.
 
-## CON-059 - How does a layout tree collapse, and which panes are adjacent?
+## CON-056 - Pane chrome content fields are finished outside geometry
 
-Pruning and pane-id collection now live on core's `Node`, and core's
-`find_in_direction` uses one directional helper. Still open: mux
-`workspace/geometry.rs` decides adjacency (`ranges_overlap`, `pane_to_right`,
-`pane_below`, `u16` saturating) separately from core's helper (`u32` ends), and
-the two differ at the right or bottom edge of a `u16::MAX` area. (mux-state)
+The border-only inner rect is built correctly, zoomed panes included, and one
+`content_layout` serves spawn, UI, resume and retained paths. Still open:
+`PaneChromeInfo`'s content and scrollbar fields need the screen-dependent gutter
+finalized by callers in `crates/shepr-server/src/ui/panes.rs` and
+`server/headless/retained_surface.rs`; separate pre- and post-finalization
+types would enforce it. (mux-state, server-app, server-serving)
 
-## CON-061 - Which pane maps to which terminal and runtime?
+## CON-061 - find_pane still walks workspaces
 
-`AppState` now keeps a `PaneId -> TerminalId` index with `terminal_of` and
-`runtime_of`, used by six paths. Still open: `find_pane` in
-`crates/shepr-server/src/app/ids.rs` re-walks workspaces, and state assembled
-directly (outside the creation, restore and removal paths that maintain the
-index) still falls back to a scan, so the index is a second record kept in step
-by hand. Reported by server-app and mux-panes.
+`terminal_of` no longer scans on a miss, and every assembly path maintains the
+pane to terminal index. Still open: `find_pane` in
+`crates/shepr-server/src/app/ids.rs` walks workspaces for the position and
+`PaneState`, and attachment is recorded both on the workspace pane and in the
+index (the reason the index alone cannot answer is at the code). (server-app,
+mux-panes)
+
+## CON-076 - Two delivery paths still resolve the viewed workspace themselves
+
+Both render paths use one `projection_due` rule and a `ViewedWorkspace`
+resolved once per client. Still open: delivery preflight and shared-surface
+counting in `crates/shepr-server/src/server/headless/render.rs` resolve the
+workspace separately. (server-serving)
 
 ## Persistence and session saves
 
+## CON-009 - Publish paths still keep their own staging names
+
+One platform `publish_file` (`crates/shepr-platform/src/publish_file.rs`) serves
+persistence, agent config replacement and the SSH metadata cache, each keeping
+its durability policy. Still open: lease-protected fixed staging names in
+persistence and the integration collision-test seams keep their own temp naming.
+(foundation)
+
 ## App and server loop
 
-## CON-071 - Geometry claims are decided by scattered handlers
-
-The PTY size rule is now one function in
-`crates/shepr-server/src/server/headless/client_views.rs`, geometry is settled
-before the render plan (rendering no longer resizes PTYs), and alternate-screen
-mode is a per-workspace record rather than read from the delivered baseline.
-Still open: who claims geometry is decided in several places (focus gain, pane
-interaction, connect, activation, navigating commands, and a four-branch policy
-in `handle_client_shell_command` keyed on `claims_shell_geometry` and
-`changes_topology`) with controller storage in the client registry; one owner
-with `claim(client, ClaimReason)` would hold them. Who views a workspace is also
-answered twice: settlement (`settle_workspace_geometry_before_plan`,
-`apply_all_workspace_geometry`) uses `location.focused_workspace_id()` while
-render uses `shell_target_for_client`, which also checks the workspace still
-exists. (server-serving, wave-2 review)
-
-## CON-076 - Does a projection need recomputing?
-
-`render_plan` uses `!settled || projected_location_generation !=
-location.generation() || snapshot.is_none()`; `render_client_full` also compares
-`session_generation != shell_session_generation`. The plan relies on every bump
-of the session generation also calling `mark_view_changed`, which holds at both
-bump sites today with nothing tying them. Owner: one
-`ClientShellState::projection_due(&SessionGeneration)`. Projection identity
-resolution is also repeated (`snapshot_from_session` resolves the focused
-workspace twice, `shell_target_for_client` applies the same filter,
-`focus_target_for_surface`, `shell_focused_runtime` and `visible_pane_runtimes`
-each go id to index to workspace to runtime, `send_pane_focus` uses a linear
-`position`): a `ViewedWorkspace { index, workspace }` resolved once per client
-per pass. (server-serving)
-
 ## Wire, handshake and surfaces
-
-## CON-080 - Is this update a patch against unchanged topology, and may it apply?
-
-`SurfaceTopology`, `SurfaceBaseline::admits`, named revision transitions and one
-patch application are now shared by the server and both decoder paths. Still
-open: the client's `endpoint/choice/preparing.rs` keeps a second full baseline
-and applies patches to it instead of reading the connection decoder's baseline
-(`Decoder::current_surface`); the boundary is commented there. Reported by
-contracts and server-serving.
 
 ## Config and keybindings
 

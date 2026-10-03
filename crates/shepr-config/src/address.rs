@@ -1,6 +1,6 @@
 use shepr_core::env::EnvVar;
 use shepr_core::socket_path::SocketPath;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 
 impl crate::machine::SshTarget {
@@ -19,7 +19,7 @@ impl crate::machine::SshTarget {
 /// `shepr.sock`, or the socket `SHEPR_SOCKET_PATH` selects.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServerAddress {
-    socket: PathBuf,
+    socket: SocketPath,
     /// A socket override picked the address, so it names an existing server
     /// that this client may attach to or stop but never start.
     overridden: bool,
@@ -31,29 +31,25 @@ impl ServerAddress {
     // target or guarantee valid paths. An override equal to the runtime socket
     // is not an override: a pane exports its server's resolved socket, and a
     // pane of the same profile must still count as the runtime address.
-    pub(crate) fn resolve_paths(runtime_dir: &Path, socket_override: Option<&Path>) -> Self {
-        let runtime = runtime_dir.join(SOCKET_FILE_NAME);
-        let socket_override = socket_override.filter(|path| *path != runtime);
-        Self {
-            socket: socket_override.map_or(runtime, Path::to_path_buf),
-            overridden: socket_override.is_some(),
-        }
-    }
-
-    /// [`Self::resolve_paths`], refusing a socket path no Unix socket can
-    /// have, so a too-long runtime directory or override fails the launch
-    /// instead of the later bind or connect.
+    /// Resolve and retain the checked socket pathname for the entire launch.
     pub(crate) fn resolve_paths_checked(
         runtime_dir: &Path,
         socket_override: Option<&Path>,
     ) -> std::io::Result<Self> {
-        let address = Self::resolve_paths(runtime_dir, socket_override);
-        SocketPath::new(address.socket.clone())?;
-        Ok(address)
+        let runtime = runtime_dir.join(SOCKET_FILE_NAME);
+        let socket_override = socket_override.filter(|path| *path != runtime);
+        Ok(Self {
+            socket: SocketPath::new(socket_override.map_or(runtime, Path::to_path_buf))?,
+            overridden: socket_override.is_some(),
+        })
+    }
+
+    pub fn socket_path(&self) -> &SocketPath {
+        &self.socket
     }
 
     pub fn socket(&self) -> &Path {
-        &self.socket
+        self.socket.as_path()
     }
 
     /// Whether this is the build profile's own runtime address, as opposed to
@@ -99,7 +95,7 @@ impl ServerAddress {
             format!(
                 "{}={} {command}",
                 EnvVar::SheprSocketPath,
-                shepr_core::shell_quote::quote(&self.socket.to_string_lossy())
+                shepr_core::shell_quote::quote(&self.socket.as_path().to_string_lossy())
             )
         } else {
             command.to_owned()
@@ -135,6 +131,13 @@ pub fn operator_entrypoint() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    impl ServerAddress {
+        fn resolve_paths(runtime_dir: &Path, socket_override: Option<&Path>) -> Self {
+            Self::resolve_paths_checked(runtime_dir, socket_override)
+                .expect("valid test socket path")
+        }
+    }
 
     #[test]
     fn a_leading_equals_sign_is_quoted_for_zsh() {

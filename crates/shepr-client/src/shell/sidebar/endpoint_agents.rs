@@ -1,6 +1,7 @@
 use crate::endpoint::ClientEndpointId;
+use crate::shell::navigation::location::Location;
 use crate::shell::presentation::render::put_text;
-use crate::shell::state::{ClientShellConfig, ClientShellState, ShellHitMap};
+use crate::shell::state::{AgentHit, ClientShellConfig, ClientShellState, ShellHitMap};
 use ratatui::buffer::Buffer;
 use ratatui::style::{Modifier, Style};
 
@@ -54,7 +55,6 @@ pub(in crate::shell) fn render_collapsed(
                 glyph.text,
                 glyph.style,
             );
-            hits.agents.push((rect, row.agent.pane_id));
         } else {
             let initial = row.machine_label.chars().next().unwrap_or('?');
             put_text(
@@ -65,9 +65,11 @@ pub(in crate::shell) fn render_collapsed(
                 &format!("{initial}{}", glyph.text),
                 glyph.style,
             );
-            hits.endpoint_agents
-                .push((rect, row.endpoint_id.clone(), row.agent.pane_id));
         }
+        hits.agent_hits.push(AgentHit {
+            rect,
+            location: Location::pane(row.endpoint_id.clone(), row.agent.pane_id),
+        });
     }
 }
 
@@ -75,7 +77,6 @@ pub(in crate::shell) fn render_expanded(
     buffer: &mut Buffer,
     area: Rect,
     active_endpoint_id: &ClientEndpointId,
-    single_endpoint: bool,
     config: &ClientShellConfig,
     model: &crate::shell::navigation::aggregate_navigation::AgentPanelModel,
     agent_scroll: &mut usize,
@@ -107,12 +108,10 @@ pub(in crate::shell) fn render_expanded(
                         .add_modifier(Modifier::DIM),
                 );
             }
-            if single_endpoint {
-                hits.agents.push((rect, row.agent.pane_id));
-            } else {
-                hits.endpoint_agents
-                    .push((rect, row.endpoint_id.clone(), row.agent.pane_id));
-            }
+            hits.agent_hits.push(AgentHit {
+                rect,
+                location: Location::pane(row.endpoint_id.clone(), row.agent.pane_id),
+            });
         },
     );
 }

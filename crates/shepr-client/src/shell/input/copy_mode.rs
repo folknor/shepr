@@ -131,16 +131,14 @@ impl ClientShellState {
         request: &shepr_protocol::RequestId,
         pane_id: &shepr_protocol::PublicPaneId,
         origin: shepr_protocol::command::PaneTextPoint,
-        result: &Result<shepr_protocol::command::EndpointReply, ClientShellEndpointError>,
-        now: std::time::Instant,
+        result: &Result<shepr_protocol::command::PaneCopyMotionReply, ClientShellEndpointError>,
         outcome: &mut ClientShellInput,
     ) -> Repaint {
-        use shepr_protocol::command::EndpointReply;
         if !self.copy_pipeline.is_awaiting(request) {
             return Repaint::Unchanged;
         }
         let (repaint, continue_queue) = match result {
-            Ok(EndpointReply::PaneCopyMotion {
+            Ok(shepr_protocol::command::PaneCopyMotionReply {
                 pane_id: returned_pane_id,
                 cursor,
             }) if returned_pane_id == pane_id => {
@@ -154,11 +152,7 @@ impl ClientShellState {
                     true,
                 )
             }
-            Ok(EndpointReply::PaneCopyMotion { .. }) => (Repaint::Unchanged, false),
-            Ok(_) => {
-                self.set_endpoint_error("endpoint returned an unexpected copy-motion result", now);
-                (Repaint::Needed, false)
-            }
+            Ok(shepr_protocol::command::PaneCopyMotionReply { .. }) => (Repaint::Unchanged, false),
             Err(_) => (Repaint::Needed, false),
         };
         // The apply can reset the pipeline (a search with `copy_after_search` exits copy
@@ -177,16 +171,14 @@ impl ClientShellState {
         direction: shepr_protocol::command::PaneCopySearchDirection,
         repeat: bool,
         generation: u64,
-        result: Result<shepr_protocol::command::EndpointReply, ClientShellEndpointError>,
-        now: std::time::Instant,
+        result: Result<shepr_protocol::command::PaneCopySearchReply, ClientShellEndpointError>,
         outcome: &mut ClientShellInput,
     ) -> Repaint {
-        use shepr_protocol::command::EndpointReply;
         if !self.copy_pipeline.is_awaiting(request) {
             return Repaint::Unchanged;
         }
         let (repaint, continue_queue) = match result {
-            Ok(EndpointReply::PaneCopySearch {
+            Ok(shepr_protocol::command::PaneCopySearchReply {
                 pane_id: returned_pane_id,
                 search,
             }) if &returned_pane_id == pane_id => {
@@ -200,10 +192,8 @@ impl ClientShellState {
                     generation,
                     ClientCopySearchResult {
                         matches: search.matches,
-                        total: u64::try_from(search.total).unwrap_or(u64::MAX),
-                        current: current.map(|position| position.window_index),
-                        current_global: current
-                            .and_then(|position| u64::try_from(position.global_index).ok()),
+                        total: search.total,
+                        current,
                     },
                     outcome,
                 );
@@ -214,14 +204,9 @@ impl ClientShellState {
                     (Repaint::Unchanged, false)
                 }
             }
-            Ok(EndpointReply::PaneCopySearch { .. }) => {
+            Ok(shepr_protocol::command::PaneCopySearchReply { .. }) => {
                 self.cancel_deferred_copy_after_search(generation);
                 (Repaint::Unchanged, false)
-            }
-            Ok(_) => {
-                self.cancel_deferred_copy_after_search(generation);
-                self.set_endpoint_error("endpoint returned an unexpected copy-search result", now);
-                (Repaint::Needed, false)
             }
             Err(_) => {
                 self.cancel_deferred_copy_after_search(generation);
@@ -404,7 +389,7 @@ impl ClientShellState {
                     copy_mode.selection.is_some()
                         || copy_mode.search.as_ref().is_some_and(|search| {
                             !search.query.is_empty()
-                                || !search.matches.is_empty()
+                                || !search.results.matches.is_empty()
                                 || search.direction.is_some()
                         })
                 });
@@ -588,7 +573,7 @@ impl ClientShellState {
                         search.prompt = None;
                         search.query.is_empty()
                             && search.direction.is_none()
-                            && search.matches.is_empty()
+                            && search.results.matches.is_empty()
                     } else {
                         false
                     };
@@ -762,16 +747,16 @@ impl ClientShellState {
         let Some(search) = copy_mode.search.as_mut() else {
             return false;
         };
-        let current = result.current.filter(|index| *index < result.matches.len());
+        let current = result
+            .current
+            .filter(|position| position.window_index < result.matches.len());
         search.query = query;
         if !repeat {
             search.direction = Some(direction);
         }
-        search.matches = result.matches;
-        search.total = result.total;
-        search.current = current;
-        search.current_global = result.current_global;
-        let target = current.and_then(|index| search.matches.get(index).copied());
+        search.results = ClientCopySearchResult { current, ..result };
+        let target =
+            current.and_then(|position| search.results.matches.get(position.window_index).copied());
         let copy_after_search = if search_queued {
             false
         } else {
@@ -1089,8 +1074,11 @@ impl ClientShellState {
                     let previous = repeat
                         .then(|| {
                             search
+                                .results
                                 .current
-                                .and_then(|index| search.matches.get(index).copied())
+                                .and_then(|position| {
+                                    search.results.matches.get(position.window_index).copied()
+                                })
                                 .filter(|text_match| text_match.start == copy_mode.cursor)
                         })
                         .flatten();
@@ -1164,9 +1152,9 @@ impl ClientShellState {
                     .search
                     .as_ref()
                     .and_then(|search| {
-                        search
-                            .current
-                            .and_then(|index| search.matches.get(index).copied())
+                        search.results.current.and_then(|position| {
+                            search.results.matches.get(position.window_index).copied()
+                        })
                     })
                     .map(|text_match| (copy_mode.pane_id, text_match))
             })

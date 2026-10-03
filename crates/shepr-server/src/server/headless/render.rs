@@ -1,3 +1,4 @@
+use super::client_views::ViewedWorkspace;
 use super::*;
 use crate::server::ClientId;
 use crate::server::render_stream::{PreparedSurface, ViewEpoch};
@@ -67,33 +68,31 @@ pub(super) struct PassReport {
     /// Surface renders made; clients sharing a workspace and size share one.
     pub(super) surface_renders: usize,
 }
-type SurfaceEncoder = fn(&ServerMessage) -> Result<Vec<u8>, shepr_protocol::FramingError>;
+pub(super) trait SurfaceBoundary {
+    fn encode(&self, message: &ServerMessage) -> Result<Vec<u8>, shepr_protocol::FramingError> {
+        shepr_protocol::encode_message(message)
+    }
 
-type SurfaceRenderer = fn(
-    &app::App,
-    Option<&shepr_protocol::WorkspaceId>,
-    Rect,
-    shepr_termio::host_term::cell_size::HostCellSize,
-) -> Result<
-    crate::server::pane_surface::RenderedPaneSurface,
-    crate::server::pane_surface::SurfaceRenderDeferred,
->;
-
-pub(super) struct SurfaceBoundary {
-    pub(super) encode: SurfaceEncoder,
-    pub(super) render: SurfaceRenderer,
-}
-impl Default for SurfaceBoundary {
-    fn default() -> Self {
-        Self {
-            encode: shepr_protocol::encode_message,
-            render: render_client_shell_pane_surface,
-        }
+    fn render(
+        &self,
+        app: &app::App,
+        workspace: Option<&shepr_protocol::WorkspaceId>,
+        area: Rect,
+        cell_size: shepr_termio::host_term::cell_size::HostCellSize,
+    ) -> Result<
+        crate::server::pane_surface::RenderedPaneSurface,
+        crate::server::pane_surface::SurfaceRenderDeferred,
+    > {
+        render_client_shell_pane_surface(app, workspace, area, cell_size)
     }
 }
 
-struct SharedSurfaces {
-    boundary: SurfaceBoundary,
+struct LiveSurfaceBoundary;
+
+impl SurfaceBoundary for LiveSurfaceBoundary {}
+
+struct SharedSurfaces<B: SurfaceBoundary> {
+    boundary: B,
     remaining: HashMap<PaneSurfaceRenderKey, usize>,
     rendered: HashMap<
         PaneSurfaceRenderKey,
@@ -213,14 +212,9 @@ impl HeadlessServer {
         &self,
         client_id: ClientId,
     ) -> Option<(&shepr_mux::pane::PaneRuntime, shepr_core::layout::PaneId)> {
-        let target = self.shell_target_for_client(client_id)?;
-        let workspace_index = self.app.state.workspace_index(&target)?;
-        let pane_id = self
-            .app
-            .state
-            .workspaces
-            .get(workspace_index)?
-            .focused_pane_id();
+        let view = self.viewed_workspace_for_client(client_id)?;
+        let workspace_index = view.index;
+        let pane_id = view.workspace.focused_pane_id();
         self.app
             .state
             .runtime_for_pane_in_workspace(&self.app.terminal_runtimes, workspace_index, pane_id)
@@ -363,8 +357,7 @@ impl HeadlessServer {
             };
             let shell = client.shell_state();
             let full = !client.render_state.is_settled_at(self.view_epoch)
-                || shell.projected_location_generation != shell.location.generation()
-                || shell.snapshot.is_none()
+                || shell.projection_due(self.shell_session_generation)
                 || (client.presents_surface()
                     && client.render_state.surface_debt()
                     && self.surface_deliverable(target.client_id, &mut held));
@@ -423,16 +416,16 @@ impl HeadlessServer {
         plan: &RenderPlan,
         sources: &HashSet<shepr_core::layout::PaneId>,
     ) -> PassReport {
-        self.render_pass_with_boundary(plan, sources, SurfaceBoundary::default())
+        self.render_pass_with_boundary(plan, sources, LiveSurfaceBoundary)
     }
 
     // Inject the framing boundary so failure recovery can be verified without
     // constructing a surface larger than the protocol's one GiB limit.
-    pub(super) fn render_pass_with_boundary(
+    pub(super) fn render_pass_with_boundary<B: SurfaceBoundary>(
         &mut self,
         plan: &RenderPlan,
         sources: &HashSet<shepr_core::layout::PaneId>,
-        boundary: SurfaceBoundary,
+        boundary: B,
     ) -> PassReport {
         let epoch = self.view_epoch;
         let mut report = PassReport::default();
@@ -459,12 +452,12 @@ impl HeadlessServer {
         report
     }
 
-    fn render_full(
+    fn render_full<B: SurfaceBoundary>(
         &mut self,
         ids: &[ClientId],
         epoch: ViewEpoch,
         report: &mut PassReport,
-        boundary: SurfaceBoundary,
+        boundary: B,
     ) {
         let render_targets = render_targets(&self.clients)
             .into_iter()
@@ -543,17 +536,20 @@ impl HeadlessServer {
             self.send_to_client(client_id, &notice);
         }
     }
-    fn render_client_full(
+    fn render_client_full<B: SurfaceBoundary>(
         &mut self,
         target: &crate::server::clients::RenderTarget,
         deliverable: bool,
-        shared: &mut SharedSurfaces,
+        shared: &mut SharedSurfaces<B>,
     ) -> ClientPassOutcome {
         let client_id = target.client_id;
         let geometry = target.geometry();
         let cell_size = geometry.cell_size;
         let area = geometry.area;
-        let shell_target = self.shell_target_for_client(client_id);
+        let viewed = self.clients.get(&client_id).and_then(|client| {
+            ViewedWorkspace::for_location(&self.app, &client.shell_state().location)
+        });
+        let shell_target = viewed.as_ref().map(|view| view.workspace.id);
         let Some(client) = self.clients.get_mut(&client_id) else {
             return ClientPassOutcome::Closed;
         };
@@ -562,9 +558,7 @@ impl HeadlessServer {
         // the projection of the client that moved.
         let needs_projection = {
             let shell = client.shell_state();
-            shell.session_generation != self.shell_session_generation
-                || shell.projected_location_generation != shell.location.generation()
-                || shell.snapshot.is_none()
+            shell.projection_due(self.shell_session_generation)
         };
         if needs_projection {
             let (location_generation, projection_revision) = {
@@ -591,12 +585,12 @@ impl HeadlessServer {
                     warn!(?client_id, "shell session cache missing while projecting");
                     return ClientPassOutcome::Owed;
                 };
-                Self::snapshot_from_session(
+                Self::snapshot_from_viewed_workspace(
                     &self.app,
                     &cache.session,
                     &self.client_shell_boot_id,
                     projection_revision,
-                    &client.shell_state().location,
+                    viewed.as_ref(),
                 )
             };
             let snapshot_changed = client.shell_state().snapshot.as_ref() != Some(&candidate);
@@ -653,18 +647,15 @@ impl HeadlessServer {
             let result = if remaining == 1 {
                 shared.rendered.remove(&key).unwrap_or_else(|| {
                     shared.surface_renders += 1;
-                    (shared.boundary.render)(
-                        &self.app,
-                        shell_target.as_ref(),
-                        area,
-                        render_cell_size,
-                    )
+                    shared
+                        .boundary
+                        .render(&self.app, shell_target.as_ref(), area, render_cell_size)
                 })
             } else if let Some(result) = shared.rendered.get(&key) {
                 result.clone()
             } else {
                 shared.surface_renders += 1;
-                let result = (shared.boundary.render)(
+                let result = shared.boundary.render(
                     &self.app,
                     shell_target.as_ref(),
                     area,
@@ -732,7 +723,7 @@ impl HeadlessServer {
         };
         // A surface past one frame is split across frames here; only one
         // past `MAX_MESSAGE_SIZE` fails.
-        let serialized = match (shared.boundary.encode)(prepared.message()) {
+        let serialized = match shared.boundary.encode(prepared.message()) {
             Ok(frame) => frame,
             Err(shepr_protocol::FramingError::LimitExceeded(error)) => {
                 let claimed = error.actual;
@@ -799,19 +790,22 @@ impl HeadlessServer {
         revision: shepr_protocol::ProjectionRevision,
         location: &crate::server::clients::ClientShellLocation,
     ) -> shepr_protocol::ClientShellSnapshot {
-        // The client views what its own location names and nothing else: a client
-        // with no workspace has no focus, never the session's bookmark.
-        let focused_workspace_id = location
-            .focused_workspace_id()
-            .copied()
-            .filter(|workspace_id| app.resolve_workspace_id(workspace_id).is_some());
-        let focused_pane_id = focused_workspace_id
+        let viewed = ViewedWorkspace::for_location(app, location);
+        Self::snapshot_from_viewed_workspace(app, snapshot, boot_id, revision, viewed.as_ref())
+    }
+
+    fn snapshot_from_viewed_workspace(
+        app: &app::App,
+        snapshot: &crate::app::SessionSnapshot,
+        boot_id: &shepr_protocol::BootId,
+        revision: shepr_protocol::ProjectionRevision,
+        viewed: Option<&ViewedWorkspace<'_>>,
+    ) -> shepr_protocol::ClientShellSnapshot {
+        // A client with no live workspace has no focus; never use the bookmark.
+        let focused_workspace_id = viewed.as_ref().map(|view| view.workspace.id);
+        let focused_pane_id = viewed
             .as_ref()
-            .and_then(|workspace_id| app.resolve_workspace_id(workspace_id))
-            .and_then(|workspace_index| {
-                let pane_id = app.state.workspaces.get(workspace_index)?.focused_pane_id();
-                app.public_pane_id(workspace_index, pane_id)
-            });
+            .and_then(|view| app.public_pane_id(view.index, view.workspace.focused_pane_id()));
         // Snapshot entries are joined to live state by their public ids, never by
         // position: a snapshot that filtered or reordered entries would otherwise
         // hand one workspace's labels and branch to another. The snapshot is built
@@ -831,10 +825,10 @@ impl HeadlessServer {
                     .then_some(position)
                     .or_else(|| app.resolve_workspace_id(workspace_id));
                 let state = workspace_index.and_then(|index| app.state.workspaces.get(index));
-                let new_workspace_cwd = workspace_index.map_or_default(|workspace_index| {
-                    app.resolved_new_workspace_cwd(workspace_index)
-                        .display()
-                        .to_string()
+                let new_workspace_cwd = workspace_index.map(|workspace_index| {
+                    shepr_protocol::RemotePath::from(
+                        app.resolved_new_workspace_cwd(workspace_index),
+                    )
                 });
                 shepr_protocol::ClientShellWorkspace {
                     workspace_id: *workspace_id,

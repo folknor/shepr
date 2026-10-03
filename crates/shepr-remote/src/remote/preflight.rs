@@ -435,7 +435,8 @@ pub fn restart_different_builds(
 
 /// The real ssh behind [`PreflightSsh`]: one retained probe per configured machine,
 /// under one shared deadline per round, `ssh_authentication_command` on shepr's
-/// control socket, and [`stop_remote_server`](crate::stop_remote_server).
+/// control socket, and a conditional remote stop over the probe's transport.
+/// [`Self::into_connectors`] hands each probe to the client's connector.
 pub struct MachineSshPreflight<'a> {
     paths: &'a shepr_config::AppPaths,
     deadline: Mutex<Instant>,
@@ -450,6 +451,28 @@ impl<'a> MachineSshPreflight<'a> {
             deadline: Mutex::new(round_deadline()),
             probes: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Transfers resolution progress and verified transports to the client.
+    pub fn into_connectors(self, machines: &[MachineConfig]) -> Vec<crate::MachineSshConnector> {
+        let mut probes = self
+            .probes
+            .into_inner()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        machines
+            .iter()
+            .map(|machine| {
+                let probe = probes
+                    .remove(&machine.label)
+                    .map_or_else(Default::default, |probe| {
+                        let mut probe = probe
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        std::mem::take(&mut *probe)
+                    });
+                crate::MachineSshConnector::from_preflight(self.paths, machine, probe)
+            })
+            .collect()
     }
 }
 
@@ -504,7 +527,17 @@ impl PreflightSsh for MachineSshPreflight<'_> {
         machine: &MachineConfig,
         server: &DifferentBuildServer,
     ) -> io::Result<RemoteStop> {
-        crate::stop_remote_server(self.paths, &machine.ssh, server)
+        let probe = Arc::clone(
+            self.probes
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .entry(machine.label.clone())
+                .or_default(),
+        );
+        let mut probe = probe
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        probe.stop_server(self.paths, &machine.ssh, server)
     }
 }
 

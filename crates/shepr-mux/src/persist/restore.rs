@@ -2352,8 +2352,10 @@ mod tests {
             let focused = workspace.layout().focused();
             let other = workspace.root_pane();
             assert_ne!(focused, other);
-            let (other_rows, other_cols) = size(other);
-            let (focused_rows, focused_cols) = size(focused);
+            let other_size = size(other);
+            let (other_rows, other_cols) = (other_size.rows.get(), other_size.cols.get());
+            let focused_size = size(focused);
+            let (focused_rows, focused_cols) = (focused_size.rows.get(), focused_size.cols.get());
             assert_eq!((other_rows, focused_rows), (24, 24), "zoomed={zoomed}");
             // The first pane has a quarter of the width in the tiled layout.
             assert!(other_cols < 40, "zoomed={zoomed} cols={other_cols}");

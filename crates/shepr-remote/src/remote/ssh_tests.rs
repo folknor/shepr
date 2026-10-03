@@ -18,8 +18,26 @@ fn test_app_paths() -> shepr_config::AppPaths {
 /// The control socket's directory. These tests render config text and
 /// never bind the socket, so it names a directory as short as a real
 /// `/run/user/<uid>`, which no scratch directory under the build tree is.
-fn test_control_dir() -> SshControlDir<'static> {
-    SshControlDir::unchecked(Path::new("/nonexistent/ssh"))
+fn test_control_dir() -> &'static Path {
+    Path::new("/nonexistent/ssh")
+}
+
+fn write_test_managed_ssh_config(
+    target: &SshTarget,
+    paths: &shepr_config::AppPaths,
+    control_dir: &Path,
+) -> io::Result<ManagedSshConfig> {
+    let runtime_dir = ensure_ssh_runtime_dir(paths)?;
+    let control_path = shepr_platform::ssh_control_path_under(
+        control_dir,
+        &paths.client_config_file(),
+        target.control_key(),
+    )?;
+    write_managed_ssh_config_at(
+        runtime_dir,
+        &shepr_platform::remote_ssh_config_paths(paths.home_dir()),
+        Some(control_path),
+    )
 }
 
 fn example_target() -> SshTarget {
@@ -29,7 +47,7 @@ fn example_target() -> SshTarget {
 /// A `RemoteSsh` for `example` over a managed config that names no bindable socket.
 fn test_ssh() -> RemoteSsh {
     let managed_config =
-        write_managed_ssh_config(&example_target(), &test_app_paths(), test_control_dir())
+        write_test_managed_ssh_config(&example_target(), &test_app_paths(), test_control_dir())
             .expect("test precondition");
     RemoteSsh::test_with_state(
         SshTarget::parse("example").expect("test precondition"),
@@ -48,8 +66,9 @@ fn managed_ssh_config_includes_user_config_then_fallback() {
         .expect("create user ssh config directory");
     std::fs::write(&user_config, "Host example\n  ServerAliveInterval 30\n")
         .expect("write user ssh config");
-    let managed_config = write_managed_ssh_config(&example_target(), &paths, test_control_dir())
-        .expect("write managed config");
+    let managed_config =
+        write_test_managed_ssh_config(&example_target(), &paths, test_control_dir())
+            .expect("write managed config");
     let path = managed_config.options.config_path.clone();
     let control_path = managed_config
         .options
@@ -116,9 +135,9 @@ fn managed_ssh_config_includes_user_config_then_fallback() {
 fn shared_ssh_transport_survives_helper_config_drop() {
     let paths = test_app_paths();
     let control_dir = test_control_dir();
-    let first = write_managed_ssh_config(&example_target(), &paths, control_dir)
+    let first = write_test_managed_ssh_config(&example_target(), &paths, control_dir)
         .expect("test precondition");
-    let second = write_managed_ssh_config(&example_target(), &paths, control_dir)
+    let second = write_test_managed_ssh_config(&example_target(), &paths, control_dir)
         .expect("test precondition");
     let socket = first
         .options
@@ -215,7 +234,7 @@ fn ssh_failure_output_wins_over_a_stdin_write_error() {
 #[test]
 fn bridge_options_keep_temporary_config_alive_after_helper_drop() {
     let paths = test_app_paths();
-    let config = write_managed_ssh_config(&example_target(), &paths, test_control_dir())
+    let config = write_test_managed_ssh_config(&example_target(), &paths, test_control_dir())
         .expect("test precondition");
     let path = config.options.config_path.clone();
     let worker_options = config.options.clone();
@@ -228,7 +247,7 @@ fn bridge_options_keep_temporary_config_alive_after_helper_drop() {
 #[test]
 fn authentication_command_uses_shared_transport_without_askpass_or_host_key_relaxation() {
     let paths = test_app_paths();
-    let config = write_managed_ssh_config(&example_target(), &paths, test_control_dir())
+    let config = write_test_managed_ssh_config(&example_target(), &paths, test_control_dir())
         .expect("test precondition");
     let authentication = authentication_command_with_config(
         &SshTarget::parse("example").expect("test precondition"),
@@ -274,8 +293,9 @@ fn ssh_config_quote_wraps_path_with_spaces() {
 #[test]
 fn remote_ssh_command_uses_managed_config_when_present() {
     let paths = test_app_paths();
-    let managed_config = write_managed_ssh_config(&example_target(), &paths, test_control_dir())
-        .expect("write managed config");
+    let managed_config =
+        write_test_managed_ssh_config(&example_target(), &paths, test_control_dir())
+            .expect("write managed config");
     let config_path = managed_config.options.config_path.clone();
     let control_path = managed_config
         .options
@@ -399,7 +419,7 @@ fn ssh_modes_override_user_remote_command_and_quiet_logging() {
     )
     .expect("write user ssh config");
     let target = SshTarget::parse("example").expect("test precondition");
-    let config = write_managed_ssh_config(&example_target(), &paths, test_control_dir())
+    let config = write_test_managed_ssh_config(&example_target(), &paths, test_control_dir())
         .expect("write managed config");
     let managed_contents =
         std::fs::read_to_string(&config.options.config_path).expect("read managed config");
@@ -413,7 +433,7 @@ fn ssh_modes_override_user_remote_command_and_quiet_logging() {
         .get_args()
         .map(|arg| arg.to_string_lossy().into_owned())
         .collect::<Vec<_>>();
-    let auth_config = write_managed_ssh_config(&example_target(), &paths, test_control_dir())
+    let auth_config = write_test_managed_ssh_config(&example_target(), &paths, test_control_dir())
         .expect("write config");
     let auth_args = authentication_command_with_config(&target, auth_config)
         .command

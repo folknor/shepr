@@ -34,10 +34,7 @@ impl PaneRead<'_> {
                 let Some(text) = self.extract_selection(&selection) else {
                     return Err(crate::pane::TerminalCopyMotionError::RowUnavailable);
                 };
-                let width = self
-                    .terminal
-                    .dimensions()
-                    .map_or(1, |(cols, _)| cols.max(1));
+                let width = self.terminal.dimensions().map_or(1, |grid| grid.cols.get());
                 let col = match motion {
                     TerminalLineMotion::End => {
                         shepr_termio::copy_mode::last_character_col(&text).unwrap_or(0)
@@ -62,7 +59,7 @@ impl PaneRead<'_> {
         }
     }
 
-    pub fn terminal_dimensions(&self) -> Option<(u16, u16)> {
+    pub fn terminal_dimensions(&self) -> Option<shepr_core::geometry::GridSize> {
         self.terminal.dimensions()
     }
 
@@ -146,7 +143,7 @@ impl PaneRead<'_> {
     /// A handle that reads this pane's history from any thread, so a save
     /// can take it on the event loop and format the history off it.
     pub fn history_source(&self) -> super::PaneHistorySource {
-        super::PaneHistorySource(Arc::clone(self.terminal))
+        super::PaneHistorySource::new(Arc::clone(self.terminal))
     }
 
     pub fn extract_selection<P>(

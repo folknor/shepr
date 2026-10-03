@@ -28,6 +28,40 @@ pub(super) struct ShellFocusTarget {
     pub(super) pane_id: shepr_core::layout::PaneId,
 }
 
+/// A live workspace selected by a client location, resolved together with its index.
+pub(super) struct ViewedWorkspace<'a> {
+    pub(super) index: usize,
+    pub(super) workspace: &'a shepr_mux::workspace::Workspace,
+}
+
+impl<'a> ViewedWorkspace<'a> {
+    pub(super) fn resolve(app: &'a app::App, id: &shepr_protocol::WorkspaceId) -> Option<Self> {
+        let index = app.state.workspace_index(id)?;
+        Some(Self {
+            index,
+            workspace: app.state.workspaces.get(index)?,
+        })
+    }
+
+    pub(super) fn for_location(app: &'a app::App, location: &ClientShellLocation) -> Option<Self> {
+        Self::resolve(app, location.focused_workspace_id()?)
+    }
+}
+
+/// Why a client can take ownership of its viewed workspace's geometry.
+#[derive(Clone, Copy)]
+pub(super) enum GeometryClaimReason {
+    Connect,
+    Activate,
+    Focus,
+    Interaction,
+    Command {
+        claims: bool,
+        topology: bool,
+        navigated: bool,
+    },
+}
+
 /// Which surface a workspace's PTY geometry comes from
 /// (`workspace_geometry_source`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -104,13 +138,18 @@ impl HeadlessServer {
         &self,
         client_id: ClientId,
     ) -> Option<shepr_protocol::WorkspaceId> {
-        self.clients
-            .get(&client_id)?
-            .shell_state()
-            .location
-            .focused_workspace_id()
-            .copied()
-            .filter(|workspace_id| self.app.state.workspace_index(workspace_id).is_some())
+        self.viewed_workspace_for_client(client_id)
+            .map(|view| view.workspace.id)
+    }
+
+    pub(super) fn viewed_workspace_for_client(
+        &self,
+        client_id: ClientId,
+    ) -> Option<ViewedWorkspace<'_>> {
+        ViewedWorkspace::for_location(
+            &self.app,
+            &self.clients.get(&client_id)?.shell_state().location,
+        )
     }
 
     /// The location a client that just connected starts at: the session's
@@ -199,21 +238,11 @@ impl HeadlessServer {
         moved
     }
 
-    fn focus_target_for_surface(
-        &self,
-        workspace_id: shepr_protocol::WorkspaceId,
-    ) -> Option<ShellFocusTarget> {
-        let workspace_index = self.app.state.workspace_index(&workspace_id)?;
-        let pane_id = self
-            .app
-            .state
-            .workspaces
-            .get(workspace_index)?
-            .focused_pane_id();
-        Some(ShellFocusTarget {
-            workspace_id,
-            pane_id,
-        })
+    fn focus_target_for_surface(&self, view: &ViewedWorkspace<'_>) -> ShellFocusTarget {
+        ShellFocusTarget {
+            workspace_id: view.workspace.id,
+            pane_id: view.workspace.focused_pane_id(),
+        }
     }
 
     /// The client an automatically created workspace is sized for and
@@ -275,7 +304,7 @@ impl HeadlessServer {
     /// The pane a client's keyboard reaches: the focused pane of the workspace
     /// its location names.
     pub(super) fn shell_focus_target(&self, client_id: ClientId) -> Option<ShellFocusTarget> {
-        self.focus_target_for_surface(self.shell_target_for_client(client_id)?)
+        Some(self.focus_target_for_surface(&self.viewed_workspace_for_client(client_id)?))
     }
 
     /// The panes that hold terminal focus: the focus target of every active
@@ -336,13 +365,7 @@ impl HeadlessServer {
         pane_id: shepr_core::layout::PaneId,
         event: shepr_vt::FocusEvent,
     ) {
-        if let Some(workspace_index) = self
-            .app
-            .state
-            .workspaces
-            .iter()
-            .position(|workspace| &workspace.id == workspace_id)
-        {
+        if let Some(workspace_index) = self.app.state.workspace_index(workspace_id) {
             self.app
                 .send_pane_focus_event(workspace_index, pane_id, event);
         }
@@ -445,19 +468,16 @@ impl HeadlessServer {
         &self,
         target: &shepr_protocol::WorkspaceId,
     ) -> Vec<&shepr_mux::pane::PaneRuntime> {
-        let Some(workspace_index) = self.app.state.workspace_index(target) else {
+        let Some(view) = ViewedWorkspace::resolve(&self.app, target) else {
             return Vec::new();
         };
-        let Some(workspace) = self.app.state.workspaces.get(workspace_index) else {
-            return Vec::new();
-        };
-        workspace
+        view.workspace
             .visible_pane_ids()
             .into_iter()
             .filter_map(|pane_id| {
                 self.app.state.runtime_for_pane_in_workspace(
                     &self.app.terminal_runtimes,
-                    workspace_index,
+                    view.index,
                     pane_id,
                 )
             })
@@ -535,7 +555,9 @@ impl HeadlessServer {
             // This runs before the plan, so every affected client is included
             // regardless of another viewer's delivery slot or scroll baseline.
             for client in self.clients.values_mut() {
-                if client.shell_state().location.focused_workspace_id() == Some(&workspace_id) {
+                if ViewedWorkspace::for_location(&self.app, &client.shell_state().location)
+                    .is_some_and(|view| view.workspace.id == workspace_id)
+                {
                     client.request_recompute();
                 }
             }
@@ -561,7 +583,9 @@ impl HeadlessServer {
                 area_changed || self.visible_pane_grid_sizes(workspace_id) != sizes_before;
             if resized {
                 for client in self.clients.values_mut() {
-                    if client.shell_state().location.focused_workspace_id() == Some(workspace_id) {
+                    if ViewedWorkspace::for_location(&self.app, &client.shell_state().location)
+                        .is_some_and(|view| &view.workspace.id == workspace_id)
+                    {
                         client.request_recompute();
                     }
                 }
@@ -627,6 +651,58 @@ impl HeadlessServer {
         self.apply_shell_geometry(start_pending_agent_resumes)
     }
 
+    /// Owns claim policy as well as the geometry settlement required by each reason.
+    pub(super) fn claim_client_geometry(
+        &mut self,
+        client_id: ClientId,
+        reason: GeometryClaimReason,
+    ) -> bool {
+        match reason {
+            GeometryClaimReason::Connect => {
+                self.claim_unowned_shell_workspace_geometry(client_id, true)
+            }
+            GeometryClaimReason::Activate => {
+                let resized = self.resize_shell_workspaces_sized_for(client_id, true);
+                let focused_viewer =
+                    self.shell_target_for_client(client_id)
+                        .is_some_and(|workspace| {
+                            self.clients.presenting().any(|(&other_id, client)| {
+                                other_id != client_id
+                                    && client.shell_state().outer_terminal_focus == Some(true)
+                                    && self.shell_target_for_client(other_id) == Some(workspace)
+                            })
+                        });
+                let claimed =
+                    !focused_viewer && self.claim_shell_workspace_geometry(client_id, true);
+                resized || claimed
+            }
+            GeometryClaimReason::Focus | GeometryClaimReason::Interaction => {
+                self.claim_shell_workspace_geometry(client_id, false)
+            }
+            GeometryClaimReason::Command {
+                claims,
+                topology,
+                navigated,
+            } => {
+                if !claims {
+                    return false;
+                }
+                if topology {
+                    self.reapply_controlled_shell_workspace_geometry(false)
+                } else if navigated {
+                    if let Some(workspace) = self.shell_target_for_client(client_id) {
+                        self.clients.claim_geometry(workspace, client_id);
+                    }
+                    // Navigation must settle even when the destination remembers this owner.
+                    self.reapply_controlled_shell_workspace_geometry(false)
+                } else {
+                    self.claim_shell_workspace_geometry(client_id, false)
+                        || self.resize_shell_workspaces_sized_for(client_id, false)
+                }
+            }
+        }
+    }
+
     /// Makes `client_id` the geometry controller of the workspace it views
     /// and, if that changed the controller, applies the PTY size rule.
     pub(super) fn claim_shell_workspace_geometry(
@@ -677,17 +753,13 @@ impl HeadlessServer {
 mod tests {
     use super::*;
 
-    fn client(active: bool, attached: bool) -> ClientConnection {
-        let outbox = if attached {
-            crate::server::outbox::ClientOutbox::test_pair().0
-        } else {
-            crate::server::outbox::ClientOutbox::detached()
-        };
+    fn client(active: bool) -> ClientConnection {
+        let outbox = crate::server::outbox::ClientOutbox::test_pair().0;
         ClientConnection::with_shell(
             ClientShellState::with_surface_active(active),
             shepr_core::geometry::GridSize::clamped(80, 24),
             shepr_termio::host_term::cell_size::HostCellSize::default(),
-            1,
+            crate::server::clients::ActivityStamp::from(1),
             outbox,
         )
     }
@@ -702,7 +774,7 @@ mod tests {
         );
 
         let first = ClientId::test_new(1);
-        let mut first_client = client(true, true);
+        let mut first_client = client(true);
         first_client
             .shell_state_mut()
             .location
@@ -715,7 +787,7 @@ mod tests {
 
         // With a second presenter, the current viewers decide the source.
         let second = ClientId::test_new(2);
-        let mut second_client = client(true, true);
+        let mut second_client = client(true);
         second_client
             .shell_state_mut()
             .location

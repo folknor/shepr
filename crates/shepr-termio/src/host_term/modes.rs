@@ -14,9 +14,7 @@ pub const HOST_MODIFY_OTHER_KEYS_RESET_SEQUENCE: &[u8] = ModifyOtherKeysLevel::O
 pub const HOST_KITTY_KEYBOARD_POP_SEQUENCE: &[u8] = shepr_vt::seq::HOST_KITTY_KEYBOARD_POP_SEQUENCE;
 pub const HOST_CURSOR_SHAPE_DEFAULT_SEQUENCE: &[u8] =
     shepr_vt::seq::HOST_CURSOR_SHAPE_DEFAULT_SEQUENCE;
-pub const HOST_CURSOR_AND_SHAPE_RESTORE_SEQUENCE: &[u8] =
-    shepr_vt::seq::HOST_CURSOR_AND_SHAPE_RESTORE_SEQUENCE;
-pub const HOST_MOUSE_SGR_PIXELS_ENABLE_SEQUENCE: &[u8] =
+pub const HOST_MOUSE_SGR_PIXELS_ENABLE_SEQUENCE: shepr_vt::seq::DecModeSequence =
     shepr_vt::seq::HOST_MOUSE_SGR_PIXELS_ENABLE_SEQUENCE;
 pub const HOST_WINDOW_TITLE_PUSH_SEQUENCE: &[u8] = shepr_vt::seq::HOST_WINDOW_TITLE_PUSH_SEQUENCE;
 pub const HOST_WINDOW_TITLE_POP_SEQUENCE: &[u8] = shepr_vt::seq::HOST_WINDOW_TITLE_POP_SEQUENCE;
@@ -29,7 +27,7 @@ pub fn clear_host_mouse_reporting<W: Write>(writer: &mut W) -> io::Result<()> {
 }
 
 pub fn enable_host_sgr_pixel_mouse_reporting<W: Write>(writer: &mut W) -> io::Result<()> {
-    writer.write_all(HOST_MOUSE_SGR_PIXELS_ENABLE_SEQUENCE)?;
+    writer.write_all(HOST_MOUSE_SGR_PIXELS_ENABLE_SEQUENCE.as_bytes())?;
     writer.flush()
 }
 

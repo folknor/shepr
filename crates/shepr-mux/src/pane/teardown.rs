@@ -19,17 +19,6 @@ struct ChildState {
 enum ChildIdentity {
     Absent,
     Process(Arc<shepr_platform::ProcessHandle>),
-    // Unit tests model a reused numeric pid without giving it signalling
-    // authority. Only tests construct this identity, so a production build
-    // never holds one.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "constructed only by unit tests; a test-gated variant would release the production code below it from the skip_after lint"
-        )
-    )]
-    Unhandled(shepr_platform::Pid),
 }
 
 #[derive(Clone, Copy)]
@@ -61,6 +50,11 @@ impl ChildPhase {
 }
 
 impl ChildLiveness {
+    /// The public ChildIo constructor admits externally hosted IO without a
+    /// process owned by this runtime. Absence must carry no signalling or
+    /// observation authority; substituting a numeric pid here could tear down
+    /// an unrelated process when the runtime closes.
+    ///
     /// A pane whose program is reached through a seam instead of a child
     /// process (`PaneRuntime::with_child_io`): it counts as launched, so its
     /// own screen is the pane's content, and it has no process to observe or
@@ -118,7 +112,6 @@ impl ChildLiveness {
     pub(super) fn process_id(&self) -> Option<shepr_platform::Pid> {
         match &shepr_core::locks::lock_auxiliary(&self.state).identity {
             ChildIdentity::Process(leader) => Some(leader.process_id()),
-            ChildIdentity::Unhandled(pid) => Some(*pid),
             ChildIdentity::Absent => None,
         }
     }
@@ -135,9 +128,6 @@ impl ChildLiveness {
         }
         match &state.identity {
             ChildIdentity::Process(leader) => leader.is_unreaped().then(|| leader.process_id()),
-            // `Running` excludes an ended wait, the only way an unhandled
-            // test identity reads as reaped.
-            ChildIdentity::Unhandled(pid) => Some(*pid),
             ChildIdentity::Absent => None,
         }
     }
@@ -174,22 +164,12 @@ impl ChildLiveness {
         self.leader()
             .as_ref()
             .is_some_and(|leader| leader.has_exited())
-            || self.unhandled_wait_ended()
     }
 
     pub(super) fn is_reaped(&self) -> bool {
         self.leader()
             .as_ref()
             .is_some_and(|leader| !leader.is_unreaped())
-            || self.unhandled_wait_ended()
-    }
-
-    /// A test identity has no handle, so its ended wait stands in for exit
-    /// and reaping.
-    fn unhandled_wait_ended(&self) -> bool {
-        let state = shepr_core::locks::lock_auxiliary(&self.state);
-        matches!(state.identity, ChildIdentity::Unhandled(_))
-            && matches!(state.phase, ChildPhase::WaitEnded(_))
     }
 
     pub(super) fn leader(&self) -> Option<Arc<shepr_platform::ProcessHandle>> {
@@ -379,14 +359,6 @@ impl ChildLiveness {
         Self::running(ChildIdentity::Process(leader))
     }
 
-    /// A launched child known only by its numeric pid, with no signalling
-    /// authority.
-    pub(super) fn running_unhandled(pid: u32) -> Self {
-        Self::running(
-            shepr_platform::Pid::new(pid).map_or(ChildIdentity::Absent, ChildIdentity::Unhandled),
-        )
-    }
-
     fn running(identity: ChildIdentity) -> Self {
         Self {
             state: Mutex::new(ChildState {
@@ -394,12 +366,6 @@ impl ChildLiveness {
                 phase: ChildPhase::Running,
             }),
         }
-    }
-
-    pub(super) fn set_pid_for_test(&self, pid: shepr_platform::Pid) {
-        let mut state = shepr_core::locks::lock_auxiliary(&self.state);
-        state.identity = ChildIdentity::Unhandled(pid);
-        state.phase = ChildPhase::Running;
     }
 }
 
@@ -409,9 +375,12 @@ mod tests {
 
     #[test]
     fn observation_is_discarded_when_wait_ends_during_read() {
-        let child = ChildLiveness::running_unhandled(42);
+        let pid = shepr_platform::Pid::new(std::process::id()).expect("test pid");
+        let child = ChildLiveness::running_with_handle(Arc::new(
+            shepr_platform::ProcessHandle::open(pid).expect("current process handle"),
+        ));
         let observed = child.observe(|pid| {
-            assert_eq!(pid.get(), 42);
+            assert_eq!(pid.get(), std::process::id());
             child.mark_wait_completed();
             "stale"
         });

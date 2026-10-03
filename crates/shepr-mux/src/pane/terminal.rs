@@ -499,9 +499,12 @@ impl PaneTerminal {
         self.core.is_poisoned()
     }
 
-    pub(crate) fn dimensions(&self) -> Option<(u16, u16)> {
+    pub(crate) fn dimensions(&self) -> Option<shepr_core::geometry::GridSize> {
         let core = self.core.lock().ok()?;
-        Some((core.terminal.cols(), core.terminal.rows()))
+        Some(shepr_core::geometry::GridSize::clamped(
+            core.terminal.cols(),
+            core.terminal.rows(),
+        ))
     }
 
     pub(crate) fn keyboard_protocol(
@@ -540,7 +543,7 @@ mod history;
 mod input;
 mod text;
 
-pub use history::{HistoryPiece, PaneHistoryCache, PaneHistorySource};
+pub use history::{HistoryPiece, HistoryUnavailable, PaneHistoryCache, PaneHistorySource};
 pub use input::WheelRouting;
 
 use helpers::*;

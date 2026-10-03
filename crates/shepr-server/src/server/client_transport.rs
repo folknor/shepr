@@ -345,7 +345,7 @@ fn handle_client_handshake(
         client_id,
         server_event_tx,
         stop_signal,
-        Some(&endpoint_control_writer),
+        &endpoint_control_writer,
     )
 }
 
@@ -437,7 +437,7 @@ fn client_read_loop_with_endpoint_controls(
     client_id: ClientId,
     server_event_tx: &mpsc::Sender<ServerEvent>,
     stop_signal: &Arc<shepr_api::ServerStopSignal>,
-    endpoint_control_writer: Option<&ControlSender>,
+    endpoint_control_writer: &ControlSender,
 ) -> io::Result<()> {
     while !stop_signal.is_requested() {
         let message = shepr_protocol::read_message_single_frame_limited(
@@ -566,10 +566,7 @@ fn client_read_loop_with_endpoint_controls(
                 // A pong that cannot be queued (lane overflow or an encode
                 // failure) has closed the outbox, which wakes the loop to
                 // reap the client; the reader has nothing left to serve.
-                let Some(writer) = endpoint_control_writer else {
-                    continue;
-                };
-                if writer.send(&ServerMessage::HealthPong) == Delivery::Closed {
+                if endpoint_control_writer.send(&ServerMessage::HealthPong) == Delivery::Closed {
                     break;
                 }
                 continue;
@@ -613,12 +610,14 @@ mod tests {
         server_event_tx: &mpsc::Sender<ServerEvent>,
         stop_signal: &Arc<shepr_api::ServerStopSignal>,
     ) -> io::Result<()> {
+        let outbox =
+            ClientOutbox::for_connection(stream.try_clone()?, Arc::new(tokio::sync::Notify::new()));
         client_read_loop_with_endpoint_controls(
             stream,
             client_id,
             server_event_tx,
             stop_signal,
-            None,
+            &outbox.control_sender(),
         )
     }
 

@@ -133,7 +133,7 @@ pub(crate) fn client_shell_snapshot(
 
 pub(crate) fn test_headless_server() -> HeadlessServer {
     let config = shepr_config::ServerConfig::default();
-    let mut app = crate::app::App::new(&config, crate::app::AppPolicy::Test);
+    let mut app = crate::app::App::new(&config, crate::app::AppPolicy::Suspended);
     app.set_test_shell(crate::app::exiting_test_command());
     let (server_event_tx, server_event_rx) = mpsc::channel(64);
     let (api_tx, api_request_rx) = mpsc::channel(crate::limits::API_REQUEST_CHANNEL_CAPACITY);
@@ -359,7 +359,10 @@ fn disconnect_after_detach_has_no_render_impact() {
 #[tokio::test]
 async fn headless_api_reads_latest_title() {
     let mut server = test_headless_server();
-    server.app.state.workspaces = vec![shepr_mux::workspace::Workspace::test_new("one")];
+    server
+        .app
+        .state
+        .test_set_workspaces(vec![shepr_mux::workspace::Workspace::test_new("one")]);
     server.app.state.ensure_test_terminals();
     server.app.state.set_bookmark_index(Some(0));
     let pane_id = server.app.state.workspaces[0].root_pane();
@@ -585,7 +588,10 @@ async fn complete_shutdown_answers_queued_requests_and_closes_the_channel() {
 #[tokio::test]
 async fn an_endpoint_request_queued_at_shutdown_is_answered() {
     let mut server = test_headless_server();
-    server.app.state.workspaces = vec![shepr_mux::workspace::Workspace::test_new("stopping")];
+    server
+        .app
+        .state
+        .test_set_workspaces(vec![shepr_mux::workspace::Workspace::test_new("stopping")]);
     server.app.state.ensure_test_terminals();
     server.app.state.set_bookmark_index(Some(0));
     let (control, _render) = connect_matching_test_shell(&mut server, 44);
@@ -826,7 +832,12 @@ fn headless_api_request_drains_all_pending_internal_events_before_reading_state(
 #[test]
 fn api_request_drain_is_bounded_and_keeps_remaining_requests_in_order() {
     let mut server = test_headless_server();
-    server.app.state.workspaces = vec![shepr_mux::workspace::Workspace::test_new("bounded-api")];
+    server
+        .app
+        .state
+        .test_set_workspaces(vec![shepr_mux::workspace::Workspace::test_new(
+            "bounded-api",
+        )]);
     let request_count = crate::limits::API_REQUEST_DRAIN_LIMIT + 2;
     let (api_tx, api_rx) = tokio::sync::mpsc::channel(request_count);
     server.api_request_rx = api_rx;
@@ -898,7 +909,10 @@ fn api_request_drain_is_bounded_and_keeps_remaining_requests_in_order() {
 
 fn window_title_test_server() -> (HeadlessServer, std::sync::mpsc::Receiver<Vec<u8>>) {
     let mut server = test_headless_server();
-    server.app.state.workspaces = vec![shepr_mux::workspace::Workspace::test_new("herd")];
+    server
+        .app
+        .state
+        .test_set_workspaces(vec![shepr_mux::workspace::Workspace::test_new("herd")]);
     server.app.state.set_bookmark_index(Some(0));
 
     let (client_tx, control_rx, _render_rx) = test_client_writer();
@@ -947,7 +961,10 @@ fn no_window_title(control_rx: &std::sync::mpsc::Receiver<Vec<u8>>) -> bool {
 #[test]
 fn window_title_waits_for_a_client_to_exist() {
     let mut server = test_headless_server();
-    server.app.state.workspaces = vec![shepr_mux::workspace::Workspace::test_new("herd")];
+    server
+        .app
+        .state
+        .test_set_workspaces(vec![shepr_mux::workspace::Workspace::test_new("herd")]);
     server.app.state.set_bookmark_index(Some(0));
     server.app.configure_window_title("{workspace}");
 
@@ -1078,9 +1095,9 @@ fn a_client_without_a_writer_does_not_cache_the_window_title() {
     let (mut server, _control_rx) = window_title_test_server();
     server.app.configure_window_title("{workspace}");
 
-    // Production never keeps a writer-less client (a detach removes it), but
-    // the targeted send must still report a writer-less entry as undelivered.
-    if let Some(client) = server.clients.get_mut(&1) {
+    // A client whose writer has closed waits for the loop's reap; until then
+    // the targeted send must report it as undelivered.
+    if let Some(client) = server.clients.get_mut(&ClientId::test_new(1)) {
         client.outbox = ClientOutbox::detached();
     }
     assert!(!server.send_to_client(
@@ -1090,11 +1107,16 @@ fn a_client_without_a_writer_does_not_cache_the_window_title() {
         }
     ));
     server.sync_window_title();
-    assert!(server.clients[&1].outbox.told_window_title().is_none());
+    assert!(
+        server.clients[&ClientId::test_new(1)]
+            .outbox
+            .told_window_title()
+            .is_none()
+    );
 
     // Attaching again has to deliver the title rather than skip it as sent.
     let (client_tx, control_rx, _render_rx) = test_client_writer();
-    if let Some(client) = server.clients.get_mut(&1) {
+    if let Some(client) = server.clients.get_mut(&ClientId::test_new(1)) {
         client.outbox = client_tx;
     }
     server.sync_window_title();
@@ -1155,7 +1177,10 @@ async fn promoted_client_window_title_uses_its_own_view() {
     let survivor_pane = survivor.focused_pane_id();
     let disconnected = shepr_mux::workspace::Workspace::test_new("disconnected");
     let disconnected_pane = disconnected.focused_pane_id();
-    server.app.state.workspaces = vec![survivor, disconnected];
+    server
+        .app
+        .state
+        .test_set_workspaces(vec![survivor, disconnected]);
     server.app.state.set_bookmark_index(Some(1));
     server.app.state.ensure_test_terminals();
     let survivor_terminal = server.app.state.workspaces[0]
@@ -1261,6 +1286,7 @@ fn attach_test_writer(
 async fn client_shell_attach_seeds_workspace() {
     let mut server = test_headless_server();
     server.app.state.workspaces.clear();
+    server.app.state.test_reindex_panes();
     server.app.state.set_bookmark_index(None);
     let (writer, _control_rx, _render_rx) = test_client_writer();
 
@@ -1302,7 +1328,7 @@ async fn client_shell_snapshot_presents_unknown_agent_as_idle() {
     let mut server = test_headless_server();
     let workspace = shepr_mux::workspace::Workspace::test_new("endpoint");
     let pane_id = workspace.root_pane();
-    server.app.state.workspaces = vec![workspace];
+    server.app.state.test_set_workspaces(vec![workspace]);
     server.app.state.ensure_test_terminals();
     server.app.state.set_bookmark_index(Some(0));
     let terminal_id = server
@@ -1345,7 +1371,10 @@ async fn client_shell_snapshot_presents_unknown_agent_as_idle() {
 #[tokio::test]
 async fn client_shell_endpoint_request_uses_the_selected_connection() {
     let mut server = test_headless_server();
-    server.app.state.workspaces = vec![shepr_mux::workspace::Workspace::test_new("endpoint")];
+    server
+        .app
+        .state
+        .test_set_workspaces(vec![shepr_mux::workspace::Workspace::test_new("endpoint")]);
     server.app.state.ensure_test_terminals();
     server.app.state.set_bookmark_index(Some(0));
     let (writer, control_rx, _render_rx) = test_client_writer();
@@ -1425,7 +1454,10 @@ async fn client_shell_endpoint_request_uses_the_selected_connection() {
 #[tokio::test]
 async fn immediate_endpoint_replies_stay_after_earlier_commands() {
     let mut server = test_headless_server();
-    server.app.state.workspaces = vec![shepr_mux::workspace::Workspace::test_new("ordered")];
+    server
+        .app
+        .state
+        .test_set_workspaces(vec![shepr_mux::workspace::Workspace::test_new("ordered")]);
     server.app.state.ensure_test_terminals();
     server.app.state.set_bookmark_index(Some(0));
     let (control, _render) = connect_matching_test_shell(&mut server, 40);
@@ -1535,8 +1567,7 @@ async fn endpoint_requests_dirty_immediate_sources_for_view_changes_only() {
     server
         .app
         .state
-        .workspaces
-        .push(shepr_mux::workspace::Workspace::test_new("second"));
+        .test_push_workspace(shepr_mux::workspace::Workspace::test_new("second"));
     server.app.state.ensure_test_terminals();
     let (control, _render) = connect_matching_test_shell(&mut server, 45);
     let _initial_snapshot = client_shell_snapshot(&control);
@@ -1594,7 +1625,10 @@ async fn endpoint_requests_dirty_immediate_sources_for_view_changes_only() {
 #[tokio::test]
 async fn slow_checkout_root_worker_does_not_hold_other_clients() {
     let mut server = test_headless_server();
-    server.app.state.workspaces = vec![shepr_mux::workspace::Workspace::test_new("checkout")];
+    server
+        .app
+        .state
+        .test_set_workspaces(vec![shepr_mux::workspace::Workspace::test_new("checkout")]);
     server.app.state.ensure_test_terminals();
     server.app.state.set_bookmark_index(Some(0));
     let (control_a, _render_a) = connect_matching_test_shell(&mut server, 51);
@@ -1608,15 +1642,13 @@ async fn slow_checkout_root_worker_does_not_hold_other_clients() {
     let (release_tx, release_rx) = std::sync::mpsc::channel();
     let release_rx = std::sync::Arc::new(std::sync::Mutex::new(release_rx));
     server.workers.set_runner(std::sync::Arc::new(move |_| {
-        started_tx.send(()).map_err(|error| error.to_string())?;
+        started_tx.send(()).expect("checkout worker started signal");
         let released = release_rx
             .lock()
             .ok()
             .is_some_and(|receiver| receiver.recv_timeout(Duration::from_secs(3)).is_ok());
-        if !released {
-            return Err("slow worker test gate timed out".to_owned());
-        }
-        Ok(Some("/checkout".to_owned()))
+        assert!(released, "slow worker test gate released before timeout");
+        Ok(Some("/checkout".into()))
     }));
 
     let started = std::time::Instant::now();
@@ -1712,7 +1744,7 @@ async fn slow_checkout_root_worker_does_not_hold_other_clients() {
         Ok(shepr_protocol::command::EndpointReply::WorkspaceCheckoutRoot {
             root: Some(root),
             ..
-        }) if root == "/checkout"
+        }) if root.as_path() == std::path::Path::new("/checkout")
     ));
     shutdown_test_runtimes(&mut server);
 }
@@ -1720,7 +1752,10 @@ async fn slow_checkout_root_worker_does_not_hold_other_clients() {
 #[tokio::test]
 async fn pending_endpoint_replies_leave_with_their_client_and_resolve_at_shutdown() {
     let mut server = test_headless_server();
-    server.app.state.workspaces = vec![shepr_mux::workspace::Workspace::test_new("pending")];
+    server
+        .app
+        .state
+        .test_set_workspaces(vec![shepr_mux::workspace::Workspace::test_new("pending")]);
     server.app.state.ensure_test_terminals();
     server.app.state.set_bookmark_index(Some(0));
     let (control_a, _render_a) = connect_matching_test_shell(&mut server, 61);
@@ -1818,7 +1853,10 @@ async fn pending_endpoint_replies_leave_with_their_client_and_resolve_at_shutdow
 #[tokio::test]
 async fn an_endpoint_error_reply_is_held_until_the_flush() {
     let mut server = test_headless_server();
-    server.app.state.workspaces = vec![shepr_mux::workspace::Workspace::test_new("no-render")];
+    server
+        .app
+        .state
+        .test_set_workspaces(vec![shepr_mux::workspace::Workspace::test_new("no-render")]);
     server.app.state.ensure_test_terminals();
     server.app.state.set_bookmark_index(Some(0));
     let (writer, control_rx, _render_rx) = test_client_writer();
@@ -1863,7 +1901,10 @@ async fn an_endpoint_error_reply_is_held_until_the_flush() {
 #[tokio::test]
 async fn an_endpoint_reply_for_a_departed_client_is_dropped() {
     let mut server = test_headless_server();
-    server.app.state.workspaces = vec![shepr_mux::workspace::Workspace::test_new("departed")];
+    server
+        .app
+        .state
+        .test_set_workspaces(vec![shepr_mux::workspace::Workspace::test_new("departed")]);
     server.app.state.ensure_test_terminals();
     server.app.state.set_bookmark_index(Some(0));
     let (writer, control_rx, _render_rx) = test_client_writer();
@@ -1908,7 +1949,7 @@ async fn client_shell_receives_metadata_then_shell_free_pane_surface() {
     let workspace = shepr_mux::workspace::Workspace::test_new("shell-only-label");
     let pane_id = workspace.focused_pane_id();
 
-    server.app.state.workspaces = vec![workspace];
+    server.app.state.test_set_workspaces(vec![workspace]);
     server.app.insert_test_runtime(
         pane_id,
         shepr_mux::pane::PaneRuntime::test_with_screen_bytes(
@@ -1956,7 +1997,7 @@ async fn client_shell_receives_metadata_then_shell_free_pane_surface() {
         other => panic!("expected pane surface, got {other:?}"),
     };
 
-    let baseline = server.clients[&7]
+    let baseline = server.clients[&ClientId::test_new(7)]
         .render_state
         .last_pane_surface()
         .expect("initial baseline");
@@ -1999,7 +2040,7 @@ async fn client_shell_receives_metadata_then_shell_free_pane_surface() {
         }
         other => panic!("expected pane surface patch, got {other:?}"),
     }
-    let patched = server.clients[&7]
+    let patched = server.clients[&ClientId::test_new(7)]
         .render_state
         .last_pane_surface()
         .expect("test precondition");
@@ -2034,7 +2075,7 @@ async fn client_shell_receives_metadata_then_shell_free_pane_surface() {
         }
         other => panic!("expected metadata-only pane surface patch, got {other:?}"),
     }
-    let retained = server.clients[&7]
+    let retained = server.clients[&ClientId::test_new(7)]
         .render_state
         .last_pane_surface()
         .expect("committed retained surface");
@@ -2053,7 +2094,7 @@ async fn client_shell_receives_metadata_then_shell_free_pane_surface() {
     let retained = retained.clone();
     server
         .clients
-        .get_mut(&7)
+        .get_mut(&ClientId::test_new(7))
         .expect("test precondition")
         .render_state
         .request_repaint();
@@ -2073,7 +2114,7 @@ fn install_shared_view_test_runtime(server: &mut HeadlessServer) -> shepr_core::
     let workspace = shepr_mux::workspace::Workspace::test_new("shared-view");
     let pane_id = workspace.focused_pane_id();
 
-    server.app.state.workspaces = vec![workspace];
+    server.app.state.test_set_workspaces(vec![workspace]);
     server.app.insert_test_runtime(
         pane_id,
         shepr_mux::pane::PaneRuntime::test_with_screen_bytes(80, 23, b"BASE"),
@@ -2154,7 +2195,9 @@ async fn unchanged_shell_render_reuses_session_and_sends_no_snapshot() {
         );
         assert_eq!(server.shell_session_generation, generation);
         assert_eq!(
-            server.clients[&7].shell_state().session_generation,
+            server.clients[&ClientId::test_new(7)]
+                .shell_state()
+                .session_generation,
             generation
         );
     };
@@ -2266,8 +2309,11 @@ async fn cwd_report_and_slow_probe_refresh_shell_projection() {
     server.render_now();
     let reported = client_shell_snapshot(&control);
     assert_eq!(
-        reported.panes[0].cwd.as_deref(),
-        Some(cwd.to_str().expect("cwd utf8"))
+        reported.panes[0]
+            .cwd
+            .as_ref()
+            .map(shepr_protocol::RemotePath::as_path),
+        Some(cwd.as_path())
     );
 
     let age_cache = |server: &mut HeadlessServer| {
@@ -2425,7 +2471,7 @@ async fn each_kind_of_change_sends_a_new_projection_through_its_real_path() {
             results: vec![shepr_mux::git::WorkspaceGitStatus {
                 workspace_id: workspace_state_id,
                 resolved_identity_cwd: cwd.clone(),
-                status_cache_key: cwd,
+                status_cache_key: shepr_mux::git::GitStatusKey::Checkout(cwd),
                 auto_label: "focus-reporting".into(),
                 branch: shepr_mux::git::WorkspaceBranch::Named("feature".into()),
                 ahead_behind: None,
@@ -2483,7 +2529,7 @@ async fn every_client_of_a_partly_restored_boot_gets_the_notice_in_its_seed() {
             dropped: std::num::NonZeroUsize::MIN,
             panes_pruned: true,
         },
-        backup_dir: "/state/shepr/session-backups".to_owned(),
+        backup_dir: "/state/shepr/session-backups".into(),
     };
     server.app.restore_notice = Some(notice.clone());
 
@@ -2517,7 +2563,7 @@ async fn a_new_shell_seed_uses_the_shared_session_cache_for_cwd() {
     let first_pane = first.root_pane();
     let second = shepr_mux::workspace::Workspace::test_new("cached-cwd-second");
     let second_workspace_id = second.id;
-    server.app.state.workspaces = vec![first, second];
+    server.app.state.test_set_workspaces(vec![first, second]);
     server.app.state.ensure_test_terminals();
     server.app.state.set_bookmark_index(Some(0));
 
@@ -2552,8 +2598,9 @@ async fn a_new_shell_seed_uses_the_shared_session_cache_for_cwd() {
             .find(|pane| pane.pane_id == public_pane_id)
             .expect("first pane snapshot")
             .cwd
-            .as_deref(),
-        Some(older_cwd_text)
+            .as_ref()
+            .map(shepr_protocol::RemotePath::as_path),
+        Some(std::path::Path::new(older_cwd_text))
     );
     server.render_now();
     assert!(first_control.try_recv().is_err());
@@ -2579,8 +2626,11 @@ async fn a_new_shell_seed_uses_the_shared_session_cache_for_cwd() {
             shepr_mux::UsableCwd::new(newer_cwd.path().to_path_buf()).expect("newer cwd is usable"),
         );
     assert_eq!(
-        server.app.session_snapshot().panes[0].cwd.as_deref(),
-        Some(newer_cwd_text)
+        server.app.session_snapshot().panes[0]
+            .cwd
+            .as_ref()
+            .map(shepr_protocol::RemotePath::as_path),
+        Some(std::path::Path::new(newer_cwd_text))
     );
     assert_eq!(
         server
@@ -2590,8 +2640,9 @@ async fn a_new_shell_seed_uses_the_shared_session_cache_for_cwd() {
             .session
             .panes[0]
             .cwd
-            .as_deref(),
-        Some(older_cwd_text)
+            .as_ref()
+            .map(shepr_protocol::RemotePath::as_path),
+        Some(std::path::Path::new(older_cwd_text))
     );
 
     let (control, _render) = connect_matching_test_shell(&mut server, 8);
@@ -2602,8 +2653,9 @@ async fn a_new_shell_seed_uses_the_shared_session_cache_for_cwd() {
             .find(|pane| pane.pane_id == public_pane_id)
             .expect("seed pane snapshot")
             .cwd
-            .as_deref(),
-        Some(older_cwd_text)
+            .as_ref()
+            .map(shepr_protocol::RemotePath::as_path),
+        Some(std::path::Path::new(older_cwd_text))
     );
 
     assert!(server.place_test_client_on_workspace(ClientId::test_new(8), &second_workspace_id));
@@ -2616,8 +2668,9 @@ async fn a_new_shell_seed_uses_the_shared_session_cache_for_cwd() {
             .find(|pane| pane.pane_id == public_pane_id)
             .expect("projected pane snapshot")
             .cwd
-            .as_deref(),
-        Some(older_cwd_text),
+            .as_ref()
+            .map(shepr_protocol::RemotePath::as_path),
+        Some(std::path::Path::new(older_cwd_text)),
         "a location projection must not move cwd backwards from its seed"
     );
 
@@ -2631,8 +2684,9 @@ async fn a_new_shell_seed_uses_the_shared_session_cache_for_cwd() {
             .find(|pane| pane.pane_id == public_pane_id)
             .expect("refreshed pane snapshot")
             .cwd
-            .as_deref(),
-        Some(newer_cwd_text)
+            .as_ref()
+            .map(shepr_protocol::RemotePath::as_path),
+        Some(std::path::Path::new(newer_cwd_text))
     );
     shutdown_test_runtimes(&mut server);
 }
@@ -2723,7 +2777,9 @@ async fn unrelated_render_keeps_synchronized_pane_frame_committed() {
     server.render_now();
     let before = recv_pane_surface(&mut render, "baseline");
     assert!(frame_text(&before.frame).contains("BASE"));
-    let projection_before = server.clients[&7].shell_state().projection_revision;
+    let projection_before = server.clients[&ClientId::test_new(7)]
+        .shell_state()
+        .projection_revision;
     // Drain the attach and baseline control traffic.
     while control.recv_timeout(Duration::from_millis(50)).is_ok() {}
 
@@ -2736,7 +2792,7 @@ async fn unrelated_render_keeps_synchronized_pane_frame_committed() {
     server.app.state.mark_shell_projection_dirty();
     server
         .clients
-        .get_mut(&7)
+        .get_mut(&ClientId::test_new(7))
         .expect("test precondition")
         .request_recompute();
     server.render_now();
@@ -2753,7 +2809,9 @@ async fn unrelated_render_keeps_synchronized_pane_frame_committed() {
     assert_eq!(snapshot.workspaces[0].label, "renamed during frame");
     assert!(snapshot.revision > projection_before);
     assert_eq!(
-        server.clients[&7].shell_state().projection_revision,
+        server.clients[&ClientId::test_new(7)]
+            .shell_state()
+            .projection_revision,
         snapshot.revision
     );
 
@@ -2773,7 +2831,7 @@ async fn sibling_retained_output_waits_for_synchronized_pane_to_finish() {
     let first = workspace.root_pane();
     let second = workspace.test_split(shepr_core::layout::Direction::Vertical);
 
-    server.app.state.workspaces = vec![workspace];
+    server.app.state.test_set_workspaces(vec![workspace]);
     server.app.insert_test_runtime(
         first,
         shepr_mux::pane::PaneRuntime::test_with_screen_bytes(80, 23, b"FIRST"),
@@ -2818,7 +2876,7 @@ async fn zoom_hidden_synchronized_pane_does_not_block_surface() {
     let visible = workspace.test_split(shepr_core::layout::Direction::Vertical);
     assert!(workspace.set_zoomed(true));
 
-    server.app.state.workspaces = vec![workspace];
+    server.app.state.test_set_workspaces(vec![workspace]);
     server.app.insert_test_runtime(
         hidden,
         shepr_mux::pane::PaneRuntime::test_with_screen_bytes(80, 23, b"HIDDEN"),
@@ -2876,7 +2934,7 @@ async fn retained_snapshot_survives_a_writer_waiting_for_the_terminal_core() {
     assert_eq!(meta_panes(&patch.meta)[0].content_revision, revision);
     assert!(revision.is_multiple_of(2));
     assert!(meta_panes(&patch.meta)[0].mouse_reporting);
-    let surface = server.clients[&7]
+    let surface = server.clients[&ClientId::test_new(7)]
         .render_state
         .last_pane_surface()
         .expect("surface");
@@ -2887,7 +2945,7 @@ async fn retained_snapshot_survives_a_writer_waiting_for_the_terminal_core() {
     let next = recv_pane_surface_patch(&mut render, "waiting write remains dirty");
     assert_eq!(meta_panes(&next.meta)[0].content_revision, revision + 2);
     assert!(!meta_panes(&next.meta)[0].mouse_reporting);
-    let surface = server.clients[&7]
+    let surface = server.clients[&ClientId::test_new(7)]
         .render_state
         .last_pane_surface()
         .expect("next surface");
@@ -2978,7 +3036,7 @@ async fn different_size_shells_receive_geometry_specific_patches_from_one_dirty_
     );
     assert!(
         frame_text(
-            &server.clients[&7]
+            &server.clients[&ClientId::test_new(7)]
                 .render_state
                 .last_pane_surface()
                 .expect("large retained surface")
@@ -2988,7 +3046,7 @@ async fn different_size_shells_receive_geometry_specific_patches_from_one_dirty_
     );
     assert!(
         frame_text(
-            &server.clients[&8]
+            &server.clients[&ClientId::test_new(8)]
                 .render_state
                 .last_pane_surface()
                 .expect("small retained surface")
@@ -3048,7 +3106,7 @@ async fn retained_patches_only_reach_shells_viewing_the_dirty_workspace() {
     let second = shepr_mux::workspace::Workspace::test_new("divergent-second");
     let second_pane = second.root_pane();
 
-    server.app.state.workspaces = vec![first, second];
+    server.app.state.test_set_workspaces(vec![first, second]);
     server.app.insert_test_runtime(
         first_pane,
         shepr_mux::pane::PaneRuntime::test_with_screen_bytes(80, 23, b"FIRST"),
@@ -3133,7 +3191,7 @@ async fn late_retained_fallback_promotes_its_client_and_commits_no_patch_for_it(
         .set_foreground_client_id(Some(ClientId::test_new(8)));
     let linked = server
         .clients
-        .get_mut(&8)
+        .get_mut(&ClientId::test_new(8))
         .expect("test precondition")
         .render_state
         .last_surface_mut()
@@ -3141,7 +3199,7 @@ async fn late_retained_fallback_promotes_its_client_and_commits_no_patch_for_it(
     linked.frame.hyperlinks.push("https://example.com".into());
     linked.frame.cells[0].hyperlink = Some(0);
     let before = [7, 8].map(|id| {
-        server.clients[&id]
+        server.clients[&ClientId::test_new(id)]
             .render_state
             .last_pane_surface()
             .expect("test precondition")
@@ -3155,11 +3213,15 @@ async fn late_retained_fallback_promotes_its_client_and_commits_no_patch_for_it(
     assert!(first_render.try_recv().is_ok());
     assert!(second_render.try_recv().is_err());
     assert_ne!(
-        server.clients[&7].render_state.last_pane_surface(),
+        server.clients[&ClientId::test_new(7)]
+            .render_state
+            .last_pane_surface(),
         Some(&before[0])
     );
     assert_eq!(
-        server.clients[&8].render_state.last_pane_surface(),
+        server.clients[&ClientId::test_new(8)]
+            .render_state
+            .last_pane_surface(),
         Some(&before[1])
     );
     shutdown_test_runtimes(&mut server);
@@ -3188,7 +3250,7 @@ async fn backpressured_shell_does_not_disable_retained_patches_for_responsive_pe
         ServerMessage::SurfaceUpdate(_)
     ));
 
-    let slow_baseline = server.clients[&8]
+    let slow_baseline = server.clients[&ClientId::test_new(8)]
         .render_state
         .last_pane_surface()
         .expect("test precondition")
@@ -3199,9 +3261,15 @@ async fn backpressured_shell_does_not_disable_retained_patches_for_responsive_pe
         read_server_message(responsive_render.recv().expect("responsive second patch")),
         ServerMessage::SurfaceUpdate(_)
     ));
-    assert!(server.clients[&8].render_state.surface_debt());
+    assert!(
+        server.clients[&ClientId::test_new(8)]
+            .render_state
+            .surface_debt()
+    );
     assert_eq!(
-        server.clients[&8].render_state.last_pane_surface(),
+        server.clients[&ClientId::test_new(8)]
+            .render_state
+            .last_pane_surface(),
         Some(&slow_baseline),
         "queue-full must not advance cells, metadata, cursor, or revision"
     );
@@ -3243,19 +3311,23 @@ async fn full_render_backpressure_does_not_disable_responsive_peer_patches() {
     // replacement for both clients.
     server
         .clients
-        .get_mut(&7)
+        .get_mut(&ClientId::test_new(7))
         .expect("test precondition")
         .request_repaint();
     server
         .clients
-        .get_mut(&8)
+        .get_mut(&ClientId::test_new(8))
         .expect("test precondition")
         .request_repaint();
     server.render_now();
     let _ = responsive_render
         .recv()
         .expect("responsive full replacement");
-    assert!(server.clients[&8].render_state.surface_debt());
+    assert!(
+        server.clients[&ClientId::test_new(8)]
+            .render_state
+            .surface_debt()
+    );
 
     write_shared_test_pane(&mut server, pane_id, b"\rPATCH");
     assert!(server.try_render_patches(&HashSet::from([pane_id])));
@@ -3283,7 +3355,7 @@ async fn a_client_command_neither_drags_the_bookmark_nor_moves_the_clients_locat
     let first_pane = first.root_pane();
     let second = shepr_mux::workspace::Workspace::test_new("bookmark-focus-second");
     let second_pane = second.root_pane();
-    server.app.state.workspaces = vec![first, second];
+    server.app.state.test_set_workspaces(vec![first, second]);
     server.app.insert_test_runtime(
         first_pane,
         shepr_mux::pane::PaneRuntime::test_with_screen_bytes(80, 23, b"FIRST"),
@@ -3348,7 +3420,7 @@ async fn a_client_command_neither_drags_the_bookmark_nor_moves_the_clients_locat
     // on the bookmark, so nothing about it or the client's view moves.
     assert_eq!(
         result,
-        Err(shepr_protocol::command::EndpointError::Rejected(
+        Err(shepr_protocol::command::EndpointError::Unavailable(
             "selection text is unavailable".into()
         ))
     );
@@ -3363,7 +3435,7 @@ async fn a_client_command_neither_drags_the_bookmark_nor_moves_the_clients_locat
     );
 
     server.render_now();
-    let shell = server.clients[&70].shell_state();
+    let shell = server.clients[&ClientId::test_new(70)].shell_state();
     assert_eq!(shell.session_generation, server.shell_session_generation);
     assert_eq!(
         shell
@@ -3404,7 +3476,7 @@ async fn client_local_navigation_does_not_emit_global_focus_transitions() {
             4,
         );
 
-    server.app.state.workspaces = vec![first, second];
+    server.app.state.test_set_workspaces(vec![first, second]);
     server.app.insert_test_runtime(first_pane, first_runtime);
     server.app.insert_test_runtime(second_pane, second_runtime);
     server.app.state.set_bookmark_index(Some(0));
@@ -3420,13 +3492,13 @@ async fn client_local_navigation_does_not_emit_global_focus_transitions() {
     assert!(server.place_test_client_on_workspace(ClientId::test_new(62), &second_workspace_id));
     server
         .clients
-        .get_mut(&61)
+        .get_mut(&ClientId::test_new(61))
         .expect("test precondition")
         .shell_state_mut()
         .outer_terminal_focus = Some(true);
     server
         .clients
-        .get_mut(&62)
+        .get_mut(&ClientId::test_new(62))
         .expect("test precondition")
         .shell_state_mut()
         .outer_terminal_focus = Some(true);
@@ -3464,7 +3536,7 @@ async fn client_local_navigation_leaves_the_other_clients_focus_alone() {
     let first_pane = first.root_pane();
     let second = shepr_mux::workspace::Workspace::test_new("focus-events-second");
     let second_pane = second.root_pane();
-    server.app.state.workspaces = vec![first, second];
+    server.app.state.test_set_workspaces(vec![first, second]);
     server.app.state.ensure_test_terminals();
     server.app.state.set_bookmark_index(Some(0));
     let first_workspace_id = server
@@ -3559,7 +3631,7 @@ async fn navigation_moves_pane_focus_between_workspaces_once() {
             4,
         );
 
-    server.app.state.workspaces = vec![first, second];
+    server.app.state.test_set_workspaces(vec![first, second]);
     server.app.insert_test_runtime(first_pane, first_runtime);
     server.app.insert_test_runtime(second_pane, second_runtime);
     server.app.state.set_bookmark_index(Some(0));
@@ -3575,13 +3647,13 @@ async fn navigation_moves_pane_focus_between_workspaces_once() {
     assert!(server.place_test_client_on_workspace(ClientId::test_new(64), &second_workspace_id));
     server
         .clients
-        .get_mut(&63)
+        .get_mut(&ClientId::test_new(63))
         .expect("test precondition")
         .shell_state_mut()
         .outer_terminal_focus = Some(true);
     server
         .clients
-        .get_mut(&64)
+        .get_mut(&ClientId::test_new(64))
         .expect("test precondition")
         .shell_state_mut()
         .outer_terminal_focus = Some(true);
@@ -3629,7 +3701,7 @@ async fn repeated_layout_action_reapplies_controller_geometry() {
     let first_pane = workspace.root_pane();
     let second_pane = workspace.test_split(shepr_core::layout::Direction::Horizontal);
 
-    server.app.state.workspaces = vec![workspace];
+    server.app.state.test_set_workspaces(vec![workspace]);
     server.app.insert_test_runtime(
         first_pane,
         shepr_mux::pane::PaneRuntime::test_with_screen_bytes(80, 24, b""),
@@ -3681,7 +3753,7 @@ async fn pane_close_reapplies_controller_geometry() {
     let first_pane = workspace.root_pane();
     let second_pane = workspace.test_split(shepr_core::layout::Direction::Vertical);
 
-    server.app.state.workspaces = vec![workspace];
+    server.app.state.test_set_workspaces(vec![workspace]);
     server.app.insert_test_runtime(
         first_pane,
         shepr_mux::pane::PaneRuntime::test_with_screen_bytes(80, 24, b""),
@@ -3714,7 +3786,7 @@ async fn pane_close_reapplies_controller_geometry() {
     assert!(grown.0 > shrunk.0);
     assert_eq!(
         runtime.read().terminal_dimensions(),
-        Some((grown.1, grown.0))
+        Some(shepr_core::geometry::GridSize::clamped(grown.1, grown.0))
     );
     assert_eq!(
         runtime
@@ -3736,7 +3808,10 @@ async fn geometry_reapply_replaces_a_controller_that_left_the_workspace() {
     let second_pane = second.root_pane();
     let third = shepr_mux::workspace::Workspace::test_new("geometry-controller-third");
     let third_pane = third.root_pane();
-    server.app.state.workspaces = vec![first, second, third];
+    server
+        .app
+        .state
+        .test_set_workspaces(vec![first, second, third]);
     for pane_id in [first_pane, second_pane, third_pane] {
         server.app.insert_test_runtime(
             pane_id,
@@ -3804,7 +3879,7 @@ async fn controller_disconnect_hands_geometry_to_a_remaining_viewer() {
     let first_pane = first.root_pane();
     let second = shepr_mux::workspace::Workspace::test_new("controller-disconnect-second");
     let second_pane = second.root_pane();
-    server.app.state.workspaces = vec![first, second];
+    server.app.state.test_set_workspaces(vec![first, second]);
     for pane_id in [first_pane, second_pane] {
         server.app.insert_test_runtime(
             pane_id,
@@ -3865,7 +3940,7 @@ async fn client_shell_workspaces_render_accept_input_and_resize_independently() 
             4,
         );
 
-    server.app.state.workspaces = vec![first, second];
+    server.app.state.test_set_workspaces(vec![first, second]);
     server.app.insert_test_runtime(
         first_pane,
         shepr_mux::pane::PaneRuntime::test_with_screen_bytes(80, 24, b"FIRST_WORKSPACE"),
@@ -3956,7 +4031,7 @@ async fn workspace_focus_moves_only_its_client() {
     let mut server = test_headless_server();
     let first = shepr_mux::workspace::Workspace::test_new("first");
     let second = shepr_mux::workspace::Workspace::test_new("second");
-    server.app.state.workspaces = vec![first, second];
+    server.app.state.test_set_workspaces(vec![first, second]);
     server.app.state.ensure_test_terminals();
     server.app.state.set_bookmark_index(Some(0));
     let first_workspace_id = server.app.state.workspaces[0].id;
@@ -3978,8 +4053,12 @@ async fn workspace_focus_moves_only_its_client() {
         }),
     ));
 
-    let first_location = &server.clients[&41].shell_state().location;
-    let second_location = &server.clients[&42].shell_state().location;
+    let first_location = &server.clients[&ClientId::test_new(41)]
+        .shell_state()
+        .location;
+    let second_location = &server.clients[&ClientId::test_new(42)]
+        .shell_state()
+        .location;
     assert_eq!(
         first_location.focused_workspace_id(),
         Some(&second_workspace_id)
@@ -4000,7 +4079,7 @@ async fn pane_focus_replaces_a_diverged_client_shell_projection() {
     let second = shepr_mux::workspace::Workspace::test_new("second");
     let second_pane = second.root_pane();
 
-    server.app.state.workspaces = vec![first, second];
+    server.app.state.test_set_workspaces(vec![first, second]);
     server.app.insert_test_runtime(
         first_pane,
         shepr_mux::pane::PaneRuntime::test_with_screen_bytes(80, 24, b"FIRST_AGENT"),
@@ -4055,7 +4134,9 @@ async fn pane_focus_replaces_a_diverged_client_shell_projection() {
     };
     assert_eq!(pane.pane_id, first_pane_id);
     assert_eq!(server.app.state.bookmark_index(), Some(0));
-    let location = &server.clients[&9].shell_state().location;
+    let location = &server.clients[&ClientId::test_new(9)]
+        .shell_state()
+        .location;
     assert_eq!(location.focused_workspace_id(), Some(&first_workspace_id));
 
     server.render_now();
@@ -4075,7 +4156,7 @@ async fn workspace_focus_replaces_the_client_shell_projection() {
     let mut server = test_headless_server();
     let first = shepr_mux::workspace::Workspace::test_new("first");
     let second = shepr_mux::workspace::Workspace::test_new("second");
-    server.app.state.workspaces = vec![first, second];
+    server.app.state.test_set_workspaces(vec![first, second]);
     server.app.state.ensure_test_terminals();
     server.app.state.set_bookmark_index(Some(0));
     let second_id = server.app.session_snapshot().workspaces[1].workspace_id;
@@ -4125,7 +4206,7 @@ async fn client_shell_input_targets_runtime_without_server_shell_classification(
             ClientShellState::with_surface_active(true),
             shepr_core::geometry::GridSize::clamped(80, 24),
             shepr_termio::host_term::cell_size::HostCellSize::default(),
-            1,
+            crate::server::clients::ActivityStamp::from(1),
             crate::server::outbox::ClientOutbox::detached(),
         ),
     );
@@ -4223,7 +4304,7 @@ async fn client_shell_hidden_pane_rejects_presses_but_accepts_releases() {
             4,
         );
 
-    server.app.state.workspaces = vec![visible, hidden];
+    server.app.state.test_set_workspaces(vec![visible, hidden]);
     server.app.insert_test_runtime(hidden_pane, runtime);
     server.app.state.set_bookmark_index(Some(0));
     let pane_id = server
@@ -4290,7 +4371,7 @@ async fn client_shell_text_input_renders_only_when_resetting_scrollback() {
             .is_some_and(|metrics| metrics.offset_from_bottom > 0)
     );
 
-    server.app.state.workspaces = vec![workspace];
+    server.app.state.test_set_workspaces(vec![workspace]);
     server.app.insert_test_runtime(pane_id, runtime);
     server.app.state.set_bookmark_index(Some(0));
     let public_pane_id = server
@@ -4303,7 +4384,7 @@ async fn client_shell_text_input_renders_only_when_resetting_scrollback() {
             ClientShellState::with_surface_active(true),
             shepr_core::geometry::GridSize::clamped(80, 24),
             shepr_termio::host_term::cell_size::HostCellSize::default(),
-            1,
+            crate::server::clients::ActivityStamp::from(1),
             crate::server::outbox::ClientOutbox::detached(),
         ),
     );
@@ -4361,7 +4442,7 @@ async fn client_shell_mouse_motion_delivers_without_render_when_foreground() {
             ClientShellState::with_surface_active(true),
             shepr_core::geometry::GridSize::clamped(80, 24),
             shepr_termio::host_term::cell_size::HostCellSize::default(),
-            1,
+            crate::server::clients::ActivityStamp::from(1),
             crate::server::outbox::ClientOutbox::detached(),
         ),
     );
@@ -4402,7 +4483,7 @@ async fn client_shell_mouse_motion_promotes_and_requests_render() {
             ClientShellState::with_surface_active(true),
             shepr_core::geometry::GridSize::clamped(80, 24),
             shepr_termio::host_term::cell_size::HostCellSize::default(),
-            1,
+            crate::server::clients::ActivityStamp::from(1),
             crate::server::outbox::ClientOutbox::detached(),
         ),
     );
@@ -4496,7 +4577,7 @@ pub(crate) fn install_focused_test_runtime(
         4,
     );
 
-    server.app.state.workspaces = vec![workspace];
+    server.app.state.test_set_workspaces(vec![workspace]);
     server.app.insert_test_runtime(pane_id, runtime);
     server.app.state.set_bookmark_index(Some(0));
     input_rx
@@ -4514,7 +4595,7 @@ fn retained_test_server_with_control(
     let workspace = shepr_mux::workspace::Workspace::test_new("test");
     let pane_id = workspace.focused_pane_id();
 
-    server.app.state.workspaces = vec![workspace];
+    server.app.state.test_set_workspaces(vec![workspace]);
     server.app.insert_test_runtime(
         pane_id,
         shepr_mux::pane::PaneRuntime::test_with_screen_bytes(80, 24, initial_screen),
@@ -4758,7 +4839,7 @@ async fn every_rejected_paste_is_reported_to_the_client_shell() {
     assert_eq!(pastes.len(), 2);
     assert!(pastes[0].starts_with("Paste rejected"));
     assert!(
-        server.clients.contains_key(&7),
+        server.clients.contains_key(&ClientId::test_new(7)),
         "notices never end the connection"
     );
     shutdown_test_runtimes(&mut server);
@@ -4778,7 +4859,7 @@ fn with_terminal_session_test_server(
     let terminal_id = workspace.terminal_id(pane_id).expect("terminal id").clone();
     let terminal_id_string = terminal_id.to_string();
     let public_pane_id = format!("{}:p1", workspace.id);
-    server.app.state.workspaces = vec![workspace];
+    server.app.state.test_set_workspaces(vec![workspace]);
     server.app.state.ensure_test_terminals();
     server.app.terminal_runtimes.insert(
         terminal_id.clone(),
@@ -4803,20 +4884,20 @@ fn unchanged_git_refresh_does_not_request_headless_render() {
         shepr_mux::git::WorkspaceGitStatus {
             workspace_id,
             resolved_identity_cwd: cwd.clone(),
-            status_cache_key: cwd.clone(),
+            status_cache_key: shepr_mux::git::GitStatusKey::Outside(cwd.clone()),
             auto_label: "cached".into(),
             branch: shepr_mux::git::WorkspaceBranch::OutsideRepository,
             ahead_behind: None,
         },
         Some(&cwd),
     );
-    server.app.state.workspaces.push(workspace);
+    server.app.state.test_push_workspace(workspace);
 
     let changed = server.handle_internal_event_with_forwarding(AppEvent::GitStatusRefreshed {
         results: vec![shepr_mux::git::WorkspaceGitStatus {
             workspace_id,
             resolved_identity_cwd: cwd.clone(),
-            status_cache_key: cwd,
+            status_cache_key: shepr_mux::git::GitStatusKey::Outside(cwd),
             auto_label: "cached".into(),
             branch: shepr_mux::git::WorkspaceBranch::OutsideRepository,
             ahead_behind: None,
@@ -4834,13 +4915,13 @@ fn changed_git_refresh_requests_headless_render() {
     let workspace = shepr_mux::workspace::Workspace::test_new("one");
     let workspace_id = workspace.id;
     let cwd = workspace.identity_cwd.clone();
-    server.app.state.workspaces.push(workspace);
+    server.app.state.test_push_workspace(workspace);
 
     let changed = server.handle_internal_event_with_forwarding(AppEvent::GitStatusRefreshed {
         results: vec![shepr_mux::git::WorkspaceGitStatus {
             workspace_id,
             resolved_identity_cwd: cwd.clone(),
-            status_cache_key: cwd,
+            status_cache_key: shepr_mux::git::GitStatusKey::Checkout(cwd),
             auto_label: "one".into(),
             branch: shepr_mux::git::WorkspaceBranch::Named("changed".into()),
             ahead_behind: None,
@@ -4856,7 +4937,7 @@ async fn host_shutdown_warning_freezes_saves_before_applying_events_and_thaws_on
     let mut server = test_headless_server();
     let workspace = shepr_mux::workspace::Workspace::test_new("host-shutdown");
     let pane_id = workspace.root_pane();
-    server.app.state.workspaces = vec![workspace];
+    server.app.state.test_set_workspaces(vec![workspace]);
     server.app.state.ensure_test_terminals();
     server.app.state.set_bookmark_index(Some(0));
     server
@@ -4899,7 +4980,6 @@ async fn host_shutdown_warning_freezes_saves_before_applying_events_and_thaws_on
     assert!(server.app.state.session_dirty);
     // Not stopping: the warning alone never ends the server.
     assert!(!server.lifecycle.stop_requested());
-    server.app.policy = crate::app::AppPolicy::Suspended;
     shutdown_test_runtimes(&mut server);
 }
 
@@ -4908,7 +4988,7 @@ async fn a_surface_larger_than_one_frame_crosses_in_parts() {
     let mut server = test_headless_server();
     let workspace = shepr_mux::workspace::Workspace::test_new("oversized");
     let pane_id = workspace.root_pane();
-    server.app.state.workspaces = vec![workspace];
+    server.app.state.test_set_workspaces(vec![workspace]);
     server.app.state.ensure_test_terminals();
     server.app.state.set_bookmark_index(Some(0));
     // One displayed grapheme large enough that the encoded surface is past
@@ -4951,7 +5031,7 @@ async fn a_surface_larger_than_one_frame_crosses_in_parts() {
     assert!(
         !server
             .clients
-            .get(&91)
+            .get(&ClientId::test_new(91))
             .expect("client stays connected")
             .oversized_surface_reported
     );
@@ -4974,7 +5054,7 @@ async fn signal_quit_drain_keeps_dying_panes_in_the_layout() {
     let mut server = test_headless_server();
     let workspace = shepr_mux::workspace::Workspace::test_new("signal-quit");
     let pane_id = workspace.root_pane();
-    server.app.state.workspaces = vec![workspace];
+    server.app.state.test_set_workspaces(vec![workspace]);
     server.app.state.ensure_test_terminals();
     server.app.state.set_bookmark_index(Some(0));
     // From the pane's live runtime, so admission passes it and only the
@@ -5024,7 +5104,7 @@ async fn pane_death_reconciles_each_client_view_and_focus() {
             4,
         );
 
-    server.app.state.workspaces = vec![doomed, second];
+    server.app.state.test_set_workspaces(vec![doomed, second]);
     server.app.insert_test_runtime(second_pane, second_runtime);
     server.app.state.ensure_test_terminals();
     server.app.state.set_bookmark_index(Some(0));
@@ -5040,13 +5120,13 @@ async fn pane_death_reconciles_each_client_view_and_focus() {
     assert!(server.place_test_client_on_workspace(ClientId::test_new(72), &second_workspace_id));
     server
         .clients
-        .get_mut(&71)
+        .get_mut(&ClientId::test_new(71))
         .expect("test precondition")
         .shell_state_mut()
         .outer_terminal_focus = Some(true);
     server
         .clients
-        .get_mut(&72)
+        .get_mut(&ClientId::test_new(72))
         .expect("test precondition")
         .shell_state_mut()
         .outer_terminal_focus = Some(false);
@@ -5103,7 +5183,7 @@ async fn pane_death_reapplies_controller_geometry() {
     let first_pane = workspace.root_pane();
     let dead_pane = workspace.test_split(shepr_core::layout::Direction::Vertical);
 
-    server.app.state.workspaces = vec![workspace];
+    server.app.state.test_set_workspaces(vec![workspace]);
     server.app.insert_test_runtime(
         first_pane,
         shepr_mux::pane::PaneRuntime::test_with_screen_bytes(80, 24, b""),
@@ -5134,7 +5214,7 @@ async fn pane_death_reapplies_controller_geometry() {
     assert!(grown.0 > shrunk.0);
     assert_eq!(
         runtime.read().terminal_dimensions(),
-        Some((grown.1, grown.0))
+        Some(shepr_core::geometry::GridSize::clamped(grown.1, grown.0))
     );
     assert_eq!(
         runtime
@@ -5551,7 +5631,7 @@ async fn headless_scheduled_tasks_start_pending_agent_resume_without_foreground_
         .terminal_id(pane_id)
         .cloned()
         .expect("test precondition");
-    server.app.state.workspaces = vec![workspace];
+    server.app.state.test_set_workspaces(vec![workspace]);
     server.app.state.set_bookmark_index(Some(0));
     server.app.state.ensure_test_terminals();
     server
@@ -5602,7 +5682,7 @@ async fn headless_scheduled_tasks_keep_pending_agent_resume_deadline_across_tick
         .terminal_id(pane_id)
         .cloned()
         .expect("test precondition");
-    server.app.state.workspaces = vec![workspace];
+    server.app.state.test_set_workspaces(vec![workspace]);
     server.app.state.set_bookmark_index(Some(0));
     server.app.state.ensure_test_terminals();
     server
@@ -5802,7 +5882,7 @@ fn client_shell_mouse_capture_combines_local_preference_with_endpoint_demand() {
     ));
     server
         .clients
-        .get_mut(&1)
+        .get_mut(&ClientId::test_new(1))
         .expect("shell client")
         .shell_state_mut()
         .mouse_capture = true;
@@ -5930,7 +6010,7 @@ fn client_shell_focus_promotes_and_reaches_reporting_pane() {
 fn unviewed_clipboard_write(server: &mut HeadlessServer) -> AppEvent {
     let workspace = shepr_mux::workspace::Workspace::test_new("unviewed-clipboard");
     let pane_id = workspace.root_pane();
-    server.app.state.workspaces.push(workspace);
+    server.app.state.test_push_workspace(workspace);
     server.app.state.ensure_test_terminals();
     server.app.insert_idle_test_runtime(pane_id);
     server.app.from_pane_runtime(
@@ -5948,7 +6028,7 @@ async fn clipboard_write_goes_to_the_clients_viewing_the_writing_pane() {
     let first = shepr_mux::workspace::Workspace::test_new("clipboard-viewers");
     let second = shepr_mux::workspace::Workspace::test_new("clipboard-viewers-second");
     let second_pane = second.root_pane();
-    server.app.state.workspaces = vec![first, second];
+    server.app.state.test_set_workspaces(vec![first, second]);
     server.app.state.ensure_test_terminals();
     server.app.state.set_bookmark_index(Some(0));
     let second_workspace_id = server
@@ -6083,11 +6163,11 @@ fn clipboard_write_failed_foreground_send_is_removed_at_the_reap() {
 
     assert!(!changed);
     assert!(
-        server.clients.contains_key(&1),
+        server.clients.contains_key(&ClientId::test_new(1)),
         "closure is latched at the reap"
     );
     assert!(server.reap_closed_clients());
-    assert!(!server.clients.contains_key(&1));
+    assert!(!server.clients.contains_key(&ClientId::test_new(1)));
 }
 
 #[tokio::test]
@@ -6095,7 +6175,7 @@ async fn unchanged_internal_events_leave_projection_and_sources_clean() {
     let mut server = test_headless_server();
     let workspace = shepr_mux::workspace::Workspace::test_new("event-effects");
     let pane_id = workspace.root_pane();
-    server.app.state.workspaces = vec![workspace];
+    server.app.state.test_set_workspaces(vec![workspace]);
     server.app.state.ensure_test_terminals();
     let terminal_id = server.app.state.workspaces[0]
         .terminal_id(pane_id)
@@ -6197,7 +6277,7 @@ async fn a_failed_health_pong_leaves_no_ghost_client() {
     let client_id = ClientId::test_new(1);
     let workspace = shepr_mux::workspace::Workspace::test_new("health");
     let workspace_id = workspace.id;
-    server.app.state.workspaces = vec![workspace];
+    server.app.state.test_set_workspaces(vec![workspace]);
     server.app.state.ensure_test_terminals();
     server.insert_test_client(
         client_id,
@@ -6270,7 +6350,7 @@ fn closing_the_foreground_client_hands_foreground_over_at_the_reap() {
         Some(colors[1].into())
     );
     let epoch = server.view_epoch;
-    server.clients[&2].outbox.close();
+    server.clients[&ClientId::test_new(2)].outbox.close();
     assert_eq!(
         server.clients.foreground_client_id(),
         Some(ClientId::test_new(2))
@@ -6291,7 +6371,10 @@ fn closing_the_foreground_client_hands_foreground_over_at_the_reap() {
 #[test]
 fn a_stopping_server_reaps_closed_clients_without_reapplying_geometry() {
     let mut server = test_headless_server();
-    server.app.state.workspaces = vec![shepr_mux::workspace::Workspace::test_new("stopping")];
+    server
+        .app
+        .state
+        .test_set_workspaces(vec![shepr_mux::workspace::Workspace::test_new("stopping")]);
     server.app.state.ensure_test_terminals();
     let area = Rect::new(0, 0, 17, 9);
     server.app.state.test_record_all_workspace_areas(area);
@@ -6306,7 +6389,7 @@ fn a_stopping_server_reaps_closed_clients_without_reapplying_geometry() {
         ),
     );
     server.lifecycle.begin_stopping();
-    server.clients[&1].outbox.close();
+    server.clients[&ClientId::test_new(1)].outbox.close();
     assert!(server.reap_closed_clients());
     assert_eq!(server.app.state.workspace_area(0), Some(area));
 }
@@ -6387,9 +6470,16 @@ fn a_completion_for_a_departed_client_is_dropped() {
         },
     );
     assert!(!server.clients.contains_key(&ClientId::test_new(1)));
-    assert_eq!(server.clients[&2].outbox.held_reply_count(), 1);
     assert_eq!(
-        server.clients[&2].outbox.held_reply_message(0),
+        server.clients[&ClientId::test_new(2)]
+            .outbox
+            .held_reply_count(),
+        1
+    );
+    assert_eq!(
+        server.clients[&ClientId::test_new(2)]
+            .outbox
+            .held_reply_message(0),
         None,
         "the survivor's reply is still pending"
     );
@@ -6409,7 +6499,7 @@ fn a_reaped_client_marks_the_view_changed() {
         ),
     );
     let epoch = server.view_epoch;
-    server.clients[&1].outbox.close();
+    server.clients[&ClientId::test_new(1)].outbox.close();
     assert_eq!(server.view_epoch, epoch);
     assert!(server.reap_closed_clients());
     assert_ne!(server.view_epoch, epoch);

@@ -1,10 +1,8 @@
 use shepr_protocol::{FrameData, PaneSurfaceFrame};
 
 use shepr_protocol::{BootId, PaneSurfacePatch, ProjectionRevision};
-/// The connection generation a baseline came from. `None` is a snapshot or surface
-/// set without a connection (tests); it is an identity like any other, never a
-/// wildcard.
-pub(in crate::shell) type SurfaceGeneration = Option<u64>;
+/// The connection generation a baseline came from.
+pub(in crate::shell) type SurfaceGeneration = u64;
 
 /// The reader baseline and the last exact snapshot/surface pair have separate roles.
 /// Moving a snapshot past its surface copies nothing; only the first patch in that
@@ -394,7 +392,7 @@ mod tests {
         }
     }
     fn paired() -> PaneSurfaces {
-        paired_at(None)
+        paired_at(1)
     }
     fn paired_at(generation: SurfaceGeneration) -> PaneSurfaces {
         let s = surface(1);
@@ -407,8 +405,8 @@ mod tests {
     #[test]
     fn a_generation_change_with_nothing_held_and_no_new_baseline_is_empty() {
         let mut s = PaneSurfaces::default();
-        s.receive(surface(1), Some(1));
-        s.snapshot_generation_changed(Some(2));
+        s.receive(surface(1), 1);
+        s.snapshot_generation_changed(2);
         assert!(matches!(s, PaneSurfaces::Empty));
     }
     #[test]
@@ -416,11 +414,11 @@ mod tests {
         let mut s = PaneSurfaces::default();
         let frame = surface(1);
         let boot = frame.boot_id.clone();
-        s.receive(frame, None);
+        s.receive(frame, 1);
         assert!(s.baseline().is_some());
         assert!(s.presented().is_none());
         assert!(matches!(
-            s.pair(&boot, 1.into(), None),
+            s.pair(&boot, 1.into(), 1),
             Pairing::Presented { previous: None }
         ));
         assert!(s.is_paired());
@@ -428,8 +426,8 @@ mod tests {
     #[test]
     fn a_surface_ahead_of_the_snapshot_waits_while_the_last_pair_is_held() {
         let mut s = paired();
-        s.receive(surface(2), None);
-        s.pair(&surface(1).boot_id, 1.into(), None);
+        s.receive(surface(2), 1);
+        s.pair(&surface(1).boot_id, 1.into(), 1);
         assert_eq!(
             s.presented().expect("held").projection_revision,
             shepr_protocol::ProjectionRevision::new(1)
@@ -442,8 +440,8 @@ mod tests {
     #[test]
     fn a_surface_behind_the_snapshot_waits_for_a_newer_one() {
         let mut s = paired();
-        s.receive(surface(2), None);
-        s.pair(&surface(1).boot_id, 3.into(), None);
+        s.receive(surface(2), 1);
+        s.pair(&surface(1).boot_id, 3.into(), 1);
         assert!(!s.is_paired());
         assert_eq!(
             s.presented().expect("held").projection_revision,
@@ -454,16 +452,16 @@ mod tests {
     fn a_snapshot_moving_past_a_pair_passes_it_without_a_copy() {
         let mut s = paired();
         let ptr = s.baseline().expect("baseline").frame.cells.as_ptr();
-        s.pair(&surface(1).boot_id, 2.into(), None);
+        s.pair(&surface(1).boot_id, 2.into(), 1);
         assert!(matches!(s, PaneSurfaces::Passed { .. }));
         assert_eq!(s.baseline().expect("baseline").frame.cells.as_ptr(), ptr);
     }
     #[test]
     fn the_first_patch_after_a_pass_splits_the_baseline_from_the_held_pair() {
         let mut s = paired();
-        s.pair(&surface(1).boot_id, 2.into(), None);
+        s.pair(&surface(1).boot_id, 2.into(), 1);
         let p = patch(s.baseline().expect("baseline"));
-        s.validate(&p, None).expect("valid");
+        s.validate(&p, 1).expect("valid");
         s.apply_validated(&p).expect("apply");
         assert_eq!(
             s.presented().expect("held").surface_revision,
@@ -477,24 +475,24 @@ mod tests {
     #[test]
     fn a_full_surface_after_a_pass_replaces_the_baseline_without_a_copy() {
         let mut s = paired();
-        s.pair(&surface(1).boot_id, 2.into(), None);
+        s.pair(&surface(1).boot_id, 2.into(), 1);
         let f = surface(2);
         let ptr = f.frame.cells.as_ptr();
-        s.receive(f, None);
+        s.receive(f, 1);
         assert_eq!(s.baseline().expect("baseline").frame.cells.as_ptr(), ptr);
     }
     #[test]
     fn a_different_boot_never_pairs() {
         let mut s = paired();
-        s.receive(surface(2), None);
-        s.pair(&crate::tests::test_boot_id("remote-boot"), 2.into(), None);
+        s.receive(surface(2), 1);
+        s.pair(&crate::tests::test_boot_id("remote-boot"), 2.into(), 1);
         assert!(!s.is_paired());
     }
     #[test]
     fn a_generation_change_keeps_only_the_held_pair() {
-        let mut s = paired_at(Some(1));
-        s.receive(surface(2), Some(1));
-        s.snapshot_generation_changed(Some(2));
+        let mut s = paired_at(1);
+        s.receive(surface(2), 1);
+        s.snapshot_generation_changed(2);
         assert!(s.baseline().is_none());
         assert_eq!(
             s.presented().expect("held").surface_revision,
@@ -505,55 +503,55 @@ mod tests {
     fn a_surface_from_another_connection_never_pairs_with_this_snapshot() {
         // Same boot and projection revision, different connection: the old
         // connection's snapshot must not present the new connection's surface.
-        let mut s = paired_at(Some(1));
-        s.receive(surface(1), Some(2));
+        let mut s = paired_at(1);
+        s.receive(surface(1), 2);
         assert!(matches!(
-            s.pair(&surface(1).boot_id, 1.into(), Some(1)),
+            s.pair(&surface(1).boot_id, 1.into(), 1),
             Pairing::Unchanged
         ));
         assert!(!s.is_paired());
     }
     #[test]
     fn a_surface_sent_before_its_snapshot_survives_the_generation_change() {
-        let mut s = paired_at(Some(1));
-        s.receive(surface(1), Some(2));
-        s.snapshot_generation_changed(Some(2));
-        assert_eq!(s.baseline_generation(), Some(Some(2)));
+        let mut s = paired_at(1);
+        s.receive(surface(1), 2);
+        s.snapshot_generation_changed(2);
+        assert_eq!(s.baseline_generation(), Some(2));
         assert_eq!(
             s.presented().expect("held").surface_revision,
             shepr_protocol::SurfaceRevision::new(1)
         );
         assert!(matches!(
-            s.pair(&surface(1).boot_id, 1.into(), Some(2)),
+            s.pair(&surface(1).boot_id, 1.into(), 2),
             Pairing::Presented { .. }
         ));
         let p = patch(s.baseline().expect("baseline"));
-        s.validate(&p, Some(2))
+        s.validate(&p, 2)
             .expect("the new connection's patch follows");
     }
     #[test]
     fn a_reboot_reset_keeps_the_incoming_connections_baseline_unpresented() {
-        let mut s = paired_at(Some(1));
+        let mut s = paired_at(1);
         let rebooted = crate::tests::test_boot_id("restarted-local");
         let mut frame = surface(1);
         frame.boot_id = rebooted.clone();
-        s.receive(frame, Some(2));
-        s.reset_for_boot(&rebooted, Some(2));
+        s.receive(frame, 2);
+        s.reset_for_boot(&rebooted, 2);
         assert!(s.presented().is_none());
-        assert_eq!(s.baseline_generation(), Some(Some(2)));
-        s.reset_for_boot(&rebooted, Some(3));
+        assert_eq!(s.baseline_generation(), Some(2));
+        s.reset_for_boot(&rebooted, 3);
         assert!(matches!(s, PaneSurfaces::Empty));
     }
     #[test]
     fn a_patch_from_another_connection_has_no_baseline() {
-        let s = paired_at(Some(1));
+        let s = paired_at(1);
         let p = patch(s.baseline().expect("baseline"));
-        assert_eq!(s.validate(&p, Some(2)), Err(PatchRejection::NoBaseline));
+        assert_eq!(s.validate(&p, 2), Err(PatchRejection::NoBaseline));
     }
     #[test]
     fn a_patch_without_a_baseline_is_rejected() {
         assert_eq!(
-            PaneSurfaces::default().validate(&patch(&surface(1)), None),
+            PaneSurfaces::default().validate(&patch(&surface(1)), 1),
             Err(PatchRejection::NoBaseline)
         );
     }
@@ -561,7 +559,7 @@ mod tests {
     fn a_patch_that_does_not_follow_the_baseline_is_rejected_and_changes_nothing() {
         let s = paired();
         assert_eq!(
-            s.validate(&patch(&surface(2)), None),
+            s.validate(&patch(&surface(2)), 1),
             Err(PatchRejection::DoesNotFollow)
         );
         assert_eq!(
@@ -572,9 +570,9 @@ mod tests {
     #[test]
     fn a_patch_on_a_waiting_baseline_leaves_the_held_pair_untouched() {
         let mut s = paired();
-        s.receive(surface(2), None);
+        s.receive(surface(2), 1);
         let p = patch(s.baseline().expect("baseline"));
-        s.validate(&p, None).expect("valid");
+        s.validate(&p, 1).expect("valid");
         s.apply_validated(&p).expect("apply");
         assert_eq!(
             s.presented().expect("held").surface_revision,

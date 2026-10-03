@@ -521,21 +521,6 @@ restart engine, `src/autodetect.rs` stays a separate module rather than part of
 the TUI launch path, and daemon error classification stays in the daemon
 `main`. (edges)
 
-## STR-048 - Preflight and the connectors resolve each machine twice
-
-`MachineSshPreflight` keeps one `MachineProbe` per machine and verifies the remote
-executable at startup; `MachineSshConnector::new` builds a fresh `MachineProbe`,
-and only the disk cache passes between them, so every connector re-verifies the
-cached hint on its first connect: one more SSH round trip per machine right after
-preflight verified it. `RemoteSsh::new` (a fresh temporary config directory) is
-rebuilt on every preflight check and every stop, and the SSH runtime directory is
-validated twice per `RemoteSsh` (`SshControlDir::runtime` and
-`write_managed_ssh_config`, which re-derives `runtime_dir` from `app_paths` while
-taking a `control_dir` for the socket, so the two can disagree). Proposal: pass
-the verified per-machine state from preflight to the connectors
-(`MachineSshPreflight::into_connectors()` or one object used by both phases).
-(edges)
-
 ## Tests
 
 ## STR-049 - Test layouts mirror accretion

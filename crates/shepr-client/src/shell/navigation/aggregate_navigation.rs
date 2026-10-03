@@ -2,18 +2,13 @@
 
 use crate::endpoint::{ClientEndpointId, ClientEndpointStatus};
 use crate::shell::endpoints::{ClientShellEndpoint, EndpointState};
+use crate::shell::navigation::location::Location;
 use crate::shell::state::{
-    ClientNavigatorFilter, ClientNavigatorOverlay, ClientNavigatorRow, ClientNavigatorTarget,
-    ClientShellConfig,
+    ClientNavigatorFilter, ClientNavigatorOverlay, ClientNavigatorRow, ClientShellConfig,
 };
 use std::collections::HashMap;
 
 use crate::shell::presentation::status::status_priority;
-
-pub(in crate::shell) struct AggregateAgentTarget {
-    pub(in crate::shell) endpoint_id: ClientEndpointId,
-    pub(in crate::shell) pane_id: shepr_protocol::PublicPaneId,
-}
 
 pub(in crate::shell) struct AgentPanelRow {
     pub(in crate::shell) endpoint_id: ClientEndpointId,
@@ -26,7 +21,7 @@ pub(in crate::shell) struct AgentPanelRow {
 
 pub(in crate::shell) struct AgentPanelModel {
     pub(in crate::shell) rows: Vec<AgentPanelRow>,
-    targets: Vec<AggregateAgentTarget>,
+    targets: Vec<Location>,
 }
 
 impl AgentPanelModel {
@@ -72,15 +67,12 @@ impl AgentPanelModel {
         }
         let targets = rows
             .iter()
-            .map(|row| AggregateAgentTarget {
-                endpoint_id: row.endpoint_id.clone(),
-                pane_id: row.agent.pane_id,
-            })
+            .map(|row| Location::pane(row.endpoint_id.clone(), row.agent.pane_id))
             .collect();
         Self { rows, targets }
     }
 
-    pub(in crate::shell) fn targets(&self) -> &[AggregateAgentTarget] {
+    pub(in crate::shell) fn targets(&self) -> &[Location] {
         &self.targets
     }
 }
@@ -110,7 +102,7 @@ pub(in crate::shell) fn cycle_index(
 }
 
 pub(in crate::shell) fn agent_target_index(
-    targets: &[AggregateAgentTarget],
+    targets: &[Location],
     active_endpoint_id: &ClientEndpointId,
     focused_pane_id: Option<&shepr_protocol::PublicPaneId>,
     action: shepr_termio::input::KeybindAction,
@@ -121,8 +113,8 @@ pub(in crate::shell) fn agent_target_index(
         KeybindAction::FocusAgent(index) => (index < targets.len()).then_some(index),
         KeybindAction::PreviousAgent | KeybindAction::NextAgent => {
             let current = targets.iter().position(|target| {
-                &target.endpoint_id == active_endpoint_id
-                    && Some(&target.pane_id) == focused_pane_id
+                &target.endpoint == active_endpoint_id
+                    && target.pane_id().as_ref() == focused_pane_id
             });
             let delta = if action == KeybindAction::PreviousAgent {
                 -1
@@ -206,9 +198,9 @@ impl NavigatorIndex {
                     let title = agent.and_then(|agent| agent.terminal_title_stripped.as_deref());
                     let meta = pane
                         .foreground_cwd
-                        .as_deref()
-                        .or(pane.cwd.as_deref())
-                        .unwrap_or_default();
+                        .as_ref()
+                        .or(pane.cwd.as_ref())
+                        .map_or_default(shepr_protocol::RemotePath::display_text);
                     let label = if workspace_panes.len() == 1 {
                         pane.label
                             .as_deref()
@@ -227,23 +219,20 @@ impl NavigatorIndex {
                     let row = ClientNavigatorRow {
                         depth: 1 + u8::from(federated),
                         label: label.clone(),
-                        meta: meta.to_owned(),
+                        meta: meta.to_string(),
                         detail: format!("{} / {}", workspace.label, pane.pane_id),
                         agent: agent_kind,
                         status: Some(status),
                         stale: false,
                         current: false,
-                        target: ClientNavigatorTarget::Pane {
-                            endpoint_id: endpoint.endpoint_id.clone(),
-                            pane_id: pane.pane_id,
-                        },
+                        target: Location::pane(endpoint.endpoint_id.clone(), pane.pane_id),
                     };
                     let mut pane_id_text = pane.pane_id.to_string();
                     pane_id_text.make_ascii_lowercase();
                     let mut search_fields =
                         vec![label.to_lowercase(), meta.to_lowercase(), pane_id_text];
-                    if let Some(cwd) = pane.cwd.as_deref() {
-                        search_fields.push(cwd.to_lowercase());
+                    if let Some(cwd) = pane.cwd.as_ref() {
+                        search_fields.push(cwd.display_text().to_lowercase());
                     }
                     if let Some(agent_kind) = agent_kind {
                         search_fields.push(agent_kind.label().to_lowercase());
@@ -262,15 +251,18 @@ impl NavigatorIndex {
                         depth: u8::from(federated),
                         label: workspace.label.clone(),
                         meta: workspace.branch.clone().unwrap_or_default(),
-                        detail: workspace.new_workspace_cwd.clone(),
+                        detail: workspace
+                            .new_workspace_cwd
+                            .as_ref()
+                            .map_or_default(|path| path.display_text().into_owned()),
                         agent: None,
                         status: None,
                         stale: false,
                         current: false,
-                        target: ClientNavigatorTarget::Workspace {
-                            endpoint_id: endpoint.endpoint_id.clone(),
-                            workspace_id: workspace.workspace_id,
-                        },
+                        target: Location::workspace(
+                            endpoint.endpoint_id.clone(),
+                            workspace.workspace_id,
+                        ),
                     },
                     search_fields,
                     panes,
@@ -324,9 +316,10 @@ impl NavigatorIndex {
                     let mut row = pane.row.clone();
                     row.stale = stale;
                     row.current = &endpoint.endpoint_id == active_endpoint_id
-                        && endpoint.focused_pane_id.as_ref().is_some_and(|focused| {
-                            matches!(&row.target, ClientNavigatorTarget::Pane { pane_id, .. } if pane_id == focused)
-                        });
+                        && endpoint
+                            .focused_pane_id
+                            .as_ref()
+                            .is_some_and(|focused| row.target.pane_id().as_ref() == Some(focused));
                     children.push(row);
                 }
                 if !filtering
@@ -350,9 +343,7 @@ impl NavigatorIndex {
                         status: None,
                         stale,
                         current: false,
-                        target: ClientNavigatorTarget::Machine {
-                            endpoint_id: endpoint.endpoint_id.clone(),
-                        },
+                        target: Location::machine(endpoint.endpoint_id.clone()),
                     });
                 }
                 rows.extend(endpoint_rows);
@@ -386,7 +377,7 @@ pub(in crate::shell) fn navigator_selected_index(
             .or_else(|| (!rows.is_empty()).then_some(0)),
         None => rows
             .iter()
-            .position(|row| matches!(row.target, ClientNavigatorTarget::Pane { .. }))
+            .position(|row| row.target.pane_id().is_some())
             .or_else(|| (!rows.is_empty()).then_some(0)),
     }
 }
@@ -394,7 +385,7 @@ pub(in crate::shell) fn navigator_selected_index(
 pub(in crate::shell) fn selected_navigator_target(
     rows: &[ClientNavigatorRow],
     navigator: &ClientNavigatorOverlay,
-) -> Option<ClientNavigatorTarget> {
+) -> Option<Location> {
     navigator_selected_index(rows, navigator).map(|index| rows[index].target.clone())
 }
 

@@ -2,7 +2,7 @@ use super::*;
 
 use super::process::{PipeCapture, kill_and_reap, kill_child};
 use std::io::{self, Write as _};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::{
     Arc,
@@ -20,7 +20,7 @@ use crate::limits::{
 
 pub(crate) struct SshStdioBridge {
     local_socket: PathBuf,
-    socket_identity: shepr_platform::ipc::SocketFileIdentity,
+    socket_file: shepr_platform::ipc::OwnedSocketFile,
     _socket_startup_lock: shepr_platform::ipc::SocketStartupLock,
     should_stop: Arc<AtomicBool>,
     // The accept thread clears a previous report before each accepted stream.
@@ -65,13 +65,11 @@ impl SshStdioBridge {
     ) -> Result<Self, shepr_platform::ipc::BindError> {
         // A busy bind retains its path until the machine boundary chooses
         // whether to retry or report local setup failure.
-        let (listener, socket_startup_lock, socket_identity) =
-            shepr_platform::ipc::bind_single_use_private_socket(&local_socket)?;
-        let teardown = SSH_TEARDOWN.register(TeardownResource::Socket {
-            path: local_socket.clone(),
-            identity: socket_identity.clone(),
-        });
-        let mut socket_cleanup = BridgeSocketStartupCleanup::new(&local_socket, &socket_identity);
+        let socket_path = shepr_core::socket_path::SocketPath::new(local_socket.clone())?;
+        let (listener, socket_file, socket_startup_lock) =
+            shepr_platform::ipc::bind_owned_single_use_private_socket(&socket_path)?.into_parts();
+        let teardown = SSH_TEARDOWN.register(TeardownResource::Socket(socket_file.clone()));
+        let mut socket_cleanup = BridgeSocketStartupCleanup::new(&socket_file);
         listener.set_nonblocking(true)?;
 
         let should_stop = Arc::new(AtomicBool::new(false));
@@ -177,7 +175,7 @@ impl SshStdioBridge {
 
         let bridge = Self {
             local_socket,
-            socket_identity,
+            socket_file,
             _socket_startup_lock: socket_startup_lock,
             should_stop,
             failure_rx,
@@ -233,7 +231,7 @@ pub(super) fn prepare_remote_bridge_stream(
 impl Drop for SshStdioBridge {
     fn drop(&mut self) {
         self.should_stop.store(true, Ordering::Release);
-        remove_bridge_socket(&self.local_socket, &self.socket_identity);
+        remove_bridge_socket(&self.socket_file);
         if let Some(thread) = self.thread.take()
             && thread.join().is_err()
         {
@@ -249,9 +247,11 @@ impl Drop for SshStdioBridge {
 /// Removes a bridge's own socket on a failed start or on drop. The caller has
 /// nothing better to do with a failure, but a socket file left behind in the
 /// runtime directory is worth a line naming it.
-fn remove_bridge_socket(path: &Path, identity: &shepr_platform::ipc::SocketFileIdentity) {
-    if let Err(error) = shepr_platform::ipc::remove_socket_file_if_owned(path, identity) {
+fn remove_bridge_socket(file: &shepr_platform::ipc::OwnedSocketFile) {
+    let path = file.path();
+    if let Err(error) = file.remove_if_still_ours() {
         tracing::warn!(%error, socket = %path.display(), "could not remove remote bridge socket");
+        return;
     }
     // Bridge socket paths carry a random token, so no later binder ever locks
     // this path and the sidecar would otherwise pile up, one per bridge ever
@@ -262,16 +262,14 @@ fn remove_bridge_socket(path: &Path, identity: &shepr_platform::ipc::SocketFileI
 
 /// Owns the newly bound socket until the bridge itself is ready to own cleanup.
 struct BridgeSocketStartupCleanup {
-    path: PathBuf,
-    identity: shepr_platform::ipc::SocketFileIdentity,
+    file: shepr_platform::ipc::OwnedSocketFile,
     armed: bool,
 }
 
 impl BridgeSocketStartupCleanup {
-    fn new(path: &Path, identity: &shepr_platform::ipc::SocketFileIdentity) -> Self {
+    fn new(file: &shepr_platform::ipc::OwnedSocketFile) -> Self {
         Self {
-            path: path.to_owned(),
-            identity: identity.clone(),
+            file: file.clone(),
             armed: true,
         }
     }
@@ -284,7 +282,7 @@ impl BridgeSocketStartupCleanup {
 impl Drop for BridgeSocketStartupCleanup {
     fn drop(&mut self) {
         if self.armed {
-            remove_bridge_socket(&self.path, &self.identity);
+            remove_bridge_socket(&self.file);
         }
     }
 }
@@ -320,7 +318,7 @@ impl BridgeUploadStop {
 /// its own, until the upload is cancelled, the bridge stops, or the client
 /// closes its end. Cancelling never closes the socket, so the download half
 /// keeps delivering what the remote end still sends.
-pub struct BridgeUpload {
+pub(crate) struct BridgeUpload {
     stop: Arc<BridgeUploadStop>,
     failed: Arc<AtomicBool>,
     client_closed: Arc<AtomicBool>,
@@ -329,13 +327,13 @@ pub struct BridgeUpload {
 
 /// How an upload ended: the copy's result and whether the local client closed
 /// its end.
-pub struct BridgeUploadEnd {
-    pub result: io::Result<u64>,
-    pub client_closed: bool,
+pub(crate) struct BridgeUploadEnd {
+    result: io::Result<u64>,
+    client_closed: bool,
 }
 
 impl BridgeUpload {
-    pub fn spawn(
+    pub(crate) fn spawn(
         stream: shepr_platform::ipc::LocalStream,
         mut writer: impl io::Write + Send + 'static,
         bridge_stop: Arc<AtomicBool>,
@@ -367,30 +365,21 @@ impl BridgeUpload {
         })
     }
 
-    /// Stop copying. Bytes already read are still written.
-    pub fn cancel(&self) {
-        self.stop.cancel();
-    }
-
     pub(super) fn stop_handle(&self) -> Arc<BridgeUploadStop> {
         Arc::clone(&self.stop)
     }
 
     /// The copy failed; set once it has ended.
-    pub fn failed(&self) -> bool {
+    pub(crate) fn failed(&self) -> bool {
         self.failed.load(Ordering::Acquire)
     }
 
-    pub fn client_closed(&self) -> bool {
+    pub(crate) fn client_closed(&self) -> bool {
         self.client_closed.load(Ordering::Acquire)
     }
 
-    pub fn is_finished(&self) -> bool {
-        self.worker.is_finished()
-    }
-
     /// Wait for the copy to end.
-    pub fn join(self) -> io::Result<BridgeUploadEnd> {
+    pub(crate) fn join(self) -> io::Result<BridgeUploadEnd> {
         let result = self
             .worker
             .join()

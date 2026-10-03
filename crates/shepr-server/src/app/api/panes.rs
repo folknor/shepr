@@ -12,10 +12,9 @@ use shepr_protocol::command::{
     PaneWordMotion, PaneZoomParams,
 };
 
-use super::super::api_helpers::{detect_state_from_api, normalized_user_label, pane_not_found};
+use super::super::api_helpers::{detect_state_from_api, normalized_user_label};
 use super::endpoint::{
-    EndpointEffects, Handled, HandlerError, HandlerResult, pane_missing, rejected,
-    rejected_with_effects,
+    EndpointEffects, Handled, HandlerError, HandlerResult, internal_with_effects, pane_missing,
 };
 use super::responses::{failure, success};
 
@@ -72,17 +71,24 @@ impl App {
             shepr_mux::pane::LaunchKind::Fresh,
         ) {
             Ok(runtime) => runtime,
-            Err(err) => return rejected(format!("the pane could not be split: {err}")),
+            Err(err) => {
+                return Err(
+                    shepr_protocol::command::EndpointError::ResourceFailure(format!(
+                        "the pane could not be split: {err}"
+                    ))
+                    .into(),
+                );
+            }
         };
         let terminal_id = prepared.terminal().id.clone();
         let Some(outcome) = self.state.commit_pane_split(ws_idx, prepared) else {
             drop(runtime);
-            return rejected("the split target is no longer available");
+            return Err(pane_missing(&params.pane_id).into());
         };
         self.install_terminal_runtime(terminal_id, runtime);
         let effects = EndpointEffects::from(&outcome);
         let Some(pane) = self.pane_info(outcome.workspace_index, outcome.pane_id) else {
-            return rejected_with_effects("the new pane is unavailable", effects);
+            return internal_with_effects("the new pane is unavailable", effects);
         };
 
         Handled::navigating_with_effects(

@@ -39,6 +39,20 @@ pub(crate) struct EndpointOutcome {
 }
 
 impl App {
+    fn json_pane(
+        &self,
+        raw: &str,
+    ) -> Result<(usize, shepr_core::layout::PaneId), shepr_api::error::ApiError> {
+        let public_id = raw.parse::<shepr_protocol::PublicPaneId>().map_err(|_| {
+            shepr_api::error::ApiError::new(
+                shepr_api::error::ApiErrorCode::InvalidPaneId,
+                format!("invalid pane id {raw:?}; expected w<workspace>:p<pane>"),
+            )
+        })?;
+        self.resolve_pane_id(&public_id)
+            .ok_or_else(|| shepr_api::error::ApiError::pane_not_found(raw))
+    }
+
     /// Publishes a shared surface change at its mutation site. Projection
     /// changes additionally invalidate the client-shell snapshot cache.
     pub(super) fn invalidate_shared_view(&mut self, projection_changed: bool) {
@@ -207,7 +221,7 @@ impl App {
         match command.into_app_command() {
             Ok(command) => self.handle_endpoint_app_command_with_render(command, ctx),
             Err(command) => EndpointOutcome {
-                result: Err(EndpointError::Rejected(format!(
+                result: Err(EndpointError::Internal(format!(
                     "{} is not handled by the app",
                     command.name()
                 ))),
@@ -267,7 +281,7 @@ mod tests {
     fn the_viewing_request_answered_by_the_loop_is_reported_as_misrouted() {
         let mut app = App::new(
             &shepr_config::ServerConfig::default(),
-            crate::app::AppPolicy::Test,
+            crate::app::AppPolicy::Suspended,
         );
 
         let surface = app.handle_endpoint_command(EndpointCommand::ClientShellSurfaceSet(
@@ -275,7 +289,7 @@ mod tests {
         ));
         assert!(matches!(
             surface.expect_err("viewing request is answered by the loop"),
-            EndpointError::Rejected(_)
+            EndpointError::Internal(_)
         ));
     }
 
@@ -283,7 +297,7 @@ mod tests {
     fn read_only_commands_do_not_force_a_render() {
         let mut app = App::new(
             &shepr_config::ServerConfig::default(),
-            crate::app::AppPolicy::Test,
+            crate::app::AppPolicy::Suspended,
         );
         let read = app.handle_endpoint_command_with_render(
             EndpointCommand::PaneSelectionRead(shepr_protocol::command::PaneSelectionReadParams {
@@ -322,9 +336,10 @@ mod tests {
     fn workspace_rename_trims_and_clears_and_renders_what_it_changed() {
         let mut app = App::new(
             &shepr_config::ServerConfig::default(),
-            crate::app::AppPolicy::Test,
+            crate::app::AppPolicy::Suspended,
         );
-        app.state.workspaces = vec![shepr_mux::workspace::Workspace::test_new("rename")];
+        app.state
+            .test_set_workspaces(vec![shepr_mux::workspace::Workspace::test_new("rename")]);
         let workspace_id = app.state.workspaces[0].id;
         let mut rename = |label: &str| {
             let before = app.state.shell_projection_revision;
@@ -375,11 +390,11 @@ mod tests {
     fn pane_exit_keeps_the_workspace_when_other_panes_remain() {
         let mut app = App::new(
             &shepr_config::ServerConfig::default(),
-            crate::app::AppPolicy::Test,
+            crate::app::AppPolicy::Suspended,
         );
         let mut workspace = shepr_mux::workspace::Workspace::test_new("pane-exit-layout");
         let dead_pane = workspace.test_split(shepr_core::layout::Direction::Horizontal);
-        app.state.workspaces = vec![workspace];
+        app.state.test_set_workspaces(vec![workspace]);
         app.state.ensure_test_terminals();
 
         report_runtime_exit(&mut app, dead_pane);
@@ -392,12 +407,12 @@ mod tests {
     fn pane_exit_removes_the_workspace_it_empties() {
         let mut app = App::new(
             &shepr_config::ServerConfig::default(),
-            crate::app::AppPolicy::Test,
+            crate::app::AppPolicy::Suspended,
         );
-        app.state.workspaces = vec![
+        app.state.test_set_workspaces(vec![
             shepr_mux::workspace::Workspace::test_new("pane-exit-first"),
             shepr_mux::workspace::Workspace::test_new("pane-exit-second"),
-        ];
+        ]);
         app.state.ensure_test_terminals();
         let first_root = app.state.workspaces[0].root_pane();
         let second_root = app.state.workspaces[1].root_pane();
@@ -421,14 +436,14 @@ mod tests {
                 ended_at: std::time::Instant::now(),
             },
         );
-        app.handle_internal_event_after_checkpoint(exit);
+        crate::server::headless::HeadlessServer::replay_test_exit_for_app(app, exit);
     }
 
     #[test]
     fn process_exit_releases_a_newer_hook_owned_agent() {
         let mut app = App::new(
             &shepr_config::ServerConfig::default(),
-            crate::app::AppPolicy::Test,
+            crate::app::AppPolicy::Suspended,
         );
         let workspace = shepr_mux::workspace::Workspace::test_new("stale-agent-exit");
         let pane_id = workspace.root_pane();
@@ -436,7 +451,7 @@ mod tests {
             .terminal_id(pane_id)
             .cloned()
             .expect("test precondition");
-        app.state.workspaces = vec![workspace];
+        app.state.test_set_workspaces(vec![workspace]);
         app.state.ensure_test_terminals();
         let terminal = app
             .state
@@ -448,9 +463,9 @@ mod tests {
         // so the probe is stamped after the detection seeded above.
         let observed_at = std::time::Instant::now();
         terminal
-            .set_hook_authority_at(
-                "shepr:codex",
-                "codex",
+            .set_hook_report_at(
+                shepr_agent::agent::ReportOrigin::parse("shepr:codex", "codex")
+                    .expect("test origin"),
                 AgentState::Working,
                 shepr_agent::agent::resume::AgentSessionRef::id("codex-session"),
                 Some(1),

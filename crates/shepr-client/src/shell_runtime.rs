@@ -103,23 +103,11 @@ pub(super) fn dispatch_client_shell_actions(
                     prefers_osc52_clipboard,
                     output_writer,
                 ) {
-                    match crate::state::host_write_failure_action(
-                        crate::state::HostWritePurpose::Clipboard,
-                        error.kind(),
-                    ) {
-                        crate::state::HostWriteAction::Fatal => {
-                            return Err(LoopExit::HostTerminal(error));
-                        }
-                        crate::state::HostWriteAction::Retry
-                        | crate::state::HostWriteAction::Continue
-                        | crate::state::HostWriteAction::Succeeded => {
-                            warn!(
-                                bytes = bytes.len(),
-                                %error,
-                                "clipboard copy did not reach the host clipboard"
-                            );
-                        }
-                    }
+                    warn!(
+                        bytes = bytes.len(),
+                        %error,
+                        "clipboard copy did not reach the host clipboard"
+                    );
                 }
             }
             shell::ClientShellAction::ActivateEndpoint {

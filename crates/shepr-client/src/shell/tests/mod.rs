@@ -19,7 +19,7 @@ pub(in crate::shell) fn snapshot() -> ClientShellSnapshot {
         focused_pane_id: Some(test_pane_id("w1:p1")),
         workspaces: vec![ClientShellWorkspace {
             workspace_id: test_workspace_id("w1"),
-            new_workspace_cwd: "/repo".into(),
+            new_workspace_cwd: Some("/repo".into()),
             label: "client-shell".into(),
             branch: Some("main".into()),
             git_ahead_behind: None,

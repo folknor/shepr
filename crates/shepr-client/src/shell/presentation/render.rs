@@ -2,7 +2,7 @@ use crate::shell::overlays::text_editor;
 
 use crate::endpoint::ClientEndpointId;
 use crate::shell::endpoints::ClientShellEndpoint;
-use crate::shell::navigation::workspace_navigation::WorkspaceNavigationTarget;
+use crate::shell::navigation::location::PinnedLocation;
 use crate::shell::state::{
     ClientCopyModeState, ClientShellConfig, ClientShellLayout, ClientShellMode, ShellHitMap,
 };
@@ -240,9 +240,13 @@ pub(in crate::shell) fn render_mode_bar(
                 let search = copy_mode.search.as_ref();
                 let match_status = search
                     .and_then(|search| {
-                        search
-                            .current_global
-                            .map(|current| format!(" {}/{}", current + 1, search.total))
+                        search.results.current.map(|current| {
+                            format!(
+                                " {}/{}",
+                                current.global_index.saturating_add(1),
+                                search.results.total
+                            )
+                        })
                     })
                     .or_else(|| {
                         search
@@ -344,7 +348,7 @@ pub(in crate::shell) struct ShellRenderState<'a> {
     pub(in crate::shell) reveal_focused_workspace: &'a mut bool,
     pub(in crate::shell) sidebar_collapsed: bool,
     pub(in crate::shell) sidebar_section_split: crate::shell::sidebar::sidebar_tokens::SectionSplit,
-    pub(in crate::shell) selected_workspace_id: Option<&'a WorkspaceNavigationTarget>,
+    pub(in crate::shell) selected_workspace_id: Option<&'a PinnedLocation>,
     pub(in crate::shell) reveal_navigation_workspace: &'a mut bool,
     pub(in crate::shell) dragged_workspace_id: Option<&'a shepr_protocol::WorkspaceId>,
     pub(in crate::shell) workspace_drop_indicator_row: Option<u16>,
@@ -387,8 +391,7 @@ pub(in crate::shell) fn render_shell(
         hits.new_workspace = Rect::default();
         hits.machines.clear();
         hits.workspaces.clear();
-        hits.agents.clear();
-        hits.endpoint_agents.clear();
+        hits.agent_hits.clear();
         hits.pane_splits.clear();
     }
     hits

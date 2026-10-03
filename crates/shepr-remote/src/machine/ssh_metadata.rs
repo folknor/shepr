@@ -1,18 +1,14 @@
-use std::io::{self, Read as _, Write as _};
+use std::io::{self, Read as _};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
 
 use super::{RemoteExecutable, SshTarget};
 use crate::limits::MAX_METADATA_BYTES;
 
-static NEXT_TEMP_FILE: AtomicU64 = AtomicU64::new(1);
-
 #[derive(Serialize, Deserialize)]
 struct StoredMetadata {
-    // The on-disk record is JSON; the cache itself retains the checked type.
-    target: String,
+    target: SshTarget,
     executable: String,
 }
 
@@ -60,7 +56,7 @@ impl SshMetadataCache {
     /// still lose that entry, in which case discovery can rebuild it.
     pub fn store(&self, executable: &RemoteExecutable) -> io::Result<()> {
         let stored = StoredMetadata {
-            target: self.target.as_str().to_owned(),
+            target: self.target.clone(),
             executable: executable.as_str().to_owned(),
         };
         let bytes = serde_json::to_vec(&stored).map_err(io::Error::other)?;
@@ -113,39 +109,21 @@ fn store_private_json_with_directory_sync(
             format!("invalid SSH metadata path: {}", path.display()),
         )
     })?;
-    let file_name = path.file_name().ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("invalid SSH metadata path: {}", path.display()),
-        )
-    })?;
     shepr_platform::create_private_directory_all(parent)?;
-    if let Ok(metadata) = std::fs::symlink_metadata(path)
-        && (metadata.file_type().is_symlink() || !metadata.is_file())
+    let prepared = shepr_platform::publish_file::PreparedFile::prepare(
+        path,
+        &mut io::Cursor::new(content),
+        &shepr_platform::publish_file::PublishOptions {
+            preserve_metadata_from: None,
+            refuse_symlink_target: true,
+            durability: shepr_platform::publish_file::Durability::Directory,
+            replace: true,
+            mode: 0o600,
+        },
+    )?;
+    if let shepr_platform::publish_file::Published::NotDurable(error) =
+        prepared.commit_with_directory_sync(sync_directory)?
     {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "refusing to replace SSH metadata through a non-file path",
-        ));
-    }
-
-    let sequence = NEXT_TEMP_FILE.fetch_add(1, Ordering::Relaxed);
-    let token = shepr_platform::unpredictable_token()?;
-    let mut temp_name = std::ffi::OsString::from(".");
-    temp_name.push(file_name);
-    // Keep the random token at its full fixed width hexadecimal representation.
-    temp_name.push(format!("-{token:016x}-{sequence}.tmp"));
-    let temp_path = parent.join(temp_name);
-    let mut temp = shepr_platform::create_private_file(&temp_path)?;
-    let mut cleanup = AbandonedTempFile(Some(temp_path.clone()));
-    temp.write_all(content).and_then(|()| temp.sync_all())?;
-    drop(temp);
-    std::fs::rename(&temp_path, path)?;
-    cleanup.0 = None;
-    if let Err(error) = sync_directory(parent) {
-        // The cache is only a discovery hint. The atomic rename has published
-        // the entry for live readers, so uncertain crash durability must not be
-        // reported as if the cache were still absent.
         tracing::debug!(
             %error,
             directory = %parent.display(),
@@ -153,24 +131,6 @@ fn store_private_json_with_directory_sync(
         );
     }
     Ok(())
-}
-
-/// Removes a failed store's temporary file. A failed removal is logged with its
-/// path and does not replace the store error the caller returns.
-struct AbandonedTempFile(Option<PathBuf>);
-
-impl Drop for AbandonedTempFile {
-    fn drop(&mut self) {
-        if let Some(path) = &self.0
-            && let Err(error) = std::fs::remove_file(path)
-        {
-            tracing::warn!(
-                %error,
-                path = %path.display(),
-                "could not remove temporary SSH metadata file after a failed store"
-            );
-        }
-    }
 }
 
 fn load_metadata(path: &Path, target: &SshTarget) -> Option<RemoteExecutable> {
@@ -188,7 +148,7 @@ fn load_metadata(path: &Path, target: &SshTarget) -> Option<RemoteExecutable> {
         return None;
     }
     let stored: StoredMetadata = serde_json::from_slice(&bytes).ok()?;
-    if stored.target != target.as_str() {
+    if &stored.target != target {
         return None;
     }
     RemoteExecutable::parse(stored.executable).ok()
@@ -326,7 +286,7 @@ mod tests {
         let path = root.join("cache.json");
         let executable = RemoteExecutable::parse("/some-path/shepr").expect("test precondition");
         let content = serde_json::to_vec(&StoredMetadata {
-            target: "dev@build.example".into(),
+            target: SshTarget::parse("dev@build.example").expect("test target"),
             executable: executable.as_str().to_owned(),
         })
         .expect("serialize metadata");

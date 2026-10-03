@@ -1,39 +1,30 @@
 use crate::endpoint::ClientEndpointId;
-use crate::shell::endpoints::ClientEndpointFocusTarget;
 use crate::shell::endpoints::ClientShellEndpoint;
+use crate::shell::navigation::location::{Location, LocationTarget, PinnedLocation};
 use crate::shell::state::ClientShellMode;
 use crate::shell::state::{ClientShellInput, ClientShellState};
 use crate::shell::{EndpointNotice, EndpointNoticeKind};
 
-/// A client-only preview. Snapshot identity prevents Enter from using a reused workspace ID.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(in crate::shell) struct WorkspaceNavigationTarget {
-    pub(in crate::shell) endpoint_id: ClientEndpointId,
-    pub(in crate::shell) workspace_id: shepr_protocol::WorkspaceId,
-    boot_id: shepr_protocol::BootId,
-    generation: Option<u64>,
-}
-
 /// Display-only continuity while a direct focus request awaits its authoritative snapshot.
 pub(in crate::shell) struct PendingWorkspaceHighlight {
-    pub(in crate::shell) target: WorkspaceNavigationTarget,
+    pub(in crate::shell) target: PinnedLocation,
     pub(in crate::shell) request_id: shepr_protocol::RequestId,
     expires_at: std::time::Instant,
 }
 
-impl WorkspaceNavigationTarget {
-    pub(in crate::shell) fn matches(
+impl PinnedLocation {
+    pub(in crate::shell) fn matches_workspace(
         &self,
         endpoint_id: &ClientEndpointId,
         workspace_id: &shepr_protocol::WorkspaceId,
     ) -> bool {
-        &self.endpoint_id == endpoint_id && self.workspace_id == *workspace_id
+        self.matches(endpoint_id, LocationTarget::Workspace(*workspace_id))
     }
 }
 
 pub(in crate::shell) fn workspace_navigation_targets(
     endpoints: &[ClientShellEndpoint],
-) -> Vec<WorkspaceNavigationTarget> {
+) -> Vec<PinnedLocation> {
     let mut targets = Vec::new();
     for endpoint in endpoints {
         if endpoint.state.stale() {
@@ -42,13 +33,15 @@ pub(in crate::shell) fn workspace_navigation_targets(
         let Some(snapshot) = endpoint.snapshot() else {
             continue;
         };
+        let Some(generation) = endpoint.snapshot_generation() else {
+            continue;
+        };
         for workspace in &snapshot.workspaces {
-            targets.push(WorkspaceNavigationTarget {
-                endpoint_id: endpoint.endpoint_id.clone(),
-                workspace_id: workspace.workspace_id,
-                boot_id: snapshot.boot_id.clone(),
-                generation: endpoint.snapshot_generation(),
-            });
+            targets.push(PinnedLocation::new(
+                Location::workspace(endpoint.endpoint_id.clone(), workspace.workspace_id),
+                snapshot.boot_id.clone(),
+                generation,
+            ));
         }
     }
     targets
@@ -57,7 +50,7 @@ pub(in crate::shell) fn workspace_navigation_targets(
 impl ClientShellState {
     pub(in crate::shell) fn keep_workspace_highlight_until_snapshot(
         &mut self,
-        target: WorkspaceNavigationTarget,
+        target: PinnedLocation,
         request_id: &shepr_protocol::RequestId,
         now: std::time::Instant,
     ) {
@@ -92,10 +85,16 @@ impl ClientShellState {
             .pending_workspace_highlight
             .as_ref()
             .is_some_and(|pending| {
-                pending.target.endpoint_id != *self.endpoints.presented()
+                pending.target.location.endpoint != *self.endpoints.presented()
                     || !self.navigation_target_valid(&pending.target)
                     || self.snapshot.as_deref().is_some_and(|snapshot| {
-                        snapshot.focused_workspace_id.as_ref() == Some(&pending.target.workspace_id)
+                        pending
+                            .target
+                            .location
+                            .workspace_id()
+                            .is_some_and(|workspace_id| {
+                                snapshot.focused_workspace_id.as_ref() == Some(&workspace_id)
+                            })
                     })
             })
         {
@@ -107,46 +106,46 @@ impl ClientShellState {
         &self,
         endpoint_id: &ClientEndpointId,
         workspace_id: &shepr_protocol::WorkspaceId,
-    ) -> Option<WorkspaceNavigationTarget> {
+    ) -> Option<PinnedLocation> {
         let endpoint = self
             .endpoints
             .iter()
             .find(|entry| &entry.endpoint_id == endpoint_id)?;
         let snapshot = endpoint.snapshot()?;
-        Some(WorkspaceNavigationTarget {
-            endpoint_id: endpoint_id.clone(),
-            workspace_id: *workspace_id,
-            boot_id: snapshot.boot_id.clone(),
-            generation: endpoint.snapshot_generation(),
-        })
+        let generation = endpoint.snapshot_generation()?;
+        Some(PinnedLocation::new(
+            Location::workspace(endpoint_id.clone(), *workspace_id),
+            snapshot.boot_id.clone(),
+            generation,
+        ))
     }
 
-    pub(in crate::shell) fn focused_navigation_target(&self) -> Option<WorkspaceNavigationTarget> {
+    pub(in crate::shell) fn focused_navigation_target(&self) -> Option<PinnedLocation> {
         let workspace_id = self.snapshot.as_deref()?.focused_workspace_id.as_ref()?;
         self.navigation_target(self.endpoints.presented(), workspace_id)
     }
 
-    pub(in crate::shell) fn navigation_target_valid(
-        &self,
-        target: &WorkspaceNavigationTarget,
-    ) -> bool {
+    pub(in crate::shell) fn navigation_target_valid(&self, target: &PinnedLocation) -> bool {
+        let workspace_id = target.location.workspace_id();
         self.endpoints.iter().any(|endpoint| {
-            endpoint.endpoint_id == target.endpoint_id
+            endpoint.endpoint_id == target.location.endpoint
                 && endpoint.state.usable()
-                && endpoint.snapshot_generation() == target.generation
+                && endpoint.snapshot_generation() == Some(target.generation())
                 && endpoint.snapshot().is_some_and(|snapshot| {
-                    snapshot.boot_id == target.boot_id
-                        && snapshot
-                            .workspaces
-                            .iter()
-                            .any(|workspace| workspace.workspace_id == target.workspace_id)
+                    snapshot.boot_id == *target.boot_id()
+                        && workspace_id.is_some_and(|workspace_id| {
+                            snapshot
+                                .workspaces
+                                .iter()
+                                .any(|workspace| workspace.workspace_id == workspace_id)
+                        })
                 })
         })
     }
 
     pub(in crate::shell) fn workspace_preview_action_blocked(&self) -> bool {
         self.navigate_workspace_id.as_ref().is_some_and(|target| {
-            target.endpoint_id != *self.endpoints.presented()
+            target.location.endpoint != *self.endpoints.presented()
                 || !self.navigation_target_valid(target)
         })
     }
@@ -168,14 +167,13 @@ impl ClientShellState {
             return;
         };
         let target = targets.swap_remove(next);
-        self.collapsed_endpoints.remove(&target.endpoint_id);
-        if self.endpoints.len() == 1 {
-            self.reveal_workspace(&target.workspace_id);
+        self.collapsed_endpoints.remove(&target.location.endpoint);
+        if self.endpoints.len() == 1
+            && let Some(workspace_id) = target.location.workspace_id()
+        {
+            self.reveal_workspace(&workspace_id);
         }
         self.navigate_workspace_id = Some(target);
-        // The machine sidebars (always used with several endpoints, and the
-        // unavailable-surface fallback) scroll to the selection on their next
-        // render; the single-endpoint sidebar was revealed above.
         self.reveal_navigation_workspace =
             self.endpoints.len() > 1 || self.snapshot.is_none() || self.pane_surface().is_none();
     }
@@ -188,19 +186,13 @@ impl ClientShellState {
         };
         if !self.navigation_target_valid(&target) {
             self.receive_endpoint_unavailable(&EndpointNotice::new(
-                target.endpoint_id.clone(),
+                target.location.endpoint.clone(),
                 EndpointNoticeKind::WorkspaceNoLongerAvailable,
             ));
             outcome.repaint = true;
             return;
         }
-        // The runtime resolves explicit picks against the shown endpoint. If it can use a
-        // direct focus request, `focus_endpoint_target` records the pending highlight there.
-        if self.focus_or_activate(
-            target.endpoint_id.clone(),
-            ClientEndpointFocusTarget::Workspace(target.workspace_id),
-            outcome,
-        ) {
+        if self.focus_or_activate(target.location.clone(), outcome) {
             self.mode = ClientShellMode::Terminal;
             self.navigate_workspace_id = None;
         }

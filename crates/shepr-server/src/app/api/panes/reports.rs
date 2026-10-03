@@ -6,9 +6,7 @@ impl App {
         &mut self,
         params: PaneReportAgentParams,
     ) -> shepr_api::error::ApiResult {
-        let Some((_ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
-            return Err(pane_not_found(&params.pane_id));
-        };
+        let (_ws_idx, pane_id) = self.json_pane(&params.pane_id)?;
         let (origin, session_ref) = Self::parse_agent_report_identity(
             &params.source,
             &params.agent,
@@ -35,9 +33,7 @@ impl App {
         &mut self,
         params: PaneReportAgentSessionParams,
     ) -> shepr_api::error::ApiResult {
-        let Some((_ws_idx, pane_id)) = self.parse_pane_id(&params.pane_id) else {
-            return Err(pane_not_found(&params.pane_id));
-        };
+        let (_ws_idx, pane_id) = self.json_pane(&params.pane_id)?;
         let (origin, session_ref) = Self::parse_agent_report_identity(
             &params.source,
             &params.agent,
@@ -159,6 +155,23 @@ mod tests {
 
     use crate::test_support::{IsolatedEnv, ScratchDir};
     use shepr_api::schema::{Method, Request};
+
+    #[test]
+    fn hook_reports_distinguish_malformed_and_missing_pane_ids() {
+        let _env = IsolatedEnv::new();
+        let app = App::new(
+            &shepr_config::ServerConfig::default(),
+            crate::app::AppPolicy::Suspended,
+        );
+        assert_eq!(
+            app.json_pane("bad").expect_err("malformed pane id").code,
+            ApiErrorCode::InvalidPaneId,
+        );
+        assert_eq!(
+            app.json_pane("w99:p99").expect_err("missing pane").code,
+            ApiErrorCode::PaneNotFound,
+        );
+    }
 
     #[test]
     fn a_report_cannot_select_two_session_reference_kinds() {

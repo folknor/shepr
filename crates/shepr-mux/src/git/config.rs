@@ -2,11 +2,11 @@ use std::io::ErrorKind;
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
 
-use super::GitReadError;
 use super::discovery::{
     GitWorktreeInfo, canonicalize_best_effort_path, command_failed, run_git_output,
 };
 use super::identity::{BranchName, FullRefName};
+use super::{FileReadReason, GitReadError};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct BranchConfig {
@@ -132,7 +132,9 @@ fn config_deps(
         let Some(entry) = fields.next() else {
             return Err(GitReadError::InvalidOutput {
                 cwd: info.repo_root.clone(),
-                arguments: "config --includes --null --show-origin --list".into(),
+                arguments: ["config", "--includes", "--null", "--show-origin", "--list"]
+                    .map(str::to_owned)
+                    .to_vec(),
                 output: String::from_utf8_lossy(&output).into_owned(),
             });
         };
@@ -209,7 +211,7 @@ fn branch_config(
     let output = config_output(&info.repo_root, &args)?;
     let output = String::from_utf8(output).map_err(|_| GitReadError::InvalidUtf8 {
         cwd: info.repo_root.clone(),
-        arguments: args.join(" "),
+        arguments: args.iter().map(|arg| (*arg).to_owned()).collect(),
     })?;
     for line in output.lines() {
         let mut fields = line.split('\0');
@@ -219,7 +221,7 @@ fn branch_config(
         let Some(upstream) = fields.next() else {
             return Err(GitReadError::InvalidOutput {
                 cwd: info.repo_root.clone(),
-                arguments: args.join(" "),
+                arguments: args.iter().map(|arg| (*arg).to_owned()).collect(),
                 output: line.to_owned(),
             });
         };
@@ -229,7 +231,7 @@ fn branch_config(
         let (Some(remote), Some(merge_ref)) = (fields.next(), fields.next()) else {
             return Err(GitReadError::InvalidOutput {
                 cwd: info.repo_root.clone(),
-                arguments: args.join(" "),
+                arguments: args.iter().map(|arg| (*arg).to_owned()).collect(),
                 output: line.to_owned(),
             });
         };
@@ -238,7 +240,7 @@ fn branch_config(
         else {
             return Err(GitReadError::InvalidOutput {
                 cwd: info.repo_root.clone(),
-                arguments: args.join(" "),
+                arguments: args.iter().map(|arg| (*arg).to_owned()).collect(),
                 output: line.to_owned(),
             });
         };
@@ -261,7 +263,7 @@ pub(super) fn read_config_for_status(
         Ok(paths) => paths,
         Err(error) => {
             errors.push(GitReadError::ConfigEnvironment {
-                message: error.to_string(),
+                error: super::GitConfigEnvironmentError(error),
             });
             return ConfigCtx {
                 branch: branch.clone(),
@@ -307,21 +309,21 @@ pub(super) fn read_repository_format_value(
 ) -> Result<(Option<String>, Dependencies), GitReadError> {
     let cwd = path.parent().ok_or_else(|| GitReadError::FileRead {
         path: path.to_path_buf(),
-        message: "config has no parent".into(),
+        reason: FileReadReason::ConfigWithoutParent,
     })?;
     let name = path
         .file_name()
         .and_then(|name| name.to_str())
         .ok_or_else(|| GitReadError::FileRead {
             path: path.to_path_buf(),
-            message: "invalid config name".into(),
+            reason: FileReadReason::InvalidConfigName,
         })?;
     let dep = stamp(path.to_path_buf(), None);
     match dep.stamp.clone() {
         DependencyStamp::Unavailable => {
             return Err(GitReadError::FileRead {
                 path: path.to_path_buf(),
-                message: "repository config metadata is unavailable".into(),
+                reason: FileReadReason::ConfigMetadataUnavailable,
             });
         }
         DependencyStamp::Missing => return Ok((None, Dependencies::tracked(vec![dep]))),
@@ -340,7 +342,7 @@ pub(super) fn read_repository_format_value(
     }
     let value = String::from_utf8(output.stdout).map_err(|_| GitReadError::InvalidUtf8 {
         cwd: cwd.to_path_buf(),
-        arguments: args.join(" "),
+        arguments: args.iter().map(|arg| (*arg).to_owned()).collect(),
     })?;
     Ok((
         Some(value.trim().to_owned()),
@@ -362,7 +364,9 @@ pub(super) fn read_bare(info: &GitWorktreeInfo) -> Result<bool, GitReadError> {
     Ok(output.stdout == b"true\n")
 }
 
-pub(super) fn git_user_config_paths_at(cwd: &Path) -> std::io::Result<Vec<PathBuf>> {
+pub(super) fn git_user_config_paths_at(
+    cwd: &Path,
+) -> Result<Vec<PathBuf>, shepr_core::env::EnvError> {
     let mut paths = Vec::new();
     let no_system = shepr_core::env::read_os(shepr_core::env::EnvVar::GitConfigNoSystem)?
         .as_deref()

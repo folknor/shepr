@@ -1,5 +1,4 @@
-use std::fs::{self, OpenOptions};
-use std::io::{self, Write};
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -10,7 +9,9 @@ static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 fn temporary_path(parent: &Path, prefix: &str, sequence: u64) -> io::Result<PathBuf> {
     let token = temporary_token()?;
 
-    Ok(parent.join(format!("{prefix}-{token:016x}-{sequence}.tmp")))
+    Ok(shepr_platform::publish_file::publication_temporary_path(
+        parent, prefix, token, sequence,
+    ))
 }
 
 #[cfg(not(test))]
@@ -32,7 +33,7 @@ pub(super) enum PermissionPolicy<'a> {
 
 pub(super) struct AtomicReplace {
     target: PathBuf,
-    temporary: PathBuf,
+    prepared: shepr_platform::publish_file::PreparedFile,
 }
 
 impl AtomicReplace {
@@ -52,30 +53,34 @@ impl AtomicReplace {
             // The kernel-random token separates processes; the atomic sequence
             // separates threads, and create_new arbitrates collisions.
             let temporary = temporary_path(parent, temporary_prefix, sequence)?;
-            let created = match policy {
-                PermissionPolicy::ManagedAsset { .. } => OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .open(&temporary),
-                PermissionPolicy::UserConfig { existing: Some(_) } => {
-                    shepr_platform::create_private_file(&temporary)
-                }
-                PermissionPolicy::UserConfig { existing: None } => {
-                    shepr_platform::create_config_temporary(&temporary)
-                }
+            use shepr_platform::publish_file::{Durability, PreparedFile, PublishOptions};
+            let (existing, mode) = match policy {
+                PermissionPolicy::ManagedAsset { .. } => (None, 0o666),
+                PermissionPolicy::UserConfig { existing } => (existing, 0o666),
             };
-            let file = match created {
-                Ok(file) => file,
+            let prepared = match PreparedFile::prepare_at(
+                target,
+                &temporary,
+                &mut &contents[..],
+                &PublishOptions {
+                    preserve_metadata_from: existing,
+                    refuse_symlink_target: false,
+                    durability: Durability::FileOnly,
+                    replace: true,
+                    mode,
+                },
+            ) {
+                Ok(prepared) => prepared,
                 Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
                 Err(error) => return Err(error),
             };
-
-            let replacement = Self {
+            if matches!(policy, PermissionPolicy::ManagedAsset { executable: true }) {
+                prepared.set_mode(0o755)?;
+            }
+            return Ok(Self {
                 target: target.to_path_buf(),
-                temporary,
-            };
-            policy.write(file, &replacement.temporary, contents)?;
-            return Ok(replacement);
+                prepared,
+            });
         }
 
         Err(io::Error::new(
@@ -88,7 +93,7 @@ impl AtomicReplace {
     }
 
     pub(super) fn commit(self) -> io::Result<()> {
-        fs::rename(&self.temporary, &self.target)
+        self.prepared.commit().map(|_| ())
     }
 
     pub(super) fn commit_after(
@@ -96,40 +101,7 @@ impl AtomicReplace {
         before_publish: impl FnOnce(&Path) -> io::Result<()>,
     ) -> io::Result<()> {
         before_publish(&self.target)?;
-        fs::rename(&self.temporary, &self.target)
-    }
-}
-
-impl PermissionPolicy<'_> {
-    fn write(self, mut file: fs::File, temporary: &Path, contents: &[u8]) -> io::Result<()> {
-        match self {
-            Self::ManagedAsset { executable } => {
-                file.write_all(contents)?;
-                file.sync_all()?;
-                drop(file);
-                if executable {
-                    super::file_ops::make_executable(temporary)?;
-                }
-                Ok(())
-            }
-            Self::UserConfig { existing } => {
-                shepr_platform::write_config_temporary(existing, file, contents)
-            }
-        }
-    }
-}
-
-impl Drop for AtomicReplace {
-    fn drop(&mut self) {
-        if let Err(error) = fs::remove_file(&self.temporary)
-            && error.kind() != io::ErrorKind::NotFound
-        {
-            tracing::warn!(
-                path = %self.temporary.display(),
-                %error,
-                "failed to remove atomic replacement temporary file"
-            );
-        }
+        self.prepared.commit().map(|_| ())
     }
 }
 
@@ -172,6 +144,6 @@ pub(super) fn temporary_path_for_test(
 #[cfg(test)]
 impl AtomicReplace {
     pub(super) fn temporary_path(&self) -> &Path {
-        &self.temporary
+        self.prepared.temporary_path()
     }
 }

@@ -108,7 +108,7 @@ impl ClientShellState {
         patch: &shepr_protocol::PaneSurfacePatch,
         generation: u64,
     ) -> ClientPaneSurfacePatchOutcome {
-        self.apply_tagged_pane_surface_patch(patch, Some(generation))
+        self.apply_tagged_pane_surface_patch(patch, generation)
     }
 
     pub(in crate::shell) fn apply_tagged_pane_surface_patch(
@@ -127,6 +127,9 @@ impl ClientShellState {
         }
         let (cols, rows) = self.last_composed_size.unwrap_or_default();
         let area = self.layout(cols, rows).pane_surface;
+        // Composition metadata can be stale between a shell change and its redraw. A
+        // change that needs recomposition leaves presentation dirty, so the client drops
+        // any `Rows` result and composes the current shell before writing it.
         let fast_path_blocker = fast_path_blocker(self, patch, area);
         let fast_path_area = (!fast_path_blocker).then_some(area);
         let composed_patch = fast_path_area.map(|area| ClientComposedSurfacePatch {
@@ -270,14 +273,21 @@ mod tests {
         };
         let snapshot = state.snapshot.as_deref().expect("snapshot installed");
         let buffer = Buffer::empty(Rect::new(0, 0, area.width, area.height));
-        state.receive_pane_surface(shepr_protocol::PaneSurfaceFrame {
-            boot_id: snapshot.boot_id.clone(),
-            projection_revision: snapshot.revision,
-            surface_revision: shepr_protocol::SurfaceRevision::new(1),
-            frame: FrameData::from_ratatui_buffer_with_hyperlinks(&buffer, Some(cursor(1)), &[]),
-            panes,
-            splits: Vec::new(),
-        });
+        state.receive_pane_surface_from(
+            shepr_protocol::PaneSurfaceFrame {
+                boot_id: snapshot.boot_id.clone(),
+                projection_revision: snapshot.revision,
+                surface_revision: shepr_protocol::SurfaceRevision::new(1),
+                frame: FrameData::from_ratatui_buffer_with_hyperlinks(
+                    &buffer,
+                    Some(cursor(1)),
+                    &[],
+                ),
+                panes,
+                splits: Vec::new(),
+            },
+            state.active_snapshot_generation.unwrap_or(1),
+        );
         state.copy_mode = Some(ClientCopyModeState {
             scroll: shepr_vt::ScrollMetrics::new(
                 0,

@@ -496,7 +496,7 @@ mod phase_tests {
     #[tokio::test]
     async fn host_shutdown_freeze_waits_for_monitor_cancellation() {
         let config = shepr_config::ServerConfig::default();
-        let mut app = crate::app::App::new(&config, crate::app::AppPolicy::Test);
+        let mut app = crate::app::App::new(&config, crate::app::AppPolicy::Suspended);
         let mut lifecycle = ShutdownLifecycle::new(Arc::default());
         lifecycle
             .host_shutdown_request_flag()

@@ -46,7 +46,7 @@ async fn full_internal_event_queue_eventually_applies_working_to_idle_transition
     let mut server = test_headless_server();
     let workspace = shepr_mux::workspace::Workspace::test_new("test");
     let pane_id = workspace.root_pane();
-    server.app.state.workspaces = vec![workspace];
+    server.app.state.test_set_workspaces(vec![workspace]);
     server.app.state.ensure_test_terminals();
     server.app.state.set_bookmark_index(Some(0));
 
@@ -155,7 +155,12 @@ async fn full_internal_event_queue_eventually_applies_working_to_idle_transition
 #[tokio::test]
 async fn checkout_root_requests_are_limited_by_running_workers() {
     let mut server = test_headless_server();
-    server.app.state.workspaces = vec![shepr_mux::workspace::Workspace::test_new("checkout-limit")];
+    server
+        .app
+        .state
+        .test_set_workspaces(vec![shepr_mux::workspace::Workspace::test_new(
+            "checkout-limit",
+        )]);
     server.app.state.ensure_test_terminals();
     server.app.state.set_bookmark_index(Some(0));
     let (control, _render) = connect_matching_test_shell(&mut server, 811);
@@ -166,13 +171,13 @@ async fn checkout_root_requests_are_limited_by_running_workers() {
     let (release_tx, release_rx) = std::sync::mpsc::channel();
     let release_rx = std::sync::Arc::new(std::sync::Mutex::new(release_rx));
     server.workers.set_runner(std::sync::Arc::new(move |_| {
-        started_tx.send(()).map_err(|error| error.to_string())?;
+        started_tx.send(()).expect("checkout worker started signal");
         release_rx
             .lock()
-            .map_err(|_| "checkout worker gate was poisoned".to_owned())?
+            .expect("checkout worker gate was not poisoned")
             .recv_timeout(Duration::from_secs(5))
-            .map_err(|_| "checkout worker gate timed out".to_owned())?;
-        Ok(Some("/checkout".to_owned()))
+            .expect("checkout worker gate released before timeout");
+        Ok(Some("/checkout".into()))
     }));
 
     for index in 0..crate::limits::MAX_WORKER_COMPLETION_BACKLOG {
@@ -206,7 +211,7 @@ async fn checkout_root_requests_are_limited_by_running_workers() {
         replies.held_reply_message(replies.held_reply_count() - 1),
         Some(ServerMessage::ClientShellEndpointResponse {
             request_id,
-            result: Err(shepr_protocol::command::EndpointError::Rejected(message)),
+            result: Err(shepr_protocol::command::EndpointError::Busy(message)),
             ..
         }) if request_id.as_str() == "checkout-over-limit" && message.contains("limit")
     ));
@@ -234,9 +239,12 @@ async fn checkout_root_requests_are_limited_by_running_workers() {
 #[test]
 fn checkout_root_requests_count_completions_waiting_in_the_worker_channel() {
     let mut server = test_headless_server();
-    server.app.state.workspaces = vec![shepr_mux::workspace::Workspace::test_new(
-        "checkout-backlog",
-    )];
+    server
+        .app
+        .state
+        .test_set_workspaces(vec![shepr_mux::workspace::Workspace::test_new(
+            "checkout-backlog",
+        )]);
     server.app.state.ensure_test_terminals();
     server.app.state.set_bookmark_index(Some(0));
     let (control, _render) = connect_matching_test_shell(&mut server, 812);
@@ -273,7 +281,7 @@ fn checkout_root_requests_count_completions_waiting_in_the_worker_channel() {
         replies.held_reply_message(0),
         Some(ServerMessage::ClientShellEndpointResponse {
             request_id,
-            result: Err(shepr_protocol::command::EndpointError::Rejected(message)),
+            result: Err(shepr_protocol::command::EndpointError::Busy(message)),
             ..
         }) if request_id.as_str() == "checkout-queued-limit" && message.contains("limit")
     ));

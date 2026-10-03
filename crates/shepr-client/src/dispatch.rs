@@ -189,25 +189,13 @@ impl ClientLoop {
                     state.settings.prefers_osc52_clipboard(),
                     &mut state.output_writer,
                 ) {
-                    match state::host_write_failure_action(
-                        state::HostWritePurpose::Clipboard,
-                        error.kind(),
-                    ) {
-                        state::HostWriteAction::Fatal => {
-                            return Err(LoopExit::HostTerminal(error));
-                        }
-                        state::HostWriteAction::Retry
-                        | state::HostWriteAction::Continue
-                        | state::HostWriteAction::Succeeded => {
-                            warn!(
-                                endpoint = %endpoint_id,
-                                generation,
-                                bytes = data.len(),
-                                %error,
-                                "clipboard copy from the server did not reach the host clipboard"
-                            );
-                        }
-                    }
+                    warn!(
+                        endpoint = %endpoint_id,
+                        generation,
+                        bytes = data.len(),
+                        %error,
+                        "clipboard copy from the server did not reach the host clipboard"
+                    );
                 }
             }
             DecodedWireServerMessage::WindowTitle { title } => {

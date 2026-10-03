@@ -6,6 +6,43 @@ use shepr_protocol::{
 };
 use std::time::Instant;
 
+/// Why a prepared move cannot commit. Rendered only at the notice boundary.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MoveFailure {
+    Rejected(EndpointError),
+    BadSurfaceAcknowledgement,
+    UnexpectedFocusResponse,
+    BadFocusAcknowledgement,
+    LostPair,
+    ProjectionUnavailable,
+}
+
+impl std::fmt::Display for MoveFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Rejected(error) => write!(f, "{error}"),
+            Self::BadSurfaceAcknowledgement => {
+                f.write_str("surface activation returned an invalid acknowledgement")
+            }
+            Self::UnexpectedFocusResponse => f.write_str("unexpected focus response"),
+            Self::BadFocusAcknowledgement => {
+                f.write_str("endpoint focus returned an invalid acknowledgement")
+            }
+            Self::LostPair => f.write_str("endpoint move lost its coherent snapshot/surface pair"),
+            Self::ProjectionUnavailable => f.write_str("endpoint projection is unavailable"),
+        }
+    }
+}
+
+impl std::error::Error for MoveFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Rejected(error) => Some(error),
+            _ => None,
+        }
+    }
+}
+
 /// The connection a move prepares: a target is only prepared when it is connected and has a
 /// snapshot for this generation, so every field is known.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -34,10 +71,12 @@ pub(super) struct ViewEvidence {
     snapshot_revision: Option<shepr_protocol::ProjectionRevision>,
     focused_workspace_id: Option<shepr_protocol::WorkspaceId>,
     focused_pane_id: Option<shepr_protocol::PublicPaneId>,
-    // Preparation receives decoded events, not the connection decoder. Its evidence
-    // must also survive presentation filtering and reject surfaces for an old size.
-    // Reading Decoder::current_surface here requires the connection owner to pass
-    // that baseline through this event boundary; patch admission is shared until then.
+    // Preparation consumes queued events in stream order. The reader's decoder can
+    // already be several events ahead, so its current baseline cannot replace this
+    // evidence without carrying an event-specific surface across the queue. Doing
+    // that for every patch would clone and queue full cell grids, including hidden
+    // panes. Keep this event-ordered baseline; patch admission and application use
+    // the protocol's shared implementation, and geometry invalidates it locally.
     surface: Option<PaneSurfaceFrame>,
 }
 
@@ -106,7 +145,7 @@ pub struct Preparing {
     geometry: TerminalGeometry,
     focus_lane: FocusLane,
     evidence: ViewEvidence,
-    rejection: Option<String>,
+    rejection: Option<MoveFailure>,
     deadline: Instant,
 }
 impl Preparing {
@@ -134,8 +173,8 @@ impl Preparing {
     pub fn deadline(&self) -> Instant {
         self.deadline
     }
-    pub fn rejection(&self) -> Option<&str> {
-        self.rejection.as_deref()
+    pub fn rejection(&self) -> Option<&MoveFailure> {
+        self.rejection.as_ref()
     }
     fn matches(&self, endpoint: &ClientEndpointId, generation: u64, boot: &BootId) -> bool {
         self.lease.endpoint_id == *endpoint
@@ -196,7 +235,7 @@ impl Preparing {
             return PrepareProgress::Stale;
         }
         let accepted = match result {
-            Err(error) => Err(error.to_string()),
+            Err(error) => Err(MoveFailure::Rejected(error)),
             Ok(reply) if request == &self.view_request => match reply {
                 EndpointReply::ClientShellSurfaceSet {
                     active: true,
@@ -205,7 +244,7 @@ impl Preparing {
                     self.floor = Some(projection_revision);
                     Ok(())
                 }
-                _ => Err("surface activation returned an invalid acknowledgement".into()),
+                _ => Err(MoveFailure::BadSurfaceAcknowledgement),
             },
             Ok(reply) => self.focus_lane.receive(&reply),
         };
@@ -406,10 +445,7 @@ mod tests {
             ),
             PrepareProgress::Rejected
         );
-        assert_eq!(
-            p.rejection(),
-            Some("surface activation returned an invalid acknowledgement")
-        );
+        assert_eq!(p.rejection(), Some(&MoveFailure::BadSurfaceAcknowledgement));
     }
     #[test]
     fn a_rejected_preparing_is_never_ready() {

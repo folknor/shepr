@@ -2,6 +2,7 @@ use crate::server::input_wire::WirePaneInput;
 use bytes::Bytes;
 use crossterm::event::{KeyCode, KeyEventKind, KeyModifiers, MouseEventKind};
 
+use shepr_mux::workspace::SurfaceChange;
 use shepr_protocol::ClientPaneInputEvent;
 
 /// Why one piece of pane input did not reach the PTY.
@@ -45,12 +46,25 @@ impl std::fmt::Display for PaneInputError {
 /// applied to the end, so one failed event never swallows the events after it
 /// (a key or button release in particular).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(super) struct PaneInputFailures(Vec<PaneInputError>);
+pub(super) struct PaneInputFailures {
+    errors: Vec<PaneInputError>,
+    changed: bool,
+}
+
+impl PaneInputFailures {
+    pub(super) fn surface_change(&self) -> SurfaceChange {
+        if self.changed {
+            SurfaceChange::Changed
+        } else {
+            SurfaceChange::Unchanged
+        }
+    }
+}
 
 impl PaneInputFailures {
     /// Number of events dropped because the PTY input queue was full.
     pub(super) fn dropped_for_backpressure(&self) -> usize {
-        self.0
+        self.errors
             .iter()
             .filter(|error| matches!(error, PaneInputError::Backpressure(_)))
             .count()
@@ -59,7 +73,7 @@ impl PaneInputFailures {
 
 impl std::fmt::Display for PaneInputFailures {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        for (index, error) in self.0.iter().enumerate() {
+        for (index, error) in self.errors.iter().enumerate() {
             if index > 0 {
                 f.write_str("; ")?;
             }
@@ -100,7 +114,7 @@ pub(super) fn downgrade_ineligible_pixel_mouse(
     events: &mut [ClientPaneInputEvent],
     pixel_mouse: bool,
     runtime_size: shepr_core::geometry::GridSize,
-    runtime_pixels: Option<(u32, u32)>,
+    runtime_pixels: Option<shepr_mux::pane::PanePixelSize>,
 ) {
     let (runtime_rows, runtime_cols) = (runtime_size.rows.get(), runtime_size.cols.get());
     for event in events {
@@ -116,7 +130,11 @@ pub(super) fn downgrade_ineligible_pixel_mouse(
         let exact = pixel_mouse
             && geometry.is_some_and(|geometry| {
                 (runtime_rows, runtime_cols) == (geometry.rows, geometry.cols)
-                    && runtime_pixels == Some((geometry.width_px, geometry.height_px))
+                    && runtime_pixels
+                        == Some(shepr_mux::pane::PanePixelSize {
+                            width: geometry.width_px,
+                            height: geometry.height_px,
+                        })
                     && column < geometry.cols
                     && row < geometry.rows
                     && x > 0
@@ -145,6 +163,7 @@ fn apply_scroll(
     lines: u16,
     position: shepr_termio::input::mouse::Position,
     modifiers: u8,
+    changed: &mut bool,
 ) -> Result<(), PaneInputError> {
     let wheel_kind = match direction {
         ScrollDirection::Up => MouseEventKind::ScrollUp,
@@ -158,7 +177,7 @@ fn apply_scroll(
         )
     }) {
         Some((modes, shepr_mux::pane::WheelRouting::MouseReport)) => {
-            runtime.scroll_reset();
+            *changed |= runtime.scroll_reset().is_changed();
             let Some(bytes) = runtime.encode_mouse_wheel_with_modes(
                 modes,
                 wheel_kind,
@@ -173,17 +192,18 @@ fn apply_scroll(
             send_input(runtime, Bytes::from(bytes), "mouse wheel input")?;
         }
         Some((modes, shepr_mux::pane::WheelRouting::AlternateScroll)) => {
-            runtime.scroll_reset();
+            *changed |= runtime.scroll_reset().is_changed();
             let Some(bytes) = runtime.encode_alternate_scroll_with_modes(modes, wheel_kind) else {
                 return Ok(());
             };
             send_input(runtime, Bytes::from(bytes), "alternate scroll input")?;
         }
         _ => {
-            match direction {
+            *changed |= match direction {
                 ScrollDirection::Up => runtime.scroll_up(lines.max(1) as usize),
                 ScrollDirection::Down => runtime.scroll_down(lines.max(1) as usize),
-            };
+            }
+            .is_changed();
         }
     }
     Ok(())
@@ -197,15 +217,15 @@ fn apply_scroll(
 pub(super) fn apply_client_pane_input_events(
     runtime: &shepr_mux::pane::PaneRuntime,
     events: &[ClientPaneInputEvent],
-) -> Result<(), PaneInputFailures> {
+) -> Result<SurfaceChange, PaneInputFailures> {
     let mut failures = PaneInputFailures::default();
     for event in events {
-        if let Err(error) = apply_client_pane_input_event(runtime, event) {
-            failures.0.push(error);
+        if let Err(error) = apply_client_pane_input_event(runtime, event, &mut failures.changed) {
+            failures.errors.push(error);
         }
     }
-    if failures.0.is_empty() {
-        Ok(())
+    if failures.errors.is_empty() {
+        Ok(failures.surface_change())
     } else {
         Err(failures)
     }
@@ -214,6 +234,7 @@ pub(super) fn apply_client_pane_input_events(
 fn apply_client_pane_input_event(
     runtime: &shepr_mux::pane::PaneRuntime,
     event: &ClientPaneInputEvent,
+    changed: &mut bool,
 ) -> Result<(), PaneInputError> {
     if let ClientPaneInputEvent::Mouse {
         kind,
@@ -258,6 +279,7 @@ fn apply_client_pane_input_event(
                     (*lines).max(1),
                     position,
                     modifiers.bits(),
+                    changed,
                 );
             }
             MouseEventKind::ScrollLeft | MouseEventKind::ScrollRight => input_modes
@@ -282,13 +304,13 @@ fn apply_client_pane_input_event(
             return Ok(());
         }
         if kind != MouseEventKind::Moved {
-            runtime.scroll_reset();
+            *changed |= runtime.scroll_reset().is_changed();
         }
         return send_input(runtime, Bytes::from(bytes), "mouse input");
     }
 
     if let ClientPaneInputEvent::TextCommit(text) = event {
-        runtime.scroll_reset();
+        *changed |= runtime.scroll_reset().is_changed();
         return send_input(
             runtime,
             Bytes::copy_from_slice(text.as_bytes()),
@@ -310,16 +332,16 @@ fn apply_client_pane_input_event(
                     KeyEventKind::Press | KeyEventKind::Repeat => {
                         let lines = usize::from(runtime.grid_size().rows.get());
                         if key_event.code == KeyCode::PageUp {
-                            runtime.scroll_up(lines);
+                            *changed |= runtime.scroll_up(lines).is_changed();
                         } else {
-                            runtime.scroll_down(lines);
+                            *changed |= runtime.scroll_down(lines).is_changed();
                         }
                     }
                 }
                 return Ok(());
             }
 
-            runtime.scroll_reset();
+            *changed |= runtime.scroll_reset().is_changed();
             let bytes = if let Some(modes) = input_modes {
                 runtime.encode_terminal_key_with_modes(key, modes)
             } else {
@@ -331,7 +353,7 @@ fn apply_client_pane_input_event(
             send_input(runtime, Bytes::from(bytes), "key input")
         }
         shepr_termio::input::raw_input::RawInputEvent::Paste(text) => {
-            runtime.scroll_reset();
+            *changed |= runtime.scroll_reset().is_changed();
             send_paste(runtime, text, "paste")
         }
         shepr_termio::input::raw_input::RawInputEvent::Mouse(_)
@@ -350,7 +372,7 @@ fn apply_client_pane_input_event(
 #[cfg(test)]
 impl PaneInputFailures {
     pub(super) fn errors(&self) -> &[PaneInputError] {
-        &self.0
+        &self.errors
     }
 }
 
@@ -358,6 +380,34 @@ impl PaneInputFailures {
 mod tests {
     use super::*;
     use crate::test_support::*;
+
+    #[tokio::test]
+    async fn scroll_change_survives_a_failed_send_and_a_reset_in_the_same_batch() {
+        let (runtime, _input_rx) =
+            shepr_mux::pane::PaneRuntime::test_with_channel_and_scrollback_bytes(
+                20,
+                5,
+                4096,
+                b"1\r\n2\r\n3\r\n4\r\n5\r\n6\r\n",
+                1,
+            );
+        let events = [
+            ClientPaneInputEvent::TextCommit("fill".to_owned()),
+            ClientPaneInputEvent::Mouse {
+                kind: shepr_protocol::ClientMouseKind::ScrollUp,
+                position: shepr_protocol::ClientMousePosition::Cell { column: 0, row: 0 },
+                geometry: None,
+                modifiers: shepr_protocol::WireModifiers::NONE,
+                lines: 1,
+            },
+            ClientPaneInputEvent::TextCommit("dropped".to_owned()),
+        ];
+        let failures = apply_client_pane_input_events(&runtime, &events)
+            .expect_err("full queue rejects the final send");
+        assert_eq!(failures.surface_change(), SurfaceChange::Changed);
+        assert_eq!(failures.dropped_for_backpressure(), 1);
+        assert_eq!(runtime.scroll_reset(), SurfaceChange::Unchanged);
+    }
 
     #[tokio::test]
     async fn a_full_input_queue_reports_every_dropped_event_without_aborting_the_batch() {
@@ -447,7 +497,10 @@ mod tests {
             &mut events,
             false,
             shepr_core::geometry::GridSize::clamped(20, 5),
-            Some((200, 100)),
+            Some(shepr_mux::pane::PanePixelSize {
+                width: 200,
+                height: 100,
+            }),
         );
 
         assert!(matches!(
@@ -484,7 +537,10 @@ mod tests {
             &mut events,
             true,
             shepr_core::geometry::GridSize::clamped(20, 5),
-            Some((200, 100)),
+            Some(shepr_mux::pane::PanePixelSize {
+                width: 200,
+                height: 100,
+            }),
         );
 
         assert!(matches!(
@@ -520,7 +576,10 @@ mod tests {
             &mut events,
             true,
             shepr_core::geometry::GridSize::clamped(20, 6),
-            Some((200, 120)),
+            Some(shepr_mux::pane::PanePixelSize {
+                width: 200,
+                height: 120,
+            }),
         );
 
         assert!(matches!(

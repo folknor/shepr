@@ -8,8 +8,9 @@ use shepr_protocol::{PublicPaneId, WorkspaceId};
 use shepr_termio::host_term::cell_size::HostCellSize;
 
 fn app_with_test_workspace() -> (App, PublicPaneId) {
-    let mut app = App::new(&ServerConfig::default(), crate::app::AppPolicy::Test);
-    app.state.workspaces = vec![Workspace::test_new("metadata")];
+    let mut app = App::new(&ServerConfig::default(), crate::app::AppPolicy::Suspended);
+    app.state
+        .test_set_workspaces(vec![Workspace::test_new("metadata")]);
     app.state.ensure_test_terminals();
     let pane_id = app.state.workspaces[0].root_pane();
     let public_pane_id = app.public_pane_id(0, pane_id).expect("test precondition");
@@ -32,7 +33,9 @@ fn ctx() -> EndpointContext {
 fn pane_input_set_changes_only_the_target_pane() {
     let (mut app, public_pane_id) = app_with_test_workspace();
     let target = app.state.workspaces[0].root_pane();
-    let other = app.state.workspaces[0].test_split(shepr_core::layout::Direction::Horizontal);
+    let other = app
+        .state
+        .test_split_workspace(0, shepr_core::layout::Direction::Horizontal);
 
     let handled = app
         .handle_pane_input_set(&PaneInputSetParams {
@@ -328,7 +331,7 @@ async fn copy_motion_and_search_keep_their_line_across_eviction() {
     let error = evicted.expect_err("an evicted row is refused");
     assert_eq!(
         error.error,
-        EndpointError::Rejected("terminal row is unavailable".into())
+        EndpointError::Unavailable("terminal row is unavailable".into())
     );
 }
 
@@ -504,8 +507,9 @@ fn pane_rename_sets_and_clears_the_manual_label() {
 }
 
 fn app_with_workspace() -> App {
-    let mut app = App::new(&ServerConfig::default(), crate::app::AppPolicy::Test);
-    app.state.workspaces = vec![Workspace::test_new("issue")];
+    let mut app = App::new(&ServerConfig::default(), crate::app::AppPolicy::Suspended);
+    app.state
+        .test_set_workspaces(vec![Workspace::test_new("issue")]);
     app.state.ensure_test_terminals();
     app
 }
@@ -531,7 +535,9 @@ fn pane_close_of_last_pane_closes_workspace() {
 fn pane_close_keeps_the_workspace_when_other_panes_remain() {
     let mut app = app_with_workspace();
     let root = app.state.workspaces[0].root_pane();
-    let survivor = app.state.workspaces[0].test_split(shepr_core::layout::Direction::Horizontal);
+    let survivor = app
+        .state
+        .test_split_workspace(0, shepr_core::layout::Direction::Horizontal);
     app.state.ensure_test_terminals();
     let public_pane_id = app.public_pane_id(0, root).expect("test precondition");
 
@@ -567,7 +573,9 @@ fn workspace_pane_order(app: &App) -> Vec<PaneId> {
 fn app_with_two_panes() -> (App, PaneId, PaneId) {
     let mut app = app_with_workspace();
     let root = app.state.workspaces[0].root_pane();
-    let right = app.state.workspaces[0].test_split(shepr_core::layout::Direction::Horizontal);
+    let right = app
+        .state
+        .test_split_workspace(0, shepr_core::layout::Direction::Horizontal);
     app.state.ensure_test_terminals();
     app.state.workspaces[0].focus_pane(root);
     lay_out_first_workspace(&mut app);
@@ -578,7 +586,9 @@ fn app_with_two_panes() -> (App, PaneId, PaneId) {
 fn pane_swap_explicit_panes_swap_and_keep_focus_on_the_source() {
     let mut app = app_with_workspace();
     let source = app.state.workspaces[0].root_pane();
-    let target = app.state.workspaces[0].test_split(shepr_core::layout::Direction::Horizontal);
+    let target = app
+        .state
+        .test_split_workspace(0, shepr_core::layout::Direction::Horizontal);
     app.state.workspaces[0].focus_pane(source);
     lay_out_first_workspace(&mut app);
     let source_public = app.public_pane_id(0, source).expect("test precondition");
@@ -645,7 +655,7 @@ fn pane_swap_with_an_unknown_pane_is_refused_by_direction_and_a_noop_by_id() {
     });
     assert!(matches!(
         refused,
-        Err(error) if matches!(error.error, EndpointError::Rejected(_))
+        Err(error) if matches!(error.error, EndpointError::PaneGone(_))
     ));
 
     // Stale explicit ids are a successful no-op, whichever one is stale.
@@ -672,7 +682,7 @@ fn pane_swap_with_an_unknown_pane_is_refused_by_direction_and_a_noop_by_id() {
 #[test]
 fn pane_swap_across_workspaces_is_a_noop() {
     let mut app = app_with_workspace();
-    app.state.workspaces.push(Workspace::test_new("other"));
+    app.state.test_push_workspace(Workspace::test_new("other"));
     let source = app.state.workspaces[0].root_pane();
     let target = app.state.workspaces[1].root_pane();
     let source_public = app.public_pane_id(0, source).expect("test precondition");
@@ -695,7 +705,9 @@ fn pane_swap_across_workspaces_is_a_noop() {
 fn pane_zoom_toggles_zoom_and_navigates() {
     let mut app = app_with_workspace();
     let root = app.state.workspaces[0].root_pane();
-    let _right = app.state.workspaces[0].test_split(shepr_core::layout::Direction::Horizontal);
+    let _right = app
+        .state
+        .test_split_workspace(0, shepr_core::layout::Direction::Horizontal);
     app.state.workspaces[0].focus_pane(root);
     let root_public = app.public_pane_id(0, root).expect("test precondition");
     let params = PaneZoomParams {
@@ -734,7 +746,9 @@ fn pane_zoom_of_a_single_pane_changes_nothing_but_still_navigates() {
 fn pane_zoom_on_another_pane_of_a_zoomed_workspace_focuses_it_and_toggles() {
     let mut app = app_with_workspace();
     let root = app.state.workspaces[0].root_pane();
-    let right = app.state.workspaces[0].test_split(shepr_core::layout::Direction::Horizontal);
+    let right = app
+        .state
+        .test_split_workspace(0, shepr_core::layout::Direction::Horizontal);
     app.state.workspaces[0].focus_pane(root);
     app.state.workspaces[0].set_zoomed(true);
     let right_public = app.public_pane_id(0, right).expect("test precondition");
@@ -754,7 +768,9 @@ fn pane_zoom_on_another_pane_of_a_zoomed_workspace_focuses_it_and_toggles() {
 fn pane_resize_changes_target_ratio_without_changing_focus_or_navigating() {
     let mut app = app_with_workspace();
     let root = app.state.workspaces[0].root_pane();
-    let right = app.state.workspaces[0].test_split(shepr_core::layout::Direction::Horizontal);
+    let right = app
+        .state
+        .test_split_workspace(0, shepr_core::layout::Direction::Horizontal);
     app.state.workspaces[0].focus_pane(right);
     lay_out_first_workspace(&mut app);
     let root_public = app.public_pane_id(0, root).expect("test precondition");
@@ -830,7 +846,7 @@ fn pane_focus_direction_without_a_neighbor_moves_nobody() {
 #[test]
 fn pane_focus_focuses_the_target_and_navigates_across_workspaces() {
     let mut app = app_with_workspace();
-    app.state.workspaces.push(Workspace::test_new("other"));
+    app.state.test_push_workspace(Workspace::test_new("other"));
     let target_pane = app.state.workspaces[1].root_pane();
     app.state.ensure_test_terminals();
     let target_public = app
@@ -908,7 +924,10 @@ fn a_rejected_focus_command_moves_nobody() {
         let name = command.name();
         let outcome = app.handle_endpoint_command_in(command, &ctx());
         assert!(
-            matches!(outcome.result, Err(EndpointError::Rejected(_))),
+            matches!(
+                outcome.result,
+                Err(EndpointError::WorkspaceGone(_) | EndpointError::PaneGone(_))
+            ),
             "{name}"
         );
         assert_eq!(outcome.navigate, None, "{name}");
@@ -968,8 +987,5 @@ fn pane_focus_rejects_a_pane_that_is_gone() {
     });
 
     let error = response.expect_err("a missing pane is refused");
-    assert_eq!(
-        error.error,
-        EndpointError::Rejected(format!("pane {} not found", missing_pane()))
-    );
+    assert_eq!(error.error, EndpointError::PaneGone(missing_pane()));
 }

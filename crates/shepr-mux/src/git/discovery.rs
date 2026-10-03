@@ -5,8 +5,8 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::process::Output;
 
-use super::GitReadError;
 use super::identity::{FullRefName, Oid};
+use super::{FileReadReason, GitReadError};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct GitWorktreeInfo {
@@ -79,7 +79,7 @@ fn discover_below(cwd: &Path, ceilings: &GitCeilings) -> Discovery {
         Ok(info) => Discovery::Checkout(info),
         Err(error) => Discovery::Unreadable(GitReadError::FileRead {
             path: located.path.join("commondir"),
-            message: error.to_string(),
+            reason: FileReadReason::from(&error),
         }),
     }
 }
@@ -137,7 +137,7 @@ fn git_config_info(repo_root: &Path, git_dir: &Path) -> io::Result<GitWorktreeIn
 pub(super) enum RefFileRead {
     Content(String),
     Absent,
-    Unavailable(String),
+    Unavailable(FileReadReason),
 }
 
 pub(super) fn read_git_ref_file_state(path: &Path) -> RefFileRead {
@@ -150,25 +150,27 @@ pub(super) fn read_git_ref_file_state(path: &Path) -> RefFileRead {
                 // traverses a non-directory: Git treats the loose ref as broken
                 // and does not fall back to an older packed ref. Any other stat
                 // error leaves the ref's identity unknown.
-                Ok(_) => RefFileRead::Unavailable(error.to_string()),
-                Err(metadata_error) => RefFileRead::Unavailable(metadata_error.to_string()),
+                Ok(_) => RefFileRead::Unavailable(FileReadReason::from(&error)),
+                Err(metadata_error) => {
+                    RefFileRead::Unavailable(FileReadReason::from(&metadata_error))
+                }
             };
         }
         // Permission or I/O errors: the ref may exist, so its identity is
         // unavailable rather than absent.
-        Err(error) => return RefFileRead::Unavailable(error.to_string()),
+        Err(error) => return RefFileRead::Unavailable(FileReadReason::from(&error)),
     };
     let mut contents = String::new();
     if let Err(error) = file
         .take((MAX_GIT_REF_FILE_BYTES + 1) as u64)
         .read_to_string(&mut contents)
     {
-        return RefFileRead::Unavailable(error.to_string());
+        return RefFileRead::Unavailable(FileReadReason::from(&error));
     }
     if contents.len() > MAX_GIT_REF_FILE_BYTES {
-        return RefFileRead::Unavailable(format!(
-            "file exceeds the {MAX_GIT_REF_FILE_BYTES}-byte read limit"
-        ));
+        return RefFileRead::Unavailable(FileReadReason::ReadLimit {
+            bytes: MAX_GIT_REF_FILE_BYTES,
+        });
     }
     RefFileRead::Content(contents)
 }
@@ -177,10 +179,10 @@ pub(super) fn read_git_ref_file(path: &Path, errors: &mut Vec<GitReadError>) -> 
     match read_git_ref_file_state(path) {
         RefFileRead::Content(contents) => Some(contents),
         RefFileRead::Absent => None,
-        RefFileRead::Unavailable(message) => {
+        RefFileRead::Unavailable(reason) => {
             errors.push(GitReadError::FileRead {
                 path: path.to_path_buf(),
-                message,
+                reason,
             });
             None
         }
@@ -241,7 +243,7 @@ fn locate_git_dir(repo_root: &Path) -> Result<Option<LocatedGitDir>, GitReadErro
             else {
                 return Err(GitReadError::FileRead {
                     path: git_path,
-                    message: "gitfile has no gitdir target".into(),
+                    reason: FileReadReason::InvalidGitfile,
                 });
             };
             let resolved = Path::new(relative);
@@ -274,7 +276,7 @@ fn locate_git_dir(repo_root: &Path) -> Result<Option<LocatedGitDir>, GitReadErro
 fn file_read_error(path: &Path, error: &std::io::Error) -> GitReadError {
     GitReadError::FileRead {
         path: path.to_path_buf(),
-        message: error.to_string(),
+        reason: FileReadReason::from(error),
     }
 }
 
@@ -325,7 +327,7 @@ pub(super) fn git_symbolic_head_full(
         None => {
             errors.push(GitReadError::InvalidOutput {
                 cwd: repo_root.to_path_buf(),
-                arguments: args.join(" "),
+                arguments: args.iter().map(|arg| (*arg).to_owned()).collect(),
                 output,
             });
             SymbolicHeadProbe::InvalidOutput
@@ -350,7 +352,7 @@ pub(super) fn git_rev_parse_verify_with_errors(
         None => {
             errors.push(GitReadError::InvalidOutput {
                 cwd: repo_root.to_path_buf(),
-                arguments: args.join(" "),
+                arguments: args.iter().map(|arg| (*arg).to_owned()).collect(),
                 output,
             });
             None
@@ -411,7 +413,7 @@ pub(super) fn git_trimmed_stdout(
         Err(_) => {
             errors.push(GitReadError::InvalidUtf8 {
                 cwd: repo_root.to_path_buf(),
-                arguments: args.join(" "),
+                arguments: args.iter().map(|arg| (*arg).to_owned()).collect(),
             });
             return None;
         }
@@ -420,7 +422,7 @@ pub(super) fn git_trimmed_stdout(
     if stdout.is_empty() {
         errors.push(GitReadError::InvalidOutput {
             cwd: repo_root.to_path_buf(),
-            arguments: args.join(" "),
+            arguments: args.iter().map(|arg| (*arg).to_owned()).collect(),
             output: String::new(),
         });
         None
@@ -436,15 +438,15 @@ pub(super) fn run_git_output(cwd: &Path, args: &[&str]) -> Result<Output, GitRea
     super::run_git(cwd, args).map_err(|error| match error {
         GitCommandError::Spawn(error) => GitReadError::Spawn {
             cwd: cwd.to_path_buf(),
-            message: error.to_string(),
+            reason: super::GitIoError::from(&error),
         },
         GitCommandError::TimedOut => GitReadError::TimedOut {
             cwd: cwd.to_path_buf(),
-            arguments: args.join(" "),
+            arguments: args.iter().map(|arg| (*arg).to_owned()).collect(),
         },
         GitCommandError::Process(error) => GitReadError::Process {
             cwd: cwd.to_path_buf(),
-            message: error.to_string(),
+            reason: super::GitIoError::from(&error),
         },
     })
 }
@@ -452,7 +454,7 @@ pub(super) fn run_git_output(cwd: &Path, args: &[&str]) -> Result<Output, GitRea
 pub(super) fn command_failed(cwd: &Path, args: &[&str], output: &Output) -> GitReadError {
     GitReadError::CommandFailed {
         cwd: cwd.to_path_buf(),
-        arguments: args.join(" "),
+        arguments: args.iter().map(|arg| (*arg).to_owned()).collect(),
         status: output.status.code(),
         stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
     }
@@ -560,7 +562,7 @@ pub(super) fn read_ref_oid_for_full_ref(
             let Some(oid) = Oid::parse(contents.trim()) else {
                 errors.push(GitReadError::FileRead {
                     path: loose_ref,
-                    message: "loose ref is not a complete object ID".into(),
+                    reason: FileReadReason::InvalidObjectId,
                 });
                 return None;
             };
@@ -568,10 +570,10 @@ pub(super) fn read_ref_oid_for_full_ref(
         }
         // An existing but unavailable loose ref must not resurrect a stale
         // packed OID. Symbolic loose refs are reported unavailable too.
-        RefFileRead::Unavailable(message) => {
+        RefFileRead::Unavailable(reason) => {
             errors.push(GitReadError::FileRead {
                 path: loose_ref,
-                message,
+                reason,
             });
             return None;
         }
@@ -588,7 +590,7 @@ pub(super) fn read_ref_oid_for_full_ref(
         Err(error) => {
             errors.push(GitReadError::FileRead {
                 path: packed_path,
-                message: error.to_string(),
+                reason: FileReadReason::from(&error),
             });
             return None;
         }
@@ -606,14 +608,14 @@ pub(super) fn read_ref_oid_for_full_ref(
             Ok(_) => {
                 errors.push(GitReadError::FileRead {
                     path: packed_path,
-                    message: "packed ref line is too large".into(),
+                    reason: FileReadReason::PackedRefLineTooLarge,
                 });
                 return None;
             }
             Err(error) => {
                 errors.push(GitReadError::FileRead {
                     path: packed_path,
-                    message: error.to_string(),
+                    reason: FileReadReason::from(&error),
                 });
                 return None;
             }
@@ -633,7 +635,7 @@ pub(super) fn read_ref_oid_for_full_ref(
             }
             errors.push(GitReadError::FileRead {
                 path: packed_path,
-                message: "packed ref is not a complete object ID".into(),
+                reason: FileReadReason::InvalidObjectId,
             });
             return None;
         }
@@ -671,7 +673,7 @@ pub(super) fn read_ref_oid_with_errors(
     let Some(full_ref) = FullRefName::parse(full_ref) else {
         errors.push(GitReadError::FileRead {
             path: common_dir.to_path_buf(),
-            message: "invalid ref name".into(),
+            reason: FileReadReason::InvalidRefName,
         });
         return None;
     };

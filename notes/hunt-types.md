@@ -22,6 +22,44 @@ reports are in the commit that precedes this file's.
 
 ## Identities
 
+## TYP-034 - Workspace geometry sizes are still row and column tuples
+
+Pane dimensions, pixel sizes, read ranges and history parts are named types.
+Still open: `PaneGeometry::pane_size` and `sole_pane_size` in
+`crates/shepr-mux/src/workspace/geometry.rs` return `(rows, cols)` tuples, and
+`spawn_geometry` takes separate rows and cols. (mux-panes, mux-state)
+
+## TYP-045 - Saved pane cwds and launch inputs stay plain paths
+
+Wire cwds are a byte-preserving `RemotePath` and checkout workers keep typed
+Git errors to the reply. Still open: the saved pane cwd and the lexical launch
+inputs are `PathBuf` with validation at restore or child admission (the reason
+is at the code); an `AbsolutePath` checked at deserialization would make the
+saved form a type fact. (mux-state, contracts, server-app)
+
+## TYP-053 - Raw socket stream aliases and tuple bind APIs remain
+
+`TrustedServerStream`, `BoundSocket` and `OwnedSocketFile` now carry the
+trusted connect and paired path and inode cleanup. Still open: the raw
+`LocalStream`/`LocalListener` aliases and the tuple-returning bind APIs remain
+beside them, and the socket startup lock reports its outcome with hand-written
+literals. (foundation)
+
+## TYP-078 - The client launch error still wraps io::Error
+
+Move failures are a typed `MoveFailure` until the notice boundary and
+`ClientExit` keeps typed session endings. Still open: public
+`ClientRunError::Launch(io::Error)` remains for the CLI construction sites, and
+causes already flattened by shepr-remote cannot be recovered. (client-core)
+
+## TYP-080 - Endpoint activation still carries its focus separately
+
+Shell destinations and hit targets use one `Location` and a `PinnedLocation`
+for snapshot-bound selections. Still open: `ClientEndpointFocusTarget` and
+`ClientShellAction::ActivateEndpoint` carry the endpoint and an optional focus
+as separate operands, adapted through `Location::focus_target()`.
+(client-shell)
+
 ## TYP-007 - TUI request ids still travel as text
 
 Every client request id is minted by one `RequestId::allocate()`, focus-id
@@ -126,17 +164,6 @@ allocating live ids itself. `raw` then becomes crate-private to `shepr-core`.
 imports it from there only for log lines and thread names; an `ids` module would
 read better. Reported by foundation, mux-state and server-app.
 
-## TYP-011 - `SshTarget` still derefs to `str`
-
-The remote crate now uses `SshTarget::append_to`, typed target accessors and
-messages, an `SshTarget` metadata target, `MachineLabel`-keyed probes and
-`RemoteExecutable` equality. Still open: `SshTarget: Deref<Target = str>` and
-`IntoSshTarget for &String` in `crates/shepr-config/src/machine.rs`, one
-`.arg(target.as_str())` site in the machine probe, and the persisted
-`StoredMetadata.target` and platform control-socket API still take text at
-their boundaries. Drop the `Deref` once those go. Reported by edges and
-contracts.
-
 ## Agent identity and state
 
 ## TYP-016 - Agent state still has three mirror spellings
@@ -157,16 +184,6 @@ decoding its own result. Reported by agents, contracts, edges and server-app.
 ## Hook arbitration and detector state
 
 ## Pane runtime
-
-## TYP-027 - ChildLiveness still has test-only adapters in production
-
-`ChildLiveness` (`crates/shepr-mux/src/pane/teardown.rs`) is one locked identity
-and lifecycle state, and real children derive their pid from their process
-handle. Still open: a no-leader constructor used by
-`crates/shepr-mux/src/pane/detection_task.rs` tests and three pid-injection
-calls in `pane/runtime.rs` tests go through test-only adapters on the production
-type; moving those doubles into fixtures needs an observation seam through the
-runtime constructor. (mux-panes)
 
 ## TYP-030 - Content and detection counters are raw `u64` with sentinels
 
@@ -194,83 +211,7 @@ validation and carried to `PtyCommand`. Still open: the raw
 validation callback because pty cannot depend on config. Reported by
 foundation, mux-panes, contracts and server-app.
 
-## TYP-033 - Client copy search state keeps loose counts
-
-Pane text points are one `shepr_vt::Point<AbsRow>` across vt, mux, protocol and
-the client word selection, and mux search takes a typed request. Still open:
-the client copy search state in `crates/shepr-client/src/shell/state.rs` stores
-total, window index and global index as separate fields of mixed widths, and
-the word-selection drag takes an `(AbsRow, u16)` tuple at its mouse boundary.
-(client-shell)
-
-## TYP-034 - Tuples standing in for named pairs in the pane and workspace APIs
-
-`PaneTerminal::dimensions()` and `PaneRuntime::terminal_dimensions() ->
-Option<(u16, u16)>` are `(cols, rows)`, the test-only `current_size()` is
-`(rows, cols)`, and server tests assert `Some((grown.1, grown.0))`;
-`PaneGeometry::pane_size`, `sole_pane_size` and `restored_pane_size` return
-`(rows, cols)` and `spawn_geometry(rows, cols, cell)` then calls
-`PaneGeometry::with_cell(cols, rows, cell)`; `pixel_size() -> Option<(u32,
-u32)>`; `terminal_recent_read_range -> Option<(usize, usize, u16)>`;
-`PaneHistoryCache::parts()` yields `(&Arc<str>, Option<usize>, bool)`;
-`osc_rgb_response(command: &str, r, g, b)` takes three bytes and builds the
-command from a typed `ColorQueryTarget` as a string. Proposal: return
-`GridSize`/`PaneGeometry` and named structs. Reported by mux-panes and
-mux-state.
-
-## TYP-036 - Mutation results are recovered by diffing revisions
-
-The pane scroll and clear methods return `SurfaceChange` and the API handlers
-use it, but the server's headless input path still compares scroll metrics
-around each input batch, and its input helper discards the individual
-results. Aggregating `SurfaceChange` through the batch helper removes the
-comparison. The app-level form of the same pattern is filed among the
-consolidations. (mux-panes)
-
-## TYP-037 - History cache edges
-
-`PaneHistorySource(pub(crate) Arc<PaneTerminal>)` is built by reaching into the
-tuple field; `PaneHistorySource::refresh -> bool` and
-`read_primary_history_inner -> Option<()>` fold "alternate screen active" and
-"core unreadable" together. Fine today because both mean "keep the previous
-cache", but `HistoryUnavailable::{AlternateScreen, CorePoisoned}` costs nothing.
-`next_restored_revision` sets the top bit of a `u64` while `PaneHistoryCache`'s
-counter "never reaches the top bit": two files partition one integer space;
-`PaneStamp = Option<u64>`. Proposal: `HistoryRevision::{Live(u64),
-Restored(u64)}`. Reported by mux-panes and mux-state.
-
 ## Workspace, persistence and Git
-
-## TYP-041 - The Git status cache key is a bare path, and read errors are prose
-
-The cache entry is now `Miss` or `Hit` with an `AheadBehindState`. The cache key
-is still a `PathBuf` that means the canonical checkout root for a repo, the raw
-resolved cwd for a non-repo and a placeholder seeded by
-`Workspace::mark_identity_undiscovered`; a `GitStatusKey::{Checkout, Outside}`
-minted by discovery needs the workspace refresh input to carry it, not just a
-path (the boundary is commented in `app/git_refresh.rs`). `GitReadError`'s
-payloads are prose (`arguments: args.join(" ")`, `message: error.to_string()`);
-`FileRead` should carry a `FileReadReason` enum. (mux-state)
-
-## TYP-045 - Cwds are `PathBuf`s right after `UsableCwd` exists
-
-Save-time process validation now returns `UsableCwd`; event-loop observations
-deliberately stay unstat'ed paths (a stat could block the loop; commented at
-the code). Saved cwds (`PaneSnapshot::cwd`, `WorkspaceSnapshot::identity_cwd`)
-are still `PathBuf` with restore checking `is_absolute()` by hand. On the wire and in the server, paths are
-`String`: `WorkspaceCreateSource::Cwd`, `WorkspaceCheckoutRootParams::cwd`
-(validated later by `api::cwd::launch_cwd`), `EndpointReply::WorkspaceCheckoutRoot
-{ root, home }`, `ClientShellWorkspace::new_workspace_cwd` (where `""` means
-none, through `map_or_default`), `ClientShellPane::{cwd, foreground_cwd}` (built
-with lossy `display().to_string()`), `SessionRestoreNotice::backup_dir`,
-`CheckoutRootRunner: Fn(PathBuf) -> Result<Option<String>, String>`,
-`WorkerCompletion::CheckoutRoot { home: Option<String> }`, and
-`prepare_workspace_checkout_root -> (PathBuf, Option<String>)` where a non-UTF-8
-home silently becomes "no home". Proposal: an `AbsolutePath` checked at
-deserialization for saved and wire cwds, `UsableCwd` (or an `ObservedCwd`) as the
-return of runtime cwd reads, and a `RemotePath` newtype for paths on the
-server's host that the client never opens. Reported by mux-state, contracts,
-server-app and server-serving.
 
 ## Geometry and coordinates
 
@@ -328,24 +269,6 @@ Pixel(PixelPos)}` with an explicit 1-based newtype at the encoder, and the frame
 told the host mouse mode so it emits typed positions. Reported by terminal and
 client-core.
 
-## TYP-053 - The Unix socket stream, bound socket and socket path are untyped
-
-`pub type LocalStream = UnixStream` and `LocalListener = UnixListener`:
-`connect_trusted_local_stream` (peer uid checked) and `connect_local_stream`
-(not checked) return the same type, so nothing stops a client path from writing
-to an unverified stream (`wake_listener` and `probe` use the untrusted one
-deliberately). `bind_private_socket` and `bind_single_use_private_socket` return
-`(LocalListener, SocketStartupLock, SocketFileIdentity)`, and
-`remove_socket_file_if_owned(path, identity)` takes them separately, so consumers
-rebundle it (`ServerHandle`, `TeardownResource::Socket { path, identity }`,
-`BridgeSocketStartupCleanup`). Proposal: `TrustedServerStream` from the trusted
-connect only; an `AdmittedPeer` from an accept helper that ran the credential
-check; `BoundSocket { listener, lock, path, identity }` with
-`remove_if_still_ours(self)`; a `SocketPath` constructed with the length check
-(see the socket path consolidation). `SocketStartupLock` also reports its
-outcome (`"busy"`, `"acquired"`, `"released"`) by hand in three places.
-(foundation)
-
 ## Terminal values
 
 ## TYP-056 - Progress reports and OSC evidence are bytes and empty strings
@@ -374,28 +297,6 @@ Now}`), converted at the `poll` call; validation produces the `Duration`.
 Reported by terminal, foundation, client-core and contracts.
 
 ## Wire, API and config
-
-## TYP-061 - Endpoint failures a client could branch on are `Rejected(String)`
-
-`command::EndpointError::Rejected(String)` is the only failure for anything the
-app refuses: "workspace not found", "pane not found", "split children not
-found", "ratio must be finite", "split pane belongs to another workspace", "the
-pane is on the alternate screen", "copy search query is too large", "cwd must be
-an absolute path", "the pane could not be split", "the new pane is unavailable";
-the server loop adds "checkout root worker limit reached; retry later" (a busy
-condition), "failed to start checkout root worker" (a resource failure) and
-`response_within`'s "the response could not be encoded" (internal). The client
-shell keys notice identity on the prose (`format!("{method}:{message}")`), and
-every `Work` completion treats a reply of the wrong variant with
-`set_endpoint_error("endpoint returned an unexpected ... result")` (five
-sites). The JSON API reports an unparseable pane id as `pane_not_found`, so a
-syntax error and a missing pane are indistinguishable to a hook. Proposal:
-`WorkspaceGone(WorkspaceId)`, `PaneGone(PublicPaneId)`, `SplitGone`,
-`InvalidArgument(..)`, `Busy`, `Internal`, with `Rejected(String)` only for
-user-facing messages, and typed replies per command (an associated reply type)
-so the ledger's continuation cannot receive the wrong variant. The `32f70f2`
-move typed the loop's errors but left the app's as one variant. Reported by
-contracts, server-app, server-serving and client-shell.
 
 ## TYP-064 - Wire grid cells: the wide-glyph tail is a sentinel and `FrameData` has no invariant
 
@@ -444,43 +345,7 @@ gone. Still open: `crates/shepr-platform/src/private_file.rs` embeds
 `PrivateDirectoryPolicyError` in an `io::Error` and recovers it in
 `PrivateDir::is_policy_refusal`. (foundation)
 
-## TYP-075 - The launch builders still pass shell text as `&str`
-
-`PosixScript` and `AccountShellCommand`
-(`crates/shepr-remote/src/remote/shell_command.rs`) are taken by the SSH
-methods and the bridge entry point, but the command builders in
-`crates/shepr-remote/src/remote/launch.rs` still produce `&str`/`String` that
-`sh_output_within` adapts internally. Have the builders return the typed
-values. (edges)
-
 ## Client
-
-## TYP-078 - Typed move and session failures end as prose
-
-`Preparing::rejection: Option<String>` (from `EndpointError::to_string()` and
-literals such as "surface activation returned an invalid acknowledgement"),
-`FocusLane::receive -> Result<(), String>`, `view::commit_move -> Result<_,
-String>`; `reconcile` wraps each in another `format!`.
-`EndpointTransportFailure { kind: io::ErrorKind, message: String }` is rebuilt
-into an `io::Error` for `ClientError::ConnectionLost` and into a diagnostic in
-`endpoint_lost`, losing the source chain. `ClientExit { message: Option<String> }`
-and `ClientRunError::Launch(io::Error)` flatten a session outcome already
-classified in `run_launched_client`. Proposal: `MoveFailure::{Rejected, BadAck,
-FocusMismatch, LostPair, ProjectionUnavailable, TimedOut, TargetLost}` (with the
-deadline failure one more variant), and typed launch and exit outcomes.
-(client-core)
-
-## TYP-080 - Endpoint-qualified addresses are spelled six ways in the shell
-
-`ClientEndpointFocusTarget::{Workspace, Pane}` (no endpoint),
-`ClientNavigatorTarget::{Machine, Workspace, Pane}` (endpoint in each variant),
-`WorkspaceNavigationTarget { endpoint_id, workspace_id, boot_id, generation }`,
-`AggregateAgentTarget { endpoint_id, pane_id }`, `pending_agent_reveal:
-Option<(ClientEndpointId, PublicPaneId)>`, `ShellHitMap::endpoint_agents:
-Vec<(Rect, ClientEndpointId, PublicPaneId)>` beside `agents: Vec<(Rect,
-PublicPaneId)>`, `WorkspaceHit` and `ClientWorkspacePress`. Proposal: `Location
-{ endpoint, target: Target::{Machine, Workspace, Pane} }` and a `PinnedLocation`
-adding the snapshot identity. (client-shell)
 
 ## Bool parameters, tuples and sentinels
 

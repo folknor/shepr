@@ -104,7 +104,9 @@ struct ClientViewKey {
 /// render coordination settles each connection's location, baseline and outbox
 /// against the same app revision, rather than owning a second client registry.
 pub struct HeadlessServer {
-    app: app::App,
+    // Crate-visible so `app` module tests can drive an `App` through the
+    // server's event envelope (`handle_test_runtime_exit_and_replay`).
+    pub(crate) app: app::App,
     view_epoch: ViewEpoch,
     /// The server socket: startup opens its TUI gate
     /// (`open_client_protocol`), and dropping it tears down the listener and
@@ -1226,7 +1228,8 @@ impl HeadlessServer {
                 // A second surface changes no workspace's size: controlled
                 // workspaces keep their controller and uncontrolled ones keep
                 // theirs.
-                if self.claim_unowned_shell_workspace_geometry(client_id, true) {
+                if self.claim_client_geometry(client_id, client_views::GeometryClaimReason::Connect)
+                {
                     self.mark_view_changed();
                 }
             }
@@ -1323,7 +1326,9 @@ impl HeadlessServer {
                 client.shell_state_mut().outer_terminal_focus = Some(focused);
                 if focused {
                     self.promote_client_to_foreground(client_id);
-                    if self.claim_shell_workspace_geometry(client_id, false) {
+                    if self
+                        .claim_client_geometry(client_id, client_views::GeometryClaimReason::Focus)
+                    {
                         self.mark_view_changed();
                     }
                 }
@@ -1392,9 +1397,11 @@ impl HeadlessServer {
                     if let Some(client) = self.clients.get_mut(&client_id) {
                         client.track_shell_input(&pane_id, &releases);
                     }
-                    let scroll_before = runtime.read().scroll_metrics();
                     let result = apply_client_pane_input_events(runtime, &releases);
-                    let scrolled = runtime.read().scroll_metrics() != scroll_before;
+                    let scrolled = match &result {
+                        Ok(change) => change.is_changed(),
+                        Err(failures) => failures.surface_change().is_changed(),
+                    };
                     if let Err(failures) = result {
                         self.report_client_shell_input_failures(client_id, &pane_id, &failures);
                     }
@@ -1410,8 +1417,11 @@ impl HeadlessServer {
                 if interaction {
                     self.promote_client_to_foreground(client_id);
                 }
-                let geometry_changed =
-                    interaction && self.claim_shell_workspace_geometry(client_id, false);
+                let geometry_changed = interaction
+                    && self.claim_client_geometry(
+                        client_id,
+                        client_views::GeometryClaimReason::Interaction,
+                    );
                 if geometry_changed {
                     self.mark_view_changed();
                 }
@@ -1422,9 +1432,11 @@ impl HeadlessServer {
                 ) else {
                     return;
                 };
-                let scroll_before = runtime.read().scroll_metrics();
                 let result = apply_client_pane_input_events(runtime, &events);
-                let scrolled = runtime.read().scroll_metrics() != scroll_before;
+                let scrolled = match &result {
+                    Ok(change) => change.is_changed(),
+                    Err(failures) => failures.surface_change().is_changed(),
+                };
                 if let Err(failures) = result {
                     self.report_client_shell_input_failures(client_id, &pane_id, &failures);
                 }

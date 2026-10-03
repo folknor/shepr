@@ -101,11 +101,11 @@ mod tests {
     fn test_app_with_pane() -> (super::super::App, shepr_core::layout::PaneId) {
         let mut app = super::super::App::new(
             &shepr_config::ServerConfig::default(),
-            crate::app::AppPolicy::Test,
+            crate::app::AppPolicy::Suspended,
         );
         let ws = Workspace::test_new("test");
         let pane_id = ws.root_pane();
-        app.state.workspaces.push(ws);
+        app.state.test_push_workspace(ws);
         app.state.set_bookmark_index(Some(0));
         app.state
             .test_record_all_workspace_areas(ratatui::layout::Rect::new(0, 0, 80, 24));

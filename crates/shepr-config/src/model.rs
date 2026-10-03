@@ -233,7 +233,7 @@ impl SidebarBounds {
     }
 }
 
-pub fn validated_sidebar_bounds(min: u16, max: u16) -> Option<SidebarBounds> {
+pub(crate) fn validated_sidebar_bounds(min: u16, max: u16) -> Option<SidebarBounds> {
     (min <= max).then_some(SidebarBounds { min, max })
 }
 

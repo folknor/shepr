@@ -43,7 +43,7 @@ mod terminal_setup;
 
 pub use errors::{ClientExit, ClientRunError};
 pub use shell::{ClientShellConfig, ClientShellState};
-pub use startup::run_client;
+pub use startup::{run_client, run_client_with_connectors};
 
 #[cfg(test)]
 use client_loop::ClientLoop;

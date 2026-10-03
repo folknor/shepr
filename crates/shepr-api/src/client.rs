@@ -8,7 +8,7 @@ use serde::de::DeserializeOwned;
 use crate::limits::ORDINARY_RESPONSE_TIMEOUT;
 use crate::schema::{ErrorResponse, Method, PingParams, Request, ResponseResult, SuccessResponse};
 use crate::status::RuntimeLifecycle;
-use shepr_platform::ipc::{LocalStream, LocalStreamDeadlineReader};
+use shepr_platform::ipc::{LocalStreamDeadlineReader, TrustedServerStream};
 
 /// Reusable client for Shepr's newline-delimited JSON API.
 #[derive(Debug, Clone)]
@@ -135,7 +135,7 @@ impl ApiClient {
     /// Every request (status, stop, detect) checks who serves the socket
     /// before the first byte is written to it, and waits at most `timeout` for
     /// a listener whose backlog is full (`ErrorKind::TimedOut`).
-    fn connect(&self, timeout: Duration) -> io::Result<LocalStream> {
+    fn connect(&self, timeout: Duration) -> io::Result<TrustedServerStream> {
         shepr_platform::ipc::connect_trusted_local_stream_within(&self.socket_path, timeout)
     }
 }
@@ -236,7 +236,10 @@ impl From<serde_json::Error> for ApiClientError {
     }
 }
 
-fn write_request(stream: &mut LocalStream, request: &Request) -> Result<(), ApiClientError> {
+fn write_request(
+    stream: &mut TrustedServerStream,
+    request: &Request,
+) -> Result<(), ApiClientError> {
     stream.write_all(serde_json::to_string(request)?.as_bytes())?;
     stream.write_all(b"\n")?;
     stream.flush()?;

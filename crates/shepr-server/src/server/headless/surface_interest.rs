@@ -1,3 +1,4 @@
+use super::client_views::GeometryClaimReason;
 use super::*;
 use crate::server::ClientId;
 use crate::server::clients::ClientSurfaceChange;
@@ -79,22 +80,7 @@ impl HeadlessServer {
             if foreground_changed {
                 self.sync_host_theme_from_foreground();
             }
-            // A surface that already sizes some workspace settles it now,
-            // starting any resume the geometry was holding back.
-            self.resize_shell_workspaces_sized_for(client_id, true);
-            let focused_viewer_already_owns_workspace = self
-                .shell_target_for_client(client_id)
-                .is_some_and(|workspace_id| {
-                    self.clients.presenting().any(|(&other_id, client)| {
-                        other_id != client_id
-                            && client.shell_state().outer_terminal_focus == Some(true)
-                            && self.shell_target_for_client(other_id).as_ref()
-                                == Some(&workspace_id)
-                    })
-                });
-            if !focused_viewer_already_owns_workspace {
-                self.claim_shell_workspace_geometry(client_id, true);
-            }
+            self.claim_client_geometry(client_id, GeometryClaimReason::Activate);
         } else {
             if let Some(departure) = departure {
                 self.apply_client_departures(vec![(client_id, departure)]);

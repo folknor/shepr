@@ -151,11 +151,11 @@ mod tests {
     fn app_with_launching_resume() -> (App, PaneId, shepr_protocol::TerminalId) {
         let mut app = App::new(
             &shepr_config::ServerConfig::default(),
-            crate::app::AppPolicy::Test,
+            crate::app::AppPolicy::Suspended,
         );
         let workspace = shepr_mux::workspace::Workspace::test_new("unconfirmed-resume");
         let pane_id = workspace.root_pane();
-        app.state.workspaces = vec![workspace];
+        app.state.test_set_workspaces(vec![workspace]);
         app.state.ensure_test_terminals();
         let terminal_id = app.state.workspaces[0]
             .terminal_id(pane_id)

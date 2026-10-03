@@ -1,7 +1,6 @@
 use std::fmt;
-use std::ops::Deref;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::limits::MAX_SSH_TARGET_BYTES;
 
@@ -36,36 +35,9 @@ impl fmt::Display for SshTargetError {
 impl std::error::Error for SshTargetError {}
 
 /// A checked SSH destination shared by the machine config and SSH transport.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
 pub struct SshTarget(String);
-
-pub trait IntoSshTarget {
-    fn into_ssh_target(self) -> Result<SshTarget, SshTargetError>;
-}
-
-impl IntoSshTarget for SshTarget {
-    fn into_ssh_target(self) -> Result<SshTarget, SshTargetError> {
-        Ok(self)
-    }
-}
-
-impl IntoSshTarget for String {
-    fn into_ssh_target(self) -> Result<SshTarget, SshTargetError> {
-        SshTarget::parse(self)
-    }
-}
-
-impl IntoSshTarget for &str {
-    fn into_ssh_target(self) -> Result<SshTarget, SshTargetError> {
-        SshTarget::parse(self)
-    }
-}
-
-impl IntoSshTarget for &String {
-    fn into_ssh_target(self) -> Result<SshTarget, SshTargetError> {
-        SshTarget::parse(self.clone())
-    }
-}
 
 impl SshTarget {
     pub fn parse(value: impl Into<String>) -> Result<Self, SshTargetError> {
@@ -95,6 +67,11 @@ impl SshTarget {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    /// The destination identity for platform control-socket naming.
+    pub fn control_key(&self) -> shepr_platform::SshControlKey<'_> {
+        shepr_platform::SshControlKey::from_identity_bytes(self.0.as_bytes())
+    }
 }
 
 impl<'de> Deserialize<'de> for SshTarget {
@@ -107,14 +84,6 @@ impl<'de> Deserialize<'de> for SshTarget {
 impl fmt::Display for SshTarget {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(self.as_str())
-    }
-}
-
-impl Deref for SshTarget {
-    type Target = str;
-
-    fn deref(&self) -> &Self::Target {
-        self.as_str()
     }
 }
 

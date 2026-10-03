@@ -190,7 +190,7 @@ pub fn encoded_len<T: Serialize + ?Sized>(value: &T) -> Result<usize, CodecError
 
 /// Decodes one value from the start of `input` and returns it together with
 /// the number of bytes consumed.
-pub fn from_slice<'de, T: Deserialize<'de>>(input: &'de [u8]) -> Result<(T, usize), CodecError> {
+fn from_slice<'de, T: Deserialize<'de>>(input: &'de [u8]) -> Result<(T, usize), CodecError> {
     let mut decoder = Decoder::new(input);
     let value = decoder.decode()?;
     Ok((value, decoder.position()))
@@ -760,11 +760,9 @@ impl<S: Sink> ser::SerializeStructVariant for &mut Encoder<S> {
 // Decoder
 // ---------------------------------------------------------------------------
 
-/// Positional decoder over a borrowed input buffer.
-///
-/// Besides implementing `serde::Deserializer`, it exposes position and finish
-/// checks for framed values.
-pub struct Decoder<'de> {
+/// Positional decoder over a borrowed input buffer, tracking how much of a
+/// prefix value it consumes.
+struct Decoder<'de> {
     input: &'de [u8],
     pos: usize,
     depth: usize,
@@ -772,7 +770,7 @@ pub struct Decoder<'de> {
 }
 
 impl<'de> Decoder<'de> {
-    pub fn new(input: &'de [u8]) -> Self {
+    fn new(input: &'de [u8]) -> Self {
         Self {
             input,
             pos: 0,
@@ -782,7 +780,7 @@ impl<'de> Decoder<'de> {
     }
 
     /// Number of input bytes consumed so far.
-    pub fn position(&self) -> usize {
+    fn position(&self) -> usize {
         self.pos
     }
 
@@ -790,20 +788,8 @@ impl<'de> Decoder<'de> {
         self.input.len().saturating_sub(self.pos)
     }
 
-    /// Fails with `TrailingBytes` unless all input has been consumed.
-    pub fn finish(&self) -> Result<(), CodecError> {
-        if self.pos == self.input.len() {
-            Ok(())
-        } else {
-            Err(CodecError::TrailingBytes {
-                consumed: self.pos,
-                total: self.input.len(),
-            })
-        }
-    }
-
     /// Decodes the next value through its `Deserialize` implementation.
-    pub fn decode<T: Deserialize<'de>>(&mut self) -> Result<T, CodecError> {
+    fn decode<T: Deserialize<'de>>(&mut self) -> Result<T, CodecError> {
         T::deserialize(&mut *self)
     }
 
@@ -1254,7 +1240,19 @@ pub fn to_vec<T: Serialize + ?Sized>(value: &T) -> Result<Vec<u8>, CodecError> {
 
 #[cfg(test)]
 impl<'de> Decoder<'de> {
-    pub fn with_max_depth(input: &'de [u8], max_depth: usize) -> Self {
+    /// Fails with `TrailingBytes` unless all input has been consumed.
+    fn finish(&self) -> Result<(), CodecError> {
+        if self.pos == self.input.len() {
+            Ok(())
+        } else {
+            Err(CodecError::TrailingBytes {
+                consumed: self.pos,
+                total: self.input.len(),
+            })
+        }
+    }
+
+    fn with_max_depth(input: &'de [u8], max_depth: usize) -> Self {
         Self {
             max_depth,
             ..Self::new(input)

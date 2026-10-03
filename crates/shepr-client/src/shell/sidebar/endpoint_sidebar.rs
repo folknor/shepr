@@ -6,6 +6,7 @@ use ratatui::buffer::Buffer;
 use ratatui::style::{Modifier, Style};
 
 use crate::shell::endpoints::{ClientShellEndpoint, MachineHit, endpoint_status_presentation};
+use crate::shell::navigation::location::Location;
 use crate::shell::state::{ClientShellConfig, ShellHitMap, WorkspaceHit};
 use shepr_protocol::ClientShellSnapshot;
 
@@ -49,7 +50,10 @@ pub(in crate::shell) fn render_collapsed(
                     .position(|workspace| {
                         if reveal {
                             state.selected_workspace_id.is_some_and(|target| {
-                                target.matches(&endpoint.endpoint_id, &workspace.workspace_id)
+                                target.matches_workspace(
+                                    &endpoint.endpoint_id,
+                                    &workspace.workspace_id,
+                                )
                             })
                         } else {
                             &endpoint.endpoint_id == state.active_endpoint_id
@@ -137,7 +141,7 @@ pub(in crate::shell) fn render_collapsed(
                 rect,
                 status_badge,
                 collapse_toggle: Rect::new(rect.x, rect.y, u16::from(rect.width > 1), 1),
-                endpoint_id: endpoint.endpoint_id.clone(),
+                location: Location::machine(endpoint.endpoint_id.clone()),
             });
             y = y.saturating_add(1);
         }
@@ -159,7 +163,7 @@ pub(in crate::shell) fn render_collapsed(
             let focused =
                 active && snapshot.focused_workspace_id.as_ref() == Some(&workspace.workspace_id);
             let selected = state.selected_workspace_id.is_some_and(|target| {
-                target.matches(&endpoint.endpoint_id, &workspace.workspace_id)
+                target.matches_workspace(&endpoint.endpoint_id, &workspace.workspace_id)
             });
             let selection_background =
                 crate::shell::sidebar::workspace_selection_background(palette);
@@ -217,8 +221,7 @@ pub(in crate::shell) fn render_collapsed(
             );
             hits.workspaces.push(WorkspaceHit {
                 rect,
-                endpoint_id: endpoint.endpoint_id.clone(),
-                workspace_id: workspace.workspace_id,
+                location: Location::workspace(endpoint.endpoint_id.clone(), workspace.workspace_id),
             });
             y = y.saturating_add(1);
         }
@@ -373,7 +376,10 @@ pub(in crate::shell) fn render_expanded(
                     .is_some_and(|workspace| {
                         if reveal_navigation {
                             state.selected_workspace_id.is_some_and(|target| {
-                                target.matches(&endpoint.endpoint_id, &workspace.workspace_id)
+                                target.matches_workspace(
+                                    &endpoint.endpoint_id,
+                                    &workspace.workspace_id,
+                                )
                             })
                         } else {
                             &endpoint.endpoint_id == state.active_endpoint_id
@@ -436,7 +442,7 @@ pub(in crate::shell) fn render_expanded(
                         u16::from(rect.width > 1),
                         1,
                     ),
-                    endpoint_id: endpoint.endpoint_id.clone(),
+                    location: Location::machine(endpoint.endpoint_id.clone()),
                 });
                 y = y
                     .saturating_add(1)
@@ -472,7 +478,7 @@ pub(in crate::shell) fn render_expanded(
                 };
                 let endpoint_active = &endpoint.endpoint_id == state.active_endpoint_id;
                 let selected = state.selected_workspace_id.is_some_and(|target| {
-                    target.matches(&endpoint.endpoint_id, &workspace.workspace_id)
+                    target.matches_workspace(&endpoint.endpoint_id, &workspace.workspace_id)
                 });
                 // Drag-reordering moves workspaces of the active machine only.
                 let dragged = endpoint_active
@@ -503,8 +509,10 @@ pub(in crate::shell) fn render_expanded(
                 }
                 hits.workspaces.push(WorkspaceHit {
                     rect,
-                    endpoint_id: endpoint.endpoint_id.clone(),
-                    workspace_id: workspace.workspace_id,
+                    location: Location::workspace(
+                        endpoint.endpoint_id.clone(),
+                        workspace.workspace_id,
+                    ),
                 });
                 y = y
                     .saturating_add(height)
@@ -573,7 +581,6 @@ pub(in crate::shell) fn render_expanded(
         buffer,
         detail_area,
         state.active_endpoint_id,
-        single_endpoint,
         config,
         state.agent_panel_model,
         state.agent_scroll,

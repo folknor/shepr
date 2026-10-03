@@ -165,21 +165,14 @@ impl HeadlessServer {
         if immediate_sources_changed {
             self.immediate_pty_sources_dirty = true;
         }
-        if traits.claims_shell_geometry {
-            changed |= if traits.changes_topology {
-                self.reapply_controlled_shell_workspace_geometry(false)
-            } else if navigated {
-                if let Some(workspace_id) = self.shell_target_for_client(client_id) {
-                    let _ = self.clients.claim_geometry(workspace_id, client_id);
-                }
-                // The destination may already remember this client, so the
-                // claim alone may not apply geometry after its view changed.
-                self.reapply_controlled_shell_workspace_geometry(false)
-            } else {
-                self.claim_shell_workspace_geometry(client_id, false)
-                    || self.resize_shell_workspaces_sized_for(client_id, false)
-            };
-        }
+        changed |= self.claim_client_geometry(
+            client_id,
+            super::client_views::GeometryClaimReason::Command {
+                claims: traits.claims_shell_geometry,
+                topology: traits.changes_topology,
+                navigated,
+            },
+        );
         self.sync_pane_focus();
         if changed {
             self.mark_view_changed();
@@ -223,7 +216,7 @@ impl HeadlessServer {
     ) -> Result<EndpointReply, EndpointError> {
         match command.into_app_command() {
             Ok(command) => self.handle_client_shell_app_command(client_id, command),
-            Err(command) => Err(EndpointError::Rejected(format!(
+            Err(command) => Err(EndpointError::Internal(format!(
                 "{} is handled by the server loop",
                 command.name()
             ))),

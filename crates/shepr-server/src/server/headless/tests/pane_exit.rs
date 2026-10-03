@@ -12,7 +12,7 @@ fn server_with_runtime_pane(
     let mut server = test_headless_server();
     let workspace = shepr_mux::workspace::Workspace::test_new(name);
     let pane_id = workspace.root_pane();
-    server.app.state.workspaces = vec![workspace];
+    server.app.state.test_set_workspaces(vec![workspace]);
     server.app.state.ensure_test_terminals();
     server.app.state.set_bookmark_index(Some(0));
 
@@ -200,4 +200,41 @@ async fn a_released_exit_is_replayed_by_the_pass_after_the_autosave_that_followe
     assert!(server.pending_checkpointed_pane_exits.is_empty());
     assert!(server.app.find_pane(pane_id).is_none());
     shutdown_test_runtimes(&mut server);
+}
+
+impl HeadlessServer {
+    /// App-only fixtures still enter the real server loop for runtime exits.
+    pub(crate) fn replay_test_exit_for_app(app: &mut crate::app::App, event: AppEvent) {
+        let mut server = test_headless_server();
+        std::mem::swap(app, &mut server.app);
+        server.handle_test_runtime_exit_and_replay(event);
+        std::mem::swap(app, &mut server.app);
+    }
+
+    /// Drive an exit through admission, the held queue and scheduled replay.
+    pub(crate) fn handle_test_runtime_exit_and_replay(&mut self, event: AppEvent) {
+        assert!(
+            matches!(event, AppEvent::Runtime { .. }),
+            "runtime envelope required"
+        );
+        self.handle_internal_event_with_forwarding(event);
+        let timeout = std::time::Instant::now() + Duration::from_secs(5);
+        while !self.pending_checkpointed_pane_exits.is_empty() {
+            assert!(
+                std::time::Instant::now() < timeout,
+                "checkpoint replay timed out"
+            );
+            let now = if self.app.session_saver.save_in_flight() {
+                self.app.clock.now
+            } else {
+                self.app
+                    .session_saver
+                    .deadline()
+                    .unwrap_or(self.app.clock.now)
+            };
+            self.app.clock.now = now;
+            self.handle_scheduled_tasks_headless(now);
+            std::thread::yield_now();
+        }
+    }
 }

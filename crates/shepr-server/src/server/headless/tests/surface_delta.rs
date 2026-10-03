@@ -30,7 +30,7 @@ async fn surface_delta_reconstructs_metadata_text_and_hyperlinks() {
     let initial = decode_surface_message(&mut decoder, initial_message);
     assert_eq!(
         &initial,
-        server.clients[&1]
+        server.clients[&ClientId::test_new(1)]
             .render_state
             .last_pane_surface()
             .expect("initial baseline")
@@ -46,7 +46,7 @@ async fn surface_delta_reconstructs_metadata_text_and_hyperlinks() {
     );
     server
         .clients
-        .get_mut(&1)
+        .get_mut(&ClientId::test_new(1))
         .expect("test precondition")
         .request_recompute();
     assert!(!server.try_render_patches(&HashSet::from([pane_id])));
@@ -57,7 +57,7 @@ async fn surface_delta_reconstructs_metadata_text_and_hyperlinks() {
     let decoded = decode_surface_message(&mut decoder, delta_message);
     assert_eq!(
         &decoded,
-        server.clients[&1]
+        server.clients[&ClientId::test_new(1)]
             .render_state
             .last_pane_surface()
             .expect("updated baseline")
@@ -135,7 +135,7 @@ async fn a_drained_slow_client_is_rendered_alone() {
     let responsive_queued = pair.render[0]
         .recv()
         .expect("responsive queued second patch");
-    let responsive = pair.server.clients[&7]
+    let responsive = pair.server.clients[&ClientId::test_new(7)]
         .render_state
         .last_pane_surface()
         .cloned();
@@ -144,10 +144,16 @@ async fn a_drained_slow_client_is_rendered_alone() {
     assert_eq!(report.surface_renders, 1);
     assert_eq!(report.full, vec![ClientId::test_new(8)]);
     assert_eq!(
-        pair.server.clients[&7].render_state.last_pane_surface(),
+        pair.server.clients[&ClientId::test_new(7)]
+            .render_state
+            .last_pane_surface(),
         responsive.as_ref()
     );
-    assert!(pair.server.clients[&7].outbox.surface_slot_free());
+    assert!(
+        pair.server.clients[&ClientId::test_new(7)]
+            .outbox
+            .surface_slot_free()
+    );
     assert!(pair.render[0].try_recv().is_err());
     assert!(matches!(
         read_server_message(responsive_queued),
@@ -202,7 +208,7 @@ async fn a_scroll_renders_only_the_viewers_of_the_scrolled_pane() {
     pair.server.apply_workspace_geometry(&workspace_id);
     let other = shepr_mux::workspace::Workspace::test_new("other");
     let other_id = other.id;
-    pair.server.app.state.workspaces.push(other);
+    pair.server.app.state.test_push_workspace(other);
     pair.server
         .place_test_client_on_workspace(ClientId::test_new(8), &other_id);
     pair.pass(false);
@@ -242,7 +248,7 @@ async fn a_navigation_renders_only_the_client_that_moved() {
     let mut pair = Pair::new();
     let other = shepr_mux::workspace::Workspace::test_new("destination");
     let other_id = other.id;
-    pair.server.app.state.workspaces.push(other);
+    pair.server.app.state.test_push_workspace(other);
     let epoch = pair.server.view_epoch;
     assert!(
         pair.server
@@ -323,19 +329,14 @@ async fn a_changed_deferral_owes_its_client_without_a_view_change() {
     pair.server.app.render_dirty.take();
     pair.server
         .clients
-        .get_mut(&8)
+        .get_mut(&ClientId::test_new(8))
         .expect("client")
         .render_state
         .owe();
     let plan = pair.server.render_plan(false);
-    let report = pair.server.render_pass_with_boundary(
-        &plan,
-        &HashSet::new(),
-        render::SurfaceBoundary {
-            render: |_, _, _, _| Err(crate::server::pane_surface::SurfaceRenderDeferred::Changed),
-            ..render::SurfaceBoundary::default()
-        },
-    );
+    let report =
+        pair.server
+            .render_pass_with_boundary(&plan, &HashSet::new(), ChangedSurfaceBoundary);
     assert_eq!(report.owed, vec![ClientId::test_new(8)]);
     assert_eq!(report.surface_renders, 1);
     assert_eq!(pair.server.view_epoch, epoch);
@@ -353,7 +354,7 @@ async fn a_refused_client_retries_on_pty_damage_to_a_pane_it_shows() {
     let mut pair = Pair::new();
     pair.server
         .clients
-        .get_mut(&8)
+        .get_mut(&ClientId::test_new(8))
         .expect("client")
         .render_state
         .refuse();
@@ -389,7 +390,11 @@ async fn a_patch_for_a_client_with_an_occupied_slot_owes_it_a_full_surface() {
     );
     assert_eq!(outcome.owed, vec![ClientId::test_new(8)]);
     assert!(outcome.promote.is_empty());
-    assert!(pair.server.clients[&8].render_state.surface_debt());
+    assert!(
+        pair.server.clients[&ClientId::test_new(8)]
+            .render_state
+            .surface_debt()
+    );
 }
 
 #[tokio::test]
@@ -397,7 +402,7 @@ async fn a_retained_check_failure_promotes_only_its_client() {
     let mut pair = Pair::new();
     pair.server
         .clients
-        .get_mut(&8)
+        .get_mut(&ClientId::test_new(8))
         .expect("client")
         .render_state
         .last_surface_mut()
@@ -417,7 +422,7 @@ async fn a_failed_source_collection_promotes_only_clients_viewing_that_pane() {
     let mut pair = Pair::new();
     let other = shepr_mux::workspace::Workspace::test_new("other");
     let other_id = other.id;
-    pair.server.app.state.workspaces.push(other);
+    pair.server.app.state.test_push_workspace(other);
     pair.server
         .place_test_client_on_workspace(ClientId::test_new(8), &other_id);
     pair.pass(false);
@@ -441,7 +446,7 @@ async fn mode_geometry_is_settled_before_the_render_plan() {
     pair.damage(b"\x1b[?1049h");
     pair.server
         .clients
-        .get_mut(&8)
+        .get_mut(&ClientId::test_new(8))
         .expect("client")
         .render_state
         .owe();
@@ -463,7 +468,7 @@ async fn mode_geometry_is_settled_before_the_render_plan() {
         vec![ClientId::test_new(7), ClientId::test_new(8)]
     );
     let geometry = pair.server.app.test_runtime(pair.pane).current_size();
-    let surface = pair.server.clients[&8]
+    let surface = pair.server.clients[&ClientId::test_new(8)]
         .render_state
         .last_pane_surface()
         .expect("surface");
@@ -482,7 +487,7 @@ async fn mode_geometry_includes_all_viewers_in_the_same_plan() {
     pair.damage(b"\x1b[?1049h");
     pair.server
         .clients
-        .get_mut(&8)
+        .get_mut(&ClientId::test_new(8))
         .expect("client")
         .render_state
         .owe();
@@ -533,7 +538,7 @@ async fn replies_follow_the_snapshot_when_a_pass_renders_a_subset() {
     let mut pair = Pair::new();
     let other = shepr_mux::workspace::Workspace::test_new("destination");
     let other_id = other.id;
-    pair.server.app.state.workspaces.push(other);
+    pair.server.app.state.test_push_workspace(other);
     pair.server
         .navigate_shell_client(ClientId::test_new(8), &other_id);
     let reply = ServerMessage::WindowTitle {
@@ -570,7 +575,7 @@ async fn with_no_client_attached_planning_lays_out_a_workspace_without_owing_a_p
 async fn a_reaped_client_leaves_survivors_with_updated_projection_and_surface() {
     let mut pair = Pair::new();
     let epoch = pair.server.view_epoch;
-    pair.server.clients[&8].outbox.close();
+    pair.server.clients[&ClientId::test_new(8)].outbox.close();
     assert!(pair.server.reap_closed_clients());
     assert_ne!(pair.server.view_epoch, epoch);
     assert_eq!(pair.pass(false).full, vec![ClientId::test_new(7)]);
@@ -582,29 +587,17 @@ async fn an_oversized_first_surface_is_refused_without_a_retry_loop() {
     let mut pair = Pair::new();
     pair.server
         .clients
-        .get_mut(&8)
+        .get_mut(&ClientId::test_new(8))
         .expect("client")
         .request_repaint();
     let plan = pair.server.render_plan(false);
-    let report = pair.server.render_pass_with_boundary(
-        &plan,
-        &HashSet::new(),
-        render::SurfaceBoundary {
-            encode: |_| {
-                Err(shepr_protocol::FramingError::LimitExceeded(
-                    shepr_protocol::LimitExceeded::new(
-                        shepr_protocol::Limit::new(shepr_protocol::LimitKind::MessageBytes, 1),
-                        2,
-                    ),
-                ))
-            },
-            ..render::SurfaceBoundary::default()
-        },
-    );
+    let report =
+        pair.server
+            .render_pass_with_boundary(&plan, &HashSet::new(), OversizedSurfaceBoundary);
     assert_eq!(report.full, vec![ClientId::test_new(8)]);
     assert_eq!(report.surface_renders, 1);
     assert!(
-        pair.server.clients[&8]
+        pair.server.clients[&ClientId::test_new(8)]
             .render_state
             .last_pane_surface()
             .is_none()
@@ -632,7 +625,11 @@ async fn an_oversized_first_surface_is_refused_without_a_retry_loop() {
 #[tokio::test]
 async fn exhausted_surface_revisions_close_the_client() {
     let mut pair = Pair::new();
-    let client = pair.server.clients.get_mut(&8).expect("client");
+    let client = pair
+        .server
+        .clients
+        .get_mut(&ClientId::test_new(8))
+        .expect("client");
     client.render_state.exhaust_revisions();
     client.render_state.owe();
     assert_eq!(pair.pass(false).full, vec![ClientId::test_new(8)]);
@@ -699,7 +696,7 @@ async fn cjk_cursor_reveal_keeps_retained_rendering_and_matches_full_surfaces() 
         assert_eq!(report.surface_renders, 0);
 
         for id in [7, 8] {
-            let surface = pair.server.clients[&id]
+            let surface = pair.server.clients[&ClientId::test_new(id)]
                 .render_state
                 .last_pane_surface()
                 .expect("retained baseline");
@@ -722,5 +719,38 @@ async fn cjk_cursor_reveal_keeps_retained_rendering_and_matches_full_surfaces() 
             assert_eq!(full.frame.cursor, surface.frame.cursor);
             assert_eq!(full.panes, surface.panes);
         }
+    }
+}
+
+struct ChangedSurfaceBoundary;
+
+impl render::SurfaceBoundary for ChangedSurfaceBoundary {
+    fn render(
+        &self,
+        _app: &crate::app::App,
+        _workspace: Option<&shepr_protocol::WorkspaceId>,
+        _area: ratatui::layout::Rect,
+        _cell_size: shepr_termio::host_term::cell_size::HostCellSize,
+    ) -> Result<
+        crate::server::pane_surface::RenderedPaneSurface,
+        crate::server::pane_surface::SurfaceRenderDeferred,
+    > {
+        Err(crate::server::pane_surface::SurfaceRenderDeferred::Changed)
+    }
+}
+
+struct OversizedSurfaceBoundary;
+
+impl render::SurfaceBoundary for OversizedSurfaceBoundary {
+    fn encode(
+        &self,
+        _message: &shepr_protocol::ServerMessage,
+    ) -> Result<Vec<u8>, shepr_protocol::FramingError> {
+        Err(shepr_protocol::FramingError::LimitExceeded(
+            shepr_protocol::LimitExceeded::new(
+                shepr_protocol::Limit::new(shepr_protocol::LimitKind::MessageBytes, 1),
+                2,
+            ),
+        ))
     }
 }

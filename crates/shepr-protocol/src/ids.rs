@@ -7,6 +7,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const PUBLIC_ID_ALPHABET: &[u8; 32] = b"123456789ABCDEFGHJKMNPQRSTVWXYZ0";
 
+// The mux contract test calls these helpers directly to verify the public-number
+// alphabet. Keep the exports until it asserts through the public ID text types.
 /// Encodes a public number in bijective base 32 (digits 1..=32, no zero
 /// digit), so `"0"` is the digit for 32, not zero. Public numbers start at 1;
 /// zero has no digits and encodes to the empty string, which is what

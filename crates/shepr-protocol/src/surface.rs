@@ -354,11 +354,7 @@ mod scroll_metrics_tests {
         };
         let mut bytes = Vec::new();
         codec::encode_into(&mut bytes, &fields).expect("encode metric fields");
-        assert!(
-            codec::Decoder::new(&bytes)
-                .decode::<PaneSurfaceScrollMetrics>()
-                .is_err()
-        );
+        assert!(codec::from_slice_exact::<PaneSurfaceScrollMetrics>(&bytes).is_err());
     }
 
     #[test]
@@ -366,9 +362,9 @@ mod scroll_metrics_tests {
         let metrics = PaneSurfaceScrollMetrics::new(4, 10, 3, shepr_vt::AbsRow(40));
         let mut bytes = Vec::new();
         codec::encode_into(&mut bytes, &metrics).expect("encode metrics");
-        let mut decoder = codec::Decoder::new(&bytes);
-        let decoded: PaneSurfaceScrollMetrics = decoder.decode().expect("decode metrics");
-        decoder.finish().expect("all fields consumed");
+        // Exact decoding also checks that every field was consumed.
+        let decoded: PaneSurfaceScrollMetrics =
+            codec::from_slice_exact(&bytes).expect("decode metrics");
         assert_eq!(decoded, metrics);
         assert_eq!(decoded.viewport_top_row(), shepr_vt::AbsRow(46));
     }

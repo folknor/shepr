@@ -265,6 +265,8 @@ pub struct PaneSnapshot {
     )]
     // Saved paths may disappear between capture and restore. Keep the path
     // observation; restore and the child's required chdir own admission.
+    // Absolute-path validation at deserialization would reject the whole
+    // strict session file for a value defect that must drop only this pane.
     pub cwd: PathBuf,
     /// Decoding refuses zero; restore refuses repeats within a workspace.
     pub public_number: shepr_protocol::PanePublicNumber,
@@ -625,20 +627,25 @@ impl SessionHistory {
 struct RestoredEntry {
     ansi: Arc<str>,
     /// Names `ansi` the way a `PaneHistoryCache` revision names its text.
-    revision: u64,
+    revision: HistoryRevision,
 }
 
-/// Names for restored text. A `PaneHistoryCache` numbers its text from a
-/// counter of its own that never reaches the top bit, so a restored name never
-/// equals a live one.
-fn next_restored_revision() -> u64 {
+/// Restored and live text have distinct identity spaces.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum HistoryRevision {
+    Live(u64),
+    Restored(u64),
+}
+
+/// Names for restored text, independent of live cache revisions.
+fn next_restored_revision() -> HistoryRevision {
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    (1 << 63) | NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    HistoryRevision::Restored(NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
 }
 
 /// What a save's history holds for one pane, by content identity rather than
 /// content: two saves with equal stamps hold equal text.
-type PaneStamp = Option<u64>;
+type PaneStamp = Option<HistoryRevision>;
 
 /// What one save's history was made of: the content of every pane, under the
 /// workspace position and pane number it is saved with, sorted by pane
@@ -752,7 +759,7 @@ impl HistoryCarry {
         self.readers
             .get(terminal)
             .filter(|cache| cache.has_text())
-            .map(crate::pane::PaneHistoryCache::revision)
+            .map(|cache| HistoryRevision::Live(cache.revision()))
     }
 
     /// A live pane: brings its cache up to date, or leaves it as it was while
@@ -767,8 +774,14 @@ impl HistoryCarry {
         // on the alternate buffer and cannot be read.
         self.restored.remove(terminal);
         let cache = self.readers.entry(terminal.clone()).or_default();
-        source.refresh(cache);
-        cache.has_text().then(|| cache.revision())
+        // A refresh that cannot complete leaves the cache as it was, and the
+        // save carries that earlier read, whatever the reason.
+        if let Err(reason) = source.refresh(cache) {
+            tracing::debug!(?reason, "pane history refresh unavailable; keeping cache");
+        }
+        cache
+            .has_text()
+            .then(|| HistoryRevision::Live(cache.revision()))
     }
 
     /// The text a stamped pane saves, sharing the carried text.
@@ -1029,6 +1042,14 @@ pub fn capture_history(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn live_and_restored_history_revisions_have_distinct_identities() {
+        assert!(super::HistoryRevision::Live(0) != super::HistoryRevision::Restored(0));
+        assert!(
+            super::HistoryRevision::Live(u64::MAX) != super::HistoryRevision::Restored(u64::MAX)
+        );
+    }
+
     use std::collections::HashMap;
     use std::ffi::OsString;
     use std::os::unix::ffi::OsStringExt;

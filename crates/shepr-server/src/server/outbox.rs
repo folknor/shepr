@@ -63,9 +63,6 @@ pub(crate) enum SurfaceOffer {
 #[derive(Debug)]
 pub(crate) struct ClientOutbox {
     queue: Arc<OutboxQueue>,
-    /// Production outboxes are always attached because they come from an
-    /// accepted transport; only `detached()` test fixtures clear it.
-    attached: bool,
     replies: ReplyQueue,
     told: Told,
 }
@@ -75,7 +72,6 @@ impl ClientOutbox {
         queue.add_sender();
         Self {
             queue,
-            attached: true,
             replies: ReplyQueue::default(),
             told: Told::default(),
         }
@@ -95,17 +91,9 @@ impl ClientOutbox {
         ControlSender::new(Arc::clone(&self.queue))
     }
 
-    /// Production has no detached outbox state; test fixtures can model one
-    /// that never passed through the accepted transport path.
-    pub(crate) fn is_attached(&self) -> bool {
-        self.attached
-    }
-
-    /// Whether a connected outbox has closed. Its state changes on other
-    /// threads, so only the loop's reap reads it; everything else reads
-    /// `is_attached` and leaves a closed client to the reap.
+    /// Whether the writer has closed. The loop reaps closed connections.
     pub(crate) fn is_closed(&self) -> bool {
-        self.is_attached() && !self.queue.lock_state().writer_alive
+        !self.queue.lock_state().writer_alive
     }
 
     pub(crate) fn close(&self) {
@@ -155,7 +143,7 @@ impl ClientOutbox {
     /// Encodes a message for this outbox, or `None` when the outbox cannot
     /// take it: it is closed, or the message cannot be encoded, which closes it.
     fn frame<M: serde::Serialize>(&self, message: &M) -> Option<Vec<u8>> {
-        if !self.is_attached() || !self.queue.lock_state().writer_alive {
+        if !self.queue.lock_state().writer_alive {
             return None;
         }
         encode_message_or_close(&self.queue, message)
@@ -164,9 +152,7 @@ impl ClientOutbox {
 
 impl Drop for ClientOutbox {
     fn drop(&mut self) {
-        if self.is_attached() {
-            self.queue.remove_sender();
-        }
+        self.queue.remove_sender();
     }
 }
 
@@ -702,7 +688,7 @@ impl ClientOutbox {
 
     /// `Queued` while the outbox can still take messages, `Closed` after.
     fn liveness(&self) -> Delivery {
-        if self.is_attached() && self.queue.lock_state().writer_alive {
+        if self.queue.lock_state().writer_alive {
             Delivery::Queued
         } else {
             Delivery::Closed
@@ -722,9 +708,8 @@ impl ReplySeq {
 
 #[cfg(test)]
 impl ClientOutbox {
-    /// An outbox that never connected, for fixtures that exercise server
-    /// state without a transport: sends return `Closed`, the reap leaves it
-    /// alone, and presenting predicates exclude it.
+    /// A closed outbox for fixtures. It follows the same reap policy as a
+    /// connection whose writer has exited.
     pub(crate) fn detached() -> Self {
         let queue = OutboxQueue::with_limits(
             None,
@@ -733,12 +718,7 @@ impl ClientOutbox {
             CLIENT_CONTROL_QUEUE_MAX_BYTES,
         );
         queue.close_connection();
-        Self {
-            queue,
-            attached: false,
-            replies: ReplyQueue::default(),
-            told: Told::default(),
-        }
+        Self::from_queue(queue)
     }
 
     pub(crate) fn held_reply_count(&self) -> usize {
@@ -1066,10 +1046,9 @@ mod tests {
     }
 
     #[test]
-    fn a_detached_outbox_refuses_sends_and_is_never_reaped() {
+    fn a_closed_fixture_outbox_refuses_sends_and_is_reaped() {
         let outbox = ClientOutbox::detached();
-        assert!(!outbox.is_attached());
-        assert!(!outbox.is_closed());
+        assert!(outbox.is_closed());
         assert_eq!(outbox.send(&title("late")), Delivery::Closed);
         assert_eq!(outbox.offer_surface(vec![1]), SurfaceOffer::Closed);
     }

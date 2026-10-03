@@ -7,11 +7,19 @@ use crate::shell::state::{
     Repaint, TypedText,
 };
 use crate::shell::{EndpointNotice, EndpointNoticeKind};
-use shepr_protocol::command::EndpointError;
-use shepr_protocol::command::{CommandKind, EndpointCommand, EndpointReply};
+use shepr_protocol::command::{
+    CommandKind, EndpointCommand, EndpointError, EndpointReply, PaneCopyMotionReply,
+    PaneCopySearchReply, PaneInfoReply, PaneSelectionReply, WorkspaceCheckoutRootReply,
+};
 use shepr_protocol::{BootId, RequestId};
 use std::collections::HashMap;
 use std::time::Instant;
+
+fn decode_reply<T: TryFrom<EndpointReply, Error = EndpointError>>(
+    result: Result<EndpointReply, ClientShellEndpointError>,
+) -> Result<T, ClientShellEndpointError> {
+    result.and_then(|reply| T::try_from(reply).map_err(Into::into))
+}
 
 /// Owns shell request work. Only answer and drop paths take entries.
 pub(in crate::shell) struct Ledger {
@@ -129,6 +137,18 @@ pub(crate) enum DropReason {
     Reset,
 }
 impl Work {
+    fn accepts_reply(&self, reply: &EndpointReply) -> bool {
+        match self {
+            Self::Plain => true,
+            Self::SelectionCopy | Self::WordSelection { .. } => {
+                matches!(reply, EndpointReply::PaneSelection { .. })
+            }
+            Self::WorkspaceLabel => matches!(reply, EndpointReply::WorkspaceCheckoutRoot { .. }),
+            Self::PaneScroll { .. } => matches!(reply, EndpointReply::PaneInfo { .. }),
+            Self::CopyMotion { .. } => matches!(reply, EndpointReply::PaneCopyMotion { .. }),
+            Self::CopySearch { .. } => matches!(reply, EndpointReply::PaneCopySearch { .. }),
+        }
+    }
     /// The request ends without an answer. Restores exactly the state this request owns
     /// and returns a repaint decision. It has no `outcome` sink, so it cannot dispatch the
     /// queued work its caller may no longer have a connection for.
@@ -161,18 +181,24 @@ impl Work {
                     Repaint::Unchanged
                 }
             }
-            Self::WorkspaceLabel => shell.complete_workspace_label_lookup(request, result.ok()),
-            Self::PaneScroll { pane_id } => {
-                shell.answer_pane_scroll(request, &pane_id, result, now, outcome)
-            }
-            Self::SelectionCopy => match result {
-                Ok(EndpointReply::PaneSelection { text, .. }) if !text.is_empty() => {
+            Self::WorkspaceLabel => shell.complete_workspace_label_lookup(
+                request,
+                decode_reply::<WorkspaceCheckoutRootReply>(result).ok(),
+            ),
+            Self::PaneScroll { pane_id } => shell.answer_pane_scroll(
+                request,
+                &pane_id,
+                decode_reply::<PaneInfoReply>(result),
+                outcome,
+            ),
+            Self::SelectionCopy => match decode_reply::<PaneSelectionReply>(result) {
+                Ok(PaneSelectionReply { text, .. }) if !text.is_empty() => {
                     outcome
                         .actions
                         .push(ClientShellAction::ClipboardWrite(text.into_bytes()));
                     Repaint::Unchanged
                 }
-                Ok(EndpointReply::PaneSelection { .. }) => {
+                Ok(PaneSelectionReply { .. }) => {
                     if shell.push_endpoint_notice(
                         ClientEndpointNoticeKind::Rejected,
                         NoticeCode::SelectionEmpty,
@@ -184,21 +210,23 @@ impl Work {
                         Repaint::Unchanged
                     }
                 }
-                Ok(_) => {
-                    shell.set_endpoint_error(
-                        "endpoint returned an unexpected selection result",
-                        now,
-                    );
-                    Repaint::Needed
-                }
                 Err(_) => Repaint::Needed,
             },
-            Self::WordSelection { pane_id, row } => {
-                shell.complete_word_selection_row(request, &pane_id, row, result, now, outcome)
-            }
-            Self::CopyMotion { pane_id, origin } => {
-                shell.complete_copy_motion(request, &pane_id, origin, &result, now, outcome)
-            }
+            Self::WordSelection { pane_id, row } => shell.complete_word_selection_row(
+                request,
+                &pane_id,
+                row,
+                decode_reply::<PaneSelectionReply>(result),
+                now,
+                outcome,
+            ),
+            Self::CopyMotion { pane_id, origin } => shell.complete_copy_motion(
+                request,
+                &pane_id,
+                origin,
+                &decode_reply::<PaneCopyMotionReply>(result),
+                outcome,
+            ),
             Self::CopySearch {
                 pane_id,
                 origin,
@@ -207,7 +235,14 @@ impl Work {
                 repeat,
                 generation,
             } => shell.complete_copy_search(
-                request, &pane_id, origin, query, direction, repeat, generation, result, now,
+                request,
+                &pane_id,
+                origin,
+                query,
+                direction,
+                repeat,
+                generation,
+                decode_reply::<PaneCopySearchReply>(result),
                 outcome,
             ),
         };
@@ -294,6 +329,17 @@ impl ClientShellState {
                 .apply_to(&mut outcome);
             return outcome;
         }
+        let result = result.and_then(|reply| {
+            if entry.command.accepts_reply(&reply) && entry.work.accepts_reply(&reply) {
+                Ok(reply)
+            } else {
+                Err(EndpointError::Internal(format!(
+                    "endpoint returned an unexpected result for {}",
+                    entry.command.name()
+                ))
+                .into())
+            }
+        });
         if result.is_ok() {
             self.notices
                 .command_succeeded(&entry.boot_id, entry.command);

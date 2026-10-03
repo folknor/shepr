@@ -150,12 +150,72 @@ pub fn parse_hex_component(component: &str) -> Option<u8> {
 pub struct DecSet(pub crate::DecMode, pub bool);
 impl fmt::Display for DecSet {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "\x1b[?{}{}",
-            self.0.number(),
-            if self.1 { 'h' } else { 'l' }
-        )
+        fmt::Display::fmt(&DecModeSequence::new(self.0, self.1), f)
+    }
+}
+
+/// A prebuilt DEC mode sequence whose number still comes from [`crate::DecMode`].
+#[derive(Clone, Copy)]
+pub struct DecModeSequence {
+    bytes: [u8; 9],
+    len: usize,
+}
+
+impl DecModeSequence {
+    /// Builds a DEC private mode set or reset sequence.
+    pub const fn new(mode: crate::DecMode, enabled: bool) -> Self {
+        let mut bytes = [0; 9];
+        bytes[0] = 0x1b;
+        bytes[1] = b'[';
+        bytes[2] = b'?';
+
+        let mut digits = [0; 5];
+        let mut number = mode.number();
+        let mut digit_count = 0;
+        while number > 0 {
+            // The remainder is always in 0..=9; store the corresponding ASCII digit.
+            digits[digit_count] = match number % 10 {
+                0 => b'0',
+                1 => b'1',
+                2 => b'2',
+                3 => b'3',
+                4 => b'4',
+                5 => b'5',
+                6 => b'6',
+                7 => b'7',
+                8 => b'8',
+                9 => b'9',
+                _ => b'?',
+            };
+            digit_count += 1;
+            number /= 10;
+        }
+
+        let mut index = 0;
+        while index < digit_count {
+            bytes[3 + index] = digits[digit_count - index - 1];
+            index += 1;
+        }
+        let final_index = 3 + digit_count;
+        bytes[final_index] = if enabled { b'h' } else { b'l' };
+        Self {
+            bytes,
+            len: final_index + 1,
+        }
+    }
+
+    /// Returns the complete escape sequence bytes.
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.bytes[..self.len]
+    }
+}
+
+impl fmt::Display for DecModeSequence {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // One write: an io::Write adapter turns every write_str into a write
+        // of its own, and the bytes are ASCII, so the conversion cannot fail.
+        let text = std::str::from_utf8(self.as_bytes()).map_err(|_| fmt::Error)?;
+        f.write_str(text)
     }
 }
 
@@ -198,14 +258,16 @@ pub const HOST_KEYBOARD_QUERY_SEQUENCE: &[u8] = b"\x1b[?u\x1b[c";
 pub const HOST_CELL_SIZE_QUERY_SEQUENCE: &[u8] = b"\x1b[16t";
 pub const HOST_KITTY_KEYBOARD_POP_SEQUENCE: &[u8] = b"\x1b[<1u";
 pub const HOST_CURSOR_SHAPE_DEFAULT_SEQUENCE: &[u8] = b"\x1b[0 q";
-pub const HOST_CURSOR_AND_SHAPE_RESTORE_SEQUENCE: &[u8] = b"\x1b[?25h\x1b[0 q";
-pub const HOST_MOUSE_SGR_PIXELS_ENABLE_SEQUENCE: &[u8] = b"\x1b[?1016h";
+pub const HOST_MOUSE_SGR_PIXELS_ENABLE_SEQUENCE: DecModeSequence =
+    DecModeSequence::new(crate::DecMode::MouseSgrPixels, true);
 pub const HOST_WINDOW_TITLE_PUSH_SEQUENCE: &[u8] = b"\x1b[22;0t";
 pub const HOST_WINDOW_TITLE_POP_SEQUENCE: &[u8] = b"\x1b[23;0t";
 
 pub const HOST_COLOR_QUERY_SEQUENCE: &str = "\x1b]10;?\x1b\\\x1b]11;?\x1b\\";
-pub const HOST_COLOR_SCHEME_REPORT_ENABLE_SEQUENCE: &str = "\x1b[?2031h";
-pub const HOST_COLOR_SCHEME_REPORT_DISABLE_SEQUENCE: &str = "\x1b[?2031l";
+pub const HOST_COLOR_SCHEME_REPORT_ENABLE_SEQUENCE: DecModeSequence =
+    DecModeSequence::new(crate::DecMode::ColorSchemeReport, true);
+pub const HOST_COLOR_SCHEME_REPORT_DISABLE_SEQUENCE: DecModeSequence =
+    DecModeSequence::new(crate::DecMode::ColorSchemeReport, false);
 
 #[cfg(test)]
 mod tests {

@@ -87,8 +87,8 @@ fn run_git_with_program_and_clock(
         .env_remove("GIT_NAMESPACE")
         .env_remove("GIT_PREFIX")
         .env_remove("GIT_ASKPASS")
-        .env_remove("SSH_ASKPASS")
-        .env_remove("SSH_ASKPASS_REQUIRE")
+        .env_remove(shepr_core::env::ChildEnv::SshAskpass)
+        .env_remove(shepr_core::env::ChildEnv::SshAskpassRequire)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());

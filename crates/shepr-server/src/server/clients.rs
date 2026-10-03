@@ -108,6 +108,13 @@ impl ClientShellState {
         }
     }
 
+    /// Shared session changes and this client's navigation independently owe a projection.
+    pub(crate) fn projection_due(&self, session: ShellSessionGeneration) -> bool {
+        self.session_generation != session
+            || self.projected_location_generation != self.location.generation()
+            || self.snapshot.is_none()
+    }
+
     pub(crate) fn is_surface_active(&self) -> bool {
         self.surface_active
     }
@@ -256,28 +263,25 @@ impl<'a> IntoIterator for &'a mut ClientRegistry {
     }
 }
 
-impl<K: Copy + Into<ClientId>> Index<&K> for ClientRegistry {
+impl Index<&ClientId> for ClientRegistry {
     type Output = ClientConnection;
 
-    fn index(&self, client_id: &K) -> &Self::Output {
-        &self.connections[&(*client_id).into()]
+    fn index(&self, client_id: &ClientId) -> &Self::Output {
+        &self.connections[client_id]
     }
 }
 
 impl ClientRegistry {
-    pub(crate) fn contains_key<K: Copy + Into<ClientId>>(&self, client_id: &K) -> bool {
-        self.connections.contains_key(&(*client_id).into())
+    pub(crate) fn contains_key(&self, client_id: &ClientId) -> bool {
+        self.connections.contains_key(client_id)
     }
 
-    pub(crate) fn get<K: Copy + Into<ClientId>>(&self, client_id: &K) -> Option<&ClientConnection> {
-        self.connections.get(&(*client_id).into())
+    pub(crate) fn get(&self, client_id: &ClientId) -> Option<&ClientConnection> {
+        self.connections.get(client_id)
     }
 
-    pub(crate) fn get_mut<K: Copy + Into<ClientId>>(
-        &mut self,
-        client_id: &K,
-    ) -> Option<&mut ClientConnection> {
-        self.connections.get_mut(&(*client_id).into())
+    pub(crate) fn get_mut(&mut self, client_id: &ClientId) -> Option<&mut ClientConnection> {
+        self.connections.get_mut(client_id)
     }
 
     pub(crate) fn insert(
@@ -317,7 +321,7 @@ impl ClientRegistry {
             .filter(|(_, client)| client.presents_surface())
     }
 
-    pub(crate) fn is_presenting<K: Copy + Into<ClientId>>(&self, client_id: &K) -> bool {
+    pub(crate) fn is_presenting(&self, client_id: &ClientId) -> bool {
         self.get(client_id)
             .is_some_and(ClientConnection::presents_surface)
     }
@@ -457,11 +461,7 @@ impl ClientRegistry {
         workspace_id: WorkspaceId,
         client_id: ClientId,
     ) -> bool {
-        if !self
-            .connections
-            .get(&client_id)
-            .is_some_and(ClientConnection::presents_surface)
-        {
+        if !self.is_presenting(&client_id) {
             return false;
         }
         self.geometry_controllers.insert(workspace_id, client_id) != Some(client_id)
@@ -472,11 +472,7 @@ impl ClientRegistry {
         workspace_id: WorkspaceId,
         client_id: ClientId,
     ) -> bool {
-        if !self
-            .connections
-            .get(&client_id)
-            .is_some_and(ClientConnection::presents_surface)
-        {
+        if !self.is_presenting(&client_id) {
             return false;
         }
         if self.geometry_controllers.contains_key(&workspace_id) {
@@ -637,14 +633,14 @@ impl ClientConnection {
         shell: ClientShellState,
         terminal_size: shepr_core::geometry::GridSize,
         cell_size: shepr_termio::host_term::cell_size::HostCellSize,
-        last_activity: impl Into<ActivityStamp>,
+        last_activity: ActivityStamp,
         outbox: ClientOutbox,
     ) -> Self {
         Self {
             shell,
             terminal_size,
             cell_size,
-            last_activity: last_activity.into(),
+            last_activity,
             render_state: ClientRenderState::new(),
             surface_pane_identities: Vec::new(),
             pixel_mouse: false,
@@ -790,17 +786,16 @@ impl ClientConnection {
     }
 
     pub(crate) fn presents_surface(&self) -> bool {
-        self.is_active_shell_client() && self.outbox.is_attached()
+        self.is_active_shell_client()
     }
 }
 
-/// Every transport-backed shell, including inactive shells that still receive
-/// control projections. Keep connection provenance here; pane surfaces are
-/// sent only to the registry's presenting subset.
+/// Every connected shell, including inactive shells that still receive
+/// control projections. Pane surfaces are sent only to the registry's
+/// presenting subset.
 pub(crate) fn render_targets(clients: &ClientRegistry) -> Vec<RenderTarget> {
     let mut targets: Vec<RenderTarget> = clients
         .iter()
-        .filter(|(_, client)| client.outbox.is_attached())
         .map(|(&client_id, client)| RenderTarget {
             client_id,
             terminal_size: client.terminal_size,
@@ -890,7 +885,7 @@ impl ClientConnection {
             ClientShellState::with_surface_active(true),
             shepr_core::geometry::GridSize::clamped(terminal_size.0, terminal_size.1),
             cell_size,
-            last_activity,
+            last_activity.into(),
             outbox,
         )
     }

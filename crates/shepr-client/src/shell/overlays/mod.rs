@@ -17,11 +17,11 @@ pub(in crate::shell) mod transient_error;
 
 use crate::endpoint::ClientEndpointId;
 use crate::shell::endpoints::endpoint_status_presentation;
+use crate::shell::navigation::location::{Location, LocationTarget};
 use crate::shell::presentation::render::{display_width, put_right_text, put_text};
 use crate::shell::state::{
     ClientConfirmCloseOverlay, ClientContextMenuOverlay, ClientGlobalMenuOverlay,
-    ClientHelpOverlay, ClientNavigatorOverlay, ClientNavigatorTarget, ClientRenameOverlay,
-    ClientShellOverlay,
+    ClientHelpOverlay, ClientNavigatorOverlay, ClientRenameOverlay, ClientShellOverlay,
 };
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -54,7 +54,7 @@ pub(crate) struct OverlayRender {
     pub(crate) cancel: Rect,
     pub(crate) navigator_popup: Rect,
     pub(crate) navigator_search: Rect,
-    pub(crate) navigator_rows: Vec<(Rect, ClientNavigatorTarget)>,
+    pub(crate) navigator_rows: Vec<(Rect, Location)>,
     pub(crate) navigator_scrollbar: Rect,
     pub(crate) navigator_scroll_metrics: Option<shepr_termio::scroll::ListScroll>,
     pub(crate) help_popup: Rect,
@@ -393,7 +393,7 @@ fn render_navigator_overlay(
     };
     let terminal_count = rows
         .iter()
-        .filter(|row| matches!(row.target, ClientNavigatorTarget::Pane { .. }))
+        .filter(|row| matches!(row.target.target, LocationTarget::Pane(_)))
         .count();
     let count = format!(
         "{terminal_count} {}",
@@ -497,21 +497,19 @@ fn render_navigator_overlay(
                 .add_modifier(Modifier::BOLD)
         } else {
             Style::default()
-                .fg(
-                    if matches!(r.target, ClientNavigatorTarget::Machine { .. }) {
-                        p.subtext0
-                    } else {
-                        p.text
-                    },
-                )
+                .fg(if matches!(r.target.target, LocationTarget::Machine) {
+                    p.subtext0
+                } else {
+                    p.text
+                })
                 .bg(p.panel_bg)
         };
-        let is_pane = matches!(r.target, ClientNavigatorTarget::Pane { .. });
+        let is_pane = matches!(r.target.target, LocationTarget::Pane(_));
         let connector = if !is_pane {
             ""
         } else if rows
             .get(ix + 1)
-            .is_some_and(|next| matches!(next.target, ClientNavigatorTarget::Pane { .. }))
+            .is_some_and(|next| matches!(next.target.target, LocationTarget::Pane(_)))
         {
             "├─ "
         } else {
@@ -615,11 +613,12 @@ fn render_navigator_overlay(
                 );
             }
         }
-        let machine_status = match &r.target {
-            ClientNavigatorTarget::Machine { endpoint_id } if !endpoint_id.is_local() => {
-                navigator_index.endpoint_status(endpoint_id)
-            }
-            _ => None,
+        let machine_status = if matches!(r.target.target, LocationTarget::Machine)
+            && !r.target.endpoint.is_local()
+        {
+            navigator_index.endpoint_status(&r.target.endpoint)
+        } else {
+            None
         };
         if let Some(status) = machine_status {
             let (glyph, state, color) = endpoint_status_presentation(status, p);

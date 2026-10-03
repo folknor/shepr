@@ -21,8 +21,7 @@ pub use self::limits::{
     DEFAULT_SCROLLBACK_LIMIT_BYTES,
 };
 pub use self::machine::{
-    IntoSshTarget, LOCAL_ENDPOINT_LABEL, MachineConfig, MachineLabel, MachineLabelError, SshTarget,
-    SshTargetError,
+    LOCAL_ENDPOINT_LABEL, MachineConfig, MachineLabel, MachineLabelError, SshTarget, SshTargetError,
 };
 /// Role-specific raw values. Runtime code receives a [`ValidatedClientConfig`]
 /// or [`ValidatedServerConfig`], constructed through validation at launch or
@@ -44,7 +43,7 @@ pub use self::{
     model::{
         AgentPanelSortConfig, HostCursorModeConfig, NewTerminalCwdConfig, PaneBordersConfig,
         RightClickPassthroughModifierConfig, SidebarBounds, SidebarCollapsedModeConfig,
-        SidebarWidth, StatusIndicatorStyle, validated_sidebar_bounds,
+        SidebarWidth, StatusIndicatorStyle,
     },
     sidebar::{
         AgentSidebarToken, AgentSidebarTokenKind, AgentsSidebarConfig, SidebarConfig,

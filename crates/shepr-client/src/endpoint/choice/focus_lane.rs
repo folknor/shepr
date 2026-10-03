@@ -1,3 +1,4 @@
+use super::MoveFailure;
 use crate::shell::ClientEndpointFocusTarget;
 use shepr_protocol::{
     BootId, ClientMessage, RequestId,
@@ -50,9 +51,9 @@ impl FocusLane {
             command,
         })
     }
-    pub(super) fn receive(&mut self, result: &EndpointReply) -> Result<(), String> {
+    pub(super) fn receive(&mut self, result: &EndpointReply) -> Result<(), MoveFailure> {
         let Some((_, requested)) = self.in_flight.take() else {
-            return Err("unexpected focus response".into());
+            return Err(MoveFailure::UnexpectedFocusResponse);
         };
         // The reply acknowledges the resolved target; Preparing checks actual focus against
         // the coherent snapshot and surface pair before committing the move.
@@ -67,7 +68,7 @@ impl FocusLane {
             _ => false,
         };
         if !matches {
-            return Err("endpoint focus returned an invalid acknowledgement".into());
+            return Err(MoveFailure::BadFocusAcknowledgement);
         }
         self.acknowledged = Some(requested);
         Ok(())

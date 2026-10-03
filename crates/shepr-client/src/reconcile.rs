@@ -42,14 +42,14 @@ impl ClientLoop {
             {
                 return Err(LoopExit::ConnectionLost(io::Error::new(
                     failure.kind,
-                    failure.failure,
+                    failure,
                 )));
             }
             self.endpoint_lost(&failure, now)?;
         }
         if let Some(preparing) = self.state.shell.endpoints.choice.preparing() {
             if let Some(rejection) = preparing.rejection() {
-                let rejection = rejection.to_owned();
+                let rejection = rejection.to_string();
                 self.fail_move(shell::EndpointNoticeKind::MoveRejected(rejection));
             } else if now >= preparing.deadline() {
                 self.fail_move(shell::EndpointNoticeKind::MoveSurfaceTimedOut);
@@ -68,13 +68,9 @@ impl ClientLoop {
             ),
             theme,
         };
-        if let StartOutcome::Abandoned(to) = view::start_move(
-            &mut self.write_stream,
-            shell,
-            baseline,
-            &mut self.next_view_serial,
-            now,
-        ) {
+        if let StartOutcome::Abandoned(to) =
+            view::start_move(&mut self.write_stream, shell, baseline, now)
+        {
             present_notice(
                 &mut self.state,
                 &shell::EndpointNotice::new(to, shell::EndpointNoticeKind::NotReady),
@@ -103,7 +99,7 @@ impl ClientLoop {
                 self.state.mark_pane_dirty();
             }
             Err(reason) => {
-                self.fail_move(shell::EndpointNoticeKind::MoveRejected(reason));
+                self.fail_move(shell::EndpointNoticeKind::MoveRejected(reason.to_string()));
             }
             Ok(None) => {}
         }
@@ -111,7 +107,6 @@ impl ClientLoop {
             &self.state.shell.endpoints.choice,
             &mut self.write_stream,
             &self.state.shell,
-            &mut self.next_view_serial,
         );
         self.state.present_pending();
         Ok(())

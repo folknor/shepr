@@ -17,7 +17,7 @@ fn split_ratio(value: f32) -> shepr_core::layout::SplitRatio {
 
 fn state_with_workspaces(names: &[&str]) -> AppState {
     let mut state = AppState::test_new();
-    state.workspaces = names.iter().map(|name| Workspace::test_new(name)).collect();
+    state.test_set_workspaces(names.iter().map(|name| Workspace::test_new(name)).collect());
     state.ensure_test_terminals();
     if !state.workspaces.is_empty() {
         state.set_bookmark_index(Some(0));
@@ -28,7 +28,7 @@ fn state_with_workspaces(names: &[&str]) -> AppState {
 fn app_from_state(state: AppState) -> crate::app::App {
     let mut app = crate::app::App::new(
         &shepr_config::ServerConfig::default(),
-        crate::app::AppPolicy::Test,
+        crate::app::AppPolicy::Suspended,
     );
     app.state = state;
     app.state
@@ -271,7 +271,7 @@ fn capture_contract_tracks_workspace_closure() {
 fn capture_contract_tracks_layout_focus_zoom_and_root_pane() {
     let mut state = state_with_workspaces(&["one"]);
     let root = state.workspaces[0].root_pane();
-    let second = state.workspaces[0].test_split(Direction::Horizontal);
+    let second = state.test_split_workspace(0, Direction::Horizontal);
     state.workspaces[0].focus_pane(second);
     state
         .toggle_pane_zoom(0, second)
@@ -290,7 +290,7 @@ fn capture_contract_tracks_layout_focus_zoom_and_root_pane() {
 fn capture_contract_tracks_focus_navigation() {
     let mut state = state_with_workspaces(&["one"]);
     let root = state.workspaces[0].root_pane();
-    let second = state.workspaces[0].test_split(Direction::Horizontal);
+    let second = state.test_split_workspace(0, Direction::Horizontal);
     refresh_test_view(&mut state, Rect::new(0, 0, 106, 20));
     let mut app = app_from_state(state);
     let pane_id = app.public_pane_id(0, root).expect("test precondition");
@@ -314,7 +314,7 @@ fn capture_contract_tracks_focus_navigation() {
 fn capture_contract_tracks_resize_ratio_changes() {
     let mut state = state_with_workspaces(&["one"]);
     let root = state.workspaces[0].root_pane();
-    let right = state.workspaces[0].test_split(Direction::Horizontal);
+    let right = state.test_split_workspace(0, Direction::Horizontal);
     state.workspaces[0].focus_pane(right);
     refresh_test_view(&mut state, Rect::new(0, 0, 106, 20));
     let mut app = app_from_state(state);
@@ -341,7 +341,7 @@ fn capture_contract_tracks_resize_ratio_changes() {
 #[test]
 fn capture_contract_tracks_pane_closure() {
     let mut state = state_with_workspaces(&["one"]);
-    let second = state.workspaces[0].test_split(Direction::Horizontal);
+    let second = state.test_split_workspace(0, Direction::Horizontal);
     let mut app = app_from_state(state);
     let pane_id = app.public_pane_id(0, second).expect("test precondition");
 
@@ -362,9 +362,9 @@ fn capture_contract_tracks_pane_closure() {
 #[test]
 fn capture_contract_tracks_public_id_counters() {
     let mut state = state_with_workspaces(&["one"]);
-    let second = state.workspaces[0].test_split(Direction::Horizontal);
-    let third = state.workspaces[0].test_split(Direction::Vertical);
-    let fourth = state.workspaces[0].test_split(Direction::Horizontal);
+    let second = state.test_split_workspace(0, Direction::Horizontal);
+    let third = state.test_split_workspace(0, Direction::Vertical);
+    let fourth = state.test_split_workspace(0, Direction::Horizontal);
 
     state.workspaces[0]
         .close_pane(second)
@@ -395,7 +395,7 @@ async fn capture_follows_live_cwd_arbitration_and_keeps_it_after_exit() {
     let scratch = crate::test_support::ScratchDir::new("persist-cwd");
     let new = std::fs::canonicalize(scratch.path()).expect("test precondition");
     let mut state = AppState::test_new();
-    state.workspaces = vec![Workspace::test_new("cwd-source")];
+    state.test_set_workspaces(vec![Workspace::test_new("cwd-source")]);
     state.workspaces[0].identity_cwd = old.clone();
     state.set_bookmark_index(Some(0));
     state.ensure_test_terminals();
@@ -526,7 +526,7 @@ fn capture_contract_tracks_pane_cwds() {
     let pion_cwd = ScratchDir::new("snapshot-pion-cwd").to_path_buf();
     let shepr_cwd = ScratchDir::new("snapshot-shepr-cwd").to_path_buf();
     let root = state.workspaces[0].root_pane();
-    let second = state.workspaces[0].test_split(Direction::Horizontal);
+    let second = state.test_split_workspace(0, Direction::Horizontal);
     state.ensure_test_terminals();
     let root_terminal_id = state.workspaces[0].panes()[&root]
         .attached_terminal_id
@@ -583,7 +583,7 @@ async fn capture_contract_tracks_pane_history_from_runtime() {
 async fn capture_contract_tracks_history_for_each_pane() {
     let mut state = state_with_workspaces(&["one"]);
     let first = state.workspaces[0].root_pane();
-    let second = state.workspaces[0].test_split(Direction::Horizontal);
+    let second = state.test_split_workspace(0, Direction::Horizontal);
     let first_terminal_id = state.workspaces[0].panes()[&first]
         .attached_terminal_id
         .clone();
@@ -770,9 +770,8 @@ fn capture_contract_tracks_hook_authority_agent_session() {
         )
         .expect("test session is valid"),
     );
-    terminal.set_hook_authority_at(
-        "shepr:pi",
-        "pi",
+    terminal.set_hook_report_at(
+        shepr_agent::agent::ReportOrigin::parse("shepr:pi", "pi").expect("test origin"),
         shepr_agent::detect::AgentState::Working,
         shepr_agent::agent::resume::AgentSessionRef::path(session_path.clone()),
         Some(20),

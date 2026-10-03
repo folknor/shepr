@@ -5,16 +5,19 @@ use std::sync::Arc;
 use std::thread;
 use tokio::sync::mpsc;
 
-pub(super) type CheckoutRootRunner =
-    Arc<dyn Fn(PathBuf) -> Result<Option<String>, String> + Send + Sync>;
+pub(super) type CheckoutRootRunner = Arc<
+    dyn Fn(PathBuf) -> Result<Option<shepr_protocol::RemotePath>, shepr_mux::git::GitReadError>
+        + Send
+        + Sync,
+>;
 
 pub(super) enum WorkerCompletion {
     CheckoutRoot {
         ticket: ReplyTicket,
         boot_id: shepr_protocol::BootId,
         request_id: shepr_protocol::RequestId,
-        home: Option<String>,
-        result: Result<Option<String>, String>,
+        home: Option<shepr_protocol::RemotePath>,
+        result: Result<Option<shepr_protocol::RemotePath>, shepr_mux::git::GitReadError>,
     },
 }
 
@@ -35,7 +38,9 @@ impl WorkerCompletion {
                             home,
                         },
                     )
-                    .map_err(shepr_protocol::command::EndpointError::Rejected);
+                    .map_err(|error| {
+                        shepr_protocol::command::EndpointError::ResourceFailure(error.to_string())
+                    });
                 (
                     ticket,
                     crate::server::client_commands::response_message(boot_id, request_id, result),
@@ -85,7 +90,7 @@ impl EndpointWorkers {
         boot_id: shepr_protocol::BootId,
         request_id: shepr_protocol::RequestId,
         cwd: PathBuf,
-        home: Option<String>,
+        home: Option<shepr_protocol::RemotePath>,
     ) -> io::Result<()> {
         let completion_tx = self.sender.clone();
         let runner = Arc::clone(&self.runner);
@@ -117,7 +122,7 @@ impl super::HeadlessServer {
         boot_id: shepr_protocol::BootId,
         request_id: shepr_protocol::RequestId,
         cwd: PathBuf,
-        home: Option<String>,
+        home: Option<shepr_protocol::RemotePath>,
     ) {
         if !self.workers.can_admit() {
             self.queue_endpoint_reply(
@@ -125,7 +130,7 @@ impl super::HeadlessServer {
                 &crate::server::client_commands::response_message(
                     boot_id,
                     request_id,
-                    Err(shepr_protocol::command::EndpointError::Rejected(
+                    Err(shepr_protocol::command::EndpointError::Busy(
                         "checkout root worker limit reached; retry later".to_owned(),
                     )),
                 ),
@@ -150,9 +155,9 @@ impl super::HeadlessServer {
                 &crate::server::client_commands::response_message(
                     boot_id,
                     request_id,
-                    Err(shepr_protocol::command::EndpointError::Rejected(format!(
-                        "failed to start checkout root worker: {error}"
-                    ))),
+                    Err(shepr_protocol::command::EndpointError::ResourceFailure(
+                        format!("failed to start checkout root worker: {error}"),
+                    )),
                 ),
             );
         }

@@ -52,6 +52,7 @@ api_error_codes! {
     AgentExplainUnavailable => "agent_explain_unavailable",
     InvalidAgent => "invalid_agent",
     InvalidRequest => "invalid_request",
+    InvalidPaneId => "invalid_pane_id",
     PaneNotFound => "pane_not_found",
     PaneTerminalUnavailable => "pane_terminal_unavailable",
     SerializationError => "serialization_error",

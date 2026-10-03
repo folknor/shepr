@@ -78,8 +78,13 @@ fn the_commit_baseline_is_the_evidence_surface_and_the_next_patch_applies() {
     f.inbound_patch(&id, first);
     assert!(f.client.write_stream.connection(&id).is_some());
     // The first patch reached the shell and advanced its baseline: the next one follows.
+    // The committed endpoint's connection generation (the fixture connects it at 7) is
+    // the one its patches carry.
     assert!(matches!(
-        f.client.state.shell.apply_pane_surface_patch(&patch(&s)),
+        f.client
+            .state
+            .shell
+            .apply_pane_surface_patch_from(&patch(&s), 7),
         shell::ClientPaneSurfacePatchOutcome::Applied(_)
     ));
 }

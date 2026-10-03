@@ -4,10 +4,7 @@ use crate::app::events::StateEvent;
 impl StateEvent {
     /// The state part of `event`; `None` for the events the App applies itself
     /// (a pane's death, a clipboard write, a Git refresh).
-    pub(crate) fn from_app_event(
-        event: AppEvent,
-        sample: shepr_agent::ownership::HookClockSample,
-    ) -> Option<Self> {
+    pub(crate) fn from_app_event(event: AppEvent) -> Option<Self> {
         match event {
             AppEvent::AgentProcessDetected {
                 pane_id,
@@ -30,34 +27,6 @@ impl StateEvent {
                 detection,
                 process_exited,
                 observed_at,
-            }),
-            AppEvent::HookStateReported {
-                pane_id,
-                origin,
-                state,
-                seq,
-                session_ref,
-            } => Some(Self::HookStateReported {
-                pane_id,
-                sample,
-                origin,
-                state,
-                seq,
-                session_ref,
-            }),
-            AppEvent::AgentSessionReported {
-                pane_id,
-                origin,
-                seq,
-                session_ref,
-                session_start_source,
-            } => Some(Self::AgentSessionReported {
-                pane_id,
-                sample,
-                origin,
-                seq,
-                session_ref,
-                session_start_source,
             }),
             AppEvent::TerminalCwdReported { pane_id, cwd } => {
                 Some(Self::TerminalCwdReported { pane_id, cwd })
@@ -345,15 +314,6 @@ impl AppState {
     /// must be tested through `App::handle_internal_event`.
     #[cfg(test)]
     pub(crate) fn handle_app_event(&mut self, event: AppEvent) -> StateUpdate {
-        self.handle_state_event(
-            StateEvent::from_app_event(
-                event,
-                shepr_agent::ownership::HookClockSample {
-                    monotonic: self.clock_now,
-                    wall: std::time::SystemTime::now(),
-                },
-            )
-            .expect("state event"),
-        )
+        self.handle_state_event(StateEvent::from_app_event(event).expect("state event"))
     }
 }

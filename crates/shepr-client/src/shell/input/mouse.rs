@@ -187,14 +187,11 @@ impl ClientShellState {
         &mut self,
         request: &shepr_protocol::RequestId,
         pane_id: &shepr_protocol::PublicPaneId,
-        result: Result<shepr_protocol::command::EndpointReply, ClientShellEndpointError>,
-        now: std::time::Instant,
+        result: Result<shepr_protocol::command::PaneInfoReply, ClientShellEndpointError>,
         outcome: &mut ClientShellInput,
     ) -> Repaint {
         match result {
-            Ok(shepr_protocol::command::EndpointReply::PaneInfo { pane })
-                if &pane.pane_id == pane_id =>
-            {
+            Ok(shepr_protocol::command::PaneInfoReply { pane }) if &pane.pane_id == pane_id => {
                 if let ScrollAnswer::Next(Some(offset)) = self.scroll_lanes.answered(
                     pane_id,
                     request,
@@ -204,18 +201,7 @@ impl ClientShellState {
                 }
                 Repaint::Unchanged
             }
-            Ok(_) => {
-                if self.scroll_lanes.failed(pane_id, request) {
-                    self.set_endpoint_error(
-                        "endpoint returned an unexpected pane-scroll result",
-                        now,
-                    );
-                    Repaint::Needed
-                } else {
-                    Repaint::Unchanged
-                }
-            }
-            Err(_) => {
+            Ok(_) | Err(_) => {
                 if self.scroll_lanes.failed(pane_id, request) {
                     Repaint::Needed
                 } else {
@@ -305,7 +291,7 @@ impl ClientShellState {
         let (viewport_row, col) = selection_cell(column, row, hit.inner_rect);
         let absolute_row = metrics.absolute_row_at_viewport(viewport_row);
         if self.mouse_selection.word_gesture.is_some() {
-            self.drag_word_selection((absolute_row, col), outcome, now);
+            self.drag_word_selection(shepr_vt::Point::new(absolute_row, col), outcome, now);
         } else if let Some(selection) = self.mouse_selection.selection.as_mut() {
             selection.drag(shepr_vt::Point::new(absolute_row, col));
         }
@@ -690,7 +676,7 @@ impl ClientShellState {
             || point.1 < self.hits.workspace_body.y.saturating_sub(1)
             || point.1 >= drop_bottom
             || self.hits.workspaces.iter().any(|hit| {
-                hit.endpoint_id != *self.endpoints.presented()
+                hit.location.endpoint != *self.endpoints.presented()
                     && crate::shell::input::hit_test::contains(hit.rect, point)
             })
         {
@@ -700,8 +686,12 @@ impl ClientShellState {
             .hits
             .workspaces
             .iter()
-            .filter(|hit| hit.endpoint_id == *self.endpoints.presented())
-            .map(|hit| (Some(hit.workspace_id), hit.rect.y.saturating_sub(1)))
+            .filter(|hit| hit.location.endpoint == *self.endpoints.presented())
+            .filter_map(|hit| {
+                hit.location
+                    .workspace_id()
+                    .map(|workspace_id| (Some(workspace_id), hit.rect.y.saturating_sub(1)))
+            })
             .collect::<Vec<_>>();
         let snapshot = self.snapshot.as_deref()?;
         let last_hit = self
@@ -709,11 +699,12 @@ impl ClientShellState {
             .workspaces
             .iter()
             .rev()
-            .find(|hit| hit.endpoint_id == *self.endpoints.presented())?;
+            .find(|hit| hit.location.endpoint == *self.endpoints.presented())?;
+        let last_workspace_id = last_hit.location.workspace_id()?;
         let last_position = snapshot
             .workspaces
             .iter()
-            .position(|workspace| workspace.workspace_id == last_hit.workspace_id)?;
+            .position(|workspace| workspace.workspace_id == last_workspace_id)?;
         let before = snapshot
             .workspaces
             .get(last_position + 1)
@@ -1015,9 +1006,12 @@ impl ClientShellState {
                     .abs_diff(press.start_column)
                     .max(mouse.row.abs_diff(press.start_row));
                 if delta >= 1 {
-                    let source_workspace_id = press.workspace_id;
+                    let source_workspace_id = press.location.workspace_id();
                     let draggable = self.endpoint_workspace_is_draggable(press);
-                    if draggable && let Some(target) = self.workspace_drop_target_at(point) {
+                    if draggable
+                        && let Some(source_workspace_id) = source_workspace_id
+                        && let Some(target) = self.workspace_drop_target_at(point)
+                    {
                         self.chrome_drag = Some(ClientChromeDrag::Workspace {
                             source_workspace_id,
                             target: Some(target),
@@ -1645,8 +1639,7 @@ impl ClientShellState {
                     .iter()
                     .find(|hit| crate::shell::input::hit_test::contains(hit.rect, point))
                     .map(|hit| ClientWorkspacePress {
-                        endpoint_id: hit.endpoint_id.clone(),
-                        workspace_id: hit.workspace_id,
+                        location: hit.location.clone(),
                         start_column: mouse.column,
                         start_row: mouse.row,
                     });
@@ -1655,21 +1648,6 @@ impl ClientShellState {
                     return;
                 }
                 if self.handle_endpoint_agent_click(point, outcome) {
-                    return;
-                }
-                let agent_pane_id = self
-                    .hits
-                    .agents
-                    .iter()
-                    .find(|(rect, _)| crate::shell::input::hit_test::contains(*rect, point))
-                    .map(|(_, pane_id)| pane_id);
-                if let Some(pane_id) = agent_pane_id {
-                    self.push_endpoint_command(
-                        shepr_protocol::command::EndpointCommand::PaneFocus(
-                            shepr_protocol::command::PaneTarget { pane_id: *pane_id },
-                        ),
-                        outcome,
-                    );
                     return;
                 }
                 let scrollbar_hit = self
@@ -2034,12 +2012,15 @@ mod tests {
 
         let surface = split_surface(boot_id.clone(), 1, SplitBranch::First);
         let topology_signature = pane_surface_topology_signature(&surface);
-        state.receive_pane_surface(surface);
+        state.receive_pane_surface_from(surface, state.active_snapshot_generation.unwrap_or(1));
         let mut next = crate::shell::tests::snapshot();
         next.revision = shepr_protocol::ProjectionRevision::new(2);
         state.set_snapshot(Box::new(next));
         if with_changed_pending_topology {
-            state.receive_pane_surface(split_surface(boot_id, 3, SplitBranch::Second));
+            state.receive_pane_surface_from(
+                split_surface(boot_id, 3, SplitBranch::Second),
+                state.active_snapshot_generation.unwrap_or(1),
+            );
         }
         state.chrome_drag = Some(ClientChromeDrag::PaneSplit {
             first_panes: vec!["w1:p1".parse().expect("pane")],

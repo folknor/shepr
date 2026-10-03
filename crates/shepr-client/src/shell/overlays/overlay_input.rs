@@ -2,12 +2,11 @@
 //! and pasted text land in these editors; input content must stay out of logs
 //! and error messages here (log lengths or content-free kinds instead).
 
-use crate::shell::endpoints::ClientEndpointFocusTarget;
 use crate::shell::ledger::Work;
+use crate::shell::navigation::location::LocationTarget;
 use crate::shell::overlays::text_editor::TextEditor;
 use crate::shell::state::{
-    ClientNavigatorFilter, ClientNavigatorTarget, ClientRenameTarget, ClientShellMode,
-    ClientShellOverlay,
+    ClientNavigatorFilter, ClientRenameTarget, ClientShellMode, ClientShellOverlay,
 };
 use crossterm::event::KeyCode;
 
@@ -92,11 +91,11 @@ impl ClientShellState {
         };
         let section = rows[..=selected]
             .iter()
-            .rposition(|row| !matches!(row.target, ClientNavigatorTarget::Pane { .. }))
+            .rposition(|row| !matches!(row.target.target, LocationTarget::Pane(_)))
             .unwrap_or(selected);
         let mut destinations = rows.windows(2).enumerate().filter(|(index, pair)| {
-            matches!(pair[0].target, ClientNavigatorTarget::Workspace { .. })
-                && matches!(pair[1].target, ClientNavigatorTarget::Pane { .. })
+            matches!(pair[0].target.target, LocationTarget::Workspace(_))
+                && matches!(pair[1].target.target, LocationTarget::Pane(_))
                 && if forward {
                     *index > section
                 } else {
@@ -128,26 +127,11 @@ impl ClientShellState {
         let Some(target) = target else {
             return;
         };
-        let activated = match target {
-            ClientNavigatorTarget::Machine { endpoint_id } => {
-                self.activate_endpoint(endpoint_id, outcome)
+        let activated = match target.target {
+            LocationTarget::Machine => self.activate_endpoint(target.endpoint.clone(), outcome),
+            LocationTarget::Workspace(_) | LocationTarget::Pane(_) => {
+                self.focus_or_activate(target, outcome)
             }
-            ClientNavigatorTarget::Workspace {
-                endpoint_id,
-                workspace_id,
-            } => self.focus_or_activate(
-                endpoint_id,
-                ClientEndpointFocusTarget::Workspace(workspace_id),
-                outcome,
-            ),
-            ClientNavigatorTarget::Pane {
-                endpoint_id,
-                pane_id,
-            } => self.focus_or_activate(
-                endpoint_id,
-                ClientEndpointFocusTarget::Pane(pane_id),
-                outcome,
-            ),
         };
         if activated {
             self.overlay = None;
@@ -159,10 +143,10 @@ impl ClientShellState {
         self.navigate_workspace_id
             .as_ref()
             .filter(|target| {
-                target.endpoint_id == *self.endpoints.presented()
+                target.location.endpoint == *self.endpoints.presented()
                     && self.navigation_target_valid(target)
             })
-            .map(|target| target.workspace_id)
+            .and_then(|target| target.location.workspace_id())
             .or_else(|| {
                 self.snapshot
                     .as_deref()
@@ -181,25 +165,21 @@ impl ClientShellState {
                 .workspaces
                 .iter()
                 .find(|workspace| workspace.workspace_id == *workspace_id)
-                .map(|workspace| workspace.new_workspace_cwd.clone())
+                .and_then(|workspace| workspace.new_workspace_cwd.clone())
         });
-        let suggested_name = match cwd.as_deref() {
-            Some(cwd) => shepr_core::workspace_label::workspace_label_from_cwd(
-                std::path::Path::new(cwd),
-                None,
-                None,
-            ),
+        let suggested_name = match cwd.as_ref() {
+            Some(cwd) => {
+                shepr_core::workspace_label::workspace_label_from_cwd(cwd.as_path(), None, None)
+            }
             None => "workspace".to_owned(),
         };
         let mut label_lookup = None;
-        if let Some(cwd) = cwd.as_deref()
+        if let Some(cwd) = cwd.as_ref()
             && self.endpoint_usable(self.endpoints.presented())
         {
             label_lookup = self.submit(
                 shepr_protocol::command::EndpointCommand::WorkspaceCheckoutRoot(
-                    shepr_protocol::command::WorkspaceCheckoutRootParams {
-                        cwd: cwd.to_owned(),
-                    },
+                    shepr_protocol::command::WorkspaceCheckoutRootParams { cwd: cwd.clone() },
                 ),
                 Work::WorkspaceLabel,
                 outcome,
@@ -222,7 +202,7 @@ impl ClientShellState {
     pub(in crate::shell) fn complete_workspace_label_lookup(
         &mut self,
         request: &shepr_protocol::RequestId,
-        result: Option<shepr_protocol::command::EndpointReply>,
+        result: Option<shepr_protocol::command::WorkspaceCheckoutRootReply>,
     ) -> Repaint {
         let Some(ClientShellOverlay::Rename(rename)) = self.overlay.as_mut() else {
             return Repaint::Unchanged;
@@ -240,20 +220,19 @@ impl ClientShellState {
             return Repaint::Unchanged;
         }
         *label_lookup = None;
-        let Some(shepr_protocol::command::EndpointReply::WorkspaceCheckoutRoot { root, home }) =
-            result
+        let Some(shepr_protocol::command::WorkspaceCheckoutRootReply { root, home }) = result
         else {
             return Repaint::Unchanged;
         };
-        let Some(cwd) = cwd.as_deref() else {
+        let Some(cwd) = cwd.as_ref() else {
             return Repaint::Unchanged;
         };
         // Only a cwd outside Git can be labelled `~`.
         let home = if root.is_none() { home } else { None };
         let label = shepr_core::workspace_label::workspace_label_from_cwd(
-            std::path::Path::new(cwd),
-            root.as_deref().map(std::path::Path::new),
-            home.as_deref().map(std::path::Path::new),
+            cwd.as_path(),
+            root.as_ref().map(shepr_protocol::RemotePath::as_path),
+            home.as_ref().map(shepr_protocol::RemotePath::as_path),
         );
         if rename.input.as_str() == suggested_name.as_str() {
             rename.input = TextEditor::new(&label, true);

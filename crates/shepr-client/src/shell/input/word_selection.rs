@@ -93,14 +93,13 @@ impl ClientShellState {
 
     pub(in crate::shell) fn drag_word_selection(
         &mut self,
-        cursor: (shepr_vt::AbsRow, u16),
+        cursor: shepr_vt::Point<shepr_vt::AbsRow>,
         outcome: &mut ClientShellInput,
         now: std::time::Instant,
     ) {
         let Some(gesture) = self.mouse_selection.word_gesture.as_mut() else {
             return;
         };
-        let cursor = shepr_vt::Point::new(cursor.0, cursor.1);
         if gesture.released || gesture.cursor == cursor {
             return;
         }
@@ -194,7 +193,7 @@ impl ClientShellState {
         request: &shepr_protocol::RequestId,
         pane_id: &shepr_protocol::PublicPaneId,
         absolute_row: shepr_vt::AbsRow,
-        result: Result<shepr_protocol::command::EndpointReply, ClientShellEndpointError>,
+        result: Result<shepr_protocol::command::PaneSelectionReply, ClientShellEndpointError>,
         now: std::time::Instant,
         outcome: &mut ClientShellInput,
     ) -> Repaint {
@@ -215,18 +214,11 @@ impl ClientShellState {
             return Repaint::Needed;
         }
         let text = match result {
-            Ok(shepr_protocol::command::EndpointReply::PaneSelection {
+            Ok(shepr_protocol::command::PaneSelectionReply {
                 pane_id: returned_pane_id,
                 text,
             }) if returned_pane_id == *pane_id => text,
-            other => {
-                if matches!(other, Ok(value) if !matches!(value, shepr_protocol::command::EndpointReply::PaneSelection { .. }))
-                {
-                    self.set_endpoint_error(
-                        "endpoint returned an unexpected word-selection result",
-                        now,
-                    );
-                }
+            _ => {
                 self.cancel_word_selection();
                 return Repaint::Needed;
             }

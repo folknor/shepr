@@ -17,6 +17,8 @@ impl PaneRuntime {
         self.terminal.modify_other_keys_level()
     }
 
+    /// Samples the current terminal modes for server pane input, with legacy
+    /// encoding if the terminal snapshot cannot be read.
     pub fn encode_terminal_key(&self, key: shepr_termio::input::TerminalKey) -> Vec<u8> {
         if let Some(modes) = self.read().input_modes() {
             self.encode_terminal_key_with_modes(key, modes)
@@ -80,15 +82,6 @@ impl PaneRuntime {
         PaneTerminal::wheel_routing_for_modes(modes)
     }
 
-    pub fn encode_mouse_button(
-        &self,
-        kind: crossterm::event::MouseEventKind,
-        position: shepr_termio::input::mouse::Position,
-        modifiers: crossterm::event::KeyModifiers,
-    ) -> Option<Vec<u8>> {
-        self.encode_mouse_button_with_modes(self.read().input_modes()?, kind, position, modifiers)
-    }
-
     pub fn encode_mouse_button_with_modes(
         &self,
         modes: shepr_vt::InputModes,
@@ -100,15 +93,6 @@ impl PaneRuntime {
             .encode_mouse_button_with_modes(modes, kind, position, modifiers)
     }
 
-    pub fn encode_mouse_motion(
-        &self,
-        kind: crossterm::event::MouseEventKind,
-        position: shepr_termio::input::mouse::Position,
-        modifiers: crossterm::event::KeyModifiers,
-    ) -> Option<Vec<u8>> {
-        self.encode_mouse_motion_with_modes(self.read().input_modes()?, kind, position, modifiers)
-    }
-
     pub fn encode_mouse_motion_with_modes(
         &self,
         modes: shepr_vt::InputModes,
@@ -118,15 +102,6 @@ impl PaneRuntime {
     ) -> Option<Vec<u8>> {
         self.terminal
             .encode_mouse_motion_with_modes(modes, kind, position, modifiers)
-    }
-
-    pub fn encode_mouse_wheel(
-        &self,
-        kind: crossterm::event::MouseEventKind,
-        position: shepr_termio::input::mouse::Position,
-        modifiers: crossterm::event::KeyModifiers,
-    ) -> Option<Vec<u8>> {
-        self.encode_mouse_wheel_with_modes(self.read().input_modes()?, kind, position, modifiers)
     }
 
     pub fn encode_mouse_wheel_with_modes(
@@ -143,17 +118,13 @@ impl PaneRuntime {
             .encode_mouse_wheel_with_modes(modes, kind, position, modifiers)
     }
 
-    pub fn pixel_size(&self) -> Option<(u32, u32)> {
+    pub fn pixel_size(&self) -> Option<super::PanePixelSize> {
         self.current_size
             .text_area_px()
-            .map(|(width, height)| (u32::from(width), u32::from(height)))
-    }
-
-    pub fn encode_alternate_scroll(
-        &self,
-        kind: crossterm::event::MouseEventKind,
-    ) -> Option<Vec<u8>> {
-        self.encode_alternate_scroll_with_modes(self.read().input_modes()?, kind)
+            .map(|(width, height)| super::PanePixelSize {
+                width: u32::from(width),
+                height: u32::from(height),
+            })
     }
 
     pub fn encode_alternate_scroll_with_modes(

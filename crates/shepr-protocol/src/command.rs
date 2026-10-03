@@ -36,7 +36,7 @@ pub enum SplitDirection {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WorkspaceCreateSource {
     /// An explicit working directory.
-    Cwd(String),
+    Cwd(crate::RemotePath),
     /// The focused pane of this workspace supplies the cwd policy
     /// (`terminal.new_cwd`); a workspace that no longer exists falls back to
     /// [`Self::Default`].
@@ -67,7 +67,7 @@ pub struct WorkspaceRenameParams {
 /// own host, which is what a new workspace's default label derives from.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkspaceCheckoutRootParams {
-    pub cwd: String,
+    pub cwd: crate::RemotePath,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -553,8 +553,8 @@ pub enum EndpointReply {
     /// repository, and the home directory of the server's host (`None` when it
     /// has no usable one), which a directory outside Git is compared with.
     WorkspaceCheckoutRoot {
-        root: Option<String>,
-        home: Option<String>,
+        root: Option<crate::RemotePath>,
+        home: Option<crate::RemotePath>,
     },
     PaneSelection {
         pane_id: PublicPaneId,
@@ -579,8 +579,17 @@ pub enum EndpointReply {
 /// Why an [`EndpointCommand`] failed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EndpointError {
-    /// The app refused the command; the message is for the user.
+    /// A policy refusal whose message is for the user.
     Rejected(String),
+    WorkspaceGone(WorkspaceId),
+    PaneGone(PublicPaneId),
+    SplitGone,
+    InvalidArgument(String),
+    Busy(String),
+    ResourceFailure(String),
+    Internal(String),
+    Unavailable(String),
+    AlternateScreen(PublicPaneId),
     /// The server is shutting down.
     ShuttingDown,
     /// The command was aimed at another boot of the server.
@@ -594,7 +603,16 @@ pub enum EndpointError {
 impl std::fmt::Display for EndpointError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Rejected(message) => f.write_str(message),
+            Self::Rejected(message)
+            | Self::InvalidArgument(message)
+            | Self::Busy(message)
+            | Self::ResourceFailure(message)
+            | Self::Internal(message)
+            | Self::Unavailable(message) => f.write_str(message),
+            Self::WorkspaceGone(id) => write!(f, "workspace {id} not found"),
+            Self::PaneGone(id) => write!(f, "pane {id} not found"),
+            Self::SplitGone => f.write_str("split children not found"),
+            Self::AlternateScreen(_) => f.write_str("the pane is on the alternate screen"),
             Self::ShuttingDown => f.write_str("the server is shutting down"),
             Self::StaleBoot => f.write_str("the command was aimed at a previous server boot"),
             Self::SurfaceInactive => f.write_str("the client surface is not active"),
@@ -604,3 +622,117 @@ impl std::fmt::Display for EndpointError {
 }
 
 impl std::error::Error for EndpointError {}
+
+/// Reply payloads consumed by shell continuations. Decode the wire sum at the
+/// request boundary, before calling a continuation with its specific payload.
+macro_rules! endpoint_reply_payloads {
+    ($($name:ident => $variant:ident { $($field:ident: $ty:ty),+ } ;)+) => {
+        $(#[derive(Debug, Clone, PartialEq, Eq)]
+        pub struct $name { $(pub $field: $ty,)+ }
+        impl TryFrom<EndpointReply> for $name {
+            type Error = EndpointError;
+            fn try_from(reply: EndpointReply) -> Result<Self, Self::Error> {
+                match reply {
+                    EndpointReply::$variant { $($field,)+ } => Ok(Self { $($field,)+ }),
+                    _ => Err(EndpointError::Internal(concat!(
+                        "endpoint returned an unexpected ", stringify!($variant), " result"
+                    ).into())),
+                }
+            }
+        })+
+    };
+}
+endpoint_reply_payloads! {
+    PaneInfoReply => PaneInfo { pane: Box<PaneInfo> };
+    WorkspaceCheckoutRootReply => WorkspaceCheckoutRoot { root: Option<crate::RemotePath>, home: Option<crate::RemotePath> };
+    PaneSelectionReply => PaneSelection { pane_id: PublicPaneId, text: String };
+    PaneCopyMotionReply => PaneCopyMotion { pane_id: PublicPaneId, cursor: PaneTextPoint };
+    PaneCopySearchReply => PaneCopySearch { pane_id: PublicPaneId, search: PaneCopySearch };
+}
+
+impl CommandKind {
+    /// Checks the dynamic wire envelope against the request that owns it.
+    pub fn accepts_reply(self, reply: &EndpointReply) -> bool {
+        match self {
+            Self::ClientShellSurfaceSet => {
+                matches!(reply, EndpointReply::ClientShellSurfaceSet { .. })
+            }
+            Self::WorkspaceCheckoutRoot => {
+                matches!(reply, EndpointReply::WorkspaceCheckoutRoot { .. })
+            }
+            Self::WorkspaceFocus | Self::WorkspaceRename => {
+                matches!(reply, EndpointReply::WorkspaceInfo { .. })
+            }
+            Self::PaneSplit | Self::PaneFocus | Self::PaneRename | Self::PaneScroll => {
+                matches!(reply, EndpointReply::PaneInfo { .. })
+            }
+            Self::PaneSelectionRead => matches!(reply, EndpointReply::PaneSelection { .. }),
+            Self::PaneCopyMotion => matches!(reply, EndpointReply::PaneCopyMotion { .. }),
+            Self::PaneCopySearch => matches!(reply, EndpointReply::PaneCopySearch { .. }),
+            Self::WorkspaceCreate
+            | Self::WorkspaceMove
+            | Self::WorkspaceClose
+            | Self::PaneSwap
+            | Self::PaneZoom
+            | Self::LayoutSetSplitRatio
+            | Self::PaneFocusDirection
+            | Self::PaneResize
+            | Self::PaneClear
+            | Self::PaneInputSet
+            | Self::PaneClose => matches!(reply, EndpointReply::Done),
+        }
+    }
+}
+
+#[cfg(test)]
+mod reply_contract_tests {
+    use super::*;
+
+    #[test]
+    fn read_continuations_reject_an_acknowledgement_as_an_internal_error() {
+        assert!(matches!(
+            PaneSelectionReply::try_from(EndpointReply::Done),
+            Err(EndpointError::Internal(_))
+        ));
+        assert!(matches!(
+            PaneInfoReply::try_from(EndpointReply::Done),
+            Err(EndpointError::Internal(_))
+        ));
+        assert!(matches!(
+            PaneCopyMotionReply::try_from(EndpointReply::Done),
+            Err(EndpointError::Internal(_))
+        ));
+        assert!(matches!(
+            PaneCopySearchReply::try_from(EndpointReply::Done),
+            Err(EndpointError::Internal(_))
+        ));
+        assert!(matches!(
+            WorkspaceCheckoutRootReply::try_from(EndpointReply::Done),
+            Err(EndpointError::Internal(_))
+        ));
+    }
+
+    #[test]
+    fn command_contract_checks_even_acknowledgement_only_work() {
+        let checkout = EndpointReply::WorkspaceCheckoutRoot {
+            root: None,
+            home: None,
+        };
+        assert!(CommandKind::WorkspaceCheckoutRoot.accepts_reply(&checkout));
+        assert!(!CommandKind::WorkspaceCheckoutRoot.accepts_reply(&EndpointReply::Done));
+        assert!(CommandKind::WorkspaceClose.accepts_reply(&EndpointReply::Done));
+        assert!(!CommandKind::WorkspaceClose.accepts_reply(&checkout));
+    }
+
+    #[test]
+    fn selection_payload_preserves_its_pane_identity() {
+        let pane_id = "w9:p2".parse().expect("valid pane id");
+        let payload = PaneSelectionReply::try_from(EndpointReply::PaneSelection {
+            pane_id,
+            text: "selected".into(),
+        })
+        .expect("selection payload");
+        assert_eq!(payload.pane_id, pane_id);
+        assert_eq!(payload.text, "selected");
+    }
+}

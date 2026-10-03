@@ -29,6 +29,7 @@ use tracing::{info, warn};
 /// and the first Local attachment. Every launch-fatal configuration and endpoint check runs
 /// while building it; runtime creation and terminal setup follow.
 struct Launched {
+    launch_now: std::time::Instant,
     initial: LocalAtLaunch,
     supervisors: endpoint::EndpointSupervisors,
     machines: Vec<shepr_config::MachineConfig>,
@@ -46,6 +47,7 @@ impl Launched {
     fn prepare(
         config: &shepr_config::ValidatedClientConfig,
         paths: &shepr_config::AppPaths,
+        connectors: Vec<shepr_remote::MachineSshConnector>,
     ) -> Result<Self, ClientRunError> {
         let settings = ClientSettings::resolve(config).map_err(io::Error::from)?;
         let socket_path = paths.server_address().socket().to_path_buf();
@@ -65,7 +67,7 @@ impl Launched {
         // handshake and before the terminal is taken.
         // client-clock-sample-ok: supervisor creation time, before terminal ownership.
         let launch_now = std::time::Instant::now();
-        let supervisors = endpoint::EndpointSupervisors::new(paths, &machines, launch_now)
+        let supervisors = endpoint::EndpointSupervisors::new(connectors, launch_now)
             .map_err(|error| endpoint_setup_launch_error(&error))?;
         let (event_tx, event_rx) =
             tokio::sync::mpsc::channel::<ClientLoopEvent>(CLIENT_EVENT_QUEUE_CAPACITY);
@@ -123,6 +125,7 @@ impl Launched {
         };
 
         Ok(Self {
+            launch_now,
             initial,
             supervisors,
             machines,
@@ -141,10 +144,12 @@ impl Launched {
 /// Runs the local shell client with startup settings already loaded by the
 /// launch coordinator. The binary launcher installs the process-wide file
 /// logger before calling this function. The machines are the launch
-/// config's `[[machines]]`, fixed for the life of the client.
+/// config's `[[machines]]`, fixed for the life of the client, and `connectors`
+/// holds one connector per machine.
 pub(crate) fn run_launched_client(
     config: &shepr_config::ValidatedClientConfig,
     paths: &shepr_config::AppPaths,
+    connectors: Vec<shepr_remote::MachineSshConnector>,
 ) -> Result<ClientExit, ClientRunError> {
     // A panic on any thread from here on ends the client through the one finalization
     // below (see `fatal_panic`). The guard and the runtime live outside the caught launch,
@@ -157,7 +162,7 @@ pub(crate) fn run_launched_client(
     let mut terminal_slot: Option<TerminalGuard> = None;
     let mut runtime_slot: Option<tokio::runtime::Runtime> = None;
     let launched = fatal.guard(|| -> Result<Result<(), LoopExit>, ClientRunError> {
-        let launched = Launched::prepare(config, paths)?;
+        let launched = Launched::prepare(config, paths, connectors)?;
         // A runtime that cannot be built fails the launch before the terminal is taken.
         let runtime = runtime_slot.insert(
             tokio::runtime::Builder::new_current_thread()
@@ -221,14 +226,14 @@ pub(crate) fn run_launched_client(
                 .diagnostic()
                 .unwrap_or("internal error: the client panicked")
                 .to_owned();
-            return Err(ClientRunError::Session(ClientExit::new(Some(message))));
+            return Err(ClientRunError::Session(ClientExit::panicked(message)));
         }
     };
     let Err(err) = result else {
-        return Ok(ClientExit::new(None));
+        return Ok(ClientExit::default());
     };
     let graceful_shutdown = matches!(&err, LoopExit::ServerShutdown { .. });
-    let exit = ClientExit::new(Some(err.to_string()));
+    let exit = ClientExit::from_loop(err);
     if graceful_shutdown {
         Ok(exit)
     } else {
@@ -254,6 +259,7 @@ impl Launched {
         fatal: Arc<fatal_panic::FatalPanic>,
     ) -> Result<ClientLoop, LoopExit> {
         let Self {
+            launch_now,
             initial,
             mut supervisors,
             machines,
@@ -287,8 +293,6 @@ impl Launched {
         let draw_host_cursor = should_draw_host_cursor(settings.host_cursor());
 
         let host_modes = terminal_guard.host_modes();
-        // client-clock-sample-ok: sample launch time for initial shell and endpoint state.
-        let launch_now = std::time::Instant::now();
         let mut state = ClientState {
             blit_encoder: render_ansi::BlitEncoder::new(),
             output_writer: Box::new(output_writer),
@@ -508,7 +512,8 @@ mod tests {
             None,
             paths.clone(),
         );
-        let error = Launched::prepare(&config, &paths)
+        let connectors = endpoint::EndpointSupervisors::fresh_connectors(&paths, config.machines());
+        let error = Launched::prepare(&config, &paths, connectors)
             .err()
             .expect("connector admission fails");
         assert!(matches!(&error, ClientRunError::Launch(_)));

@@ -1,5 +1,106 @@
 use super::*;
+use std::io::Read as _;
 use std::time::Duration;
+
+impl BridgeUpload {
+    /// Stop copying. Bytes already read are still written.
+    fn cancel(&self) {
+        self.stop.cancel();
+    }
+
+    fn is_finished(&self) -> bool {
+        self.worker.is_finished()
+    }
+}
+
+#[test]
+fn upload_cancellation_preserves_pending_endpoint_download() {
+    let scratch = shepr_test_support::ScratchDir::new("cancel");
+    let path = scratch.join("s.sock");
+    let listener = shepr_platform::ipc::bind_local_listener(&path).expect("test precondition");
+    let mut endpoint = shepr_platform::ipc::connect_local_stream(&path).expect("test precondition");
+    let mut bridge = listener.accept().expect("test precondition").0;
+    std::fs::remove_file(path).expect("test precondition");
+    drop(listener);
+    let mut endpoint_reader = endpoint.try_clone().expect("test precondition");
+
+    struct ForwardedInput(std::sync::mpsc::Sender<Vec<u8>>);
+    impl io::Write for ForwardedInput {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.0
+                .send(bytes.to_vec())
+                .map_err(|error| io::Error::other(error.to_string()))?;
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let (forwarded_tx, forwarded_rx) = std::sync::mpsc::channel();
+    let upload_stream = bridge.try_clone().expect("test precondition");
+    upload_stream
+        .set_nonblocking(true)
+        .expect("test stream supports nonblocking mode");
+    let upload = BridgeUpload::spawn(
+        upload_stream,
+        ForwardedInput(forwarded_tx),
+        Arc::new(AtomicBool::new(false)),
+    )
+    .expect("test bridge upload starts");
+    let cancel = move || {
+        upload.cancel();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !upload.is_finished() {
+            assert!(
+                Instant::now() < deadline,
+                "upload worker completes within timeout"
+            );
+            thread::sleep(Duration::from_millis(1));
+        }
+        let end = upload.join().expect("upload worker does not panic");
+        end.result.expect("upload copy completes without error");
+        assert!(
+            !end.client_closed,
+            "upload cancellation must not report peer EOF"
+        );
+    };
+
+    let first_message = shepr_protocol::ClientMessage::ClientShellFocus { focused: false };
+    let mut expected = Vec::new();
+    shepr_protocol::write_message(&mut expected, &first_message).expect("test precondition");
+    endpoint.write_all(&expected).expect("test precondition");
+    let mut forwarded = Vec::new();
+    while forwarded.len() < expected.len() {
+        forwarded.extend(
+            forwarded_rx
+                .recv_timeout(Duration::from_secs(3))
+                .expect("test precondition"),
+        );
+    }
+    assert_eq!(forwarded, expected);
+    cancel();
+
+    // Cancelling uploads leaves the same endpoint stream available in both directions.
+    bridge
+        .set_nonblocking(false)
+        .expect("test stream supports blocking mode");
+    let second_message = shepr_protocol::ClientMessage::ClientShellFocus { focused: true };
+    shepr_protocol::write_message(&mut endpoint, &second_message).expect("test precondition");
+    let received: shepr_protocol::ClientMessage =
+        shepr_protocol::read_message(&mut bridge).expect("test precondition");
+    assert_eq!(received, second_message);
+
+    const FINAL: &[u8] = b"pending-download: FINAL OUTPUT\n";
+    bridge.write_all(FINAL).expect("test precondition");
+    drop(bridge);
+    let mut output = Vec::new();
+    endpoint_reader
+        .read_to_end(&mut output)
+        .expect("test precondition");
+    assert_eq!(output, FINAL);
+}
 
 /// Whether `error` came from ssh, the link or a bounded command timeout rather
 /// than from a remote command, so nothing is known about the remote install.

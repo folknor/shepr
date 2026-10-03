@@ -7,16 +7,20 @@ use super::endpoint::endpoint_rejected;
 /// The launch cwd named by a client-shell command (`workspace.create`), or the
 /// directory `workspace.checkout_root` asks about.
 ///
-/// A relative path is refused, not resolved: the server's own working
-/// directory means nothing to the caller, and the client sends an absolute
-/// directory. Refusing here is also what keeps every pane's launch cwd
-/// absolute, which the session snapshot requires: a relative saved cwd fails
-/// the snapshot's deserialization, and with it the whole saved layout on the
-/// next start.
-pub(super) fn launch_cwd(raw: &str) -> Result<PathBuf, EndpointError> {
-    let path = PathBuf::from(raw);
+/// A relative path is refused without a filesystem access: the server's cwd
+/// means nothing to the caller. Saved value defects are admitted by the strict
+/// session schema and dropped per pane during restore, rather than rejecting
+/// the whole saved layout at deserialization.
+/// This is lexical launch input, not a UsableCwd observation: filesystem
+/// admission belongs to the child or worker, so a hung mount cannot stall
+/// this event-loop boundary.
+pub(super) fn launch_cwd(raw: &shepr_protocol::RemotePath) -> Result<PathBuf, EndpointError> {
+    let path = raw.as_path().to_path_buf();
     if !path.is_absolute() {
-        return endpoint_rejected(format!("cwd {raw:?} must be an absolute path"));
+        return endpoint_rejected(format!(
+            "cwd {:?} must be an absolute path",
+            raw.display_text()
+        ));
     }
     Ok(path)
 }
@@ -32,14 +36,14 @@ mod tests {
     #[test]
     fn launch_cwd_accepts_absolute_and_names_a_refused_relative_path() {
         assert_eq!(
-            launch_cwd("/srv/project").expect("absolute cwd"),
+            launch_cwd(&"/srv/project".into()).expect("absolute cwd"),
             PathBuf::from("/srv/project")
         );
         for raw in ["relative/dir", ".", ""] {
-            let error = launch_cwd(raw).expect_err("relative cwd is refused");
+            let error = launch_cwd(&raw.into()).expect_err("relative cwd is refused");
             assert_eq!(
                 error,
-                EndpointError::Rejected(format!("cwd {raw:?} must be an absolute path"))
+                EndpointError::InvalidArgument(format!("cwd {raw:?} must be an absolute path"))
             );
         }
     }
@@ -51,10 +55,11 @@ mod tests {
         use super::super::test_support::{exiting_test_command, shutdown_test_runtimes};
         let mut app = App::new(
             &shepr_config::ServerConfig::default(),
-            crate::app::AppPolicy::Test,
+            crate::app::AppPolicy::Suspended,
         );
         app.set_test_shell(exiting_test_command());
-        app.state.workspaces = vec![Workspace::test_new("relative-cwd")];
+        app.state
+            .test_set_workspaces(vec![Workspace::test_new("relative-cwd")]);
         app.state.ensure_test_terminals();
         let terminal_count = app.state.terminals.len();
 

@@ -426,16 +426,6 @@ mod tests {
         EndpointCommand, EndpointReply, PaneSplitParams, PaneTarget, SplitDirection,
     };
 
-    // Test constructors say why session restore and persistence are disabled;
-    // the runtime policy name `Suspended` describes a different server state.
-    impl AppPolicy {
-        #[expect(
-            non_upper_case_globals,
-            reason = "spelled like a variant so test constructors read as one"
-        )]
-        pub(crate) const Test: Self = Self::Suspended;
-    }
-
     impl App {
         /// Test constructor: the app's files live in a fresh scratch directory.
         pub(crate) fn new(config: &ServerConfig, policy: AppPolicy) -> Self {
@@ -524,7 +514,7 @@ mod tests {
     }
 
     fn test_app() -> App {
-        let mut app = App::new(&ServerConfig::default(), crate::app::AppPolicy::Test);
+        let mut app = App::new(&ServerConfig::default(), crate::app::AppPolicy::Suspended);
         app.set_test_shell(exiting_test_command());
         app
     }
@@ -647,14 +637,12 @@ mod tests {
             std::fs::read(&backup_files[0]).expect("read backup"),
             original
         );
-
-        app.policy = AppPolicy::Suspended;
     }
 
     #[test]
     fn git_refresh_deadline_is_suppressed_while_in_flight() {
         let mut app = test_app();
-        app.state.workspaces.push(Workspace::test_new("one"));
+        app.state.test_push_workspace(Workspace::test_new("one"));
         app.git_refresh.git_refresh_in_flight = true;
 
         assert_eq!(app.git_refresh_deadline(), None);
@@ -693,7 +681,7 @@ mod tests {
     #[test]
     fn git_status_event_marks_render_dirty_when_status_changes() {
         let mut app = test_app();
-        app.state.workspaces.push(Workspace::test_new("one"));
+        app.state.test_push_workspace(Workspace::test_new("one"));
         let _ = app.render_dirty.take();
         let workspace_id = app.state.workspaces[0].id;
         let resolved_identity_cwd = app.state.workspaces[0]
@@ -704,7 +692,7 @@ mod tests {
             results: vec![shepr_mux::git::WorkspaceGitStatus {
                 workspace_id,
                 resolved_identity_cwd: resolved_identity_cwd.clone(),
-                status_cache_key: resolved_identity_cwd,
+                status_cache_key: shepr_mux::git::GitStatusKey::Checkout(resolved_identity_cwd),
                 auto_label: "one".into(),
                 branch: shepr_mux::git::WorkspaceBranch::Named("render-dirty-test".into()),
                 ahead_behind: Some(shepr_mux::git::AheadBehind {
@@ -723,7 +711,7 @@ mod tests {
         let mut config = ServerConfig::default();
         config.theme.name = Some("tokyo-night".to_string());
 
-        let app = App::new(&config, crate::app::AppPolicy::Test);
+        let app = App::new(&config, crate::app::AppPolicy::Suspended);
 
         assert_eq!(app.state.settings.palette, state::Palette::tokyo_night());
     }
@@ -796,7 +784,7 @@ mod tests {
         let mut second = Workspace::test_new("pion");
         second.identity_cwd = std::path::PathBuf::from("/shepr-test/pion");
 
-        app.state.workspaces = vec![first, second];
+        app.state.test_set_workspaces(vec![first, second]);
         app.state.set_bookmark_index(Some(0));
 
         let followed = app
@@ -872,10 +860,10 @@ mod tests {
         env.set("SHELL", exiting_test_command());
 
         let mut app = test_app();
-        app.state.workspaces = vec![
+        app.state.test_set_workspaces(vec![
             Workspace::test_new("api-pane-split-focused"),
             Workspace::test_new("api-pane-split-background"),
-        ];
+        ]);
         app.state.ensure_test_terminals();
         app.state.set_bookmark_index(Some(0));
         let command = split_of(&app, 1);
@@ -918,7 +906,8 @@ mod tests {
         app.set_test_shell(&shell);
         // Its next public number differs from both its raw pane ids and its
         // pane count, so only the number the split took can match.
-        app.state.workspaces = vec![Workspace::test_adversarial_identity_state()];
+        app.state
+            .test_set_workspaces(vec![Workspace::test_adversarial_identity_state()]);
         app.state.ensure_test_terminals();
         app.state.set_bookmark_index(Some(0));
         let command = split_of(&app, 0);
@@ -952,7 +941,8 @@ mod tests {
         env.set("SHELL", exiting_test_command());
 
         let mut app = test_app();
-        app.state.workspaces = vec![Workspace::test_new("api-pane-split-half")];
+        app.state
+            .test_set_workspaces(vec![Workspace::test_new("api-pane-split-half")]);
         app.state.ensure_test_terminals();
         let command = split_of(&app, 0);
 
@@ -987,10 +977,10 @@ mod tests {
         let mut app = test_app();
         app.state.settings.pane_borders = shepr_config::PaneBordersConfig::Off;
         app.state.settings.pane_scrollbars = false;
-        app.state.workspaces = vec![
+        app.state.test_set_workspaces(vec![
             Workspace::test_new("recorded"),
             Workspace::test_new("unrecorded"),
-        ];
+        ]);
         app.state.ensure_test_terminals();
         let recorded = SpawnGeometry {
             area: ratatui::layout::Rect::new(0, 0, 100, 20),
@@ -1031,10 +1021,10 @@ mod tests {
             );
             assert_eq!(
                 runtime.pixel_size(),
-                Some((
-                    u32::from(grid.cols.get()) * expected.cell_size.width_px,
-                    u32::from(grid.rows.get()) * expected.cell_size.height_px
-                )),
+                Some(shepr_mux::pane::PanePixelSize {
+                    width: u32::from(grid.cols.get()) * expected.cell_size.width_px,
+                    height: u32::from(grid.rows.get()) * expected.cell_size.height_px,
+                }),
                 "workspace {ws_idx}"
             );
         }
@@ -1048,7 +1038,7 @@ mod tests {
         let mut workspace = Workspace::test_new("api-pane-close");
         let target_pane = workspace.root_pane();
         workspace.test_split(shepr_core::layout::Direction::Horizontal);
-        app.state.workspaces = vec![workspace];
+        app.state.test_set_workspaces(vec![workspace]);
         app.state.ensure_test_terminals();
         app.state.set_bookmark_index(Some(0));
 
@@ -1071,7 +1061,7 @@ mod tests {
     fn pane_close_request_closes_workspace_when_it_removes_the_last_pane() {
         let mut app = test_app();
         let workspace = Workspace::test_new("api-pane-close-last");
-        app.state.workspaces = vec![workspace];
+        app.state.test_set_workspaces(vec![workspace]);
         app.state.ensure_test_terminals();
         app.state.set_bookmark_index(Some(0));
 
@@ -1129,6 +1119,7 @@ mod tests {
         let now = Instant::now();
         app.session_saver.set_autosave_deadline(None);
         app.state.workspaces.clear();
+        app.state.test_reindex_panes();
 
         assert_eq!(
             app.next_headless_loop_deadline_with_git_refresh(now, false, true),
@@ -1140,7 +1131,8 @@ mod tests {
     fn due_session_save_starts_background_writer() {
         let mut app = test_app();
         app.persist_for_test();
-        app.state.workspaces = vec![Workspace::test_new("autosave")];
+        app.state
+            .test_set_workspaces(vec![Workspace::test_new("autosave")]);
         app.state.ensure_test_terminals();
         app.session_saver
             .set_autosave_deadline(Some(Instant::now() - Duration::from_secs(1)));
@@ -1180,7 +1172,6 @@ mod tests {
     #[test]
     fn final_session_save_joins_background_writer_before_returning() {
         let mut app = test_app();
-        app.policy = AppPolicy::Suspended;
         let release = app.session_saver.hold_test_save_in_flight();
         let (done_tx, done_rx) = std::sync::mpsc::channel();
         let releaser = std::thread::spawn(move || {
@@ -1201,38 +1192,39 @@ mod tests {
 
     #[tokio::test]
     async fn pane_exit_checkpoint_survives_automatic_workspace_creation_on_shutdown() {
-        let mut app = test_app();
-        app.persist_for_test();
+        let mut server = crate::server::headless::tests::test_headless_server();
+        server.app = test_app();
+        server.app.persist_for_test();
         let mut workspace = Workspace::test_new("preserved");
         let first_pane = workspace.root_pane();
         let second_pane = workspace.test_split(shepr_core::layout::Direction::Horizontal);
-        app.state.workspaces = vec![workspace];
-        app.state.set_bookmark_index(Some(0));
-        app.state.ensure_test_terminals();
-        app.insert_idle_test_runtime(first_pane);
-        app.insert_idle_test_runtime(second_pane);
+        server.app.state.test_set_workspaces(vec![workspace]);
+        server.app.state.set_bookmark_index(Some(0));
+        server.app.state.ensure_test_terminals();
+        server.app.insert_idle_test_runtime(first_pane);
+        server.app.insert_idle_test_runtime(second_pane);
 
-        app.handle_internal_event_after_checkpoint(runtime_pane_exit(
-            &app,
+        server.handle_test_runtime_exit_and_replay(runtime_pane_exit(
+            &server.app,
             first_pane,
             shepr_platform::ChildExitReason::Interrupted,
             std::time::Instant::now(),
         ));
-        app.handle_internal_event_after_checkpoint(runtime_pane_exit(
-            &app,
+        server.handle_test_runtime_exit_and_replay(runtime_pane_exit(
+            &server.app,
             second_pane,
             shepr_platform::ChildExitReason::Interrupted,
             std::time::Instant::now(),
         ));
-        assert!(app.state.workspaces.is_empty());
-        let geometry = app.headless_spawn_geometry();
-        assert!(app.create_default_workspace(geometry));
+        assert!(server.app.state.workspaces.is_empty());
+        let geometry = server.app.headless_spawn_geometry();
+        assert!(server.app.create_default_workspace(geometry));
 
-        app.save_session_before_teardown_async().await;
-        app.retire_session_writer();
+        server.app.save_session_before_teardown_async().await;
+        server.app.retire_session_writer();
 
-        let lease =
-            shepr_mux::persist::DataDirLease::acquire(app.paths.data_dir()).expect("test lease");
+        let lease = shepr_mux::persist::DataDirLease::acquire(server.app.paths.data_dir())
+            .expect("test lease");
         let snapshot = shepr_mux::persist::load(&lease)
             .into_snapshot()
             .expect("checkpointed session should survive");
@@ -1244,18 +1236,20 @@ mod tests {
     async fn detector_release_before_pane_exit_keeps_checkpoint_resume_identity() {
         use shepr_agent::agent::resume::{AgentSessionRef, PersistedAgentSession};
         let _env = crate::test_support::IsolatedEnv::new();
-        let mut app = test_app();
-        let geometry = app.headless_spawn_geometry();
-        assert!(app.create_default_workspace(geometry));
-        let pane_id = app.state.workspaces[0].root_pane();
-        let terminal_id = app.state.workspaces[0]
+        let mut server = crate::server::headless::tests::test_headless_server();
+        server.app = test_app();
+        let geometry = server.app.headless_spawn_geometry();
+        assert!(server.app.create_default_workspace(geometry));
+        let pane_id = server.app.state.workspaces[0].root_pane();
+        let terminal_id = server.app.state.workspaces[0]
             .terminal_id(pane_id)
             .expect("terminal")
             .clone();
         // Let the real child exit, but keep its PaneDied queued. This exercises
         // the gap where the detector release can reach the app first.
         tokio::time::timeout(Duration::from_secs(5), async {
-            while !app
+            while !server
+                .app
                 .terminal_runtimes
                 .get(&terminal_id)
                 .expect("runtime")
@@ -1272,40 +1266,45 @@ mod tests {
             AgentSessionRef::id("checkpoint-resume").expect("session id"),
         )
         .expect("official session");
-        let terminal = app.state.terminals.get_mut(&terminal_id).expect("terminal");
+        let terminal = server
+            .app
+            .state
+            .terminals
+            .get_mut(&terminal_id)
+            .expect("terminal");
         terminal
             .ownership_mut()
-            .set_detected_agent_process_at(Agent::Claude, app.clock.now);
+            .set_detected_agent_process_at(Agent::Claude, server.app.clock.now);
         terminal
             .ownership_mut()
             .set_persisted_agent_session(session.clone());
         // Delivered from the live runtime, so admission passes them and only
         // the exited child decides that they are ignored.
-        release_agent(&mut app, pane_id);
+        release_agent(&mut server.app, pane_id);
         assert_eq!(
-            app.state.terminals[&terminal_id]
+            server.app.state.terminals[&terminal_id]
                 .ownership()
                 .detected_agent(),
             Some(Agent::Claude),
         );
         assert_eq!(
-            app.state.terminals[&terminal_id]
+            server.app.state.terminals[&terminal_id]
                 .ownership()
                 .current_session_identity_for_persistence(),
             Some(session.clone()),
         );
-        app.persist_for_test();
-        app.state.mark_session_dirty();
-        app.handle_internal_event_after_checkpoint(runtime_pane_exit(
-            &app,
+        server.app.persist_for_test();
+        server.app.state.mark_session_dirty();
+        server.handle_test_runtime_exit_and_replay(runtime_pane_exit(
+            &server.app,
             pane_id,
             shepr_platform::ChildExitReason::Interrupted,
             std::time::Instant::now(),
         ));
-        app.save_session_before_teardown_async().await;
-        app.retire_session_writer();
-        let lease =
-            shepr_mux::persist::DataDirLease::acquire(app.paths.data_dir()).expect("test lease");
+        server.app.save_session_before_teardown_async().await;
+        server.app.retire_session_writer();
+        let lease = shepr_mux::persist::DataDirLease::acquire(server.app.paths.data_dir())
+            .expect("test lease");
         let snapshot = shepr_mux::persist::load(&lease)
             .into_snapshot()
             .expect("saved checkpoint");
@@ -1371,31 +1370,33 @@ mod tests {
     #[tokio::test]
     async fn a_signal_death_just_after_the_agents_exit_checkpoints_its_identity() {
         let _env = crate::test_support::IsolatedEnv::new();
-        let (mut app, pane_id, terminal_id, session) = app_with_agent_session().await;
-        release_agent(&mut app, pane_id);
+        let (app, pane_id, terminal_id, session) = app_with_agent_session().await;
+        let mut server = crate::server::headless::tests::test_headless_server();
+        server.app = app;
+        release_agent(&mut server.app, pane_id);
         // The release took effect at once: no agent, nothing to resume.
         assert_eq!(
-            app.state.terminals[&terminal_id]
+            server.app.state.terminals[&terminal_id]
                 .ownership()
                 .detected_agent(),
             None
         );
         assert_eq!(
-            app.state.terminals[&terminal_id]
+            server.app.state.terminals[&terminal_id]
                 .ownership()
                 .current_session_identity_for_persistence(),
             None
         );
-        app.persist_for_test();
-        app.handle_internal_event_after_checkpoint(runtime_pane_exit(
-            &app,
+        server.app.persist_for_test();
+        server.handle_test_runtime_exit_and_replay(runtime_pane_exit(
+            &server.app,
             pane_id,
             shepr_platform::ChildExitReason::Interrupted,
-            app.clock.now + Duration::from_millis(100),
+            server.app.clock.now + Duration::from_millis(100),
         ));
-        app.save_session_before_teardown_async().await;
-        app.retire_session_writer();
-        let saved = saved_agent_session(&app);
+        server.app.save_session_before_teardown_async().await;
+        server.app.retire_session_writer();
+        let saved = saved_agent_session(&server.app);
         assert_eq!(saved.session_ref(), session.session_ref());
     }
 
@@ -1423,47 +1424,57 @@ mod tests {
 
     #[test]
     fn normal_autosave_replaces_a_signaled_exit_checkpoint() {
-        let mut app = test_app();
-        app.persist_for_test();
+        let mut server = crate::server::headless::tests::test_headless_server();
+        server.app = test_app();
+        server.app.persist_for_test();
         let workspace = Workspace::test_new("closed");
         let pane_id = workspace.root_pane();
-        app.state.workspaces = vec![workspace];
-        app.state.set_bookmark_index(Some(0));
-        app.state.ensure_test_terminals();
-        app.insert_idle_test_runtime(pane_id);
+        server.app.state.test_set_workspaces(vec![workspace]);
+        server.app.state.set_bookmark_index(Some(0));
+        server.app.state.ensure_test_terminals();
+        server.app.insert_idle_test_runtime(pane_id);
 
-        app.handle_internal_event_after_checkpoint(runtime_pane_exit(
-            &app,
+        server.handle_test_runtime_exit_and_replay(runtime_pane_exit(
+            &server.app,
             pane_id,
             shepr_platform::ChildExitReason::Interrupted,
             std::time::Instant::now(),
         ));
-        assert!(app.state.workspaces.is_empty(), "the exit was applied");
+        assert!(
+            server.app.state.workspaces.is_empty(),
+            "the exit was applied"
+        );
         // The app still holds the data-dir lease, so the checkpoint is parsed
         // directly rather than through `persist::load`.
         let checkpoint = std::fs::read_to_string(
-            app.paths
+            server
+                .app
+                .paths
                 .data_dir()
                 .join(shepr_mux::persist::SessionWriter::SESSION_FILE_NAME),
         )
         .expect("the pane exit writes a checkpoint");
         assert!(shepr_mux::persist::snapshot::parse_session_file(&checkpoint).is_ok());
         assert!(
-            app.session_saver.autosave_deadline().is_some(),
+            server.app.session_saver.autosave_deadline().is_some(),
             "the pane exit schedules the normal autosave"
         );
 
         // The loop starts the autosave once its debounce has elapsed.
-        app.session_saver
+        server
+            .app
+            .session_saver
             .set_autosave_deadline(Some(Instant::now() - Duration::from_secs(1)));
-        app.start_background_session_save();
-        assert!(app.session_saver.save_in_flight());
-        app.wait_for_session_save();
-        app.save_session_before_teardown();
-        app.retire_session_writer();
+        server.app.start_background_session_save();
+        assert!(server.app.session_saver.save_in_flight());
+        server.app.wait_for_session_save();
+        server.app.save_session_before_teardown();
+        server.app.retire_session_writer();
 
         assert!(
-            !app.paths
+            !server
+                .app
+                .paths
                 .data_dir()
                 .join(shepr_mux::persist::SessionWriter::SESSION_FILE_NAME)
                 .try_exists()
@@ -1473,25 +1484,28 @@ mod tests {
 
     #[test]
     fn reader_panic_removes_the_pane_without_a_checkpoint() {
-        let mut app = test_app();
-        app.persist_for_test();
+        let mut server = crate::server::headless::tests::test_headless_server();
+        server.app = test_app();
+        server.app.persist_for_test();
         let workspace = Workspace::test_new("broken");
         let pane_id = workspace.root_pane();
-        app.state.workspaces = vec![workspace];
-        app.state.set_bookmark_index(Some(0));
-        app.state.ensure_test_terminals();
-        app.insert_idle_test_runtime(pane_id);
+        server.app.state.test_set_workspaces(vec![workspace]);
+        server.app.state.set_bookmark_index(Some(0));
+        server.app.state.ensure_test_terminals();
+        server.app.insert_idle_test_runtime(pane_id);
 
-        app.handle_internal_event_after_checkpoint(runtime_pane_exit(
-            &app,
+        server.handle_test_runtime_exit_and_replay(runtime_pane_exit(
+            &server.app,
             pane_id,
             shepr_platform::ChildExitReason::ReaderPanicked,
             std::time::Instant::now(),
         ));
 
-        assert!(app.state.workspaces.is_empty());
+        assert!(server.app.state.workspaces.is_empty());
         assert!(
-            !app.paths
+            !server
+                .app
+                .paths
                 .data_dir()
                 .join(shepr_mux::persist::SessionWriter::SESSION_FILE_NAME)
                 .try_exists()
@@ -1502,47 +1516,51 @@ mod tests {
     #[test]
     fn durable_mutation_after_pane_exit_checkpoint_wins_on_shutdown() {
         for another_interrupted_exit in [false, true] {
-            let mut app = test_app();
-            app.persist_for_test();
+            let mut server = crate::server::headless::tests::test_headless_server();
+            server.app = test_app();
+            server.app.persist_for_test();
             let workspace = Workspace::test_new("old");
             let pane_id = workspace.root_pane();
-            app.state.workspaces = vec![workspace];
-            app.state.set_bookmark_index(Some(0));
-            app.state.ensure_test_terminals();
-            app.insert_idle_test_runtime(pane_id);
+            server.app.state.test_set_workspaces(vec![workspace]);
+            server.app.state.set_bookmark_index(Some(0));
+            server.app.state.ensure_test_terminals();
+            server.app.insert_idle_test_runtime(pane_id);
 
-            app.handle_internal_event_after_checkpoint(runtime_pane_exit(
-                &app,
+            server.handle_test_runtime_exit_and_replay(runtime_pane_exit(
+                &server.app,
                 pane_id,
                 shepr_platform::ChildExitReason::Interrupted,
                 std::time::Instant::now(),
             ));
             assert!(
-                app.state.workspaces.is_empty(),
+                server.app.state.workspaces.is_empty(),
                 "the first exit was applied"
             );
-            app.state.workspaces = vec![Workspace::test_new("newer")];
-            app.state.set_bookmark_index(Some(0));
-            app.state.ensure_test_terminals();
-            app.state.mark_session_dirty();
+            server
+                .app
+                .state
+                .test_set_workspaces(vec![Workspace::test_new("newer")]);
+            server.app.state.set_bookmark_index(Some(0));
+            server.app.state.ensure_test_terminals();
+            server.app.state.mark_session_dirty();
             if another_interrupted_exit {
-                let newer_pane = app.state.workspaces[0].root_pane();
-                app.insert_idle_test_runtime(newer_pane);
-                app.handle_internal_event_after_checkpoint(runtime_pane_exit(
-                    &app,
+                let newer_pane = server.app.state.workspaces[0].root_pane();
+                server.app.insert_idle_test_runtime(newer_pane);
+                server.handle_test_runtime_exit_and_replay(runtime_pane_exit(
+                    &server.app,
                     newer_pane,
                     shepr_platform::ChildExitReason::Interrupted,
                     std::time::Instant::now(),
                 ));
                 assert!(
-                    app.state.workspaces.is_empty(),
+                    server.app.state.workspaces.is_empty(),
                     "the second exit was applied"
                 );
             }
-            app.save_session_before_teardown();
-            app.retire_session_writer();
+            server.app.save_session_before_teardown();
+            server.app.retire_session_writer();
 
-            let lease = shepr_mux::persist::DataDirLease::acquire(app.paths.data_dir())
+            let lease = shepr_mux::persist::DataDirLease::acquire(server.app.paths.data_dir())
                 .expect("test lease");
             let snapshot = shepr_mux::persist::load(&lease)
                 .into_snapshot()

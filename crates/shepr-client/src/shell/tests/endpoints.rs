@@ -9,10 +9,11 @@ use shepr_termio::input::raw_input::RawInputEvent;
 
 use crate::endpoint::{ClientEndpointStatus, EndpointFailureStatus};
 use crate::shell::endpoints::ClientEndpointFocusTarget;
+use crate::shell::navigation::location::{Location, LocationTarget};
 use crate::shell::presentation::render;
 use crate::shell::state::{
-    ClientChromeDrag, ClientNavigatorTarget, ClientShellAction, ClientShellConfig,
-    ClientShellInput, ClientShellMode, ClientShellOverlay, ClientShellRequest,
+    ClientChromeDrag, ClientShellAction, ClientShellConfig, ClientShellInput, ClientShellMode,
+    ClientShellOverlay, ClientShellRequest,
 };
 use crossterm::event::MouseButton;
 use crossterm::event::MouseEventKind;
@@ -89,7 +90,7 @@ fn state_with_machines(
     let endpoint_id = ClientEndpointId::Ssh(machines[0].label.clone());
     state.set_machines(machines);
     state.set_snapshot(Box::new(snapshot()));
-    state.receive_pane_surface(surface());
+    state.receive_pane_surface_from(surface(), state.active_snapshot_generation.unwrap_or(1));
     let mut remote = snapshot();
     remote.boot_id = crate::tests::test_boot_id("remote-boot");
     remote.workspaces[0].label = "remote-workspace".into();
@@ -200,7 +201,7 @@ fn multi_machine_sidebar_draws_the_workspace_drop_marker() {
         .hits
         .workspaces
         .iter()
-        .find(|hit| hit.endpoint_id == ClientEndpointId::Local)
+        .find(|hit| hit.location.endpoint == ClientEndpointId::Local)
         .expect("local workspace row")
         .rect;
     let row = local.bottom();
@@ -240,7 +241,8 @@ fn collapsed_sidebar_workspace_rows_accept_drag_targets() {
         .workspaces
         .iter()
         .find(|hit| {
-            hit.endpoint_id.is_local() && hit.workspace_id == crate::tests::test_workspace_id("w1")
+            hit.location.endpoint.is_local()
+                && hit.location.workspace_id() == Some(crate::tests::test_workspace_id("w1"))
         })
         .expect("first local workspace")
         .rect;
@@ -249,7 +251,8 @@ fn collapsed_sidebar_workspace_rows_accept_drag_targets() {
         .workspaces
         .iter()
         .find(|hit| {
-            hit.endpoint_id.is_local() && hit.workspace_id == crate::tests::test_workspace_id("w2")
+            hit.location.endpoint.is_local()
+                && hit.location.workspace_id() == Some(crate::tests::test_workspace_id("w2"))
         })
         .expect("second local workspace")
         .rect;
@@ -312,16 +315,16 @@ fn revealing_an_active_workspace_ignores_a_same_id_on_another_endpoint() {
             .hits
             .workspaces
             .iter()
-            .any(|hit| hit.endpoint_id == remote_id
-                && hit.workspace_id == crate::tests::test_workspace_id("w5"))
+            .any(|hit| hit.location.endpoint == remote_id
+                && hit.location.workspace_id() == Some(crate::tests::test_workspace_id("w5")))
     );
     assert!(
         !state
             .hits
             .workspaces
             .iter()
-            .any(|hit| hit.endpoint_id.is_local()
-                && hit.workspace_id == crate::tests::test_workspace_id("w5"))
+            .any(|hit| hit.location.endpoint.is_local()
+                && hit.location.workspace_id() == Some(crate::tests::test_workspace_id("w5")))
     );
     let bottom = state.workspace_scroll;
 
@@ -334,8 +337,8 @@ fn revealing_an_active_workspace_ignores_a_same_id_on_another_endpoint() {
             .hits
             .workspaces
             .iter()
-            .any(|hit| hit.endpoint_id.is_local()
-                && hit.workspace_id == crate::tests::test_workspace_id("w5"))
+            .any(|hit| hit.location.endpoint.is_local()
+                && hit.location.workspace_id() == Some(crate::tests::test_workspace_id("w5")))
     );
     assert!(state.workspace_scroll < bottom);
 }
@@ -358,7 +361,7 @@ fn machine_diagnostic_badge_reopens_notice_without_collapsing_machine() {
             .hits
             .machines
             .iter()
-            .find(|hit| hit.endpoint_id == id)
+            .find(|hit| hit.location.endpoint == id)
             .expect("test precondition");
         let mouse = MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
@@ -407,7 +410,7 @@ fn machine_diagnostic_card_replaces_tabs_and_preserves_lines() {
         .hits
         .machines
         .iter()
-        .find(|hit| hit.endpoint_id == id)
+        .find(|hit| hit.location.endpoint == id)
         .expect("diagnostic badge hit");
     let mouse = MouseEvent {
         kind: MouseEventKind::Down(MouseButton::Left),
@@ -487,15 +490,13 @@ fn agent_navigation_reveals_offscreen_targets() {
             state.hits.agent_max_scroll
         };
         state.compose(100, 28).expect("test precondition");
-        assert!(
-            !state
-                .hits
-                .endpoint_agents
-                .iter()
-                .any(|(_, endpoint, pane)| {
-                    endpoint == &endpoint_id && pane.to_string() == pane_id
-                })
-        );
+        assert!(!state.hits.agent_hits.iter().any(|hit| {
+            hit.location.endpoint == endpoint_id
+                && hit
+                    .location
+                    .pane_id()
+                    .is_some_and(|pane| pane.to_string() == pane_id)
+        }));
 
         let mut outcome = ClientShellInput::default();
         assert!(state.handle_endpoint_navigation(action, &mut outcome));
@@ -505,13 +506,13 @@ fn agent_navigation_reveals_offscreen_targets() {
         }
         state.compose(100, 28).expect("test precondition");
         assert!(
-            state
-                .hits
-                .endpoint_agents
-                .iter()
-                .any(|(_, endpoint, pane)| {
-                    endpoint == &endpoint_id && pane.to_string() == pane_id
-                }),
+            state.hits.agent_hits.iter().any(|hit| {
+                hit.location.endpoint == endpoint_id
+                    && hit
+                        .location
+                        .pane_id()
+                        .is_some_and(|pane| pane.to_string() == pane_id)
+            }),
             "{action:?} must reveal the selected agent"
         );
     }
@@ -530,8 +531,10 @@ fn agent_navigation_reveal_is_cancelled_by_another_selection() {
         assert_eq!(state.agent_scroll, scroll);
         if select_pane {
             assert!(state.focus_or_activate(
-                remote.clone(),
-                ClientEndpointFocusTarget::Pane(test_pane_id("w1:p1")),
+                crate::shell::navigation::location::Location::pane(
+                    remote.clone(),
+                    test_pane_id("w1:p1"),
+                ),
                 &mut outcome,
             ));
         } else {
@@ -546,11 +549,13 @@ fn agent_navigation_reveal_is_cancelled_by_another_selection() {
 #[test]
 fn agent_navigation_keeps_scroll_when_target_is_visible() {
     let (mut state, _) = state_with_scrollable_agents();
-    let (_, endpoint_id, pane_id) = state.hits.endpoint_agents[1].clone();
+    let location = &state.hits.agent_hits[1].location;
+    let endpoint_id = location.endpoint.clone();
+    let pane_id = location.pane_id().expect("agent hit names a pane");
     let targets = state.agent_panel_model.targets();
     let index = targets
         .iter()
-        .position(|target| target.endpoint_id == endpoint_id && target.pane_id == pane_id)
+        .position(|target| target.endpoint == endpoint_id && target.pane_id() == Some(pane_id))
         .expect("test precondition");
     let scroll = state.agent_scroll;
     assert!(state.handle_endpoint_navigation(
@@ -597,7 +602,12 @@ fn single_endpoint_agent_indices_follow_the_rendered_client_recency_order() {
     state
         .compose(100, 28)
         .expect("collapsed single endpoint frame");
-    let first_rendered = state.hits.agents.first().expect("first visible agent").1;
+    let first_rendered = state
+        .hits
+        .agent_hits
+        .first()
+        .and_then(|hit| hit.location.pane_id())
+        .expect("first visible agent names a pane");
     assert_eq!(first_rendered.to_string(), "w1:p2");
 
     let command = state
@@ -653,14 +663,22 @@ fn agent_indices_keep_stale_rows_and_skip_agents_the_sidebar_cannot_render() {
     state.compose(100, 28).expect("aggregate endpoint frame");
     let rendered = state
         .hits
-        .endpoint_agents
+        .agent_hits
         .iter()
-        .map(|(_, endpoint_id, pane_id)| (endpoint_id.clone(), *pane_id))
+        .filter_map(|hit| {
+            hit.location
+                .pane_id()
+                .map(|pane_id| (hit.location.endpoint.clone(), pane_id))
+        })
         .collect::<Vec<_>>();
     let targets = state.agent_panel_model.targets();
     let indexed = targets
         .iter()
-        .map(|target| (target.endpoint_id.clone(), target.pane_id))
+        .filter_map(|target| {
+            target
+                .pane_id()
+                .map(|pane_id| (target.endpoint.clone(), pane_id))
+        })
         .collect::<Vec<_>>();
     assert_eq!(indexed, rendered);
     assert_eq!(
@@ -688,15 +706,15 @@ fn agent_indices_keep_stale_rows_and_skip_agents_the_sidebar_cannot_render() {
 fn switching_machines_preserves_aggregate_agent_scroll_and_visible_rows() {
     let (mut state, remote) = state_with_scrollable_agents();
     for endpoint_id in [remote.clone(), ClientEndpointId::Local, remote] {
-        let visible = state.hits.endpoint_agents.clone();
-        let (rect, _, pane_id) = visible
+        let visible = state.hits.agent_hits.clone();
+        let hit = visible
             .iter()
-            .find(|(_, endpoint, _)| endpoint == &endpoint_id)
+            .find(|hit| hit.location.endpoint == endpoint_id)
             .expect("destination agent remains visible");
         let click = state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
-            column: rect.x + 2,
-            row: rect.y,
+            column: hit.rect.x + 2,
+            row: hit.rect.y,
             modifiers: KeyModifiers::NONE,
         })]);
         assert!(matches!(
@@ -704,7 +722,7 @@ fn switching_machines_preserves_aggregate_agent_scroll_and_visible_rows() {
             [ClientShellAction::ActivateEndpoint {
                 endpoint_id: target,
                 target: Some(ClientEndpointFocusTarget::Pane(target_pane)),
-            }] if target == &endpoint_id && target_pane == pane_id
+            }] if target == &endpoint_id && hit.location.pane_id() == Some(*target_pane)
         ));
 
         state.workspace_scroll = 3;
@@ -718,10 +736,11 @@ fn switching_machines_preserves_aggregate_agent_scroll_and_visible_rows() {
             .endpoint_boot_id(&endpoint_id)
             .expect("test precondition")
             .clone();
-        state.receive_pane_surface(next_surface);
+        state
+            .receive_pane_surface_from(next_surface, state.active_snapshot_generation.unwrap_or(1));
         state.compose(100, 28).expect("test precondition");
         assert_eq!(state.agent_scroll, 6);
-        assert_eq!(state.hits.endpoint_agents, visible);
+        assert_eq!(state.hits.agent_hits, visible);
     }
 }
 
@@ -734,24 +753,24 @@ fn local_agent_click_can_cancel_a_pending_remote_switch() {
             state.mark_endpoint_disconnected(&ClientEndpointId::Local);
         }
         state.compose(100, 28).expect("test precondition");
-        let (rect, _, pane_id) = state
+        let hit = state
             .hits
-            .endpoint_agents
+            .agent_hits
             .iter()
-            .find(|(_, endpoint, _)| endpoint.is_local())
+            .find(|hit| hit.location.endpoint.is_local())
             .expect("test precondition")
             .clone();
         let outcome = state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
-            column: rect.x + 2,
-            row: rect.y,
+            column: hit.rect.x + 2,
+            row: hit.rect.y,
             modifiers: KeyModifiers::NONE,
         })]);
         assert!(
             matches!(outcome.actions.as_slice(), [ClientShellAction::ActivateEndpoint {
             endpoint_id: ClientEndpointId::Local,
             target: Some(ClientEndpointFocusTarget::Pane(target)),
-        }] if target == &pane_id)
+        }] if hit.location.pane_id() == Some(*target))
         );
     }
 }
@@ -779,7 +798,7 @@ fn aggregate_agent_scroll_still_clamps_when_rows_shrink_on_activation() {
     state.compose(100, 28).expect("test precondition");
     assert_eq!(state.agent_scroll, 0);
     assert_eq!(state.hits.agent_max_scroll, 0);
-    assert_eq!(state.hits.endpoint_agents.len(), 2);
+    assert_eq!(state.hits.agent_hits.len(), 2);
 }
 
 #[test]
@@ -806,7 +825,7 @@ fn switching_machines_from_copy_mode_restores_terminal_input() {
         2,
         shepr_vt::AbsRow(0),
     ));
-    state.receive_pane_surface(local_surface);
+    state.receive_pane_surface_from(local_surface, state.active_snapshot_generation.unwrap_or(1));
     state.compose(100, 28).expect("test precondition");
     assert!(state.enter_copy_mode(&mut ClientShellInput::default()));
     assert_eq!(state.mode, ClientShellMode::Copy);
@@ -814,7 +833,10 @@ fn switching_machines_from_copy_mode_restores_terminal_input() {
     assert!(state.activate_endpoint_projection(&remote));
     let mut remote_surface = surface();
     remote_surface.boot_id = crate::tests::test_boot_id("remote-boot");
-    state.receive_pane_surface(remote_surface);
+    state.receive_pane_surface_from(
+        remote_surface,
+        state.active_snapshot_generation.unwrap_or(1),
+    );
     state.compose(100, 28).expect("test precondition");
 
     assert!(state.copy_mode.is_none());
@@ -866,7 +888,7 @@ fn machine_navigation_does_not_require_a_local_snapshot_or_surface() {
             .hits
             .machines
             .iter()
-            .find(|hit| hit.endpoint_id.is_local())
+            .find(|hit| hit.location.endpoint.is_local())
             .expect("test precondition")
             .rect;
         let local_row = (local.x..local.right())
@@ -881,7 +903,7 @@ fn machine_navigation_does_not_require_a_local_snapshot_or_surface() {
             .hits
             .machines
             .iter()
-            .find(|hit| hit.endpoint_id == remote)
+            .find(|hit| hit.location.endpoint == remote)
             .expect("test precondition")
             .rect;
         let mut outcome = ClientShellInput::default();
@@ -928,14 +950,14 @@ fn sidebar_renders_local_and_saved_ssh_endpoints_with_status() {
         .hits
         .machines
         .iter()
-        .find(|hit| hit.endpoint_id.is_local())
+        .find(|hit| hit.location.endpoint.is_local())
         .expect("local machine row")
         .rect;
     let remote = state
         .hits
         .machines
         .iter()
-        .find(|hit| !hit.endpoint_id.is_local())
+        .find(|hit| !hit.location.endpoint.is_local())
         .expect("remote machine row")
         .rect;
     assert_ne!(frame_cell(&frame, (local.right() - 1, local.y)).symbol, "●");
@@ -954,14 +976,14 @@ fn sidebar_renders_local_and_saved_ssh_endpoints_with_status() {
         .hits
         .machines
         .iter()
-        .find(|hit| hit.endpoint_id.is_local())
+        .find(|hit| hit.location.endpoint.is_local())
         .expect("collapsed local machine row")
         .rect;
     let remote = state
         .hits
         .machines
         .iter()
-        .find(|hit| !hit.endpoint_id.is_local())
+        .find(|hit| !hit.location.endpoint.is_local())
         .expect("collapsed remote machine row")
         .rect;
     assert_ne!(frame_cell(&frame, (local.right() - 1, local.y)).symbol, "●");
@@ -1006,7 +1028,7 @@ fn local_and_ssh_sidebars_derive_workspace_positions_from_list_order() {
                 .hits
                 .workspaces
                 .iter()
-                .find(|hit| hit.endpoint_id == endpoint)
+                .find(|hit| hit.location.endpoint == endpoint)
                 .expect("workspace row")
                 .rect;
             let rendered = (row.x..row.right())
@@ -1055,21 +1077,24 @@ fn expanded_machine_sidebar_reveals_newly_focused_workspace() {
     state.set_snapshot(Box::new(update));
     let mut updated_surface = surface();
     updated_surface.projection_revision = shepr_protocol::ProjectionRevision::new(2);
-    state.receive_pane_surface(updated_surface);
+    state.receive_pane_surface_from(
+        updated_surface,
+        state.active_snapshot_generation.unwrap_or(1),
+    );
     state.compose(106, 2).expect("zero-height workspace body");
     assert!(state.reveal_focused_workspace);
     state.compose(106, 20).expect("new workspace revealed");
     assert!(state.hits.workspaces.iter().any(|hit| {
-        hit.endpoint_id == ClientEndpointId::Local
-            && hit.workspace_id == crate::tests::test_workspace_id("w13")
+        hit.location.endpoint == ClientEndpointId::Local
+            && hit.location.workspace_id() == Some(crate::tests::test_workspace_id("w13"))
     }));
 
     state.workspace_scroll = 0;
     state.compose(106, 20).expect("manual scroll");
     assert_eq!(state.workspace_scroll, 0);
     assert!(!state.hits.workspaces.iter().any(|hit| {
-        hit.endpoint_id == ClientEndpointId::Local
-            && hit.workspace_id == crate::tests::test_workspace_id("w13")
+        hit.location.endpoint == ClientEndpointId::Local
+            && hit.location.workspace_id() == Some(crate::tests::test_workspace_id("w13"))
     }));
     let unchanged = state.snapshot.as_deref().expect("snapshot").clone();
     state.set_snapshot(Box::new(unchanged));
@@ -1107,7 +1132,7 @@ fn expanded_machine_sidebar_applies_space_row_gap_within_each_machine() {
         .hits
         .workspaces
         .iter()
-        .filter(|hit| hit.endpoint_id.is_local())
+        .filter(|hit| hit.location.endpoint.is_local())
         .collect::<Vec<_>>();
     assert_eq!(local_workspaces.len(), 2);
     assert_eq!(
@@ -1119,13 +1144,13 @@ fn expanded_machine_sidebar_applies_space_row_gap_within_each_machine() {
         .hits
         .machines
         .iter()
-        .find(|hit| hit.endpoint_id.is_local())
+        .find(|hit| hit.location.endpoint.is_local())
         .expect("local machine");
     let remote_machine = state
         .hits
         .machines
         .iter()
-        .find(|hit| hit.endpoint_id == remote_id)
+        .find(|hit| hit.location.endpoint == remote_id)
         .expect("remote machine");
     assert_eq!(local_workspaces[0].rect.y, local_machine.rect.bottom());
     assert_eq!(remote_machine.rect.y, local_workspaces[1].rect.bottom());
@@ -1134,7 +1159,7 @@ fn expanded_machine_sidebar_applies_space_row_gap_within_each_machine() {
         .hits
         .workspaces
         .iter()
-        .filter(|hit| hit.endpoint_id == remote_id)
+        .filter(|hit| hit.location.endpoint == remote_id)
         .collect::<Vec<_>>();
     assert_eq!(remote_workspaces.len(), 3);
     assert_eq!(remote_workspaces[0].rect.y, remote_machine.rect.bottom());
@@ -1162,7 +1187,7 @@ fn expanded_machine_sidebar_applies_space_row_gap_within_each_machine() {
         .hits
         .workspaces
         .iter()
-        .filter(|hit| hit.endpoint_id == remote_id)
+        .filter(|hit| hit.location.endpoint == remote_id)
         .collect::<Vec<_>>();
     assert_eq!(visible_remote.len(), 3);
     let gap_y = visible_remote[1].rect.bottom();
@@ -1183,21 +1208,24 @@ fn active_workspace_is_the_only_highlight_when_machine_is_expanded() {
     assert!(state.activate_endpoint_projection(&endpoint_id));
     let mut remote_surface = surface();
     remote_surface.boot_id = crate::tests::test_boot_id("remote-boot");
-    state.receive_pane_surface(remote_surface);
+    state.receive_pane_surface_from(
+        remote_surface,
+        state.active_snapshot_generation.unwrap_or(1),
+    );
 
     let frame = state.compose(100, 28).expect("combined endpoint frame");
     let machine = state
         .hits
         .machines
         .iter()
-        .find(|hit| hit.endpoint_id == endpoint_id)
+        .find(|hit| hit.location.endpoint == endpoint_id)
         .expect("remote machine hit")
         .rect;
     let workspace = state
         .hits
         .workspaces
         .iter()
-        .find(|hit| hit.endpoint_id == endpoint_id)
+        .find(|hit| hit.location.endpoint == endpoint_id)
         .expect("remote workspace hit")
         .rect;
     assert_ne!(
@@ -1215,7 +1243,7 @@ fn active_workspace_is_the_only_highlight_when_machine_is_expanded() {
         .hits
         .machines
         .iter()
-        .find(|hit| hit.endpoint_id == endpoint_id)
+        .find(|hit| hit.location.endpoint == endpoint_id)
         .expect("remote machine hit")
         .rect;
     assert_eq!(
@@ -1243,7 +1271,7 @@ fn aggregate_agents_use_configured_rows_machine_token_and_status_colors() {
     let mut local = snapshot();
     local.agents = vec![agent(AgentStatus::Idle, 1)];
     state.set_snapshot(Box::new(local));
-    state.receive_pane_surface(surface());
+    state.receive_pane_surface_from(surface(), state.active_snapshot_generation.unwrap_or(1));
     let mut remote = snapshot();
     remote.boot_id = crate::tests::test_boot_id("remote-boot");
     remote.agents = vec![agent(AgentStatus::Blocked, 1)];
@@ -1302,7 +1330,7 @@ fn aggregate_priority_uses_client_observed_recency_across_machines() {
     let mut local = snapshot();
     local.agents = vec![agent(AgentStatus::Idle, 1)];
     state.set_snapshot(Box::new(local));
-    state.receive_pane_surface(surface());
+    state.receive_pane_surface_from(surface(), state.active_snapshot_generation.unwrap_or(1));
     let mut remote = snapshot();
     remote.boot_id = crate::tests::test_boot_id("remote-boot");
     remote.agents = vec![agent(AgentStatus::Idle, 1)];
@@ -1392,7 +1420,7 @@ fn clicking_remote_machine_name_requests_activation_without_mutating_projection(
         .hits
         .machines
         .iter()
-        .find(|hit| hit.endpoint_id == endpoint_id)
+        .find(|hit| hit.location.endpoint == endpoint_id)
         .expect("remote endpoint hit")
         .rect;
     let outcome = state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
@@ -1425,7 +1453,7 @@ fn clicking_an_offline_active_machine_row_only_toggles_its_collapse_state() {
         .hits
         .machines
         .iter()
-        .find(|hit| hit.endpoint_id == endpoint_id)
+        .find(|hit| hit.location.endpoint == endpoint_id)
         .expect("active remote endpoint hit")
         .rect;
 
@@ -1451,9 +1479,7 @@ fn selecting_an_offline_active_machine_in_the_navigator_is_silent() {
     let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_mut() else {
         panic!("expected navigator");
     };
-    navigator.selected = Some(ClientNavigatorTarget::Machine {
-        endpoint_id: endpoint_id.clone(),
-    });
+    navigator.selected = Some(Location::machine(endpoint_id.clone()));
 
     let mut outcome = ClientShellInput::default();
     state.accept_navigator_selection(&mut outcome);
@@ -1475,7 +1501,7 @@ fn clicking_an_online_active_machine_row_toggles_its_collapse_state_and_reselect
         .hits
         .machines
         .iter()
-        .find(|hit| hit.endpoint_id == endpoint_id)
+        .find(|hit| hit.location.endpoint == endpoint_id)
         .expect("active remote endpoint hit")
         .rect;
 
@@ -1511,7 +1537,7 @@ fn clicking_local_can_cancel_a_remote_switch_while_local_is_still_displayed() {
                 .hits
                 .workspaces
                 .iter()
-                .find(|hit| hit.endpoint_id.is_local())
+                .find(|hit| hit.location.endpoint.is_local())
                 .expect("test precondition")
                 .rect
         } else {
@@ -1519,7 +1545,7 @@ fn clicking_local_can_cancel_a_remote_switch_while_local_is_still_displayed() {
                 .hits
                 .machines
                 .iter()
-                .find(|hit| hit.endpoint_id.is_local())
+                .find(|hit| hit.location.endpoint.is_local())
                 .expect("test precondition")
                 .rect
         };
@@ -1567,8 +1593,10 @@ fn reconnecting_local_selection_still_reaches_the_runtime() {
     state.mark_endpoint_disconnected(&ClientEndpointId::Local);
     let mut outcome = ClientShellInput::default();
     state.focus_or_activate(
-        ClientEndpointId::Local,
-        ClientEndpointFocusTarget::Workspace(shepr_test_fixtures::id("w1")),
+        crate::shell::navigation::location::Location::workspace(
+            ClientEndpointId::Local,
+            shepr_test_fixtures::id("w1"),
+        ),
         &mut outcome,
     );
     assert!(
@@ -1599,7 +1627,7 @@ fn machine_arrow_toggles_inactive_machine_without_switching() {
                     .hits
                     .machines
                     .iter()
-                    .find(|hit| hit.endpoint_id == remote_id)
+                    .find(|hit| hit.location.endpoint == remote_id)
                     .expect("remote machine")
                     .rect;
                 let column = machine.x + u16::from(!sidebar_collapsed);
@@ -1644,7 +1672,7 @@ fn machine_arrow_toggles_inactive_machine_without_switching() {
                         .hits
                         .workspaces
                         .iter()
-                        .any(|hit| hit.endpoint_id == remote_id),
+                        .any(|hit| hit.location.endpoint == remote_id),
                     !collapsed
                 );
                 for endpoint_id in [&ClientEndpointId::Local, &other_id] {
@@ -1653,7 +1681,7 @@ fn machine_arrow_toggles_inactive_machine_without_switching() {
                             .hits
                             .workspaces
                             .iter()
-                            .any(|hit| &hit.endpoint_id == endpoint_id)
+                            .any(|hit| &hit.location.endpoint == endpoint_id)
                     );
                 }
             }
@@ -1669,14 +1697,14 @@ fn context_menu_lookup_ignores_inactive_endpoint_workspaces() {
         .hits
         .workspaces
         .iter()
-        .find(|hit| hit.endpoint_id == endpoint_id)
+        .find(|hit| hit.location.endpoint == endpoint_id)
         .expect("remote workspace")
         .rect;
     let local = state
         .hits
         .workspaces
         .iter()
-        .find(|hit| hit.endpoint_id.is_local())
+        .find(|hit| hit.location.endpoint.is_local())
         .expect("local workspace")
         .rect;
 
@@ -1696,7 +1724,7 @@ fn future_surface_waits_for_its_exact_snapshot_revision() {
     let mut future = surface();
     future.projection_revision = shepr_protocol::ProjectionRevision::new(2);
     future.surface_revision = shepr_protocol::SurfaceRevision::new(2);
-    state.receive_pane_surface(future);
+    state.receive_pane_surface_from(future, state.active_snapshot_generation.unwrap_or(1));
     assert_eq!(
         state
             .pane_surface()
@@ -1802,12 +1830,18 @@ fn reconnect_same_endpoint_accepts_new_generation_surface_revision() {
         previous_surface.projection_revision =
             shepr_protocol::ProjectionRevision::new(previous_revision);
         previous_surface.surface_revision = shepr_protocol::SurfaceRevision::new(9);
-        state.receive_pane_surface(previous_surface.clone());
+        state.receive_pane_surface_from(
+            previous_surface.clone(),
+            state.active_snapshot_generation.unwrap_or(1),
+        );
         previous_surface.projection_revision = previous_surface
             .projection_revision
             .checked_next()
             .expect("test precondition");
-        state.receive_pane_surface(previous_surface);
+        state.receive_pane_surface_from(
+            previous_surface,
+            state.active_snapshot_generation.unwrap_or(1),
+        );
         assert!(state.surfaces.waiting_baseline().is_some());
         state.agent_scroll = 7;
 
@@ -1835,7 +1869,10 @@ fn reconnect_same_endpoint_accepts_new_generation_surface_revision() {
         reconnected_surface.boot_id = crate::tests::test_boot_id("shared-server-boot");
         reconnected_surface.projection_revision = shepr_protocol::ProjectionRevision::new(1);
         reconnected_surface.surface_revision = shepr_protocol::SurfaceRevision::new(1);
-        state.receive_pane_surface(reconnected_surface);
+        state.receive_pane_surface_from(
+            reconnected_surface,
+            state.active_snapshot_generation.unwrap_or(1),
+        );
 
         assert_eq!(
             state.snapshot.as_ref().expect("test precondition").revision,
@@ -1920,7 +1957,10 @@ fn disconnected_active_endpoint_freezes_surface_and_marks_cached_ui_stale() {
     assert!(state.activate_endpoint_projection(&endpoint_id));
     let mut remote_surface = surface();
     remote_surface.boot_id = crate::tests::test_boot_id("remote-boot");
-    state.receive_pane_surface(remote_surface);
+    state.receive_pane_surface_from(
+        remote_surface,
+        state.active_snapshot_generation.unwrap_or(1),
+    );
 
     state.mark_endpoint_disconnected(&endpoint_id);
     let frame = state.compose(100, 28).expect("frozen endpoint frame");
@@ -1967,7 +2007,7 @@ fn navigator_uses_machine_parents_only_for_federated_clients() {
         render::client_navigator_rows(&state.endpoints, state.active_endpoint_id(), navigator);
     let machines = rows
         .iter()
-        .filter(|row| matches!(row.target, ClientNavigatorTarget::Machine { .. }))
+        .filter(|row| matches!(row.target.target, LocationTarget::Machine))
         .collect::<Vec<_>>();
     assert_eq!(
         machines
@@ -1977,22 +2017,22 @@ fn navigator_uses_machine_parents_only_for_federated_clients() {
         vec!["Local", "Build"]
     );
     assert!(rows.iter().all(|row| {
-        matches!(row.target, ClientNavigatorTarget::Machine { .. })
+        matches!(row.target.target, LocationTarget::Machine)
             || (!row.label.contains("Local ·") && !row.label.contains("Build ·"))
     }));
-    assert!(rows.iter().all(|row| match row.target {
-        ClientNavigatorTarget::Machine { .. } => row.depth == 0 && row.status.is_none(),
-        ClientNavigatorTarget::Workspace { .. } => row.depth == 1 && row.status.is_none(),
-        ClientNavigatorTarget::Pane { .. } => row.depth == 2 && row.status.is_some(),
+    assert!(rows.iter().all(|row| match row.target.target {
+        LocationTarget::Machine => row.depth == 0 && row.status.is_none(),
+        LocationTarget::Workspace(_) => row.depth == 1 && row.status.is_none(),
+        LocationTarget::Pane(_) => row.depth == 2 && row.status.is_some(),
     }));
     assert_eq!(rows.iter().filter(|row| row.current).count(), 1);
 
     let frame = state.compose(106, 30).expect("federated navigator");
     for (rect, target) in &state.hits.navigator_rows {
-        let expected = match target {
-            ClientNavigatorTarget::Machine { .. } => " ",
-            ClientNavigatorTarget::Workspace { .. } => "   ",
-            ClientNavigatorTarget::Pane { .. } => "   └─ ",
+        let expected = match target.target {
+            LocationTarget::Machine => " ",
+            LocationTarget::Workspace(_) => "   ",
+            LocationTarget::Pane(_) => "   └─ ",
         };
         let prefix = frame.cells[rect.y as usize * frame.width as usize + rect.x as usize..]
             .iter()
@@ -2004,7 +2044,7 @@ fn navigator_uses_machine_parents_only_for_federated_clients() {
 
     let mut local = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     local.set_snapshot(Box::new(snapshot()));
-    local.receive_pane_surface(surface());
+    local.receive_pane_surface_from(surface(), local.active_snapshot_generation.unwrap_or(1));
     let frame = local.compose(100, 28).expect("local-only sidebar");
     assert!(local.hits.machines.is_empty());
     assert!(
@@ -2029,12 +2069,12 @@ fn navigator_uses_machine_parents_only_for_federated_clients() {
         render::client_navigator_rows(&local.endpoints, local.active_endpoint_id(), navigator);
     assert!(
         rows.iter()
-            .all(|row| !matches!(row.target, ClientNavigatorTarget::Machine { .. }))
+            .all(|row| !matches!(row.target.target, LocationTarget::Machine))
     );
-    assert!(rows.iter().all(|row| match row.target {
-        ClientNavigatorTarget::Workspace { .. } => row.depth == 0,
-        ClientNavigatorTarget::Pane { .. } => row.depth == 1,
-        ClientNavigatorTarget::Machine { .. } => false,
+    assert!(rows.iter().all(|row| match row.target.target {
+        LocationTarget::Workspace(_) => row.depth == 0,
+        LocationTarget::Pane(_) => row.depth == 1,
+        LocationTarget::Machine => false,
     }));
 }
 
@@ -2061,22 +2101,16 @@ fn navigator_keeps_saved_machine_visible_before_metadata_arrives() {
         render::client_navigator_rows(&state.endpoints, state.active_endpoint_id(), navigator);
 
     assert!(rows.iter().any(|row| {
-        matches!(
-            &row.target,
-            ClientNavigatorTarget::Machine { endpoint_id: target } if target == &endpoint_id
-        ) && row.label == "Build"
+        matches!(row.target.target, LocationTarget::Machine)
+            && row.target.endpoint == endpoint_id
+            && row.label == "Build"
             && row.stale
     }));
-    assert!(!rows.iter().any(|row| match &row.target {
-        ClientNavigatorTarget::Machine { .. } => false,
-        ClientNavigatorTarget::Workspace {
-            endpoint_id: target,
-            ..
+    assert!(!rows.iter().any(|row| match row.target.target {
+        LocationTarget::Machine => false,
+        LocationTarget::Workspace(_) | LocationTarget::Pane(_) => {
+            row.target.endpoint == endpoint_id
         }
-        | ClientNavigatorTarget::Pane {
-            endpoint_id: target,
-            ..
-        } => target == &endpoint_id,
     }));
 }
 
@@ -2092,10 +2126,8 @@ fn navigator_machine_selection_opens_its_remembered_view() {
         render::client_navigator_rows(&state.endpoints, state.active_endpoint_id(), navigator)
             .into_iter()
             .find(|row| {
-                matches!(
-                    &row.target,
-                    ClientNavigatorTarget::Machine { endpoint_id: target } if target == &endpoint_id
-                )
+                matches!(row.target.target, LocationTarget::Machine)
+                    && row.target.endpoint == endpoint_id
             })
             .map(|row| row.target)
             .expect("remote machine row")
@@ -2129,13 +2161,8 @@ fn navigator_foreign_pane_selection_activates_its_endpoint() {
         render::client_navigator_rows(&state.endpoints, state.active_endpoint_id(), navigator)
             .iter()
             .find(|row| {
-                matches!(
-                    &row.target,
-                    ClientNavigatorTarget::Pane {
-                        endpoint_id: target_endpoint,
-                        pane_id,
-                    } if target_endpoint == &endpoint_id && pane_id == &crate::tests::test_pane_id("w1:p1")
-                )
+                row.target.endpoint == endpoint_id
+                    && row.target.pane_id() == Some(crate::tests::test_pane_id("w1:p1"))
             })
             .map(|row| row.target.clone())
             .expect("remote pane row")
@@ -2196,14 +2223,14 @@ fn workspace_drag_rejects_foreign_endpoint_slots() {
         .hits
         .workspaces
         .iter()
-        .find(|hit| hit.endpoint_id.is_local())
+        .find(|hit| hit.location.endpoint.is_local())
         .expect("local workspace")
         .rect;
     let remote = state
         .hits
         .workspaces
         .iter()
-        .find(|hit| hit.endpoint_id == endpoint_id)
+        .find(|hit| hit.location.endpoint == endpoint_id)
         .expect("remote workspace")
         .rect;
     let mouse = |kind, rect: Rect| {
@@ -2240,7 +2267,7 @@ fn collapsed_aggregate_workspace_status_uses_its_status_color() {
         .hits
         .workspaces
         .iter()
-        .find(|hit| hit.endpoint_id == endpoint_id)
+        .find(|hit| hit.location.endpoint == endpoint_id)
         .expect("remote workspace")
         .rect;
     assert_eq!(
@@ -2266,10 +2293,7 @@ fn navigator_workspace_arrows_cross_machine_headings_without_activating_them() {
         };
         assert_eq!(
             navigator.selected,
-            Some(ClientNavigatorTarget::Pane {
-                endpoint_id: expected_endpoint,
-                pane_id: test_pane_id("w1:p1"),
-            })
+            Some(Location::pane(expected_endpoint, test_pane_id("w1:p1")))
         );
     }
 }
@@ -2286,13 +2310,8 @@ fn navigator_foreign_workspace_heading_keeps_the_workspace_target() {
         render::client_navigator_rows(&state.endpoints, state.active_endpoint_id(), navigator)
             .iter()
             .find(|row| {
-                matches!(
-                    &row.target,
-                    ClientNavigatorTarget::Workspace {
-                        endpoint_id: target_endpoint,
-                        workspace_id,
-                    } if target_endpoint == &endpoint_id && workspace_id == &crate::tests::test_workspace_id("w1")
-                )
+                row.target.endpoint == endpoint_id
+                    && row.target.workspace_id() == Some(crate::tests::test_workspace_id("w1"))
             })
             .map(|row| row.target.clone())
             .expect("remote workspace heading")
@@ -2333,7 +2352,7 @@ mod surface_baseline {
     fn state() -> ClientShellState {
         let mut s = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
         s.set_snapshot(Box::new(snapshot()));
-        s.receive_pane_surface(surface());
+        s.receive_pane_surface_from(surface(), s.active_snapshot_generation.unwrap_or(1));
         s
     }
     fn patch(s: &PaneSurfaceFrame) -> PaneSurfacePatch {
@@ -2364,10 +2383,10 @@ mod surface_baseline {
         let mut s = state();
         let mut next = surface();
         next.projection_revision = 2.into();
-        s.receive_pane_surface(next);
+        s.receive_pane_surface_from(next, s.active_snapshot_generation.unwrap_or(1));
         let p = changed_patch(s.surfaces.baseline().expect("baseline"), "X");
         assert!(matches!(
-            s.apply_pane_surface_patch(&p),
+            s.apply_pane_surface_patch_from(&p, s.active_snapshot_generation.unwrap_or(1)),
             ClientPaneSurfacePatchOutcome::Applied(PatchPresentation::Held)
         ));
         assert_eq!(
@@ -2392,7 +2411,7 @@ mod surface_baseline {
         s.set_snapshot(Box::new(next));
         let p = patch(s.surfaces.baseline().expect("baseline"));
         assert!(matches!(
-            s.apply_pane_surface_patch(&p),
+            s.apply_pane_surface_patch_from(&p, s.active_snapshot_generation.unwrap_or(1)),
             ClientPaneSurfacePatchOutcome::Applied(PatchPresentation::Held)
         ));
         assert_eq!(
@@ -2405,7 +2424,7 @@ mod surface_baseline {
         );
         let second = changed_patch(s.surfaces.baseline().expect("baseline"), "X");
         assert!(matches!(
-            s.apply_pane_surface_patch(&second),
+            s.apply_pane_surface_patch_from(&second, s.active_snapshot_generation.unwrap_or(1)),
             ClientPaneSurfacePatchOutcome::Applied(PatchPresentation::Held)
         ));
         assert_eq!(
@@ -2415,14 +2434,14 @@ mod surface_baseline {
         assert_ne!(s.pane_surface().expect("held").frame.cells[0].symbol, "X");
         let mut next = surface();
         next.projection_revision = 2.into();
-        s.receive_pane_surface(next);
+        s.receive_pane_surface_from(next, s.active_snapshot_generation.unwrap_or(1));
         assert!(s.surfaces.is_paired());
     }
     #[test]
     fn a_new_generation_loses_the_baseline_but_keeps_the_held_pair() {
         let mut s = state();
         s.set_endpoint_snapshot_for_generation(&ClientEndpointId::Local, 1, Box::new(snapshot()));
-        s.receive_pane_surface(surface());
+        s.receive_pane_surface_from(surface(), s.active_snapshot_generation.unwrap_or(1));
         s.set_endpoint_snapshot_for_generation(&ClientEndpointId::Local, 2, Box::new(snapshot()));
         assert!(s.surfaces.baseline().is_none());
         assert!(s.pane_surface().is_some());
@@ -2497,7 +2516,7 @@ mod surface_baseline {
             .as_ptr();
         let p = changed_patch(s.surfaces.baseline().expect("baseline"), "X");
         assert!(matches!(
-            s.apply_pane_surface_patch(&p),
+            s.apply_pane_surface_patch_from(&p, s.active_snapshot_generation.unwrap_or(1)),
             ClientPaneSurfacePatchOutcome::Applied(PatchPresentation::Compose)
         ));
         assert_eq!(
@@ -2517,7 +2536,7 @@ mod surface_baseline {
         let mut p = patch(s.surfaces.baseline().expect("baseline"));
         p.base_surface_revision = p.surface_revision;
         assert!(matches!(
-            s.apply_pane_surface_patch(&p),
+            s.apply_pane_surface_patch_from(&p, s.active_snapshot_generation.unwrap_or(1)),
             ClientPaneSurfacePatchOutcome::Rejected(PatchRejection::DoesNotFollow)
         ));
         p = patch(s.surfaces.baseline().expect("baseline"));
@@ -2525,7 +2544,7 @@ mod surface_baseline {
         pane.inner_rect.width += 1;
         p.panes.push(pane);
         assert!(matches!(
-            s.apply_pane_surface_patch(&p),
+            s.apply_pane_surface_patch_from(&p, s.active_snapshot_generation.unwrap_or(1)),
             ClientPaneSurfacePatchOutcome::Rejected(PatchRejection::PaneGeometry)
         ));
         p.panes.clear();
@@ -2535,12 +2554,12 @@ mod surface_baseline {
             cells: vec![],
         });
         assert!(matches!(
-            s.apply_pane_surface_patch(&p),
+            s.apply_pane_surface_patch_from(&p, s.active_snapshot_generation.unwrap_or(1)),
             ClientPaneSurfacePatchOutcome::Rejected(PatchRejection::RowOutsideFrame)
         ));
         s.surfaces = PaneSurfaces::Empty;
         assert!(matches!(
-            s.apply_pane_surface_patch(&p),
+            s.apply_pane_surface_patch_from(&p, s.active_snapshot_generation.unwrap_or(1)),
             ClientPaneSurfacePatchOutcome::Rejected(PatchRejection::NoBaseline)
         ));
     }
@@ -2552,7 +2571,7 @@ mod surface_baseline {
         assert!(count > 0);
         let mut future = surface();
         future.projection_revision = 3.into();
-        s.receive_pane_surface(future);
+        s.receive_pane_surface_from(future, s.active_snapshot_generation.unwrap_or(1));
         assert_eq!(s.hits.panes.len(), count);
         assert_eq!(
             s.pane_surface().expect("held").projection_revision,
@@ -2566,10 +2585,10 @@ mod surface_baseline {
         s.compose(106, 20).expect("compose");
         let mut future = surface();
         future.projection_revision = 3.into();
-        s.receive_pane_surface(future.clone());
+        s.receive_pane_surface_from(future.clone(), s.active_snapshot_generation.unwrap_or(1));
         assert!(s.compose(106, 20).is_none());
         s.invalidate_pane_surface();
-        s.receive_pane_surface(future);
+        s.receive_pane_surface_from(future, s.active_snapshot_generation.unwrap_or(1));
         assert!(s.compose(106, 20).is_some());
         assert!(s.pane_surface().is_none());
     }
@@ -2595,7 +2614,7 @@ mod surface_baseline {
                 shepr_vt::AbsRow(100),
             );
         }
-        s.receive_pane_surface(future);
+        s.receive_pane_surface_from(future, s.active_snapshot_generation.unwrap_or(1));
         assert!(s.mouse_selection.word_gesture.is_some());
         let mut next = snapshot();
         next.revision = 2.into();

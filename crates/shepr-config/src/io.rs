@@ -296,7 +296,16 @@ impl AppPaths {
             home_dir: home_dir.map(Path::to_path_buf),
             current_dir: current_dir.map(Path::to_path_buf),
             startup_cwd: None,
-            server_address: super::ServerAddress::resolve_paths(&root.join("runtime"), None),
+            // A root too long to host a Unix socket still lays out the other
+            // paths (a caller may be exercising exactly that); its server
+            // address is then the short placeholder runtime directory `/`,
+            // since an address always holds a checked socket path.
+            server_address: super::ServerAddress::resolve_paths_checked(
+                &root.join("runtime"),
+                None,
+            )
+            .or_else(|_| super::ServerAddress::resolve_paths_checked(Path::new("/"), None))
+            .unwrap_or_else(|error| unreachable!("`/shepr.sock` fits a Unix socket: {error}")),
         }
     }
 }

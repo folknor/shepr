@@ -299,23 +299,39 @@ fn shared_ssh_control_path_is_stable_scoped_and_bounded() {
     // exercised over the real directory's spelling, and the directory checks
     // that `shared_ssh_control_path` adds are covered below.
     let runtime_dir = Path::new("/run/user/4294967294");
-    let path = ssh_control_path_under(runtime_dir, Path::new("/config/one"), "user@host")
-        .expect("test precondition");
+    let path = ssh_control_path_under(
+        runtime_dir,
+        Path::new("/config/one"),
+        SshControlKey::from_identity_bytes(b"user@host"),
+    )
+    .expect("test precondition");
     assert_eq!(path.parent(), Some(runtime_dir));
     assert_eq!(
         path,
-        ssh_control_path_under(runtime_dir, Path::new("/config/one"), "user@host")
-            .expect("test precondition")
+        ssh_control_path_under(
+            runtime_dir,
+            Path::new("/config/one"),
+            SshControlKey::from_identity_bytes(b"user@host")
+        )
+        .expect("test precondition")
     );
     assert_ne!(
         path,
-        ssh_control_path_under(runtime_dir, Path::new("/config/two"), "user@host")
-            .expect("test precondition")
+        ssh_control_path_under(
+            runtime_dir,
+            Path::new("/config/two"),
+            SshControlKey::from_identity_bytes(b"user@host")
+        )
+        .expect("test precondition")
     );
     assert_ne!(
         path,
-        ssh_control_path_under(runtime_dir, Path::new("/config/one"), "other@host")
-            .expect("test precondition")
+        ssh_control_path_under(
+            runtime_dir,
+            Path::new("/config/one"),
+            SshControlKey::from_identity_bytes(b"other@host")
+        )
+        .expect("test precondition")
     );
     let expanded = path.to_string_lossy().replace("%C", &"f".repeat(40));
     assert!(fits_unix_socket_path(&PathBuf::from(&expanded)));
@@ -334,8 +350,12 @@ fn shared_ssh_control_path_validates_the_runtime_directory_first() {
     std::fs::create_dir(&runtime_dir).expect("test precondition");
     std::fs::set_permissions(&runtime_dir, std::fs::Permissions::from_mode(0o755))
         .expect("test precondition");
-    let error = shared_ssh_control_path(&runtime_dir, Path::new("/config/one"), "user@host")
-        .expect_err("a runtime directory others can reach is refused");
+    let error = shared_ssh_control_path(
+        &runtime_dir,
+        Path::new("/config/one"),
+        SshControlKey::from_identity_bytes(b"user@host"),
+    )
+    .expect_err("a runtime directory others can reach is refused");
     assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
     assert!(
         error
@@ -346,7 +366,7 @@ fn shared_ssh_control_path_validates_the_runtime_directory_first() {
     let relative = shared_ssh_control_path(
         Path::new("relative/runtime"),
         Path::new("/config/one"),
-        "user@host",
+        SshControlKey::from_identity_bytes(b"user@host"),
     )
     .expect_err("a relative runtime directory is refused");
     assert_eq!(relative.kind(), std::io::ErrorKind::InvalidInput);
@@ -364,8 +384,12 @@ fn shared_ssh_control_path_rejects_a_runtime_dir_that_cannot_fit_open_ssh_stagin
         std::fs::Permissions::from_mode(crate::limits::PRIVATE_DIRECTORY_MODE),
     )
     .expect("test precondition");
-    let error = shared_ssh_control_path(&runtime_dir, Path::new("/config/one"), "user@host")
-        .expect_err("the OpenSSH staging path must fit");
+    let error = shared_ssh_control_path(
+        &runtime_dir,
+        Path::new("/config/one"),
+        SshControlKey::from_identity_bytes(b"user@host"),
+    )
+    .expect_err("the OpenSSH staging path must fit");
     assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
 }
 

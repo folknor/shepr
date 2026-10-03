@@ -1,7 +1,7 @@
 use crate::endpoint::ClientEndpointId;
 use crate::shell::state::{
-    ClientNavigatorTarget, ClientRenameTarget, ClientShellAction, ClientShellConfig,
-    ClientShellEndpointError, ClientShellMode, ClientShellOverlay, ClientShellRequest,
+    ClientRenameTarget, ClientShellAction, ClientShellConfig, ClientShellEndpointError,
+    ClientShellMode, ClientShellOverlay, ClientShellRequest,
 };
 use shepr_config::ClientConfig;
 use shepr_protocol::command::EndpointCommand;
@@ -32,7 +32,7 @@ fn shell(field: usize) -> ClientShellState {
         2,
         shepr_vt::AbsRow(0),
     ));
-    state.receive_pane_surface(frame);
+    state.receive_pane_surface_from(frame, state.active_snapshot_generation.unwrap_or(1));
     state.compose(106, 30).expect("initial shell");
     match field {
         0 => state.open_new_workspace_overlay(&mut ClientShellInput::default()),
@@ -123,12 +123,16 @@ fn open_new_workspace(
     else {
         panic!("the overlay awaits a label lookup");
     };
-    (request.id.clone(), lookup_id.clone(), params.cwd.clone())
+    (
+        request.id.clone(),
+        lookup_id.clone(),
+        params.cwd.display_text().into_owned(),
+    )
 }
 
 fn checkout_root_answer(root: Option<&str>) -> EndpointReply {
     EndpointReply::WorkspaceCheckoutRoot {
-        root: root.map(str::to_owned),
+        root: root.map(Into::into),
         home: None,
     }
 }
@@ -238,10 +242,10 @@ fn cursor_movement_preserves_filter_selection_and_scroll() {
         match state.overlay.as_mut().expect("overlay") {
             ClientShellOverlay::Navigator(v) => {
                 v.scroll = 3;
-                v.selected = Some(ClientNavigatorTarget::Pane {
-                    endpoint_id: ClientEndpointId::Local,
-                    pane_id: test_pane_id("w1:p1"),
-                });
+                v.selected = Some(crate::shell::navigation::location::Location::pane(
+                    ClientEndpointId::Local,
+                    test_pane_id("w1:p1"),
+                ));
             }
             ClientShellOverlay::Help(v) => v.scroll = 3,
             _ => unreachable!(),

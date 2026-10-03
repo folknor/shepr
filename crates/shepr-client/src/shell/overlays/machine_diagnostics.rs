@@ -113,9 +113,9 @@ impl ClientShellState {
                     && self
                         .machine_diagnostics
                         .errors
-                        .contains_key(&hit.endpoint_id)
+                        .contains_key(&hit.location.endpoint)
             })
-            .map(|hit| hit.endpoint_id.clone());
+            .map(|hit| hit.location.endpoint.clone());
         if mouse.kind == MouseEventKind::Moved {
             if self.machine_diagnostics.hover != hit {
                 self.machine_diagnostics.hover = hit;

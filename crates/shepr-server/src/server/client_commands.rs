@@ -45,7 +45,7 @@ fn response_within(
         )),
         Err(error) => {
             tracing::warn!(%error, "an endpoint response could not be encoded");
-            EndpointError::Rejected("the response could not be encoded".to_owned())
+            EndpointError::Internal("the response could not be encoded".to_owned())
         }
     };
     ServerMessage::ClientShellEndpointResponse {

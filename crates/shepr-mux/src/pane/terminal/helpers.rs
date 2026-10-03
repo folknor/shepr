@@ -103,13 +103,9 @@ pub(super) fn color_query_response(query: &shepr_vt::ColorQuery) -> Option<Bytes
     if query.child_override() {
         return Some(Bytes::from(query.encode(color)));
     }
-    let command = match query.target() {
-        shepr_vt::ColorQueryTarget::Foreground => "10".to_owned(),
-        shepr_vt::ColorQueryTarget::Background => "11".to_owned(),
-        shepr_vt::ColorQueryTarget::Cursor => "12".to_owned(),
-        shepr_vt::ColorQueryTarget::Palette(index) => format!("4;{index}"),
-    };
-    Some(osc_rgb_response(&command, color.r, color.g, color.b))
+    Some(Bytes::from(
+        query.reply(color, shepr_vt::seq::ReplyForm::St),
+    ))
 }
 
 pub(super) fn current_cursor_state(core: &mut PaneTerminalCore) -> Option<TerminalCursorState> {
@@ -237,7 +233,9 @@ pub(super) fn terminal_detection_text(
     terminal: &shepr_vt::Terminal,
 ) -> Result<String, shepr_vt::ReadError> {
     let screen_rows = usize::from(terminal.rows()).max(1);
-    let Some((start, end, _)) = terminal_recent_read_range(terminal, screen_rows)? else {
+    let Some(RecentReadRange { start, end, .. }) =
+        terminal_recent_read_range(terminal, screen_rows)?
+    else {
         return Ok(String::new());
     };
     let screen_start = terminal.total_rows().saturating_sub(screen_rows);
@@ -257,6 +255,11 @@ pub(super) fn terminal_detection_text(
     Ok(recent_text_from_rows(&rows, screen_rows))
 }
 
+pub(super) struct RecentReadRange {
+    pub start: usize,
+    pub end: usize,
+}
+
 /// The screen rows a recent read covers, on the active screen: while the
 /// alternate screen is active that is the full-screen program's frame, never
 /// the primary history (alacritty offers no access to the inactive grid).
@@ -265,7 +268,7 @@ pub(super) fn terminal_detection_text(
 pub(super) fn terminal_recent_read_range(
     terminal: &shepr_vt::Terminal,
     lines: usize,
-) -> Result<Option<(usize, usize, u16)>, shepr_vt::ReadError> {
+) -> Result<Option<RecentReadRange>, shepr_vt::ReadError> {
     let total_rows = terminal.total_rows();
     let cols = terminal.cols();
     if total_rows == 0 || cols == 0 || lines == 0 {
@@ -275,7 +278,10 @@ pub(super) fn terminal_recent_read_range(
     let physical_end = total_rows.saturating_sub(1);
     if terminal.active_screen() != shepr_vt::ActiveScreen::Primary {
         let start = physical_end.saturating_add(1).saturating_sub(lines);
-        return Ok(Some((start, physical_end, cols)));
+        return Ok(Some(RecentReadRange {
+            start,
+            end: physical_end,
+        }));
     }
 
     let rows = usize::from(terminal.rows());
@@ -299,7 +305,7 @@ pub(super) fn terminal_recent_read_range(
     let end =
         last_content_row.map_or_else(|| total_rows.saturating_sub(1), |row| row.max(cursor_row));
     let start = end.saturating_add(1).saturating_sub(lines);
-    Ok(Some((start, end, cols)))
+    Ok(Some(RecentReadRange { start, end }))
 }
 
 pub(super) fn terminal_scroll_metrics(terminal: &shepr_vt::Terminal) -> ScrollMetrics {
@@ -550,13 +556,6 @@ pub(super) fn terminal_cell_paint(
     }
 }
 
-pub(super) fn osc_rgb_response(command: &str, r: u8, g: u8, b: u8) -> Bytes {
-    let r = u16::from(r) * 257;
-    let g = u16::from(g) * 257;
-    let b = u16::from(b) * 257;
-    Bytes::from(format!("\x1b]{command};rgb:{r:04x}/{g:04x}/{b:04x}\x1b\\"))
-}
-
 pub(super) fn terminal_default_fg(
     color: shepr_vt::RgbColor,
     source: shepr_vt::ColorSource,
@@ -661,13 +660,13 @@ pub(super) fn terminal_recent_ansi(
     lines: usize,
 ) -> Result<String, shepr_vt::ReadError> {
     let terminal = &core.terminal;
-    let Some((start, end, cols)) = terminal_recent_read_range(terminal, lines)? else {
+    let Some(RecentReadRange { start, end }) = terminal_recent_read_range(terminal, lines)? else {
         return Ok(String::new());
     };
     let text = terminal_read_ansi_screen(
         terminal,
         Point::new(ScreenRow(start), 0),
-        Point::new(ScreenRow(end), cols.saturating_sub(1)),
+        Point::new(ScreenRow(end), terminal.cols().saturating_sub(1)),
     )?;
     Ok(text)
 }
@@ -712,7 +711,8 @@ pub(super) fn terminal_recent_text(
     lines: usize,
 ) -> Result<String, shepr_vt::ReadError> {
     let terminal = &core.terminal;
-    let Some((start, end, _)) = terminal_recent_read_range(terminal, lines)? else {
+    let Some(RecentReadRange { start, end, .. }) = terminal_recent_read_range(terminal, lines)?
+    else {
         return Ok(String::new());
     };
     let text = terminal_text_rows(terminal, start, end, lines)?;
@@ -725,12 +725,12 @@ pub(super) fn terminal_recent_text_unwrapped(
     lines: usize,
 ) -> Result<String, shepr_vt::ReadError> {
     let terminal = &core.terminal;
-    let Some((start, end, cols)) = terminal_recent_read_range(terminal, lines)? else {
+    let Some(RecentReadRange { start, end }) = terminal_recent_read_range(terminal, lines)? else {
         return Ok(String::new());
     };
     let text = terminal.read_text_screen(
         Point::new(ScreenRow(start), 0),
-        Point::new(ScreenRow(end), cols.saturating_sub(1)),
+        Point::new(ScreenRow(end), terminal.cols().saturating_sub(1)),
     )?;
     Ok(text)
 }

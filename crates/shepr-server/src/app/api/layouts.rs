@@ -1,7 +1,7 @@
 use crate::app::App;
 use shepr_protocol::command::LayoutSetSplitRatioParams;
 
-use super::endpoint::{Handled, HandlerResult, rejected};
+use super::endpoint::{Handled, HandlerResult};
 
 impl App {
     /// Sets one split's ratio. Moves nobody: a client changing the layout of a
@@ -16,7 +16,7 @@ impl App {
                 .map(|id| {
                     let (workspace, pane) = self.endpoint_pane(id)?;
                     if workspace != ws_idx {
-                        return Err(shepr_protocol::command::EndpointError::Rejected(
+                        return Err(shepr_protocol::command::EndpointError::InvalidArgument(
                             "split pane belongs to another workspace".into(),
                         ));
                     }
@@ -32,7 +32,7 @@ impl App {
             .get(ws_idx)
             .and_then(|workspace| workspace.layout().split_path_for_children(&first, &second))
         else {
-            return rejected("split children not found");
+            return Err(shepr_protocol::command::EndpointError::SplitGone.into());
         };
         let outcome = self.state.edit_workspace_geometry(ws_idx, |workspace| {
             workspace.set_split_ratio_at(&path, params.ratio)
@@ -52,8 +52,9 @@ mod tests {
     use shepr_protocol::command::EndpointError;
 
     fn app_with_workspace() -> App {
-        let mut app = App::new(&ServerConfig::default(), crate::app::AppPolicy::Test);
-        app.state.workspaces = vec![Workspace::test_new("layout")];
+        let mut app = App::new(&ServerConfig::default(), crate::app::AppPolicy::Suspended);
+        app.state
+            .test_set_workspaces(vec![Workspace::test_new("layout")]);
         app.state.ensure_test_terminals();
         app
     }
@@ -83,7 +84,7 @@ mod tests {
     fn layout_set_split_ratio_updates_existing_split() {
         let mut app = app_with_workspace();
         let root = app.state.workspaces[0].root_pane();
-        app.state.workspaces[0].test_split(Direction::Horizontal);
+        app.state.test_split_workspace(0, Direction::Horizontal);
         app.state.ensure_test_terminals();
         assert!(app.state.workspaces[0].focus_pane(root));
 
@@ -106,14 +107,14 @@ mod tests {
     #[test]
     fn stale_client_split_command_refuses_a_replacement_at_the_same_path() {
         let mut app = app_with_workspace();
-        app.state.workspaces[0].test_split(Direction::Horizontal);
+        app.state.test_split_workspace(0, Direction::Horizontal);
         app.state.ensure_test_terminals();
         let stale = params(
             &app,
             shepr_core::layout::SplitRatio::new(0.72).expect("test ratio is valid"),
         );
         // A second client splits a child, replacing the old root's membership.
-        app.state.workspaces[0].test_split(Direction::Vertical);
+        app.state.test_split_workspace(0, Direction::Vertical);
         app.state.ensure_test_terminals();
         let area = shepr_core::geometry::Rect::new(0, 0, 100, 20);
         let before = app.state.workspaces[0]
@@ -145,9 +146,6 @@ mod tests {
         let missing = app
             .handle_layout_set_split_ratio(&missing_params)
             .expect_err("a one-pane workspace has no split");
-        assert_eq!(
-            missing.error,
-            EndpointError::Rejected("split children not found".into())
-        );
+        assert_eq!(missing.error, EndpointError::SplitGone);
     }
 }

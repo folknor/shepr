@@ -459,8 +459,10 @@ pub(crate) fn parse_client_config(
         provenance.key_is_configured(&super::ConfigKeyPath::root().key("keys").key(field))
     });
     let palette = config.resolve_palette();
-    let sidebar_bounds =
-        super::validated_sidebar_bounds(config.ui.sidebar_min_width, config.ui.sidebar_max_width);
+    let sidebar_bounds = super::model::validated_sidebar_bounds(
+        config.ui.sidebar_min_width,
+        config.ui.sidebar_max_width,
+    );
     let sidebar_width = config.ui.sidebar_width.unwrap_or(DEFAULT_SIDEBAR_WIDTH);
     let validated_sidebar_width =
         sidebar_bounds.and_then(|bounds| bounds.checked_width(sidebar_width));

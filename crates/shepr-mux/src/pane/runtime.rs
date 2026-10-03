@@ -7,8 +7,16 @@ mod spawn;
 pub use cwd::PaneCwdProbe;
 use cwd::*;
 pub use read::PaneRead;
+
 use read_effects::*;
 pub use spawn::{LaunchPresentation, PaneLaunchRequest, PaneLauncher, PaneSpawnHandles};
+
+/// The pane's text area in pixels, bounded by PTY winsize limits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PanePixelSize {
+    pub width: u32,
+    pub height: u32,
+}
 
 use std::sync::{
     Arc, Condvar, Mutex,
@@ -363,9 +371,8 @@ impl PaneRuntime {
         Arc::clone(&self.detect_reset_notify)
     }
 
-    pub fn current_size(&self) -> (u16, u16) {
-        let grid = self.grid_size();
-        (grid.rows.get(), grid.cols.get())
+    pub fn current_size(&self) -> shepr_core::geometry::GridSize {
+        self.grid_size()
     }
 
     pub fn visible_text(&self) -> String {
@@ -1053,11 +1060,14 @@ mod tests {
         let source = runtime.read().history_source();
         let mut history = PaneHistoryCache::default();
         runtime.test_process_pty_bytes(b"primary history");
-        assert!(source.refresh(&mut history));
+        assert!(source.refresh(&mut history).is_ok());
         assert!(history.text().contains("primary history"));
         let saved_history = history.text();
         runtime.test_process_pty_bytes(b"\x1b[?1049halt frame");
-        assert!(!source.refresh(&mut history));
+        assert_eq!(
+            source.refresh(&mut history),
+            Err(super::HistoryUnavailable::AlternateScreen)
+        );
         assert_eq!(history.text(), saved_history);
     }
 
@@ -1468,7 +1478,7 @@ mod tests {
 
     #[tokio::test]
     async fn exited_shell_keeps_persistence_cwd_when_pid_is_reused() {
-        let (runtime, _rx) = PaneRuntime::test_with_channel(80, 24);
+        let (mut runtime, _rx) = PaneRuntime::test_with_channel(80, 24);
         let scratch = crate::test_support::ScratchDir::new("exited-cwd");
         let saved = scratch.join("saved");
         *shepr_core::locks::lock_auxiliary(&runtime.cwd.remembered) = Some(PersistedCwd {
@@ -1476,9 +1486,12 @@ mod tests {
             report_generation: None,
         });
         // A different live process now owns the exited shell's numeric PID.
-        runtime
-            .child_liveness
-            .set_pid_for_test(shepr_platform::Pid::new(std::process::id()).expect("test pid"));
+        runtime.child_liveness = Arc::new(ChildLiveness::running_with_handle(Arc::new(
+            shepr_platform::ProcessHandle::open(
+                shepr_platform::Pid::new(std::process::id()).expect("test pid"),
+            )
+            .expect("current process handle"),
+        )));
         runtime.child_liveness.mark_wait_completed();
         assert_eq!(runtime.cwd_probe().read(), Some(saved.clone()));
         assert_eq!(runtime.remembered_cwd(), Some(saved));
@@ -1497,7 +1510,7 @@ mod tests {
             }
         }
 
-        let (runtime, _rx) = PaneRuntime::test_with_channel(80, 24);
+        let (mut runtime, _rx) = PaneRuntime::test_with_channel(80, 24);
         let scratch = crate::test_support::ScratchDir::new("deleted-process-cwd");
         let remembered = scratch.join("remembered");
         let reported = scratch.join("reported");
@@ -1518,7 +1531,9 @@ mod tests {
             Some(deleted.clone()),
             "test precondition: process starts in the selected cwd"
         );
-        runtime.child_liveness.set_pid_for_test(pid);
+        runtime.child_liveness = Arc::new(ChildLiveness::running_with_handle(Arc::new(
+            shepr_platform::ProcessHandle::open(pid).expect("fixture process handle"),
+        )));
         std::fs::remove_dir(&deleted).expect("unlink process cwd");
         let deleted_link = shepr_agent::detect::process_cwd(pid).expect("read unlinked cwd");
         assert!(deleted_link.to_string_lossy().ends_with(" (deleted)"));
@@ -1591,7 +1606,7 @@ mod tests {
             }
         }
 
-        let (runtime, _rx) = PaneRuntime::test_with_channel(80, 24);
+        let (mut runtime, _rx) = PaneRuntime::test_with_channel(80, 24);
         let scratch = crate::test_support::ScratchDir::new("cwd-save-symlink");
         let physical = scratch.join("physical");
         let logical = scratch.join("logical");
@@ -1606,7 +1621,9 @@ mod tests {
         let pid = shepr_platform::Pid::new(child.0.id()).expect("fixture pid");
         let shell_cwd = shepr_agent::detect::process_cwd(pid).expect("read shell cwd");
         assert_eq!(shell_cwd, physical);
-        runtime.child_liveness.set_pid_for_test(pid);
+        runtime.child_liveness = Arc::new(ChildLiveness::running_with_handle(Arc::new(
+            shepr_platform::ProcessHandle::open(pid).expect("fixture process handle"),
+        )));
         *shepr_core::locks::lock_auxiliary(&runtime.cwd.reported) = Some(ReportedCwd {
             path: logical.clone(),
             shell_cwd_at_report: Some(shell_cwd),
@@ -1634,8 +1651,14 @@ mod tests {
 
         runtime.resize(shepr_core::geometry::PaneGeometry::new(80, 45, 0, 0));
 
-        assert_eq!(runtime.current_size(), (45, 80));
-        assert_eq!(runtime.read().terminal_dimensions(), Some((80, 45)));
+        assert_eq!(
+            runtime.current_size(),
+            shepr_core::geometry::GridSize::clamped(80, 45)
+        );
+        assert_eq!(
+            runtime.read().terminal_dimensions(),
+            Some(shepr_core::geometry::GridSize::clamped(80, 45))
+        );
         assert_eq!(
             runtime
                 .read()

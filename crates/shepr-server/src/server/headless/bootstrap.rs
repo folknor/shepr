@@ -340,7 +340,7 @@ mod startup_tests {
             &config,
             &paths,
             lease,
-            app::AppPolicy::Test,
+            app::AppPolicy::Suspended,
             super::super::sample_app_clock(),
         );
         assert_eq!(

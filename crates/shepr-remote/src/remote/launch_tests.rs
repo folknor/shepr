@@ -14,7 +14,7 @@ fn remote_server_commands_name_no_session() {
         (RemoteCliCommand::ClientBridge, "remote-client-bridge"),
     ] {
         assert_eq!(
-            shepr.command(&command.args()),
+            shepr.command(&command.args()).as_str(),
             format!("{} {line}", shepr.as_str())
         );
     }
@@ -39,7 +39,7 @@ fn remote_executable_rejects_paths_that_need_shell_quoting() {
 fn remote_bridge_command_uses_installed_binary() {
     let remote_shepr = RemoteExecutable::parse("/usr/bin/shepr").expect("test precondition");
     assert_eq!(
-        remote_shepr.bridge_command(),
+        remote_shepr.bridge_command().as_str(),
         format!(
             "/bin/sh -c 'echo; echo shepr-remote-output-ready; /usr/bin/shepr remote-client-bridge; shepr_exit_status=$?; if [ $shepr_exit_status -eq {SSH_OWN_FAILURE_EXIT_CODE} ]; then exit {REMAPPED_REMOTE_255_EXIT_CODE}; fi; exit $shepr_exit_status'"
         )
@@ -53,6 +53,7 @@ fn bridge_command_is_one_quoted_word_for_bin_sh_that_frames_its_output() {
     let remote = RemoteExecutable::parse("/usr/bin/shepr").expect("test precondition");
     let command = remote.bridge_command();
     let script = command
+        .as_str()
         .strip_prefix("/bin/sh -c '")
         .and_then(|rest| rest.strip_suffix('\''))
         .expect("wrapped in /bin/sh -c");
@@ -63,7 +64,7 @@ fn bridge_command_is_one_quoted_word_for_bin_sh_that_frames_its_output() {
     // host-program-ok: the generated remote script is the subject, run as sshd runs it
     let output = shepr_test_support::command_in_scratch("/bin/sh", "machine-bridge-command-sh")
         .arg("-c")
-        .arg(posix_remote_output_command("printf payload"))
+        .arg(posix_remote_output_command(&PosixScript::new("printf payload")).as_str())
         .output()
         .expect("test precondition");
     let mut stdout = output.stdout;
@@ -91,7 +92,11 @@ fn remote_output_wrapper_accepts_newline_scripts_and_remaps_exit_255() {
             .stdin
             .take()
             .expect("test precondition")
-            .write_all(posix_remote_output_command(script).as_bytes())
+            .write_all(
+                posix_remote_output_command(&PosixScript::new(script))
+                    .as_str()
+                    .as_bytes(),
+            )
             .expect("test precondition");
         child.wait_with_output().expect("test precondition")
     };

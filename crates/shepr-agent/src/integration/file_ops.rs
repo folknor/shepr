@@ -68,14 +68,6 @@ pub(crate) fn read_if_file(path: &Path) -> io::Result<Option<String>> {
         .transpose()
 }
 
-pub(crate) fn make_executable(path: &Path) -> io::Result<()> {
-    use std::os::unix::fs::PermissionsExt;
-
-    let mut perms = fs::metadata(path)?.permissions();
-    perms.set_mode(0o755);
-    fs::set_permissions(path, perms)
-}
-
 /// Install a shepr-managed asset (hook script, plugin file) by writing a
 /// sibling temporary file and renaming it over `path`.
 ///

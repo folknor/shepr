@@ -63,7 +63,7 @@ impl AgentReportHarness {
             .ownership_mut()
             .set_detected_agent_process_at(agent, at.monotonic);
         app.state.terminals.insert(terminal_id.clone(), terminal);
-        app.state.workspaces.push(Workspace::test_from_pane(
+        app.state.test_push_workspace(Workspace::test_from_pane(
             Some("agent-report-contract".to_owned()),
             root,
             pane,

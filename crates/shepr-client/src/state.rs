@@ -332,7 +332,6 @@ pub(super) enum HostWritePurpose {
     TerminalMode,
     Frame,
     Title,
-    Clipboard,
     Probe,
 }
 
@@ -347,8 +346,8 @@ pub(super) enum HostWriteAction {
 /// The client can retry stateful input modes because their desired state is retained. A
 /// permanent mode failure ends the session because the host may now interpret keys or mouse
 /// reports differently from the client. Frames retain a repaint request; title and probe
-/// writes have later updates or a fallback; clipboard writes report the lost copy, so those
-/// failures leave the client running.
+/// writes have later updates or a fallback, so those failures leave the client running.
+/// A failed clipboard copy is only logged at its call site and never reaches this policy.
 pub(super) fn host_write_failure_action(
     purpose: HostWritePurpose,
     error: io::ErrorKind,

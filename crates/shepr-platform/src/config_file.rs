@@ -28,6 +28,15 @@ pub fn write_config_temporary(
     mut output: std::fs::File,
     contents: &[u8],
 ) -> std::io::Result<()> {
+    preserve_metadata(source, &output)?;
+    output.write_all(contents)?;
+    output.sync_all()
+}
+
+pub(crate) fn preserve_metadata(
+    source: Option<&Path>,
+    output: &std::fs::File,
+) -> std::io::Result<()> {
     use std::os::unix::fs::MetadataExt;
     if let Some(source) = source {
         use std::os::unix::fs::OpenOptionsExt;
@@ -65,8 +74,7 @@ pub fn write_config_temporary(
         copy_config_xattrs(input.as_raw_fd(), output.as_raw_fd())?;
         output.set_permissions(metadata.permissions())?;
     }
-    output.write_all(contents)?;
-    output.sync_all()
+    Ok(())
 }
 
 fn preserve_config_owner_with(

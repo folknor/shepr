@@ -37,7 +37,7 @@ impl ClientShellState {
         let pending_workspace_highlight =
             self.pending_workspace_highlight.as_ref().filter(|pending| {
                 self.mode != ClientShellMode::Navigate
-                    && pending.target.endpoint_id == *self.endpoints.presented()
+                    && pending.target.location.endpoint == *self.endpoints.presented()
                     && self.navigation_target_valid(&pending.target)
             });
         // Only the exact snapshot pair is drawn. With nothing presented the placeholder
@@ -228,7 +228,7 @@ impl ClientShellState {
                 .copy_mode
                 .as_ref()
                 .and_then(|copy_mode| copy_mode.search.as_ref())
-                .is_some_and(|search| !search.matches.is_empty());
+                .is_some_and(|search| !search.results.matches.is_empty());
             // Highlights restyle wire cells in the existing order: noncurrent search matches,
             // selection, the current search match, then the copy cursor.
             if has_selection || has_search {
@@ -586,8 +586,12 @@ fn render_client_copy_search_highlights(
     } else {
         Style::default().fg(palette.text).bg(palette.surface1)
     });
-    for (index, text_match) in search.matches.iter().enumerate() {
-        if (search.current == Some(index)) != current_only
+    for (index, text_match) in search.results.matches.iter().enumerate() {
+        if (search
+            .results
+            .current
+            .is_some_and(|current| current.window_index == index))
+            != current_only
             || text_match.end.row < top
             || text_match.start.row > bottom
         {
@@ -699,10 +703,14 @@ mod tests {
             selection: None,
             search: Some(ClientCopySearch {
                 query: "x".into(),
-                matches: vec![text_range(2, 0, 1), text_range(3, 0, 5)],
-                total: 2,
-                current: Some(1),
-                current_global: Some(1),
+                results: crate::shell::state::ClientCopySearchResult {
+                    matches: vec![text_range(2, 0, 1), text_range(3, 0, 5)],
+                    total: 2,
+                    current: Some(shepr_protocol::command::PaneCopySearchPosition {
+                        window_index: 1,
+                        global_index: 1,
+                    }),
+                },
                 ..Default::default()
             }),
             operation_generation: 0,

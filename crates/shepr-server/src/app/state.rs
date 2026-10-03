@@ -314,30 +314,14 @@ impl AppState {
     /// carry pane ids while terminal metadata and runtimes are keyed by
     /// terminal id, so this is the one state-level mapping between them.
     ///
-    /// The index is kept in step by hand at every path that adds or removes
-    /// panes, so a miss falls back to scanning the workspaces. A miss for a
-    /// pane that is already gone is normal (late events from a closed pane)
-    /// and the scan finds nothing. A scan that does find the pane means some
-    /// path put a pane into state without indexing it, which is a bug in
-    /// production and is logged; tests that assign `workspaces` directly
-    /// reach it on purpose.
+    /// Creation, restore and removal maintain the index; fixture assembly
+    /// does the same. A missing id is a closed or unknown pane, including
+    /// late events, and never causes a workspace scan on this input path.
     pub(crate) fn terminal_of(
         &self,
         pane_id: shepr_core::layout::PaneId,
     ) -> Option<&shepr_protocol::TerminalId> {
-        if let Some(terminal_id) = self.pane_terminal_ids.get(&pane_id) {
-            return Some(terminal_id);
-        }
-        let terminal_id = self
-            .workspaces
-            .iter()
-            .find_map(|workspace| workspace.terminal_id(pane_id))?;
-        tracing::warn!(
-            ?pane_id,
-            %terminal_id,
-            "pane is in a workspace but missing from the pane terminal index"
-        );
-        Some(terminal_id)
+        self.pane_terminal_ids.get(&pane_id)
     }
 
     /// Adds the pane-to-terminal links from a workspace entering state.
@@ -437,10 +421,51 @@ impl AppState {
         }
     }
 
+    /// Replace the fixture workspace set and its pane index together.
+    pub(crate) fn test_set_workspaces(&mut self, workspaces: Vec<Workspace>) {
+        self.workspaces = workspaces;
+        self.test_reindex_panes();
+    }
+
+    /// Add a fixture workspace with the same index update as live creation.
+    pub(crate) fn test_push_workspace(&mut self, workspace: Workspace) {
+        self.index_workspace_terminals(&workspace);
+        self.workspaces.push(workspace);
+    }
+
+    /// Split a fixture workspace and register its new terminal link.
+    pub(crate) fn test_split_workspace(
+        &mut self,
+        ws_idx: usize,
+        direction: shepr_core::layout::Direction,
+    ) -> shepr_core::layout::PaneId {
+        let pane_id = self.workspaces[ws_idx].test_split(direction);
+        let terminal_id = self.workspaces[ws_idx]
+            .terminal_id(pane_id)
+            .expect("a fixture split attaches a terminal")
+            .clone();
+        self.pane_terminal_ids.insert(pane_id, terminal_id);
+        pane_id
+    }
+
+    /// Rebuild the index after direct fixture removal or replacement.
+    pub(crate) fn test_reindex_panes(&mut self) {
+        self.pane_terminal_ids.clear();
+        for workspace in &self.workspaces {
+            self.pane_terminal_ids.extend(
+                workspace
+                    .panes()
+                    .iter()
+                    .map(|(pane_id, pane)| (*pane_id, pane.attached_terminal_id.clone())),
+            );
+        }
+    }
+
     /// Populate missing `TerminalState` entries for every pane so tests that
     /// read or write terminal metadata don't need to manually create them.
     pub fn ensure_test_terminals(&mut self) {
         use shepr_mux::terminal::TerminalState;
+        self.test_reindex_panes();
         for ws in &self.workspaces {
             for pane in ws.panes().values() {
                 if !self.terminals.contains_key(&pane.attached_terminal_id) {
@@ -456,13 +481,23 @@ impl AppState {
 
     pub fn test_with_adversarial_identity_state() -> Self {
         let mut state = Self::test_new();
-        state.workspaces = vec![shepr_mux::workspace::Workspace::test_adversarial_identity_state()];
+        state.test_set_workspaces(vec![
+            shepr_mux::workspace::Workspace::test_adversarial_identity_state(),
+        ]);
         state.set_bookmark_index(Some(0));
         state.ensure_test_terminals();
         state
     }
 
     pub fn assert_invariants_for_test(&self) {
+        assert_eq!(
+            self.pane_terminal_ids.len(),
+            self.workspaces
+                .iter()
+                .map(Workspace::pane_count)
+                .sum::<usize>(),
+            "the pane terminal index must contain exactly the live panes"
+        );
         if self.workspaces.is_empty() {
             assert!(
                 self.bookmark.is_none(),
@@ -494,6 +529,11 @@ impl AppState {
             ws.assert_invariants_for_test();
 
             for (pane_id, pane) in ws.panes() {
+                assert_eq!(
+                    self.terminal_of(*pane_id),
+                    Some(&pane.attached_terminal_id),
+                    "every pane attachment must be indexed"
+                );
                 assert!(
                     pane_ids.insert(*pane_id),
                     "pane {pane_id:?} appears in more than one workspace"
@@ -524,7 +564,7 @@ mod tests {
         let mut state = AppState::test_new();
         state.settings.headless_size = shepr_core::geometry::GridSize::clamped(132, 41);
         state.settings.pane_scrollbars = false;
-        state.workspaces = vec![shepr_mux::workspace::Workspace::test_new("only")];
+        state.test_set_workspaces(vec![shepr_mux::workspace::Workspace::test_new("only")]);
 
         assert_eq!(state.workspace_spawn_geometry(0), None);
         assert_eq!(state.workspace_layout_area(0), Rect::new(0, 0, 132, 41));
@@ -541,9 +581,7 @@ mod tests {
     #[test]
     fn a_workspaces_layout_area_is_its_own_recorded_geometry_never_another_workspaces() {
         let mut state = AppState::test_with_adversarial_identity_state();
-        state
-            .workspaces
-            .push(shepr_mux::workspace::Workspace::test_new("second"));
+        state.test_push_workspace(shepr_mux::workspace::Workspace::test_new("second"));
         state.ensure_test_terminals();
         let first_area = Rect::new(0, 0, 97, 33);
         let first_cell = HostCellSize {
@@ -575,6 +613,7 @@ mod tests {
 
         // Closed workspaces drop their geometry.
         state.workspaces.truncate(1);
+        state.test_reindex_panes();
         state.workspace_geometry.insert(
             WorkspaceId::from_number(usize::MAX).expect("nonzero id"),
             SpawnGeometry {
@@ -590,10 +629,12 @@ mod tests {
     #[test]
     fn the_bookmark_remembers_its_index_and_repairs_by_it() {
         let mut state = AppState::test_new();
-        state.workspaces = ["a", "b", "c", "d"]
-            .into_iter()
-            .map(shepr_mux::workspace::Workspace::test_new)
-            .collect();
+        state.test_set_workspaces(
+            ["a", "b", "c", "d"]
+                .into_iter()
+                .map(shepr_mux::workspace::Workspace::test_new)
+                .collect(),
+        );
         let ids: Vec<_> = state.workspaces.iter().map(|w| w.id).collect();
 
         assert!(state.set_bookmark(&ids[2]));
@@ -602,7 +643,8 @@ mod tests {
 
         // An order change refreshes the remembered index and moves nothing.
         let moved = state.workspaces.remove(0);
-        state.workspaces.push(moved);
+        state.test_reindex_panes();
+        state.test_push_workspace(moved);
         assert!(!state.reconcile_bookmark());
         assert_eq!(state.bookmark_index(), Some(1));
         assert!(!state.session_dirty);
@@ -610,6 +652,7 @@ mod tests {
         // The bookmarked workspace vanishes: the one now at its index takes
         // over, and the repair schedules a save.
         state.workspaces.remove(1);
+        state.test_reindex_panes();
         assert!(state.reconcile_bookmark());
         assert_eq!(state.bookmark.as_ref(), Some(&ids[3]));
         assert_eq!(state.bookmark_index(), Some(1));
@@ -617,9 +660,11 @@ mod tests {
 
         // Past the end it clamps, and with nothing left it is none.
         state.workspaces.truncate(1);
+        state.test_reindex_panes();
         assert!(state.reconcile_bookmark());
         assert_eq!(state.bookmark_index(), Some(0));
         state.workspaces.clear();
+        state.test_reindex_panes();
         assert!(state.reconcile_bookmark());
         assert_eq!(state.bookmark, None);
     }
@@ -647,13 +692,36 @@ mod tests {
         assert_eq!(geometry.pane_size(&layout, false, new_pane), Some((38, 87)));
     }
 
+    #[test]
+    fn fixture_changes_index_live_panes_and_retire_replaced_panes() {
+        let mut state = AppState::test_new();
+        let workspace = Workspace::test_new("first");
+        let old_pane = workspace.root_pane();
+        state.test_set_workspaces(vec![workspace]);
+        assert!(state.terminal_of(old_pane).is_some());
+        let split = state.test_split_workspace(0, shepr_core::layout::Direction::Horizontal);
+        assert_eq!(
+            state.terminal_of(split),
+            state.workspaces[0].terminal_id(split)
+        );
+
+        let next = Workspace::test_new("replacement");
+        let next_pane = next.root_pane();
+        state.test_set_workspaces(vec![next]);
+        assert!(state.terminal_of(old_pane).is_none());
+        assert!(state.terminal_of(split).is_none());
+        assert!(state.terminal_of(next_pane).is_some());
+        state.ensure_test_terminals();
+        state.assert_invariants_for_test();
+    }
+
     #[tokio::test]
     async fn runtime_lookup_goes_through_the_registry_by_terminal_id() {
         let mut state = AppState::test_new();
         let ws = shepr_mux::workspace::Workspace::test_new("test");
         let pane_id = ws.root_pane();
         let terminal_id = ws.panes()[&pane_id].attached_terminal_id.clone();
-        state.workspaces = vec![ws];
+        state.test_set_workspaces(vec![ws]);
         let mut registry = shepr_mux::pane::PaneRuntimeRegistry::new();
 
         assert!(
@@ -662,6 +730,7 @@ mod tests {
                 .is_none()
         );
 
+        assert!(state.runtime_of(&registry, pane_id).is_none());
         registry.insert(
             terminal_id,
             shepr_mux::pane::PaneRuntime::test_with_screen_bytes(20, 5, b""),
@@ -676,6 +745,7 @@ mod tests {
                 .runtime_for_pane_in_workspace(&registry, 1, pane_id)
                 .is_none()
         );
+        assert!(state.runtime_of(&registry, pane_id).is_some());
         for (_, runtime) in registry.drain() {
             drop(runtime);
         }

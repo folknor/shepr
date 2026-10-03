@@ -34,23 +34,16 @@ impl TerminalState {
         )
     }
 
-    /// String-input seam retained for fixtures. Live reports enter ownership
-    /// through the typed `report_hook_outcome_at` method.
-    pub fn set_hook_authority_at(
+    /// Apply a typed hook report and return its ownership mutation.
+    pub fn set_hook_report_at(
         &mut self,
-        source: &str,
-        agent_label: &str,
+        origin: ReportOrigin,
         state: AgentState,
         session_ref: Option<shepr_agent::agent::resume::AgentSessionRef>,
         seq: Option<u64>,
         sample: impl Into<HookClockSample>,
     ) -> Option<shepr_agent::ownership::AgentOwnershipMutation> {
-        self.ownership.set_hook_report_at(
-            ReportOrigin::parse(source, agent_label).ok()?,
-            state,
-            session_ref,
-            seq,
-            sample.into(),
-        )
+        self.ownership
+            .set_hook_report_at(origin, state, session_ref, seq, sample.into())
     }
 }

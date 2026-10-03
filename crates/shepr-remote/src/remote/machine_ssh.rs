@@ -17,6 +17,7 @@ use super::{
 /// after SSH process failures such as authentication rejection or host-key errors.
 #[derive(Default)]
 pub(crate) struct MachineProbe {
+    ssh: Option<RemoteSsh>,
     executable: ProbeExecutable,
     discovery: DiscoveryProgress,
 }
@@ -37,10 +38,39 @@ impl MachineProbe {
         target: &SshTarget,
         deadline: std::time::Instant,
     ) -> io::Result<MachineSshCheck> {
-        let mut ssh = RemoteSsh::new(target.clone(), paths)?;
+        self.ensure_ssh(paths, target)?;
+        let Some(mut ssh) = self.ssh.take() else {
+            return Err(io::Error::other("machine SSH transport is unavailable"));
+        };
         ssh.set_attempt_deadline(Some(deadline));
         let cache = SshMetadataCache::new(paths, target);
-        self.advance(&ssh, &cache).map(|(_, check)| check)
+        let result = self.advance(&ssh, &cache).map(|(_, check)| check);
+        self.ssh = Some(ssh);
+        result
+    }
+
+    fn ensure_ssh(&mut self, paths: &shepr_config::AppPaths, target: &SshTarget) -> io::Result<()> {
+        let missing = match &self.ssh {
+            Some(ssh) => !ssh.options().config_path.try_exists()?,
+            None => true,
+        };
+        if missing {
+            self.ssh = Some(RemoteSsh::new(target.clone(), paths)?);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn stop_server(
+        &mut self,
+        paths: &shepr_config::AppPaths,
+        target: &SshTarget,
+        server: &super::DifferentBuildServer,
+    ) -> io::Result<super::RemoteStop> {
+        self.ensure_ssh(paths, target)?;
+        let Some(ssh) = self.ssh.as_ref() else {
+            return Err(io::Error::other("machine SSH transport is unavailable"));
+        };
+        super::launch::stop_remote_server_with_ssh(ssh, server)
     }
 
     fn advance(
@@ -256,6 +286,36 @@ impl MachineSshConnector {
         connector
     }
 
+    pub(crate) fn from_preflight(
+        paths: &shepr_config::AppPaths,
+        machine: &shepr_config::MachineConfig,
+        mut probe: MachineProbe,
+    ) -> Self {
+        let ssh = probe.ssh.take();
+        let mut connector = Self {
+            paths: paths.clone(),
+            label: machine.label.clone(),
+            target: machine.ssh.clone(),
+            state: ConnectorState {
+                ssh,
+                probe,
+                launch_fatal_setup_error: None,
+            },
+        };
+        if connector.state.ssh.is_none() {
+            connector.prepare_for_launch();
+        } else if let Err(error) = connector.validate_local_setup()
+            && is_launch_fatal_setup_error(&error)
+        {
+            connector.state.launch_fatal_setup_error = Some(StoredSetupError::capture(&error));
+        }
+        connector
+    }
+
+    pub fn label(&self) -> &MachineLabel {
+        &self.label
+    }
+
     /// Reports a deterministic local setup failure found while constructing this
     /// connector. The client checks it before entering its retry loop; transient filesystem
     /// failures remain in the connector and are tried again by `connect`.
@@ -274,7 +334,7 @@ impl MachineSshConnector {
                 tracing::warn!(
                     %error,
                     machine = %self.label,
-                    target = %self.target.as_str(),
+                    target = %self.target,
                     "machine SSH path setup failed transiently; it will be retried"
                 );
             }
@@ -289,7 +349,7 @@ impl MachineSshConnector {
                 tracing::warn!(
                     %error,
                     machine = %self.label,
-                    target = %self.target.as_str(),
+                    target = %self.target,
                     "machine SSH setup failed transiently; it will be retried"
                 );
             }
@@ -306,7 +366,7 @@ impl MachineSshConnector {
             shepr_platform::shared_ssh_control_path(
                 runtime_dir,
                 &self.paths.client_config_file(),
-                self.target.as_str(),
+                self.target.control_key(),
             )
             .map_err(crate::ssh_runtime_error)?;
             Ok(())
@@ -417,7 +477,8 @@ impl MachineSshConnector {
         if remaining.is_zero() {
             return Err(super::attempt_deadline_passed());
         }
-        let stream = shepr_platform::ipc::connect_trusted_local_stream_within(&path, remaining)?;
+        let stream = shepr_platform::ipc::connect_trusted_local_stream_within(&path, remaining)?
+            .into_local_stream();
         establish(MachineSshStream {
             stream,
             bridge: MachineSshBridge { bridge },
@@ -544,6 +605,34 @@ mod tests {
             "a missing local runtime root is actionable, not a dropped SSH link"
         );
         assert!(state.ssh.is_none(), "a failed setup keeps nothing to reuse");
+    }
+
+    #[test]
+    fn connector_reuses_the_executable_verified_by_preflight() {
+        let scratch = shepr_test_support::ScratchDir::new("preflight-connector");
+        let paths = shepr_config::AppPaths::rooted_at(&scratch, Some(&scratch), None);
+        let machine = shepr_config::MachineConfig {
+            label: MachineLabel::parse("build").expect("test label"),
+            ssh: SshTarget::parse("build.example").expect("test target"),
+        };
+        let executable = executable("/usr/bin/shepr");
+        let probe = MachineProbe {
+            executable: ProbeExecutable::Verified(executable.clone()),
+            ..MachineProbe::default()
+        };
+        let mut connector = MachineSshConnector::from_preflight(&paths, &machine, probe);
+        let cache = SshMetadataCache::new(&paths, &machine.ssh);
+        let resolved = connector
+            .state
+            .probe
+            .resolve(
+                &cache,
+                |_| panic!("preflight already verified this executable"),
+                |_| panic!("preflight already discovered this executable"),
+            )
+            .expect("verified executable is retained");
+        assert_eq!(resolved, executable);
+        assert_eq!(connector.label(), &machine.label);
     }
 
     fn resolve_remote_shepr(

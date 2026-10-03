@@ -1,7 +1,7 @@
 mod writer;
 pub(crate) use writer::{EndpointReadActivity, NativeEndpointTransport};
 
-use crate::errors::{ClientRunError, endpoint_setup_launch_error};
+use crate::errors::{ClientRunError, endpoint_connection_launch_error};
 use crate::events::ClientLoopEvent;
 use crate::{endpoint, handshake};
 use shepr_platform::ipc::LocalStream;
@@ -35,12 +35,8 @@ impl LocalAttachFailure {
 
     pub(crate) fn into_launch_error(self) -> ClientRunError {
         match self {
-            Self::Connection(error) => ClientRunError::Launch(io::Error::new(
-                error.kind(),
-                format!("endpoint connection setup failed: {error}"),
-            )),
-            Self::Handshake(error) => ClientRunError::Launch(error),
-            Self::Setup(error) => endpoint_setup_launch_error(&error),
+            Self::Connection(error) => endpoint_connection_launch_error(error),
+            Self::Handshake(error) | Self::Setup(error) => ClientRunError::Launch(error),
         }
     }
 }
@@ -53,7 +49,8 @@ pub(crate) fn attach_local_endpoint(
     mismatch_guidance: &str,
 ) -> Result<AcceptedEndpoint, LocalAttachFailure> {
     let stream = shepr_platform::ipc::connect_trusted_local_stream(path)
-        .map_err(LocalAttachFailure::Connection)?;
+        .map_err(LocalAttachFailure::Connection)?
+        .into_local_stream();
     attach_endpoint_stream(
         stream,
         geometry,
@@ -130,7 +127,9 @@ impl EndpointConnectionIo {
         assemble().map_err(|error| {
             io::Error::new(
                 error.kind(),
-                shepr_remote::EndpointFailure::local_setup(error.to_string()),
+                shepr_remote::EndpointFailure::local_setup(format!(
+                    "failed to set up configured endpoint transport: {error}"
+                )),
             )
         })
     }
@@ -337,9 +336,7 @@ impl io::Read for EndpointReader<'_> {
 mod tests {
     use super::*;
     use crate::endpoint::EndpointTransport as _;
-    use shepr_protocol::ClientMessage;
-    use std::io::{Read as _, Write as _};
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
 
     #[test]
     fn server_reader_errors_keep_eof_io_and_decode_causes() {
@@ -449,98 +446,34 @@ mod tests {
         writer.disconnect();
     }
 
-    #[test]
-    fn upload_cancellation_preserves_pending_endpoint_download() {
-        let scratch = shepr_test_support::ScratchDir::new("cancel");
+    #[tokio::test]
+    async fn dropping_an_unactivated_connection_ends_its_reader() {
+        let scratch = shepr_test_support::ScratchDir::new("reader-abandoned");
         let path = scratch.join("s.sock");
-        let listener = shepr_platform::ipc::bind_local_listener(&path).expect("test precondition");
-        let client = shepr_platform::ipc::connect_local_stream(&path).expect("test precondition");
-        let mut bridge = listener.accept().expect("test precondition").0;
-        std::fs::remove_file(path).expect("test precondition");
-        drop(listener);
-        let mut reader_stream = client.try_clone().expect("test precondition");
-        let mut writer =
-            NativeEndpointTransport::with_lifetime(client, ()).expect("test precondition");
-        let stopped = writer.stop_handle();
-        struct ForwardedInput(std::sync::mpsc::Sender<Vec<u8>>);
-        impl io::Write for ForwardedInput {
-            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-                self.0
-                    .send(bytes.to_vec())
-                    .map_err(|error| io::Error::other(error.to_string()))?;
-                Ok(bytes.len())
-            }
-
-            fn flush(&mut self) -> io::Result<()> {
-                Ok(())
-            }
-        }
-        let (forwarded_tx, forwarded_rx) = std::sync::mpsc::channel();
-        let upload_stream = bridge.try_clone().expect("test precondition");
-        upload_stream
-            .set_nonblocking(true)
-            .expect("test stream supports nonblocking mode");
-        let upload = shepr_remote::BridgeUpload::spawn(
-            upload_stream,
-            ForwardedInput(forwarded_tx),
-            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        let listener =
+            shepr_platform::ipc::bind_private_local_listener(&path).expect("test listener");
+        let stream = shepr_platform::ipc::connect_local_stream(&path).expect("test client");
+        let _peer = listener.accept().expect("test peer").0;
+        let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(4);
+        let connection = EndpointConnectionIo::start(
+            AcceptedEndpoint {
+                stream,
+                lifetime: Box::new(()),
+            },
+            &event_tx,
+            endpoint::ClientEndpointId::Local,
+            7,
         )
-        .expect("test bridge upload starts");
-        let cancel = move || {
-            upload.cancel();
-            let deadline = Instant::now() + Duration::from_secs(3);
-            while !upload.is_finished() {
-                assert!(
-                    Instant::now() < deadline,
-                    "upload worker completes within timeout"
-                );
-                std::thread::sleep(Duration::from_millis(1));
-            }
-            let end = upload.join().expect("upload worker does not panic");
-            end.result.expect("upload copy completes without error");
-            assert!(
-                !end.client_closed,
-                "upload cancellation must not report peer EOF"
-            );
-        };
-        let message = ClientMessage::ClientShellFocus { focused: false };
-        let mut expected = Vec::new();
-        shepr_protocol::write_message(&mut expected, &message).expect("test precondition");
-        writer.send(&message).expect("test precondition");
-        let mut forwarded = Vec::new();
-        while forwarded.len() < expected.len() {
-            forwarded.extend(
-                forwarded_rx
-                    .recv_timeout(Duration::from_secs(3))
-                    .expect("test precondition"),
-            );
-        }
-        assert_eq!(forwarded, expected);
-        cancel();
-
-        // A client write after upload cancellation must not stop the download reader.
-        writer
-            .send(&ClientMessage::ClientShellFocus { focused: true })
-            .expect("test precondition");
-        let flushed = writer.flush(Instant::now() + Duration::from_secs(3));
-        if flushed.is_ok() {
-            let received: ClientMessage =
-                shepr_protocol::read_message(&mut bridge).expect("test precondition");
-            assert_eq!(received, ClientMessage::ClientShellFocus { focused: true });
-        }
-        const FINAL: &[u8] = b"pending-download: FINAL OUTPUT\n";
-        bridge.write_all(FINAL).expect("test precondition");
-        drop(bridge);
-        let mut output = Vec::new();
-        EndpointReader {
-            stream: &mut reader_stream,
-            stopped: &stopped,
-        }
-        .read_to_end(&mut output)
-        .expect("test precondition");
-        assert_eq!(output, FINAL);
-        assert!(flushed.is_ok(), "client write failed: {flushed:?}");
-        assert!(!stopped.load(Ordering::Acquire));
-        assert!(writer.take_error().is_none());
+        .expect("test connection assembly");
+        drop(event_tx);
+        drop(connection);
+        // The reader owns the last sender. Closure proves that it exited, even
+        // while the peer stays connected and sends no bytes to wake a read.
+        assert!(
+            tokio::time::timeout(Duration::from_secs(3), event_rx.recv())
+                .await
+                .expect("abandoned reader exits within the deadline")
+                .is_none()
+        );
     }
 }

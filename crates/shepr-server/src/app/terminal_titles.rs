@@ -65,8 +65,9 @@ mod tests {
 
     #[tokio::test]
     async fn sync_keeps_latest_raw_title_and_reports_stripped_changes() {
-        let mut app = App::new(&ServerConfig::default(), crate::app::AppPolicy::Test);
-        app.state.workspaces = vec![Workspace::test_new("one")];
+        let mut app = App::new(&ServerConfig::default(), crate::app::AppPolicy::Suspended);
+        app.state
+            .test_set_workspaces(vec![Workspace::test_new("one")]);
         app.state.set_bookmark_index(Some(0));
         app.state.ensure_test_terminals();
         let pane_id = app.state.workspaces[0].root_pane();
@@ -143,8 +144,9 @@ mod tests {
 
     #[tokio::test]
     async fn syncing_pending_titles_preserves_sidebar_render_impact() {
-        let mut app = App::new(&ServerConfig::default(), crate::app::AppPolicy::Test);
-        app.state.workspaces = vec![Workspace::test_new("one")];
+        let mut app = App::new(&ServerConfig::default(), crate::app::AppPolicy::Suspended);
+        app.state
+            .test_set_workspaces(vec![Workspace::test_new("one")]);
         app.state.set_bookmark_index(Some(0));
         app.state.ensure_test_terminals();
         let pane_id = app.state.workspaces[0].root_pane();
