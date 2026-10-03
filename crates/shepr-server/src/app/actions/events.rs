@@ -116,31 +116,9 @@ impl AppState {
                 continue;
             };
 
-            // App resolves the live cwd before entering this pure state reducer
-            // so a result is admitted only for the identity the worker saw.
-            if resolved_identity_cwd.as_ref() != Some(&result.resolved_identity_cwd) {
-                continue;
-            }
-
-            let ws = &mut self.workspaces[ws_idx];
-            if ws.cached_identity_cwd != result.resolved_identity_cwd {
-                ws.cached_identity_cwd = result.resolved_identity_cwd;
-            }
-            if ws.cached_auto_label != result.auto_label {
-                ws.cached_auto_label = result.auto_label;
-                changed |= ws.custom_name.is_none();
-            }
-            if ws.cached_git_status_key != result.status_cache_key {
-                ws.cached_git_status_key = result.status_cache_key;
-            }
-            if ws.cached_git_branch != result.branch {
-                ws.cached_git_branch = result.branch;
-                changed = true;
-            }
-            if ws.cached_git_ahead_behind != result.ahead_behind {
-                ws.cached_git_ahead_behind = result.ahead_behind;
-                changed = true;
-            }
+            changed |= self.workspaces[ws_idx]
+                .admit_git_status(result, resolved_identity_cwd.as_deref())
+                .is_changed();
         }
         changed
     }

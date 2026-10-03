@@ -623,7 +623,7 @@ mod tests {
 
     fn status(build_id: &str, boot_id: &str) -> RuntimeStatus {
         RuntimeStatus {
-            version: Some("0.0.0-test".into()),
+            version: "0.0.0-test".into(),
             build_id: build_id.into(),
             boot_id: boot_id.into(),
             stopping: false,

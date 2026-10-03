@@ -52,7 +52,9 @@ pub(in crate::shell) fn render_collapsed(
                                 target.matches(&endpoint.endpoint_id, &workspace.workspace_id)
                             })
                         } else {
-                            &endpoint.endpoint_id == state.active_endpoint_id && workspace.focused
+                            &endpoint.endpoint_id == state.active_endpoint_id
+                                && snapshot.focused_workspace_id.as_ref()
+                                    == Some(&workspace.workspace_id)
                         }
                     })
                     .map(|index| total_rows + index);
@@ -153,7 +155,8 @@ pub(in crate::shell) fn render_collapsed(
                 break;
             }
             let rect = Rect::new(workspace_area.x, y, workspace_area.width, 1);
-            let focused = active && workspace.focused;
+            let focused =
+                active && snapshot.focused_workspace_id.as_ref() == Some(&workspace.workspace_id);
             let selected = state.selected_workspace_id.is_some_and(|target| {
                 target.matches(&endpoint.endpoint_id, &workspace.workspace_id)
             });
@@ -486,7 +489,8 @@ pub(in crate::shell) fn render_expanded(
                     status,
                     config.status_indicators,
                     &tokens,
-                    endpoint_active && workspace.focused,
+                    endpoint_active
+                        && snapshot.focused_workspace_id.as_ref() == Some(&workspace.workspace_id),
                     selected,
                     state.selected_workspace_id.is_some(),
                     dragged,

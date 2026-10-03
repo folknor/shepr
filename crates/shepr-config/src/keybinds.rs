@@ -23,7 +23,7 @@ impl CanonicalKey {
         Self::from_event(code, modifiers, None)
     }
 
-    fn from_event(code: KeyCode, modifiers: KeyModifiers, shifted_codepoint: Option<u32>) -> Self {
+    fn from_event(code: KeyCode, modifiers: KeyModifiers, shifted_codepoint: Option<char>) -> Self {
         let (mut code, mut modifiers) = normalize_key_combo((code, modifiers));
         if let KeyCode::Char(ch) = code {
             // Unicode case folds are not always one-to-one, so only ASCII
@@ -34,9 +34,7 @@ impl CanonicalKey {
             {
                 code = KeyCode::Char(lowercase);
             } else if modifiers.contains(KeyModifiers::SHIFT) && !ch.is_alphabetic() {
-                let shifted = shifted_codepoint
-                    .and_then(char::from_u32)
-                    .or_else(|| shifted_ascii_char(ch));
+                let shifted = shifted_codepoint.or_else(|| shifted_ascii_char(ch));
                 if let Some(shifted) = shifted {
                     code = KeyCode::Char(shifted);
                     modifiers.remove(KeyModifiers::SHIFT);
@@ -103,7 +101,7 @@ fn is_shifted_ascii_symbol(ch: char) -> bool {
 pub trait BindingKey {
     fn code(&self) -> KeyCode;
     fn modifiers(&self) -> KeyModifiers;
-    fn shifted_codepoint(&self) -> Option<u32>;
+    fn shifted_codepoint(&self) -> Option<char>;
 
     fn canonical_key(&self) -> (KeyCode, KeyModifiers) {
         CanonicalKey::from_event(self.code(), self.modifiers(), self.shifted_codepoint()).combo()
@@ -1281,13 +1279,13 @@ mod tests {
     use super::*;
     use crate::ClientConfig;
 
-    struct TerminalKey(KeyCode, KeyModifiers, Option<u32>);
+    struct TerminalKey(KeyCode, KeyModifiers, Option<char>);
 
     impl TerminalKey {
         fn new(code: KeyCode, modifiers: KeyModifiers) -> Self {
             Self(code, modifiers, None)
         }
-        fn with_shifted_codepoint(mut self, codepoint: u32) -> Self {
+        fn with_shifted_codepoint(mut self, codepoint: char) -> Self {
             self.2 = Some(codepoint);
             self
         }
@@ -1300,7 +1298,7 @@ mod tests {
         fn modifiers(&self) -> KeyModifiers {
             self.1
         }
-        fn shifted_codepoint(&self) -> Option<u32> {
+        fn shifted_codepoint(&self) -> Option<char> {
             self.2
         }
     }
@@ -1566,7 +1564,7 @@ close_workspace = "X"
             assert!(
                 bindings.matches_prefix_key(
                     &TerminalKey::new(KeyCode::Char(base), KeyModifiers::SHIFT)
-                        .with_shifted_codepoint(shifted as u32)
+                        .with_shifted_codepoint(shifted)
                 )
             );
         }
@@ -1712,20 +1710,14 @@ zoom = "prefix+!"
         assert!(
             help.matches_prefix_key(&TerminalKey::new(KeyCode::Char('?'), KeyModifiers::SHIFT))
         );
-        assert!(
-            help.matches_prefix_key(
-                &TerminalKey::new(KeyCode::Char('/'), KeyModifiers::SHIFT)
-                    .with_shifted_codepoint('?' as u32)
-            )
-        );
+        assert!(help.matches_prefix_key(
+            &TerminalKey::new(KeyCode::Char('/'), KeyModifiers::SHIFT).with_shifted_codepoint('?')
+        ));
 
         let bang = ActionKeybinds::prefix("!");
-        assert!(
-            bang.matches_prefix_key(
-                &TerminalKey::new(KeyCode::Char('1'), KeyModifiers::SHIFT)
-                    .with_shifted_codepoint('!' as u32)
-            )
-        );
+        assert!(bang.matches_prefix_key(
+            &TerminalKey::new(KeyCode::Char('1'), KeyModifiers::SHIFT).with_shifted_codepoint('!')
+        ));
     }
 
     #[test]

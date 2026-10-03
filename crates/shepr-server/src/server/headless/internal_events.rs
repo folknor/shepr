@@ -97,7 +97,10 @@ impl HeadlessServer {
                     prepared
                 };
 
-                if !self.app.handle_prepared_pane_exit(ev, prepared) {
+                if !self.app.handle_prepared_pane_exit(
+                    preserve_runtime_origin(runtime_origin, ev),
+                    prepared,
+                ) {
                     return self.app.state.shell_projection_revision != projection_before;
                 }
                 self.immediate_pty_sources_dirty = true;
@@ -108,7 +111,12 @@ impl HeadlessServer {
 
                 true
             }
-            _ => self.app.handle_internal_event_with_view_change(ev),
+            _ => self
+                .app
+                .handle_internal_event_with_view_change(preserve_runtime_origin(
+                    runtime_origin,
+                    ev,
+                )),
         }
     }
 

@@ -995,8 +995,8 @@ pub enum StreamFailure {
 }
 
 /// Gives common local stream errors one transport meaning for all consumers.
-pub fn classify_stream_error(error: &io::Error) -> StreamFailure {
-    match error.kind() {
+pub fn classify_stream_error(kind: io::ErrorKind) -> StreamFailure {
+    match kind {
         io::ErrorKind::BrokenPipe
         | io::ErrorKind::ConnectionAborted
         | io::ErrorKind::ConnectionReset
@@ -1387,7 +1387,7 @@ mod tests {
         .expect("test precondition");
         let live_tag = super::super::process_identity::ProcessIdentity::current()
             .expect("current process identity")
-            .tag(0);
+            .tag();
         let (_, rest) = live_tag.split_once('-').expect("serialized identity");
         let dead_tag = format!("{:08x}-{rest}", u32::MAX);
 

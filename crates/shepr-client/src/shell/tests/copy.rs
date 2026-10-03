@@ -1214,7 +1214,6 @@ fn navigator_renders_every_terminal_in_workspace_sections() {
     let mut snapshot = snapshot();
     snapshot.focused_pane_id = None;
     snapshot.panes[0].label = Some("agent".into());
-    snapshot.panes[0].focused = false;
     let mut shell = snapshot.panes[0].clone();
     shell.pane_id = test_pane_id("w1:p2");
     shell.label = Some("shell".into());
@@ -1226,16 +1225,13 @@ fn navigator_renders_every_terminal_in_workspace_sections() {
             snapshot.panes.len() + 1,
         );
         pane.label = Some(label.into());
-        pane.focused = false;
         snapshot.panes.push(pane);
     }
     let mut workspace = snapshot.workspaces[0].clone();
     workspace.workspace_id = test_workspace_id("w2");
     workspace.label = "second".into();
     workspace.number = 2;
-    workspace.focused = false;
     let mut pane = snapshot.panes[0].clone();
-    pane.workspace_id = workspace.workspace_id.clone();
     pane.pane_id = test_pane_id("w2:p1");
     snapshot.workspaces.push(workspace);
     snapshot.panes.push(pane);
@@ -1354,25 +1350,21 @@ fn navigator_searches_ancestor_context_and_keeps_split_agents_individually_actio
     projected.focused_pane_id = Some(test_pane_id("w1:p1"));
     let mut second = projected.panes[0].clone();
     second.pane_id = test_pane_id("w1:p2");
-    second.focused = false;
     second.foreground_cwd = Some("/repo/subproject".into());
     projected.panes.push(second);
     let first_agent = ClientShellAgent {
         pane_id: test_pane_id("w1:p1"),
-        workspace_id: test_workspace_id("w1"),
         agent: Some("pi".into()),
         terminal_title: None,
         terminal_title_stripped: None,
         agent_status: AgentStatus::Working,
         state_change_seq: 1,
-        focused: true,
     };
     let mut second_agent = first_agent.clone();
     second_agent.pane_id = "w1:p2".parse().expect("test precondition");
     second_agent.agent = Some("claude".into());
     second_agent.terminal_title_stripped = Some("checking navigation".into());
     second_agent.agent_status = AgentStatus::Blocked;
-    second_agent.focused = false;
     projected.agents = vec![first_agent, second_agent];
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(projected));
@@ -1475,7 +1467,6 @@ fn navigator_distinguishes_unnamed_terminals_in_one_workspace() {
         let mut pane = projected.panes[0].clone();
         pane.pane_id =
             shepr_protocol::PublicPaneId::new(&crate::tests::test_workspace_id("w1"), number);
-        pane.focused = false;
         projected.panes.push(pane);
     }
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
@@ -1541,23 +1532,18 @@ fn navigator_horizontal_arrows_jump_sections_but_edit_the_search_cursor() {
     let mut sibling = projected.panes[0].clone();
     sibling.pane_id = test_pane_id("w1:p2");
     sibling.label = Some("other".into());
-    sibling.focused = false;
     projected.panes.push(sibling);
     let mut empty = projected.workspaces[0].clone();
     empty.workspace_id = test_workspace_id("w8");
     empty.label = "empty".into();
-    empty.focused = false;
     projected.workspaces.push(empty);
     let mut last = projected.workspaces[0].clone();
     last.workspace_id = test_workspace_id("w9");
     last.label = "last".into();
-    last.focused = false;
     for (id, label) in [("w9:p1", "needle-last"), ("w9:p2", "other-last")] {
         let mut pane = projected.panes[0].clone();
         pane.pane_id = test_pane_id(id);
         pane.label = Some(label.into());
-        pane.workspace_id = last.workspace_id.clone();
-        pane.focused = false;
         projected.panes.push(pane);
     }
     projected.workspaces.push(last);
@@ -1633,7 +1619,6 @@ fn navigator_scrollbar_click_and_drag_scroll_without_opening_a_destination() {
         pane.pane_id =
             shepr_protocol::PublicPaneId::new(&crate::tests::test_workspace_id("w1"), index);
         pane.label = Some(format!("agent {index}"));
-        pane.focused = false;
         projected.panes.push(pane);
     }
     state.set_snapshot(Box::new(projected));
@@ -1804,13 +1789,10 @@ fn navigator_scale_snapshot(workspaces: usize, panes: usize) -> ClientShellSnaps
             shepr_protocol::WorkspaceId::from_number(w + 1).expect("one-based workspace number");
         workspace.number = w + 1;
         workspace.label = format!("workspace {w}");
-        workspace.focused = w == 0;
         for p in 0..panes {
             let mut pane = pane_template.clone();
-            pane.workspace_id = workspace.workspace_id.clone();
             pane.pane_id = shepr_protocol::PublicPaneId::new(&workspace.workspace_id, p + 1);
             pane.label = Some(format!("terminal {p}"));
-            pane.focused = w == 0 && p == 0;
             result.panes.push(pane);
         }
         result.workspaces.push(workspace);
@@ -1831,7 +1813,7 @@ fn navigator_grouping_keeps_snapshot_order_with_interleaved_panes() {
             snapshot
                 .panes
                 .iter()
-                .filter(|pane| pane.workspace_id == workspace.workspace_id)
+                .filter(|pane| pane.pane_id.workspace_id() == &workspace.workspace_id)
                 .map(|pane| pane.pane_id.clone())
         })
         .collect::<Vec<_>>();
@@ -2019,14 +2001,11 @@ fn copy_mode_survives_mouse_motion_and_parks_across_focus_changes() {
 
     let mut unfocused = snapshot();
     unfocused.focused_pane_id = Some(test_pane_id("w1:p2"));
-    unfocused.panes[0].focused = false;
     unfocused.panes.push(ClientShellPane {
         pane_id: test_pane_id("w1:p2"),
-        workspace_id: test_workspace_id("w1"),
         label: None,
         cwd: Some("/repo".into()),
         foreground_cwd: Some("/repo".into()),
-        focused: true,
         right_click_passthrough: false,
     });
     state.set_snapshot(Box::new(unfocused.clone()));
@@ -2658,14 +2637,11 @@ fn copy_operation_does_not_capture_input_after_focus_moves() {
 
     let mut unfocused = snapshot();
     unfocused.focused_pane_id = Some(test_pane_id("w1:p2"));
-    unfocused.panes[0].focused = false;
     unfocused.panes.push(ClientShellPane {
         pane_id: test_pane_id("w1:p2"),
-        workspace_id: test_workspace_id("w1"),
         label: None,
         cwd: Some("/repo".into()),
         foreground_cwd: Some("/repo".into()),
-        focused: true,
         right_click_passthrough: false,
     });
     state.set_snapshot(Box::new(unfocused));
@@ -2885,7 +2861,6 @@ fn word_selection_result_survives_focus_snapshot_lag() {
     };
     let mut lagging = snapshot();
     lagging.focused_pane_id = None;
-    lagging.panes[0].focused = false;
     state.set_snapshot(Box::new(lagging));
     let (repaint, _) = state
         .handle_endpoint_result(

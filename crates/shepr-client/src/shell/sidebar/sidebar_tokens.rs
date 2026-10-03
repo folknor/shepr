@@ -13,44 +13,19 @@ use unicode_segmentation::UnicodeSegmentation;
 use shepr_config::theme::Palette;
 
 /// Workspace share of the expanded sidebar, constrained before rendering.
-#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(transparent)]
-pub(in crate::shell) struct SectionSplit(f32);
+pub(in crate::shell) struct SectionSplit(shepr_core::layout::SplitRatio);
 
 impl SectionSplit {
-    pub(in crate::shell) const DEFAULT: Self = Self(shepr_core::layout::EVEN_SPLIT);
-
-    pub(in crate::shell) fn new(value: f32) -> Option<Self> {
-        (value.is_finite()
-            && (shepr_core::layout::MIN_SPLIT_RATIO..=shepr_core::layout::MAX_SPLIT_RATIO)
-                .contains(&value))
-        .then_some(Self(value))
-    }
+    pub(in crate::shell) const DEFAULT: Self = Self(shepr_core::layout::SplitRatio::EVEN);
 
     pub(in crate::shell) fn from_drag(value: f32) -> Self {
-        Self(if value.is_finite() {
-            value.clamp(
-                shepr_core::layout::MIN_SPLIT_RATIO,
-                shepr_core::layout::MAX_SPLIT_RATIO,
-            )
-        } else {
-            Self::DEFAULT.get()
-        })
+        Self(shepr_core::layout::SplitRatio::clamped(value))
     }
 
     pub(in crate::shell) fn get(self) -> f32 {
-        self.0
-    }
-}
-
-impl<'de> serde::Deserialize<'de> for SectionSplit {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let value = <f32 as serde::Deserialize>::deserialize(deserializer)?;
-        let min = shepr_core::layout::MIN_SPLIT_RATIO;
-        let max = shepr_core::layout::MAX_SPLIT_RATIO;
-        Self::new(value).ok_or_else(|| {
-            serde::de::Error::custom(format!("sidebar split must be between {min} and {max}"))
-        })
+        self.0.get()
     }
 }
 
@@ -350,6 +325,13 @@ fn apply_token_style(mut style: Style, patch: shepr_config::SidebarTokenStyle) -
         };
     }
     style
+}
+
+#[cfg(test)]
+impl SectionSplit {
+    pub(in crate::shell) fn new(value: f32) -> Option<Self> {
+        shepr_core::layout::SplitRatio::new(value).map(Self)
+    }
 }
 
 #[cfg(test)]

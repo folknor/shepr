@@ -36,18 +36,16 @@ impl ProcessIdentity {
         })
     }
 
-    /// Serialize the process identity and a trailing format field. The process
-    /// identity alone names the owner; every runtime marker writes zero there
-    /// and the stale-marker sweep only accepts zero.
-    pub(super) fn tag(self, token: u64) -> String {
+    /// Serialize the process identity used by runtime ownership markers.
+    pub(super) fn tag(self) -> String {
         format!(
-            "{:08x}-{:016x}-{:016x}-{:016x}-{:016x}",
-            self.pid, self.start_ticks, self.pid_namespace.0, self.pid_namespace.1, token
+            "{:08x}-{:016x}-{:016x}-{:016x}",
+            self.pid, self.start_ticks, self.pid_namespace.0, self.pid_namespace.1
         )
     }
 
-    /// Parse a serialized identity and its marker-format suffix.
-    pub(super) fn parse_tag(value: &str) -> Option<(Self, u64)> {
+    /// Parse a serialized runtime ownership identity.
+    pub(super) fn parse_tag(value: &str) -> Option<Self> {
         let mut fields = value.split('-');
         let identity = Self {
             pid: u32::from_str_radix(fields.next()?, 16).ok()?,
@@ -57,8 +55,7 @@ impl ProcessIdentity {
                 u64::from_str_radix(fields.next()?, 16).ok()?,
             ),
         };
-        let token = u64::from_str_radix(fields.next()?, 16).ok()?;
-        fields.next().is_none().then_some((identity, token))
+        fields.next().is_none().then_some(identity)
     }
 
     /// A process is gone only when the current proc view is in its recorded
@@ -151,11 +148,8 @@ mod tests {
     #[test]
     fn current_process_identity_is_live_and_round_trips() {
         let identity = ProcessIdentity::current().expect("current process identity");
-        let tag = identity.tag(0xfeed_beef);
-        assert_eq!(
-            ProcessIdentity::parse_tag(&tag),
-            Some((identity, 0xfeed_beef))
-        );
+        let tag = identity.tag();
+        assert_eq!(ProcessIdentity::parse_tag(&tag), Some(identity));
         assert!(!identity.is_provably_gone());
     }
 
@@ -172,7 +166,7 @@ mod tests {
 
     #[test]
     fn malformed_identity_tags_are_rejected() {
-        for tag in ["", "1-2-3-4", "zz-2-3-4-5", "1-2-3-4-5-extra"] {
+        for tag in ["", "1-2-3", "zz-2-3-4", "1-2-3-4-extra"] {
             assert_eq!(ProcessIdentity::parse_tag(tag), None, "{tag:?}");
         }
     }

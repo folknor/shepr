@@ -80,7 +80,7 @@ enum Cause {
     RemoteRepair,
     Backpressure,
     Retry,
-    Shutdown(Option<shepr_protocol::ShutdownReason>),
+    Shutdown(shepr_protocol::ShutdownReason),
 }
 
 /// A failure built where its cause is known. SSH stderr classification is one
@@ -166,20 +166,16 @@ impl EndpointFailure {
         }
     }
 
-    pub fn server_shutdown(reason: Option<shepr_protocol::ShutdownReason>) -> Self {
-        let message = reason.as_ref().map_or_else(
-            || "server shut down".to_owned(),
-            |reason| format!("server shut down: {reason}"),
-        );
+    pub fn server_shutdown(reason: shepr_protocol::ShutdownReason) -> Self {
         Self {
             cause: Cause::Shutdown(reason),
-            message: RemoteText::from_untrusted(&message),
+            message: RemoteText::from_untrusted(&reason.to_string()),
         }
     }
 
-    pub fn shutdown_reason(&self) -> Option<&shepr_protocol::ShutdownReason> {
-        match &self.cause {
-            Cause::Shutdown(reason) => reason.as_ref(),
+    pub fn shutdown_reason(&self) -> Option<shepr_protocol::ShutdownReason> {
+        match self.cause {
+            Cause::Shutdown(reason) => Some(reason),
             _ => None,
         }
     }
@@ -245,7 +241,7 @@ impl EndpointFailure {
         match self.cause {
             Cause::Backpressure => "local output queue filled; reconnecting",
             Cause::Shutdown(_) => "server shut down; reconnecting",
-            Cause::Io(kind) => match classify_stream_error(&io::Error::from(kind)) {
+            Cause::Io(kind) => match classify_stream_error(kind) {
                 StreamFailure::TimedOut => "connection timed out; reconnecting",
                 StreamFailure::PeerGone => "connection was lost; reconnecting",
                 StreamFailure::NoListener | StreamFailure::Other => {
@@ -371,14 +367,13 @@ mod tests {
 
     #[test]
     fn shutdown_keeps_its_reason_and_queue_pressure_names_the_local_cause() {
-        let failure = EndpointFailure::server_shutdown(Some(
-            shepr_protocol::ShutdownReason::Message("updating".into()),
-        ));
+        let failure = EndpointFailure::server_shutdown(shepr_protocol::ShutdownReason::Stopping);
         let restored = EndpointFailure::from_error(&io::Error::other(failure));
-        assert!(matches!(
+        assert_eq!(
             restored.shutdown_reason(),
-            Some(shepr_protocol::ShutdownReason::Message(message)) if message == "updating"
-        ));
+            Some(shepr_protocol::ShutdownReason::Stopping)
+        );
+        assert_eq!(restored.to_string(), "server is shutting down");
         assert_eq!(restored.disposition(), FailureDisposition::Retry);
         assert_eq!(
             restored.disconnect_notice(),

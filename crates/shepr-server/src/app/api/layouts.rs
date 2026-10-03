@@ -10,9 +10,6 @@ impl App {
         &mut self,
         params: &LayoutSetSplitRatioParams,
     ) -> HandlerResult {
-        if !params.ratio.is_finite() {
-            return rejected("ratio must be finite");
-        }
         let ws_idx = self.endpoint_workspace(&params.workspace_id)?;
         let resolve_children = |ids: &[shepr_protocol::PublicPaneId]| {
             ids.iter()
@@ -37,30 +34,12 @@ impl App {
         else {
             return rejected("split children not found");
         };
-        let area = shepr_mux::workspace::layout_rect(self.state.workspace_layout_area(ws_idx));
-        let Some(current_ratio) = self.state.workspaces.get(ws_idx).and_then(|workspace| {
-            workspace
-                .layout()
-                .splits(area)
-                .into_iter()
-                .find(|split| split.path == path)
-                .map(|split| split.ratio)
-        }) else {
-            return rejected("split children not found");
-        };
-        let next_ratio = shepr_core::layout::SplitRatio::clamped(params.ratio).get();
-        // Both sides went through the same clamp, so a repeat of the stored
-        // ratio is bit-for-bit equal.
-        let changed = current_ratio.to_bits() != next_ratio.to_bits();
+        let changed = self
+            .state
+            .workspaces
+            .get_mut(ws_idx)
+            .is_some_and(|workspace| workspace.set_split_ratio_at(&path, params.ratio));
         if changed {
-            let set = self
-                .state
-                .workspaces
-                .get_mut(ws_idx)
-                .is_some_and(|workspace| workspace.set_split_ratio_at(&path, params.ratio));
-            if !set {
-                return rejected("split children not found");
-            }
             self.state.mark_session_dirty();
         }
         let effects = if changed {
@@ -92,7 +71,7 @@ mod tests {
         app
     }
 
-    fn params(app: &App, ratio: f32) -> LayoutSetSplitRatioParams {
+    fn params(app: &App, ratio: shepr_core::layout::SplitRatio) -> LayoutSetSplitRatioParams {
         LayoutSetSplitRatioParams {
             workspace_id: app.public_workspace_id(0).expect("test precondition"),
             first_panes: app.state.workspaces[0]
@@ -122,7 +101,10 @@ mod tests {
         assert!(app.state.workspaces[0].focus_pane(root));
 
         let handled = app
-            .handle_layout_set_split_ratio(&params(&app, 0.72))
+            .handle_layout_set_split_ratio(&params(
+                &app,
+                shepr_core::layout::SplitRatio::new(0.72).expect("test ratio is valid"),
+            ))
             .expect("the ratio is set");
 
         assert_eq!(handled.navigate, None);
@@ -130,7 +112,7 @@ mod tests {
             .layout()
             .splits(shepr_core::geometry::Rect::new(0, 0, 100, 20));
         assert_eq!(splits.len(), 1);
-        assert!((splits[0].ratio - 0.72).abs() < f32::EPSILON);
+        assert!((splits[0].ratio.get() - 0.72).abs() < f32::EPSILON);
         assert_eq!(app.state.workspaces[0].layout().focused(), root);
     }
 
@@ -139,7 +121,10 @@ mod tests {
         let mut app = app_with_workspace();
         app.state.workspaces[0].test_split(Direction::Horizontal);
         app.state.ensure_test_terminals();
-        let stale = params(&app, 0.72);
+        let stale = params(
+            &app,
+            shepr_core::layout::SplitRatio::new(0.72).expect("test ratio is valid"),
+        );
         // A second client splits a child, replacing the old root's membership.
         app.state.workspaces[0].test_split(Direction::Vertical);
         app.state.ensure_test_terminals();
@@ -163,24 +148,19 @@ mod tests {
     }
 
     #[test]
-    fn layout_set_split_ratio_rejects_missing_split_and_bad_ratios() {
+    fn layout_set_split_ratio_rejects_missing_split() {
         let mut app = app_with_workspace();
 
-        let missing_params = params(&app, 0.72);
+        let missing_params = params(
+            &app,
+            shepr_core::layout::SplitRatio::new(0.72).expect("test ratio is valid"),
+        );
         let missing = app
             .handle_layout_set_split_ratio(&missing_params)
             .expect_err("a one-pane workspace has no split");
         assert_eq!(
             missing.error,
             EndpointError::Rejected("split children not found".into())
-        );
-        let bad_ratio_params = params(&app, f32::NAN);
-        let bad_ratio = app
-            .handle_layout_set_split_ratio(&bad_ratio_params)
-            .expect_err("a non-finite ratio is refused");
-        assert_eq!(
-            bad_ratio.error,
-            EndpointError::Rejected("ratio must be finite".into())
         );
     }
 }

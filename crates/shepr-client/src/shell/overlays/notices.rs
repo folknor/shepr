@@ -12,6 +12,9 @@ pub(in crate::shell) enum ClientEndpointNoticeKind {
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(in crate::shell) struct ClientEndpointNoticeKey {
+    /// Machine notices can share a boot id and code across hosts, so endpoint
+    /// identity is kept as a typed part of the key.
+    pub(in crate::shell) endpoint_id: Option<ClientEndpointId>,
     /// The server boot the notice is about; `None` for a notice no server
     /// boot raised (no snapshot yet, or a configured machine's diagnostic).
     pub(in crate::shell) boot_id: Option<shepr_protocol::BootId>,
@@ -44,6 +47,7 @@ impl Notices {
         method: &str,
     ) {
         self.timeout_seen.remove(&ClientEndpointNoticeKey {
+            endpoint_id: None,
             boot_id: Some(boot_id.clone()),
             kind: ClientEndpointNoticeKind::Timeout,
             code: method.to_owned(),
@@ -63,11 +67,9 @@ impl Notices {
         &mut self,
         notice: ClientVisibleEndpointNotice,
     ) -> bool {
-        if self
-            .visible
-            .as_ref()
-            .is_none_or(|current| current.key.code == notice.key.code)
-        {
+        if self.visible.as_ref().is_none_or(|current| {
+            current.key.endpoint_id == notice.key.endpoint_id && current.key.code == notice.key.code
+        }) {
             self.drawn_until = None;
             self.visible = Some(notice);
             true
@@ -84,6 +86,7 @@ impl Notices {
         body: impl Into<String>,
     ) -> bool {
         let key = ClientEndpointNoticeKey {
+            endpoint_id: None,
             boot_id,
             kind,
             code: code.into(),
@@ -135,9 +138,10 @@ impl Notices {
         body: String,
     ) -> bool {
         let key = ClientEndpointNoticeKey {
+            endpoint_id: Some(endpoint_id.clone()),
             boot_id: Some(boot_id.clone()),
             kind: ClientEndpointNoticeKind::Rejected,
-            code: format!("{code}:{}", endpoint_id.storage_key()),
+            code: code.to_owned(),
         };
         if !self.boot_seen.insert(key.clone()) {
             return false;

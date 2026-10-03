@@ -25,7 +25,7 @@ pub(crate) enum AttemptOutcome {
     /// dispatch: the launch itself settles later, possibly out of order.
     Launched,
     /// The plan was consumed without starting an agent (PTY could not be
-    /// opened, empty argv, missing launch env). Nothing to space out.
+    /// opened, missing launch env). Nothing to space out.
     Abandoned,
 }
 

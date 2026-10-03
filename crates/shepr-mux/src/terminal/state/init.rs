@@ -12,7 +12,7 @@ impl TerminalState {
             terminal_title: None,
             manual_label: None,
             ownership: AgentOwnership::new(),
-            pending_agent_resume_plan: None,
+            agent_resume: AgentResumeState::None,
             restore_error: None,
         }
     }

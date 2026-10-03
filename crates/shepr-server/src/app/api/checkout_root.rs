@@ -6,9 +6,11 @@ use crate::app::App;
 
 impl App {
     /// `workspace.checkout_root`: the checkout root shared discovery finds for
-    /// a directory on this host, which the client derives a new workspace's
-    /// default label from. A directory outside any repository, or one that is
-    /// not a directory here, is an ordinary `None`; a filesystem failure that
+    /// a directory on this host, which the client uses for the new-workspace
+    /// name suggestion. An admitted workspace's automatic identity is decided
+    /// separately by Workspace and its background Git status result. A directory
+    /// outside any repository, or one that is not a directory here, is an
+    /// ordinary `None`; a filesystem failure that
     /// kept discovery from answering is an error, and the client falls back to
     /// a path-based label. Discovery is the walk the sidebar labels the
     /// created workspace by, so the two agree (a bare repository answers with

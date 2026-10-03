@@ -125,7 +125,7 @@ pub(crate) fn surface_cursor(
             y: cursor.y,
             visible,
             shape: if reveal && visible {
-                shepr_protocol::CursorShapeParam::from_decscusr(app.settings.cjk_ime_cursor_shape)
+                app.settings.cjk_ime_cursor_shape
             } else {
                 cursor.shape
             },
@@ -135,9 +135,7 @@ pub(crate) fn surface_cursor(
             x: info.inner_rect.x,
             y: info.inner_rect.y,
             visible: true,
-            shape: shepr_protocol::CursorShapeParam::from_decscusr(
-                app.settings.cjk_ime_cursor_shape,
-            ),
+            shape: app.settings.cjk_ime_cursor_shape,
         })
     } else {
         None

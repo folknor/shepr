@@ -26,7 +26,10 @@ const ORDINARY_REQUEST_TIMEOUT_MESSAGE: &str =
 
 mod client_protocol;
 mod listener;
-pub use client_protocol::{ClientGate, ClientProtocolHandler, ConnectionSlot};
+pub use client_protocol::{
+    ClientGate, ClientHandshakeOutcome, ClientHandshakeSilence, ClientProtocolHandler,
+    ConnectionSlot, read_client_handshake,
+};
 
 pub struct ServerHandle {
     thread: Option<std::thread::JoinHandle<()>>,
@@ -277,7 +280,7 @@ fn finish_api_response(
     // the log must not claim the response's outcome for an answer nobody got.
     let outcome = match write_text_line(stream, &response.body) {
         Ok(()) => response.outcome.as_str(),
-        Err(err) if matches!(classify_stream_error(&err), StreamFailure::PeerGone) => {
+        Err(err) if matches!(classify_stream_error(err.kind()), StreamFailure::PeerGone) => {
             "client_disconnected"
         }
         Err(err) => {
@@ -347,7 +350,7 @@ fn route_request(
         return Route::Immediate(error_response_json(
             &id,
             crate::error::ApiErrorCode::ServerUnavailable,
-            "server is shutting down".into(),
+            shepr_protocol::ShutdownReason::Stopping.to_string(),
         ));
     }
 
@@ -462,7 +465,7 @@ fn write_text_line(stream: &mut LocalStream, value: &str) -> std::io::Result<()>
 
 fn write_text_line_allow_disconnect(stream: &mut LocalStream, value: &str) -> std::io::Result<()> {
     match write_text_line(stream, value) {
-        Err(err) if matches!(classify_stream_error(&err), StreamFailure::PeerGone) => Ok(()),
+        Err(err) if matches!(classify_stream_error(err.kind()), StreamFailure::PeerGone) => Ok(()),
         result => result,
     }
 }
@@ -482,7 +485,7 @@ fn write_api_json_line_allow_disconnect<T: serde::Serialize>(
     value: &T,
 ) -> std::io::Result<()> {
     match write_api_json_line(stream, request_id, value) {
-        Err(err) if matches!(classify_stream_error(&err), StreamFailure::PeerGone) => Ok(()),
+        Err(err) if matches!(classify_stream_error(err.kind()), StreamFailure::PeerGone) => Ok(()),
         result => result,
     }
 }

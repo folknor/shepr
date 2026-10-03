@@ -680,7 +680,7 @@ fn stop_request_error_allows_wait(err: &std::io::Error) -> bool {
     // This error came from the request after connecting; a refused or missing
     // listener cannot mean that an already-sent stop may be in flight.
     matches!(
-        shepr_platform::ipc::classify_stream_error(err),
+        shepr_platform::ipc::classify_stream_error(err.kind()),
         shepr_platform::ipc::StreamFailure::PeerGone | shepr_platform::ipc::StreamFailure::TimedOut
     )
 }

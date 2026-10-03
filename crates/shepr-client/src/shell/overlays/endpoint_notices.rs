@@ -135,10 +135,9 @@ pub(in crate::shell) fn render_notice(
         &notice.title,
         &notice.body,
         top_offset,
-        (!notice.key.code.starts_with(
-            crate::shell::overlays::machine_diagnostics::MACHINE_DIAGNOSTIC_NOTICE_PREFIX,
-        ))
-        .then_some(crate::limits::MAX_AUTOMATIC_NOTICE_BODY_ROWS),
+        (notice.key.code
+            != crate::shell::overlays::machine_diagnostics::MACHINE_DIAGNOSTIC_NOTICE_CODE)
+            .then_some(crate::limits::MAX_AUTOMATIC_NOTICE_BODY_ROWS),
         match notice.key.kind {
             ClientEndpointNoticeKind::Rejected => palette.red,
             ClientEndpointNoticeKind::Timeout | ClientEndpointNoticeKind::Unavailable => {

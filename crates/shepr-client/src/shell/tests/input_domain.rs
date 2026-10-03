@@ -51,7 +51,6 @@ fn cycle_pane_uses_snapshot_order_in_prefix_and_navigate_modes() {
         let mut projection = snapshot();
         let mut second = projection.panes[0].clone();
         second.pane_id = test_pane_id("w1:p2");
-        second.focused = false;
         let mut third = second.clone();
         third.pane_id = test_pane_id("w1:p3");
         projection.panes.extend([second, third]);
@@ -649,7 +648,6 @@ fn collapsed_sidebar_scrolls_to_workspaces_past_its_height() {
         .map(|number| ClientShellWorkspace {
             workspace_id: test_workspace_id(&format!("w{number}")),
             number,
-            focused: number == 30,
             ..template.clone()
         })
         .collect();

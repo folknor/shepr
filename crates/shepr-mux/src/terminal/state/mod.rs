@@ -15,6 +15,55 @@ pub struct TerminalTitleChange {
     pub stripped_changed: bool,
 }
 
+/// The deferred resume belongs to its terminal, including the command held
+/// while its shell is launching. Removing the terminal removes the whole state.
+#[derive(Debug, Clone, Default)]
+pub enum AgentResumeState {
+    #[default]
+    None,
+    Planned(shepr_agent::agent::resume::AgentResumePlan),
+    Launching {
+        plan: shepr_agent::agent::resume::AgentResumePlan,
+        command: Option<bytes::Bytes>,
+    },
+}
+
+impl AgentResumeState {
+    pub fn is_pending(&self) -> bool {
+        !matches!(self, Self::None)
+    }
+
+    pub fn is_launching(&self) -> bool {
+        matches!(self, Self::Launching { .. })
+    }
+
+    pub fn candidate(
+        &self,
+        has_runtime: bool,
+    ) -> Option<&shepr_agent::agent::resume::AgentResumePlan> {
+        match self {
+            Self::Planned(plan) if !has_runtime => Some(plan),
+            _ => None,
+        }
+    }
+
+    pub fn begin_launch(&mut self, command: bytes::Bytes) {
+        if let Self::Planned(plan) = self {
+            *self = Self::Launching {
+                plan: plan.clone(),
+                command: Some(command),
+            };
+        }
+    }
+
+    pub fn take_command(&mut self) -> Option<bytes::Bytes> {
+        match self {
+            Self::Launching { command, .. } => command.take(),
+            _ => None,
+        }
+    }
+}
+
 /// Why a saved pane has no running shell. The pane surface renders its
 /// `guidance` and `cause`; detect requests include its `Display` text in the
 /// existing API error message when a pane has no runtime. Causes are stored as
@@ -116,7 +165,7 @@ pub struct TerminalState {
     pub terminal_title: Option<String>,
     pub manual_label: Option<String>,
     ownership: AgentOwnership,
-    pub pending_agent_resume_plan: Option<shepr_agent::agent::resume::AgentResumePlan>,
+    pub agent_resume: AgentResumeState,
     pub restore_error: Option<RestoreFailure>,
 }
 

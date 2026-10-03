@@ -469,7 +469,7 @@ impl ClientShellState {
                     .iter()
                     .filter(|pane| {
                         focused_workspace
-                            .is_some_and(|workspace_id| &pane.workspace_id == workspace_id)
+                            .is_some_and(|workspace_id| pane.pane_id.workspace_id() == workspace_id)
                     })
                     .collect::<Vec<_>>();
                 if panes.is_empty() {

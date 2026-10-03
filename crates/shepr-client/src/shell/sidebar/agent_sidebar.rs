@@ -193,8 +193,9 @@ pub(in crate::shell) fn agent_rows(
 /// Snapshot-local joins used while building the shared agent panel model.
 struct AgentRowIndex<'a> {
     agents: &'a [ClientShellAgent],
-    workspaces: HashMap<&'a str, &'a ClientShellWorkspace>,
+    workspaces: HashMap<&'a shepr_protocol::WorkspaceId, &'a ClientShellWorkspace>,
     panes: HashMap<&'a str, &'a ClientShellPane>,
+    focused_pane_id: Option<&'a PublicPaneId>,
 }
 
 impl<'a> AgentRowIndex<'a> {
@@ -202,7 +203,7 @@ impl<'a> AgentRowIndex<'a> {
         let workspaces = snapshot
             .workspaces
             .iter()
-            .map(|workspace| (workspace.workspace_id.as_str(), workspace))
+            .map(|workspace| (&workspace.workspace_id, workspace))
             .collect();
         let panes = snapshot
             .panes
@@ -213,11 +214,15 @@ impl<'a> AgentRowIndex<'a> {
             agents: &snapshot.agents,
             workspaces,
             panes,
+            focused_pane_id: snapshot.focused_pane_id.as_ref(),
         }
     }
 
-    fn workspace(&self, workspace_id: &str) -> Option<&'a ClientShellWorkspace> {
-        self.workspaces.get(workspace_id).copied()
+    fn workspace(
+        &self,
+        workspace_id: &shepr_protocol::WorkspaceId,
+    ) -> Option<&'a ClientShellWorkspace> {
+        self.workspaces.get(&workspace_id).copied()
     }
 
     fn pane(&self, pane_id: &PublicPaneId) -> Option<&'a ClientShellPane> {
@@ -230,7 +235,7 @@ impl<'a> AgentRowIndex<'a> {
         config: &ClientShellConfig,
         machine: Option<&str>,
     ) -> Option<AgentRow> {
-        let workspace = self.workspace(&agent.workspace_id)?;
+        let workspace = self.workspace(agent.pane_id.workspace_id())?;
         let pane = self.pane(&agent.pane_id);
         let agent_label = agent.agent.as_deref();
         let state_text = status_text(agent.agent_status);
@@ -254,7 +259,7 @@ impl<'a> AgentRowIndex<'a> {
         Some(AgentRow {
             pane_id: agent.pane_id.clone(),
             status: agent.agent_status,
-            focused: agent.focused,
+            focused: self.focused_pane_id == Some(&agent.pane_id),
             rows,
             state_change_seq: agent.state_change_seq,
         })

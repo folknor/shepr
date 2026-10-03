@@ -1,6 +1,8 @@
 use std::path::Path;
 
-/// Choose a workspace label from an optional discovered Git root and the cwd.
+/// The naming policy for both an admitted workspace identity and the client's
+/// new-workspace name suggestion. Use the actual cwd, not a Git cache key:
+/// a checkout rooted at `/` still needs the workspace's own cwd basename.
 /// `home_dir` is supplied by the caller after resolving it with
 /// `pathutil::home_dir`, keeping this helper independent of process state.
 pub fn workspace_label_from_cwd(

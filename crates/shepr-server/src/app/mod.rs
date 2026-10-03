@@ -119,9 +119,6 @@ pub struct App {
     /// been told about focus; `sync_pane_focus` drains this and re-sends the
     /// focus-in report for the ones that hold focus.
     pub(crate) runtimes_replaced_panes: Vec<shepr_core::layout::PaneId>,
-    /// Deferred agent resume commands whose shell is still launching; each is
-    /// typed into its pane when the launch settles (`pane_launch`).
-    pending_resume_commands: std::collections::HashMap<shepr_protocol::TerminalId, bytes::Bytes>,
     pub(crate) session_saver: session::SessionSaver,
     /// Host name resolved once for the window title.
     hostname: String,
@@ -276,7 +273,6 @@ impl App {
             default_workspace_retry_at: None,
             default_workspace_retry_failures: 0,
             runtimes_replaced_panes: Vec::new(),
-            pending_resume_commands: std::collections::HashMap::new(),
             session_saver: session::SessionSaver::new(
                 persister,
                 save_finished,
@@ -433,6 +429,40 @@ mod tests {
             self.terminal_runtimes.insert(terminal_id, runtime);
         }
 
+        /// Installs an idle test runtime for a pane, so events can be
+        /// delivered as that runtime's with `from_pane_runtime`.
+        pub(crate) fn insert_idle_test_runtime(&mut self, pane_id: shepr_core::layout::PaneId) {
+            self.insert_test_runtime(
+                pane_id,
+                shepr_mux::pane::PaneRuntime::test_with_screen_bytes(20, 5, b""),
+            );
+        }
+
+        /// `event` as the pane's current runtime publishes it: inside the
+        /// envelope carrying that runtime's generation, which admission
+        /// checks. Panics if the pane has no runtime.
+        ///
+        /// Tests never deliver a runtime-produced event bare. Production never
+        /// does, and admission drops a bare one, so a test that sent it bare
+        /// and asserted that nothing changed would pass without reaching the
+        /// rule it names. There is deliberately no test-only way past
+        /// admission either: the generation check is what the envelope is for.
+        #[expect(
+            clippy::wrong_self_convention,
+            reason = "reads as `app.from_pane_runtime(pane, event)` at every test call site: the event as the pane's runtime publishes it"
+        )]
+        pub(crate) fn from_pane_runtime(
+            &self,
+            pane_id: shepr_core::layout::PaneId,
+            event: AppEvent,
+        ) -> AppEvent {
+            AppEvent::Runtime {
+                pane_id,
+                generation: self.test_runtime(pane_id).generation(),
+                event: Box::new(event),
+            }
+        }
+
         /// Looks up a pane runtime through its workspace terminal link.
         pub(crate) fn test_runtime(
             &self,
@@ -460,12 +490,48 @@ mod tests {
         app
     }
 
+    /// The pane's exit as its current runtime reports it.
+    fn runtime_pane_exit(
+        app: &App,
+        pane_id: shepr_core::layout::PaneId,
+        exit_reason: shepr_platform::ChildExitReason,
+        ended_at: Instant,
+    ) -> AppEvent {
+        app.from_pane_runtime(
+            pane_id,
+            AppEvent::PaneDied {
+                pane_id,
+                exit_reason,
+                ended_at,
+            },
+        )
+    }
+
+    /// The detector's exit report for the pane's agent, then its withdrawal,
+    /// as the pane's current runtime publishes them.
+    fn release_agent(app: &mut App, pane_id: shepr_core::layout::PaneId) {
+        for (agent, process_exited) in [(Some(Agent::Claude), true), (None, false)] {
+            let event = app.from_pane_runtime(
+                pane_id,
+                AppEvent::StateChanged {
+                    pane_id,
+                    agent,
+                    state: AgentState::Idle,
+                    visible_blocker: false,
+                    process_exited,
+                    observed_at: app.clock.now,
+                },
+            );
+            app.handle_internal_event(event);
+        }
+    }
+
     #[tokio::test]
     async fn restore_that_prunes_a_pane_backs_up_the_saved_session_before_the_first_save() {
         use crate::test_support::{AppPathsFixture as _, ValidatedServerConfigFixture as _};
         use shepr_mux::persist::snapshot::{
-            DirectionSnapshot, LayoutSnapshot, PaneSnapshot, SessionFile, SessionSnapshot,
-            WorkspaceSnapshot,
+            DirectionSnapshot, LayoutSnapshot, PaneSnapshot, SavedSplitRatio, SessionFile,
+            SessionSnapshot, WorkspaceSnapshot,
         };
 
         let scratch = crate::test_support::ScratchDir::new("pruned-pane-backup");
@@ -493,7 +559,7 @@ mod tests {
                 next_public_pane_number: 3,
                 layout: LayoutSnapshot::Split {
                     direction: DirectionSnapshot::Horizontal,
-                    ratio: 0.5,
+                    ratio: SavedSplitRatio::from_raw(0.5),
                     first: Box::new(LayoutSnapshot::Pane(1)),
                     second: Box::new(LayoutSnapshot::Pane(2)),
                 },
@@ -589,7 +655,7 @@ mod tests {
                 resolved_identity_cwd: resolved_identity_cwd.clone(),
                 status_cache_key: resolved_identity_cwd,
                 auto_label: "one".into(),
-                branch: Some("render-dirty-test".into()),
+                branch: shepr_mux::git::WorkspaceBranch::Named("render-dirty-test".into()),
                 ahead_behind: Some(shepr_mux::git::AheadBehind {
                     ahead: 1,
                     behind: 0,
@@ -778,16 +844,6 @@ mod tests {
         // returned and never applied to the session's bookmark.
         assert_eq!(outcome.navigate, app.public_workspace_id(1));
         assert_eq!(app.state.bookmark_index(), Some(0));
-        // Whether the pane is focused depends on the requester's location,
-        // which the server loop fills in.
-        assert!(!pane.focused);
-        let mut reply = EndpointReply::PaneInfo { pane };
-        let viewed = app.public_workspace_id(1);
-        app.fill_reply_focus(&mut reply, viewed.as_ref());
-        assert!(matches!(&reply, EndpointReply::PaneInfo { pane } if pane.focused));
-        let viewing_another = app.public_workspace_id(0);
-        app.fill_reply_focus(&mut reply, viewing_another.as_ref());
-        assert!(matches!(&reply, EndpointReply::PaneInfo { pane } if !pane.focused));
 
         shut_down_runtimes(&mut app);
     }
@@ -858,7 +914,7 @@ mod tests {
             .layout()
             .splits(shepr_core::geometry::Rect::new(0, 0, 100, 20));
         assert_eq!(splits.len(), 1);
-        assert!((splits[0].ratio - 0.5).abs() < f32::EPSILON);
+        assert!((splits[0].ratio.get() - 0.5).abs() < f32::EPSILON);
         let (_, response_pane_id) = app
             .resolve_pane_id(&pane.pane_id)
             .expect("test precondition");
@@ -1102,17 +1158,21 @@ mod tests {
         app.state.workspaces = vec![workspace];
         app.state.set_bookmark_index(Some(0));
         app.state.ensure_test_terminals();
+        app.insert_idle_test_runtime(first_pane);
+        app.insert_idle_test_runtime(second_pane);
 
-        app.handle_internal_event_after_checkpoint(AppEvent::PaneDied {
-            pane_id: first_pane,
-            exit_reason: shepr_platform::ChildExitReason::Interrupted,
-            ended_at: std::time::Instant::now(),
-        });
-        app.handle_internal_event_after_checkpoint(AppEvent::PaneDied {
-            pane_id: second_pane,
-            exit_reason: shepr_platform::ChildExitReason::Interrupted,
-            ended_at: std::time::Instant::now(),
-        });
+        app.handle_internal_event_after_checkpoint(runtime_pane_exit(
+            &app,
+            first_pane,
+            shepr_platform::ChildExitReason::Interrupted,
+            std::time::Instant::now(),
+        ));
+        app.handle_internal_event_after_checkpoint(runtime_pane_exit(
+            &app,
+            second_pane,
+            shepr_platform::ChildExitReason::Interrupted,
+            std::time::Instant::now(),
+        ));
         assert!(app.state.workspaces.is_empty());
         let geometry = app.headless_spawn_geometry();
         assert!(app.create_default_workspace(geometry));
@@ -1164,16 +1224,9 @@ mod tests {
         let terminal = app.state.terminals.get_mut(&terminal_id).expect("terminal");
         terminal.set_detected_agent_process_at(Agent::Claude, app.clock.now);
         terminal.set_persisted_agent_session(session.clone());
-        for (agent, process_exited) in [(Some(Agent::Claude), true), (None, false)] {
-            app.handle_internal_event(AppEvent::StateChanged {
-                pane_id,
-                agent,
-                state: AgentState::Idle,
-                visible_blocker: false,
-                process_exited,
-                observed_at: app.clock.now,
-            });
-        }
+        // Delivered from the live runtime, so admission passes them and only
+        // the exited child decides that they are ignored.
+        release_agent(&mut app, pane_id);
         assert_eq!(
             app.state.terminals[&terminal_id].detected_agent,
             Some(Agent::Claude),
@@ -1184,11 +1237,12 @@ mod tests {
         );
         app.persist_for_test();
         app.state.mark_session_dirty();
-        app.handle_internal_event_after_checkpoint(AppEvent::PaneDied {
+        app.handle_internal_event_after_checkpoint(runtime_pane_exit(
+            &app,
             pane_id,
-            exit_reason: shepr_platform::ChildExitReason::Interrupted,
-            ended_at: std::time::Instant::now(),
-        });
+            shepr_platform::ChildExitReason::Interrupted,
+            std::time::Instant::now(),
+        ));
         app.save_session_before_teardown_async().await;
         app.retire_session_writer();
         let lease =
@@ -1236,21 +1290,6 @@ mod tests {
         (app, pane_id, terminal_id, session)
     }
 
-    /// The detector's exit report for the pane's agent, then its withdrawal,
-    /// while the shell still runs.
-    fn release_agent(app: &mut App, pane_id: shepr_core::layout::PaneId) {
-        for (agent, process_exited) in [(Some(Agent::Claude), true), (None, false)] {
-            app.handle_internal_event(AppEvent::StateChanged {
-                pane_id,
-                agent,
-                state: AgentState::Idle,
-                visible_blocker: false,
-                process_exited,
-                observed_at: app.clock.now,
-            });
-        }
-    }
-
     /// The resume identity the saved session holds for its only pane.
     fn saved_agent_session(app: &App) -> shepr_mux::persist::snapshot::PaneAgentSessionSnapshot {
         let lease =
@@ -1278,11 +1317,12 @@ mod tests {
             None
         );
         app.persist_for_test();
-        app.handle_internal_event_after_checkpoint(AppEvent::PaneDied {
+        app.handle_internal_event_after_checkpoint(runtime_pane_exit(
+            &app,
             pane_id,
-            exit_reason: shepr_platform::ChildExitReason::Interrupted,
-            ended_at: app.clock.now + Duration::from_millis(100),
-        });
+            shepr_platform::ChildExitReason::Interrupted,
+            app.clock.now + Duration::from_millis(100),
+        ));
         app.save_session_before_teardown_async().await;
         app.retire_session_writer();
         let saved = saved_agent_session(&app);
@@ -1319,12 +1359,15 @@ mod tests {
         app.state.workspaces = vec![workspace];
         app.state.set_bookmark_index(Some(0));
         app.state.ensure_test_terminals();
+        app.insert_idle_test_runtime(pane_id);
 
-        app.handle_internal_event_after_checkpoint(AppEvent::PaneDied {
+        app.handle_internal_event_after_checkpoint(runtime_pane_exit(
+            &app,
             pane_id,
-            exit_reason: shepr_platform::ChildExitReason::Interrupted,
-            ended_at: std::time::Instant::now(),
-        });
+            shepr_platform::ChildExitReason::Interrupted,
+            std::time::Instant::now(),
+        ));
+        assert!(app.state.workspaces.is_empty(), "the exit was applied");
         // The app still holds the data-dir lease, so the checkpoint is parsed
         // directly rather than through `persist::load`.
         let checkpoint = std::fs::read_to_string(
@@ -1366,12 +1409,14 @@ mod tests {
         app.state.workspaces = vec![workspace];
         app.state.set_bookmark_index(Some(0));
         app.state.ensure_test_terminals();
+        app.insert_idle_test_runtime(pane_id);
 
-        app.handle_internal_event(AppEvent::PaneDied {
+        app.handle_internal_event(runtime_pane_exit(
+            &app,
             pane_id,
-            exit_reason: shepr_platform::ChildExitReason::ReaderPanicked,
-            ended_at: std::time::Instant::now(),
-        });
+            shepr_platform::ChildExitReason::ReaderPanicked,
+            std::time::Instant::now(),
+        ));
 
         assert!(app.state.workspaces.is_empty());
         assert!(
@@ -1393,22 +1438,35 @@ mod tests {
             app.state.workspaces = vec![workspace];
             app.state.set_bookmark_index(Some(0));
             app.state.ensure_test_terminals();
+            app.insert_idle_test_runtime(pane_id);
 
-            app.handle_internal_event_after_checkpoint(AppEvent::PaneDied {
+            app.handle_internal_event_after_checkpoint(runtime_pane_exit(
+                &app,
                 pane_id,
-                exit_reason: shepr_platform::ChildExitReason::Interrupted,
-                ended_at: std::time::Instant::now(),
-            });
+                shepr_platform::ChildExitReason::Interrupted,
+                std::time::Instant::now(),
+            ));
+            assert!(
+                app.state.workspaces.is_empty(),
+                "the first exit was applied"
+            );
             app.state.workspaces = vec![Workspace::test_new("newer")];
             app.state.set_bookmark_index(Some(0));
             app.state.ensure_test_terminals();
             app.state.mark_session_dirty();
             if another_interrupted_exit {
-                app.handle_internal_event_after_checkpoint(AppEvent::PaneDied {
-                    pane_id: app.state.workspaces[0].root_pane(),
-                    exit_reason: shepr_platform::ChildExitReason::Interrupted,
-                    ended_at: std::time::Instant::now(),
-                });
+                let newer_pane = app.state.workspaces[0].root_pane();
+                app.insert_idle_test_runtime(newer_pane);
+                app.handle_internal_event_after_checkpoint(runtime_pane_exit(
+                    &app,
+                    newer_pane,
+                    shepr_platform::ChildExitReason::Interrupted,
+                    std::time::Instant::now(),
+                ));
+                assert!(
+                    app.state.workspaces.is_empty(),
+                    "the second exit was applied"
+                );
             }
             app.save_session_before_teardown();
             app.retire_session_writer();

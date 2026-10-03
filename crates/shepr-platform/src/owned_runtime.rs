@@ -145,7 +145,7 @@ impl OwnedRuntimeEntry {
                 tracing::debug!(%error, "could not mark runtime artifact; abandoned entry will be retained");
             }).ok();
             if let Some(owner) = owner {
-                (&hold).write_all(owner.tag(0).as_bytes())?;
+                (&hold).write_all(owner.tag().as_bytes())?;
             }
             Ok(owner)
         })();
@@ -247,7 +247,7 @@ impl OwnedRuntimeEntry {
             {
                 continue;
             }
-            let Some((owner, 0)) = ProcessIdentity::parse_tag(&contents) else {
+            let Some(owner) = ProcessIdentity::parse_tag(&contents) else {
                 continue;
             };
             // Both proofs are required: ambiguous proc views and held locks
@@ -353,7 +353,7 @@ fn release(path: &Path, kind: RuntimeKind, owner: Option<ProcessIdentity>) {
                     .create_new(true)
                     .mode(crate::limits::RUNTIME_MARKER_MODE)
                     .open(&marker)
-                    .and_then(|mut file| file.write_all(owner.tag(0).as_bytes()));
+                    .and_then(|mut file| file.write_all(owner.tag().as_bytes()));
                 if let Err(error) = restore {
                     tracing::warn!(%error, "could not restore runtime artifact marker");
                 }
@@ -412,7 +412,7 @@ mod tests {
                 fs::Permissions::from_mode(crate::limits::PRIVATE_DIRECTORY_MODE),
             )
             .expect("private parent");
-            let live = ProcessIdentity::current().expect("current identity").tag(0);
+            let live = ProcessIdentity::current().expect("current identity").tag();
             let (_, rest) = live.split_once('-').expect("identity fields");
             let dead = format!("{:08x}-{rest}", u32::MAX);
             let fixture = |token, marker| {
@@ -496,7 +496,7 @@ mod tests {
         let path = entry.path().to_path_buf();
         assert_eq!(
             fs::read_to_string(path.join(OWNER_MARKER)).expect("read marker"),
-            ProcessIdentity::current().expect("current identity").tag(0)
+            ProcessIdentity::current().expect("current identity").tag()
         );
         assert!(crate::ipc::acquire_flock_lock(&path.join(OWNER_MARKER), false).is_err());
         fs::write(DirectoryKind::SshConfig.content_path(&path), "Host *\n").expect("write config");
@@ -526,7 +526,7 @@ mod tests {
         );
         assert_eq!(
             fs::read_to_string(path.join(OWNER_MARKER)).expect("restored marker"),
-            ProcessIdentity::current().expect("current identity").tag(0)
+            ProcessIdentity::current().expect("current identity").tag()
         );
     }
 }

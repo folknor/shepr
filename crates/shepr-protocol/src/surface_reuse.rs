@@ -398,7 +398,7 @@ pub enum DecodedServerMessage {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DecodedWireServerMessage {
     ServerShutdown {
-        reason: Option<super::ShutdownReason>,
+        reason: super::ShutdownReason,
     },
     Clipboard {
         data: String,

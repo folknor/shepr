@@ -115,8 +115,9 @@ pub fn ensure_running(
     // clock-io-ok: the launch budget measures real elapsed waiting on the socket
     let transition_deadline = Instant::now() + timeout;
     // A client that held the lock before us may have finished its launch.
+    let mut probed = probe_server(paths)?;
     loop {
-        match probe_server(paths)? {
+        match probed {
             Probed::Running(status) => {
                 info!("server started by another client");
                 return accept_running(paths, status, build_check);
@@ -132,7 +133,8 @@ pub fn ensure_running(
                 {
                     return Err(server_transition_timeout(paths, timeout));
                 }
-                wait_for_server_socket_to_settle_until(paths, transition_deadline, timeout)?;
+                probed =
+                    wait_for_server_socket_to_settle_until(paths, transition_deadline, timeout)?;
             }
         }
     }
@@ -163,6 +165,7 @@ pub fn running_server_status(paths: &shepr_config::AppPaths) -> io::Result<Optio
 // ---------------------------------------------------------------------------
 
 /// What a probe of the local server found.
+#[derive(Debug)]
 enum Probed {
     /// The socket has no live listener.
     NoServer,
@@ -207,11 +210,13 @@ fn wait_for_server_socket_to_settle_until(
     paths: &shepr_config::AppPaths,
     deadline: Instant,
     timeout: Duration,
-) -> io::Result<()> {
+) -> io::Result<Probed> {
     // clock-io-ok: bounds a wait on another process's real socket.
     loop {
         match probe_server(paths)? {
-            Probed::NoServer | Probed::Running(_) | Probed::Unresponsive => return Ok(()),
+            stable @ (Probed::NoServer | Probed::Running(_) | Probed::Unresponsive) => {
+                return Ok(stable);
+            }
             Probed::Starting | Probed::Stopping => {}
         }
         // clock-io-ok: the same real-socket wait.
@@ -244,15 +249,17 @@ fn wait_for_overridden_server(
 ) -> io::Result<RuntimeStatus> {
     // clock-io-ok: the launch budget measures real elapsed waiting on the socket
     let deadline = Instant::now() + timeout;
+    let mut settled = wait_for_server_socket_to_settle_until(paths, deadline, timeout)?;
     loop {
-        wait_for_server_socket_to_settle_until(paths, deadline, timeout)?;
-        match probe_server(paths)? {
+        match settled {
             Probed::Running(status) => return accept_running(paths, status, build_check),
             Probed::NoServer => return Err(no_server_at_override(paths)),
             Probed::Unresponsive => return Err(unresponsive_error(paths)),
-            // A new transition began after the shared wait observed a stable
-            // state. Keep using the original deadline for that next transition.
-            Probed::Starting | Probed::Stopping => {}
+            Probed::Starting | Probed::Stopping => {
+                // The shared wait returns only settled states; should that
+                // change, wait again within the original deadline.
+                settled = wait_for_server_socket_to_settle_until(paths, deadline, timeout)?;
+            }
         }
     }
 }
@@ -288,7 +295,7 @@ fn running_build_mismatch(paths: &shepr_config::AppPaths, status: &RuntimeStatus
     };
     io::Error::other(format!(
         "{summary}\n\nserver: v{} build {}\nclient: v{} build {}\n\n{}",
-        status.version.as_deref().unwrap_or("unknown"),
+        status.version,
         status.build_id,
         shepr_protocol::build_version(),
         shepr_protocol::BUILD_ID,
@@ -849,7 +856,7 @@ fn sibling_build_mismatch(files: &LaunchFiles<'_>, status: &RuntimeStatus) -> io
     io::Error::other(format!(
         "{} is a different build than this shepr and was stopped; install shepr and {SERVER_BINARY_NAME} together (`brokkr install`).\n\nserver: v{} build {}\nclient: v{} build {}",
         files.server.display(),
-        status.version.as_deref().unwrap_or("unknown"),
+        status.version,
         status.build_id,
         shepr_protocol::build_version(),
         shepr_protocol::BUILD_ID

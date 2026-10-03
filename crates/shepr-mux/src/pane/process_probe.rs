@@ -14,7 +14,7 @@ use super::agent_detection::{
     PendingIdleConfirmation, ScreenDetectionPublishInput, decide_detection_screen_read,
     decide_screen_detection_publish, detection_update_for_publish_with_osc, withhold_agent_absence,
 };
-use super::launch::LaunchPurpose;
+use super::launch::LaunchKind;
 use super::terminal::PaneTerminal;
 use crate::UsableCwd;
 use crate::events::AppEvent;
@@ -33,7 +33,7 @@ pub(super) struct StateChangedUpdate {
 }
 
 pub(super) async fn publish_state_changed_event(
-    state_events: impl Into<crate::events::EventSender>,
+    state_events: crate::events::EventSender,
     pane_id: PaneId,
     update: StateChangedUpdate,
 ) {
@@ -42,7 +42,6 @@ pub(super) async fn publish_state_changed_event(
     // without blocking pane I/O. The application event exposes only the state
     // and blocker evidence it arbitrates; derive both from the same verdict.
     if let Err(e) = state_events
-        .into()
         .send(AppEvent::StateChanged {
             pane_id,
             agent: update.agent,
@@ -62,13 +61,12 @@ pub(super) async fn publish_state_changed_event(
 }
 
 pub(super) async fn publish_agent_process_detected_event(
-    state_events: impl Into<crate::events::EventSender>,
+    state_events: crate::events::EventSender,
     pane_id: PaneId,
     agent: Agent,
     observed_at: std::time::Instant,
 ) {
     if let Err(e) = state_events
-        .into()
         .send(AppEvent::AgentProcessDetected {
             pane_id,
             agent,
@@ -595,10 +593,10 @@ pub(super) enum ScreenDetectionCacheLookup {
 }
 
 impl DetectorState {
-    pub(super) fn new(now: std::time::Instant, purpose: LaunchPurpose) -> Self {
+    pub(super) fn new(now: std::time::Instant, purpose: LaunchKind) -> Self {
         let agent_absence_hold_until = match purpose {
-            LaunchPurpose::Fresh => None,
-            LaunchPurpose::AgentResume => now.checked_add(AGENT_ABSENCE_STARTUP_HOLD),
+            LaunchKind::Fresh | LaunchKind::Restored => None,
+            LaunchKind::AgentResume => now.checked_add(AGENT_ABSENCE_STARTUP_HOLD),
         };
         Self {
             tick_schedule: None,
@@ -872,15 +870,27 @@ impl DetectorState {
                 self.agent_presence.clear_current_agent() || had_exit
             }
             ForegroundShellAgentAction::ObserveProbe => {
-                self.exit_phase = AgentExitPhase::Observing;
-                let changed = self.agent_presence.observe_process_probe(identified_agent);
-                if changed && identified_agent.is_none() {
-                    if let Some(agent) = previous_agent {
-                        self.exit_phase = AgentExitPhase::ReportOwed { agent };
+                // Absence cannot cancel an exit that has not reached the app.
+                // Once reported, withdraw the carried identity on the next probe.
+                if identified_agent.is_none() && self.exit_phase.clear_pending() {
+                    if self.exit_phase.reported() {
+                        self.exit_phase = AgentExitPhase::Observing;
+                        self.agent_presence.clear_current_agent();
+                        true
+                    } else {
+                        false
                     }
-                    false
                 } else {
-                    changed
+                    self.exit_phase = AgentExitPhase::Observing;
+                    let changed = self.agent_presence.observe_process_probe(identified_agent);
+                    if changed && identified_agent.is_none() {
+                        if let Some(agent) = previous_agent {
+                            self.exit_phase = AgentExitPhase::ReportOwed { agent };
+                        }
+                        false
+                    } else {
+                        changed
+                    }
                 }
             }
             ForegroundShellAgentAction::Suspended => {
@@ -1239,7 +1249,7 @@ mod tests {
     #[test]
     fn tick_retries_the_initial_absence_report_until_restore_hold_expires() {
         let now = std::time::Instant::now();
-        let mut detector = DetectorState::new(now, LaunchPurpose::AgentResume);
+        let mut detector = DetectorState::new(now, LaunchKind::AgentResume);
         assert!(
             detector
                 .tick(&tick_input(now, TickObservation::Begin))
@@ -1262,7 +1272,7 @@ mod tests {
     #[test]
     fn tick_acquisition_grace_cache_and_authority_share_one_transition_path() {
         let now = std::time::Instant::now();
-        let mut detector = DetectorState::new(now, LaunchPurpose::Fresh);
+        let mut detector = DetectorState::new(now, LaunchKind::Fresh);
         assert!(
             detector
                 .tick(&tick_input(now, TickObservation::Begin))
@@ -1318,7 +1328,7 @@ mod tests {
     #[test]
     fn tick_confirmed_misses_publish_exit_before_identity_withdrawal() {
         let now = std::time::Instant::now();
-        let mut detector = DetectorState::new(now, LaunchPurpose::Fresh);
+        let mut detector = DetectorState::new(now, LaunchKind::Fresh);
         detector.agent_presence = AgentDetectionPresence::from_agent(Some(Agent::Pi));
         for attempt in 1..=AGENT_MISS_CONFIRMATION_ATTEMPTS {
             let at = now + PROCESS_RECHECK_IDENTIFIED * u32::from(attempt);
@@ -1600,7 +1610,7 @@ mod tests {
     #[test]
     fn agent_detection_does_not_skip_before_first_published_report() {
         let now = std::time::Instant::now();
-        let mut detector = DetectorState::new(now, LaunchPurpose::AgentResume);
+        let mut detector = DetectorState::new(now, LaunchKind::AgentResume);
         assert_eq!(detector.current_agent(), None);
         assert_eq!(
             detector.tick_interval(now, false),
@@ -1632,7 +1642,7 @@ mod tests {
     #[test]
     fn detector_state_accepts_process_identity_without_a_runtime() {
         let now = std::time::Instant::now();
-        let mut detector = DetectorState::new(now, LaunchPurpose::Fresh);
+        let mut detector = DetectorState::new(now, LaunchKind::Fresh);
         let request = ProcessProbeRequest {
             now,
             observed_foreground_group: Some(25),
@@ -1661,7 +1671,7 @@ mod tests {
     #[test]
     fn reset_keeps_process_evidence_for_the_next_lifecycle_probe() {
         let now = std::time::Instant::now();
-        let mut detector = DetectorState::new(now, LaunchPurpose::Fresh);
+        let mut detector = DetectorState::new(now, LaunchKind::Fresh);
         detector.agent_presence = AgentDetectionPresence::from_agent(Some(Agent::Claude));
         detector.exit_phase = AgentExitPhase::ReportOwed {
             agent: Agent::Claude,
@@ -1693,7 +1703,7 @@ mod tests {
     #[test]
     fn reset_does_not_rereport_an_exit_already_reported() {
         let now = std::time::Instant::now();
-        let mut detector = DetectorState::new(now, LaunchPurpose::Fresh);
+        let mut detector = DetectorState::new(now, LaunchKind::Fresh);
         detector.agent_presence = AgentDetectionPresence::from_agent(None);
         detector.exit_phase = AgentExitPhase::ClearOwed { agent: Agent::Pi };
 
@@ -1728,7 +1738,7 @@ mod tests {
     #[test]
     fn confirmed_process_misses_publish_exit_before_clearing_identity() {
         let now = std::time::Instant::now();
-        let mut detector = DetectorState::new(now, LaunchPurpose::Fresh);
+        let mut detector = DetectorState::new(now, LaunchKind::Fresh);
         detector.agent_presence = AgentDetectionPresence::from_agent(Some(Agent::Pi));
         let probe = ProcessProbeResult {
             process_group_id: Some(25),
@@ -1760,9 +1770,55 @@ mod tests {
     }
 
     #[test]
+    fn command_after_confirmed_misses_preserves_exit_then_withdraws_identity() {
+        let now = std::time::Instant::now();
+        let mut detector = DetectorState::new(now, LaunchKind::Fresh);
+        detector.agent_presence = AgentDetectionPresence::from_agent(Some(Agent::Pi));
+        let mut command = ProcessProbeResult {
+            process_group_id: Some(25),
+            foreground_is_pane_shell: false,
+            suspended_agents: Vec::new(),
+            identity: ProcessProbeIdentity::Unidentified,
+        };
+        let schedule = ProbeScheduleDecision::Probe {
+            foreground_group_changed: false,
+            had_previous_probe: true,
+        };
+        for _ in 0..AGENT_MISS_CONFIRMATION_ATTEMPTS {
+            detector.observe_process_probe(&command, now, Some(25), schedule);
+        }
+        assert!(detector.process_exited());
+        command.process_group_id = Some(26);
+        let owed = detector.observe_process_probe(&command, now, Some(26), schedule);
+        assert!(!owed.agent_changed);
+        assert_eq!(owed.agent, Some(Agent::Pi));
+        assert!(detector.process_exited());
+        let mut output = TickOutput {
+            probe: false,
+            screen: false,
+            process_change: None,
+            state_changed: None,
+            next_wake: std::time::Duration::ZERO,
+        };
+        detector.finish_screen_tick(
+            &tick_input(now, TickObservation::Begin),
+            Some(&Default::default()),
+            &mut output,
+        );
+        let update = output.state_changed.expect("owed exit must publish");
+        assert_eq!(update.agent, Some(Agent::Pi));
+        assert!(update.process_exited);
+        assert_eq!(update.detection.state(), AgentState::Idle);
+        let cleared = detector.observe_process_probe(&command, now, Some(26), schedule);
+        assert!(cleared.agent_changed);
+        assert_eq!(cleared.agent, None);
+        assert!(!detector.process_exited());
+    }
+
+    #[test]
     fn suspended_agent_is_not_reported_as_a_process_exit_or_replacement() {
         let now = std::time::Instant::now();
-        let mut detector = DetectorState::new(now, LaunchPurpose::Fresh);
+        let mut detector = DetectorState::new(now, LaunchKind::Fresh);
         detector.agent_presence = AgentDetectionPresence::from_agent(Some(Agent::Claude));
         let suspended_probe = ProcessProbeResult {
             process_group_id: Some(25),
@@ -1813,7 +1869,7 @@ mod tests {
     #[test]
     fn agent_detection_allows_scan_at_startup_grace_deadline() {
         let now = std::time::Instant::now();
-        let mut detector = DetectorState::new(now, LaunchPurpose::Fresh);
+        let mut detector = DetectorState::new(now, LaunchKind::Fresh);
         let deadline = now + AGENT_STARTUP_GRACE_WINDOW;
         detector.agent_startup_grace_until = Some(deadline);
 

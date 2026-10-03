@@ -130,12 +130,9 @@ impl App {
         Ok(outcome.workspace_index)
     }
 
-    /// The reply a pane command gives the client shell: the pane and its
-    /// scroll position. `focused` is left false: whether the pane is focused
-    /// depends on which workspace the requesting client views once its command
-    /// has run, which only the server loop knows (`fill_reply_focus`). Cheap
-    /// on purpose; the per-pane snapshot entry with the `/proc` reads is
-    /// `snapshot_pane`.
+    /// The reply acknowledges the pane target and includes its scroll position.
+    /// Focus belongs to the requester-specific shell snapshot; the per-pane
+    /// snapshot entry with the `/proc` reads is `snapshot_pane`.
     pub(super) fn pane_info(
         &self,
         ws_idx: usize,
@@ -156,44 +153,8 @@ impl App {
             });
         Some(shepr_protocol::command::PaneInfo {
             pane_id: self.public_pane_id(ws_idx, pane_id)?,
-            focused: false,
             scroll,
         })
-    }
-
-    /// Sets `focused` in a reply's `PaneInfo` or `WorkspaceInfo` for a client
-    /// viewing `viewed`: a workspace is focused when it is the viewed one, and a
-    /// pane when it is the focused pane of the viewed workspace. Pane focus is
-    /// shared by every viewer of a workspace; only which workspace is viewed is
-    /// per client.
-    pub(crate) fn fill_reply_focus(
-        &self,
-        reply: &mut shepr_protocol::command::EndpointReply,
-        viewed: Option<&shepr_protocol::WorkspaceId>,
-    ) {
-        use shepr_protocol::command::EndpointReply;
-        match reply {
-            EndpointReply::PaneInfo { pane } => {
-                pane.focused = viewed == Some(pane.pane_id.workspace_id())
-                    && self
-                        .resolve_pane_id(&pane.pane_id)
-                        .is_some_and(|(ws_idx, pane_id)| {
-                            self.state
-                                .workspaces
-                                .get(ws_idx)
-                                .is_some_and(|ws| ws.focused_pane_id() == pane_id)
-                        });
-            }
-            EndpointReply::WorkspaceInfo { workspace } => {
-                workspace.focused = viewed == Some(&workspace.workspace_id);
-            }
-            EndpointReply::Done
-            | EndpointReply::WorkspaceCheckoutRoot { .. }
-            | EndpointReply::PaneSelection { .. }
-            | EndpointReply::PaneCopyMotion { .. }
-            | EndpointReply::PaneCopySearch { .. }
-            | EndpointReply::ClientShellSurfaceSet { .. } => {}
-        }
     }
 
     pub(super) fn lookup_runtime(
@@ -205,7 +166,6 @@ impl App {
             .runtime_for_pane_in_workspace(&self.terminal_runtimes, ws_idx, pane_id)
     }
 
-    /// `focused` is left false, as in `pane_info`; `fill_reply_focus` sets it.
     /// `None` when `index` names no workspace, like `pane_info`: every caller
     /// either resolved the index a moment ago or carries it across an event,
     /// and a stale index must not panic the server.
@@ -219,7 +179,6 @@ impl App {
             workspace_id: self.public_workspace_id(index)?,
             number: index + 1,
             label: ws.display_name(),
-            focused: false,
             pane_count: ws.pane_count(),
             agent_status: presented_agent_status(agg_state),
         })

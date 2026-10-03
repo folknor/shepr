@@ -6,8 +6,6 @@ mod identity;
 mod runner;
 mod status;
 
-use self::discovery::automatic_workspace_label;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum RefBackend {
     Files,
@@ -117,20 +115,39 @@ pub struct AheadBehind {
     pub behind: usize,
 }
 
+/// The result of reading HEAD, distinct from whether a repository was found.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WorkspaceBranch {
+    OutsideRepository,
+    Detached,
+    Named(String),
+    ReadFailed,
+}
+
+impl WorkspaceBranch {
+    /// The branch text drawn by consumers that do not display read failures.
+    pub fn as_deref(&self) -> Option<&str> {
+        match self {
+            Self::Named(name) => Some(name),
+            Self::OutsideRepository | Self::Detached | Self::ReadFailed => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkspaceGitStatus {
     pub workspace_id: String,
     pub resolved_identity_cwd: PathBuf,
     pub status_cache_key: PathBuf,
     pub auto_label: String,
-    pub branch: Option<String>,
+    pub branch: WorkspaceBranch,
     pub ahead_behind: Option<AheadBehind>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkspaceGitStatusSnapshot {
     pub repo_root: Option<PathBuf>,
-    pub branch: Option<String>,
+    pub branch: WorkspaceBranch,
     pub ahead_behind: Option<AheadBehind>,
 }
 
@@ -141,9 +158,15 @@ impl WorkspaceGitStatusSnapshot {
         resolved_identity_cwd: PathBuf,
         status_cache_key: PathBuf,
     ) -> WorkspaceGitStatus {
-        let auto_label = self.repo_root.as_ref().map_or_else(
-            || fallback_label_from_cwd(&resolved_identity_cwd),
-            |repo_root| automatic_workspace_label(&resolved_identity_cwd, repo_root),
+        let home = if self.repo_root.is_none() {
+            shepr_core::pathutil::home_dir().ok()
+        } else {
+            None
+        };
+        let auto_label = shepr_core::workspace_label::workspace_label_from_cwd(
+            &resolved_identity_cwd,
+            self.repo_root.as_deref(),
+            home.as_deref(),
         );
         WorkspaceGitStatus {
             workspace_id,

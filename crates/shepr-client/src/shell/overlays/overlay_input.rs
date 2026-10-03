@@ -762,7 +762,7 @@ impl ClientShellState {
         let pane_count = snapshot
             .panes
             .iter()
-            .filter(|pane| pane.workspace_id == workspace.workspace_id)
+            .filter(|pane| pane.pane_id.workspace_id() == &workspace.workspace_id)
             .count();
         let scope = if pane_count == 1 {
             "1 pane".to_owned()

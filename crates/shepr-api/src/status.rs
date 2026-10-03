@@ -6,9 +6,7 @@ use crate::client::{ApiClient, ApiClientDeadlineError, ApiClientError};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeStatus {
-    /// Kept optional because remote launch diagnostics render absence as
-    /// "unknown", although the current ping schema always supplies a version.
-    pub version: Option<String>,
+    pub version: String,
     pub build_id: String,
     /// The server process's boot identity: what a conditional stop names to
     /// stop this instance and no other.
@@ -72,7 +70,7 @@ pub(crate) fn status_probe_has_no_answer(error: &ApiClientDeadlineError) -> bool
         ApiClientDeadlineError::Connect(error)
         | ApiClientDeadlineError::Request(ApiClientError::Io(error)) => {
             matches!(
-                shepr_platform::ipc::classify_stream_error(error),
+                shepr_platform::ipc::classify_stream_error(error.kind()),
                 shepr_platform::ipc::StreamFailure::PeerGone
                     | shepr_platform::ipc::StreamFailure::NoListener
                     | shepr_platform::ipc::StreamFailure::TimedOut

@@ -20,29 +20,6 @@ raw reports are in the commit that precedes this file's.
 
 ## Dead code and dead state
 
-## CLN-009 - Dead pieces in the client shell
-
-`ClientShellWorkspace.custom_label` (defined in
-`crates/shepr-protocol/src/projection.rs`) is not read anywhere in shell
-production code; drop it from the projection or find the reader it was meant
-for. (client-shell)
-
-## CLN-011 - Dead pieces in the contracts crates
-
-`RuntimeStatus::version: Option<String>` (`crates/shepr-api/src/status.rs`) is
-always `Some` (ping decoding in `crates/shepr-api/src/client.rs` supplies it).
-Its consumers in `crates/shepr-remote/src/remote/local_server.rs`, the status
-display and JSON projection in `src/cli/status.rs`, and the fixtures in
-`src/preflight.rs` still format absence as `"unknown"`; make the field plain
-and drop those branches together. (contracts)
-
-## CLN-014 - Dead pieces in mux state and core layout
-
-`ProcessIdentity::tag(token)` is always called with `0`, and the sweep accepts
-only `Some((owner, 0))` from `parse_tag`: the token field is dead format.
-Removing it means changing the tag writers and the sweep parse together
-(`crates/shepr-platform/src/process_identity.rs`). (foundation)
-
 ## CLN-023 - Small leftovers from the first fixes
 
 - `crates/shepr-server/src/app/`: `AppPolicy::Test` is kept as a const equal
@@ -60,22 +37,21 @@ Removing it means changing the tag writers and the sweep parse together
 
 (wave-1 review and gate, wave-3 review, wave-5 fixer and review, wave-7 and wave-8 reviews)
 
-## CLN-025 - Small leftovers from the light-loop waves
+## CLN-026 - Leftovers from the third light-loop wave
 
-- `crates/shepr-platform/src/ipc.rs`: `classify_stream_error` takes
-  `&io::Error`, so `EndpointFailure::disconnect_notice`
-  (`crates/shepr-remote/src/failure.rs`) builds a throwaway
-  `io::Error::from(kind)` to call it; classifying on `ErrorKind` removes that.
-- `crates/shepr-remote/src/remote/local_server.rs`:
-  `wait_for_overridden_server` probes inside the shared settle helper and then
-  again itself on every turn; it could take the settled probe from the helper.
-- `crates/shepr-agent/src/integration/types.rs`: `InstallError` has nine
-  variants each wrapping the same `io::Error`, plus a `kind()` mapping back to
-  `InstallErrorKind`; `struct InstallError { kind, source }` carries the same
-  facts. `InstallIssue::io_error` stamps every category, `AgentDirMissing` and
-  `Io` included, as `io::ErrorKind::InvalidData`.
+- `Workspace::resize_focused_pane` (`crates/shepr-mux/src/workspace/pane_tree.rs`)
+  has no caller; resizing goes through `resize_pane`.
+- `WorkspaceGitStatusSnapshot::into_workspace_status`
+  (`crates/shepr-mux/src/git/mod.rs`) reimplements `fallback_label_from_cwd`
+  inline for the outside-repository case.
+- `publish_state_changed_event` and `publish_agent_process_detected_event` in
+  mux take an `EventSender` (which carries the pane id) and a separate
+  `pane_id`; if the two disagree, admission drops the event.
+- `crates/shepr-agent/src/detect/manifests/codex.toml` matches curly-quote
+  characters, the one non-ASCII punctuation in the source tree; if it is
+  deliberate screen-text matching, a comment there should say so.
 
-(wave-2 review)
+(wave-3 review)
 
 ## Test-only twins and test seams in production
 
@@ -115,8 +91,6 @@ would let the copy go. Reported by mux-panes, mux-state and server-app.
   FnMut>`, `poll_observer`); a small trait would keep them out.
 - `TerminalState::set_hook_authority_at` is a public production method
   documented as a fixture seam taking the source as a string.
-- `AgentResumePlan::argv` is public and `shepr-server/src/test_support.rs`
-  overwrites it.
 - `SshControlDir::unchecked` exists only so tests can make the control and
   config directories differ.
 
@@ -151,4 +125,3 @@ Reported by edges, client-core and contracts.
 `shepr-remote`'s `remote/` directory name reflects an older module tree (its
 `lib.rs` mounts the files with `#[path]`; see the structure entry on the client
 shell and remote module trees). (edges)
-

@@ -14,7 +14,7 @@ use std::os::unix::net::UnixListener;
 
 fn status_of_build(build_id: &str) -> RuntimeStatus {
     RuntimeStatus {
-        version: Some("0.0.0".to_owned()),
+        version: "0.0.0".to_owned(),
         build_id: build_id.to_owned(),
         boot_id: "4242-1700000000".to_owned(),
         stopping: false,
@@ -343,8 +343,11 @@ fn repeated_socket_transitions_share_one_wait_deadline() {
         release.send(()).expect("release");
         server.join().expect("server");
     });
-    wait_for_server_socket_to_settle_until(&paths, deadline, timeout)
-        .expect("first transition ends");
+    assert!(matches!(
+        wait_for_server_socket_to_settle_until(&paths, deadline, timeout)
+            .expect("first transition ends"),
+        Probed::NoServer
+    ));
     releaser.join().expect("release");
     std::fs::remove_file(&socket).expect("remove stale socket");
     let (release, server) = serve_starting_until_released(&socket);
@@ -370,7 +373,7 @@ fn a_live_server_is_probed_for_its_status() {
     let Probed::Running(status) = probed else {
         panic!("a live server that answers is running");
     };
-    assert_eq!(status.version.as_deref(), Some("0.5.5"));
+    assert_eq!(status.version, "0.5.5");
     assert_eq!(status.build_id, shepr_protocol::BUILD_ID);
 }
 

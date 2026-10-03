@@ -12,10 +12,13 @@ use crate::limits::{
 pub use crate::limits::{EVEN_SPLIT, MAX_SPLIT_RATIO, MIN_SPLIT_RATIO};
 
 /// First-child share of a BSP split.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize)]
+#[serde(transparent)]
 pub struct SplitRatio(f32);
 
 impl SplitRatio {
+    pub const EVEN: Self = Self(EVEN_SPLIT);
+
     /// Accept a finite ratio within the layout bounds.
     pub fn new(value: f32) -> Option<Self> {
         (value.is_finite() && (MIN_SPLIT_RATIO..=MAX_SPLIT_RATIO).contains(&value))
@@ -32,6 +35,40 @@ impl SplitRatio {
 
     pub fn get(self) -> f32 {
         self.0
+    }
+
+    /// Move a split by a signed fraction of its parent extent.
+    pub fn nudged(self, delta: RatioDelta) -> Self {
+        Self::clamped(self.0 + delta.0)
+    }
+}
+
+// SplitRatio's constructor and deserializer exclude NaN, infinities, and both
+// signed zero values, so its f32 equality is reflexive for every valid value.
+impl Eq for SplitRatio {}
+
+impl<'de> serde::Deserialize<'de> for SplitRatio {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = <f32 as serde::Deserialize>::deserialize(deserializer)?;
+        Self::new(value).ok_or_else(|| {
+            serde::de::Error::custom(format!(
+                "split ratio must be finite and between {MIN_SPLIT_RATIO} and {MAX_SPLIT_RATIO}"
+            ))
+        })
+    }
+}
+
+/// Signed movement of a split as a fraction of its parent extent.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RatioDelta(f32);
+
+impl RatioDelta {
+    pub const fn new(value: f32) -> Self {
+        Self(value)
+    }
+
+    const fn negated(self) -> Self {
+        Self(-self.0)
     }
 }
 
@@ -106,7 +143,7 @@ pub struct SplitBorder {
     /// Direction of the split that created this border.
     pub direction: Direction,
     /// Ratio assigned to the first child of this split.
-    pub ratio: f32,
+    pub ratio: SplitRatio,
     /// Total area of the split node.
     pub area: Rect,
     /// Path from root to this split node.
@@ -266,11 +303,15 @@ impl TileLayout {
     /// method also serves cross-crate test support that needs a fixed layout
     /// seam without a test feature.
     pub fn split_focused(&mut self, direction: Direction) -> PaneId {
-        self.split_focused_with_ratio(direction, EVEN_SPLIT)
+        self.split_focused_with_ratio(direction, SplitRatio::EVEN)
     }
 
     /// Split the focused pane with a custom first-child ratio.
-    pub(crate) fn split_focused_with_ratio(&mut self, direction: Direction, ratio: f32) -> PaneId {
+    pub(crate) fn split_focused_with_ratio(
+        &mut self,
+        direction: Direction,
+        ratio: SplitRatio,
+    ) -> PaneId {
         let ids = self.pane_ids();
         let target = if ids.contains(&self.focus) {
             self.focus
@@ -281,13 +322,7 @@ impl TileLayout {
             first
         };
         let new_id = PaneId::alloc();
-        split_at(
-            &mut self.root,
-            target,
-            direction,
-            new_id,
-            SplitRatio::clamped(ratio),
-        );
+        split_at(&mut self.root, target, direction, new_id, ratio);
         self.set_focus(new_id);
         new_id
     }
@@ -299,19 +334,13 @@ impl TileLayout {
         &mut self,
         target: PaneId,
         direction: Direction,
-        ratio: f32,
+        ratio: SplitRatio,
     ) -> Option<PaneId> {
         if !self.pane_ids().contains(&target) {
             return None;
         }
         let new_id = PaneId::alloc();
-        split_at(
-            &mut self.root,
-            target,
-            direction,
-            new_id,
-            SplitRatio::clamped(ratio),
-        );
+        split_at(&mut self.root, target, direction, new_id, ratio);
         Some(new_id)
     }
 
@@ -420,14 +449,15 @@ impl TileLayout {
         find(&self.root, first_ids, second_ids)
     }
 
-    /// Set the ratio of a split node at the given path.
-    pub fn set_ratio_at(&mut self, path: &[SplitBranch], ratio: f32) -> bool {
-        set_ratio_at(&mut self.root, path, SplitRatio::clamped(ratio))
+    /// Set the ratio of a split node at the given path. Returns true only if
+    /// an existing split's ratio changed.
+    pub fn set_ratio_at(&mut self, path: &[SplitBranch], ratio: SplitRatio) -> bool {
+        set_ratio_at(&mut self.root, path, ratio)
     }
 
     /// Adjust the nearest split in the given direction for the focused pane.
     /// `delta` is positive to grow, negative to shrink.
-    pub fn resize_focused(&mut self, nav: NavDirection, delta: f32, area: Rect) {
+    pub fn resize_focused(&mut self, nav: NavDirection, delta: RatioDelta, area: Rect) {
         let panes = self.panes(area);
         let Some(focused) = panes.iter().find(|p| p.is_focused) else {
             return;
@@ -447,9 +477,9 @@ impl TileLayout {
 
         if let Some(split) = best {
             let path = split.path.clone();
-            let current_ratio = get_ratio_at(&self.root, &path).map_or(EVEN_SPLIT, SplitRatio::get);
-            let adj = if grows { delta } else { -delta };
-            self.set_ratio_at(&path, current_ratio + adj);
+            let current_ratio = get_ratio_at(&self.root, &path).unwrap_or(SplitRatio::EVEN);
+            let adj = if grows { delta } else { delta.negated() };
+            self.set_ratio_at(&path, current_ratio.nudged(adj));
         }
     }
 
@@ -457,7 +487,7 @@ impl TileLayout {
         &mut self,
         pane_id: PaneId,
         nav: NavDirection,
-        delta: f32,
+        delta: RatioDelta,
         area: Rect,
     ) -> bool {
         if !self.pane_ids().contains(&pane_id) {
@@ -701,7 +731,7 @@ fn collect_panes(node: &Node, area: Rect, focus: PaneId, result: &mut Vec<PaneIn
             first,
             second,
         } => {
-            let (a, b) = split_rect(area, *direction, ratio.get());
+            let (a, b) = split_rect(area, *direction, *ratio);
             collect_panes(first, a, focus, result);
             collect_panes(second, b, focus, result);
         }
@@ -716,7 +746,7 @@ fn collect_splits(node: &Node, area: Rect, path: Vec<SplitBranch>, result: &mut 
         second,
     } = node
     {
-        let (a, b) = split_rect(area, *direction, ratio.get());
+        let (a, b) = split_rect(area, *direction, *ratio);
         let pos = match direction {
             Direction::Horizontal => a.x.saturating_add(a.width),
             Direction::Vertical => a.y.saturating_add(a.height),
@@ -724,7 +754,7 @@ fn collect_splits(node: &Node, area: Rect, path: Vec<SplitBranch>, result: &mut 
         result.push(SplitBorder {
             pos,
             direction: *direction,
-            ratio: ratio.get(),
+            ratio: *ratio,
             area,
             path: path.clone(),
         });
@@ -754,8 +784,12 @@ fn first_pane_id(node: &Node) -> PaneId {
     }
 }
 
-fn split_ratios(node: &Node) -> Vec<(Vec<SplitBranch>, f32)> {
-    fn collect(node: &Node, path: &mut Vec<SplitBranch>, out: &mut Vec<(Vec<SplitBranch>, f32)>) {
+fn split_ratios(node: &Node) -> Vec<(Vec<SplitBranch>, SplitRatio)> {
+    fn collect(
+        node: &Node,
+        path: &mut Vec<SplitBranch>,
+        out: &mut Vec<(Vec<SplitBranch>, SplitRatio)>,
+    ) {
         match node {
             Node::Pane(_) => {}
             Node::Split {
@@ -764,7 +798,7 @@ fn split_ratios(node: &Node) -> Vec<(Vec<SplitBranch>, f32)> {
                 second,
                 ..
             } => {
-                out.push((path.clone(), ratio.get()));
+                out.push((path.clone(), *ratio));
                 path.push(SplitBranch::First);
                 collect(first, path, out);
                 path.pop();
@@ -854,8 +888,12 @@ fn set_ratio_at(node: &mut Node, path: &[SplitBranch], new_ratio: SplitRatio) ->
     } = node
     {
         if path.is_empty() {
-            *ratio = new_ratio;
-            true
+            if *ratio == new_ratio {
+                false
+            } else {
+                *ratio = new_ratio;
+                true
+            }
         } else if path[0] == SplitBranch::Second {
             set_ratio_at(second, &path[1..], new_ratio)
         } else {
@@ -886,7 +924,7 @@ fn get_ratio_at(node: &Node, path: &[SplitBranch]) -> Option<SplitRatio> {
     }
 }
 
-fn split_rect(area: Rect, direction: Direction, ratio: f32) -> (Rect, Rect) {
+fn split_rect(area: Rect, direction: Direction, ratio: SplitRatio) -> (Rect, Rect) {
     match direction {
         Direction::Horizontal => {
             let (first_w, second_w) = split_extent(area.width, ratio);
@@ -910,7 +948,7 @@ fn split_rect(area: Rect, direction: Direction, ratio: f32) -> (Rect, Rect) {
     }
 }
 
-fn split_extent(total: u16, ratio: f32) -> (u16, u16) {
+fn split_extent(total: u16, ratio: SplitRatio) -> (u16, u16) {
     // For axes at least `MIN_SPLIT_EXTENT_CELLS` wide, keep
     // `MIN_SPLIT_CHILD_CELLS` for each child even when the requested fraction
     // rounds to an endpoint. A smaller axis cannot show both children, so
@@ -920,7 +958,7 @@ fn split_extent(total: u16, ratio: f32) -> (u16, u16) {
         clippy::cast_sign_loss,
         reason = "SplitRatio keeps the product finite and within [0, total] before rounding"
     )]
-    let first = (f32::from(total) * ratio).round() as u16;
+    let first = (f32::from(total) * ratio.get()).round() as u16;
     let first = if total >= MIN_SPLIT_EXTENT_CELLS {
         first.clamp(MIN_SPLIT_CHILD_CELLS, total - MIN_SPLIT_CHILD_CELLS)
     } else {
@@ -965,7 +1003,7 @@ mod tests {
         );
         assert!(
             layout
-                .split_pane(second, Direction::Vertical, 0.5)
+                .split_pane(second, Direction::Vertical, SplitRatio::clamped(0.5))
                 .is_some()
         );
         assert_eq!(layout.split_path_for_children(&[first], &[second]), None);
@@ -1107,7 +1145,7 @@ mod tests {
         let (mut layout, root) = TileLayout::new();
         layout.focus_pane(root);
 
-        layout.split_focused_with_ratio(Direction::Horizontal, 0.333);
+        layout.split_focused_with_ratio(Direction::Horizontal, SplitRatio::clamped(0.333));
 
         let splits = split_snapshot(&layout);
         assert_eq!(splits.len(), 1);
@@ -1120,7 +1158,12 @@ mod tests {
         let mut layout = sample_layout();
         let original_focus = layout.focused();
 
-        assert!(layout.resize_pane(pane(1), NavDirection::Right, 0.05, Rect::new(0, 0, 100, 40),));
+        assert!(layout.resize_pane(
+            pane(1),
+            NavDirection::Right,
+            RatioDelta::new(0.05),
+            Rect::new(0, 0, 100, 40),
+        ));
 
         assert_eq!(layout.focused(), original_focus);
         let split = split_snapshot(&layout)[0];
@@ -1134,7 +1177,12 @@ mod tests {
         let right = layout.split_focused(Direction::Horizontal);
         layout.focus_pane(root);
 
-        assert!(layout.resize_pane(right, NavDirection::Left, 0.05, Rect::new(0, 0, 100, 40),));
+        assert!(layout.resize_pane(
+            right,
+            NavDirection::Left,
+            RatioDelta::new(0.05),
+            Rect::new(0, 0, 100, 40),
+        ));
 
         let split = split_snapshot(&layout)[0];
         assert_eq!(split.0, Direction::Horizontal);
@@ -1147,7 +1195,12 @@ mod tests {
         let (mut horizontal, left) = TileLayout::new();
         horizontal.split_focused(Direction::Horizontal);
 
-        assert!(horizontal.resize_pane(left, NavDirection::Left, 0.05, Rect::new(0, 0, 100, 40),));
+        assert!(horizontal.resize_pane(
+            left,
+            NavDirection::Left,
+            RatioDelta::new(0.05),
+            Rect::new(0, 0, 100, 40),
+        ));
         let split = split_snapshot(&horizontal)[0];
         assert_eq!(split.0, Direction::Horizontal);
         assert!((split.1 - 0.45).abs() < f32::EPSILON);
@@ -1155,9 +1208,12 @@ mod tests {
         let (mut horizontal, _left) = TileLayout::new();
         let right = horizontal.split_focused(Direction::Horizontal);
 
-        assert!(
-            horizontal.resize_pane(right, NavDirection::Right, 0.05, Rect::new(0, 0, 100, 40),)
-        );
+        assert!(horizontal.resize_pane(
+            right,
+            NavDirection::Right,
+            RatioDelta::new(0.05),
+            Rect::new(0, 0, 100, 40),
+        ));
         let split = split_snapshot(&horizontal)[0];
         assert_eq!(split.0, Direction::Horizontal);
         assert!((split.1 - 0.55).abs() < f32::EPSILON);
@@ -1165,7 +1221,12 @@ mod tests {
         let (mut vertical, top) = TileLayout::new();
         vertical.split_focused(Direction::Vertical);
 
-        assert!(vertical.resize_pane(top, NavDirection::Up, 0.05, Rect::new(0, 0, 100, 40),));
+        assert!(vertical.resize_pane(
+            top,
+            NavDirection::Up,
+            RatioDelta::new(0.05),
+            Rect::new(0, 0, 100, 40),
+        ));
         let split = split_snapshot(&vertical)[0];
         assert_eq!(split.0, Direction::Vertical);
         assert!((split.1 - 0.45).abs() < f32::EPSILON);
@@ -1173,7 +1234,12 @@ mod tests {
         let (mut vertical, _top) = TileLayout::new();
         let bottom = vertical.split_focused(Direction::Vertical);
 
-        assert!(vertical.resize_pane(bottom, NavDirection::Down, 0.05, Rect::new(0, 0, 100, 40),));
+        assert!(vertical.resize_pane(
+            bottom,
+            NavDirection::Down,
+            RatioDelta::new(0.05),
+            Rect::new(0, 0, 100, 40),
+        ));
         let split = split_snapshot(&vertical)[0];
         assert_eq!(split.0, Direction::Vertical);
         assert!((split.1 - 0.55).abs() < f32::EPSILON);
@@ -1197,7 +1263,12 @@ mod tests {
         );
         let before = pane_rect(&layout, pane(1));
 
-        assert!(layout.resize_pane(pane(1), NavDirection::Left, 0.05, Rect::new(0, 0, 100, 40),));
+        assert!(layout.resize_pane(
+            pane(1),
+            NavDirection::Left,
+            RatioDelta::new(0.05),
+            Rect::new(0, 0, 100, 40),
+        ));
 
         let after = pane_rect(&layout, pane(1));
         assert_eq!(after.height, before.height);
@@ -1226,7 +1297,12 @@ mod tests {
         );
         let before = pane_rect(&layout, pane(1));
 
-        assert!(layout.resize_pane(pane(1), NavDirection::Up, 0.05, Rect::new(0, 0, 100, 40),));
+        assert!(layout.resize_pane(
+            pane(1),
+            NavDirection::Up,
+            RatioDelta::new(0.05),
+            Rect::new(0, 0, 100, 40),
+        ));
 
         let after = pane_rect(&layout, pane(1));
         assert_eq!(after.width, before.width);
@@ -1259,7 +1335,12 @@ mod tests {
             pane(3),
         );
 
-        assert!(layout.resize_pane(pane(3), NavDirection::Right, 0.05, Rect::new(0, 0, 100, 40),));
+        assert!(layout.resize_pane(
+            pane(3),
+            NavDirection::Right,
+            RatioDelta::new(0.05),
+            Rect::new(0, 0, 100, 40),
+        ));
 
         let splits = split_snapshot(&layout);
         assert_eq!(splits[0], (Direction::Vertical, 0.5));
@@ -1371,7 +1452,12 @@ mod tests {
     fn resize_does_not_disturb_the_close_focus_target() {
         let mut layout = sample_layout();
         layout.focus_pane(pane(4));
-        layout.resize_pane(pane(1), NavDirection::Right, 0.05, Rect::new(0, 0, 100, 40));
+        layout.resize_pane(
+            pane(1),
+            NavDirection::Right,
+            RatioDelta::new(0.05),
+            Rect::new(0, 0, 100, 40),
+        );
 
         assert!(layout.close_focused());
 
@@ -1384,7 +1470,7 @@ mod tests {
         layout.focus_pane(pane(4));
 
         let new_id = layout
-            .split_pane(pane(1), Direction::Horizontal, 0.5)
+            .split_pane(pane(1), Direction::Horizontal, SplitRatio::clamped(0.5))
             .expect("target exists");
 
         assert!(layout.pane_ids().contains(&new_id));
@@ -1399,7 +1485,7 @@ mod tests {
         let ids = layout.pane_ids();
 
         assert_eq!(
-            layout.split_pane(pane(99), Direction::Horizontal, 0.5),
+            layout.split_pane(pane(99), Direction::Horizontal, SplitRatio::clamped(0.5)),
             None
         );
 
@@ -1410,16 +1496,16 @@ mod tests {
     fn discarded_prepared_split_preserves_focus_history() {
         let (mut layout, root) = TileLayout::new();
         let _ = layout
-            .split_pane(root, Direction::Horizontal, 0.5)
+            .split_pane(root, Direction::Horizontal, SplitRatio::clamped(0.5))
             .expect("target exists");
         let focused = layout
-            .split_pane(root, Direction::Vertical, 0.5)
+            .split_pane(root, Direction::Vertical, SplitRatio::clamped(0.5))
             .expect("target exists");
         layout.focus_pane(focused);
         let original_ids = layout.pane_ids();
         let mut prepared = layout.clone();
         let new_id = prepared
-            .split_pane(focused, Direction::Horizontal, 0.5)
+            .split_pane(focused, Direction::Horizontal, SplitRatio::clamped(0.5))
             .expect("target exists");
         assert!(prepared.pane_ids().contains(&new_id));
 
@@ -1452,14 +1538,15 @@ mod tests {
     #[test]
     fn split_leaves_a_cell_for_each_child() {
         for total in 2..=12 {
-            for ratio in [0.1, 0.5, 0.9] {
+            for ratio in [0.1, 0.5, 0.9].map(SplitRatio::clamped) {
                 let (first, second) = split_extent(total, ratio);
-                assert!(first >= 1 && second >= 1, "{total} x {ratio}");
+                assert!(first >= 1 && second >= 1, "{total} x {}", ratio.get());
                 assert_eq!(first + second, total);
             }
         }
-        assert_eq!(split_extent(1, 0.5).0 + split_extent(1, 0.5).1, 1);
-        assert_eq!(split_extent(0, 0.5), (0, 0));
+        let even = SplitRatio::clamped(0.5);
+        assert_eq!(split_extent(1, even).0 + split_extent(1, even).1, 1);
+        assert_eq!(split_extent(0, even), (0, 0));
     }
 
     #[test]

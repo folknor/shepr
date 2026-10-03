@@ -189,7 +189,7 @@ pub(super) fn server_reader_thread(
             }
             Err(shepr_protocol::FramingError::UnexpectedEof) => {
                 debug!(
-                    endpoint = %endpoint_id.storage_key(),
+                    endpoint = %endpoint_id,
                     generation,
                     "server closed connection"
                 );
@@ -209,7 +209,7 @@ pub(super) fn server_reader_thread(
             // `EndpointReader` waits out WouldBlock itself, so any error here is final.
             Err(err) => {
                 warn!(
-                    endpoint = %endpoint_id.storage_key(),
+                    endpoint = %endpoint_id,
                     generation,
                     error = %err,
                     "server read error"
@@ -253,7 +253,7 @@ fn framing_error_to_io(
     };
     let failure = match &framed.source {
         shepr_protocol::FramingError::Io(error) => shepr_remote::EndpointFailure::from_error(error)
-            .with_context(&format!("endpoint {}", framed.endpoint_id.storage_key())),
+            .with_context(&format!("endpoint {}", framed.endpoint_id)),
         shepr_protocol::FramingError::UnexpectedEof => {
             shepr_remote::EndpointFailure::from_error(&io::Error::new(kind, framed))
         }
@@ -270,7 +270,7 @@ struct EndpointFramingError {
 
 impl std::fmt::Display for EndpointFramingError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(formatter, "endpoint {}: ", self.endpoint_id.storage_key())?;
+        write!(formatter, "endpoint {}: ", self.endpoint_id)?;
         if matches!(&self.source, shepr_protocol::FramingError::UnexpectedEof) {
             formatter.write_str("server closed connection")
         } else {

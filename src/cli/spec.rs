@@ -122,8 +122,8 @@ fn detect_command() -> Command {
                 )
                 .after_help(
                     "While a hook reports the pane's full agent lifecycle, screen detection is \
-                     skipped and the output says so (screen_detection_skip_reason) instead of \
-                     showing rule evidence.",
+                     skipped and the output says so (screen_detection_skip_reason, or \
+                     state_source with --json) instead of showing rule evidence.",
                 )
                 .arg(pane_id_argument().required_unless_present("file").conflicts_with("file"))
                 .arg(

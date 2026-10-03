@@ -61,12 +61,10 @@ pub(super) fn snapshot_from_session(
                     .to_string()
             });
             shepr_protocol::ClientShellWorkspace {
-                focused: focused_workspace_id.as_ref() == Some(workspace_id),
                 workspace_id: workspace_id.clone(),
                 new_workspace_cwd,
                 number: workspace.number,
                 label: workspace.label.clone(),
-                custom_label: state.is_some_and(|state| state.custom_name.is_some()),
                 branch: state.and_then(shepr_mux::workspace::Workspace::branch),
                 git_ahead_behind: state
                     .and_then(shepr_mux::workspace::Workspace::git_ahead_behind)
@@ -79,7 +77,6 @@ pub(super) fn snapshot_from_session(
         .panes
         .iter()
         .map(|pane| {
-            let focused = focused_pane_id.as_ref() == Some(&pane.pane_id);
             let right_click_passthrough = app
                 .resolve_pane_id(&pane.pane_id)
                 .and_then(|(workspace_index, pane_id)| {
@@ -91,11 +88,9 @@ pub(super) fn snapshot_from_session(
                 .is_some_and(|pane| pane.right_click_passthrough);
             shepr_protocol::ClientShellPane {
                 pane_id: pane.pane_id.clone(),
-                workspace_id: pane.workspace_id.clone(),
                 label: pane.label.clone(),
                 cwd: pane.cwd.clone(),
                 foreground_cwd: pane.foreground_cwd.clone(),
-                focused,
                 right_click_passthrough,
             }
         })
@@ -103,18 +98,13 @@ pub(super) fn snapshot_from_session(
     let agents = snapshot
         .agents
         .iter()
-        .map(|agent| {
-            let focused = focused_pane_id.as_ref() == Some(&agent.pane_id);
-            shepr_protocol::ClientShellAgent {
-                pane_id: agent.pane_id.clone(),
-                workspace_id: agent.workspace_id.clone(),
-                agent: agent.agent.clone(),
-                terminal_title: agent.terminal_title.clone(),
-                terminal_title_stripped: agent.terminal_title_stripped.clone(),
-                agent_status: agent.agent_status,
-                state_change_seq: agent.state_change_seq,
-                focused,
-            }
+        .map(|agent| shepr_protocol::ClientShellAgent {
+            pane_id: agent.pane_id.clone(),
+            agent: agent.agent.clone(),
+            terminal_title: agent.terminal_title.clone(),
+            terminal_title_stripped: agent.terminal_title_stripped.clone(),
+            agent_status: agent.agent_status,
+            state_change_seq: agent.state_change_seq,
         })
         .collect();
 
@@ -364,47 +354,13 @@ fn split_hit_rect(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::*;
-
-    #[test]
-    fn snapshot_state_fields_follow_ids_not_positions() {
-        let mut app = app::App::new(&shepr_config::ServerConfig::default(), app::AppPolicy::Test);
-        let mut first = shepr_mux::workspace::Workspace::test_new("first");
-        // `test_new` always sets a custom name for identification; clear it
-        // so only `second` below is actually custom-named, which is what
-        // this test's `custom_label` assertions check.
-        first.custom_name = None;
-        let mut second = shepr_mux::workspace::Workspace::test_new("second");
-        second.custom_name = Some("named".into());
-        app.state.workspaces = vec![first, second];
-        app.state.ensure_test_terminals();
-
-        let second_workspace_id = app.state.workspaces[1].id.clone();
-        let snapshot = snapshot_from_session(
-            &app,
-            &app.session_snapshot(),
-            &shepr_test_fixtures::fixed_boot_id(1),
-            1,
-            &crate::server::clients::ClientShellLocation::default(),
-        );
-
-        for workspace in &snapshot.workspaces {
-            assert_eq!(
-                workspace.custom_label,
-                workspace.workspace_id == second_workspace_id,
-                "workspace {}",
-                workspace.workspace_id
-            );
-        }
-        assert_eq!(snapshot.workspaces.len(), 2);
-    }
 
     #[test]
     fn split_hits_follow_released_border_and_gap_geometry() {
         let horizontal = shepr_core::layout::SplitBorder {
             pos: 20,
             direction: shepr_core::layout::Direction::Horizontal,
-            ratio: 0.5,
+            ratio: shepr_core::layout::SplitRatio::EVEN,
             area: shepr_core::geometry::Rect::new(2, 3, 40, 12),
             path: vec![shepr_core::geometry::SplitBranch::First],
         };
@@ -425,7 +381,7 @@ mod tests {
         let vertical = shepr_core::layout::SplitBorder {
             pos: 9,
             direction: shepr_core::layout::Direction::Vertical,
-            ratio: 0.5,
+            ratio: shepr_core::layout::SplitRatio::EVEN,
             area: shepr_core::geometry::Rect::new(2, 3, 40, 12),
             path: vec![shepr_core::geometry::SplitBranch::Second],
         };
@@ -437,7 +393,7 @@ mod tests {
         let edge = shepr_core::layout::SplitBorder {
             pos: 0,
             direction: shepr_core::layout::Direction::Horizontal,
-            ratio: 0.5,
+            ratio: shepr_core::layout::SplitRatio::EVEN,
             area: shepr_core::geometry::Rect::new(0, 0, 1, 4),
             path: Vec::new(),
         };

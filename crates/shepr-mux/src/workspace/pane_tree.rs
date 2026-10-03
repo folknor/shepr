@@ -175,7 +175,7 @@ impl Workspace {
     pub fn resize_focused_pane(
         &mut self,
         direction: NavDirection,
-        delta: f32,
+        delta: shepr_core::layout::RatioDelta,
         area: shepr_core::geometry::Rect,
     ) -> bool {
         if !self.has_consistent_panes() {
@@ -189,7 +189,7 @@ impl Workspace {
         &mut self,
         pane_id: PaneId,
         direction: NavDirection,
-        delta: f32,
+        delta: shepr_core::layout::RatioDelta,
         area: shepr_core::geometry::Rect,
     ) -> bool {
         self.has_consistent_panes() && self.layout.resize_pane(pane_id, direction, delta, area)
@@ -198,7 +198,7 @@ impl Workspace {
     pub fn set_split_ratio_at(
         &mut self,
         path: &[shepr_core::geometry::SplitBranch],
-        ratio: f32,
+        ratio: shepr_core::layout::SplitRatio,
     ) -> bool {
         self.has_consistent_panes() && self.layout.set_ratio_at(path, ratio)
     }
@@ -228,7 +228,9 @@ impl Workspace {
         spawn: &PaneSpawnHandles,
     ) -> std::io::Result<NewPane> {
         let mut prepared_layout = self.layout.clone();
-        let Some(new_id) = prepared_layout.split_pane(target, direction, 0.5) else {
+        let Some(new_id) =
+            prepared_layout.split_pane(target, direction, shepr_core::layout::SplitRatio::EVEN)
+        else {
             // `Workspace::split_pane` checks the pane record first. Keep this
             // guard because the pane map and layout tree are separate state;
             // disagreement must not create an unlaid-out pane record.

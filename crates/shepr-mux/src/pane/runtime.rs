@@ -992,11 +992,11 @@ impl PaneRuntime {
         render_dirty: &Arc<RenderSignal>,
         pane_teardowns: &Arc<PaneTeardownTracker>,
     ) -> std::io::Result<Self> {
-        let mut cmd = pane_shell_command_builder(shell_config);
+        let mut cmd = pane_shell_command_builder(shell_config, launch_env.kind());
         cmd.cwd(cwd);
         apply_pane_terminal_env(&mut cmd);
         apply_pane_launch_env(&mut cmd, launch_env);
-        let launch_purpose = launch_env.purpose();
+        let launch_kind = launch_env.kind();
         let teardown_tracker = Arc::clone(pane_teardowns);
         // One geometry is what the PTY, the terminal and the cached size all
         // start from, so the first `TIOCSWINSZ` carries the pixel dimensions
@@ -1046,6 +1046,7 @@ impl PaneRuntime {
         // before it existed is still published.
         let launch = super::launch_status::spawn(
             pane_id,
+            launch_kind,
             launch,
             Arc::clone(&child_liveness),
             Arc::clone(&exit_arbiter),
@@ -1061,7 +1062,7 @@ impl PaneRuntime {
         let detect_reset_notify = Arc::new(Notify::new());
         let detect_handle = Some(super::detection_task::DetectionTask::spawn(
             pane_id,
-            launch_purpose,
+            launch_kind,
             launch,
             super::detection_task::DetectionHandles {
                 terminal: Arc::clone(&terminal),
@@ -1367,7 +1368,7 @@ impl PaneRuntime {
             .keyboard_protocol(shepr_termio::input::KeyboardProtocol::legacy())
     }
 
-    pub fn modify_other_keys_level(&self) -> u8 {
+    pub fn modify_other_keys_level(&self) -> shepr_vt::ModifyOtherKeysLevel {
         self.terminal.modify_other_keys_level()
     }
 
@@ -2055,7 +2056,7 @@ mod tests {
             &runtime.child_liveness,
             cwd.clone(),
             &runtime.cwd.reported,
-            &events.clone().into(),
+            &crate::events::EventSender::runtime(events, runtime.pane_id, runtime.generation),
         );
         assert_eq!(
             reported_path(&runtime),
@@ -2083,12 +2084,17 @@ mod tests {
             })
             .expect("test precondition");
 
+        let sender = crate::events::EventSender::runtime(
+            events.clone(),
+            runtime.pane_id,
+            runtime.generation,
+        );
         publish_reported_cwd(
             runtime.pane_id,
             &runtime.child_liveness,
             cwd.clone(),
             &runtime.cwd.reported,
-            &events.clone().into(),
+            &sender,
         );
         assert!(
             shepr_vt::lock_auxiliary(&runtime.cwd.reported).is_none(),
@@ -2101,9 +2107,12 @@ mod tests {
             &runtime.child_liveness,
             cwd.clone(),
             &runtime.cwd.reported,
-            &events.clone().into(),
+            &sender,
         );
-        let Ok(AppEvent::TerminalCwdReported { cwd: sent, .. }) = event_rx.try_recv() else {
+        let Ok(AppEvent::Runtime { event, .. }) = event_rx.try_recv() else {
+            panic!("expected the retried cwd report");
+        };
+        let AppEvent::TerminalCwdReported { cwd: sent, .. } = *event else {
             panic!("expected the retried cwd report");
         };
         assert_eq!(sent.as_path(), cwd);
@@ -2173,7 +2182,7 @@ mod tests {
             &runtime.child_liveness,
             cwd.clone(),
             &runtime.cwd.reported,
-            &events.clone().into(),
+            &crate::events::EventSender::runtime(events, runtime.pane_id, runtime.generation),
         );
 
         assert!(event_rx.try_recv().is_err(), "a repeat is not a new event");
@@ -2402,7 +2411,11 @@ mod tests {
             render_notify: Arc::new(Notify::new()),
             render_dirty: Arc::new(RenderSignal::new()),
             cwd: Arc::default(),
-            events: events.into(),
+            events: crate::events::EventSender::runtime(
+                events,
+                pane_id,
+                crate::events::RuntimeGeneration::alloc(),
+            ),
             child_liveness: Arc::new(ChildLiveness::new(0, None)),
             sync_timeout_render: SyncTimeoutRender::default(),
             deferred_effect_order: Arc::default(),
@@ -2578,7 +2591,10 @@ mod tests {
         );
         let resolved = fixture::resolved_shell(&shell);
         let shell = shell.to_str().expect("scratch shell path is UTF-8");
-        let mut cmd = pane_shell_command_builder(PaneShellConfig::new(&resolved, true));
+        let mut cmd = pane_shell_command_builder(
+            PaneShellConfig::new(&resolved, true),
+            crate::pane::LaunchKind::Fresh,
+        );
         cmd.cwd(scratch.path());
 
         let mut spawned = shepr_pty::backend::spawn_pty(
@@ -2620,7 +2636,10 @@ mod tests {
         );
         let resolved = fixture::resolved_shell(&shell);
         let shell = shell.to_str().expect("scratch shell path is UTF-8");
-        let cmd = pane_shell_command_builder(PaneShellConfig::new(&resolved, false));
+        let cmd = pane_shell_command_builder(
+            PaneShellConfig::new(&resolved, false),
+            crate::pane::LaunchKind::Fresh,
+        );
         let mut spawned = shepr_pty::backend::spawn_pty(
             shepr_core::geometry::PaneGeometry::new(80, 24, 0, 0),
             &cmd,
@@ -2653,7 +2672,10 @@ mod tests {
     #[test]
     fn a_missing_configured_shell_fails_in_the_child_not_at_the_fork() {
         let shell = fixture::resolved_shell("/__shepr_missing_shell__");
-        let cmd = pane_shell_command_builder(PaneShellConfig::new(&shell, true));
+        let cmd = pane_shell_command_builder(
+            PaneShellConfig::new(&shell, true),
+            crate::pane::LaunchKind::Fresh,
+        );
         let mut spawned = shepr_pty::backend::spawn_pty(
             shepr_core::geometry::PaneGeometry::new(80, 24, 0, 0),
             &cmd,
@@ -3148,7 +3170,11 @@ mod tests {
         .expect("test precondition");
 
         let publish = publish_state_changed_event(
-            tx.clone(),
+            crate::events::EventSender::runtime(
+                tx.clone(),
+                pane_id,
+                crate::events::RuntimeGeneration::alloc(),
+            ),
             pane_id,
             StateChangedUpdate {
                 agent: Some(Agent::Pi),
@@ -3184,8 +3210,11 @@ mod tests {
             .await
             .expect("queue should yield second event")
             .expect("sender still alive");
+        let AppEvent::Runtime { event, .. } = second else {
+            panic!("runtime envelope required");
+        };
         assert!(matches!(
-            second,
+            *event,
             AppEvent::StateChanged {
                 pane_id: delivered_pane,
                 agent: Some(Agent::Pi),

@@ -75,7 +75,7 @@ mod tests {
                     modifiers: crate::WireModifiers::SHIFT,
                     kind: ClientKeyKind::Release,
                     repeat_count: 1,
-                    shifted_codepoint: Some('L' as u32),
+                    shifted_codepoint: Some('L'),
                     generated_text: None,
                 },
                 ClientPaneInputEvent::Key {
@@ -185,7 +185,7 @@ mod tests {
                 workspace_id: workspace.clone(),
                 first_panes: vec![pane.clone()],
                 second_panes: vec!["w1:p2".parse()?],
-                ratio: 0.6,
+                ratio: shepr_core::layout::SplitRatio::new(0.6).expect("wire test ratio is valid"),
             }),
             EndpointCommand::WorkspaceMove(WorkspaceMoveParams {
                 workspace_id: workspace.clone(),
@@ -455,32 +455,26 @@ mod tests {
                 new_workspace_cwd: "/tmp".into(),
                 number: 1,
                 label: "shell".into(),
-                custom_label: false,
                 branch: Some("main".into()),
                 git_ahead_behind: None,
-                focused: true,
                 agent_status: crate::AgentStatus::Idle,
             }],
             panes: vec![ClientShellPane {
                 pane_id: "w1:p1".into(),
-                workspace_id: "w1".into(),
                 label: None,
                 cwd: Some("/repo".into()),
                 foreground_cwd: Some("/repo".into()),
-                focused: true,
                 right_click_passthrough: false,
             }],
             agents: vec![ClientShellAgent {
                 pane_id: "w1:p1"
                     .parse()
                     .map_err(|_| std::io::Error::other("invalid test pane id"))?,
-                workspace_id: "w1".into(),
                 agent: Some("codex".into()),
                 terminal_title: None,
                 terminal_title_stripped: None,
                 agent_status: crate::AgentStatus::Working,
                 state_change_seq: 1,
-                focused: true,
             }],
         };
         let decoded: ClientShellSnapshot = roundtrip(&msg)?;
@@ -491,7 +485,7 @@ mod tests {
     #[test]
     fn server_shutdown_roundtrip() -> TestResult {
         let msg = ServerMessage::ServerShutdown {
-            reason: Some(crate::ShutdownReason::Message("updating".to_owned())),
+            reason: crate::ShutdownReason::Stopping,
         };
         assert_eq!(roundtrip(&msg)?, msg);
         Ok(())

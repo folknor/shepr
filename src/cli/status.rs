@@ -172,10 +172,7 @@ fn answered_status(server: &ServerPresence) -> Option<&RuntimeStatus> {
 }
 
 fn print_runtime_identity(status: &RuntimeStatus, indent: &str) {
-    println!(
-        "{indent}version: {}",
-        option_label(status.version.as_deref())
-    );
+    println!("{indent}version: {}", status.version);
     println!("{indent}build_id: {}", status.build_id);
     println!("{indent}boot_id: {}", status.boot_id);
 }
@@ -225,7 +222,7 @@ fn server_status_json(paths: &shepr_config::AppPaths, server: &ServerPresence) -
     let status = answered_status(server);
     ServerStatusJson {
         presence,
-        version: status.and_then(|status| status.version.clone()),
+        version: status.map(|status| status.version.clone()),
         build_id: status.map(|status| status.build_id.clone()),
         boot_id: status.map(|status| status.boot_id.clone()),
         socket: paths.server_address().socket().display().to_string(),
@@ -274,9 +271,9 @@ mod tests {
     use super::*;
     use shepr_test_fixtures::*;
 
-    fn runtime_status(version: Option<&str>, build_id: &str) -> RuntimeStatus {
+    fn runtime_status(version: &str, build_id: &str) -> RuntimeStatus {
         RuntimeStatus {
-            version: version.map(str::to_owned),
+            version: version.to_owned(),
             build_id: build_id.to_owned(),
             boot_id: "4242-1700000000".to_owned(),
             stopping: false,
@@ -284,7 +281,7 @@ mod tests {
         }
     }
 
-    fn running_server(version: Option<&str>, build_id: &str) -> ServerPresence {
+    fn running_server(version: &str, build_id: &str) -> ServerPresence {
         ServerPresence::Running(runtime_status(version, build_id))
     }
 
@@ -294,7 +291,7 @@ mod tests {
 
     #[test]
     fn server_status_json_reports_the_running_boot() {
-        let server = running_server(Some("test"), shepr_protocol::BUILD_ID);
+        let server = running_server("test", shepr_protocol::BUILD_ID);
         let value = serde_json::to_value(server_status_json(&test_paths(), &server))
             .expect("test precondition");
         assert!(value.get("capabilities").is_none());
@@ -306,7 +303,7 @@ mod tests {
 
     #[test]
     fn every_presence_is_reported_by_name() {
-        let status = runtime_status(None, shepr_protocol::BUILD_ID);
+        let status = runtime_status("test", shepr_protocol::BUILD_ID);
         for (server, name) in [
             (ServerPresence::Gone, "gone"),
             (ServerPresence::Starting(status.clone()), "starting"),
@@ -322,7 +319,7 @@ mod tests {
 
     #[test]
     fn human_status_detects_a_restart_for_starting_but_not_stopping_servers() {
-        let other = runtime_status(Some("0.0.0-old"), "ffffffffffffffff");
+        let other = runtime_status("0.0.0-old", "ffffffffffffffff");
         let starting = ServerPresence::Starting(other.clone());
         let json = server_status_json(&test_paths(), &starting);
         assert_eq!(json.presence, ServerPresenceJson::Starting);
@@ -355,17 +352,14 @@ mod tests {
 
     #[test]
     fn same_build_does_not_require_restart() {
-        let server = running_server(Some("0.0.0-old"), shepr_protocol::BUILD_ID);
+        let server = running_server("0.0.0-old", shepr_protocol::BUILD_ID);
 
         assert_eq!(build_status_flags(&server), (Some(true), false));
     }
 
     #[test]
     fn different_build_requires_restart() {
-        let server = running_server(
-            Some(shepr_protocol::build_version().as_str()),
-            "ffffffffffffffff",
-        );
+        let server = running_server(shepr_protocol::build_version().as_str(), "ffffffffffffffff");
 
         assert_eq!(build_status_flags(&server), (Some(false), true));
     }

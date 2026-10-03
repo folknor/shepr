@@ -27,7 +27,6 @@ fn focused_workspace_change_reveals_new_workspace_in_full_sidebar() {
             number,
             label: format!("space-{number}"),
             branch: None,
-            focused: number == 1,
             ..template.clone()
         })
         .collect();
@@ -48,9 +47,6 @@ fn focused_workspace_change_reveals_new_workspace_in_full_sidebar() {
     let mut update = state.snapshot.as_deref().expect("snapshot").clone();
     update.revision = shepr_protocol::ProjectionRevision::new(2);
     update.focused_workspace_id = Some(test_workspace_id("w12"));
-    for workspace in &mut update.workspaces {
-        workspace.focused = workspace.workspace_id == "w12";
-    }
     let mut updated_surface = surface();
     updated_surface.projection_revision = shepr_protocol::ProjectionRevision::new(2);
     state.set_snapshot(Box::new(update));

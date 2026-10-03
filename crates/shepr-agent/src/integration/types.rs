@@ -22,8 +22,19 @@ pub(crate) struct InstallIssue {
 
 impl InstallIssue {
     pub(crate) fn io_error(kind: InstallErrorKind, message: impl Into<String>) -> io::Error {
+        let error_kind = match kind {
+            InstallErrorKind::ConfigChanged => io::ErrorKind::WouldBlock,
+            InstallErrorKind::ConfigUnparseable
+            | InstallErrorKind::ConfigShape
+            | InstallErrorKind::ManagedBlockConflict
+            | InstallErrorKind::HardLinked
+            | InstallErrorKind::NotRegularFile
+            | InstallErrorKind::TooManySymlinks => io::ErrorKind::InvalidData,
+            InstallErrorKind::AgentDirMissing => io::ErrorKind::NotFound,
+            InstallErrorKind::Io => io::ErrorKind::Other,
+        };
         io::Error::new(
-            io::ErrorKind::InvalidData,
+            error_kind,
             Self {
                 kind,
                 message: message.into(),
@@ -41,52 +52,28 @@ impl std::fmt::Display for InstallIssue {
 impl std::error::Error for InstallIssue {}
 
 #[derive(Debug)]
-pub(crate) enum InstallError {
-    ConfigChanged { source: io::Error },
-    ConfigUnparseable { source: io::Error },
-    ConfigShape { source: io::Error },
-    ManagedBlockConflict { source: io::Error },
-    HardLinked { source: io::Error },
-    NotRegularFile { source: io::Error },
-    TooManySymlinks { source: io::Error },
-    AgentDirMissing { source: io::Error },
-    Io { source: io::Error },
+pub(crate) struct InstallError {
+    kind: InstallErrorKind,
+    source: io::Error,
 }
 
 impl InstallError {
     pub(crate) fn kind(&self) -> InstallErrorKind {
-        match self {
-            Self::ConfigChanged { .. } => InstallErrorKind::ConfigChanged,
-            Self::ConfigUnparseable { .. } => InstallErrorKind::ConfigUnparseable,
-            Self::ConfigShape { .. } => InstallErrorKind::ConfigShape,
-            Self::ManagedBlockConflict { .. } => InstallErrorKind::ManagedBlockConflict,
-            Self::HardLinked { .. } => InstallErrorKind::HardLinked,
-            Self::NotRegularFile { .. } => InstallErrorKind::NotRegularFile,
-            Self::TooManySymlinks { .. } => InstallErrorKind::TooManySymlinks,
-            Self::AgentDirMissing { .. } => InstallErrorKind::AgentDirMissing,
-            Self::Io { .. } => InstallErrorKind::Io,
-        }
+        self.kind
     }
 
     fn source(&self) -> &io::Error {
-        match self {
-            Self::ConfigChanged { source }
-            | Self::ConfigUnparseable { source }
-            | Self::ConfigShape { source }
-            | Self::ManagedBlockConflict { source }
-            | Self::HardLinked { source }
-            | Self::NotRegularFile { source }
-            | Self::TooManySymlinks { source }
-            | Self::AgentDirMissing { source }
-            | Self::Io { source } => source,
-        }
+        &self.source
     }
 }
 
 impl From<io::Error> for InstallError {
     fn from(source: io::Error) -> Self {
         if super::config_file::is_config_changed(&source) {
-            return Self::ConfigChanged { source };
+            return Self {
+                kind: InstallErrorKind::ConfigChanged,
+                source,
+            };
         }
 
         let kind = source
@@ -100,16 +87,9 @@ impl From<io::Error> for InstallError {
                     .map(|_| InstallErrorKind::NotRegularFile)
             });
 
-        match kind {
-            Some(InstallErrorKind::ConfigUnparseable) => Self::ConfigUnparseable { source },
-            Some(InstallErrorKind::ConfigShape) => Self::ConfigShape { source },
-            Some(InstallErrorKind::ManagedBlockConflict) => Self::ManagedBlockConflict { source },
-            Some(InstallErrorKind::HardLinked) => Self::HardLinked { source },
-            Some(InstallErrorKind::NotRegularFile) => Self::NotRegularFile { source },
-            Some(InstallErrorKind::TooManySymlinks) => Self::TooManySymlinks { source },
-            Some(InstallErrorKind::AgentDirMissing) => Self::AgentDirMissing { source },
-            Some(InstallErrorKind::ConfigChanged) => Self::ConfigChanged { source },
-            Some(InstallErrorKind::Io) | None => Self::Io { source },
+        Self {
+            kind: kind.unwrap_or(InstallErrorKind::Io),
+            source,
         }
     }
 }
@@ -244,8 +224,22 @@ mod tests {
             InstallErrorKind::AgentDirMissing,
             InstallErrorKind::Io,
         ] {
-            let error = InstallError::from(InstallIssue::io_error(kind, "settings failure"));
+            let raw = InstallIssue::io_error(kind, "settings failure");
+            let expected_kind = match kind {
+                InstallErrorKind::ConfigChanged => io::ErrorKind::WouldBlock,
+                InstallErrorKind::ConfigUnparseable
+                | InstallErrorKind::ConfigShape
+                | InstallErrorKind::ManagedBlockConflict
+                | InstallErrorKind::HardLinked
+                | InstallErrorKind::NotRegularFile
+                | InstallErrorKind::TooManySymlinks => io::ErrorKind::InvalidData,
+                InstallErrorKind::AgentDirMissing => io::ErrorKind::NotFound,
+                InstallErrorKind::Io => io::ErrorKind::Other,
+            };
+            assert_eq!(raw.kind(), expected_kind);
+            let error = InstallError::from(raw);
             assert_eq!(error.kind(), kind);
+            assert_eq!(error.source().kind(), expected_kind);
         }
         let error = InstallError::from(InstallIssue::io_error(
             InstallErrorKind::ConfigShape,

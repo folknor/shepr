@@ -208,7 +208,7 @@ fn try_encode_csi_u(key: &TerminalKey, flags: KittyKeyboardFlags) -> Option<Vec<
     sequence.push_str("\x1b[");
     write!(&mut sequence, "{codepoint}").ok()?;
     if let Some(shifted) = alternate_shifted {
-        write!(&mut sequence, ":{shifted}").ok()?;
+        write!(&mut sequence, ":{}", u32::from(shifted)).ok()?;
     }
     write!(&mut sequence, ";{modifier}").ok()?;
     if let Some(event) = event_suffix {
@@ -541,7 +541,7 @@ fn text_char_for_key(key: &TerminalKey) -> Option<char> {
 }
 
 fn shifted_text_char(key: &TerminalKey, ch: char) -> Option<char> {
-    if let Some(shifted) = key.shifted_codepoint.and_then(char::from_u32) {
+    if let Some(shifted) = key.shifted_codepoint {
         return Some(shifted);
     }
 
@@ -601,7 +601,7 @@ fn canonical_kitty_char(ch: char, mods: KeyModifiers) -> char {
     }
 }
 
-fn alternate_shifted_codepoint(key: &TerminalKey, flags: KittyKeyboardFlags) -> Option<u32> {
+fn alternate_shifted_codepoint(key: &TerminalKey, flags: KittyKeyboardFlags) -> Option<char> {
     if !flags.contains(KittyKeyboardFlags::REPORT_ALTERNATE_KEYS) {
         return None;
     }
@@ -614,7 +614,7 @@ fn alternate_shifted_codepoint(key: &TerminalKey, flags: KittyKeyboardFlags) -> 
         KeyCode::Char(ch)
             if key.modifiers.contains(KeyModifiers::SHIFT) && ch.is_ascii_uppercase() =>
         {
-            Some(ch as u32)
+            Some(ch)
         }
         _ => None,
     }
@@ -750,7 +750,7 @@ mod tests {
         code: KeyCode,
         modifiers: KeyModifiers,
         kind: crossterm::event::KeyEventKind,
-        shifted_codepoint: Option<u32>,
+        shifted_codepoint: Option<char>,
     ) {
         assert_eq!(actual.code, code);
         assert_eq!(actual.modifiers, modifiers);
@@ -1269,7 +1269,7 @@ mod tests {
             ),
             (
                 TerminalKey::new(KeyCode::Char('1'), KeyModifiers::SHIFT)
-                    .with_shifted_codepoint('!' as u32),
+                    .with_shifted_codepoint('!'),
                 b"\x1b[49;2;33u".as_slice(),
             ),
             (
@@ -1425,8 +1425,8 @@ mod tests {
 
     #[test]
     fn kitty_shifted_symbol_sends_text() {
-        let key = TerminalKey::new(KeyCode::Char('1'), KeyModifiers::SHIFT)
-            .with_shifted_codepoint('!' as u32);
+        let key =
+            TerminalKey::new(KeyCode::Char('1'), KeyModifiers::SHIFT).with_shifted_codepoint('!');
         assert_eq!(encode_terminal_key(key, kitty_protocol(7)), b"!");
     }
 
@@ -1457,8 +1457,8 @@ mod tests {
 
     #[test]
     fn kitty_shifted_symbol_prefers_text_over_roundtrip_key_identity() {
-        let key = TerminalKey::new(KeyCode::Char('1'), KeyModifiers::SHIFT)
-            .with_shifted_codepoint('!' as u32);
+        let key =
+            TerminalKey::new(KeyCode::Char('1'), KeyModifiers::SHIFT).with_shifted_codepoint('!');
         let encoded = encode_terminal_key(key, kitty_protocol(7));
         assert_eq!(encoded, b"!");
     }
@@ -1511,7 +1511,7 @@ mod tests {
 
         for (base, shifted) in cases {
             let key = TerminalKey::new(KeyCode::Char(base), KeyModifiers::SHIFT)
-                .with_shifted_codepoint(shifted as u32);
+                .with_shifted_codepoint(shifted);
             let encoded = encode_terminal_key(key, kitty_protocol(7));
             assert_eq!(encoded, shifted.to_string().into_bytes(), "base={base}");
         }

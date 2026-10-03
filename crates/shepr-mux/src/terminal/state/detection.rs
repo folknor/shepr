@@ -23,7 +23,7 @@ impl TerminalState {
         mut self,
         plan: shepr_agent::agent::resume::AgentResumePlan,
     ) -> Self {
-        self.pending_agent_resume_plan = Some(plan);
+        self.agent_resume = AgentResumeState::Planned(plan);
         self
     }
 
@@ -39,7 +39,7 @@ impl TerminalState {
     // Removing its synthetic detected identity is not a new agent activity
     // transition: Unknown and Idle have the same sidebar presentation.
     pub fn abandon_agent_resume(&mut self, error: super::RestoreFailure, now: Instant) {
-        self.pending_agent_resume_plan = None;
+        self.agent_resume = AgentResumeState::None;
         self.restore_error = Some(error);
         if self.detected_agent.is_some() {
             let _ = self.set_detected_state_with_screen_signals_at(

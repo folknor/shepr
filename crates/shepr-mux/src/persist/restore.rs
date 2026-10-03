@@ -11,7 +11,7 @@ use crate::render_signal::RenderSignal;
 use crate::terminal::{RestoreFailure, TerminalState};
 use crate::workspace::Workspace;
 use shepr_agent::detect::AgentState;
-use shepr_core::layout::{Direction, Node, PaneId, SplitRatio, TileLayout};
+use shepr_core::layout::{Direction, Node, PaneId, TileLayout};
 use shepr_protocol::{TerminalId, WorkspaceId};
 
 use super::snapshot::{
@@ -288,7 +288,7 @@ fn restored_terminal(
     match start {
         RestoredPaneStart::Running { .. } => {}
         RestoredPaneStart::PendingResume(plan) => {
-            let plan_agent = plan.agent;
+            let plan_agent = plan.agent();
             terminal = terminal.with_pending_agent_resume_plan(plan);
             // Seeded so the sidebar shows the agent while its resume waits to
             // launch and while the resumed process starts. Once the shell
@@ -567,8 +567,9 @@ fn restore_workspace(
             );
             return None;
         };
-        let launch_env =
-            PaneLaunchEnv::new(runtime_context.socket_path.to_path_buf()).with_pane_id(pane_id);
+        let launch_env = PaneLaunchEnv::new(runtime_context.socket_path.to_path_buf())
+            .with_pane_id(pane_id)
+            .for_restore();
         if let Some(plan) = restore_plan {
             let terminal = restored_terminal(
                 saved_pane,
@@ -600,7 +601,7 @@ fn restore_workspace(
             runtime_context.scrollback_limit_bytes,
             runtime_context.host_theme,
             None,
-            runtime_context.shell_config.require_cwd(),
+            runtime_context.shell_config,
             &launch_env,
             initial_history_ansi,
             &runtime_context.events,
@@ -701,11 +702,9 @@ fn pane_restore_startup<'a>(
     // Reserve the session so later panes in the same restore pass cannot
     // launch the same native agent session. A reserving pane always defers its
     // launch, so no restore-time spawn failure can leave a stale reservation.
-    let duplicate_agent_session = restore_plan.as_ref().is_some_and(|plan| {
-        !agent_restore
-            .resumed_sessions
-            .insert(plan.dedupe_key.clone())
-    });
+    let duplicate_agent_session = restore_plan
+        .as_ref()
+        .is_some_and(|plan| !agent_restore.resumed_sessions.insert(plan.key().clone()));
     let restore_plan = if duplicate_agent_session {
         // The duplicate is accidental saved state. Nothing resumes in this
         // pane; it starts as a plain shell, so dropping its old agent screen
@@ -740,10 +739,10 @@ fn restore_plan_for_snapshot(
 fn persisted_agent_session_from_snapshot(
     session: &PaneAgentSessionSnapshot,
 ) -> Option<shepr_agent::agent::resume::PersistedAgentSession> {
-    shepr_agent::agent::resume::session_ref_from_snapshot(
-        &session.source,
+    shepr_agent::agent::resume::PersistedAgentSession::new(
+        session.source.clone(),
         session.agent,
-        &session.session_ref,
+        session.session_ref.clone(),
     )
 }
 
@@ -811,7 +810,9 @@ fn remap_inner(
             first,
             second,
         } => {
-            let ratio = SplitRatio::new(*ratio).ok_or(SavedLayoutDefect::InvalidSplitRatio)?;
+            let ratio = ratio
+                .validate()
+                .ok_or(SavedLayoutDefect::InvalidSplitRatio)?;
             let first_node = remap_inner(first, id_map)?;
             let second_node = remap_inner(second, id_map)?;
             // Keep this translation at the persistence boundary: core owns
@@ -837,7 +838,7 @@ fn take_restore_plan_for_snapshot(
     resumed_agent_sessions: &mut HashSet<shepr_agent::agent::resume::AgentResumeKey>,
 ) -> Option<shepr_agent::agent::resume::AgentResumePlan> {
     restore_plan_for_snapshot(session, resume_agents_on_restore)
-        .filter(|plan| resumed_agent_sessions.insert(plan.dedupe_key.clone()))
+        .filter(|plan| resumed_agent_sessions.insert(plan.key().clone()))
 }
 
 #[cfg(test)]
@@ -845,6 +846,7 @@ mod tests {
     use shepr_test_support::fixture::resolved_shell as test_shell;
     use std::path::{Path, PathBuf};
 
+    use super::super::snapshot::SavedSplitRatio;
     use super::*;
 
     std::thread_local! {
@@ -912,7 +914,7 @@ mod tests {
         for saved in [f32::NAN, f32::INFINITY, 5.0, -1.0] {
             let snap = LayoutSnapshot::Split {
                 direction: DirectionSnapshot::Horizontal,
-                ratio: saved,
+                ratio: SavedSplitRatio::from_raw(saved),
                 first: Box::new(LayoutSnapshot::Pane(0)),
                 second: Box::new(LayoutSnapshot::Pane(1)),
             };
@@ -927,7 +929,7 @@ mod tests {
 
         let snap = LayoutSnapshot::Split {
             direction: DirectionSnapshot::Horizontal,
-            ratio: 0.5,
+            ratio: SavedSplitRatio::from_raw(0.5),
             first: Box::new(LayoutSnapshot::Pane(0)),
             second: Box::new(LayoutSnapshot::Pane(1)),
         };
@@ -942,7 +944,7 @@ mod tests {
     fn repeated_saved_pane_maps_only_its_first_leaf() {
         let snap = LayoutSnapshot::Split {
             direction: DirectionSnapshot::Vertical,
-            ratio: 0.5,
+            ratio: SavedSplitRatio::from_raw(0.5),
             first: Box::new(LayoutSnapshot::Pane(4)),
             second: Box::new(LayoutSnapshot::Pane(4)),
         };
@@ -961,11 +963,11 @@ mod tests {
         // Pane 0 appears twice and pane 7 has no entry in `panes`.
         snapshot.workspaces[0].layout = LayoutSnapshot::Split {
             direction: DirectionSnapshot::Horizontal,
-            ratio: 0.5,
+            ratio: SavedSplitRatio::from_raw(0.5),
             first: Box::new(LayoutSnapshot::Pane(0)),
             second: Box::new(LayoutSnapshot::Split {
                 direction: DirectionSnapshot::Vertical,
-                ratio: 0.5,
+                ratio: SavedSplitRatio::from_raw(0.5),
                 first: Box::new(LayoutSnapshot::Pane(7)),
                 second: Box::new(LayoutSnapshot::Pane(0)),
             }),
@@ -1212,7 +1214,7 @@ mod tests {
             "numbers",
             LayoutSnapshot::Split {
                 direction: DirectionSnapshot::Horizontal,
-                ratio: 0.5,
+                ratio: SavedSplitRatio::from_raw(0.5),
                 first: Box::new(LayoutSnapshot::Pane(1)),
                 second: Box::new(LayoutSnapshot::Pane(2)),
             },
@@ -1234,7 +1236,7 @@ mod tests {
             "paths",
             LayoutSnapshot::Split {
                 direction: DirectionSnapshot::Horizontal,
-                ratio: 0.5,
+                ratio: SavedSplitRatio::from_raw(0.5),
                 first: Box::new(LayoutSnapshot::Pane(1)),
                 second: Box::new(LayoutSnapshot::Pane(2)),
             },
@@ -1286,7 +1288,7 @@ mod tests {
                 name,
                 LayoutSnapshot::Split {
                     direction: DirectionSnapshot::Horizontal,
-                    ratio,
+                    ratio: SavedSplitRatio::from_raw(ratio),
                     first: Box::new(LayoutSnapshot::Pane(1)),
                     second: Box::new(LayoutSnapshot::Pane(2)),
                 },
@@ -1324,7 +1326,7 @@ mod tests {
             "duplicated",
             LayoutSnapshot::Split {
                 direction: DirectionSnapshot::Horizontal,
-                ratio: 0.5,
+                ratio: SavedSplitRatio::from_raw(0.5),
                 first: Box::new(LayoutSnapshot::Pane(1)),
                 second: Box::new(LayoutSnapshot::Pane(2)),
             },
@@ -1403,11 +1405,11 @@ mod tests {
     fn zoom_does_not_survive_pruning_to_one_pane_or_losing_the_zoomed_pane() {
         let split = |first: u32, second: u32, third: u32| LayoutSnapshot::Split {
             direction: DirectionSnapshot::Horizontal,
-            ratio: 0.5,
+            ratio: SavedSplitRatio::from_raw(0.5),
             first: Box::new(LayoutSnapshot::Pane(first)),
             second: Box::new(LayoutSnapshot::Split {
                 direction: DirectionSnapshot::Vertical,
-                ratio: 0.5,
+                ratio: SavedSplitRatio::from_raw(0.5),
                 first: Box::new(LayoutSnapshot::Pane(second)),
                 second: Box::new(LayoutSnapshot::Pane(third)),
             }),
@@ -1537,8 +1539,8 @@ mod tests {
         assert_eq!(
             restore_plan_for_snapshot(&session, true)
                 .expect("test precondition")
-                .argv,
-            vec!["pi", "--session", pi_session_path.as_str()]
+                .args(),
+            &["--session", pi_session_path.as_str()]
         );
 
         let unsupported_path = super::super::snapshot::PaneAgentSessionSnapshot {
@@ -1568,10 +1570,7 @@ mod tests {
 
         let first = take_restore_plan_for_snapshot(&session, true, &mut resumed)
             .expect("first restore should get a plan");
-        assert_eq!(
-            first.argv,
-            vec!["pi", "--session", pi_session_path.as_str()]
-        );
+        assert_eq!(first.args(), &["--session", pi_session_path.as_str()]);
         assert!(take_restore_plan_for_snapshot(&session, true, &mut resumed).is_none());
     }
 
@@ -1670,7 +1669,7 @@ mod tests {
             .expect("restore should preserve metadata");
         assert_eq!(preserved.source.as_str(), "shepr:codex");
         assert_eq!(preserved.agent.label(), "codex");
-        assert_eq!(preserved.session_ref.value(), "codex-session");
+        assert_eq!(preserved.session_ref.value_str(), "codex-session");
     }
 
     #[test]
@@ -1812,9 +1811,12 @@ mod tests {
                 // launch settles as a failure, never in another directory.
                 assert!(matches!(
                     launch_settlement(&mut events_rx, root).await,
-                    crate::pane::LaunchSettlement::Failed(RestoreFailure::DirectoryUnavailable {
-                        ref path
-                    }) if *path == missing
+                    crate::pane::LaunchSettlement {
+                        kind: crate::pane::LaunchKind::Restored,
+                        outcome: crate::pane::LaunchOutcome::Failed(
+                            RestoreFailure::DirectoryUnavailable { ref path }
+                        ),
+                    } if *path == missing
                 ));
                 assert!(
                     !runtimes
@@ -1920,7 +1922,7 @@ mod tests {
             .expect("persisted agent session should survive restore");
         assert_eq!(session.source.as_str(), "shepr:opencode");
         assert_eq!(session.agent.label(), "opencode");
-        assert_eq!(session.session_ref.value(), "opencode-session");
+        assert_eq!(session.session_ref.value_str(), "opencode-session");
     }
 
     #[tokio::test]
@@ -1936,7 +1938,7 @@ mod tests {
                 next_public_pane_number: 4,
                 layout: LayoutSnapshot::Split {
                     direction: super::super::snapshot::DirectionSnapshot::Horizontal,
-                    ratio: 0.5,
+                    ratio: SavedSplitRatio::from_raw(0.5),
                     first: Box::new(LayoutSnapshot::Pane(10)),
                     second: Box::new(LayoutSnapshot::Pane(20)),
                 },
@@ -2043,7 +2045,7 @@ mod tests {
                 next_public_pane_number: 8,
                 layout: LayoutSnapshot::Split {
                     direction: DirectionSnapshot::Horizontal,
-                    ratio: 0.5,
+                    ratio: SavedSplitRatio::from_raw(0.5),
                     first: Box::new(LayoutSnapshot::Pane(10)),
                     second: Box::new(LayoutSnapshot::Pane(13)),
                 },
@@ -2146,7 +2148,7 @@ mod tests {
             .next()
             .expect("native agent restore should create terminal state");
         assert!(
-            terminal.pending_agent_resume_plan.is_some(),
+            terminal.agent_resume.is_pending(),
             // The launch waits for the event loop, not for a client: once a
             // view exists it starts after a short wait for a host theme, at
             // the headless size when no client is attached (see the headless
@@ -2178,7 +2180,7 @@ mod tests {
                 workspaces: vec![WorkspaceSnapshot {
                     layout: LayoutSnapshot::Split {
                         direction: DirectionSnapshot::Horizontal,
-                        ratio: 0.25,
+                        ratio: SavedSplitRatio::from_raw(0.25),
                         first: Box::new(LayoutSnapshot::Pane(0)),
                         second: Box::new(LayoutSnapshot::Pane(1)),
                     },

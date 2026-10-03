@@ -55,6 +55,7 @@ pub struct EncodedBlit {
 pub struct BlitEncoder {
     last_frame: Option<FrameData>,
     last_visible_cursor: Option<(u16, u16)>,
+    /// Numeric CSI parameter cache; setup establishes the default value zero.
     last_cursor_shape: u8,
 }
 
@@ -580,7 +581,7 @@ pub fn symbol_width(symbol: &str) -> usize {
 struct HostCursorState {
     position: (u16, u16),
     visible: bool,
-    /// DECSCUSR parameter (0-6). 0 means terminal default.
+    /// DECSCUSR numeric parameter; zero means the terminal default.
     shape: u8,
 }
 

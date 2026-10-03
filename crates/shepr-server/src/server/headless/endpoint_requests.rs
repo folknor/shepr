@@ -151,7 +151,7 @@ impl HeadlessServer {
             _ => None,
         };
         let projection_before = self.app.state.shell_projection_revision;
-        let mut outcome = self
+        let outcome = self
             .app
             .handle_endpoint_app_command_with_render(command, &ctx);
         if let Some(pane) = scrolled_pane {
@@ -195,10 +195,6 @@ impl HeadlessServer {
                 self.claim_shell_workspace_geometry(client_id, false)
                     || self.resize_shell_workspaces_sized_for(client_id, false)
             };
-        }
-        if let Ok(reply) = &mut outcome.result {
-            let viewed = self.shell_target_for_client(client_id);
-            self.app.fill_reply_focus(reply, viewed.as_ref());
         }
         self.sync_pane_focus();
         if changed {

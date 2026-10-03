@@ -80,6 +80,9 @@ impl ReportedSessionStart {
 #[serde(transparent)]
 pub struct SessionId(String);
 
+// Resume paths are UTF-8 command arguments reported by agent hooks. Retain
+// the exact text, including redundant separators; a PathBuf would still need
+// a UTF-8 check whenever the planner borrows the command argument.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 #[serde(transparent)]
 pub struct AbsoluteSessionPath(String);
@@ -91,26 +94,38 @@ pub enum AgentSessionRef {
     Path(AbsoluteSessionPath),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct AgentResumeKey {
-    source: AgentSource,
-    agent: Agent,
-    session_ref: AgentSessionRef,
-}
+/// A resume key is the saved identity itself, without another copy of its fields.
+pub type AgentResumeKey = PersistedAgentSession;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentResumePlan {
-    pub source: AgentSource,
-    pub agent: Agent,
-    pub argv: Vec<String>,
-    pub dedupe_key: AgentResumeKey,
+    session: PersistedAgentSession,
+    argv: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 pub struct PersistedAgentSession {
     pub source: AgentSource,
     pub agent: Agent,
     pub session_ref: AgentSessionRef,
+}
+
+impl<'de> Deserialize<'de> for PersistedAgentSession {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct SavedSession {
+            source: AgentSource,
+            agent: Agent,
+            session_ref: AgentSessionRef,
+        }
+        let saved = SavedSession::deserialize(deserializer)?;
+        Self::new(saved.source, saved.agent, saved.session_ref)
+            .ok_or_else(|| serde::de::Error::custom("invalid saved agent session"))
+    }
 }
 
 impl SessionId {
@@ -142,15 +157,15 @@ impl AgentSessionRef {
         Some(Self::Path(AbsoluteSessionPath::new(value.into())?))
     }
 
+    pub const fn is_id(&self) -> bool {
+        matches!(self, Self::Id(_))
+    }
+
     pub const fn kind(&self) -> AgentSessionRefKind {
         match self {
             Self::Id(_) => AgentSessionRefKind::Id,
             Self::Path(_) => AgentSessionRefKind::Path,
         }
-    }
-
-    pub fn value(&self) -> String {
-        self.value_str().to_owned()
     }
 
     pub fn value_str(&self) -> &str {
@@ -223,16 +238,25 @@ impl<'de> Deserialize<'de> for AbsoluteSessionPath {
 }
 
 impl PersistedAgentSession {
+    // Custom reporters can record a built-in agent's session identity through
+    // ReportOrigin::session, but only bundled official integrations may launch
+    // an automatic resume. A stored identity is therefore wider than a plan.
+    fn is_valid_identity(&self) -> bool {
+        self.source.agent().is_none_or(|agent| agent == self.agent)
+            && self.session_ref.accepted_for(self.agent)
+    }
+
+    pub fn is_resumable(&self) -> bool {
+        self.source.agent() == Some(self.agent) && self.is_valid_identity()
+    }
+
     pub fn new(source: AgentSource, agent: Agent, session_ref: AgentSessionRef) -> Option<Self> {
-        (source
-            .agent()
-            .is_none_or(|source_agent| source_agent == agent)
-            && session_ref.accepted_for(agent))
-        .then_some(Self {
+        let session = Self {
             source,
             agent,
             session_ref,
-        })
+        };
+        session.is_valid_identity().then_some(session)
     }
 
     pub fn from_report(
@@ -248,21 +272,42 @@ impl PersistedAgentSession {
 
 impl AgentResumePlan {
     fn with_argv(session: &PersistedAgentSession, argv: Vec<String>) -> Option<Self> {
-        // A plan with nothing to run cannot be launched; refuse it here so
-        // the server never holds one.
-        (session.source.agent() == Some(session.agent)
-            && session.session_ref.accepted_for(session.agent)
-            && argv.first().is_some_and(|program| !program.is_empty()))
-        .then(|| Self {
-            source: session.source.clone(),
-            agent: session.agent,
-            argv,
-            dedupe_key: AgentResumeKey {
-                source: session.source.clone(),
-                agent: session.agent,
-                session_ref: session.session_ref.clone(),
+        (session.is_resumable() && argv.first().is_some_and(|program| !program.is_empty())).then(
+            || Self {
+                session: session.clone(),
+                argv,
             },
-        })
+        )
+    }
+
+    pub fn agent(&self) -> Agent {
+        self.session.agent
+    }
+
+    pub fn key(&self) -> &AgentResumeKey {
+        &self.session
+    }
+
+    /// The arguments after the executable, which the constructor requires.
+    pub fn args(&self) -> &[String] {
+        &self.argv[1..]
+    }
+
+    pub fn to_shell_command(&self) -> String {
+        shepr_core::shell_quote::join_argv(&self.argv)
+    }
+
+    /// Construct an explicit command for this resume identity. The executable
+    /// must be nonempty, just as for commands derived from agent descriptors.
+    pub fn for_command(
+        session: &PersistedAgentSession,
+        program: String,
+        args: Vec<String>,
+    ) -> Option<Self> {
+        let mut argv = Vec::with_capacity(args.len() + 1);
+        argv.push(program);
+        argv.extend(args);
+        Self::with_argv(session, argv)
     }
 }
 
@@ -285,31 +330,31 @@ pub fn session_ref_for_agent_report(
     }
 }
 
-pub fn session_ref_from_snapshot(
-    source: &AgentSource,
-    agent: Agent,
-    session_ref: &AgentSessionRef,
-) -> Option<PersistedAgentSession> {
-    PersistedAgentSession::new(source.clone(), agent, session_ref.clone())
-}
-
 pub fn plan(session: &PersistedAgentSession) -> Option<AgentResumePlan> {
     let agent = session.agent;
     let descriptor = agent.descriptor();
-    if session.source.agent() != Some(agent) || !session.session_ref.accepted_for(agent) {
+    if !session.is_resumable() {
         return None;
     }
 
     let executable = agent.executable().to_owned();
     let argv = match (descriptor.resume_support?.resume_args, &session.session_ref) {
         (ResumeArgs::FlagValue(flag), reference) => {
-            vec![executable, flag.to_owned(), reference.value()]
+            vec![
+                executable,
+                flag.to_owned(),
+                reference.value_str().to_owned(),
+            ]
         }
         (ResumeArgs::InlineFlag(flag), reference) => {
-            vec![executable, format!("{flag}{}", reference.value())]
+            vec![executable, format!("{flag}{}", reference.value_str())]
         }
         (ResumeArgs::Subcommand(subcommand), reference) => {
-            vec![executable, subcommand.to_owned(), reference.value()]
+            vec![
+                executable,
+                subcommand.to_owned(),
+                reference.value_str().to_owned(),
+            ]
         }
     };
     AgentResumePlan::with_argv(session, argv)
@@ -388,6 +433,46 @@ mod tests {
         let agent = source.agent()?;
         let session = PersistedAgentSession::new(source, agent, session_ref.clone())?;
         plan(&session)
+    }
+
+    #[test]
+    fn saved_sessions_validate_source_agent_and_reference_together() {
+        for (source, agent, kind, value) in [
+            ("shepr:codex", "claude", "id", "session"),
+            ("shepr:claude", "claude", "path", "/sessions/claude"),
+            ("shepr:removed-agent", "removed-agent", "id", "session"),
+        ] {
+            let saved = serde_json::json!({
+                "source": source,
+                "agent": agent,
+                "session_ref": { "kind": kind, "value": value },
+            });
+            assert!(serde_json::from_value::<PersistedAgentSession>(saved).is_err());
+        }
+        let session = PersistedAgentSession::from_report(
+            "shepr:codex",
+            "codex",
+            AgentSessionRef::id("session").expect("session ID"),
+        )
+        .expect("official session");
+        let custom = PersistedAgentSession::from_report(
+            "custom:codex",
+            "codex",
+            AgentSessionRef::id("session").expect("session ID"),
+        )
+        .expect("custom reporters can record a built-in agent session");
+        assert!(plan(&custom).is_none());
+        let saved_custom = serde_json::to_value(&custom).expect("encode custom identity");
+        assert_eq!(
+            serde_json::from_value::<PersistedAgentSession>(saved_custom)
+                .expect("decode custom identity"),
+            custom,
+        );
+        let saved = serde_json::to_value(&session).expect("encode session");
+        assert_eq!(
+            serde_json::from_value::<PersistedAgentSession>(saved).expect("decode session"),
+            session,
+        );
     }
 
     #[test]

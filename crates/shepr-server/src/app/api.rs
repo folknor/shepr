@@ -346,11 +346,7 @@ mod tests {
         app.state.workspaces = vec![workspace];
         app.state.ensure_test_terminals();
 
-        app.handle_internal_event(AppEvent::PaneDied {
-            pane_id: dead_pane,
-            exit_reason: shepr_platform::ChildExitReason::Exited,
-            ended_at: std::time::Instant::now(),
-        });
+        report_runtime_exit(&mut app, dead_pane);
 
         assert_eq!(app.state.workspaces.len(), 1);
         assert_eq!(app.state.workspaces[0].pane_count(), 1);
@@ -370,20 +366,26 @@ mod tests {
         let first_root = app.state.workspaces[0].root_pane();
         let second_root = app.state.workspaces[1].root_pane();
 
-        app.handle_internal_event(AppEvent::PaneDied {
-            pane_id: first_root,
-            exit_reason: shepr_platform::ChildExitReason::Exited,
-            ended_at: std::time::Instant::now(),
-        });
+        report_runtime_exit(&mut app, first_root);
         assert_eq!(app.state.workspaces.len(), 1);
         assert_eq!(app.state.workspaces[0].root_pane(), second_root);
 
-        app.handle_internal_event(AppEvent::PaneDied {
-            pane_id: second_root,
-            exit_reason: shepr_platform::ChildExitReason::Exited,
-            ended_at: std::time::Instant::now(),
-        });
+        report_runtime_exit(&mut app, second_root);
         assert!(app.state.workspaces.is_empty());
+    }
+
+    /// The pane's process exit, reported by a runtime installed for it.
+    fn report_runtime_exit(app: &mut App, pane_id: shepr_core::layout::PaneId) {
+        app.insert_idle_test_runtime(pane_id);
+        let exit = app.from_pane_runtime(
+            pane_id,
+            AppEvent::PaneDied {
+                pane_id,
+                exit_reason: shepr_platform::ChildExitReason::Exited,
+                ended_at: std::time::Instant::now(),
+            },
+        );
+        app.handle_internal_event(exit);
     }
 
     #[test]
@@ -423,14 +425,19 @@ mod tests {
 
         // An official hook's state does not outlive its process: the exit
         // releases it at once, even though the report came after the probe.
-        app.handle_internal_event(AppEvent::StateChanged {
+        app.insert_idle_test_runtime(pane_id);
+        let exit_report = app.from_pane_runtime(
             pane_id,
-            agent: Some(Agent::Codex),
-            state: AgentState::Idle,
-            visible_blocker: false,
-            process_exited: true,
-            observed_at,
-        });
+            AppEvent::StateChanged {
+                pane_id,
+                agent: Some(Agent::Codex),
+                state: AgentState::Idle,
+                visible_blocker: false,
+                process_exited: true,
+                observed_at,
+            },
+        );
+        app.handle_internal_event(exit_report);
 
         let terminal = &app.state.terminals[&terminal_id];
         assert_eq!(terminal.state, AgentState::Idle);

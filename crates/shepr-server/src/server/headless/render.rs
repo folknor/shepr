@@ -268,7 +268,8 @@ impl HeadlessServer {
                             let protocol = runtime.keyboard_protocol();
                             protocol.reports_all_keys()
                                 || (protocol.reports_event_types()
-                                    && runtime.modify_other_keys_level() > 0)
+                                    && runtime.modify_other_keys_level()
+                                        != shepr_vt::ModifyOtherKeysLevel::Off)
                         });
                 (client_id, report_all)
             })

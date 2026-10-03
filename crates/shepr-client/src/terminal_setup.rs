@@ -1,6 +1,6 @@
 //! Terminal setup and restoration for the rendered client.
 
-use std::io;
+use std::io::{self, Write as _};
 use std::os::fd::{AsFd as _, AsRawFd as _};
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -45,6 +45,9 @@ pub(super) fn setup_terminal(
     crossterm::terminal::enable_raw_mode()?;
     let mut output = output_writer.clone();
     execute!(output, EnterAlternateScreen)?;
+    // Seed the blitter's numeric cursor-shape cache with the host's default.
+    output.write_all(shepr_termio::host_term::modes::HOST_CURSOR_SHAPE_DEFAULT_SEQUENCE)?;
+    output.flush()?;
     host_modes.set_keyboard_enhancement_flags(
         &mut output,
         shepr_termio::host_term::modes::ime_compatible_keyboard_enhancement_flags(),
@@ -166,9 +169,9 @@ fn host_escape_disambiguation_confirmed(
     responses: &shepr_termio::input::raw_input::HostKeyboardProbeResponses,
 ) -> bool {
     responses.primary_device_attributes
-        && responses.flags.is_some_and(|flags| {
-            flags & shepr_protocol::KittyKeyboardFlags::DISAMBIGUATE.bits() != 0
-        })
+        && responses
+            .flags
+            .is_some_and(|flags| flags.contains(shepr_protocol::KittyKeyboardFlags::DISAMBIGUATE))
 }
 
 pub(super) fn write_host_color_scheme_report_mode(
@@ -487,9 +490,8 @@ impl HostModes {
     pub(super) fn set_keyboard_enhancement_flags(
         &self,
         writer: &mut impl io::Write,
-        flags: crossterm::event::KeyboardEnhancementFlags,
+        flags: shepr_protocol::KittyKeyboardFlags,
     ) -> io::Result<()> {
-        let flags = shepr_protocol::KittyKeyboardFlags::from_bits_retain(u16::from(flags.bits()));
         self.set_keyboard_protocol(writer, HostKeyboardUpdate::EnhancementFlags(flags))
     }
 
@@ -831,7 +833,11 @@ mod tests {
                 &mut responses,
             );
 
-            assert_eq!(responses.flags, Some(7), "split {split}");
+            assert_eq!(
+                responses.flags,
+                Some(shepr_protocol::KittyKeyboardFlags::from_bits_retain(7)),
+                "split {split}"
+            );
             assert!(responses.primary_device_attributes, "split {split}");
             assert_eq!(buffered, b"before-middle-after", "split {split}");
         }
@@ -983,8 +989,8 @@ mod tests {
         modes
             .set_keyboard_enhancement_flags(
                 &mut output,
-                crossterm::event::KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
-                    | crossterm::event::KeyboardEnhancementFlags::REPORT_EVENT_TYPES,
+                shepr_protocol::KittyKeyboardFlags::DISAMBIGUATE
+                    | shepr_protocol::KittyKeyboardFlags::REPORT_EVENT_TYPES,
             )
             .expect("write to a Vec");
         modes

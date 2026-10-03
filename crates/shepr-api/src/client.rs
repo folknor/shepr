@@ -150,7 +150,7 @@ fn runtime_status(
             stopping,
             starting,
         } => Ok(crate::RuntimeStatus {
-            version: Some(version),
+            version,
             build_id,
             boot_id,
             stopping,

@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use super::{AheadBehind, GitReadError, WorkspaceGitStatusSnapshot};
+use super::{AheadBehind, GitReadError, WorkspaceBranch, WorkspaceGitStatusSnapshot};
 
 use super::identity::{BranchName, FullRefName, Oid};
 use super::{
@@ -72,9 +72,17 @@ impl GitStatusCacheEntry {
 
     pub fn snapshot(&self) -> WorkspaceGitStatusSnapshot {
         match self {
-            Self::Miss { repo_root, .. } => WorkspaceGitStatusSnapshot {
+            Self::Miss {
+                repo_root,
+                read_errors,
+                ..
+            } => WorkspaceGitStatusSnapshot {
                 repo_root: repo_root.clone(),
-                branch: None,
+                branch: if repo_root.is_none() && read_errors.is_empty() {
+                    WorkspaceBranch::OutsideRepository
+                } else {
+                    WorkspaceBranch::ReadFailed
+                },
                 ahead_behind: None,
             },
             Self::Hit {
@@ -83,9 +91,9 @@ impl GitStatusCacheEntry {
                 ..
             } => WorkspaceGitStatusSnapshot {
                 repo_root: Some(fingerprint.repository_context.info.repo_root.clone()),
-                // Keep the workspace/sidebar boundary as a display string;
-                // repository identity stays typed inside the Git cache.
-                branch: fingerprint.branch_name().map(str::to_string),
+                // Preserve HEAD outcome at admission; presentation chooses
+                // whether to draw anything besides a named branch.
+                branch: workspace_branch(fingerprint),
                 ahead_behind: match ahead_behind {
                     AheadBehindState::Known(ahead_behind) => Some(*ahead_behind),
                     AheadBehindState::NotComputed | AheadBehindState::Failed { .. } => None,
@@ -99,6 +107,14 @@ impl GitStatusCacheEntry {
             Self::Miss { read_errors, .. } | Self::Hit { read_errors, .. } => read_errors,
         }
     }
+}
+
+fn workspace_branch(fingerprint: &GitStatusFingerprint) -> WorkspaceBranch {
+    fingerprint
+        .branch_name()
+        .map_or(WorkspaceBranch::Detached, |name| {
+            WorkspaceBranch::Named(name.to_owned())
+        })
 }
 
 /// The cached Git answers for the workspaces in one server process. It owns
@@ -328,7 +344,11 @@ fn git_status_snapshot(
     let Some(repository_context) = repository_context else {
         let snapshot = WorkspaceGitStatusSnapshot {
             repo_root: None,
-            branch: None,
+            branch: if read_errors.is_empty() {
+                WorkspaceBranch::OutsideRepository
+            } else {
+                WorkspaceBranch::ReadFailed
+            },
             ahead_behind: None,
         };
         return (
@@ -344,7 +364,7 @@ fn git_status_snapshot(
     let Some(fingerprint) = fingerprint(repository_context, &mut read_errors) else {
         let snapshot = WorkspaceGitStatusSnapshot {
             repo_root: Some(repo_root.clone()),
-            branch: None,
+            branch: WorkspaceBranch::ReadFailed,
             ahead_behind: None,
         };
         return (
@@ -356,7 +376,7 @@ fn git_status_snapshot(
             }),
         );
     };
-    let branch = fingerprint.branch_name().map(str::to_string);
+    let branch = workspace_branch(&fingerprint);
 
     if let Some(GitStatusCacheEntry::Hit {
         fingerprint: cached_fingerprint,
@@ -604,6 +624,39 @@ mod tests {
     use std::time::Duration;
 
     #[test]
+    fn cached_misses_preserve_outside_repository_and_failed_read_distinction() {
+        let retry_after = Instant::now();
+        let outside = GitStatusCacheEntry::Miss {
+            retry_after,
+            repo_root: None,
+            read_errors: Vec::new(),
+        };
+        let failed_head = GitStatusCacheEntry::Miss {
+            retry_after,
+            repo_root: Some(PathBuf::from("/checkout")),
+            read_errors: Vec::new(),
+        };
+        let failed_discovery = GitStatusCacheEntry::Miss {
+            retry_after,
+            repo_root: None,
+            read_errors: vec![GitReadError::FileRead {
+                path: PathBuf::from("/checkout/.git"),
+                message: "denied".into(),
+            }],
+        };
+
+        assert_eq!(
+            outside.snapshot().branch,
+            WorkspaceBranch::OutsideRepository
+        );
+        assert_eq!(failed_head.snapshot().branch, WorkspaceBranch::ReadFailed);
+        assert_eq!(
+            failed_discovery.snapshot().branch,
+            WorkspaceBranch::ReadFailed
+        );
+    }
+
+    #[test]
     fn cache_key_preserves_non_utf8_checkout_path() {
         use std::os::unix::ffi::OsStringExt;
 
@@ -678,9 +731,9 @@ mod tests {
 
         let (snapshot, _) = git_status_snapshot_for_cwd(&root, None);
 
-        let branch_len = snapshot.branch.as_ref().map(String::len);
+        let branch_len = snapshot.branch.as_deref().map(str::len);
         assert!(
-            snapshot.branch.is_none(),
+            snapshot.branch == WorkspaceBranch::ReadFailed,
             "oversized Git HEAD produced branch with {branch_len:?} bytes"
         );
     }
@@ -714,7 +767,7 @@ mod tests {
 
         let (snapshot, update) = git_status_snapshot_for_cwd(&root, None);
 
-        assert_eq!(snapshot.branch, None);
+        assert_eq!(snapshot.branch, WorkspaceBranch::Detached);
         assert!(
             snapshot.repo_root.is_some(),
             "a detached HEAD is still a repo"

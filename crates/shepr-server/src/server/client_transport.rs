@@ -60,18 +60,21 @@ fn client_shell_geometry_error(
     surface_size: shepr_protocol::ClientSurfaceSize,
     cell_width_px: u32,
     cell_height_px: u32,
-) -> Option<&'static str> {
+) -> Option<shepr_protocol::SurfaceRefusal> {
     if surface_size.cols > shepr_protocol::MAX_SURFACE_DIMENSION
         || surface_size.rows > shepr_protocol::MAX_SURFACE_DIMENSION
-        || usize::from(surface_size.cols) * usize::from(surface_size.rows)
-            > shepr_protocol::MAX_SURFACE_CELLS
     {
-        return Some("client shell pane surface exceeds the surface size limit");
+        return Some(shepr_protocol::SurfaceRefusal::DimensionTooLarge);
+    }
+    if usize::from(surface_size.cols) * usize::from(surface_size.rows)
+        > shepr_protocol::MAX_SURFACE_CELLS
+    {
+        return Some(shepr_protocol::SurfaceRefusal::TooManyCells);
     }
     if cell_width_px > shepr_protocol::MAX_CELL_SIZE_PX
         || cell_height_px > shepr_protocol::MAX_CELL_SIZE_PX
     {
-        return Some("client shell cell pixel size exceeds the safe geometry limit");
+        return Some(shepr_protocol::SurfaceRefusal::CellTooLarge);
     }
     None
 }
@@ -208,12 +211,11 @@ fn pane_input_event_limit(events: &[ClientPaneInputEvent]) -> InputEventLimit {
 
 /// Handles the client handshake on a blocking thread.
 ///
-/// Reads the client's preamble first, since the client speaks first, and
-/// answers a recognisable preamble of any build with this build's. A client of
-/// another build is closed there, without decoding its hello. A client of this
-/// build then has its endpoint hello read and its surface geometry validated,
-/// and is sent the welcome accepting the connection; its messages are then
-/// forwarded to the server event channel. Any other first message is refused.
+/// Reads the client's opening through the listener's shared handshake rule.
+/// A client of another build is answered with this build's preamble and closed
+/// without decoding its hello. A same-build client then has its endpoint hello
+/// and surface geometry validated, and is sent the welcome accepting the
+/// connection; its messages are then forwarded to the server event channel.
 /// `deadline` bounds reading the preamble and hello together and is counted
 /// from accept, so classification time is part of the handshake budget.
 /// `wake` is the server loop's outbox wake, raised when this connection's
@@ -232,64 +234,44 @@ fn handle_client_handshake(
     }
 
     // Accepted streams start blocking (classification peeks without changing
-    // the mode). The bounded preamble write below switches the stream to
-    // nonblocking; the handshake reads still work because the deadline reader
-    // polls for readiness before every read.
-
-    // The client's preamble and hello are read against one overall deadline,
-    // counted from accept. The client speaks first, so nothing is written
-    // until its preamble has been read.
-    let mut reader = shepr_platform::ipc::LocalStreamDeadlineReader::new(&mut stream, deadline);
-    let foreign = match shepr_protocol::preamble::read_preamble(&mut reader) {
-        Ok(()) => None,
-        Err(shepr_protocol::preamble::PreambleError::UnexpectedEof) => {
-            debug!(?client_id, "client disconnected before handshake");
+    // the mode). The shared reader answers the preamble before reading the
+    // hello and leaves the stream in nonblocking mode for deadline reads.
+    let hello = match shepr_api::read_client_handshake(&mut stream, deadline) {
+        Ok(shepr_api::ClientHandshakeOutcome::Hello(message)) => message,
+        Ok(shepr_api::ClientHandshakeOutcome::Foreign(peer)) => {
+            warn!(?client_id, build_id = %peer.build_id, "rejecting client from another build");
             return Ok(());
         }
-        Err(shepr_protocol::preamble::PreambleError::Io(error)) => {
-            debug!(?client_id, %error, "failed to read client preamble");
+        Ok(shepr_api::ClientHandshakeOutcome::Silent(
+            shepr_api::ClientHandshakeSilence::Preamble(error),
+        )) => {
+            debug!(?client_id, %error, "client disconnected before handshake");
             return Ok(());
         }
-        Err(error @ shepr_protocol::preamble::PreambleError::NotShepr) => {
-            warn!(?client_id, %error, "rejecting client connection");
-            return Ok(());
-        }
-        Err(error @ shepr_protocol::preamble::PreambleError::DifferentBuild(_)) => Some(error),
-    };
-    // A recognisable preamble of any build is answered with this build's, so
-    // a client of another build learns which build it reached.
-    if let Err(error) = shepr_platform::write_client_stream(
-        &stream,
-        &shepr_protocol::preamble::local_preamble(),
-        CLIENT_WRITE_STALL_TIMEOUT,
-    ) {
-        debug!(?client_id, %error, "client left before the build-identity preamble");
-        return Ok(());
-    }
-    if let Some(error) = foreign {
-        // The client reports the mismatch from this server's preamble;
-        // nothing it sends after a foreign preamble can be decoded.
-        warn!(?client_id, %error, "rejecting client connection");
-        return Ok(());
-    }
-    let mut reader = shepr_platform::ipc::LocalStreamDeadlineReader::new(&mut stream, deadline);
-    let hello = shepr_protocol::read_handshake_message::<_, ClientMessage>(&mut reader);
-    let hello: ClientMessage = match hello {
-        Ok(msg) => msg,
-        Err(shepr_protocol::FramingError::UnexpectedEof) => {
-            debug!(?client_id, "client disconnected before handshake");
-            return Ok(());
-        }
-        Err(shepr_protocol::FramingError::Oversized { claimed, max }) => {
+        Ok(shepr_api::ClientHandshakeOutcome::Silent(
+            shepr_api::ClientHandshakeSilence::Hello(shepr_protocol::FramingError::Oversized {
+                claimed,
+                max,
+            }),
+        )) => {
             warn!(?client_id, claimed, max, "oversized handshake from client");
             return Ok(());
         }
-        Err(err) => {
-            debug!(
+        Ok(shepr_api::ClientHandshakeOutcome::Silent(
+            shepr_api::ClientHandshakeSilence::Hello(error),
+        )) => {
+            debug!(?client_id, %error, "failed to read client hello");
+            return Ok(());
+        }
+        Ok(shepr_api::ClientHandshakeOutcome::NotShepr) => {
+            warn!(
                 ?client_id,
-                error = %err,
-                "failed to read client hello"
+                "rejecting client connection without a shepr preamble"
             );
+            return Ok(());
+        }
+        Err(error) => {
+            debug!(?client_id, %error, "client left before the build-identity preamble");
             return Ok(());
         }
     };
@@ -308,7 +290,7 @@ fn handle_client_handshake(
         hello.geometry.width(),
         hello.geometry.height(),
     )
-    .map(|reason| shepr_protocol::HandshakeRefusal::InvalidSurface(reason.to_owned()));
+    .map(shepr_protocol::HandshakeRefusal::InvalidSurface);
     if let Some(reason) = incompatibility {
         write_endpoint_rejection(&mut stream, client_id, reason);
         return Ok(());
@@ -382,12 +364,7 @@ fn handle_client_handshake(
 }
 
 fn send_shutdown_to_unregistered_client(outbox: &ClientOutbox) {
-    if outbox.send(&ServerMessage::ServerShutdown {
-        reason: Some(shepr_protocol::ShutdownReason::Message(
-            "server is shutting down".to_owned(),
-        )),
-    }) == Delivery::Queued
-    {
+    if outbox.send(&ServerMessage::server_shutdown()) == Delivery::Queued {
         // Handshake handling runs on a transport thread, so waiting here
         // does not park the Tokio server loop. The wait is bounded: a writer
         // stuck on a client that stopped reading must not pin this thread
@@ -1074,7 +1051,18 @@ mod tests {
             )
             .is_none()
         );
-        assert!(
+        assert_eq!(
+            client_shell_geometry_error(
+                shepr_protocol::ClientSurfaceSize {
+                    cols: shepr_protocol::MAX_SURFACE_DIMENSION + 1,
+                    rows: 24,
+                },
+                8,
+                16,
+            ),
+            Some(shepr_protocol::SurfaceRefusal::DimensionTooLarge)
+        );
+        assert_eq!(
             client_shell_geometry_error(
                 shepr_protocol::ClientSurfaceSize {
                     cols: shepr_protocol::MAX_SURFACE_DIMENSION,
@@ -1082,16 +1070,16 @@ mod tests {
                 },
                 8,
                 16,
-            )
-            .is_some()
+            ),
+            Some(shepr_protocol::SurfaceRefusal::TooManyCells)
         );
-        assert!(
+        assert_eq!(
             client_shell_geometry_error(
                 shepr_protocol::ClientSurfaceSize { cols: 80, rows: 24 },
                 shepr_protocol::MAX_CELL_SIZE_PX + 1,
                 16,
-            )
-            .is_some()
+            ),
+            Some(shepr_protocol::SurfaceRefusal::CellTooLarge)
         );
     }
 

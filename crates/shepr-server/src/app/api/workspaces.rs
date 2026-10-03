@@ -465,7 +465,6 @@ mod tests {
             panic!("expected workspace info");
         };
         assert_eq!(workspace.workspace_id, target);
-        assert!(!workspace.focused, "the server loop fills the flag in");
         assert!(!app.state.session_dirty, "nothing was mutated");
 
         // The same again, as when the requester already views it.
@@ -475,19 +474,9 @@ mod tests {
             })
             .expect("focusing again succeeds");
         assert_eq!(again.navigate.as_ref(), Some(&target));
-
-        // Filling the flag follows the requester's location.
-        let mut reply = again.reply;
-        app.fill_reply_focus(&mut reply, Some(&target));
         assert!(matches!(
-            &reply,
-            EndpointReply::WorkspaceInfo { workspace } if workspace.focused
-        ));
-        let other = app.public_workspace_id(0);
-        app.fill_reply_focus(&mut reply, other.as_ref());
-        assert!(matches!(
-            &reply,
-            EndpointReply::WorkspaceInfo { workspace } if !workspace.focused
+            again.reply,
+            EndpointReply::WorkspaceInfo { workspace } if workspace.workspace_id == target
         ));
     }
 

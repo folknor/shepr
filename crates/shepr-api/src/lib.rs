@@ -12,7 +12,10 @@ mod stop;
 
 pub use limits::MAX_APP_REQUESTS_IN_FLIGHT;
 pub use server::start_server;
-pub use server::{ClientGate, ClientProtocolHandler, ConnectionSlot, ServerHandle};
+pub use server::{
+    ClientGate, ClientHandshakeOutcome, ClientHandshakeSilence, ClientProtocolHandler,
+    ConnectionSlot, ServerHandle, read_client_handshake,
+};
 pub use status::{RuntimeStatus, ServerPresence, read_server_presence_at};
 pub use stop::ServerStopSignal;
 

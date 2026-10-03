@@ -277,12 +277,7 @@ pub struct PaneSnapshot {
     pub agent_session: Option<PaneAgentSessionSnapshot>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PaneAgentSessionSnapshot {
-    pub source: shepr_agent::agent::AgentSource,
-    pub agent: shepr_agent::agent::Agent,
-    pub session_ref: shepr_agent::agent::resume::AgentSessionRef,
-}
+pub type PaneAgentSessionSnapshot = shepr_agent::agent::resume::PersistedAgentSession;
 
 // Agent labels and session formats can disappear between builds. A bad saved
 // session must not discard the pane or unrelated workspaces.
@@ -310,6 +305,7 @@ pub struct PaneHistorySnapshot {
 
 /// Serializable BSP tree.
 #[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 #[expect(
     variant_size_differences,
     reason = "a split is 23 bytes; boxing it would allocate per split to save that much per leaf"
@@ -318,10 +314,31 @@ pub enum LayoutSnapshot {
     Pane(u32),
     Split {
         direction: DirectionSnapshot,
-        ratio: f32,
+        ratio: SavedSplitRatio,
         first: Box<LayoutSnapshot>,
         second: Box<LayoutSnapshot>,
     },
+}
+
+/// A ratio read from a saved workspace. It keeps the JSON number intact so a
+/// bad value can invalidate that workspace during restore without failing the
+/// session file's structural parse.
+#[derive(Clone, Copy, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct SavedSplitRatio(f32);
+
+impl SavedSplitRatio {
+    pub fn from_ratio(value: shepr_core::layout::SplitRatio) -> Self {
+        Self(value.get())
+    }
+
+    pub const fn from_raw(value: f32) -> Self {
+        Self(value)
+    }
+
+    pub fn validate(self) -> Option<shepr_core::layout::SplitRatio> {
+        shepr_core::layout::SplitRatio::new(self.0)
+    }
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -450,12 +467,7 @@ fn capture_workspace(
         }
         let label = terminal.and_then(|terminal| terminal.manual_label.clone());
         let agent_session = terminal
-            .and_then(crate::terminal::TerminalState::current_session_identity_for_persistence)
-            .map(|session| PaneAgentSessionSnapshot {
-                source: session.source,
-                agent: session.agent,
-                session_ref: session.session_ref,
-            });
+            .and_then(crate::terminal::TerminalState::current_session_identity_for_persistence);
         panes.insert(
             id.raw(),
             PaneSnapshot {
@@ -528,7 +540,7 @@ fn append_layout_fingerprint(layout: &LayoutSnapshot, encoding: &mut Vec<u8>) ->
             first,
             second,
         } => {
-            if !ratio.is_finite() {
+            if !ratio.0.is_finite() {
                 return None;
             }
             encoding.push(1);
@@ -536,7 +548,7 @@ fn append_layout_fingerprint(layout: &LayoutSnapshot, encoding: &mut Vec<u8>) ->
                 DirectionSnapshot::Horizontal => 0,
                 DirectionSnapshot::Vertical => 1,
             });
-            encoding.extend_from_slice(&ratio.to_bits().to_le_bytes());
+            encoding.extend_from_slice(&ratio.0.to_bits().to_le_bytes());
             append_layout_fingerprint(first, encoding)?;
             append_layout_fingerprint(second, encoding)?;
         }
@@ -993,7 +1005,7 @@ pub(super) fn capture_node(node: &Node) -> LayoutSnapshot {
                 Direction::Horizontal => DirectionSnapshot::Horizontal,
                 Direction::Vertical => DirectionSnapshot::Vertical,
             },
-            ratio: ratio.get(),
+            ratio: SavedSplitRatio::from_ratio(*ratio),
             first: Box::new(capture_node(first)),
             second: Box::new(capture_node(second)),
         },

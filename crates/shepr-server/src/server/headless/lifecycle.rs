@@ -21,12 +21,28 @@ pub(super) enum ShutdownPhase {
     Stopping,
 }
 
+/// Lifecycle operation names kept typed until an error is presented.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ShutdownStep {
+    FreezeForHostShutdown,
+    CompleteShutdown,
+}
+
+impl std::fmt::Display for ShutdownStep {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::FreezeForHostShutdown => f.write_str("freezing for host shutdown"),
+            Self::CompleteShutdown => f.write_str("completing shutdown"),
+        }
+    }
+}
+
 /// A lifecycle step was asked for from a phase it does not start from. The
 /// step is refused and the phase left as it was, so an illegal transition
 /// never lands.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct UnexpectedPhase {
-    pub(super) step: &'static str,
+    pub(super) step: ShutdownStep,
     pub(super) expected: ShutdownPhase,
     pub(super) actual: ShutdownPhase,
 }
@@ -135,7 +151,7 @@ impl ShutdownLifecycle {
     /// Refuses `step` unless the server is in `expected`.
     pub(super) fn require_phase(
         &self,
-        step: &'static str,
+        step: ShutdownStep,
         expected: ShutdownPhase,
     ) -> Result<(), UnexpectedPhase> {
         if self.phase == expected {
@@ -156,7 +172,7 @@ impl ShutdownLifecycle {
         freeze: HostShutdownFreeze,
     ) -> Result<(), UnexpectedPhase> {
         self.require_phase(
-            "freezing for host shutdown",
+            ShutdownStep::FreezeForHostShutdown,
             ShutdownPhase::HostShutdownWarning,
         )?;
         self.freeze = Some(freeze);
@@ -223,7 +239,7 @@ impl ShutdownLifecycle {
         assert_eq!(self.phase, ShutdownPhase::Stopping);
         shepr_api::error::ApiError::new(
             shepr_api::error::ApiErrorCode::ServerUnavailable,
-            "server is shutting down",
+            shepr_protocol::ShutdownReason::Stopping.to_string(),
         )
     }
 }
@@ -291,7 +307,7 @@ impl ShutdownLifecycle {
         // Checked before any side effect: a refused freeze must leave the save
         // policy and logind's delay lock as they were.
         if let Err(error) = self.require_phase(
-            "freezing for host shutdown",
+            ShutdownStep::FreezeForHostShutdown,
             ShutdownPhase::HostShutdownWarning,
         ) {
             tracing::error!(%error, "refusing the host shutdown freeze");
@@ -362,7 +378,7 @@ impl HeadlessServer {
         // Completing is only legal once `initiate_shutdown` marked the server
         // stopping; this step settles queued requests before notifying clients.
         self.lifecycle
-            .require_phase("completing shutdown", ShutdownPhase::Stopping)
+            .require_phase(ShutdownStep::CompleteShutdown, ShutdownPhase::Stopping)
             .map_err(io::Error::other)?;
         info!("completing server shutdown");
         // A client whose outbox already closed leaves first, so a request it
@@ -370,11 +386,7 @@ impl HeadlessServer {
         self.reap_closed_clients();
         self.reject_late_client_connections().await;
 
-        let shutdown_msg = ServerMessage::ServerShutdown {
-            reason: Some(shepr_protocol::ShutdownReason::Message(
-                "server is shutting down".to_owned(),
-            )),
-        };
+        let shutdown_msg = ServerMessage::server_shutdown();
         self.send_to_all_clients(&shutdown_msg);
         self.queue_shutdown_flushes();
 

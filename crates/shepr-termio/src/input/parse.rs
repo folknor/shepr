@@ -46,7 +46,8 @@ fn parse_kitty_key_sequence(data: &str) -> Option<TerminalKey> {
     let shifted_codepoint = key_fields
         .next()
         .filter(|field| !field.is_empty())
-        .and_then(|field| field.parse::<u32>().ok());
+        .and_then(|field| field.parse::<u32>().ok())
+        .and_then(char::from_u32);
 
     let code = kitty_codepoint_to_keycode(codepoint)?;
     let associated_text = match associated_text {
@@ -62,8 +63,7 @@ fn parse_kitty_key_sequence(data: &str) -> Option<TerminalKey> {
     // Kitty permits the shifted alternate only while Shift is active. Normalize
     // contradictory reports here so they cannot dispatch an unshifted command.
     if matches!(code, KeyCode::Char(_))
-        && shifted_codepoint
-            .is_some_and(|shifted| shifted != codepoint && char::from_u32(shifted).is_some())
+        && shifted_codepoint.is_some_and(|shifted| u32::from(shifted) != codepoint)
     {
         modifiers |= KeyModifiers::SHIFT;
     }
@@ -347,7 +347,7 @@ mod tests {
         code: KeyCode,
         modifiers: KeyModifiers,
         kind: crossterm::event::KeyEventKind,
-        shifted_codepoint: Option<u32>,
+        shifted_codepoint: Option<char>,
     ) {
         assert_eq!(actual.code, code);
         assert_eq!(actual.modifiers, modifiers);
@@ -616,7 +616,7 @@ mod tests {
         assert_eq!(key.code, KeyCode::Char('1'));
         assert_eq!(key.modifiers, KeyModifiers::SHIFT);
         assert_eq!(key.kind, crossterm::event::KeyEventKind::Press);
-        assert_eq!(key.shifted_codepoint, Some('!' as u32));
+        assert_eq!(key.shifted_codepoint, Some('!'));
         assert_eq!(
             key.canonical_key(),
             (KeyCode::Char('!'), KeyModifiers::empty())
@@ -643,7 +643,7 @@ mod tests {
         assert_eq!(key.code, KeyCode::Char('l'));
         assert_eq!(key.modifiers, KeyModifiers::SHIFT);
         assert_eq!(key.kind, crossterm::event::KeyEventKind::Release);
-        assert_eq!(key.shifted_codepoint, Some('L' as u32));
+        assert_eq!(key.shifted_codepoint, Some('L'));
     }
 
     #[test]
@@ -657,7 +657,7 @@ mod tests {
             assert_eq!(key.code, KeyCode::Char('r'));
             assert_eq!(key.modifiers, KeyModifiers::SHIFT);
             assert_eq!(key.kind, kind);
-            assert_eq!(key.shifted_codepoint, Some('R' as u32));
+            assert_eq!(key.shifted_codepoint, Some('R'));
         }
     }
 
@@ -682,7 +682,7 @@ mod tests {
             assert_eq!(key.code, KeyCode::Char(base));
             assert_eq!(key.modifiers, KeyModifiers::SHIFT);
             assert_eq!(key.kind, crossterm::event::KeyEventKind::Press);
-            assert_eq!(key.shifted_codepoint, Some(shifted as u32));
+            assert_eq!(key.shifted_codepoint, Some(shifted));
         }
     }
 
@@ -1095,7 +1095,10 @@ mod tests {
                 if shifted.is_empty() {
                     None
                 } else {
-                    Some(shifted.parse::<u32>().expect("test precondition"))
+                    Some(
+                        char::from_u32(shifted.parse::<u32>().expect("test precondition"))
+                            .expect("test precondition"),
+                    )
                 },
             );
         }

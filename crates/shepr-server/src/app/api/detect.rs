@@ -1,5 +1,7 @@
 use shepr_api::error::{ApiError, ApiErrorCode, ApiResult};
-use shepr_api::schema::{DetectionCapture, PaneTarget, ResponseResult};
+use shepr_api::schema::{
+    DetectionCapture, DetectionExplanation, PaneTarget, ResponseResult, ScreenDetectionSkipReason,
+};
 
 use crate::app::App;
 
@@ -71,11 +73,11 @@ impl App {
         }) {
             let full_lifecycle = authority.origin.is_full_lifecycle();
             let skip_reason = if full_lifecycle {
-                "full_lifecycle_hook_authority"
+                ScreenDetectionSkipReason::FullLifecycleHookAuthority
             } else {
-                "hook_authority"
+                ScreenDetectionSkipReason::HookAuthority
             };
-            let explain = shepr_agent::detect::manifest::hook_authority_explain_to_json_value(
+            let explain = DetectionExplanation::hook_authority(
                 authority.origin.label(),
                 terminal.state,
                 authority.origin.source().as_str(),
@@ -102,9 +104,9 @@ impl App {
                 osc_progress: &capture.osc_progress,
             },
         );
-        let value = shepr_agent::detect::manifest::explain_to_json_value(&explain);
-
-        success(ResponseResult::DetectExplain { explain: value })
+        success(ResponseResult::DetectExplain {
+            explain: explain.into(),
+        })
     }
 
     fn detect_terminal_unavailable_error(
@@ -409,9 +411,12 @@ mod tests {
         );
 
         let explain = &response["result"]["explain"];
-        assert_eq!(explain["screen_detection_skipped"], true, "{response}");
         assert_eq!(
-            explain["screen_detection_skip_reason"], "full_lifecycle_hook_authority",
+            explain["state_source"]["kind"], "hook_authority",
+            "{response}"
+        );
+        assert_eq!(
+            explain["state_source"]["skip_reason"], "full_lifecycle_hook_authority",
             "{response}"
         );
         assert_eq!(explain["state"], "working", "{response}");

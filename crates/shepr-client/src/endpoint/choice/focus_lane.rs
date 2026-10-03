@@ -68,14 +68,16 @@ impl FocusLane {
         let Some((_, requested)) = self.in_flight.take() else {
             return Err("unexpected focus response".into());
         };
+        // The reply acknowledges the resolved target; Preparing checks actual focus against
+        // the coherent snapshot and surface pair before committing the move.
         let matches = match (&requested, result) {
             (ClientEndpointFocusTarget::Pane(id), EndpointReply::PaneInfo { pane }) => {
-                pane.focused && &pane.pane_id == id
+                &pane.pane_id == id
             }
             (
                 ClientEndpointFocusTarget::Workspace(id),
                 EndpointReply::WorkspaceInfo { workspace },
-            ) => workspace.focused && &workspace.workspace_id == id,
+            ) => &workspace.workspace_id == id,
             _ => false,
         };
         if !matches {
@@ -98,7 +100,6 @@ mod tests {
                 workspace_id: crate::tests::test_workspace_id(id),
                 number: 1,
                 label: id.into(),
-                focused: true,
                 pane_count: 1,
                 agent_status: shepr_protocol::AgentStatus::Idle,
             },

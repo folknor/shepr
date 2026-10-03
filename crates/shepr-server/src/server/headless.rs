@@ -918,12 +918,7 @@ impl HeadlessServer {
     }
 
     fn send_shutdown_to_unregistered_client(&mut self, client_id: ClientId, outbox: &ClientOutbox) {
-        if outbox.send(&ServerMessage::ServerShutdown {
-            reason: Some(shepr_protocol::ShutdownReason::Message(
-                "server is shutting down".to_owned(),
-            )),
-        }) == Delivery::Closed
-        {
+        if outbox.send(&ServerMessage::server_shutdown()) == Delivery::Closed {
             debug!(?client_id, "late client left before its shutdown notice");
         } else {
             self.shutdown_flushes.push(outbox.flush_barrier());

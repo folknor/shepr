@@ -22,20 +22,15 @@ pub(in crate::shell) fn snapshot() -> ClientShellSnapshot {
             new_workspace_cwd: "/repo".into(),
             number: 1,
             label: "client-shell".into(),
-            // This protocol-owned metadata is present in the fixture but not rendered by the shell.
-            custom_label: false,
             branch: Some("main".into()),
             git_ahead_behind: None,
-            focused: true,
             agent_status: AgentStatus::Idle,
         }],
         panes: vec![ClientShellPane {
             pane_id: test_pane_id("w1:p1"),
-            workspace_id: test_workspace_id("w1"),
             label: None,
             cwd: Some("/repo".into()),
             foreground_cwd: Some("/repo".into()),
-            focused: true,
             right_click_passthrough: false,
         }],
         agents: Vec::new(),
@@ -163,7 +158,6 @@ pub(in crate::shell) fn pane_scroll_result(
     EndpointReply::PaneInfo {
         pane: Box::new(shepr_protocol::command::PaneInfo {
             pane_id: shepr_test_fixtures::id("w1:p1"),
-            focused: true,
             scroll: Some(shepr_protocol::command::PaneScrollInfo {
                 offset_from_bottom,
                 max_offset_from_bottom,

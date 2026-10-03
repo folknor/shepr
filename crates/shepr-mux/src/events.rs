@@ -95,16 +95,7 @@ impl RuntimeGeneration {
 #[derive(Clone)]
 pub(crate) struct EventSender {
     sender: tokio::sync::mpsc::Sender<AppEvent>,
-    origin: Option<(PaneId, RuntimeGeneration)>,
-}
-
-impl From<tokio::sync::mpsc::Sender<AppEvent>> for EventSender {
-    fn from(sender: tokio::sync::mpsc::Sender<AppEvent>) -> Self {
-        Self {
-            sender,
-            origin: None,
-        }
-    }
+    origin: (PaneId, RuntimeGeneration),
 }
 
 impl EventSender {
@@ -115,18 +106,16 @@ impl EventSender {
     ) -> Self {
         Self {
             sender,
-            origin: Some((pane_id, generation)),
+            origin: (pane_id, generation),
         }
     }
 
     fn tag(&self, event: AppEvent) -> AppEvent {
-        match self.origin {
-            Some((pane_id, generation)) => AppEvent::Runtime {
-                pane_id,
-                generation,
-                event: Box::new(event),
-            },
-            None => event,
+        let (pane_id, generation) = self.origin;
+        AppEvent::Runtime {
+            pane_id,
+            generation,
+            event: Box::new(event),
         }
     }
 

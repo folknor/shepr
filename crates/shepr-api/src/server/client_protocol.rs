@@ -73,42 +73,100 @@ impl Drop for ConnectionSlot {
     }
 }
 
-/// Refuses a TUI connection for `reason`, in the client protocol. The client
-/// writes its preamble and hello together before reading, so both are read
-/// (within one short bound) before anything is written, and the refusal then
-/// goes out in one write with this build's preamble ahead of it. A preamble of
-/// another build gets this build's preamble alone, without its hello being
-/// decoded, and so does a same-build client whose hello does not arrive: a
-/// recognisable preamble is always answered with this build's identity. A
-/// peer that sent no recognisable preamble is closed without an answer.
+/// What a TUI listener learned from one bounded client opening.
+#[derive(Debug)]
+pub enum ClientHandshakeOutcome {
+    /// The same-build preamble was answered and the client's first message decoded.
+    Hello(shepr_protocol::ClientMessage),
+    /// Another build id was answered with this process's preamble;
+    /// the foreign hello was not decoded.
+    Foreign(shepr_protocol::preamble::PeerBuild),
+    /// No usable hello arrived. A recognized preamble, if one arrived, was
+    /// already answered with this process's preamble.
+    Silent(ClientHandshakeSilence),
+    /// The peer did not send the shepr preamble magic and received no answer.
+    NotShepr,
+}
+
+/// The read failure that left a recognized client opening without a hello.
+#[derive(Debug)]
+pub enum ClientHandshakeSilence {
+    /// The preamble ended early or failed to read.
+    Preamble(PreambleError),
+    /// The first framed message was absent or could not be decoded.
+    Hello(shepr_protocol::FramingError),
+}
+
+/// Reads and answers the client-protocol preamble by the listener's one rule.
+/// Every recognized build gets this process's preamble; only a same-build
+/// peer's hello is decoded. The same deadline covers both reads. A failed
+/// preamble write is returned as an I/O error.
+pub fn read_client_handshake(
+    stream: &mut LocalStream,
+    deadline: Instant,
+) -> std::io::Result<ClientHandshakeOutcome> {
+    let build = {
+        let mut reader = LocalStreamDeadlineReader::new(stream, deadline);
+        match read_preamble(&mut reader) {
+            Ok(()) => None,
+            Err(PreambleError::DifferentBuild(peer)) => Some(peer),
+            Err(PreambleError::NotShepr) => return Ok(ClientHandshakeOutcome::NotShepr),
+            Err(error) => {
+                return Ok(ClientHandshakeOutcome::Silent(
+                    ClientHandshakeSilence::Preamble(error),
+                ));
+            }
+        }
+    };
+
+    shepr_platform::write_client_stream(stream, &local_preamble(), STREAM_WRITE_TIMEOUT)?;
+
+    if let Some(peer) = build {
+        return Ok(ClientHandshakeOutcome::Foreign(peer));
+    }
+
+    let hello = {
+        let mut reader = LocalStreamDeadlineReader::new(stream, deadline);
+        shepr_protocol::read_handshake_message::<_, shepr_protocol::ClientMessage>(&mut reader)
+    };
+    match hello {
+        Ok(message) => Ok(ClientHandshakeOutcome::Hello(message)),
+        Err(error) => Ok(ClientHandshakeOutcome::Silent(
+            ClientHandshakeSilence::Hello(error),
+        )),
+    }
+}
+
+/// Refuses a TUI connection for `reason`. The shared handshake reader answers
+/// recognized preambles before this refusal is encoded, and foreign builds
+/// never have their hello decoded.
 pub(super) fn refuse_client(mut stream: LocalStream, reason: shepr_protocol::HandshakeRefusal) {
     // clock-io-ok: bounds real reads of the refused peer's preamble and hello.
     let deadline = Instant::now() + BUSY_CLIENT_HANDSHAKE_TIMEOUT;
-    let mut reader = LocalStreamDeadlineReader::new(&mut stream, deadline);
-    let mut answer = local_preamble().to_vec();
-    match read_preamble(&mut reader) {
-        Ok(()) => {
-            let hello = shepr_protocol::read_handshake_message::<_, shepr_protocol::ClientMessage>(
-                &mut reader,
+    match read_client_handshake(&mut stream, deadline) {
+        Ok(ClientHandshakeOutcome::Hello(_)) => {
+            let welcome = shepr_protocol::ServerMessage::EndpointWelcome(
+                shepr_protocol::endpoint::EndpointServerWelcome::refused(reason),
             );
-            if let Err(error) = hello {
-                debug!(%error, "refused client sent no readable hello");
-            } else {
-                let welcome = shepr_protocol::ServerMessage::EndpointWelcome(
-                    shepr_protocol::endpoint::EndpointServerWelcome::refused(reason),
-                );
-                match shepr_protocol::encode_message(&welcome) {
-                    Ok(framed) => answer.extend_from_slice(&framed),
-                    Err(error) => error!(%error, "failed to encode client refusal"),
+            match shepr_protocol::encode_message(&welcome) {
+                Ok(framed) => {
+                    if let Err(error) =
+                        shepr_platform::write_client_stream(&stream, &framed, STREAM_WRITE_TIMEOUT)
+                    {
+                        debug!(%error, "failed to send client refusal");
+                    }
                 }
+                Err(error) => error!(%error, "failed to encode client refusal"),
             }
         }
-        Err(PreambleError::DifferentBuild(_)) => {}
-        Err(_) => return,
-    }
-    if let Err(error) = shepr_platform::write_client_stream(&stream, &answer, STREAM_WRITE_TIMEOUT)
-    {
-        debug!(%error, "failed to send client refusal");
+        Ok(ClientHandshakeOutcome::Foreign(peer)) => {
+            debug!(build_id = %peer.build_id, "refusing a client from another build");
+        }
+        Ok(ClientHandshakeOutcome::Silent(error)) => {
+            debug!(?error, "refused client sent no readable hello");
+        }
+        Ok(ClientHandshakeOutcome::NotShepr) => {}
+        Err(error) => debug!(%error, "failed to send client build-identity preamble"),
     }
 }
 

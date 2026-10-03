@@ -1,11 +1,13 @@
 use serde::{Deserialize, Serialize};
 
 pub mod common;
+pub mod detection;
 pub mod panes;
 pub mod response;
 pub mod server;
 
 pub use common::*;
+pub use detection::*;
 pub use panes::*;
 pub use response::*;
 pub use server::*;

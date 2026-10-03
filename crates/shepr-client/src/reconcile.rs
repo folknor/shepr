@@ -32,7 +32,7 @@ impl ClientLoop {
             // generation is connected, and only `endpoint_lost` below (`disconnected`) re-arms
             // it. So every queued failure ends its endpoint's lane here.
             warn!(
-                endpoint = %failure.endpoint_id.storage_key(),
+                endpoint = %failure.endpoint_id,
                 error = %failure.failure,
                 "endpoint transport failed"
             );

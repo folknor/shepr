@@ -84,12 +84,6 @@ fn discover_below(cwd: &Path, ceilings: &GitCeilings) -> Discovery {
     }
 }
 
-/// Inside a Git checkout the label is the checkout root's name; the home
-/// directory is never consulted, so none is resolved.
-pub(crate) fn automatic_workspace_label(cwd: &Path, repo_root: &Path) -> String {
-    shepr_core::workspace_label::workspace_label_from_cwd(cwd, Some(repo_root), None)
-}
-
 pub(super) fn canonicalize_best_effort_path(path: &Path) -> PathBuf {
     std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
@@ -644,6 +638,13 @@ pub(super) fn read_ref_oid_for_full_ref(
             return None;
         }
     }
+}
+
+/// Inside a Git checkout the label is the checkout root's name; the home
+/// directory is never consulted, so none is resolved.
+#[cfg(test)]
+pub(crate) fn automatic_workspace_label(cwd: &Path, repo_root: &Path) -> String {
+    shepr_core::workspace_label::workspace_label_from_cwd(cwd, Some(repo_root), None)
 }
 
 #[cfg(test)]

@@ -318,15 +318,15 @@ fn codex_no_match_is_unknown_without_changing_other_agents() {
     assert_eq!(explain.verdict.state(), AgentState::Unknown);
     assert!(!explain.verdict.visible_idle());
     assert_eq!(
-        explain.fallback_reason.as_deref(),
-        Some(UNKNOWN_MANIFEST_FALLBACK)
+        explain.fallback_reason,
+        Some(FallbackReason::ManifestUnknownFallback)
     );
     let pi = bundled_loaded(Agent::Pi);
     let other = fallback_explain(Agent::Pi, Some((&pi, Vec::new())));
     assert_eq!(other.verdict.state(), AgentState::Idle);
     assert_eq!(
-        other.fallback_reason.as_deref(),
-        Some(DEFAULT_KNOWN_AGENT_IDLE_FALLBACK)
+        other.fallback_reason,
+        Some(FallbackReason::DefaultKnownAgentIdleFallback)
     );
 }
 
@@ -341,8 +341,8 @@ fn agents_without_a_screen_manifest_are_unknown_not_idle() {
         let explain = fallback_explain(agent, None);
         assert_eq!(explain.verdict.state(), AgentState::Unknown);
         assert_eq!(
-            explain.fallback_reason.as_deref(),
-            Some(NO_SCREEN_MANIFEST_FALLBACK)
+            explain.fallback_reason,
+            Some(FallbackReason::NoScreenManifest)
         );
     }
     assert!(screen_unknown_is_stable(Agent::Codex));
@@ -361,7 +361,7 @@ fn explain_for_label_evaluates_the_bundled_manifest_and_names_an_unknown_label()
 
     let unknown = explain_for_label("no-such-agent", screen_input(screen));
     assert_eq!(unknown.verdict.state(), AgentState::Unknown);
-    assert_eq!(unknown.fallback_reason.as_deref(), Some("unknown_agent"));
+    assert_eq!(unknown.fallback_reason, Some(FallbackReason::UnknownAgent));
 }
 
 #[test]
@@ -547,8 +547,10 @@ contains = ["overlay-marker"]
         assert_eq!(result.verdict.state(), AgentState::Unknown);
         assert!(result.verdict.skip_state_update());
         assert_eq!(
-            result.skipped_update_reason.as_deref(),
-            Some("matched_rule:overlay")
+            result.skipped_update_reason,
+            Some(SkippedUpdateReason::MatchedRule {
+                rule_id: "overlay".into()
+            })
         );
         assert!(!result.verdict.visible_idle());
         assert!(!result.verdict.visible_working());
@@ -849,4 +851,26 @@ fn manifest_validation_rejects_invalid_counted_line_regions() {
             );
         }
     }
+}
+
+#[test]
+fn explained_regions_use_the_parsed_canonical_spelling() {
+    let mut source = local_manifest("working", "active-marker");
+    source.push_str("\nregion = \"  whole_recent  \"\n");
+    let manifests = TestManifests::new(&source);
+    let explain = manifests.explain(Agent::Codex, "active-marker");
+    assert_eq!(
+        explain
+            .matched_rule
+            .expect("matched rule")
+            .region
+            .to_string(),
+        "whole_recent"
+    );
+    assert!(
+        explain
+            .evaluated_rules
+            .iter()
+            .all(|rule| rule.region.to_string() == "whole_recent")
+    );
 }

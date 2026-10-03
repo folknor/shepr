@@ -2280,12 +2280,14 @@ async fn cwd_report_and_slow_probe_refresh_shell_projection() {
 
     let scratch = ScratchDir::new("headless-cwd");
     let cwd = scratch.path().to_path_buf();
-    server
-        .app
-        .handle_internal_event(shepr_mux::events::AppEvent::TerminalCwdReported {
+    let report = server.app.from_pane_runtime(
+        pane_id,
+        shepr_mux::events::AppEvent::TerminalCwdReported {
             pane_id,
             cwd: shepr_mux::UsableCwd::new(cwd.clone()).expect("socket directory is usable"),
-        });
+        },
+    );
+    server.app.handle_internal_event(report);
     server.render_now();
     let reported = client_shell_snapshot(&control);
     assert_eq!(
@@ -2399,7 +2401,6 @@ async fn each_kind_of_change_sends_a_new_projection_through_its_real_path() {
     ));
     let workspace = next_projection(&mut server, &control, &mut previous);
     assert_eq!(workspace.workspaces[0].label, "named-workspace");
-    assert!(workspace.workspaces[0].custom_label);
 
     assert!(command_through_server(
         &mut server,
@@ -2411,16 +2412,18 @@ async fn each_kind_of_change_sends_a_new_projection_through_its_real_path() {
     ));
     assert!(pane(&next_projection(&mut server, &control, &mut previous)).right_click_passthrough);
 
-    assert!(
-        server.handle_internal_event_with_forwarding(AppEvent::StateChanged {
+    let working = server.app.from_pane_runtime(
+        pane_id,
+        AppEvent::StateChanged {
             pane_id,
             agent: Some(shepr_agent::detect::Agent::Pi),
             state: shepr_agent::detect::AgentState::Working,
             visible_blocker: false,
             process_exited: false,
             observed_at: Instant::now(),
-        })
+        },
     );
+    assert!(server.handle_internal_event_with_forwarding(working));
     let agent = next_projection(&mut server, &control, &mut previous);
     assert!(agent.agents.iter().any(|entry| entry.state_change_seq > 0));
 
@@ -2447,7 +2450,7 @@ async fn each_kind_of_change_sends_a_new_projection_through_its_real_path() {
                 resolved_identity_cwd: cwd.clone(),
                 status_cache_key: cwd,
                 auto_label: "focus-reporting".into(),
-                branch: Some("feature".into()),
+                branch: shepr_mux::git::WorkspaceBranch::Named("feature".into()),
                 ahead_behind: None,
             }],
             cache_updates: Vec::new(),
@@ -3681,7 +3684,7 @@ async fn repeated_layout_action_reapplies_controller_geometry() {
                 workspace_id: workspace_id.clone(),
                 first_panes: vec![first_public],
                 second_panes: vec![second_public],
-                ratio: 0.8,
+                ratio: shepr_core::layout::SplitRatio::new(0.8).expect("test split ratio is valid"),
             },
         ),
     );
@@ -4080,7 +4083,6 @@ async fn pane_focus_replaces_a_diverged_client_shell_projection() {
         panic!("expected pane info");
     };
     assert_eq!(pane.pane_id, first_pane_id);
-    assert!(pane.focused);
     assert_eq!(server.app.state.bookmark_index(), Some(0));
     let location = &server.clients[&9].shell_state().location;
     assert_eq!(location.focused_workspace_id(), Some(&first_workspace_id));
@@ -4751,7 +4753,8 @@ fn resizing_a_background_shell_does_not_change_foreground_or_host_theme() {
         Some(first_background.into())
     );
 
-    assert!(!server.handle_internal_event_with_forwarding(unviewed_clipboard_write()));
+    let write = unviewed_clipboard_write(&mut server);
+    assert!(!server.handle_internal_event_with_forwarding(write));
     assert!(matches!(
         read_server_message(
             first_control
@@ -4837,9 +4840,17 @@ fn unchanged_git_refresh_does_not_request_headless_render() {
     let mut workspace = shepr_mux::workspace::Workspace::test_new("one");
     let workspace_id = workspace.id.to_string();
     let cwd = workspace.identity_cwd.clone();
-    workspace.cached_auto_label = "cached".into();
-    workspace.cached_git_status_key = cwd.clone();
-    workspace.cached_git_branch = None;
+    workspace.admit_git_status(
+        shepr_mux::git::WorkspaceGitStatus {
+            workspace_id: workspace_id.clone(),
+            resolved_identity_cwd: cwd.clone(),
+            status_cache_key: cwd.clone(),
+            auto_label: "cached".into(),
+            branch: shepr_mux::git::WorkspaceBranch::OutsideRepository,
+            ahead_behind: None,
+        },
+        Some(&cwd),
+    );
     server.app.state.workspaces.push(workspace);
 
     let changed = server.handle_internal_event_with_forwarding(AppEvent::GitStatusRefreshed {
@@ -4848,7 +4859,7 @@ fn unchanged_git_refresh_does_not_request_headless_render() {
             resolved_identity_cwd: cwd.clone(),
             status_cache_key: cwd,
             auto_label: "cached".into(),
-            branch: None,
+            branch: shepr_mux::git::WorkspaceBranch::OutsideRepository,
             ahead_behind: None,
         }],
         cache_updates: Vec::new(),
@@ -4872,7 +4883,7 @@ fn changed_git_refresh_requests_headless_render() {
             resolved_identity_cwd: cwd.clone(),
             status_cache_key: cwd,
             auto_label: "one".into(),
-            branch: Some("changed".into()),
+            branch: shepr_mux::git::WorkspaceBranch::Named("changed".into()),
             ahead_behind: None,
         }],
         cache_updates: Vec::new(),
@@ -4904,13 +4915,16 @@ async fn host_shutdown_warning_freezes_saves_before_applying_events_and_thaws_on
     assert!(server.app.session_saver.autosave_deadline().is_none());
 
     // The server keeps running and applies pane deaths; only the disk is frozen.
-    assert!(
-        server.handle_internal_event_with_forwarding(AppEvent::PaneDied {
+    server.app.insert_idle_test_runtime(pane_id);
+    let died = server.app.from_pane_runtime(
+        pane_id,
+        AppEvent::PaneDied {
             pane_id,
             exit_reason: shepr_platform::ChildExitReason::Exited,
             ended_at: std::time::Instant::now(),
-        })
+        },
     );
+    assert!(server.handle_internal_event_with_forwarding(died));
     assert!(server.app.find_pane(pane_id).is_none());
     assert!(!server.app.policy.persists_session());
 
@@ -5001,14 +5015,21 @@ async fn signal_quit_drain_keeps_dying_panes_in_the_layout() {
     server.app.state.workspaces = vec![workspace];
     server.app.state.ensure_test_terminals();
     server.app.state.set_bookmark_index(Some(0));
-    server
-        .app
-        .event_tx
-        .try_send(AppEvent::PaneDied {
+    // From the pane's live runtime, so admission passes it and only the
+    // signal quit keeps the pane.
+    server.app.insert_idle_test_runtime(pane_id);
+    let died = server.app.from_pane_runtime(
+        pane_id,
+        AppEvent::PaneDied {
             pane_id,
             exit_reason: shepr_platform::ChildExitReason::Exited,
             ended_at: std::time::Instant::now(),
-        })
+        },
+    );
+    server
+        .app
+        .event_tx
+        .try_send(died)
         .expect("test precondition");
     server
         .lifecycle
@@ -5068,13 +5089,16 @@ async fn pane_death_reconciles_each_client_view_and_focus() {
         .shell_state_mut()
         .outer_terminal_focus = Some(false);
 
-    assert!(
-        server.handle_internal_event_with_forwarding(AppEvent::PaneDied {
+    server.app.insert_idle_test_runtime(dead_pane);
+    let died = server.app.from_pane_runtime(
+        dead_pane,
+        AppEvent::PaneDied {
             pane_id: dead_pane,
             exit_reason: shepr_platform::ChildExitReason::Exited,
             ended_at: std::time::Instant::now(),
-        })
+        },
     );
+    assert!(server.handle_internal_event_with_forwarding(died));
 
     assert_eq!(
         server.shell_target_for_client(ClientId::test_new(71)),
@@ -5137,13 +5161,15 @@ async fn pane_death_reapplies_controller_geometry() {
     let shrunk = server.app.test_runtime(first_pane).current_size();
     assert!(shrunk.0 < 46);
 
-    assert!(
-        server.handle_internal_event_with_forwarding(AppEvent::PaneDied {
+    let died = server.app.from_pane_runtime(
+        dead_pane,
+        AppEvent::PaneDied {
             pane_id: dead_pane,
             exit_reason: shepr_platform::ChildExitReason::Exited,
             ended_at: std::time::Instant::now(),
-        })
+        },
     );
+    assert!(server.handle_internal_event_with_forwarding(died));
 
     let runtime = &server.app.test_runtime(first_pane);
     let grown = runtime.current_size();
@@ -5562,10 +5588,11 @@ async fn headless_scheduled_tasks_start_pending_agent_resume_without_foreground_
         .terminals
         .get_mut(&terminal_id)
         .expect("test terminal should exist")
-        .pending_agent_resume_plan = Some(crate::test_support::test_codex_plan(
-        "shepr:codex\0codex\0Id\0codex-session",
-        vec![crate::app::exiting_test_command().into()],
-    ));
+        .agent_resume =
+        shepr_mux::terminal::AgentResumeState::Planned(crate::test_support::test_codex_plan(
+            "shepr:codex\0codex\0Id\0codex-session",
+            vec![crate::app::exiting_test_command().into()],
+        ));
 
     server.render_now();
     assert_eq!(
@@ -5612,10 +5639,11 @@ async fn headless_scheduled_tasks_keep_pending_agent_resume_deadline_across_tick
         .terminals
         .get_mut(&terminal_id)
         .expect("test terminal should exist")
-        .pending_agent_resume_plan = Some(crate::test_support::test_codex_plan(
-        "shepr:codex\0codex\0Id\0codex-session",
-        vec![crate::app::exiting_test_command().into()],
-    ));
+        .agent_resume =
+        shepr_mux::terminal::AgentResumeState::Planned(crate::test_support::test_codex_plan(
+            "shepr:codex\0codex\0Id\0codex-session",
+            vec![crate::app::exiting_test_command().into()],
+        ));
     server.render_now();
 
     let now = Instant::now();
@@ -5648,8 +5676,8 @@ async fn settle_resume_launch(
 ) {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     while server.app.state.terminals[terminal_id]
-        .pending_agent_resume_plan
-        .is_some()
+        .agent_resume
+        .is_pending()
     {
         let event = tokio::time::timeout_at(deadline, server.app.event_rx.recv())
             .await
@@ -5917,13 +5945,23 @@ fn client_shell_focus_promotes_and_reaches_reporting_pane() {
     });
 }
 
-/// A clipboard write from a pane that no client views: the fallback that
-/// sends it to the foreground client.
-fn unviewed_clipboard_write() -> AppEvent {
-    AppEvent::ClipboardWrite {
-        pane_id: shepr_core::layout::PaneId::alloc(),
-        content: b"test".to_vec(),
-    }
+/// A clipboard write from a pane that no client views (its workspace is no
+/// client's location): the fallback that sends it to the foreground client.
+/// The pane has a live runtime, since admission drops a write from anywhere
+/// else before forwarding is reached.
+fn unviewed_clipboard_write(server: &mut HeadlessServer) -> AppEvent {
+    let workspace = shepr_mux::workspace::Workspace::test_new("unviewed-clipboard");
+    let pane_id = workspace.root_pane();
+    server.app.state.workspaces.push(workspace);
+    server.app.state.ensure_test_terminals();
+    server.app.insert_idle_test_runtime(pane_id);
+    server.app.from_pane_runtime(
+        pane_id,
+        AppEvent::ClipboardWrite {
+            pane_id,
+            content: b"test".to_vec(),
+        },
+    )
 }
 
 #[tokio::test]
@@ -5951,10 +5989,15 @@ async fn clipboard_write_goes_to_the_clients_viewing_the_writing_pane() {
         .clients
         .set_foreground_client_id(Some(ClientId::test_new(7)));
 
-    let changed = server.handle_internal_event_with_forwarding(AppEvent::ClipboardWrite {
-        pane_id: second_pane,
-        content: b"test".to_vec(),
-    });
+    server.app.insert_idle_test_runtime(second_pane);
+    let write = server.app.from_pane_runtime(
+        second_pane,
+        AppEvent::ClipboardWrite {
+            pane_id: second_pane,
+            content: b"test".to_vec(),
+        },
+    );
+    let changed = server.handle_internal_event_with_forwarding(write);
 
     assert!(!changed);
     let clipboard = loop {
@@ -6006,7 +6049,8 @@ fn clipboard_write_from_an_unviewed_pane_targets_foreground_client_only() {
         .clients
         .set_foreground_client_id(Some(ClientId::test_new(2)));
 
-    let changed = server.handle_internal_event_with_forwarding(unviewed_clipboard_write());
+    let write = unviewed_clipboard_write(&mut server);
+    let changed = server.handle_internal_event_with_forwarding(write);
 
     assert!(!changed);
     match read_server_message(
@@ -6030,7 +6074,8 @@ fn clipboard_write_without_foreground_client_does_not_change_visual_state() {
     let mut server = test_headless_server();
     server.clients.set_foreground_client_id(None);
 
-    let changed = server.handle_internal_event_with_forwarding(unviewed_clipboard_write());
+    let write = unviewed_clipboard_write(&mut server);
+    let changed = server.handle_internal_event_with_forwarding(write);
 
     assert!(!changed);
 }
@@ -6055,7 +6100,8 @@ fn clipboard_write_failed_foreground_send_is_removed_at_the_reap() {
         .clients
         .set_foreground_client_id(Some(ClientId::test_new(1)));
 
-    let changed = server.handle_internal_event_with_forwarding(unviewed_clipboard_write());
+    let write = unviewed_clipboard_write(&mut server);
+    let changed = server.handle_internal_event_with_forwarding(write);
 
     assert!(!changed);
     assert!(
@@ -6078,51 +6124,57 @@ async fn unchanged_internal_events_leave_projection_and_sources_clean() {
         .expect("terminal")
         .clone();
     let cwd = server.app.state.terminals[&terminal_id].cwd().to_path_buf();
+    // Every event comes from the pane's live runtime, so an unchanged result
+    // below is the reducer finding nothing new, not admission dropping it.
+    server.app.insert_idle_test_runtime(pane_id);
+    let from_runtime =
+        |server: &HeadlessServer, event: AppEvent| server.app.from_pane_runtime(pane_id, event);
+    let working = |server: &HeadlessServer| {
+        from_runtime(
+            server,
+            AppEvent::StateChanged {
+                pane_id,
+                agent: Some(shepr_agent::detect::Agent::Codex),
+                state: shepr_agent::detect::AgentState::Working,
+                visible_blocker: false,
+                process_exited: false,
+                observed_at: server.app.clock.now,
+            },
+        )
+    };
     server.immediate_pty_sources_dirty = false;
     server.host_input_modes_dirty = false;
     let before = server.app.state.shell_projection_revision;
-    assert!(
-        !server.handle_internal_event_with_forwarding(AppEvent::TerminalCwdReported {
+    let same_cwd = from_runtime(
+        &server,
+        AppEvent::TerminalCwdReported {
             pane_id,
             cwd: shepr_mux::UsableCwd::new(cwd).expect("absolute cwd"),
-        })
+        },
     );
+    assert!(!server.handle_internal_event_with_forwarding(same_cwd));
     assert_eq!(server.app.state.shell_projection_revision, before);
     assert!(!server.immediate_pty_sources_dirty);
     assert!(!server.host_input_modes_dirty);
 
     // The same events do invalidate once they change what a client sees.
     let moved = shepr_test_support::ScratchDir::new("event-effects-cwd");
-    assert!(
-        server.handle_internal_event_with_forwarding(AppEvent::TerminalCwdReported {
+    let moved_cwd = from_runtime(
+        &server,
+        AppEvent::TerminalCwdReported {
             pane_id,
             cwd: shepr_mux::UsableCwd::new(moved.path().to_path_buf()).expect("absolute cwd"),
-        })
+        },
     );
+    assert!(server.handle_internal_event_with_forwarding(moved_cwd));
     assert_ne!(server.app.state.shell_projection_revision, before);
     let before = server.app.state.shell_projection_revision;
-    assert!(
-        server.handle_internal_event_with_forwarding(AppEvent::StateChanged {
-            pane_id,
-            agent: Some(shepr_agent::detect::Agent::Codex),
-            state: shepr_agent::detect::AgentState::Working,
-            visible_blocker: false,
-            process_exited: false,
-            observed_at: server.app.clock.now,
-        })
-    );
+    let event = working(&server);
+    assert!(server.handle_internal_event_with_forwarding(event));
     assert_ne!(server.app.state.shell_projection_revision, before);
     let before = server.app.state.shell_projection_revision;
-    assert!(
-        !server.handle_internal_event_with_forwarding(AppEvent::StateChanged {
-            pane_id,
-            agent: Some(shepr_agent::detect::Agent::Codex),
-            state: shepr_agent::detect::AgentState::Working,
-            visible_blocker: false,
-            process_exited: false,
-            observed_at: server.app.clock.now,
-        })
-    );
+    let event = working(&server);
+    assert!(!server.handle_internal_event_with_forwarding(event));
     assert_eq!(server.app.state.shell_projection_revision, before);
     assert!(!server.immediate_pty_sources_dirty);
     assert!(!server.host_input_modes_dirty);
@@ -6134,11 +6186,18 @@ async fn missing_pane_exit_has_no_invalidation() {
     server.immediate_pty_sources_dirty = false;
     server.host_input_modes_dirty = false;
     let before = server.app.state.shell_projection_revision;
+    // A late exit from the runtime of a pane already gone from the layout: the
+    // runtime went with the pane, so admission finds no producer for it.
+    let pane_id = shepr_core::layout::PaneId::alloc();
     assert!(
-        !server.handle_internal_event_with_forwarding(AppEvent::PaneDied {
-            pane_id: shepr_core::layout::PaneId::alloc(),
-            exit_reason: shepr_platform::ChildExitReason::Exited,
-            ended_at: std::time::Instant::now(),
+        !server.handle_internal_event_with_forwarding(AppEvent::Runtime {
+            pane_id,
+            generation: shepr_mux::events::RuntimeGeneration::alloc(),
+            event: Box::new(AppEvent::PaneDied {
+                pane_id,
+                exit_reason: shepr_platform::ChildExitReason::Exited,
+                ended_at: std::time::Instant::now(),
+            }),
         })
     );
     assert_eq!(server.app.state.shell_projection_revision, before);

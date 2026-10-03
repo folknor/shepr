@@ -657,7 +657,11 @@ impl ClientShellState {
         (!first.is_empty() && !second.is_empty()).then_some((first, second))
     }
 
-    fn pane_split_ratio(hit: &PaneSplitHit, grab_offset: i32, point: (u16, u16)) -> f32 {
+    fn pane_split_ratio(
+        hit: &PaneSplitHit,
+        grab_offset: i32,
+        point: (u16, u16),
+    ) -> shepr_core::layout::SplitRatio {
         let (pointer, origin, length) = match hit.direction {
             shepr_protocol::PaneSurfaceSplitDirection::Horizontal => {
                 (i32::from(point.0), i32::from(hit.area.x), hit.area.width)
@@ -666,9 +670,8 @@ impl ClientShellState {
                 (i32::from(point.1), i32::from(hit.area.y), hit.area.height)
             }
         };
-        ((pointer + grab_offset - origin) as f32 / f32::from(length.max(1))).clamp(
-            shepr_core::layout::MIN_SPLIT_RATIO,
-            shepr_core::layout::MAX_SPLIT_RATIO,
+        shepr_core::layout::SplitRatio::clamped(
+            (pointer + grab_offset - origin) as f32 / f32::from(length.max(1)),
         )
     }
 
@@ -1078,10 +1081,7 @@ impl ClientShellState {
                         let target_is_current =
                             self.pane_split_topology_matches_hit(&hit, &workspace_id);
                         let ratio = Self::pane_split_ratio(&hit, grab_offset, point);
-                        if target_is_current
-                            && last_sent_ratio
-                                .is_none_or(|sent| (sent - ratio).abs() > f32::EPSILON)
-                        {
+                        if target_is_current && last_sent_ratio.is_none_or(|sent| sent != ratio) {
                             self.push_endpoint_command(
                                 shepr_protocol::command::EndpointCommand::LayoutSetSplitRatio(
                                     shepr_protocol::command::LayoutSetSplitRatioParams {
@@ -2063,7 +2063,7 @@ mod tests {
             workspace_id: shepr_protocol::WorkspaceId::from_number(1)
                 .expect("one-based workspace number"),
             grab_offset: 0,
-            last_sent_ratio: Some(0.5),
+            last_sent_ratio: Some(shepr_core::layout::SplitRatio::clamped(0.5)),
             throttle: Throttle::new(crate::limits::MOUSE_DRAG_SEND_INTERVAL),
         });
         state
@@ -2096,7 +2096,7 @@ mod tests {
                 if matches!(
                     &request.command,
                     shepr_protocol::command::EndpointCommand::LayoutSetSplitRatio(params)
-                        if (params.ratio - 0.75).abs() < f32::EPSILON
+                        if (params.ratio.get() - 0.75).abs() < f32::EPSILON
                             && params.first_panes
                                 == vec!["w1:p1".parse::<shepr_protocol::PublicPaneId>().expect("pane")]
                             && params.second_panes

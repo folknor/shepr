@@ -123,10 +123,17 @@ fn registered_names_where(
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(crate) enum LaunchPurpose {
+pub enum LaunchKind {
     #[default]
     Fresh,
+    Restored,
     AgentResume,
+}
+
+impl LaunchKind {
+    pub fn requires_cwd(self) -> bool {
+        !matches!(self, Self::Fresh)
+    }
 }
 
 pub(super) fn apply_pane_terminal_env(cmd: &mut PtyCommand) {
@@ -148,7 +155,7 @@ pub struct PaneLaunchEnv {
     /// The public id of a managed pane. When absent, `SHEPR_PANE_ID` stays
     /// unset rather than inheriting an enclosing pane's id.
     pane_id: Option<PublicPaneId>,
-    purpose: LaunchPurpose,
+    kind: LaunchKind,
     /// Resolved server socket exported to every pane.
     socket_path: std::path::PathBuf,
 }
@@ -158,12 +165,17 @@ impl PaneLaunchEnv {
         Self {
             socket_path,
             pane_id: None,
-            purpose: LaunchPurpose::Fresh,
+            kind: LaunchKind::Fresh,
         }
     }
 
     pub fn for_agent_resume(mut self) -> Self {
-        self.purpose = LaunchPurpose::AgentResume;
+        self.kind = LaunchKind::AgentResume;
+        self
+    }
+
+    pub fn for_restore(mut self) -> Self {
+        self.kind = LaunchKind::Restored;
         self
     }
 
@@ -172,8 +184,8 @@ impl PaneLaunchEnv {
         self
     }
 
-    pub(super) fn purpose(&self) -> LaunchPurpose {
-        self.purpose
+    pub(super) fn kind(&self) -> LaunchKind {
+        self.kind
     }
 }
 
@@ -229,7 +241,6 @@ pub fn init_pane_launches() -> std::io::Result<()> {
 pub struct PaneShellConfig<'a> {
     pub default_shell: &'a shepr_core::shell::ResolvedShell,
     pub login_shell: bool,
-    require_cwd: bool,
 }
 
 impl<'a> PaneShellConfig<'a> {
@@ -237,24 +248,18 @@ impl<'a> PaneShellConfig<'a> {
         Self {
             default_shell,
             login_shell,
-            require_cwd: false,
         }
-    }
-
-    /// Fail the shell launch if its requested working directory has gone
-    /// away. Resumed agent commands use this because redirecting one to `HOME`
-    /// could act on a different project or session.
-    pub fn require_cwd(mut self) -> Self {
-        self.require_cwd = true;
-        self
     }
 }
 
 /// Carry the validated shell unchanged into the child command.
-pub(super) fn pane_shell_command_builder(shell_config: PaneShellConfig<'_>) -> PtyCommand {
+pub(super) fn pane_shell_command_builder(
+    shell_config: PaneShellConfig<'_>,
+    kind: LaunchKind,
+) -> PtyCommand {
     let mut command =
         PtyCommand::interactive_shell(shell_config.default_shell, shell_config.login_shell);
-    if shell_config.require_cwd {
+    if kind.requires_cwd() {
         command.require_cwd();
     }
     command

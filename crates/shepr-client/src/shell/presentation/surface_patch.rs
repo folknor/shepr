@@ -265,10 +265,8 @@ mod tests {
         let other_pane_id = crate::tests::test_pane_id("w1:p2");
         if !copy_pane_focused {
             snapshot.focused_pane_id = Some(other_pane_id.clone());
-            snapshot.panes[0].focused = false;
             let mut other_pane = snapshot.panes[0].clone();
             other_pane.pane_id = other_pane_id.clone();
-            other_pane.focused = true;
             snapshot.panes.push(other_pane);
         }
         state.set_snapshot(Box::new(snapshot));

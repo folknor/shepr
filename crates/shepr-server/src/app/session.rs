@@ -864,37 +864,62 @@ impl App {
         self.wait_for_session_save_with_outcome() == Some(true)
     }
 
-    /// Applies an App pane exit after locally settling its checkpoint. The server
-    /// event loop owns ordering in its held exit queue, which these App tests do
-    /// not exercise.
+    /// Applies a runtime's pane exit after locally settling its checkpoint, in
+    /// the order the server event loop uses: admission first, so an exit from
+    /// a stale or missing runtime publishes nothing and asks for no
+    /// checkpoint, then preparation, then removal with the envelope kept so
+    /// admission checks the producer again. The loop's held exit queue, which
+    /// orders exits waiting on a checkpoint, is not exercised here.
+    ///
+    /// `ev` is the runtime's envelope (see `App::from_pane_runtime`). The
+    /// caller builds it rather than this helper wrapping a bare exit, so each
+    /// test names the runtime whose exit it simulates and the admission rule
+    /// stays visible in it.
+    ///
+    /// # Panics
+    ///
+    /// If `ev` is bare (admission would drop it, so the test would observe
+    /// nothing for a reason it did not mean), or if the admitted event is not
+    /// a pane exit.
     pub(crate) fn handle_internal_event_after_checkpoint(&mut self, ev: AppEvent) {
-        let prepared = if let AppEvent::PaneDied {
+        let AppEvent::Runtime { generation, .. } = &ev else {
+            panic!("a pane exit reaches the app inside its runtime's envelope");
+        };
+        let generation = *generation;
+        let Some(admitted) = self.admit_runtime_event(ev) else {
+            return;
+        };
+        let AppEvent::PaneDied {
             pane_id,
             exit_reason,
             ended_at,
-        } = &ev
-        {
-            let prepared = self.prepare_pane_exit(*pane_id, *exit_reason, *ended_at);
-            if let Some(generation) = prepared.held_generation() {
-                for _ in 0..4 {
-                    self.wait_for_session_save();
-                    if self.pane_exit_checkpoint_generation_settled(generation) {
-                        break;
-                    }
-                    self.session_saver.expedite_checkpoint_retries();
-                    self.start_background_session_save();
-                }
-            }
-            Some(prepared)
-        } else {
-            None
+        } = admitted
+        else {
+            panic!("this helper applies pane exits only");
         };
-        match prepared {
-            Some(prepared) => {
-                self.handle_prepared_pane_exit(ev, prepared);
+        let prepared = self.prepare_pane_exit(pane_id, exit_reason, ended_at);
+        if let Some(checkpoint_generation) = prepared.held_generation() {
+            for _ in 0..4 {
+                self.wait_for_session_save();
+                if self.pane_exit_checkpoint_generation_settled(checkpoint_generation) {
+                    break;
+                }
+                self.session_saver.expedite_checkpoint_retries();
+                self.start_background_session_save();
             }
-            None => self.handle_internal_event(ev),
         }
+        self.handle_prepared_pane_exit(
+            AppEvent::Runtime {
+                pane_id,
+                generation,
+                event: Box::new(AppEvent::PaneDied {
+                    pane_id,
+                    exit_reason,
+                    ended_at,
+                }),
+            },
+            prepared,
+        );
     }
 
     /// Save the live pane histories while runtimes still exist, keeping the
@@ -939,7 +964,21 @@ mod tests {
         app.state.workspaces = vec![workspace];
         app.state.set_bookmark_index(Some(0));
         app.state.ensure_test_terminals();
+        app.insert_idle_test_runtime(exiting);
+        app.insert_idle_test_runtime(staying);
         (app, exiting, staying)
+    }
+
+    /// A signalled exit of the pane, as its runtime reports it.
+    fn interrupted_exit(app: &App, pane_id: shepr_core::layout::PaneId) -> AppEvent {
+        app.from_pane_runtime(
+            pane_id,
+            AppEvent::PaneDied {
+                pane_id,
+                exit_reason: shepr_platform::ChildExitReason::Interrupted,
+                ended_at: std::time::Instant::now(),
+            },
+        )
     }
 
     fn saved_pane_counts(app: &App) -> Vec<usize> {
@@ -1017,11 +1056,7 @@ mod tests {
     fn exits_after_a_pane_exit_checkpoint_keep_its_layout() {
         let (mut app, exiting, staying) = two_pane_app("burst");
 
-        app.handle_internal_event_after_checkpoint(AppEvent::PaneDied {
-            pane_id: exiting,
-            exit_reason: shepr_platform::ChildExitReason::Interrupted,
-            ended_at: std::time::Instant::now(),
-        });
+        app.handle_internal_event_after_checkpoint(interrupted_exit(&app, exiting));
         assert_eq!(saved_pane_counts(&app), vec![2]);
         assert_eq!(
             app.prepare_pane_exit(
@@ -1038,11 +1073,7 @@ mod tests {
     #[tokio::test]
     async fn the_final_save_rewrites_the_checkpoint_layout_instead_of_skipping_it() {
         let (mut app, exiting, _) = two_pane_app("final");
-        app.handle_internal_event_after_checkpoint(AppEvent::PaneDied {
-            pane_id: exiting,
-            exit_reason: shepr_platform::ChildExitReason::Interrupted,
-            ended_at: std::time::Instant::now(),
-        });
+        app.handle_internal_event_after_checkpoint(interrupted_exit(&app, exiting));
         assert_eq!(app.state.workspaces[0].panes().len(), 1);
         // A final save that skipped would leave no session file behind.
         std::fs::remove_file(
@@ -1066,11 +1097,7 @@ mod tests {
     #[tokio::test]
     async fn a_final_save_with_missing_checkpoint_identities_keeps_the_durable_layout() {
         let (mut app, exiting, _) = two_pane_app("identities");
-        app.handle_internal_event_after_checkpoint(AppEvent::PaneDied {
-            pane_id: exiting,
-            exit_reason: shepr_platform::ChildExitReason::Interrupted,
-            ended_at: std::time::Instant::now(),
-        });
+        app.handle_internal_event_after_checkpoint(interrupted_exit(&app, exiting));
         app.session_saver
             .preserved_layout_mut()
             .expect("saved checkpoint")
@@ -1390,11 +1417,7 @@ mod tests {
     #[test]
     fn a_host_checkpoint_supersedes_a_preserved_pane_exit_layout() {
         let (mut app, exiting, _) = two_pane_app("host-supersedes");
-        app.handle_internal_event_after_checkpoint(AppEvent::PaneDied {
-            pane_id: exiting,
-            exit_reason: shepr_platform::ChildExitReason::Interrupted,
-            ended_at: std::time::Instant::now(),
-        });
+        app.handle_internal_event_after_checkpoint(interrupted_exit(&app, exiting));
         assert!(app.preserves_pane_exit_checkpoint());
         app.request_host_shutdown_checkpoint();
         app.wait_for_session_save();
@@ -1407,11 +1430,7 @@ mod tests {
     #[test]
     fn a_mutation_pending_when_a_checkpoint_starts_discards_the_preserved_layout() {
         let (mut app, exiting, _) = two_pane_app("pending-mutation");
-        app.handle_internal_event_after_checkpoint(AppEvent::PaneDied {
-            pane_id: exiting,
-            exit_reason: shepr_platform::ChildExitReason::Interrupted,
-            ended_at: std::time::Instant::now(),
-        });
+        app.handle_internal_event_after_checkpoint(interrupted_exit(&app, exiting));
         assert!(app.preserves_pane_exit_checkpoint());
         app.state.mark_session_dirty();
         app.request_host_shutdown_checkpoint();
@@ -1466,22 +1485,11 @@ mod tests {
         assert!(app.pane_exit_checkpoint_generation_settled(first_generation));
         assert!(app.pane_exit_checkpoint_generation_settled(second_generation));
         assert!(!app.session_saver.exit.is_requested());
-        app.handle_prepared_pane_exit(
-            AppEvent::PaneDied {
-                pane_id: first,
-                exit_reason: reason,
-                ended_at: std::time::Instant::now(),
-            },
-            first_prepared,
-        );
-        app.handle_prepared_pane_exit(
-            AppEvent::PaneDied {
-                pane_id: second,
-                exit_reason: reason,
-                ended_at: std::time::Instant::now(),
-            },
-            second_prepared,
-        );
+        assert!(app.handle_prepared_pane_exit(interrupted_exit(&app, first), first_prepared));
+        assert!(app.handle_prepared_pane_exit(interrupted_exit(&app, second), second_prepared));
+        // Both exits were applied, so the three panes saved below are the
+        // preserved pre-exit layout, not the live one.
+        assert_eq!(app.state.workspaces[0].panes().len(), 1);
         app.sync_session_save_schedule();
         app.save_session_before_teardown_async().await;
         assert_eq!(saved_pane_counts(&app), vec![3]);
@@ -1508,8 +1516,8 @@ mod tests {
     async fn a_restore_that_drops_a_workspace_backs_up_the_saved_session_before_the_first_save() {
         use crate::test_support::{AppPathsFixture as _, ValidatedServerConfigFixture as _};
         use shepr_mux::persist::snapshot::{
-            DirectionSnapshot, LayoutSnapshot, PaneSnapshot, SessionFile, SessionSnapshot,
-            WorkspaceSnapshot,
+            DirectionSnapshot, LayoutSnapshot, PaneSnapshot, SavedSplitRatio, SessionFile,
+            SessionSnapshot, WorkspaceSnapshot,
         };
 
         let scratch = crate::test_support::ScratchDir::new("dropped-workspace-backup");
@@ -1555,7 +1563,7 @@ mod tests {
                     "invalid ratio",
                     LayoutSnapshot::Split {
                         direction: DirectionSnapshot::Horizontal,
-                        ratio: 1.0,
+                        ratio: SavedSplitRatio::from_raw(1.0),
                         first: Box::new(LayoutSnapshot::Pane(2)),
                         second: Box::new(LayoutSnapshot::Pane(3)),
                     },

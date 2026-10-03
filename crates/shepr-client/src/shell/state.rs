@@ -5,7 +5,7 @@
 use crate::shell::ledger::DropReason;
 use crate::shell::presentation::surfaces::Pairing;
 
-use crate::endpoint::ClientEndpointId;
+use crate::endpoint::{ClientEndpointBootKey, ClientEndpointId};
 use crate::shell::endpoints::{
     ClientEndpointFocusTarget, ClientShellEndpoint, MachineHit, local_endpoint,
 };
@@ -198,7 +198,7 @@ pub(in crate::shell) enum ClientChromeDrag {
         hit: PaneSplitHit,
         workspace_id: shepr_protocol::WorkspaceId,
         grab_offset: i32,
-        last_sent_ratio: Option<f32>,
+        last_sent_ratio: Option<shepr_core::layout::SplitRatio>,
         throttle: crate::shell::input::mouse::Throttle,
     },
     PaneScrollbar {
@@ -510,7 +510,9 @@ impl From<shepr_protocol::command::EndpointError> for ClientShellEndpointError {
 
 #[derive(Debug)]
 pub(crate) struct ClientPresentationLogContext {
-    pub(crate) endpoint: String,
+    /// Owned: the context is taken before a presentation step that borrows
+    /// the shell mutably, and is logged only if that step fails.
+    pub(crate) endpoint: ClientEndpointId,
     pub(crate) generation: Option<u64>,
     pub(crate) boot_id: Option<String>,
     pub(crate) projection_revision: Option<u64>,
@@ -675,7 +677,7 @@ pub struct ClientShellState {
     pub(in crate::shell) copy_pipeline: CopyPipeline,
     /// Identifies the currently active endpoint and its boot, so a switch of endpoint or a
     /// restart of its server is detectable when the next snapshot arrives.
-    pub(in crate::shell) active_boot_key: String,
+    pub(in crate::shell) active_boot_key: Option<ClientEndpointBootKey>,
     pub(in crate::shell) chrome: crate::shell::sidebar::chrome::ChromeLayout,
     pub(in crate::shell) agent_panel_sort_manual: bool,
     pub(in crate::shell) last_sidebar_divider_click: Option<std::time::Instant>,
@@ -772,7 +774,7 @@ impl ClientShellState {
             ledger: Ledger::default(),
             scroll_lanes: ScrollLanes::default(),
             copy_pipeline: CopyPipeline::default(),
-            active_boot_key: String::new(),
+            active_boot_key: None,
             chrome,
             agent_panel_sort_manual: preferences.agent_panel_sort.is_some(),
             last_sidebar_divider_click: None,
@@ -827,7 +829,7 @@ impl ClientShellState {
         }
         let snapshot = self.snapshot.as_deref();
         ClientPresentationLogContext {
-            endpoint: self.active_endpoint_id.storage_key(),
+            endpoint: self.active_endpoint_id.clone(),
             generation: self.active_snapshot_generation,
             boot_id: surface
                 .map(|surface| surface.boot_id.to_string())
@@ -960,10 +962,10 @@ impl ClientShellState {
         snapshot: Arc<ClientShellSnapshot>,
         generation: Option<u64>,
     ) {
-        let active_boot_key = match &self.active_endpoint_id {
-            ClientEndpointId::Local => snapshot.boot_id.to_string(),
-            endpoint_id => format!("{}:{}", endpoint_id.storage_key(), snapshot.boot_id),
-        };
+        let active_boot_key = Some(ClientEndpointBootKey::new(
+            &self.active_endpoint_id,
+            &snapshot.boot_id,
+        ));
         let endpoint_boot_changed =
             self.snapshot.is_some() && self.active_boot_key != active_boot_key;
         let generation_changed = self.active_snapshot_generation != generation;

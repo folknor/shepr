@@ -812,7 +812,7 @@ impl ClientLoop {
                     return Ok(ClientLoopAction::NextEvent);
                 }
                 if status == endpoint::ClientEndpointStatus::Attention {
-                    warn!(endpoint = %endpoint_id.storage_key(), generation, error = %message, "endpoint needs attention");
+                    warn!(endpoint = %endpoint_id, generation, error = %message, "endpoint needs attention");
                 }
                 update_endpoint_status_presentation(state, &endpoint_id, status, &message);
             }
@@ -926,7 +926,7 @@ impl ClientLoop {
                         // patched pane; the decoder checks neither). Both are bugs, and
                         // reconnecting for a fresh full surface baseline is the one response.
                         tracing::error!(
-                            endpoint = %endpoint_id.storage_key(),
+                            endpoint = %endpoint_id,
                             generation,
                             ?reason,
                             "client shell rejected a pane surface patch; failing its connection"
@@ -1036,7 +1036,7 @@ impl ClientLoop {
                     &mut state.output_writer,
                 ) {
                     warn!(
-                        endpoint = %endpoint_id.storage_key(),
+                        endpoint = %endpoint_id,
                         generation,
                         encoded_bytes = data.len(),
                         %error,

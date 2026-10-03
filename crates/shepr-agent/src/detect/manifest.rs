@@ -39,9 +39,46 @@ use crate::limits::{
     MAX_TOTAL_MATCHERS, MIN_REGION_LINE_COUNT,
 };
 
-pub const DEFAULT_KNOWN_AGENT_IDLE_FALLBACK: &str = "default_known_agent_idle_fallback";
-pub const NO_SCREEN_MANIFEST_FALLBACK: &str = "no_screen_manifest";
-pub const UNKNOWN_MANIFEST_FALLBACK: &str = "manifest_unknown_fallback";
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FallbackReason {
+    DefaultKnownAgentIdleFallback,
+    NoScreenManifest,
+    ManifestUnknownFallback,
+    UnknownAgent,
+}
+
+impl std::fmt::Display for FallbackReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::DefaultKnownAgentIdleFallback => "default_known_agent_idle_fallback",
+            Self::NoScreenManifest => "no_screen_manifest",
+            Self::ManifestUnknownFallback => "manifest_unknown_fallback",
+            Self::UnknownAgent => "unknown_agent",
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SkippedUpdateReason {
+    MatchedRule { rule_id: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExplainedAgent {
+    Known(Agent),
+    UnknownLabel(String),
+}
+
+impl ExplainedAgent {
+    pub fn label(&self) -> &str {
+        match self {
+            Self::Known(agent) => agent_label(*agent),
+            Self::UnknownLabel(label) => label,
+        }
+    }
+}
 
 /// Input to the detection engine, carrying the screen snapshot plus any
 /// OSC-derived strings captured from the terminal title / progress sequences.
@@ -56,12 +93,11 @@ pub struct DetectionInput<'a> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DetectionExplain {
-    pub agent: Option<String>,
+    pub agent: ExplainedAgent,
     pub verdict: AgentDetection,
     pub matched_rule: Option<MatchedRule>,
-    pub screen_detection_skipped: bool,
-    pub skipped_update_reason: Option<String>,
-    pub fallback_reason: Option<String>,
+    pub skipped_update_reason: Option<SkippedUpdateReason>,
+    pub fallback_reason: Option<FallbackReason>,
     pub evaluated_rules: Vec<EvaluatedRule>,
 }
 
@@ -69,7 +105,7 @@ pub struct DetectionExplain {
 pub struct MatchedRule {
     pub id: String,
     pub priority: i32,
-    pub region: String,
+    pub region: RegionSpec,
     pub state: AgentState,
 }
 
@@ -77,7 +113,7 @@ pub struct MatchedRule {
 pub struct EvaluatedRule {
     pub id: String,
     pub priority: i32,
-    pub region: String,
+    pub region: RegionSpec,
     pub evidence: RuleEvidence,
     pub state: AgentState,
     pub matched: bool,
@@ -200,7 +236,6 @@ struct CompiledRule {
     id: String,
     verdict: AgentDetection,
     priority: i32,
-    region_name: String,
     gate: CompiledGate,
     /// Index of the rule's own region, used for `explain` evidence.
     region_index: usize,
@@ -355,7 +390,7 @@ struct CompiledRegion {
 /// (U+2717) or a check mark (U+2713), and the current prompt is the last prompt
 /// line with no block marker below it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RegionSpec {
+pub enum RegionSpec {
     /// `whole_recent`: the whole detection snapshot.
     WholeRecent,
     /// `codex_after_last_prompt_marker`: text after Codex's last `›` prompt line.
@@ -380,6 +415,30 @@ enum RegionSpec {
     /// `MIN_REGION_LINE_COUNT..=MAX_REGION_LINE_COUNT`, written without a leading zero.
     BottomNonEmptyLines(usize),
     TopNonEmptyLines(usize),
+}
+
+impl std::fmt::Display for RegionSpec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::WholeRecent => f.write_str("whole_recent"),
+            Self::CodexAfterLastPromptMarker => f.write_str("codex_after_last_prompt_marker"),
+            Self::CodexBeforeCurrentPromptMarker => {
+                f.write_str("codex_before_current_prompt_marker")
+            }
+            Self::CodexWholeRecentWithoutCurrentPromptMarker => {
+                f.write_str("codex_whole_recent_without_current_prompt_marker")
+            }
+            Self::ClaudePromptBoxBody => f.write_str("claude_prompt_box_body"),
+            Self::ClaudeLastNonEmptyAbovePromptBox => {
+                f.write_str("claude_last_non_empty_above_prompt_box")
+            }
+            Self::AfterLastHorizontalRule => f.write_str("after_last_horizontal_rule"),
+            Self::OscTitle => f.write_str("osc_title"),
+            Self::OscProgress => f.write_str("osc_progress"),
+            Self::BottomNonEmptyLines(count) => write!(f, "bottom_non_empty_lines({count})"),
+            Self::TopNonEmptyLines(count) => write!(f, "top_non_empty_lines({count})"),
+        }
+    }
 }
 
 impl RegionSpec {
@@ -575,12 +634,11 @@ fn explain_with_manifest(
 pub fn explain_for_label(agent_label: &str, input: DetectionInput<'_>) -> DetectionExplain {
     let Some(agent) = parse_agent_label(agent_label) else {
         return DetectionExplain {
-            agent: Some(agent_label.to_string()),
+            agent: ExplainedAgent::UnknownLabel(agent_label.to_string()),
             verdict: AgentDetection::State(Detection::Unknown),
             matched_rule: None,
-            screen_detection_skipped: false,
             skipped_update_reason: None,
-            fallback_reason: Some("unknown_agent".to_string()),
+            fallback_reason: Some(FallbackReason::UnknownAgent),
             evaluated_rules: Vec::new(),
         };
     };
@@ -620,7 +678,7 @@ fn explain_loaded_manifest(
         evaluated_rules.push(EvaluatedRule {
             id: rule.id.clone(),
             priority: rule.priority,
-            region: rule.region_name.clone(),
+            region: loaded.regions[rule.region_index].spec,
             evidence: rule_evidence(rule, region_text),
             state: rule_state(rule),
             matched,
@@ -637,21 +695,22 @@ fn explain_loaded_manifest(
     };
 
     let detection = rule_detection(rule);
-    let skipped_update_reason = rule
-        .verdict
-        .skip_state_update()
-        .then(|| format!("matched_rule:{}", rule.id));
+    let skipped_update_reason =
+        rule.verdict
+            .skip_state_update()
+            .then(|| SkippedUpdateReason::MatchedRule {
+                rule_id: rule.id.clone(),
+            });
 
     DetectionExplain {
-        agent: Some(agent_label(agent).to_string()),
+        agent: ExplainedAgent::Known(agent),
         verdict: detection,
         matched_rule: Some(MatchedRule {
             id: rule.id.clone(),
             priority: rule.priority,
-            region: rule.region_name.clone(),
+            region: loaded.regions[rule.region_index].spec,
             state: detection.state(),
         }),
-        screen_detection_skipped: false,
         skipped_update_reason,
         fallback_reason: None,
         evaluated_rules,
@@ -667,15 +726,14 @@ fn fallback_explain(
     let evaluated_rules = context.map_or_else(Vec::new, |(_, evaluated)| evaluated);
 
     DetectionExplain {
-        agent: Some(agent_label(agent).to_string()),
+        agent: ExplainedAgent::Known(agent),
         verdict: fallback_detection(manifest),
         matched_rule: None,
-        screen_detection_skipped: false,
         skipped_update_reason: None,
         fallback_reason: match manifest_fallback {
-            None => Some(NO_SCREEN_MANIFEST_FALLBACK.to_string()),
-            Some(ManifestFallback::Unknown) => Some(UNKNOWN_MANIFEST_FALLBACK.to_string()),
-            Some(ManifestFallback::Idle) => Some(DEFAULT_KNOWN_AGENT_IDLE_FALLBACK.to_string()),
+            None => Some(FallbackReason::NoScreenManifest),
+            Some(ManifestFallback::Unknown) => Some(FallbackReason::ManifestUnknownFallback),
+            Some(ManifestFallback::Idle) => Some(FallbackReason::DefaultKnownAgentIdleFallback),
         },
         evaluated_rules,
     }
@@ -704,103 +762,6 @@ fn parse_bundled_manifest(label: &str, content: &str) -> Result<CompiledManifest
         ));
     }
     compile_manifest(manifest)
-}
-
-pub fn agent_state_label(state: AgentState) -> &'static str {
-    match state {
-        AgentState::Idle => "idle",
-        AgentState::Working => "working",
-        AgentState::Blocked => "blocked",
-        AgentState::Unknown => "unknown",
-    }
-}
-
-pub fn explain_to_json_value(explain: &DetectionExplain) -> serde_json::Value {
-    // The server uses this payload for explicit detect.explain requests. Its
-    // bounded preview contains pane text, which helps the caller diagnose the
-    // selected rule. Keep this diagnostic payload out of logs and unsolicited
-    // broadcasts.
-    let matched_rule = explain.matched_rule.as_ref().map(|rule| {
-        serde_json::json!({
-            "id": rule.id,
-            "priority": rule.priority,
-            "region": rule.region,
-            "state": agent_state_label(rule.state),
-        })
-    });
-    let evaluated_rules: Vec<_> = explain
-        .evaluated_rules
-        .iter()
-        .map(|rule| {
-            serde_json::json!({
-                "id": rule.id,
-                "priority": rule.priority,
-                "region": rule.region,
-                "state": agent_state_label(rule.state),
-                "matched": rule.matched,
-                "evidence": {
-                    "contains": &rule.evidence.contains,
-                    "regex": &rule.evidence.regex,
-                    "line_regex": &rule.evidence.line_regex,
-                    "all_count": rule.evidence.all_count,
-                    "any_count": rule.evidence.any_count,
-                    "not_count": rule.evidence.not_count,
-                    "region_bytes": rule.evidence.region_bytes,
-                    "region_preview": &rule.evidence.region_preview,
-                },
-            })
-        })
-        .collect();
-
-    serde_json::json!({
-        "agent": explain.agent,
-        "state": agent_state_label(explain.verdict.state()),
-        "matched_rule": matched_rule,
-        "visible_idle": explain.verdict.visible_idle(),
-        "visible_blocker": explain.verdict.visible_blocker(),
-        "visible_working": explain.verdict.visible_working(),
-        "screen_detection_skipped": explain.screen_detection_skipped,
-        "skip_state_update": explain.verdict.skip_state_update(),
-        "skipped_update_reason": explain.skipped_update_reason,
-        "fallback_reason": explain.fallback_reason,
-        "evaluated_rules": evaluated_rules,
-    })
-}
-
-/// Builds the same diagnostic payload for a state supplied by an integration
-/// hook. The shared converter keeps the rule and evidence fields aligned with
-/// screen-based explanations; the extra fields identify who supplied the
-/// effective state and why no screen rules were evaluated.
-pub fn hook_authority_explain_to_json_value(
-    agent_label: &str,
-    state: AgentState,
-    source: &str,
-    skip_reason: &str,
-) -> serde_json::Value {
-    // Preserve the raw state here: detect explain describes the detector's
-    // input, while the sidebar separately collapses Unknown to Idle.
-    let explain = DetectionExplain {
-        agent: Some(agent_label.to_string()),
-        verdict: AgentDetection::State(Detection::new(state, false)),
-        matched_rule: None,
-        screen_detection_skipped: true,
-        skipped_update_reason: None,
-        fallback_reason: None,
-        evaluated_rules: Vec::new(),
-    };
-    let mut value = explain_to_json_value(&explain);
-    if let Some(fields) = value.as_object_mut() {
-        fields.insert(
-            "state_source".to_string(),
-            serde_json::json!("hook_authority"),
-        );
-        fields.insert("hook_source".to_string(), serde_json::json!(source));
-        fields.insert(
-            "screen_detection_skip_reason".to_string(),
-            serde_json::json!(skip_reason),
-        );
-    }
-    value
 }
 
 fn parse_manifest_source(content: &str) -> Result<AgentManifest, String> {
@@ -912,7 +873,6 @@ fn compile_rule(
             ))
         },
         priority: rule.priority,
-        region_name: rule.region,
         region_index: gate.region,
         gate,
         regions_used,

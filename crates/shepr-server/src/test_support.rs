@@ -346,10 +346,10 @@ pub(crate) fn test_codex_plan(
         AgentSessionRef::id(session_id).expect("test session id is valid"),
     )
     .expect("test session is a Codex session");
-    let mut plan =
-        shepr_agent::agent::resume::plan(&session).expect("a Codex session has a resume plan");
-    plan.argv = argv;
-    plan
+    let mut argv = argv.into_iter();
+    let program = argv.next().expect("test resume command has an executable");
+    shepr_agent::agent::resume::AgentResumePlan::for_command(&session, program, argv.collect())
+        .expect("test resume command has a nonempty executable")
 }
 
 /// An API reply as the JSON a client would read.

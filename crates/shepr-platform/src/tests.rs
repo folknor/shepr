@@ -204,10 +204,10 @@ fn startup_sweeps_only_owned_paths_with_a_proven_dead_process() {
         std::fs::Permissions::from_mode(crate::limits::PRIVATE_DIRECTORY_MODE),
     )
     .expect("test precondition");
-    let dead_tag = dead_process_tag(0);
+    let dead_tag = dead_process_tag();
     let live_tag = process_identity::ProcessIdentity::current()
         .expect("current process identity")
-        .tag(0);
+        .tag();
 
     let ssh_config_kind = crate::owned_runtime::DirectoryKind::SshConfig;
     let staging_kind = crate::owned_runtime::DirectoryKind::Staging;
@@ -280,9 +280,9 @@ fn present(path: &Path) -> bool {
     path.try_exists().expect("stat a swept path")
 }
 
-fn dead_process_tag(token: u64) -> String {
+fn dead_process_tag() -> String {
     let current = process_identity::ProcessIdentity::current().expect("current process identity");
-    let tag = current.tag(token);
+    let tag = current.tag();
     let (_, rest) = tag.split_once('-').expect("serialized process identity");
     format!("{:08x}-{rest}", u32::MAX)
 }

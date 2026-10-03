@@ -79,7 +79,7 @@ pub enum ClientError {
     UnexpectedWelcome,
     /// Server shut down.
     ServerShutdown {
-        reason: Option<shepr_protocol::ShutdownReason>,
+        reason: shepr_protocol::ShutdownReason,
     },
     /// Lost connection to the server.
     ConnectionLost(io::Error),
@@ -114,11 +114,7 @@ impl std::fmt::Display for ClientError {
                 write!(f, "protocol error: expected endpoint welcome")
             }
             ClientError::ServerShutdown { reason } => {
-                write!(f, "server shut down")?;
-                if let Some(reason) = reason {
-                    write!(f, ": {reason}")?;
-                }
-                Ok(())
+                write!(f, "{reason}")
             }
             ClientError::ConnectionLost(err) => write!(f, "lost connection to server: {err}"),
             ClientError::Protocol(err) => write!(f, "protocol error: {err}"),

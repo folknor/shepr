@@ -122,7 +122,8 @@ pub(crate) const SHELL_CWD_REFRESH_INTERVAL: Duration = Duration::from_secs(1);
 pub(crate) const TOKIO_RUNTIME_SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(100);
 
 /// The fraction of a split one resize step moves its edge by.
-pub(crate) const DEFAULT_PANE_RESIZE_AMOUNT: f32 = 0.05;
+pub(crate) const DEFAULT_PANE_RESIZE_AMOUNT: shepr_core::layout::RatioDelta =
+    shepr_core::layout::RatioDelta::new(0.05);
 
 /// Most endpoint replies held for one client, ready or waiting on a worker. A
 /// same-build client has one command in flight per endpoint, so a legitimate

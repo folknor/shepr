@@ -24,6 +24,21 @@ pub enum ClientEndpointId {
     Ssh(MachineLabel),
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ClientEndpointBootKey {
+    endpoint_id: ClientEndpointId,
+    boot_id: shepr_protocol::BootId,
+}
+
+impl ClientEndpointBootKey {
+    pub(crate) fn new(endpoint_id: &ClientEndpointId, boot_id: &shepr_protocol::BootId) -> Self {
+        Self {
+            endpoint_id: endpoint_id.clone(),
+            boot_id: boot_id.clone(),
+        }
+    }
+}
+
 impl ClientEndpointId {
     pub(crate) fn policy(&self) -> EndpointPolicy {
         match self {
@@ -44,11 +59,13 @@ impl ClientEndpointId {
             Self::Ssh(label) => label.as_str(),
         }
     }
+}
 
-    pub(crate) fn storage_key(&self) -> String {
+impl std::fmt::Display for ClientEndpointId {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Local => "local".into(),
-            Self::Ssh(label) => format!("ssh:{label}"),
+            Self::Local => formatter.write_str("local"),
+            Self::Ssh(label) => write!(formatter, "ssh:{label}"),
         }
     }
 }
@@ -112,9 +129,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn endpoint_storage_keys_use_the_label_not_the_ssh_target() {
+    fn endpoint_display_uses_the_label_not_the_ssh_target() {
         let label = MachineLabel::parse("build").expect("test precondition");
-        assert_eq!(ClientEndpointId::Ssh(label).storage_key(), "ssh:build");
+        assert_eq!(ClientEndpointId::Ssh(label).to_string(), "ssh:build");
     }
 
     #[test]

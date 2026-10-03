@@ -17,6 +17,7 @@ pub const HOST_KEYBOARD_QUERY_SEQUENCE: &[u8] = b"\x1b[?u\x1b[c";
 pub const HOST_CELL_SIZE_QUERY_SEQUENCE: &[u8] = b"\x1b[16t";
 pub const HOST_MODIFY_OTHER_KEYS_RESET_SEQUENCE: &[u8] = b"\x1b[>4;0m";
 pub const HOST_KITTY_KEYBOARD_POP_SEQUENCE: &[u8] = b"\x1b[<1u";
+pub const HOST_CURSOR_SHAPE_DEFAULT_SEQUENCE: &[u8] = b"\x1b[0 q";
 pub const HOST_CURSOR_AND_SHAPE_RESTORE_SEQUENCE: &[u8] = b"\x1b[?25h\x1b[0 q";
 pub const HOST_MOUSE_SGR_PIXELS_ENABLE_SEQUENCE: &[u8] = b"\x1b[?1016h";
 pub const HOST_WINDOW_TITLE_PUSH_SEQUENCE: &[u8] = b"\x1b[22;0t";
@@ -63,14 +64,11 @@ pub fn set_host_kitty_keyboard_report_all<W: Write>(
 ) -> io::Result<()> {
     let mut flags = ime_compatible_keyboard_enhancement_flags();
     if report_all_keys {
-        flags |= crossterm::event::KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES;
+        flags.insert(KittyKeyboardFlags::REPORT_ALL_KEYS);
+        flags.insert(KittyKeyboardFlags::REPORT_ASSOCIATED_TEXT);
     }
     let modify_other_keys_level = active.modify_other_keys_level;
-    let mut kitty_flags = KittyKeyboardFlags::from_bits_retain(u16::from(flags.bits()));
-    if report_all_keys {
-        kitty_flags.insert(KittyKeyboardFlags::REPORT_ASSOCIATED_TEXT);
-    }
-    set_host_keyboard_protocol(writer, active, kitty_flags, modify_other_keys_level)
+    set_host_keyboard_protocol(writer, active, flags, modify_other_keys_level)
 }
 
 pub fn set_host_modify_other_keys<W: Write>(
@@ -82,9 +80,10 @@ pub fn set_host_modify_other_keys<W: Write>(
     set_host_keyboard_protocol(writer, active, flags, level)
 }
 
-pub fn ime_compatible_keyboard_enhancement_flags() -> crossterm::event::KeyboardEnhancementFlags {
-    use crossterm::event::KeyboardEnhancementFlags as Flags;
-    Flags::DISAMBIGUATE_ESCAPE_CODES | Flags::REPORT_EVENT_TYPES | Flags::REPORT_ALTERNATE_KEYS
+pub fn ime_compatible_keyboard_enhancement_flags() -> KittyKeyboardFlags {
+    KittyKeyboardFlags::DISAMBIGUATE
+        | KittyKeyboardFlags::REPORT_EVENT_TYPES
+        | KittyKeyboardFlags::REPORT_ALTERNATE_KEYS
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -150,12 +149,11 @@ mod tests {
 
     #[test]
     fn keyboard_enhancement_flags_stay_ime_compatible() {
-        use crossterm::event::KeyboardEnhancementFlags as Flags;
         let flags = ime_compatible_keyboard_enhancement_flags();
-        assert!(flags.contains(Flags::DISAMBIGUATE_ESCAPE_CODES));
-        assert!(flags.contains(Flags::REPORT_EVENT_TYPES));
-        assert!(flags.contains(Flags::REPORT_ALTERNATE_KEYS));
-        assert!(!flags.contains(Flags::REPORT_ALL_KEYS_AS_ESCAPE_CODES));
+        assert!(flags.contains(KittyKeyboardFlags::DISAMBIGUATE));
+        assert!(flags.contains(KittyKeyboardFlags::REPORT_EVENT_TYPES));
+        assert!(flags.contains(KittyKeyboardFlags::REPORT_ALTERNATE_KEYS));
+        assert!(!flags.contains(KittyKeyboardFlags::REPORT_ALL_KEYS));
     }
 
     #[test]

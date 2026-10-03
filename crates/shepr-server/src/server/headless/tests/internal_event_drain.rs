@@ -55,15 +55,20 @@ async fn full_internal_event_queue_eventually_applies_working_to_idle_transition
         .expect("test precondition")
         .attached_terminal_id
         .clone();
+    server.app.insert_idle_test_runtime(pane_id);
     let now = server.app.clock.now;
-    server.app.handle_internal_event(AppEvent::StateChanged {
+    let working = server.app.from_pane_runtime(
         pane_id,
-        agent: Some(Agent::Pi),
-        state: AgentState::Working,
-        visible_blocker: false,
-        process_exited: false,
-        observed_at: now,
-    });
+        AppEvent::StateChanged {
+            pane_id,
+            agent: Some(Agent::Pi),
+            state: AgentState::Working,
+            visible_blocker: false,
+            process_exited: false,
+            observed_at: now,
+        },
+    );
+    server.app.handle_internal_event(working);
     assert_eq!(
         server
             .app
@@ -88,14 +93,17 @@ async fn full_internal_event_queue_eventually_applies_working_to_idle_transition
 
     let tx = server.app.event_tx.clone();
     let now = server.app.clock.now;
-    let send = tx.send(AppEvent::StateChanged {
+    let send = tx.send(server.app.from_pane_runtime(
         pane_id,
-        agent: Some(Agent::Pi),
-        state: AgentState::Idle,
-        visible_blocker: false,
-        process_exited: false,
-        observed_at: now,
-    });
+        AppEvent::StateChanged {
+            pane_id,
+            agent: Some(Agent::Pi),
+            state: AgentState::Idle,
+            visible_blocker: false,
+            process_exited: false,
+            observed_at: now,
+        },
+    ));
     tokio::pin!(send);
 
     let blocked =

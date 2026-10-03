@@ -467,7 +467,7 @@ async fn workspace_create_sizes_the_first_pty_for_the_requester_and_navigates_it
 }
 
 #[tokio::test]
-async fn reply_focus_flags_follow_the_requesters_location() {
+async fn pane_replies_name_the_requested_target() {
     let (mut server, panes) = server_with_workspaces(&["first", "second"]);
     let (_control, _render) = connect(&mut server, 7);
     let first_pane = server
@@ -479,8 +479,7 @@ async fn reply_focus_flags_follow_the_requesters_location() {
         .public_pane_id(1, panes[1])
         .expect("test precondition");
 
-    // Focusing a pane of the other workspace navigates the requester there, so
-    // the pane it asked about is the one it now views.
+    // Focusing a pane of the other workspace navigates the requester there.
     let Ok(EndpointReply::PaneInfo { pane }) = run(
         &mut server,
         7,
@@ -491,10 +490,12 @@ async fn reply_focus_flags_follow_the_requesters_location() {
         panic!("expected pane info");
     };
     assert_eq!(pane.pane_id, second_pane);
-    assert!(pane.focused);
+    assert_eq!(
+        server.shell_target_for_client(ClientId::test_new(7)),
+        Some(second_pane.workspace_id().clone())
+    );
 
-    // The first workspace's root is its focused pane, but the requester views
-    // the second workspace, so the reply does not call it focused.
+    // A pane info reply names its target; focus remains in the shell snapshot.
     let Ok(EndpointReply::PaneInfo { pane }) = run(
         &mut server,
         7,
@@ -506,6 +507,9 @@ async fn reply_focus_flags_follow_the_requesters_location() {
         panic!("expected pane info");
     };
     assert_eq!(pane.pane_id, first_pane);
-    assert!(!pane.focused);
+    assert_eq!(
+        server.shell_target_for_client(ClientId::test_new(7)),
+        Some(second_pane.workspace_id().clone())
+    );
     shutdown_test_runtimes(&mut server);
 }

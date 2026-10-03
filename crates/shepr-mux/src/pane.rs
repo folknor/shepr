@@ -13,8 +13,8 @@ mod state;
 mod teardown;
 mod terminal;
 
-pub use launch::{PaneLaunchEnv, PaneShellConfig, init_pane_launches};
-pub use launch_status::LaunchSettlement;
+pub use launch::{LaunchKind, PaneLaunchEnv, PaneShellConfig, init_pane_launches};
+pub use launch_status::{LaunchOutcome, LaunchSettlement};
 pub use runtime::PaneCwdProbe;
 pub use runtime::WheelRouting;
 pub use runtime::{PaneOutputWrite, PaneOutputWriter, PaneRuntime};

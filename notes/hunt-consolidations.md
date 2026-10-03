@@ -38,18 +38,6 @@ plumbing that AGENTS.md puts in platform, and mux reaches through
 `foreground_job`, `foreground_group_leader_job`). Reported by foundation and
 agents.
 
-## CON-004 - What is a valid split ratio, and how is one clamped?
-
-`SplitRatio::new` and `SplitRatio::clamped` in core (non-finite becomes
-`EVEN_SPLIT`); `sidebar_tokens.rs` `SectionSplit` (same bounds, same finite
-check, same fallback, its own serde); client `mouse.rs` `pane_split_ratio`
-clamping before sending; `handle_layout_set_split_ratio` rejecting non-finite,
-clamping through `SplitRatio::clamped(..).get()` to compare bits, then passing
-the raw `f32` to `set_split_ratio_at`, which clamps again (the "both sides went
-through the same clamp" comment is the guarantee). They agree because the
-constants are shared. Owner: `SplitRatio` on the wire and in `SectionSplit`.
-Reported by foundation, server-app and client-shell.
-
 ## CON-005 - When is a cell size exact, how big may it be, and how small may a host grid be?
 
 "Pixel coordinates are exact only with a known cell" is decided in
@@ -306,27 +294,6 @@ map from the descriptor, with the agent-specific decoder appended. The module
 comment argues against templating because decoders differ; that holds for the
 decoders only. (agents)
 
-## CON-050 - Is this persisted session resumable, and is this launch a resume?
-
-Resumability: `PersistedAgentSession::new` (custom sources allowed), `plan`
-(official only) and `AgentResumePlan::with_argv` (non-empty argv) each check, the
-snapshot path bypasses `new` through derived `Deserialize`, and
-`foreground_agent_confirms_session_owner` builds an argv as a predicate (the type
-is filed among the types). Resume state lives in four places:
-`TerminalState::pending_agent_resume_plan`, `App::pending_resume_commands`
-(pruned by `retain` every pass), `PaneLaunchEnv::purpose` and
-`PaneShellConfig::require_cwd`; runtime presence in the registry is a fifth.
-Candidates are decided in `has_pending_agent_resume_candidates`,
-`pending_agent_resume_candidates`, `pane_awaits_agent_resume`, an inline check
-inside `pending_agent_resume_candidates`, `has_pending_agent_resumes`, and
-`handle_pane_launch_settled`, which decides how to record a failure from
-`resume_command.is_some() || terminal.pending_agent_resume_plan.is_some()` rather
-than from the runtime's own purpose; held together by the pairwise test
-`candidate_probe_agrees_with_the_collected_candidates`. Owner: a `ResumeState::{
-Planned(plan), Launching { plan, command }, ..}` on one store with "is a
-candidate" as a method, and the launch kind carried by the runtime and returned
-with the settlement. Reported by agents, mux-panes and server-app.
-
 ## Pane runtime and workspace
 
 ## CON-051 - Is this observation still about our live child?
@@ -472,17 +439,6 @@ column is patched in the handler. Owner: one `PaneRuntime::copy_motion(cursor,
 CopyMotion) -> Point`, or the text engine moving to termio with mux supplying row
 text. Reported by mux-panes and server-app.
 
-## CON-063 - What is a workspace's automatic label, and is it visible?
-
-`Workspace::mark_identity_undiscovered` (`fallback_label_from_cwd(identity_cwd)`),
-the Git status snapshot (from the cache key, see cleanup),
-`WorkspaceGitStatusSnapshot::into_workspace_status` (from the real cwd and repo
-root), and the client from the server's checkout-root answer. Visibility:
-`apply_workspace_git_statuses` sets `changed |= ws.custom_name.is_none()` and
-`Workspace::display_name` encodes the same rule. Owner: the label as a pure
-function of `(cwd, checkout root, home)` (already `shepr_core::workspace_label`)
-computed once at admission. Reported by mux-state and server-app.
-
 ## Persistence and session saves
 
 ## CON-069 - Is a pane exit checkpointed before removal?
@@ -597,18 +553,6 @@ protocol `ClientSurfaceSize::clamped` re-derives the row bound
 holds any grid up to 65535 by 65535 until `client_shell_geometry_error` checks
 it. They agree. Owner: core, as a bounded grid type that refuses over-budget
 grids, which also lets protocol drop its config edge. (contracts)
-
-## CON-082 - How is a handshake answered?
-
-`shepr-api` `client_protocol.rs::refuse_client` reads the preamble and hello,
-then writes the preamble and refusal in one write; `shepr-server`
-`client_transport::handle_client_handshake` reads the preamble, writes the
-preamble at once, then reads the hello. Both decide what `DifferentBuild` and
-`NotShepr` mean and which `PreambleError` outcomes get this build's preamble
-back; they order their writes differently, compatible with a client that writes
-preamble and hello together but pinned by nothing. Owner: one handshake function
-returning `Hello | Foreign | Silent | NotShepr` (or a validated hello) and
-writing the preamble once by one rule. Reported by contracts and server-serving.
 
 ## Config and keybindings
 

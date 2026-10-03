@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use tokio::sync::Notify;
 use tracing::info;
 
-use super::launch::LaunchPurpose;
+use super::launch::LaunchKind;
 use super::launch_status::LaunchWatch;
 use super::process_probe::*;
 use super::teardown::ChildLiveness;
@@ -54,7 +54,7 @@ impl DetectionTask {
     /// the launch, not from the fork.
     pub(super) fn spawn(
         pane_id: PaneId,
-        launch_purpose: LaunchPurpose,
+        launch_purpose: LaunchKind,
         mut launch: LaunchWatch,
         handles: DetectionHandles,
     ) -> tokio::task::AbortHandle {
@@ -238,11 +238,15 @@ mod tests {
                 child_liveness: Arc::new(ChildLiveness::new(std::process::id(), None)),
                 lifecycle_authority: Arc::new(AtomicBool::new(false)),
                 reset: Arc::new(Notify::new()),
-                events: events.into(),
+                events: EventSender::runtime(
+                    events,
+                    shepr_test_fixtures::fixed_pane_id(1),
+                    crate::events::RuntimeGeneration::alloc(),
+                ),
                 render_notify: Arc::new(Notify::new()),
                 render_dirty: Arc::new(RenderSignal::new()),
             },
-            detector: DetectorState::new(Instant::now(), LaunchPurpose::Fresh),
+            detector: DetectorState::new(Instant::now(), LaunchKind::Fresh),
             next_wake: Duration::ZERO,
             cancelled: Arc::new(AtomicBool::new(false)),
         }

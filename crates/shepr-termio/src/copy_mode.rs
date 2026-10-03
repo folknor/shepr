@@ -49,7 +49,7 @@ pub fn copy_mode_command_char(key: &TerminalKey) -> Option<char> {
     if !key.modifiers.difference(KeyModifiers::SHIFT).is_empty() {
         return None;
     }
-    if let Some(ch) = key.shifted_codepoint.and_then(char::from_u32) {
+    if let Some(ch) = key.shifted_codepoint {
         return Some(ch);
     }
     let KeyCode::Char(ch) = key.code else {

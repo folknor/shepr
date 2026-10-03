@@ -282,39 +282,27 @@ fn client_error_display_host_terminal_does_not_claim_server_connection_failed() 
 #[test]
 fn client_error_display_handshake_rejected() {
     let err = ClientError::HandshakeRejected {
-        error: shepr_protocol::HandshakeRefusal::InvalidSurface("incompatible".into()),
+        error: shepr_protocol::HandshakeRefusal::InvalidSurface(
+            shepr_protocol::SurfaceRefusal::TooManyCells,
+        ),
     };
     let msg = err.to_string();
     assert!(
         msg.contains("rejected handshake"),
         "should mention rejection: {msg}"
     );
-    assert!(msg.contains("incompatible"), "should include error: {msg}");
+    assert!(
+        msg.contains("surface size limit"),
+        "should include error: {msg}"
+    );
 }
 
 #[test]
 fn client_error_display_server_shutdown() {
     let err = ClientError::ServerShutdown {
-        reason: Some(shepr_protocol::ShutdownReason::Message(
-            "maintenance".into(),
-        )),
+        reason: shepr_protocol::ShutdownReason::Stopping,
     };
-    let msg = err.to_string();
-    assert!(
-        msg.contains("server shut down"),
-        "should mention shutdown: {msg}"
-    );
-    assert!(msg.contains("maintenance"), "should include reason: {msg}");
-}
-
-#[test]
-fn client_error_display_server_shutdown_no_reason() {
-    let err = ClientError::ServerShutdown { reason: None };
-    let msg = err.to_string();
-    assert!(
-        msg.contains("server shut down"),
-        "should mention shutdown: {msg}"
-    );
+    assert_eq!(err.to_string(), "server is shutting down");
 }
 
 #[test]

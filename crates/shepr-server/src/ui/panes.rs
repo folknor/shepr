@@ -955,14 +955,14 @@ mod tests {
             shepr_core::layout::SplitBorder {
                 pos: 2,
                 direction: shepr_core::layout::Direction::Horizontal,
-                ratio: 0.5,
+                ratio: shepr_core::layout::SplitRatio::EVEN,
                 area: shepr_core::geometry::Rect::new(0, 0, 4, 4),
                 path: vec![],
             },
             shepr_core::layout::SplitBorder {
                 pos: 2,
                 direction: shepr_core::layout::Direction::Vertical,
-                ratio: 0.5,
+                ratio: shepr_core::layout::SplitRatio::EVEN,
                 area: shepr_core::geometry::Rect::new(0, 0, 4, 4),
                 path: vec![shepr_core::geometry::SplitBranch::First],
             },

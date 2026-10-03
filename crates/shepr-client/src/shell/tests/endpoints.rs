@@ -51,13 +51,11 @@ pub(in crate::shell) fn agent(
 ) -> ClientShellAgent {
     ClientShellAgent {
         pane_id: "w1:p1".parse().expect("test precondition"),
-        workspace_id: test_workspace_id("w1"),
         agent: Some("pi".into()),
         terminal_title: None,
         terminal_title_stripped: None,
         agent_status: status,
         state_change_seq,
-        focused: true,
     }
 }
 
@@ -231,7 +229,6 @@ fn collapsed_sidebar_workspace_rows_accept_drag_targets() {
             workspace_id: test_workspace_id(&format!("w{number}")),
             number,
             label: format!("space-{number}"),
-            focused: number == 1,
             ..template.clone()
         })
         .collect();
@@ -287,7 +284,6 @@ fn revealing_an_active_workspace_ignores_a_same_id_on_another_endpoint() {
             workspace_id: test_workspace_id(&format!("w{number}")),
             number,
             label: format!("space-{number}"),
-            focused: number == 5,
             ..template.clone()
         })
         .collect();
@@ -447,7 +443,6 @@ fn state_with_scrollable_agents() -> (ClientShellState, ClientEndpointId) {
                     &crate::tests::test_workspace_id("w1"),
                     index + 1,
                 ),
-                focused: index == 0,
                 ..agent(AgentStatus::Idle, 1)
             })
             .collect();
@@ -456,7 +451,6 @@ fn state_with_scrollable_agents() -> (ClientShellState, ClientEndpointId) {
             .iter()
             .map(|agent| ClientShellPane {
                 pane_id: agent.pane_id.clone(),
-                focused: agent.focused,
                 ..projection.panes[0].clone()
             })
             .collect();
@@ -578,12 +572,10 @@ fn single_endpoint_agent_indices_follow_the_rendered_client_recency_order() {
     first.agents.push(ClientShellAgent {
         pane_id: test_pane_id("w1:p2"),
         state_change_seq: 5,
-        focused: false,
         ..first.agents[0].clone()
     });
     first.panes.push(ClientShellPane {
         pane_id: test_pane_id("w1:p2"),
-        focused: false,
         ..first.panes[0].clone()
     });
     state.set_endpoint_snapshot_for_generation(&ClientEndpointId::Local, 1, Box::new(first));
@@ -642,13 +634,12 @@ fn agent_indices_keep_stale_rows_and_skip_agents_the_sidebar_cannot_render() {
 
     let mut stale = snapshot_with_agent("remote-boot", "w1:p2", AgentStatus::Working, 2);
     stale.agents.push(ClientShellAgent {
-        pane_id: test_pane_id("w1:p8"),
+        pane_id: test_pane_id("w9:p8"),
         // A workspace this snapshot does not carry.
-        workspace_id: test_workspace_id("w9"),
         ..stale.agents[0].clone()
     });
     stale.panes.push(ClientShellPane {
-        pane_id: test_pane_id("w1:p8"),
+        pane_id: test_pane_id("w9:p8"),
         ..stale.panes[0].clone()
     });
     state.set_endpoint_snapshot(&stale_id, Box::new(stale));
@@ -1029,7 +1020,6 @@ fn expanded_machine_sidebar_reveals_newly_focused_workspace() {
             workspace_id: test_workspace_id(&format!("w{number}")),
             number,
             label: format!("space-{number}"),
-            focused: number == 1,
             ..template.clone()
         })
         .collect();
@@ -1039,7 +1029,6 @@ fn expanded_machine_sidebar_reveals_newly_focused_workspace() {
     remote.workspaces.push(ClientShellWorkspace {
         workspace_id: test_workspace_id("w13"),
         number: 13,
-        focused: false,
         ..template.clone()
     });
     state.set_endpoint_snapshot(&remote_id, Box::new(remote));
@@ -1056,9 +1045,6 @@ fn expanded_machine_sidebar_reveals_newly_focused_workspace() {
         ..template
     });
     update.focused_workspace_id = Some(test_workspace_id("w13"));
-    for workspace in &mut update.workspaces {
-        workspace.focused = workspace.workspace_id == "w13";
-    }
     state.set_snapshot(Box::new(update));
     let mut updated_surface = surface();
     updated_surface.projection_revision = shepr_protocol::ProjectionRevision::new(2);
@@ -1102,7 +1088,6 @@ fn expanded_machine_sidebar_applies_space_row_gap_within_each_machine() {
         workspace.workspace_id = test_workspace_id("w2");
         workspace.number = 2;
         workspace.label = "second-workspace".into();
-        workspace.focused = false;
         snapshot.workspaces.push(workspace);
     };
     let mut local = snapshot();
@@ -2162,7 +2147,6 @@ fn navigator_foreign_pane_selection_activates_its_endpoint() {
     let mut local = snapshot();
     let mut inserted = local.workspaces[0].clone();
     inserted.workspace_id = test_workspace_id("w2");
-    inserted.focused = false;
     local.workspaces.push(inserted);
     state.set_snapshot(Box::new(local));
 

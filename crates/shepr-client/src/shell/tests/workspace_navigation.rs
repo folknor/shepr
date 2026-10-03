@@ -32,7 +32,6 @@ fn workspaces(count: usize) -> ClientShellSnapshot {
             let mut workspace = projected.workspaces[0].clone();
             workspace.workspace_id = test_workspace_id(&format!("w{number}"));
             workspace.number = number;
-            workspace.focused = number == 1;
             workspace
         })
         .collect();
@@ -638,9 +637,6 @@ fn set_local_focus(state: &mut ClientShellState, workspace_id: &str, revision: u
     let mut snapshot = workspaces(3);
     snapshot.revision = shepr_protocol::ProjectionRevision::new(revision);
     snapshot.focused_workspace_id = Some(test_workspace_id(workspace_id));
-    for workspace in &mut snapshot.workspaces {
-        workspace.focused = workspace.workspace_id == workspace_id;
-    }
     state.set_snapshot(Box::new(snapshot));
     let mut frame = surface();
     frame.projection_revision = shepr_protocol::ProjectionRevision::new(revision);

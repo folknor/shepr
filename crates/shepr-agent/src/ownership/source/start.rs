@@ -143,9 +143,8 @@ impl AgentOwnership {
                     .current_session_identity_for_persistence()
                     .is_some_and(|current| {
                         origin.owns(&current)
-                            && current.session_ref.kind()
-                                == crate::agent::resume::AgentSessionRefKind::Id
-                            && session_ref.kind() == crate::agent::resume::AgentSessionRefKind::Id
+                            && current.session_ref.is_id()
+                            && session_ref.is_id()
                             && current.session_ref != session_ref
                     });
         if replacing_identity_only_session && !process_present {

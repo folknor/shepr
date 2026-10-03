@@ -30,31 +30,12 @@ status and are retried as ordinary failures. (edges)
 
 ## Latent defects
 
-## BUG-078 - An agent exit owed when the user runs a command is never reported
-
-In `crates/shepr-mux/src/pane/process_probe.rs`, when a confirmed-miss agent
-exit is still owed and the next probe sees a non-shell, non-agent foreground
-(a command run right after the agent quit), the owed exit report is dropped
-along with the agent identity and no `agent_changed` is raised. The pane never
-reports that the agent exited. No test covers the sequence. (wave-2 review)
-
 ## BUG-071 - Parked hook starts have no expiry or process attribution
 
 Comments in the hook arbitration (`crates/shepr-mux/src/terminal/state/`)
 already admit that a parked start never expires and is not tied to a process,
 and that a replayed pane exit can consume a parked start. Neither is handled.
 (wave-2 fixer)
-
-## BUG-043 - Untagged runtime events would skip the generation check
-
-`AppEvent::Runtime { pane_id, generation, event: Box<AppEvent> }` is optional:
-`EventSender` has `From<mpsc::Sender<AppEvent>>` with `origin: None`, the
-publish helpers in `pane/process_probe.rs` take `impl Into<EventSender>`, and
-`App::admit_runtime_event` passes any non-`Runtime` event straight through. An
-untagged `PaneDied` or `StateChanged` would skip the generation check that is
-the point of the envelope. No production producer sends one today. The typed
-envelope is filed among the types. Reported by mux-panes, mux-state and
-server-app.
 
 ## Hot-path costs
 

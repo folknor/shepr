@@ -1550,7 +1550,10 @@ fn terminal_modify_other_keys_mode_one_preserves_shift_enter() {
         shepr_termio::input::parse_terminal_key_sequence("\x1b[13;2u").expect("test precondition");
 
     pane.seed_history_ansi("\x1b[>4;1m");
-    assert_eq!(pane.modify_other_keys_level(), 1);
+    assert_eq!(
+        pane.modify_other_keys_level(),
+        shepr_vt::ModifyOtherKeysLevel::ExceptWellDefined
+    );
     let encoded =
         pane.encode_terminal_key(key.clone(), shepr_termio::input::KeyboardProtocol::legacy());
 

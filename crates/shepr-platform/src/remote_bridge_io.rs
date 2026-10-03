@@ -74,12 +74,12 @@ pub(super) fn forward_remote_bridge_stdio_with_timeout(
         if let Err(err) = copy_flush(
             &mut stdin,
             &mut TrackedIo::new(&mut stdin_to_socket, Some(activity)),
-        ) && !matches!(classify_stream_error(&err), StreamFailure::PeerGone)
+        ) && !matches!(classify_stream_error(err.kind()), StreamFailure::PeerGone)
         {
             tracing::warn!(error_kind = ?err.kind(), error = %err, "SSH bridge upload failed");
         }
         if let Err(err) = stdin_to_socket.shutdown(std::net::Shutdown::Write)
-            && !matches!(classify_stream_error(&err), StreamFailure::PeerGone)
+            && !matches!(classify_stream_error(err.kind()), StreamFailure::PeerGone)
         {
             tracing::warn!(error = %err, "SSH bridge failed to half-close the server socket");
         }
@@ -98,7 +98,7 @@ pub(super) fn forward_remote_bridge_stdio_with_timeout(
             // The caller ends the process next, which closes the socket
             // regardless; a failure only delays the server noticing.
             if let Err(err) = control.shutdown(std::net::Shutdown::Both)
-                && !matches!(classify_stream_error(&err), StreamFailure::PeerGone)
+                && !matches!(classify_stream_error(err.kind()), StreamFailure::PeerGone)
             {
                 tracing::warn!(error = %err, "SSH bridge failed to shut down the idle server socket");
             }

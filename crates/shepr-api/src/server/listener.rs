@@ -78,6 +78,8 @@ impl Dispatch {
                 let Some(handler) = self.gate.handler() else {
                     return Service::RefuseClient(shepr_protocol::HandshakeRefusal::ServerStarting);
                 };
+                // The cap is a small compile-time constant that fits the wire's
+                // u32 field; the u32::MAX fallback only keeps the conversion total.
                 ConnectionSlot::try_acquire(&self.client, MAX_ACTIVE_CLIENT_CONNECTIONS)
                     .map_or_else(
                         || {

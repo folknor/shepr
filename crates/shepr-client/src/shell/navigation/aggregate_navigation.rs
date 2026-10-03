@@ -187,14 +187,14 @@ impl NavigatorIndex {
             let mut panes_by_workspace = HashMap::new();
             for pane in &snapshot.panes {
                 panes_by_workspace
-                    .entry(pane.workspace_id.as_str())
+                    .entry(pane.pane_id.workspace_id())
                     .or_insert_with(Vec::new)
                     .push(pane);
             }
             indexed.workspaces.reserve(snapshot.workspaces.len());
             for workspace in &snapshot.workspaces {
                 let workspace_panes = panes_by_workspace
-                    .get(workspace.workspace_id.as_str())
+                    .get(&&workspace.workspace_id)
                     .map_or_default(Vec::as_slice);
                 let mut panes = Vec::with_capacity(workspace_panes.len());
                 for (index, pane) in workspace_panes.iter().enumerate() {

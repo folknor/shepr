@@ -224,7 +224,7 @@ fn pane_split_drag_uses_projected_handle_and_stable_child_identities() {
             if params.workspace_id == "w1"
                 && params.first_panes == vec![test_pane_id("w1:p1")]
                 && params.second_panes == vec![test_pane_id("w1:p2")]
-                && (params.ratio - 0.6).abs() < f32::EPSILON
+                && (params.ratio.get() - 0.6).abs() < f32::EPSILON
     ));
     let release =
         state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
@@ -604,7 +604,6 @@ fn double_click_drag_survives_focus_lag_after_anchor_reply() {
     word_row_reply(&mut state, &initial, "alpha bravo charlie");
     let mut lagging = snapshot();
     lagging.focused_pane_id = None;
-    lagging.panes[0].focused = false;
     state.set_snapshot(Box::new(lagging));
     assert!(state.mouse_selection.selection.is_some());
     word_drag_mouse(&mut state, MouseEventKind::Drag(MouseButton::Left), 0, 14);
@@ -628,9 +627,6 @@ fn drag_in_unfocused_pane_survives_snapshots_until_focus_moves_after_landing() {
         let mut other = projected.panes[0].clone();
         other.pane_id = test_pane_id("w1:p2");
         projected.panes.push(other);
-        for pane in &mut projected.panes {
-            pane.focused = pane.pane_id == pane_id;
-        }
         projected.focused_pane_id = Some(test_pane_id(pane_id));
         projected
     };
@@ -699,7 +695,6 @@ fn selection_in_focused_pane_still_ends_when_focus_moves() {
     let mut moved = snapshot();
     let mut other = moved.panes[0].clone();
     other.pane_id = test_pane_id("w1:p2");
-    moved.panes[0].focused = false;
     moved.panes.push(other);
     moved.focused_pane_id = Some(test_pane_id("w1:p2"));
     state.set_snapshot(Box::new(moved));
@@ -774,14 +769,11 @@ fn double_click_release_ignores_reply_after_focus_or_content_changes() {
         if focus_changed {
             let mut lagging = snapshot();
             lagging.focused_pane_id = None;
-            lagging.panes[0].focused = false;
             state.set_snapshot(Box::new(lagging));
             let mut unfocused = snapshot();
             unfocused.focused_pane_id = Some(test_pane_id("w1:p2"));
-            unfocused.panes[0].focused = false;
             let mut other = unfocused.panes[0].clone();
             other.pane_id = test_pane_id("w1:p2");
-            other.focused = true;
             unfocused.panes.push(other);
             state.set_snapshot(Box::new(unfocused));
         } else {

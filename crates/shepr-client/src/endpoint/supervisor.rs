@@ -958,7 +958,7 @@ mod tests {
         let rejected = handshake_error(
             crate::ClientError::HandshakeRejected {
                 error: shepr_protocol::HandshakeRefusal::InvalidSurface(
-                    "surface capability missing".into(),
+                    shepr_protocol::SurfaceRefusal::CellTooLarge,
                 ),
             },
             None,
@@ -1003,7 +1003,12 @@ mod tests {
         );
         assert_eq!(eof.kind(), std::io::ErrorKind::UnexpectedEof);
         assert!(!shepr_remote::SshFailureDiagnostic::from_error(&eof).needs_attention());
-        let shutdown = handshake_error(crate::ClientError::ServerShutdown { reason: None }, None);
+        let shutdown = handshake_error(
+            crate::ClientError::ServerShutdown {
+                reason: shepr_protocol::ShutdownReason::Stopping,
+            },
+            None,
+        );
         assert!(!shepr_remote::SshFailureDiagnostic::from_error(&shutdown).needs_attention());
         let malformed = handshake_error(
             crate::ClientError::Protocol(shepr_protocol::FramingError::Oversized {

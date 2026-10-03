@@ -44,7 +44,7 @@ use shepr_core::layout::PaneId;
 
 /// How a pane launch ended, as the app is told.
 #[derive(Debug)]
-pub enum LaunchSettlement {
+pub enum LaunchOutcome {
     /// Exec committed in `cwd`, the candidate the child entered.
     Launched { cwd: crate::UsableCwd },
     /// The child reported why it could not start the shell.
@@ -53,6 +53,13 @@ pub enum LaunchSettlement {
     /// pane ended before the launch settled. The pane's death follows and is
     /// an ordinary one.
     Unconfirmed,
+}
+
+/// The runtime's launch kind and the result of that launch, published together.
+#[derive(Debug)]
+pub struct LaunchSettlement {
+    pub kind: super::launch::LaunchKind,
+    pub outcome: LaunchOutcome,
 }
 
 /// What a launch has reached.
@@ -86,6 +93,7 @@ pub(super) struct LaunchStatus {
 /// Starts the coordinator. Returns the watch the detection task waits on.
 pub(super) fn spawn(
     pane_id: PaneId,
+    kind: super::launch::LaunchKind,
     status: LaunchStatus,
     child_liveness: Arc<ChildLiveness>,
     arbiter: Arc<PaneExitArbiter>,
@@ -103,6 +111,7 @@ pub(super) fn spawn(
         coordinate(
             Coordinator {
                 pane_id,
+                kind,
                 child_liveness: &child_liveness,
                 arbiter: &arbiter,
                 events: &events,
@@ -118,6 +127,7 @@ pub(super) fn spawn(
 
 struct Coordinator<'a> {
     pane_id: PaneId,
+    kind: super::launch::LaunchKind,
     child_liveness: &'a ChildLiveness,
     arbiter: &'a PaneExitArbiter,
     events: &'a EventSender,
@@ -135,11 +145,12 @@ struct Coordinator<'a> {
 /// watcher-side publisher had the same outcome.
 async fn coordinate<Claim>(
     coordinator: Coordinator<'_>,
-    settling: impl std::future::Future<Output = LaunchSettlement>,
+    settling: impl std::future::Future<Output = LaunchOutcome>,
     claim: Claim,
 ) {
     let Coordinator {
         pane_id,
+        kind,
         child_liveness,
         arbiter,
         events,
@@ -159,7 +170,7 @@ async fn coordinate<Claim>(
             PaneEnding::Observed { child_exit_confirmed: false, .. } => {
                 tokio::time::timeout(crate::limits::LAUNCH_SETTLE_AFTER_PANE_END, settling)
                     .await
-                    .unwrap_or(LaunchSettlement::Unconfirmed)
+                    .unwrap_or(LaunchOutcome::Unconfirmed)
             }
         },
         settlement = &mut settling => settlement,
@@ -170,18 +181,21 @@ async fn coordinate<Claim>(
     if arbiter.ending() == Some(PaneEnding::Silent) {
         return;
     }
-    let launched = matches!(settlement, LaunchSettlement::Launched { .. });
+    let launched = matches!(settlement, LaunchOutcome::Launched { .. });
     if launched {
         child_liveness.mark_launched();
     }
     progress.send_modify(|progress| progress.launched = Some(launched));
-    if let LaunchSettlement::Failed(failure) = &settlement {
+    if let LaunchOutcome::Failed(failure) = &settlement {
         tracing::warn!(pane = pane_id.raw(), %failure, "pane launch failed");
     }
     if let Err(error) = events
         .send(AppEvent::PaneLaunchSettled {
             pane_id,
-            settlement,
+            settlement: LaunchSettlement {
+                kind,
+                outcome: settlement,
+            },
         })
         .await
     {
@@ -212,7 +226,7 @@ async fn settle(
     cwd_candidates: &[PathBuf],
     program: &str,
     child_liveness: &ChildLiveness,
-) -> LaunchSettlement {
+) -> LaunchOutcome {
     let exit = child_liveness
         .leader()
         .and_then(|leader| leader.try_clone_pidfd().ok())
@@ -247,13 +261,13 @@ async fn settle(
         }
     };
     let Some(channel) = channel else {
-        return LaunchSettlement::Unconfirmed;
+        return LaunchOutcome::Unconfirmed;
     };
     let channel = match AsyncFd::new(channel) {
         Ok(channel) => channel,
         Err(error) => {
             tracing::warn!(%error, "could not watch a pane launch status channel");
-            return LaunchSettlement::Unconfirmed;
+            return LaunchOutcome::Unconfirmed;
         }
     };
     let mut selected: Option<usize> = None;
@@ -262,7 +276,7 @@ async fn settle(
             Ok(ready) => ready,
             Err(error) => {
                 tracing::warn!(%error, "pane launch status channel failed");
-                return LaunchSettlement::Unconfirmed;
+                return LaunchOutcome::Unconfirmed;
             }
         };
         let read = shepr_pty::launch::read_record(ready.get_inner());
@@ -276,7 +290,7 @@ async fn settle(
                     Some(index) => selected = Some(index),
                     None => {
                         tracing::warn!(index, "pane launch reported an unknown cwd candidate");
-                        return LaunchSettlement::Unconfirmed;
+                        return LaunchOutcome::Unconfirmed;
                     }
                 }
             }
@@ -289,33 +303,33 @@ async fn settle(
                 // exotic to spell out.
                 let Some(path) = cwd_candidates.first().cloned() else {
                     tracing::warn!("pane launch reported a cwd failure with no candidates");
-                    return LaunchSettlement::Unconfirmed;
+                    return LaunchOutcome::Unconfirmed;
                 };
-                return LaunchSettlement::Failed(directory_failure(path, errno));
+                return LaunchOutcome::Failed(directory_failure(path, errno));
             }
             Ok(RecordRead::Record(LaunchRecord::ExecFailed(errno))) if selected.is_some() => {
                 let error = std::io::Error::from_raw_os_error(errno);
-                return LaunchSettlement::Failed(RestoreFailure::ShellStartFailed {
+                return LaunchOutcome::Failed(RestoreFailure::ShellStartFailed {
                     error: format!("{program}: {error}"),
                 });
             }
             Ok(RecordRead::Record(record)) => {
                 tracing::warn!(?record, "pane launch reported out of order");
-                return LaunchSettlement::Unconfirmed;
+                return LaunchOutcome::Unconfirmed;
             }
             Ok(RecordRead::Eof) => {
                 // The child's end is close-on-exec and nothing else closes it
                 // before exec, so EOF while the child lives is exec committed.
                 return match selected {
-                    Some(index) if !child_liveness.has_exited() => LaunchSettlement::Launched {
+                    Some(index) if !child_liveness.has_exited() => LaunchOutcome::Launched {
                         cwd: crate::UsableCwd::entered(cwd_candidates[index].clone()),
                     },
-                    _ => LaunchSettlement::Unconfirmed,
+                    _ => LaunchOutcome::Unconfirmed,
                 };
             }
             Err(error) => {
                 tracing::warn!(%error, "pane launch status channel failed");
-                return LaunchSettlement::Unconfirmed;
+                return LaunchOutcome::Unconfirmed;
             }
         }
     }
@@ -350,12 +364,17 @@ mod tests {
     fn told(rx: &mut mpsc::Receiver<AppEvent>) -> Vec<Told> {
         let mut out = Vec::new();
         while let Ok(event) = rx.try_recv() {
-            out.push(match event {
-                AppEvent::PaneLaunchSettled { settlement, .. } => Told::Settled(match settlement {
-                    LaunchSettlement::Launched { .. } => "launched",
-                    LaunchSettlement::Failed(_) => "failed",
-                    LaunchSettlement::Unconfirmed => "unconfirmed",
-                }),
+            let AppEvent::Runtime { event, .. } = event else {
+                panic!("runtime events carry their producer");
+            };
+            out.push(match *event {
+                AppEvent::PaneLaunchSettled { settlement, .. } => {
+                    Told::Settled(match settlement.outcome {
+                        LaunchOutcome::Launched { .. } => "launched",
+                        LaunchOutcome::Failed(_) => "failed",
+                        LaunchOutcome::Unconfirmed => "unconfirmed",
+                    })
+                }
                 AppEvent::PaneDied { exit_reason, .. } => Told::Died(exit_reason),
                 _ => panic!("unexpected event"),
             });
@@ -365,15 +384,20 @@ mod tests {
 
     async fn run(
         arbiter: &PaneExitArbiter,
-        settling: impl std::future::Future<Output = LaunchSettlement>,
+        settling: impl std::future::Future<Output = LaunchOutcome>,
     ) -> Vec<Told> {
         let (tx, mut rx) = mpsc::channel(8);
-        let events = EventSender::from(tx);
+        let events = EventSender::runtime(
+            tx,
+            shepr_test_fixtures::fixed_pane_id(1),
+            crate::events::RuntimeGeneration::alloc(),
+        );
         let (progress, _watch) = watch::channel(LaunchProgress::default());
         let child_liveness = ChildLiveness::new(std::process::id(), None);
         coordinate(
             Coordinator {
                 pane_id: shepr_test_fixtures::fixed_pane_id(1),
+                kind: super::super::launch::LaunchKind::Fresh,
                 child_liveness: &child_liveness,
                 arbiter,
                 events: &events,
@@ -386,8 +410,8 @@ mod tests {
         told(&mut rx)
     }
 
-    fn failed() -> LaunchSettlement {
-        LaunchSettlement::Failed(RestoreFailure::ShellStartFailed {
+    fn failed() -> LaunchOutcome {
+        LaunchOutcome::Failed(RestoreFailure::ShellStartFailed {
             error: "no shell".into(),
         })
     }
@@ -484,12 +508,17 @@ mod tests {
     async fn a_teardown_after_the_settlement_was_published_publishes_no_death() {
         let arbiter = std::sync::Arc::new(PaneExitArbiter::default());
         let (tx, mut rx) = mpsc::channel(8);
-        let events = EventSender::from(tx);
+        let events = EventSender::runtime(
+            tx,
+            shepr_test_fixtures::fixed_pane_id(1),
+            crate::events::RuntimeGeneration::alloc(),
+        );
         let (progress, _watch) = watch::channel(LaunchProgress::default());
         let child_liveness = ChildLiveness::new(std::process::id(), None);
         let coordinating = coordinate(
             Coordinator {
                 pane_id: shepr_test_fixtures::fixed_pane_id(1),
+                kind: super::super::launch::LaunchKind::Fresh,
                 child_liveness: &child_liveness,
                 arbiter: &arbiter,
                 events: &events,

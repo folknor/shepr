@@ -17,9 +17,10 @@ use std::collections::HashMap;
 
 use shepr_termio::input::raw_input::RawInputEvent;
 
-/// Code prefix of a notice opened from a machine badge. Only these explicitly
-/// opened cards grow to their full body; automatic notices are capped.
-pub(in crate::shell) const MACHINE_DIAGNOSTIC_NOTICE_PREFIX: &str = "machine-diagnostic:";
+/// Code of a notice opened from a machine badge; the machine is the key's
+/// endpoint. Only these explicitly opened cards grow to their full body;
+/// automatic notices are capped.
+pub(in crate::shell) const MACHINE_DIAGNOSTIC_NOTICE_CODE: &str = "machine-diagnostic";
 
 #[derive(Default)]
 pub(in crate::shell) struct MachineDiagnostics {
@@ -139,16 +140,16 @@ impl ClientShellState {
         let Some(diagnostic) = self.machine_diagnostics.errors.get(&id) else {
             return true;
         };
-        let ClientEndpointId::Ssh(label) = &id else {
+        let ClientEndpointId::Ssh(_) = &id else {
             return true;
         };
-        let code = format!("{MACHINE_DIAGNOSTIC_NOTICE_PREFIX}{label}");
         // An explicit click can reopen its diagnostic, but must not replace another notice.
         let opened = self.notices.open_diagnostic(ClientVisibleEndpointNotice {
             key: ClientEndpointNoticeKey {
+                endpoint_id: Some(id.clone()),
                 boot_id: None,
                 kind: ClientEndpointNoticeKind::Unavailable,
-                code,
+                code: MACHINE_DIAGNOSTIC_NOTICE_CODE.to_owned(),
             },
             // The TUI never prompts: machines connect in BatchMode and
             // interactive authentication runs only at startup, before the TUI

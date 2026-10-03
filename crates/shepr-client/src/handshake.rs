@@ -151,7 +151,7 @@ mod tests {
             shepr_protocol::write_message(
                 &mut server,
                 &ServerMessage::ServerShutdown {
-                    reason: Some(shepr_protocol::ShutdownReason::Message("restarting".into())),
+                    reason: shepr_protocol::ShutdownReason::Stopping,
                 },
             )
             .expect("test precondition");
@@ -246,10 +246,7 @@ mod tests {
     fn shutdown_in_place_of_welcome_is_reported_as_a_shutdown() {
         match handshake_against_shutdown() {
             ClientError::ServerShutdown { reason } => {
-                assert_eq!(
-                    reason,
-                    Some(shepr_protocol::ShutdownReason::Message("restarting".into()))
-                );
+                assert_eq!(reason, shepr_protocol::ShutdownReason::Stopping);
             }
             other => panic!("{other}"),
         }

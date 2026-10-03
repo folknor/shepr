@@ -6,7 +6,10 @@ use std::path::{Path, PathBuf};
 
 use clap::ArgMatches;
 
-use shepr_api::schema::{DetectionCapture, ErrorBody, ErrorResponse, Method, PaneTarget, Request};
+use shepr_api::schema::{
+    DetectionCapture, DetectionExplanation, DetectionStateSource, ErrorBody, ErrorResponse, Method,
+    PaneTarget, Request, ResponseResult, SuccessResponse,
+};
 
 use super::matches::{try_flag, try_string};
 
@@ -84,13 +87,14 @@ fn capture(
     paths: &shepr_config::AppPaths,
     pane: &shepr_protocol::PublicPaneId,
 ) -> super::CliResult<i32> {
-    let response = super::send_request(paths, &capture_request(pane))?;
-    if response.get("error").is_some() {
-        print_detect_error(&response)?;
-        return Ok(1);
-    }
-    let capture: DetectionCapture = serde_json::from_value(response["result"]["capture"].clone())
-        .map_err(std::io::Error::other)?;
+    let response = decode_response(super::send_request(paths, &capture_request(pane))?)?;
+    let DetectResponse::Success(SuccessResponse {
+        result: ResponseResult::DetectCapture { capture, .. },
+        ..
+    }) = response
+    else {
+        return unexpected_or_error(response);
+    };
     println!(
         "{}",
         serde_json::to_string_pretty(&capture).map_err(std::io::Error::other)?
@@ -104,7 +108,7 @@ pub(super) fn explain(
     json: bool,
     verbose: bool,
 ) -> super::CliResult<i32> {
-    let response = super::send_request(
+    let response = decode_response(super::send_request(
         paths,
         &Request {
             id: "cli:detect:explain".into(),
@@ -112,12 +116,15 @@ pub(super) fn explain(
                 pane_id: target.to_string(),
             }),
         },
-    )?;
-    if response.get("error").is_some() {
-        print_detect_error(&response)?;
-        return Ok(1);
-    }
-    print_explain_output(&response["result"]["explain"], json, verbose);
+    )?)?;
+    let DetectResponse::Success(SuccessResponse {
+        result: ResponseResult::DetectExplain { explain },
+        ..
+    }) = response
+    else {
+        return unexpected_or_error(response);
+    };
+    print_explain_output(&explain, json, verbose)?;
     Ok(0)
 }
 
@@ -130,35 +137,65 @@ pub(super) fn run_file_explain(
     verbose: bool,
 ) -> super::CliResult<i32> {
     let explain = explain_file(path, agent_label)?;
-    print_explain_output(&explain, json, verbose);
+    print_explain_output(&explain, json, verbose)?;
     Ok(0)
 }
 
-fn print_explain_output(explain: &serde_json::Value, json: bool, verbose: bool) {
+fn print_explain_output(
+    explain: &DetectionExplanation,
+    json: bool,
+    verbose: bool,
+) -> super::CliResult<()> {
     if json {
-        println!("{explain}");
+        println!(
+            "{}",
+            serde_json::to_string(explain).map_err(std::io::Error::other)?
+        );
     } else {
         print_explain_text(explain, verbose);
-    }
-}
-
-fn print_detect_error(response: &serde_json::Value) -> super::CliResult<()> {
-    if response["error"]["code"] == "pane_terminal_unavailable"
-        && let Some(message) = response["error"]["message"].as_str()
-    {
-        eprintln!("{message}");
-    } else {
-        eprintln!(
-            "{}",
-            serde_json::to_string(response).map_err(std::io::Error::other)?
-        );
     }
     Ok(())
 }
 
+#[derive(serde::Deserialize)]
+#[serde(untagged)]
+enum DetectResponse {
+    Success(SuccessResponse),
+    Error(ErrorResponse),
+}
+
+fn decode_response(value: serde_json::Value) -> super::CliResult<DetectResponse> {
+    serde_json::from_value(value)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error).into())
+}
+
+fn unexpected_or_error(response: DetectResponse) -> super::CliResult<i32> {
+    match response {
+        DetectResponse::Error(response) => {
+            if response.error.code == shepr_api::error::ApiErrorCode::PaneTerminalUnavailable {
+                eprintln!("{}", response.error.message);
+            } else {
+                eprintln!(
+                    "{}",
+                    serde_json::to_string(&response).map_err(std::io::Error::other)?
+                );
+            }
+            Ok(1)
+        }
+        DetectResponse::Success(_) => Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "unexpected detect response variant",
+        )
+        .into()),
+    }
+}
+
 /// Evaluates a saved capture against an agent's compiled manifest. Runs in
 /// the CLI process and needs no server.
-pub(super) fn explain_file(path: &Path, agent_label: &str) -> super::CliResult<serde_json::Value> {
+pub(super) fn explain_file(
+    path: &Path,
+    agent_label: &str,
+) -> super::CliResult<DetectionExplanation> {
     let content = match std::fs::read_to_string(path) {
         Ok(content) => content,
         Err(err) => {
@@ -180,109 +217,81 @@ pub(super) fn explain_file(path: &Path, agent_label: &str) -> super::CliResult<s
             ),
         )
     })?;
-    Ok(shepr_agent::detect::manifest::explain_to_json_value(
-        &shepr_agent::detect::manifest::explain_for_label(
-            agent_label,
-            shepr_agent::detect::manifest::DetectionInput {
-                screen: &capture.screen,
-                osc_title: &capture.osc_title,
-                osc_progress: &capture.osc_progress,
-            },
-        ),
-    ))
+    Ok(shepr_agent::detect::manifest::explain_for_label(
+        agent_label,
+        shepr_agent::detect::manifest::DetectionInput {
+            screen: &capture.screen,
+            osc_title: &capture.osc_title,
+            osc_progress: &capture.osc_progress,
+        },
+    )
+    .into())
 }
 
-pub(super) fn print_explain_text(explain: &serde_json::Value, verbose: bool) {
-    println!("agent: {}", explain["agent"].as_str().unwrap_or("unknown"));
-    println!("state: {}", explain["state"].as_str().unwrap_or("unknown"));
-    if let Some(rule) = explain["matched_rule"].as_object() {
-        let rule_id = rule
-            .get("id")
-            .and_then(|value| value.as_str())
-            .unwrap_or("-");
+pub(super) fn print_explain_text(explain: &DetectionExplanation, verbose: bool) {
+    println!("agent: {}", explain.agent);
+    println!("state: {}", explain.state);
+    if let Some(rule) = &explain.matched_rule {
         println!(
             "rule: {} (region={} priority={})",
-            rule_id,
-            rule.get("region")
-                .and_then(|value| value.as_str())
-                .unwrap_or("-"),
-            rule.get("priority")
-                .and_then(serde_json::Value::as_i64)
-                .unwrap_or(0),
+            rule.id, rule.region, rule.priority
         );
-        if let Some(preview) = matched_rule_region_preview(explain, rule_id) {
-            println!("evidence: {preview:?}");
+        if let Some(rule) = explain
+            .evaluated_rules
+            .iter()
+            .find(|evaluated| evaluated.id == rule.id)
+            && !rule.evidence.region_preview.is_empty()
+        {
+            println!("evidence: {:?}", rule.evidence.region_preview);
         }
     } else {
         println!("rule: none");
     }
-    if let Some(reason) = explain["fallback_reason"].as_str() {
+    if let Some(reason) = explain.fallback_reason {
         println!("fallback_reason: {reason}");
     }
-    if let Some(reason) = explain["screen_detection_skip_reason"].as_str() {
-        println!("screen_detection_skip_reason: {reason}");
+    if let DetectionStateSource::HookAuthority { skip_reason, .. } = &explain.state_source {
+        println!("screen_detection_skip_reason: {skip_reason}");
     }
-    if let Some(reason) = explain["skipped_update_reason"].as_str() {
-        println!("skipped_update_reason: {reason}");
+    if let Some(shepr_agent::detect::manifest::SkippedUpdateReason::MatchedRule { rule_id }) =
+        &explain.skipped_update_reason
+    {
+        println!("skipped_update_reason: matched_rule:{rule_id}");
     }
-
     if !verbose {
         return;
     }
-
     println!(
         "visible: idle={} blocker={} working={}",
-        explain["visible_idle"].as_bool().unwrap_or(false),
-        explain["visible_blocker"].as_bool().unwrap_or(false),
-        explain["visible_working"].as_bool().unwrap_or(false)
+        explain.visible_idle, explain.visible_blocker, explain.visible_working
     );
-    if let Some(evaluated_rules) = explain["evaluated_rules"]
-        .as_array()
-        .filter(|rules| !rules.is_empty())
-    {
+    if !explain.evaluated_rules.is_empty() {
         println!("evaluated_rules:");
-        for rule in evaluated_rules {
+        for rule in &explain.evaluated_rules {
             println!(
                 "  {} {} priority={} region={} state={}",
-                if rule["matched"].as_bool().unwrap_or(false) {
-                    "\u{2713}"
-                } else {
-                    "\u{2717}"
-                },
-                rule["id"].as_str().unwrap_or("-"),
-                rule["priority"].as_i64().unwrap_or(0),
-                rule["region"].as_str().unwrap_or("-"),
-                rule["state"].as_str().unwrap_or("unknown")
+                if rule.matched { "\u{2713}" } else { "\u{2717}" },
+                rule.id,
+                rule.priority,
+                rule.region,
+                rule.state
             );
-            let evidence = &rule["evidence"];
+            let evidence = &rule.evidence;
             println!(
                 "    matchers: contains={:?} regex={:?} line_regex={:?} all={} any={} not={}",
-                evidence["contains"],
-                evidence["regex"],
-                evidence["line_regex"],
-                evidence["all_count"].as_u64().unwrap_or(0),
-                evidence["any_count"].as_u64().unwrap_or(0),
-                evidence["not_count"].as_u64().unwrap_or(0)
+                evidence.contains,
+                evidence.regex,
+                evidence.line_regex,
+                evidence.all_count,
+                evidence.any_count,
+                evidence.not_count
             );
             println!(
                 "    region: bytes={} preview={:?}",
-                evidence["region_bytes"].as_u64().unwrap_or(0),
-                evidence["region_preview"].as_str().unwrap_or("")
+                evidence.region_bytes, evidence.region_preview
             );
         }
     }
-}
-
-fn matched_rule_region_preview<'a>(
-    explain: &'a serde_json::Value,
-    rule_id: &str,
-) -> Option<&'a str> {
-    explain["evaluated_rules"]
-        .as_array()?
-        .iter()
-        .find(|rule| rule["id"].as_str() == Some(rule_id))?["evidence"]["region_preview"]
-        .as_str()
-        .filter(|preview| !preview.is_empty())
 }
 
 #[cfg(test)]
@@ -412,6 +421,31 @@ mod tests {
     }
 
     #[test]
+    fn renamed_explanation_fields_are_a_decode_error() {
+        let explain: DetectionExplanation = shepr_agent::detect::manifest::explain_for_label(
+            "codex",
+            shepr_agent::detect::manifest::DetectionInput {
+                screen: "",
+                osc_title: "",
+                osc_progress: "",
+            },
+        )
+        .into();
+        let mut response = serde_json::to_value(SuccessResponse {
+            id: "test".into(),
+            result: ResponseResult::DetectExplain { explain },
+        })
+        .expect("encode explanation response");
+        assert!(decode_response(response.clone()).is_ok());
+        let fields = response["result"]["explain"]
+            .as_object_mut()
+            .expect("explanation object");
+        let state = fields.remove("state").expect("state field");
+        fields.insert("renamed_state".into(), state);
+        assert!(decode_response(response).is_err());
+    }
+
+    #[test]
     fn explain_file_evaluates_without_a_server() {
         let scratch = crate::test_support::ScratchDir::new("detect-explain-file");
         let path = scratch.join("capture.json");
@@ -425,8 +459,11 @@ mod tests {
 
         let explain =
             explain_file(&path, "codex").expect("file evaluation should not need a server");
-        assert_eq!(explain["state"], "blocked");
-        assert_eq!(explain["matched_rule"]["id"], "live_strong_blocker");
+        assert_eq!(explain.state, shepr_api::schema::DetectionState::Blocked);
+        assert_eq!(
+            explain.matched_rule.as_ref().expect("matched rule").id,
+            "live_strong_blocker"
+        );
 
         let missing = scratch.join("missing.txt");
         assert!(explain_file(&missing, "codex").is_err());
@@ -446,8 +483,11 @@ mod tests {
 
         let explain =
             explain_file(&path, "codex").expect("file evaluation should not need a server");
-        assert_eq!(explain["state"], "blocked");
-        assert_eq!(explain["matched_rule"]["id"], "osc_title_blocked");
+        assert_eq!(explain.state, shepr_api::schema::DetectionState::Blocked);
+        assert_eq!(
+            explain.matched_rule.as_ref().expect("matched rule").id,
+            "osc_title_blocked"
+        );
     }
 
     #[test]
@@ -464,7 +504,10 @@ mod tests {
 
         let explain =
             explain_file(&path, "letta").expect("file evaluation should not need a server");
-        assert_eq!(explain["state"], "blocked");
-        assert_eq!(explain["matched_rule"]["id"], "osc_progress_blocked");
+        assert_eq!(explain.state, shepr_api::schema::DetectionState::Blocked);
+        assert_eq!(
+            explain.matched_rule.as_ref().expect("matched rule").id,
+            "osc_progress_blocked"
+        );
     }
 }

@@ -13,7 +13,7 @@ pub struct TerminalKey {
     pub modifiers: KeyModifiers,
     pub kind: crossterm::event::KeyEventKind,
     pub repeat_count: u16,
-    pub shifted_codepoint: Option<u32>,
+    pub shifted_codepoint: Option<char>,
     pub generated_text: Option<String>,
 }
 
@@ -52,7 +52,7 @@ impl TerminalKey {
         self
     }
 
-    pub fn with_shifted_codepoint(mut self, shifted_codepoint: u32) -> Self {
+    pub fn with_shifted_codepoint(mut self, shifted_codepoint: char) -> Self {
         self.shifted_codepoint = Some(shifted_codepoint);
         self
     }
@@ -97,7 +97,7 @@ impl shepr_config::BindingKey for TerminalKey {
         self.modifiers
     }
 
-    fn shifted_codepoint(&self) -> Option<u32> {
+    fn shifted_codepoint(&self) -> Option<char> {
         self.shifted_codepoint
     }
 }

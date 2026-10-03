@@ -1083,8 +1083,8 @@ impl AgentOwnership {
         origin.official_agent()?;
         let current = self.current_session_identity_for_persistence()?;
         (origin.owns(&current)
-            && current.session_ref.kind() == crate::agent::resume::AgentSessionRefKind::Id
-            && session_ref.kind() == crate::agent::resume::AgentSessionRefKind::Id
+            && current.session_ref.is_id()
+            && session_ref.is_id()
             && &current.session_ref != session_ref
             && !origin.allows_session_replacement(session_start_source))
         .then_some(current.session_ref)
@@ -1148,8 +1148,7 @@ impl AgentOwnership {
             && origin.known_agent() == self.detected_agent
             && origin
                 .session(session_ref.clone())
-                .and_then(|session| crate::agent::resume::plan(&session))
-                .is_some()
+                .is_some_and(|session| session.is_resumable())
     }
 
     fn hook_report_order_allows(

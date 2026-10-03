@@ -93,8 +93,8 @@ pub(crate) struct AppSettings {
     /// Restrict cursor reveal to focused panes whose detected agent matches
     /// one of these. An empty vector applies to any focused pane.
     pub(crate) cjk_ime_agents: Vec<shepr_config::ConfigAgent>,
-    /// DECSCUSR shape parameter (1-6) for the IME anchor cursor.
-    pub(crate) cjk_ime_cursor_shape: u8,
+    /// Resolved once to the protocol cursor shape used by surface rendering.
+    pub(crate) cjk_ime_cursor_shape: shepr_protocol::CursorShapeParam,
     pub(crate) default_shell: shepr_core::shell::ResolvedShell,
     pub(crate) login_shell: bool,
     pub(crate) new_terminal_cwd: NewTerminalCwd,
@@ -116,7 +116,9 @@ impl AppSettings {
             show_agent_labels_on_pane_borders: ui.show_agent_labels_on_pane_borders,
             reveal_hidden_cursor_for_cjk_ime: experimental.reveal_hidden_cursor_for_cjk_ime,
             cjk_ime_agents: experimental.cjk_ime_agents.clone(),
-            cjk_ime_cursor_shape: experimental.cjk_ime_cursor_shape.to_decscusr(),
+            cjk_ime_cursor_shape: shepr_protocol::CursorShapeParam::from_decscusr(
+                experimental.cjk_ime_cursor_shape.to_decscusr(),
+            ),
             default_shell: terminal.default_shell.clone(),
             login_shell: terminal.login_shell,
             new_terminal_cwd: terminal.new_cwd.clone(),
@@ -610,7 +612,11 @@ mod tests {
 
         let (mut layout, root) = shepr_core::layout::TileLayout::new();
         let new_pane = layout
-            .split_pane(root, shepr_core::layout::Direction::Horizontal, 0.25)
+            .split_pane(
+                root,
+                shepr_core::layout::Direction::Horizontal,
+                shepr_core::layout::SplitRatio::clamped(0.25),
+            )
             .expect("test precondition");
 
         // Right three quarters (90 cols), minus left+right border and the

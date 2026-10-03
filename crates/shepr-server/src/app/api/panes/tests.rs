@@ -768,7 +768,7 @@ fn pane_resize_changes_target_ratio_without_changing_focus_or_navigating() {
     assert_eq!(handled.navigate, None);
     let area = shepr_mux::workspace::layout_rect(app.state.workspace_layout_area(0));
     let splits = app.state.workspaces[0].layout().splits(area);
-    assert!((splits[0].ratio - 0.55).abs() < 1e-6);
+    assert!((splits[0].ratio.get() - 0.55).abs() < 1e-6);
     assert_eq!(app.state.workspaces[0].focused_pane_id(), right);
 }
 
@@ -868,14 +868,10 @@ fn pane_focus_on_the_focused_pane_still_navigates() {
 
     assert_eq!(handled.navigate, app.public_workspace_id(0));
     assert!(!app.state.session_dirty, "nothing was mutated");
-    let mut reply = handled.reply;
-    let viewed = app.public_workspace_id(0);
-    app.fill_reply_focus(&mut reply, viewed.as_ref());
-    let EndpointReply::PaneInfo { pane } = reply else {
+    let EndpointReply::PaneInfo { pane } = handled.reply else {
         panic!("expected pane info");
     };
     assert_eq!(pane.pane_id, public_pane_id);
-    assert!(pane.focused);
 }
 
 #[test]
@@ -945,7 +941,7 @@ fn commands_that_only_change_state_in_place_navigate_nobody() {
             workspace_id: workspace_id.clone(),
             first_panes: vec![root_public],
             second_panes: vec![right_public],
-            ratio: 0.4,
+            ratio: shepr_core::layout::SplitRatio::new(0.4).expect("test split ratio is valid"),
         }),
         EndpointCommand::WorkspaceMove(shepr_protocol::command::WorkspaceMoveParams {
             workspace_id,

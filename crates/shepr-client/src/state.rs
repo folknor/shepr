@@ -283,6 +283,17 @@ pub(super) struct HostWriteFailure {
     failing: Option<io::ErrorKind>,
 }
 
+struct EndpointLogValue<'a>(Option<&'a endpoint::ClientEndpointId>);
+
+impl std::fmt::Display for EndpointLogValue<'_> {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.0 {
+            Some(endpoint) => write!(formatter, "{endpoint}"),
+            None => formatter.write_str("None"),
+        }
+    }
+}
+
 impl HostWriteFailure {
     /// Records one write's outcome and returns whether it succeeded.
     pub(super) fn observe(
@@ -306,7 +317,7 @@ impl HostWriteFailure {
                 if self.failing != Some(error.kind()) {
                     tracing::warn!(
                         write,
-                        endpoint = ?context.map(|context| context.endpoint.as_str()),
+                        endpoint = %EndpointLogValue(context.map(|context| &context.endpoint)),
                         generation = ?context.and_then(|context| context.generation),
                         projection_revision = ?context.and_then(|context| context.projection_revision),
                         surface_revision = ?context.and_then(|context| context.surface_revision),

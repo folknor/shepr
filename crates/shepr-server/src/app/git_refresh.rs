@@ -188,8 +188,11 @@ impl App {
             .filter_map(|ws| {
                 let cwd =
                     ws.resolved_identity_cwd_from(&self.state.terminals, &self.terminal_runtimes)?;
-                let cache_key_hint = (!refresh_repo_discovery && ws.cached_identity_cwd == cwd)
-                    .then(|| ws.cached_git_status_key.clone());
+                let cache_key_hint = if refresh_repo_discovery {
+                    None
+                } else {
+                    ws.git_status_key_for_cwd(&cwd).map(PathBuf::from)
+                };
                 Some(WorkspaceGitRefreshItem {
                     workspace_id: ws.id.to_string(),
                     resolved_identity_cwd: cwd,
@@ -304,6 +307,19 @@ mod tests {
     use shepr_mux::git::GitReadError;
     use shepr_mux::workspace::Workspace;
 
+    fn admit_cached_identity(ws: &mut Workspace, cwd: PathBuf, key: PathBuf) {
+        let status = WorkspaceGitStatus {
+            workspace_id: ws.id.to_string(),
+            resolved_identity_cwd: cwd,
+            status_cache_key: key,
+            auto_label: "test".into(),
+            branch: shepr_mux::git::WorkspaceBranch::OutsideRepository,
+            ahead_behind: None,
+        };
+        let current = status.resolved_identity_cwd.clone();
+        ws.admit_git_status(status, Some(&current));
+    }
+
     #[test]
     fn git_refresh_deduplicates_workspaces_with_same_cache_key() {
         let _env = shepr_test_support::IsolatedEnv::new();
@@ -395,8 +411,14 @@ mod tests {
         assert_eq!(output.results.len(), 2);
         assert_eq!(output.results[0].auto_label, "alpha");
         assert_eq!(output.results[1].auto_label, "beta");
-        assert_eq!(output.results[0].branch, None);
-        assert_eq!(output.results[1].branch, None);
+        assert_eq!(
+            output.results[0].branch,
+            shepr_mux::git::WorkspaceBranch::ReadFailed
+        );
+        assert_eq!(
+            output.results[1].branch,
+            shepr_mux::git::WorkspaceBranch::ReadFailed
+        );
     }
 
     #[test]
@@ -422,8 +444,7 @@ mod tests {
         let cache_key = PathBuf::from("/repo");
         let mut ws = Workspace::test_new("test");
         ws.identity_cwd = cwd.clone();
-        ws.cached_identity_cwd = cwd;
-        ws.cached_git_status_key = cache_key.clone();
+        admit_cached_identity(&mut ws, cwd, cache_key.clone());
         app.state.workspaces.push(ws);
 
         let items = app.workspace_git_refresh_items(false);
@@ -438,8 +459,7 @@ mod tests {
         let cwd = PathBuf::from("/repo/deep/nested");
         let mut ws = Workspace::test_new("test");
         ws.identity_cwd = cwd.clone();
-        ws.cached_identity_cwd = cwd;
-        ws.cached_git_status_key = PathBuf::from("/repo");
+        admit_cached_identity(&mut ws, cwd, PathBuf::from("/repo"));
         app.state.workspaces.push(ws);
 
         let items = app.workspace_git_refresh_items(true);
@@ -523,8 +543,8 @@ mod tests {
         let mut app = test_app(&config);
         let mut ws = Workspace::test_new("test");
         ws.identity_cwd = scratch.path().to_path_buf();
-        ws.cached_identity_cwd = ws.identity_cwd.clone();
-        ws.cached_git_status_key = ws.identity_cwd.clone();
+        let cwd = ws.identity_cwd.clone();
+        admit_cached_identity(&mut ws, cwd.clone(), cwd);
         app.state.workspaces.push(ws);
         let now = Instant::now();
         app.mark_git_status_refresh_due(now);

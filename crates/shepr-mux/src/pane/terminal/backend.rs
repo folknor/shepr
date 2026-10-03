@@ -619,14 +619,9 @@ impl PaneTerminal {
             })
     }
 
-    /// Keeps the runtime's existing numeric mode check while the encoder uses
-    /// the terminal's typed mode directly.
-    pub(crate) fn modify_other_keys_level(&self) -> u8 {
-        match self.modify_other_keys_mode() {
-            shepr_vt::ModifyOtherKeysLevel::Off => 0,
-            shepr_vt::ModifyOtherKeysLevel::ExceptWellDefined => 1,
-            shepr_vt::ModifyOtherKeysLevel::All => 2,
-        }
+    /// The child-selected xterm modifyOtherKeys level.
+    pub(crate) fn modify_other_keys_level(&self) -> shepr_vt::ModifyOtherKeysLevel {
+        self.modify_other_keys_mode()
     }
 
     pub(crate) fn sgr_pixel_mouse_enabled(&self) -> bool {

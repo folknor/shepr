@@ -301,13 +301,6 @@ messages, an `SshTarget` metadata target, `MachineLabel`-keyed probes and
 their boundaries. Drop the `Deref` once those go. Reported by edges and
 contracts.
 
-## TYP-012 - `ClientEndpointId::storage_key()` is used as an identity component
-
-It returns a `String` used only for log fields and notice keys
-(`session_restore_incomplete:{key}`, `{key}:{boot}`, the active boot key),
-never storage, and allocates per log line. Offer `Display` for logs and a typed
-notice key. Reported by client-core and client-shell.
-
 ## Agent identity and state
 
 ## TYP-013 - Agent identity still travels as text at two sites
@@ -387,25 +380,12 @@ wire (agent sits below protocol; client-shell asks to verify against
 status mapping removes the shell's dependency on `shepr-agent`. Reported by
 contracts and client-shell.
 
-## TYP-018 - Resumable sessions are four copies of one triple with a bypassable invariant
+## TYP-018 - A persisted agent session can still be built around its validation
 
-`PersistedAgentSession { source, agent, session_ref }`, `AgentResumeKey` (the
-same three fields), `AgentResumePlan { source, agent, argv, dedupe_key }` and
-mux `PaneAgentSessionSnapshot` (a fourth copy with its own lenient
-deserializer), converted by `session_ref_from_snapshot`. `PersistedAgentSession`
-derives `Deserialize` with public fields, so the snapshot path bypasses `new`;
-its source may be `Custom` although no path stores a custom session. Resumability
-is checked by `PersistedAgentSession::new`, `plan` and
-`AgentResumePlan::with_argv`, and `foreground_agent_confirms_session_owner`
-builds an argv through `plan(..).is_some()` as a yes/no predicate.
-`AgentResumePlan::argv` is public and later flattened into a shell line.
-`AgentSessionRef::value()` clones to `String` for argv building and comparison,
-`kind()` returns the core `AgentSessionRefKind` only to be compared with `Id`,
-and `AbsoluteSessionPath` wraps a `String` although it is a path. Proposal:
-`ResumableSession { target, session_ref }` with a validating `Deserialize`, from
-which key and plan derive; private argv with `program()`, `args()`,
-`to_shell_command()`; `AgentSessionRef::is_id()` and `as_resume_argument()`.
-(agents)
+The four session copies now share one type with validating decode, and resume
+plans keep their argv private. Still open: `PersistedAgentSession`
+(`crates/shepr-agent/src/agent/resume.rs`) keeps three public fields, so a
+direct struct literal bypasses the validating constructor. (agents)
 
 ## TYP-019 - Process identification passes names, not identities
 
@@ -422,27 +402,12 @@ parses `pythonX.Y`. Proposal: `Identified { agent, via: IdentifiedVia::{Comm,
 Argv0, WrappedScript { runtime }, PackagePath, ResolvedSymlink} }` with priority
 a function of `via`, and one `enum Runtime` classifier. (agents)
 
-## TYP-020 - Detection explain is untyped JSON with string-typed reasons
+## TYP-020 - CLI requests return untyped JSON
 
-`explain_to_json_value` and `hook_authority_explain_to_json_value` hand-build
-`serde_json::json!` objects in shepr-agent; the server returns
-`ResponseResult::DetectExplain { explain: serde_json::Value }`; the CLI prints it
-by indexing string keys (`"agent"`, `"state"`, `"matched_rule"`,
-`"evaluated_rules"`, `"evidence"`) with `unwrap_or("-")`/`unwrap_or(0)` defaults,
-so a renamed field prints `-` silently, and `explain --file` reads the shape
-back. Inside: `fallback_reason: Option<String>` from three `pub const
-.._FALLBACK` values plus a literal `"unknown_agent"`; `skipped_update_reason`
-always `format!("matched_rule:{id}")`; `DetectionExplain.agent: Option<String>`
-only so an unknown label can be echoed; the skip reason is one of two literals
-chosen in `shepr-server/src/app/api/detect.rs`; `ManifestRule.region: String`
-kept raw for explain while matching uses `RegionSpec` (and `RegionSpec::parse`
-trims, so explain echoes an untrimmed spelling). `send_request` returns
-`serde_json::Value` and every CLI command probes `response.get("error")`;
-`print_detect_error` compares `response["error"]["code"] ==
-"pane_terminal_unavailable"` though `ApiErrorCode` exists. Proposal: a typed
-`Serialize` explain struct in `shepr-api` (with `FallbackReason`, `RegionSpec`
-display and the state source of the explain consolidation), used for the wire
-and the printer. Reported by agents, contracts, edges and server-app.
+Detect explain is now typed from shepr-agent through the server and the CLI
+printer. Still open: the shared `cli::send_request` returns
+`serde_json::Value`, and each CLI command probes `response.get("error")` before
+decoding its own result. Reported by agents, contracts, edges and server-app.
 
 ## Hook arbitration and detector state
 
@@ -601,17 +566,6 @@ command from a typed `ColorQueryTarget` as a string. Proposal: return
 `GridSize`/`PaneGeometry` and named structs. Reported by mux-panes and
 mux-state.
 
-## TYP-035 - Launch kind is three knobs
-
-`PaneLaunchEnv::purpose: LaunchPurpose::{Fresh, AgentResume}` (drives the
-detector's absence hold), `PaneShellConfig::require_cwd: bool` (restored panes
-and resumes) and the always-empty `extra`. A restored pane is `Fresh` with
-`require_cwd`; a resume is `AgentResume` with `require_cwd`; nothing stops
-`AgentResume` without it. Proposal: `LaunchKind::{Fresh, Restored,
-AgentResume}` from which `require_cwd`, the detector hold and settlement
-handling follow, returned with the settlement. Who decides "this launch was a
-resume" is filed among the consolidations. (mux-panes)
-
 ## TYP-036 - Mutation results are recovered by diffing revisions
 
 The pane scroll and clear methods return `SurfaceChange` and the API handlers
@@ -635,13 +589,6 @@ Restored(u64)}`. Reported by mux-panes and mux-state.
 
 ## Workspace, persistence and Git
 
-## TYP-039 - The workspace branch is an option that means three things
-
-`Oid`, `FullRefName` and `BranchName` now carry Git identity inside mux git.
-Still open: `WorkspaceGitStatus::branch: None` means detached or read failed,
-and `repo_name` falls back to the literal `"repo"`; a branch state enum at the
-workspace boundary would say which. (mux-state)
-
 ## TYP-041 - The Git status cache key is a bare path, and read errors are prose
 
 The cache entry is now `Miss` or `Hit` with an `AheadBehindState`. The cache key
@@ -652,19 +599,6 @@ minted by discovery needs the workspace refresh input to carry it, not just a
 path (the boundary is commented in `app/git_refresh.rs`). `GitReadError`'s
 payloads are prose (`arguments: args.join(" ")`, `message: error.to_string()`);
 `FileRead` should carry a `FileReadReason` enum. (mux-state)
-
-## TYP-042 - Workspace Git identity is six public fields and an empty-path sentinel
-
-`Workspace` has `cached_identity_cwd`, `cached_auto_label`,
-`cached_git_status_key`, `cached_git_branch`, `cached_git_ahead_behind` and
-`cached_git_space`, all `pub`; "undiscovered" is `cached_identity_cwd =
-PathBuf::new()`. `AppState::apply_workspace_git_statuses` writes them one by
-one with its own change detection (a label change counts only if
-`custom_name.is_none()`, restating `Workspace::display_name`'s rule). Proposal:
-`GitIdentity::{Undiscovered { fallback_label }, Admitted { cwd, key, label,
-branch, ahead_behind }}` owned by the workspace, with
-`Workspace::admit_git_status(..) -> IdentityChange` and `matches_cwd(&Path)`.
-Reported by mux-state and server-app.
 
 ## TYP-043 - Persistence load and restore outcomes are prose and loose primitives
 
@@ -711,21 +645,6 @@ released one, indistinguishable from a fresh start. Proposal: `release(self)`
 consumes, `load(&DataDirLease)` needs no runtime check, and the writer holds the
 lease by value so retirement drops it. Whether a save may run is filed among the
 consolidations. (mux-state)
-
-## TYP-047 - Split ratios cross every API as `f32`
-
-`TileLayout::split_pane(.., ratio: f32)` (called with a literal `0.5` by
-`split_pane_shell` while core has `EVEN_SPLIT`), `set_ratio_at(path, f32)`,
-`resize_focused(nav, delta: f32, ..)`, `SplitBorder.ratio: f32` (all fields
-public, including the path), `LayoutSnapshot::Split::ratio: f32`, the wire's
-`LayoutSetSplitRatioParams.ratio` (which can arrive as NaN),
-`ClientChromeDrag::PaneSplit.last_sent_ratio: Option<f32>` compared with
-`f32::EPSILON`, and `DEFAULT_PANE_RESIZE_AMOUNT: f32`. `SplitRatio::get()` is
-unwrapped to compare `to_bits()`. Proposal: `SplitRatio` with value
-`PartialEq`/`Eq` and serde that refuses out-of-range values on every API and on
-the wire, a `RatioDelta`, `nudged(delta)`, and `set_ratio_at` returning whether
-it changed. The four clamp sites are filed among the consolidations. Reported by
-foundation, mux-state, contracts, server-app and client-shell.
 
 ## Geometry and coordinates
 
@@ -902,34 +821,6 @@ empty string as "no evidence". `OscDebugEvent::command: String` is one of `"0"`,
 Option<u8> }` parsed once by the scanner and `Option<&str>` evidence through to
 the matcher. Reported by terminal and mux-panes.
 
-## TYP-057 - Keyboard modes still leave the terminal as integers
-
-`KittyKeyboardFlags` now lives in vt with `contains`, `is_empty` and `insert`,
-and `KeyEncodeModes` carries typed flags and `ModifyOtherKeysLevel`. Still
-integers: `PaneTerminal::modify_other_keys_level() -> u8` with the server
-comparing `> 0`, `HostKeyboardProbeResponses.flags: Option<u16>`, and the client's
-`terminal_setup.rs` using `bits()` and `from_bits_retain()` around crossterm's
-`u8`. Reported by terminal and mux-panes.
-
-## TYP-058 - Cursor shapes round-trip through `u8`
-
-`ExperimentalConfig::cjk_ime_cursor_shape` goes through
-`ImeCursorShape::to_decscusr() -> u8`, is stored as `u8` in `AppSettings`, and
-comes back through `CursorShapeParam::from_decscusr`, whose `_ => Default` arm
-makes the round trip lossy by construction. In blit,
-`BlitEncoder.last_cursor_shape: u8` (0 = terminal default) and
-`HostCursorState.shape: u8` from `cursor.shape as u8`, with positions as
-`(u16, u16)`. Proposal: `From<ImeCursorShape> for CursorShapeParam` (or one
-enum), stored typed, `Option` for "never set", and `decscusr()` on it. Reported
-by contracts, server-app and terminal.
-
-## TYP-059 - Codepoints are `u32`
-
-`TerminalKey.shifted_codepoint: Option<u32>` (and the wire field and
-`BindingKey::shifted_codepoint`) is re-validated with `char::from_u32` by every
-reader; `unicode_codepoint_width(codepoint: u32)` is called as `ch as u32` by the
-client. Use `char`. (terminal)
-
 ## TYP-060 - Durations and poll timeouts are `i32` milliseconds with `-1` for forever
 
 `termio/limits.rs` mixes `*_TIMEOUT_MS: i32` with `PASTE_STALL_TIMEOUT:
@@ -966,24 +857,6 @@ user-facing messages, and typed replies per command (an associated reply type)
 so the ledger's continuation cannot receive the wrong variant. The `32f70f2`
 move typed the loop's errors but left the app's as one variant. Reported by
 contracts, server-app, server-serving and client-shell.
-
-## TYP-062 - Shutdown and handshake refusal reasons are prose
-
-`ShutdownReason::Message(String)` is the only variant and
-`ServerMessage::ServerShutdown { reason: Option<ShutdownReason> }`; every
-production site sends "server is shutting down", built in `complete_shutdown`,
-`HeadlessServer::send_shutdown_to_unregistered_client`,
-`client_transport::send_shutdown_to_unregistered_client`, and as an `ApiError` in
-`ShutdownLifecycle::shutdown_error` and `reject_api_request_for_shutdown`.
-`HandshakeRefusal::InvalidSurface(String)` wraps
-`client_shell_geometry_error`'s `Option<&'static str>`, so the client cannot tell
-too many cells from a cell too large; `ConnectionLimit(u32)` is built with
-`u32::try_from(..).unwrap_or(u32::MAX)`. `UnexpectedPhase { step: &'static str
-}` spells "freezing for host shutdown" twice. Proposal: closed enums
-(`ShutdownReason::Stopping`, `SurfaceRefusal::{TooManyCells, DimensionTooLarge,
-CellTooLarge}` or, better, those limits in `TerminalGeometry`'s decode, a
-`LifecycleStep`) from one constructor. Reported by contracts and
-server-serving.
 
 ## TYP-063 - "Over a size limit" has six shapes, and caps are attributes
 
@@ -1267,18 +1140,6 @@ return a bare `bool` meaning repaint; client core returns
 `AtomicCellSize::store -> bool`. The `outcome.repaint |= ..` plumbing can drop
 one silently. Proposal: an `EditOutcome` and a `Repaint` value, or writing into
 the outcome directly. Reported by client-shell and client-core.
-
-## TYP-084 - The shell snapshot states facts twice
-
-`focused_workspace_id` and `ClientShellWorkspace.focused`, `focused_pane_id` and
-`ClientShellPane.focused`/`ClientShellAgent.focused`; the shell reads one or the
-other per site (`render_collapsed` uses `workspace.focused`, `render_expanded`'s
-reveal uses `focused_workspace_id`). `ClientShellPane.workspace_id` and
-`ClientShellAgent.workspace_id` duplicate `PublicPaneId::workspace_id()`. In the
-app, `PaneInfo::focused` and `WorkspaceInfo::focused` are built `false` and fixed
-later by `fill_reply_focus`, which the loop must remember to call; a reply type
-without the field, mapped together with the requester's location, makes
-forgetting impossible. Reported by client-shell and server-app.
 
 ## Bool parameters, tuples and sentinels
 

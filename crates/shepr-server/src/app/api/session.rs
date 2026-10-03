@@ -107,7 +107,7 @@ mod tests {
 
         assert_eq!(snapshot.workspaces.len(), 1);
         assert_eq!(snapshot.panes.len(), 2);
-        // Focus is each client's own location, not part of the shared session.
-        assert!(!snapshot.workspaces[0].focused);
+        // Focus is each client's own location, not part of the shared
+        // session: the snapshot's types have no focus field to set.
     }
 }

@@ -75,8 +75,8 @@ pub struct RowWrap {
     pub wrap_continuation: bool,
 }
 
-pub(super) fn is_halfwidth_voiced_mark_codepoint(codepoint: u32) -> bool {
-    matches!(codepoint, 0xff9e | 0xff9f)
+pub(super) fn is_halfwidth_voiced_mark(character: char) -> bool {
+    matches!(character, '\u{ff9e}' | '\u{ff9f}')
 }
 
 /// U+FF9E/U+FF9F on their own. unicode-width measures them as zero-width, but
@@ -86,7 +86,7 @@ pub fn is_halfwidth_katakana_voiced_mark(symbol: &str) -> bool {
     let Some(mark) = characters.next() else {
         return false;
     };
-    characters.next().is_none() && is_halfwidth_voiced_mark_codepoint(u32::from(mark))
+    characters.next().is_none() && is_halfwidth_voiced_mark(mark)
 }
 
 /// A halfwidth katakana letter followed by its voiced mark: two columns in the
@@ -101,22 +101,20 @@ pub fn is_halfwidth_katakana_voiced_grapheme(symbol: &str) -> bool {
     };
     characters.next().is_none()
         && ('\u{ff66}'..='\u{ff9d}').contains(&base)
-        && is_halfwidth_voiced_mark_codepoint(u32::from(mark))
+        && is_halfwidth_voiced_mark(mark)
 }
 
-pub fn unicode_codepoint_width(codepoint: u32) -> u8 {
-    if is_halfwidth_voiced_mark_codepoint(codepoint) {
+pub fn unicode_codepoint_width(character: char) -> u8 {
+    if is_halfwidth_voiced_mark(character) {
         return 1;
     }
-    match char::from_u32(codepoint) {
-        Some(ch) => u8::try_from(
-            ch.width()
-                .unwrap_or(0)
-                .min(usize::from(MAX_UNICODE_CODEPOINT_WIDTH)),
-        )
-        .unwrap_or(MAX_UNICODE_CODEPOINT_WIDTH),
-        None => 1,
-    }
+    u8::try_from(
+        character
+            .width()
+            .unwrap_or(0)
+            .min(usize::from(MAX_UNICODE_CODEPOINT_WIDTH)),
+    )
+    .unwrap_or(MAX_UNICODE_CODEPOINT_WIDTH)
 }
 
 /// A codepoint and any following zero-width codepoints stored in its cell.
@@ -138,14 +136,14 @@ impl<'a> Iterator for UnicodeDisplayUnits<'a> {
             Some(next) => next,
             None => {
                 let (index, character) = self.characters.next()?;
-                (index, character, unicode_codepoint_width(character as u32))
+                (index, character, unicode_codepoint_width(character))
             }
         };
         let first_len = character.len_utf8();
         let mut end = start + first_len;
         if !character.is_control() {
             for (index, following) in self.characters.by_ref() {
-                let following_width = unicode_codepoint_width(following as u32);
+                let following_width = unicode_codepoint_width(following);
                 if following.is_control() || following_width != 0 {
                     self.next_character = Some((index, following, following_width));
                     break;

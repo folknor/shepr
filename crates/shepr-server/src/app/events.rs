@@ -111,6 +111,12 @@ impl App {
 
     /// Check the producer before publication, checkpointing, or forwarding.
     /// A discarded resume attempt can finish after a successor runtime starts.
+    ///
+    /// Only events produced without a pane runtime (API reports and the Git
+    /// worker) are admitted bare; every runtime-produced kind must arrive in
+    /// its runtime's envelope. Tests are held to the same rule and build the
+    /// envelope (`App::from_pane_runtime`): a test-only path past this check
+    /// would let an untagged event skip the generation check again.
     pub(crate) fn admit_runtime_event(&self, ev: AppEvent) -> Option<AppEvent> {
         match ev {
             AppEvent::Runtime {
@@ -120,9 +126,24 @@ impl App {
             } => {
                 let runtime = self.state.runtime_of(&self.terminal_runtimes, pane_id);
                 runtime.filter(|runtime| runtime.generation() == generation)?;
-                self.admit_runtime_event(*event)
+                match event.as_ref() {
+                    AppEvent::PaneLaunchSettled { pane_id: inner, .. }
+                    | AppEvent::PaneDied { pane_id: inner, .. }
+                    | AppEvent::AgentProcessDetected { pane_id: inner, .. }
+                    | AppEvent::StateChanged { pane_id: inner, .. }
+                    | AppEvent::ClipboardWrite { pane_id: inner, .. }
+                    | AppEvent::TerminalCwdReported { pane_id: inner, .. }
+                        if *inner == pane_id =>
+                    {
+                        Some(*event)
+                    }
+                    _ => None,
+                }
             }
-            event => Some(event),
+            AppEvent::HookStateReported { .. }
+            | AppEvent::AgentSessionReported { .. }
+            | AppEvent::GitStatusRefreshed { .. } => Some(ev),
+            _ => None,
         }
     }
 
@@ -381,7 +402,7 @@ impl App {
 #[cfg(test)]
 mod pane_exit_event_tests {
     use super::*;
-    use crate::test_support::WorkspaceFixture as _;
+    use crate::test_support::{PaneRuntimeFixture as _, WorkspaceFixture as _};
     use shepr_core::layout::Direction;
     use shepr_mux::workspace::Workspace;
 
@@ -399,10 +420,17 @@ mod pane_exit_event_tests {
     }
 
     fn report_pane_exit(app: &mut App, pane_id: PaneId) {
-        app.handle_internal_event(AppEvent::PaneDied {
+        let runtime = shepr_mux::pane::PaneRuntime::test_with_screen_bytes(20, 5, b"");
+        let generation = runtime.generation();
+        app.insert_test_runtime(pane_id, runtime);
+        app.handle_internal_event(AppEvent::Runtime {
             pane_id,
-            exit_reason: shepr_platform::ChildExitReason::Exited,
-            ended_at: std::time::Instant::now(),
+            generation,
+            event: Box::new(AppEvent::PaneDied {
+                pane_id,
+                exit_reason: shepr_platform::ChildExitReason::Exited,
+                ended_at: std::time::Instant::now(),
+            }),
         });
     }
 
@@ -459,7 +487,19 @@ mod pane_exit_event_tests {
         let mut app = app_with_workspaces(&["test"]);
         let fake_id = shepr_test_fixtures::fixed_pane_id(9999);
 
-        report_pane_exit(&mut app, fake_id);
+        // A pane outside the layout has no runtime that could report its
+        // exit; a late report from one that went with its pane is dropped.
+        assert!(
+            !app.handle_internal_event_with_view_change(AppEvent::Runtime {
+                pane_id: fake_id,
+                generation: shepr_mux::events::RuntimeGeneration::alloc(),
+                event: Box::new(AppEvent::PaneDied {
+                    pane_id: fake_id,
+                    exit_reason: shepr_platform::ChildExitReason::Exited,
+                    ended_at: std::time::Instant::now(),
+                }),
+            })
+        );
 
         assert_eq!(app.state.workspaces.len(), 1);
         app.state.assert_invariants_for_test();
@@ -496,13 +536,20 @@ mod runtime_generation_tests {
         let terminal = app.state.terminals.get_mut(&terminal_id).expect("terminal");
         terminal.set_persisted_agent_session(session.clone());
         terminal.set_detected_agent_process_at(shepr_agent::agent::Agent::Codex, now);
-        app.handle_internal_event(AppEvent::StateChanged {
+        let runtime = shepr_mux::pane::PaneRuntime::test_with_screen_bytes(20, 5, b"");
+        let generation = runtime.generation();
+        app.insert_test_runtime(pane_id, runtime);
+        app.handle_internal_event(AppEvent::Runtime {
             pane_id,
-            agent: Some(shepr_agent::agent::Agent::Codex),
-            state: shepr_agent::detect::AgentState::Idle,
-            visible_blocker: false,
-            process_exited: true,
-            observed_at: now,
+            generation,
+            event: Box::new(AppEvent::StateChanged {
+                pane_id,
+                agent: Some(shepr_agent::agent::Agent::Codex),
+                state: shepr_agent::detect::AgentState::Idle,
+                visible_blocker: false,
+                process_exited: true,
+                observed_at: now,
+            }),
         });
         // The agent is released at once ...
         assert_eq!(
@@ -548,8 +595,10 @@ mod runtime_generation_tests {
         .expect("persisted identity");
         let terminal = app.state.terminals.get_mut(&terminal_id).expect("terminal");
         terminal.set_persisted_agent_session(session.clone());
-        terminal.pending_agent_resume_plan =
-            Some(test_codex_plan("restored", vec!["codex".into()]));
+        terminal.agent_resume = shepr_mux::terminal::AgentResumeState::Planned(test_codex_plan(
+            "restored",
+            vec!["codex".into()],
+        ));
         let discarded = shepr_mux::pane::PaneRuntime::test_with_screen_bytes(20, 5, b"");
         let generation = discarded.generation();
         drop(discarded);
@@ -568,11 +617,7 @@ mod runtime_generation_tests {
             app.state.terminals[&terminal_id].persisted_agent_session(),
             Some(&session)
         );
-        assert!(
-            app.state.terminals[&terminal_id]
-                .pending_agent_resume_plan
-                .is_some()
-        );
+        assert!(app.state.terminals[&terminal_id].agent_resume.is_pending());
 
         let replacement = shepr_mux::pane::PaneRuntime::test_with_screen_bytes(20, 5, b"");
         let replacement_generation = replacement.generation();
@@ -591,6 +636,72 @@ mod runtime_generation_tests {
                     exit_reason: shepr_platform::ChildExitReason::Interrupted,
                     ended_at: std::time::Instant::now(),
                 }),
+            })
+            .is_some()
+        );
+    }
+
+    #[test]
+    fn runtime_admission_rejects_bare_nested_and_misattributed_events() {
+        let mut app = App::new(
+            &shepr_config::ServerConfig::default(),
+            crate::app::AppPolicy::Test,
+        );
+        let workspace = shepr_mux::workspace::Workspace::test_new("admission");
+        let pane_id = workspace.root_pane();
+        app.state.workspaces = vec![workspace];
+        app.state.ensure_test_terminals();
+        let runtime = shepr_mux::pane::PaneRuntime::test_with_screen_bytes(20, 5, b"");
+        let generation = runtime.generation();
+        app.insert_test_runtime(pane_id, runtime);
+        let clipboard = |pane_id| AppEvent::ClipboardWrite {
+            pane_id,
+            content: Vec::new(),
+        };
+        assert!(app.admit_runtime_event(clipboard(pane_id)).is_none());
+        assert!(
+            app.admit_runtime_event(AppEvent::PaneDied {
+                pane_id,
+                exit_reason: shepr_platform::ChildExitReason::Exited,
+                ended_at: app.clock.now,
+            })
+            .is_none()
+        );
+        assert!(
+            app.admit_runtime_event(AppEvent::StateChanged {
+                pane_id,
+                agent: Some(Agent::Codex),
+                state: AgentState::Working,
+                visible_blocker: false,
+                process_exited: false,
+                observed_at: app.clock.now,
+            })
+            .is_none()
+        );
+        assert!(
+            app.admit_runtime_event(AppEvent::Runtime {
+                pane_id,
+                generation,
+                event: Box::new(clipboard(PaneId::alloc())),
+            })
+            .is_none()
+        );
+        assert!(
+            app.admit_runtime_event(AppEvent::Runtime {
+                pane_id,
+                generation,
+                event: Box::new(AppEvent::Runtime {
+                    pane_id,
+                    generation,
+                    event: Box::new(clipboard(pane_id)),
+                }),
+            })
+            .is_none()
+        );
+        assert!(
+            app.admit_runtime_event(AppEvent::GitStatusRefreshed {
+                results: Vec::new(),
+                cache_updates: Vec::new(),
             })
             .is_some()
         );

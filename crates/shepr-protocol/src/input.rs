@@ -299,7 +299,7 @@ pub enum ClientPaneInputEvent {
         modifiers: WireModifiers,
         kind: ClientKeyKind,
         repeat_count: u16,
-        shifted_codepoint: Option<u32>,
+        shifted_codepoint: Option<char>,
         generated_text: Option<String>,
     },
     TextCommit(String),

@@ -507,7 +507,6 @@ fn scroll_reply(offset: u64) -> EndpointReply {
     EndpointReply::PaneInfo {
         pane: Box::new(shepr_protocol::command::PaneInfo {
             pane_id: test_pane_id("w1:p1"),
-            focused: true,
             scroll: Some(shepr_protocol::command::PaneScrollInfo {
                 offset_from_bottom: offset,
                 max_offset_from_bottom: 20,
@@ -808,7 +807,6 @@ fn a_failed_focus_releases_only_its_own_highlight() {
         let mut w = snap.workspaces[0].clone();
         w.workspace_id = test_workspace_id(&format!("w{number}"));
         w.number = number;
-        w.focused = false;
         snap.workspaces.push(w);
     }
     s.set_snapshot(Box::new(snap));

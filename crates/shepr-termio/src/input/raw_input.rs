@@ -1,4 +1,5 @@
 use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use shepr_protocol::KittyKeyboardFlags;
 
 use super::tables::{
     MOUSE_BUTTON_FIELD_MASK, MOUSE_BUTTON_RELEASE, MOUSE_DRAG_BIT,
@@ -62,14 +63,12 @@ pub struct FramedRawInputEvent {
 
 #[derive(Default)]
 pub struct HostKeyboardProbeResponses {
-    /// Kept numeric for the outer-terminal setup API, which inspects replies
-    /// before building the typed pane keyboard protocol.
-    pub flags: Option<u16>,
+    pub flags: Option<KittyKeyboardFlags>,
     pub primary_device_attributes: bool,
 }
 
 enum HostKeyboardProbeResponse {
-    Flags(u16),
+    Flags(KittyKeyboardFlags),
     PrimaryDeviceAttributes,
 }
 
@@ -1205,8 +1204,10 @@ fn parse_host_keyboard_probe_response(buffer: &[u8]) -> Option<HostKeyboardProbe
     let (final_byte, parameters) = body.split_last()?;
     match final_byte {
         b'u' if !parameters.is_empty() && parameters.iter().all(u8::is_ascii_digit) => {
-            let flags = std::str::from_utf8(parameters).ok()?.parse().ok()?;
-            Some(HostKeyboardProbeResponse::Flags(flags))
+            let flags = std::str::from_utf8(parameters).ok()?.parse::<u16>().ok()?;
+            Some(HostKeyboardProbeResponse::Flags(
+                KittyKeyboardFlags::from_bits_retain(flags),
+            ))
         }
         b'c' if !parameters.is_empty()
             && parameters
@@ -1795,7 +1796,7 @@ mod tests {
         assert_eq!(key.code, KeyCode::Char('l'));
         assert_eq!(key.modifiers, KeyModifiers::SHIFT);
         assert_eq!(key.kind, KeyEventKind::Release);
-        assert_eq!(key.shifted_codepoint, Some('L' as u32));
+        assert_eq!(key.shifted_codepoint, Some('L'));
     }
 
     #[test]

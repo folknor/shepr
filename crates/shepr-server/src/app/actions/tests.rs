@@ -82,7 +82,11 @@ fn pane_split_state_command_commits_prepared_geometry_and_terminal() {
     let root_pane = state.workspaces[0].root_pane();
     let mut prepared_layout = state.workspaces[0].layout().clone();
     let new_pane = prepared_layout
-        .split_pane(root_pane, Direction::Horizontal, 0.5)
+        .split_pane(
+            root_pane,
+            Direction::Horizontal,
+            shepr_core::layout::SplitRatio::EVEN,
+        )
         .expect("test precondition");
     assert_eq!(state.workspaces[0].pane_count(), 1);
     let terminal_id = shepr_protocol::TerminalId::alloc();
@@ -157,7 +161,7 @@ fn apply_workspace_git_statuses_updates_matching_workspace() {
             resolved_identity_cwd: first_cwd.clone(),
             status_cache_key: first_cwd.clone(),
             auto_label: "one".into(),
-            branch: Some("main".into()),
+            branch: shepr_mux::git::WorkspaceBranch::Named("main".into()),
             ahead_behind: Some(shepr_mux::git::AheadBehind {
                 ahead: 2,
                 behind: 1,
@@ -183,11 +187,21 @@ fn apply_workspace_git_statuses_updates_matching_workspace() {
 fn apply_workspace_git_statuses_ignores_stale_cwd() {
     let mut state = app_with_workspaces(&["one"]);
     let workspace_id = state.workspaces[0].id.to_string();
-    state.workspaces[0].cached_git_branch = Some("old".into());
-    state.workspaces[0].cached_git_ahead_behind = Some(shepr_mux::git::AheadBehind {
-        ahead: 1,
-        behind: 0,
-    });
+    let cwd = state.workspaces[0].identity_cwd.clone();
+    state.workspaces[0].admit_git_status(
+        WorkspaceGitStatus {
+            workspace_id: workspace_id.clone(),
+            resolved_identity_cwd: cwd.clone(),
+            status_cache_key: cwd.clone(),
+            auto_label: "one".into(),
+            branch: shepr_mux::git::WorkspaceBranch::Named("old".into()),
+            ahead_behind: Some(shepr_mux::git::AheadBehind {
+                ahead: 1,
+                behind: 0,
+            }),
+        },
+        Some(&cwd),
+    );
 
     let current_cwd = state.workspaces[0]
         .resolved_identity_cwd()
@@ -198,7 +212,7 @@ fn apply_workspace_git_statuses_ignores_stale_cwd() {
             resolved_identity_cwd: std::path::PathBuf::from("/definitely/not/current"),
             status_cache_key: std::path::PathBuf::from("/definitely/not/current"),
             auto_label: "stale".into(),
-            branch: Some("main".into()),
+            branch: shepr_mux::git::WorkspaceBranch::Named("main".into()),
             ahead_behind: Some(shepr_mux::git::AheadBehind {
                 ahead: 0,
                 behind: 1,
@@ -225,11 +239,20 @@ fn apply_workspace_git_statuses_clears_missing_git_status() {
     let cwd = state.workspaces[0]
         .resolved_identity_cwd()
         .expect("test precondition");
-    state.workspaces[0].cached_git_branch = Some("main".into());
-    state.workspaces[0].cached_git_ahead_behind = Some(shepr_mux::git::AheadBehind {
-        ahead: 1,
-        behind: 2,
-    });
+    state.workspaces[0].admit_git_status(
+        WorkspaceGitStatus {
+            workspace_id: workspace_id.clone(),
+            resolved_identity_cwd: cwd.clone(),
+            status_cache_key: cwd.clone(),
+            auto_label: "one".into(),
+            branch: shepr_mux::git::WorkspaceBranch::Named("main".into()),
+            ahead_behind: Some(shepr_mux::git::AheadBehind {
+                ahead: 1,
+                behind: 2,
+            }),
+        },
+        Some(&cwd),
+    );
 
     let changed = state.apply_workspace_git_statuses(vec![(
         WorkspaceGitStatus {
@@ -237,7 +260,7 @@ fn apply_workspace_git_statuses_clears_missing_git_status() {
             resolved_identity_cwd: cwd.clone(),
             status_cache_key: cwd.clone(),
             auto_label: "one".into(),
-            branch: None,
+            branch: shepr_mux::git::WorkspaceBranch::OutsideRepository,
             ahead_behind: None,
         },
         Some(cwd),

@@ -85,7 +85,9 @@ fn capture_history_with_carry(
 
 fn root_split_ratio(workspace: &WorkspaceSnapshot) -> Option<f32> {
     match &workspace.layout {
-        LayoutSnapshot::Split { ratio, .. } => Some(*ratio),
+        LayoutSnapshot::Split { ratio, .. } => {
+            ratio.validate().map(shepr_core::layout::SplitRatio::get)
+        }
         LayoutSnapshot::Pane(_) => None,
     }
 }
@@ -135,11 +137,11 @@ fn capture_keeps_the_theme_for_a_headless_resume() {
 fn round_trip_layout_snapshot() {
     let layout = LayoutSnapshot::Split {
         direction: DirectionSnapshot::Horizontal,
-        ratio: 0.6,
+        ratio: SavedSplitRatio::from_raw(0.6),
         first: Box::new(LayoutSnapshot::Pane(0)),
         second: Box::new(LayoutSnapshot::Split {
             direction: DirectionSnapshot::Vertical,
-            ratio: 0.5,
+            ratio: SavedSplitRatio::from_raw(0.5),
             first: Box::new(LayoutSnapshot::Pane(1)),
             second: Box::new(LayoutSnapshot::Pane(2)),
         }),
@@ -148,7 +150,9 @@ fn round_trip_layout_snapshot() {
     let restored: LayoutSnapshot = serde_json::from_str(&json).expect("test precondition");
 
     match restored {
-        LayoutSnapshot::Split { ratio, .. } => assert!((ratio - 0.6).abs() < 0.01),
+        LayoutSnapshot::Split { ratio, .. } => {
+            assert!((ratio.validate().expect("valid saved ratio").get() - 0.6).abs() < 0.01);
+        }
         _ => panic!("expected split"),
     }
 }
@@ -183,7 +187,7 @@ fn round_trip_full_workspace_snapshot() {
             next_public_pane_number: 3,
             layout: LayoutSnapshot::Split {
                 direction: DirectionSnapshot::Horizontal,
-                ratio: 0.5,
+                ratio: SavedSplitRatio::from_raw(0.5),
                 first: Box::new(LayoutSnapshot::Pane(0)),
                 second: Box::new(LayoutSnapshot::Pane(1)),
             },
@@ -867,7 +871,7 @@ fn snapshot_parsing_preserves_missing_cwd() {
             next_public_pane_number: 3,
             layout: LayoutSnapshot::Split {
                 direction: DirectionSnapshot::Horizontal,
-                ratio: 0.5,
+                ratio: SavedSplitRatio::from_raw(0.5),
                 first: Box::new(LayoutSnapshot::Pane(0)),
                 second: Box::new(LayoutSnapshot::Pane(1)),
             },

@@ -82,7 +82,6 @@ pub struct WorkspaceInfo {
     pub workspace_id: WorkspaceId,
     pub number: usize,
     pub label: String,
-    pub focused: bool,
     pub pane_count: usize,
     pub agent_status: AgentStatus,
 }
@@ -132,7 +131,7 @@ pub struct PaneZoomParams {
     pub pane_id: PublicPaneId,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LayoutSetSplitRatioParams {
     pub workspace_id: WorkspaceId,
     /// Exact pane membership of the two children, captured when dragging starts.
@@ -146,7 +145,7 @@ pub struct LayoutSetSplitRatioParams {
         deserialize_with = "crate::codec::deserialize_bounded_vec::<{ crate::MAX_SURFACE_PANES }, _, _>"
     )]
     pub second_panes: Vec<PublicPaneId>,
-    pub ratio: f32,
+    pub ratio: shepr_core::layout::SplitRatio,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -255,12 +254,11 @@ pub struct PaneScrollInfo {
 }
 
 /// What a client shell reads back about one pane after a command: which pane
-/// it was, whether it now has focus, and its scroll position. Everything else
-/// about a pane reaches the shell through its snapshot.
+/// it was and its scroll position. Focus is part of the requester-specific
+/// shell snapshot. Everything else about a pane reaches the shell through it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaneInfo {
     pub pane_id: PublicPaneId,
-    pub focused: bool,
     pub scroll: Option<PaneScrollInfo>,
 }
 

@@ -135,12 +135,11 @@ fn terminal_regression_history_purge_restores_the_wide_panes_scrollback_budget()
 
 #[test]
 fn unicode_width_helpers_match_terminal_layout_rules() {
-    assert_eq!(unicode_codepoint_width('A' as u32), 1);
-    assert_eq!(unicode_codepoint_width('\u{301}' as u32), 0);
-    assert_eq!(unicode_codepoint_width('\u{ff9e}' as u32), 1);
-    assert_eq!(unicode_codepoint_width('\u{ff9f}' as u32), 1);
-    assert_eq!(unicode_codepoint_width('界' as u32), 2);
-    assert_eq!(unicode_codepoint_width(0x11_0000), 1);
+    assert_eq!(unicode_codepoint_width('A'), 1);
+    assert_eq!(unicode_codepoint_width('\u{301}'), 0);
+    assert_eq!(unicode_codepoint_width('\u{ff9e}'), 1);
+    assert_eq!(unicode_codepoint_width('\u{ff9f}'), 1);
+    assert_eq!(unicode_codepoint_width('界'), 2);
     assert_eq!(unicode_text_width("\u{263a}\u{fe0f}"), 1);
     let family = "\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}";
     assert_eq!(unicode_text_width(family), 6);

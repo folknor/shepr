@@ -2,15 +2,55 @@ use super::*;
 use serde::{Deserialize, Serialize};
 
 /// Why a client connection ended.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ShutdownReason {
-    Message(String),
+    /// This server is stopping and no longer accepts clients.
+    Stopping,
+}
+
+impl std::fmt::Display for ShutdownReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Stopping => f.write_str("server is shutting down"),
+        }
+    }
+}
+
+/// Why the server refused the client's requested surface geometry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SurfaceRefusal {
+    /// A requested row or column exceeds the terminal dimension limit.
+    DimensionTooLarge,
+    /// The requested row and column counts exceed the shared cell budget.
+    TooManyCells,
+    /// A requested pixel dimension for one cell exceeds its safe bound.
+    CellTooLarge,
+}
+
+impl std::fmt::Display for SurfaceRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::DimensionTooLarge => {
+                f.write_str("client shell pane surface dimensions exceed the dimension limit")
+            }
+            Self::TooManyCells => {
+                f.write_str("client shell pane surface exceeds the surface size limit")
+            }
+            Self::CellTooLarge => {
+                f.write_str("client shell cell pixel size exceeds the safe geometry limit")
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[expect(
+    variant_size_differences,
+    reason = "a four-byte limit beside one-byte refusals; boxing it would add an allocation to save three bytes"
+)]
 pub enum HandshakeRefusal {
     ExpectedHello,
-    InvalidSurface(String),
+    InvalidSurface(SurfaceRefusal),
     /// The server already serves its limit of active client connections,
     /// the value carried. Transient: a connection frees a slot when it ends.
     ConnectionLimit(u32),
@@ -23,7 +63,7 @@ impl std::fmt::Display for HandshakeRefusal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::ExpectedHello => f.write_str("expected a handshake as the first message"),
-            Self::InvalidSurface(message) => f.write_str(message),
+            Self::InvalidSurface(reason) => write!(f, "{reason}"),
             Self::ServerStarting => f.write_str(
                 "the server is still starting; it accepts clients once its panes are restored",
             ),
@@ -158,21 +198,13 @@ impl std::fmt::Display for NoticeKind {
     }
 }
 
-impl std::fmt::Display for ShutdownReason {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Message(message) => f.write_str(message),
-        }
-    }
-}
-
 /// Messages sent from the server to the client over the client protocol socket.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ServerMessage {
     /// Server is shutting down. Clients should exit gracefully.
     ServerShutdown {
-        /// Optional reason for the shutdown.
-        reason: Option<ShutdownReason>,
+        /// Why the server is stopping.
+        reason: ShutdownReason,
     },
 
     /// OSC 52 clipboard data forwarded from a PTY through the server.
@@ -223,6 +255,15 @@ pub enum ServerMessage {
     EndpointSnapshot(Box<ClientShellSnapshot>),
     /// Response to a connection health probe.
     HealthPong,
+}
+
+impl ServerMessage {
+    /// The terminal notice sent when this server stops accepting clients.
+    pub fn server_shutdown() -> Self {
+        Self::ServerShutdown {
+            reason: ShutdownReason::Stopping,
+        }
+    }
 }
 
 #[cfg(test)]

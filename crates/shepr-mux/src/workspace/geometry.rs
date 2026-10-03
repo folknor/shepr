@@ -342,7 +342,11 @@ mod tests {
 
         let (mut layout, root) = TileLayout::new();
         let right = layout
-            .split_pane(root, Direction::Horizontal, 0.5)
+            .split_pane(
+                root,
+                Direction::Horizontal,
+                shepr_core::layout::SplitRatio::EVEN,
+            )
             .expect("split");
         let split = geometry
             .pane_spawn_geometry(&layout, false, right, cell)
@@ -373,7 +377,11 @@ mod tests {
         let geometry = geometry(shepr_config::PaneBordersConfig::Off, false);
         let (mut layout, root) = TileLayout::new();
         let right = layout
-            .split_pane(root, Direction::Horizontal, 0.5)
+            .split_pane(
+                root,
+                Direction::Horizontal,
+                shepr_core::layout::SplitRatio::EVEN,
+            )
             .expect("test precondition");
 
         let (root_rows, root_cols) = geometry.pane_size(&layout, false, root).expect("root size");
@@ -393,7 +401,11 @@ mod tests {
         let bordered = geometry(shepr_config::PaneBordersConfig::Always, false);
         let (mut layout, root) = TileLayout::new();
         let below = layout
-            .split_pane(root, Direction::Vertical, 0.5)
+            .split_pane(
+                root,
+                Direction::Vertical,
+                shepr_core::layout::SplitRatio::EVEN,
+            )
             .expect("test precondition");
 
         let (plain_rows, plain_cols) = borderless.pane_size(&layout, false, below).expect("size");
@@ -415,7 +427,11 @@ mod tests {
         let geometry = geometry(shepr_config::PaneBordersConfig::Always, false);
         let (mut layout, root) = TileLayout::new();
         let right = layout
-            .split_pane(root, Direction::Horizontal, 0.5)
+            .split_pane(
+                root,
+                Direction::Horizontal,
+                shepr_core::layout::SplitRatio::EVEN,
+            )
             .expect("test precondition");
         layout.focus_pane(right);
 
@@ -450,7 +466,11 @@ mod tests {
             Borders::NONE
         );
         layout
-            .split_pane(root, Direction::Vertical, 0.5)
+            .split_pane(
+                root,
+                Direction::Vertical,
+                shepr_core::layout::SplitRatio::EVEN,
+            )
             .expect("test precondition");
         assert_eq!(
             chrome(shepr_config::PaneBordersConfig::Auto, true).visible_panes(&layout, true)[0]

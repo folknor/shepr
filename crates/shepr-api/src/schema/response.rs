@@ -2,6 +2,8 @@ use serde::{Deserialize, Serialize};
 
 use shepr_protocol::PublicPaneId;
 
+use super::detection::DetectionExplanation;
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SuccessResponse {
     pub id: String,
@@ -64,7 +66,7 @@ pub enum ResponseResult {
         capture: DetectionCapture,
     },
     DetectExplain {
-        explain: serde_json::Value,
+        explain: DetectionExplanation,
     },
     Ok {},
 }
