@@ -168,9 +168,10 @@ mod tests {
     fn client_shell_endpoint_messages_roundtrip() -> TestResult {
         use crate::command::{
             EndpointCommand, EndpointError, EndpointReply, LayoutSetSplitRatioParams,
-            PaneCopyMotion, PaneCopyMotionParams, PaneDirection, PaneLineMotion, PaneSplitParams,
-            PaneSwapParams, PaneTextPoint, PaneTextRange, PaneWordMotion, SplitDirection,
-            WorkspaceCreateParams, WorkspaceCreateSource, WorkspaceMoveParams,
+            PaneCopyMotion, PaneCopyMotionParams, PaneCopySearch, PaneCopySearchPosition,
+            PaneDirection, PaneLineMotion, PaneSplitParams, PaneSwapParams, PaneTextPoint,
+            PaneTextRange, PaneWordMotion, SplitDirection, WorkspaceCreateParams,
+            WorkspaceCreateSource, WorkspaceMoveParams,
         };
         use crate::{PublicPaneId, WorkspaceId};
 
@@ -248,13 +249,17 @@ mod tests {
             Ok(EndpointReply::Done),
             Ok(EndpointReply::PaneCopySearch {
                 pane_id: pane.clone(),
-                matches: vec![PaneTextRange {
-                    start: point(3, 1),
-                    end: point(3, 4),
-                }],
-                total: 1,
-                current: Some(0),
-                current_global: None,
+                search: PaneCopySearch {
+                    matches: vec![PaneTextRange {
+                        start: point(3, 1),
+                        end: point(3, 4),
+                    }],
+                    total: 1,
+                    current: Some(PaneCopySearchPosition {
+                        window_index: 0,
+                        global_index: 0,
+                    }),
+                },
             }),
             Err(EndpointError::Rejected("pane w1:p9 not found".into())),
             Err(EndpointError::ShuttingDown),
@@ -476,7 +481,7 @@ mod tests {
                 pane_id: "w1:p1"
                     .parse()
                     .map_err(|_| std::io::Error::other("invalid test pane id"))?,
-                agent: Some("codex".into()),
+                agent: Some(shepr_agent::agent::Agent::Codex),
                 terminal_title: None,
                 terminal_title_stripped: None,
                 agent_status: crate::AgentStatus::Working,

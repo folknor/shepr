@@ -2,7 +2,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use shepr_client::endpoint::{
-    ClientEndpointId, ClientEndpointStatus, EndpointRegistry, EndpointTransport,
+    ClientEndpointId, EndpointRegistry, EndpointTransport,
     view::{self, HostBaseline, StartOutcome},
 };
 use shepr_protocol::ServerMessage;
@@ -157,7 +157,7 @@ async fn two_headless_servers_switch_endpoints_without_a_lease() {
         SOURCE_GENERATION,
         source_snapshot,
     );
-    shell.set_endpoint_status(&target_id, ClientEndpointStatus::Online);
+    shell.endpoint_connected(&target_id, TARGET_GENERATION);
     shell.set_endpoint_snapshot_for_generation(&target_id, TARGET_GENERATION, remote_snapshot);
 
     let source_sent = Arc::new(Mutex::new(Vec::new()));
@@ -174,7 +174,7 @@ async fn two_headless_servers_switch_endpoints_without_a_lease() {
         false,
         now,
     );
-    let mut serial = 41;
+    let mut serial = view::ViewSerialAllocator::new();
     headless_tests::dispatch_lifecycle_messages(
         &mut source_server,
         source_client_id,

@@ -20,14 +20,6 @@ impl RgbColor {
         }
     }
 
-    pub(super) fn into_vte(self) -> Rgb {
-        Rgb {
-            r: self.r,
-            g: self.g,
-            b: self.b,
-        }
-    }
-
     /// Relative luminance in the range 0..=1, with sRGB channels linearized first.
     pub fn relative_luminance(self) -> f32 {
         fn channel(value: u8) -> f32 {
@@ -178,7 +170,7 @@ pub struct ColorQuery {
     pub(super) target: ColorQueryTarget,
     pub(super) core_color: Option<RgbColor>,
     pub(super) child_override: bool,
-    pub(super) format: Arc<dyn Fn(Rgb) -> String + Sync + Send + 'static>,
+    pub(super) reply_form: crate::seq::ReplyForm,
 }
 
 impl ColorQuery {
@@ -200,21 +192,15 @@ impl ColorQuery {
     /// Encode a reply in the form the query asked for (same OSC number and
     /// terminator).
     pub fn encode(&self, color: RgbColor) -> Vec<u8> {
-        (*self.format)(color.into_vte()).into_bytes()
+        self.reply(color, self.reply_form)
     }
-}
 
-pub(super) fn color_query_format(
-    prefix: String,
-    terminator: &str,
-) -> Arc<dyn Fn(Rgb) -> String + Sync + Send + 'static> {
-    let terminator = terminator.to_owned();
-    Arc::new(move |color| {
-        format!(
-            "\x1b]{};rgb:{:02x}{:02x}/{:02x}{:02x}/{:02x}{:02x}{}",
-            prefix, color.r, color.r, color.g, color.g, color.b, color.b, terminator
-        )
-    })
+    /// Reply with an explicit terminator, for pane policies choosing their own form.
+    pub fn reply(&self, color: RgbColor, form: crate::seq::ReplyForm) -> Vec<u8> {
+        crate::seq::ColorReply(self.target, color, form)
+            .to_string()
+            .into_bytes()
+    }
 }
 
 impl fmt::Debug for ColorQuery {
@@ -236,7 +222,25 @@ impl Terminal {
                 *slot = RgbColor::from_vte(color);
             }
         }
+        let source = |child: bool, host: bool| {
+            if child {
+                ColorSource::Child
+            } else if host {
+                ColorSource::Host
+            } else {
+                ColorSource::Builtin
+            }
+        };
         RenderColors {
+            foreground_source: source(
+                colors[NamedColor::Foreground].is_some(),
+                self.host_foreground.is_some(),
+            ),
+            background_source: source(
+                colors[NamedColor::Background].is_some(),
+                self.host_background.is_some(),
+            ),
+            child_palette: std::array::from_fn(|index| colors[index].map(RgbColor::from_vte)),
             background: colors[NamedColor::Background]
                 .map(RgbColor::from_vte)
                 .or(self.host_background)

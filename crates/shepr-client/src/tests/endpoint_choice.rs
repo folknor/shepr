@@ -1,7 +1,5 @@
 use super::*;
-use endpoint::{
-    ClientEndpointId, ClientEndpointStatus, EndpointChoice, EndpointRegistry, EndpointTransport,
-};
+use endpoint::{ClientEndpointId, EndpointChoice, EndpointRegistry, EndpointTransport};
 use shepr_protocol::{
     ClientShellSnapshot, ClientSurfaceSize, PaneSurfaceFrame, ServerMessage,
     command::{EndpointCommand, EndpointReply},
@@ -161,9 +159,7 @@ impl Fixture {
             1,
             snapshot(&ClientEndpointId::Local, 1),
         );
-        state
-            .shell
-            .set_endpoint_status(&remote(), ClientEndpointStatus::Online);
+        state.shell.endpoint_connected(&remote(), 7);
         state
             .shell
             .cache_endpoint_snapshot_for_generation(&remote(), 7, snapshot(&remote(), 1));
@@ -311,10 +307,18 @@ impl Fixture {
         self.output.0.lock().expect("output").clear();
     }
     fn input(&mut self, message: ClientMessage) {
+        // The shell routes host theme updates to every viewed endpoint and
+        // everything else to the shown one; the fixture keeps that routing.
+        let request = match message {
+            ClientMessage::ClientShellHostTheme { update } => {
+                shell::ClientShellRequest::HostTheme(update)
+            }
+            message => shell::ClientShellRequest::Shown(message),
+        };
         finish_client_shell_input(
             &mut self.client.state,
             shell::ClientShellInput {
-                requests: vec![message],
+                requests: vec![request],
                 ..Default::default()
             },
             &mut self.client.write_stream,
@@ -611,7 +615,8 @@ fn local_selection_waits_for_metadata_while_the_shown_endpoint_stays_live() {
         false,
         &mut f.client.state.shell,
         f.now,
-    );
+    )
+    .expect("dispatch writes nothing to the host");
     f.reconcile();
     assert_eq!(
         f.client.state.shell.endpoints.choice.live(),
@@ -649,8 +654,9 @@ fn a_remote_pick_without_metadata_waits_with_a_notice() {
         false,
         &mut f.client.state.shell,
         f.now,
-    );
-    assert!(repaint);
+    )
+    .expect("dispatch writes nothing to the host");
+    assert!(repaint.is_needed());
     f.reconcile();
     assert!(
         f.client
@@ -683,7 +689,8 @@ fn a_remote_pick_without_a_connection_is_abandoned_with_one_notice() {
         false,
         &mut f.client.state.shell,
         f.now,
-    );
+    )
+    .expect("dispatch writes nothing to the host");
     let frame = f.client.state.shell.compose(100, 30).expect("chrome");
     f.client.state.present_chrome(frame);
     assert!(
@@ -749,7 +756,8 @@ fn pane_input_and_commands_go_only_to_the_shown_endpoint() {
         false,
         &mut f.client.state.shell,
         f.now,
-    );
+    )
+    .expect("dispatch writes nothing to the host");
     let source = f.local.take();
     assert!(source.contains(&input));
     assert!(source.iter().any(|m| matches!(
@@ -788,7 +796,8 @@ fn commit_retires_the_previous_command_lane() {
         false,
         &mut f.client.state.shell,
         f.now,
-    );
+    )
+    .expect("dispatch writes nothing to the host");
     f.start();
     f.commit();
     assert!(!f.client.state.shell.has_request(&request_id));
@@ -921,7 +930,7 @@ fn an_interactive_detach_goes_to_the_shown_endpoint() {
         f.now,
     )
     .expect("detach");
-    assert!(detached);
+    assert_eq!(detached, ShellInputDisposition::Detach);
     assert!(matches!(f.local.take().as_slice(), [ClientMessage::Detach]));
     assert!(f.target.take().is_empty());
 }

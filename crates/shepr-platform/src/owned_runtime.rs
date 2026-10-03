@@ -67,14 +67,6 @@ pub(crate) enum RuntimeCreateError {
     Io(io::Error),
 }
 
-impl RuntimeCreateError {
-    pub(crate) fn into_io(self) -> io::Error {
-        match self {
-            Self::RandomSource(error) | Self::Io(error) => error,
-        }
-    }
-}
-
 impl From<io::Error> for RuntimeCreateError {
     fn from(error: io::Error) -> Self {
         Self::Io(error)

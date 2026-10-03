@@ -1885,7 +1885,7 @@ fn session_required_state_hooks_match_the_descriptor_policy() {
         .filter(|agent| {
             agent
                 .descriptor()
-                .hook_session_policy
+                .hook_session_policy()
                 .state_requires_session_ref
         })
         .collect();

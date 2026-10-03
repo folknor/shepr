@@ -7,7 +7,7 @@ pub(crate) type KeybindHelpEntry = (String, Cow<'static, str>);
 pub(crate) type KeybindHelpGroup = (&'static str, Vec<KeybindHelpEntry>);
 
 pub fn keybind_help_text_char(key: &TerminalKey) -> Option<char> {
-    crate::copy_mode::copy_mode_command_char(key)
+    crate::copy_mode::copy_mode_key_char(key)
 }
 
 fn entry(key: impl Into<String>, label: &'static str) -> KeybindHelpEntry {
@@ -207,7 +207,7 @@ mod tests {
         assert_eq!(keybind_help_text_char(&key), Some('?'));
         assert_eq!(
             keybind_help_text_char(&key),
-            crate::copy_mode::copy_mode_command_char(&key)
+            crate::copy_mode::copy_mode_key_char(&key)
         );
     }
 

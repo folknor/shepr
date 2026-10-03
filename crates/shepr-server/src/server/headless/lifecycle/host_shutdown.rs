@@ -21,6 +21,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use futures_util::StreamExt;
 use tokio::sync::watch;
 
+use super::WarningGeneration;
 use crate::app::Backoff;
 use crate::limits::{SHUTDOWN_RECONNECT_INITIAL_DELAY, SHUTDOWN_RECONNECT_MAX_DELAY};
 
@@ -30,7 +31,7 @@ pub(in crate::server::headless) struct HostShutdownMonitor {
     task: tokio::task::JoinHandle<()>,
     shared: Arc<Shared>,
     /// The warning generation the server has checkpointed for.
-    checkpointed: watch::Sender<u64>,
+    checkpointed: watch::Sender<Option<WarningGeneration>>,
 }
 
 impl HostShutdownMonitor {
@@ -46,7 +47,7 @@ impl HostShutdownMonitor {
             generation: AtomicU64::new(0),
             wake: Box::new(wake),
         });
-        let (checkpointed, checkpoints) = watch::channel(0);
+        let (checkpointed, checkpoints) = watch::channel(None);
         let task = tokio::spawn(monitor(Arc::clone(&shared), checkpoints));
         Self {
             task,
@@ -55,9 +56,9 @@ impl HostShutdownMonitor {
         }
     }
 
-    /// Generation associated with the current or most recent shutdown warning.
-    pub(in crate::server::headless) fn warning_generation(&self) -> u64 {
-        self.shared.generation.load(Ordering::Acquire)
+    /// Generation associated with the shutdown warning currently pending.
+    pub(in crate::server::headless) fn warning_generation(&self) -> Option<WarningGeneration> {
+        self.shared.warning_generation()
     }
 
     /// Tell the monitor that the session checkpoint answering the current
@@ -65,9 +66,9 @@ impl HostShutdownMonitor {
     /// and let the shutdown proceed. A call with no warning pending, or one
     /// that races a cancellation, is ignored: each warning is numbered, and
     /// only a release for the warning still pending counts.
-    pub(in crate::server::headless) fn release_delay_lock(&self, generation: u64) {
-        if self.warning_generation() == generation {
-            self.checkpointed.send_replace(generation);
+    pub(in crate::server::headless) fn release_delay_lock(&self, generation: WarningGeneration) {
+        if self.warning_generation() == Some(generation) {
+            self.checkpointed.send_replace(Some(generation));
         }
     }
 }
@@ -98,7 +99,7 @@ impl Shared {
             event = "host.shutdown.request",
             subsystem = "shutdown",
             outcome = "pending",
-            generation,
+            generation = generation.as_u64(),
             "host shutdown requested; preserving session before pane termination"
         );
     }
@@ -111,19 +112,19 @@ impl Shared {
             event = "host.shutdown.refresh",
             subsystem = "shutdown",
             outcome = "pending",
-            generation,
+            generation = generation.as_u64(),
             "host shutdown remains pending after reconnect; refreshing session checkpoint"
         );
     }
 
-    fn start_warning(&self) -> u64 {
+    fn start_warning(&self) -> WarningGeneration {
         let generation = self
             .generation
             .fetch_add(1, Ordering::AcqRel)
             .wrapping_add(1);
         self.requested.store(true, Ordering::Release);
         (self.wake)();
-        generation
+        WarningGeneration(generation)
     }
 
     /// Report that the pending shutdown was called off.
@@ -135,13 +136,19 @@ impl Shared {
     }
 
     /// Whether the server has checkpointed for the warning now pending.
-    fn checkpointed(&self, released_generation: u64) -> bool {
-        self.requested.load(Ordering::Acquire)
-            && released_generation == self.generation.load(Ordering::Acquire)
+    fn warning_generation(&self) -> Option<WarningGeneration> {
+        self.requested
+            .load(Ordering::Acquire)
+            .then(|| WarningGeneration(self.generation.load(Ordering::Acquire)))
+    }
+
+    /// Whether the server checkpointed the warning now pending.
+    fn checkpointed(&self, released_generation: Option<WarningGeneration>) -> bool {
+        self.requested.load(Ordering::Acquire) && released_generation == self.warning_generation()
     }
 }
 
-async fn monitor(shared: Arc<Shared>, mut checkpoints: watch::Receiver<u64>) {
+async fn monitor(shared: Arc<Shared>, mut checkpoints: watch::Receiver<Option<WarningGeneration>>) {
     let reconnect_backoff = Backoff::new(
         SHUTDOWN_RECONNECT_INITIAL_DELAY,
         SHUTDOWN_RECONNECT_MAX_DELAY,
@@ -206,7 +213,7 @@ async fn monitor(shared: Arc<Shared>, mut checkpoints: watch::Receiver<u64>) {
 
 async fn watch_shutdown(
     shared: &Shared,
-    checkpoints: &mut watch::Receiver<u64>,
+    checkpoints: &mut watch::Receiver<Option<WarningGeneration>>,
     refresh_pending_warning: bool,
 ) -> zbus::Result<()> {
     let connection = zbus::Connection::system().await?;
@@ -261,7 +268,7 @@ fn shutdown_already_in_progress(error: &zbus::Error) -> bool {
 async fn watch_connection(
     connection: zbus::Connection,
     shared: &Shared,
-    checkpoints: &mut watch::Receiver<u64>,
+    checkpoints: &mut watch::Receiver<Option<WarningGeneration>>,
     refresh_pending_warning: bool,
 ) -> zbus::Result<()> {
     let manager = zbus::Proxy::new(
@@ -332,22 +339,26 @@ mod tests {
     async fn stale_checkpoint_cannot_release_a_new_warning() {
         let wakes = Arc::new(AtomicU64::new(0));
         let shared = Arc::new(shared(&wakes));
-        let (checkpointed, receiver) = watch::channel(0);
+        let (checkpointed, receiver) = watch::channel(None);
         let monitor = HostShutdownMonitor {
             task: tokio::spawn(std::future::pending()),
             shared,
             checkpointed,
         };
         monitor.shared.announce();
-        let first = monitor.warning_generation();
+        let first = monitor
+            .warning_generation()
+            .expect("the first warning is pending");
         monitor.shared.cancel();
         monitor.shared.announce();
-        let second = monitor.warning_generation();
+        let second = monitor
+            .warning_generation()
+            .expect("the second warning is pending");
         assert_ne!(first, second);
         monitor.release_delay_lock(first);
-        assert_eq!(*receiver.borrow(), 0);
+        assert_eq!(*receiver.borrow(), None);
         monitor.release_delay_lock(second);
-        assert_eq!(*receiver.borrow(), second);
+        assert_eq!(*receiver.borrow(), Some(second));
     }
 
     fn shared(wakes: &Arc<AtomicU64>) -> Shared {
@@ -381,17 +392,17 @@ mod tests {
     fn a_release_only_counts_for_the_warning_still_pending() {
         let wakes = Arc::new(AtomicU64::new(0));
         let shared = shared(&wakes);
-        assert!(!shared.checkpointed(0), "no warning, nothing to release");
+        assert!(!shared.checkpointed(None), "no warning, nothing to release");
         shared.announce();
-        let first = shared.generation.load(Ordering::Acquire);
-        assert!(!shared.checkpointed(0), "no checkpoint yet");
-        assert!(shared.checkpointed(first));
+        let first = shared.warning_generation().expect("warning is pending");
+        assert!(!shared.checkpointed(None), "no checkpoint yet");
+        assert!(shared.checkpointed(Some(first)));
         // The server's release for the first warning arrives after it was
         // cancelled and a second one began: it must not free the second.
         shared.cancel();
         shared.announce();
-        assert!(!shared.checkpointed(first));
-        assert!(shared.checkpointed(shared.generation.load(Ordering::Acquire)));
+        assert!(!shared.checkpointed(Some(first)));
+        assert!(shared.checkpointed(shared.warning_generation()));
     }
 
     struct PrivateBus(Child);
@@ -548,7 +559,7 @@ mod tests {
                     move || wake.notify_one()
                 }),
             });
-            let (checkpointed, mut checkpoints) = watch::channel(0);
+            let (checkpointed, mut checkpoints) = watch::channel(None);
             let task = tokio::spawn({
                 let shared = Arc::clone(&shared);
                 async move {
@@ -581,7 +592,7 @@ mod tests {
             }
 
             // The server has checkpointed: the lock goes, the watch stays.
-            checkpointed.send_replace(shared.generation.load(Ordering::Acquire));
+            checkpointed.send_replace(shared.warning_generation());
             if !starts_without_lock {
                 tokio::time::timeout(Duration::from_secs(5), async {
                     while held(&mut peers.lock().expect("test precondition")[0]) {

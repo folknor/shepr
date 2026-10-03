@@ -352,16 +352,18 @@ pub(super) fn remote_client_status(
     // ordinary discovery progress, but a started status command that fails is
     // a diagnostic the operator needs to see.
     // limits-exempt: a shell exit status chosen for the remote command contract, not a bound.
-    const CANDIDATE_NOT_EXECUTABLE: i32 = 125;
+    let candidate_missing = crate::RemoteExit::CandidateMissing.code();
     let status_command = PosixScript::new(remote_shepr.status_client_command());
     let command = PosixScript::new(format!(
-        "test -x {} || exit {CANDIDATE_NOT_EXECUTABLE}; {}",
+        "test -x {} || exit {candidate_missing}; {}",
         remote_shepr.shell_word(),
         status_command.as_str(),
     ));
     let output = ssh.sh_output(&command)?;
     if !output.status.success() {
-        if output.status.code() == Some(CANDIDATE_NOT_EXECUTABLE) {
+        if crate::SshExit::from_code(output.status.code())
+            == crate::SshExit::Remote(crate::RemoteExit::CandidateMissing)
+        {
             return Ok(None);
         }
         let error = remote_client_status_failure(&output);
@@ -384,7 +386,7 @@ pub(super) fn parse_remote_client_status_json(
 }
 
 fn remote_client_status_failure(output: &Output) -> io::Error {
-    let context = if output.status.code() == Some(crate::SSH_OWN_FAILURE_EXIT_CODE) {
+    let context = if crate::SshExit::from_code(output.status.code()) == crate::SshExit::SshFailed {
         "remote SSH connection failed"
     } else {
         "remote client status probe failed"

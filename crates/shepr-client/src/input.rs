@@ -14,6 +14,54 @@ use tokio::sync::mpsc;
 use super::{ClientLoopEvent, ParsedHostInput};
 use crate::limits::HOST_INPUT_READ_CHUNK_BYTES;
 use crate::terminal_geometry::SharedHostGeometry;
+use crate::terminal_setup::HostMouseInputProbe;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ProbeAvailability {
+    NotArmed,
+    Armed,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum EscapeDisambiguation {
+    Inactive,
+    Active,
+}
+
+pub(crate) struct HostInputProbe {
+    color_scheme_query: ProbeAvailability,
+    cell_size_query: ProbeAvailability,
+    mouse: HostMouseInputProbe,
+    escape_disambiguation: EscapeDisambiguation,
+}
+
+impl HostInputProbe {
+    pub(crate) fn new(
+        color_scheme_query_sent: bool,
+        cell_size_query_sent: bool,
+        mouse: HostMouseInputProbe,
+        escape_disambiguation_active: bool,
+    ) -> Self {
+        Self {
+            color_scheme_query: if color_scheme_query_sent {
+                ProbeAvailability::Armed
+            } else {
+                ProbeAvailability::NotArmed
+            },
+            cell_size_query: if cell_size_query_sent {
+                ProbeAvailability::Armed
+            } else {
+                ProbeAvailability::NotArmed
+            },
+            mouse,
+            escape_disambiguation: if escape_disambiguation_active {
+                EscapeDisambiguation::Active
+            } else {
+                EscapeDisambiguation::Inactive
+            },
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Stdin reader thread
@@ -31,12 +79,8 @@ use crate::terminal_geometry::SharedHostGeometry;
 pub(crate) fn stdin_reader_loop(
     event_tx: &mpsc::Sender<ClientLoopEvent>,
     should_quit: &Arc<AtomicBool>,
-    host_color_query_sent: bool,
-    host_cell_size_query_sent: bool,
-    host_mouse_capture_active: &Arc<AtomicBool>,
-    host_sgr_pixels_active: &Arc<AtomicBool>,
+    probe: &HostInputProbe,
     host_geometry: &SharedHostGeometry,
-    host_escape_disambiguation_active: bool,
     initial_host_input: &[u8],
 ) {
     let stdin = io::stdin();
@@ -44,13 +88,15 @@ pub(crate) fn stdin_reader_loop(
     let stdin_fd = stdin.as_raw_fd();
     let mut scratch = [0u8; HOST_INPUT_READ_CHUNK_BYTES];
     let mut framer = RawInputFramer::for_host_input();
-    framer.set_host_escape_disambiguation_active(host_escape_disambiguation_active);
-    if host_color_query_sent {
+    framer.set_host_escape_disambiguation_active(
+        probe.escape_disambiguation == EscapeDisambiguation::Active,
+    );
+    if probe.color_scheme_query == ProbeAvailability::Armed {
         framer.host_color_query_sent();
         framer.enable_host_color_scheme_change_tracking();
         framer.enable_host_appearance_query_on_focus();
     }
-    if host_cell_size_query_sent {
+    if probe.cell_size_query == ProbeAvailability::Armed {
         framer.host_cell_size_query_sent();
     }
     let mut pending_palette = Vec::new();
@@ -65,7 +111,7 @@ pub(crate) fn stdin_reader_loop(
             &mut pending_palette,
             &mut pending_mode,
             &mut last_geometry,
-            host_sgr_pixels_active,
+            &probe.mouse,
             host_geometry,
         ) {
             return;
@@ -76,8 +122,7 @@ pub(crate) fn stdin_reader_loop(
             event_tx,
             &mut pending_palette,
             &mut pending_mode,
-            host_mouse_capture_active,
-            host_sgr_pixels_active,
+            &probe.mouse,
             last_geometry,
         ) {
             return;
@@ -101,7 +146,7 @@ pub(crate) fn stdin_reader_loop(
                     &mut pending_palette,
                     &mut pending_mode,
                     &mut last_geometry,
-                    host_sgr_pixels_active,
+                    &probe.mouse,
                     host_geometry,
                 ) {
                     return;
@@ -113,8 +158,7 @@ pub(crate) fn stdin_reader_loop(
                     event_tx,
                     &mut pending_palette,
                     &mut pending_mode,
-                    host_mouse_capture_active,
-                    host_sgr_pixels_active,
+                    &probe.mouse,
                     last_geometry,
                 ) {
                     return;
@@ -144,11 +188,10 @@ fn consume_input_bytes(
     pending_palette: &mut Vec<ParsedHostInput>,
     pending_mode: &mut Option<bool>,
     last_geometry: &mut Option<shepr_termio::input::mouse::HostPixelExtent>,
-    host_sgr_pixels_active: &AtomicBool,
+    host_mouse_probe: &HostMouseInputProbe,
     host_geometry: &SharedHostGeometry,
 ) -> bool {
-    let sgr_pixels =
-        *pending_mode.get_or_insert_with(|| host_sgr_pixels_active.load(Ordering::Acquire));
+    let sgr_pixels = *pending_mode.get_or_insert_with(|| host_mouse_probe.sgr_pixels_active());
     if sgr_pixels {
         *last_geometry = retain_geometry(*last_geometry, host_geometry.pixel_extent());
     }
@@ -171,15 +214,13 @@ fn flush_idle_input(
     event_tx: &mpsc::Sender<ClientLoopEvent>,
     pending_palette: &mut Vec<ParsedHostInput>,
     pending_mode: &mut Option<bool>,
-    host_mouse_capture_active: &AtomicBool,
-    host_sgr_pixels_active: &AtomicBool,
+    host_mouse_probe: &HostMouseInputProbe,
     geometry: Option<shepr_termio::input::mouse::HostPixelExtent>,
 ) -> bool {
     if !framer.has_pending_input() && pending_palette.is_empty() {
         return true;
     }
-    let timeout_ms =
-        idle_flush_timeout_ms(framer, host_mouse_capture_active.load(Ordering::Acquire));
+    let timeout_ms = idle_flush_timeout_ms(framer, host_mouse_probe.capture_active());
     if stdin_read_ready(stdin_fd, timeout_ms) != Some(false) {
         return true;
     }
@@ -188,7 +229,7 @@ fn flush_idle_input(
     // those bytes their follow-up flush too; emitted chunks do not mean the
     // framer is empty.
     let has_pending_after_flush = framer.has_pending_input();
-    let sgr_pixels = pending_mode.unwrap_or_else(|| host_sgr_pixels_active.load(Ordering::Acquire));
+    let sgr_pixels = pending_mode.unwrap_or_else(|| host_mouse_probe.sgr_pixels_active());
     if !framer.has_pending_input() {
         *pending_mode = None;
     }

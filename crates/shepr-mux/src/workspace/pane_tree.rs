@@ -105,7 +105,7 @@ impl Workspace {
     }
 
     fn zoomed_pane_id(&self) -> Option<PaneId> {
-        self.zoomed.then(|| self.layout.focused())
+        PaneGeometry::zoomed_pane(&self.layout, self.zoomed)
     }
 
     pub fn pane_state(&self, pane_id: PaneId) -> Option<&PaneState> {
@@ -308,14 +308,11 @@ impl Workspace {
         terminal_runtimes: &PaneRuntimeRegistry,
     ) -> Option<PathBuf> {
         let terminal_id = self.terminal_id(pane_id)?;
-        terminal_runtimes
-            .get(terminal_id)
-            .and_then(PaneRuntime::cwd)
-            .or_else(|| {
-                terminals
-                    .get(terminal_id)
-                    .map(|terminal| terminal.cwd().to_path_buf())
-            })
+        super::terminal_cwd(
+            terminal_runtimes.get(terminal_id),
+            terminals.get(terminal_id),
+            super::CwdPurpose::Identity,
+        )
     }
 
     pub fn foreground_cwd_for_pane(

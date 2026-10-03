@@ -219,6 +219,9 @@ where
 }
 
 /// Deserializes a byte vector from a borrowed byte slice with one allocation.
+/// Clipboard data reaches this adapter after OSC 52 parsing has capped the
+/// decoded payload, and the framed reader caps the complete message at
+/// `MAX_MESSAGE_SIZE`; byte length is not a collection-item count.
 pub fn deserialize_byte_vec<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
 where
     D: de::Deserializer<'de>,

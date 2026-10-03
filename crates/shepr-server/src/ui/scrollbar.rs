@@ -10,7 +10,7 @@ pub(crate) fn pane_scrollbar_rect(info: &PaneInfo) -> Option<Rect> {
 }
 
 pub(crate) fn should_show_scrollbar(metrics: shepr_mux::pane::ScrollMetrics) -> bool {
-    metrics.max_offset_from_bottom > 0
+    PaneInfo::scrollbar_visible(metrics.max_offset_from_bottom)
 }
 
 use shepr_termio::scroll::render_scrollbar_buffer;

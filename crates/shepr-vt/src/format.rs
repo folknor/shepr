@@ -17,14 +17,6 @@ use vte::ansi::{Color, NamedColor};
 use super::{CellText, UnderlineStyle, cell_text};
 
 const OSC8_CLOSE_SEQUENCE: &str = "\x1b]8;;\x1b\\";
-const UNDERLINE_SGR: &[(UnderlineStyle, &str)] = &[
-    (UnderlineStyle::Single, ";4"),
-    (UnderlineStyle::Double, ";4:2"),
-    (UnderlineStyle::Curly, ";4:3"),
-    (UnderlineStyle::Dotted, ";4:4"),
-    (UnderlineStyle::Dashed, ";4:5"),
-];
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Format {
     Plain,
@@ -347,10 +339,8 @@ fn push_sgr(out: &mut String, style: &StyleKey) {
         out.push_str(";3");
     }
     let underline = UnderlineStyle::from_flags(flags);
-    if let Some(sgr) = UNDERLINE_SGR
-        .iter()
-        .find_map(|(style, sgr)| (*style == underline).then_some(*sgr))
-    {
+    if let Some(sgr) = underline.sgr_param() {
+        out.push(';');
         out.push_str(sgr);
     }
     if flags.contains(Flags::INVERSE) {
@@ -370,60 +360,21 @@ fn push_sgr(out: &mut String, style: &StyleKey) {
     out.push('m');
 }
 
-#[derive(Clone, Copy)]
-enum ColorSlot {
-    Foreground,
-    Background,
-    Underline,
-}
+use crate::seq::{ColorParam, ColorSlot, SgrColor};
 
 fn push_color(out: &mut String, color: Color, slot: ColorSlot) {
-    match color {
+    let color = match color {
         Color::Named(named) => {
             let index = named as usize;
             if index >= super::color::NAMED_COLOR_COUNT {
-                // Foreground/Background and the renderer-only dim/bright
-                // variants all mean "default" here.
                 return;
             }
-            match slot {
-                ColorSlot::Foreground if index < 8 => {
-                    push_fmt(out, format_args!(";{}", 30 + index));
-                }
-                ColorSlot::Foreground => {
-                    push_fmt(out, format_args!(";{}", 90 + index - 8));
-                }
-                ColorSlot::Background if index < 8 => {
-                    push_fmt(out, format_args!(";{}", 40 + index));
-                }
-                ColorSlot::Background => {
-                    push_fmt(out, format_args!(";{}", 100 + index - 8));
-                }
-                ColorSlot::Underline => {
-                    push_fmt(out, format_args!(";58;5;{index}"));
-                }
-            }
+            SgrColor::Named(u8::try_from(index).unwrap_or(0))
         }
-        Color::Indexed(index) => {
-            let prefix = match slot {
-                ColorSlot::Foreground => 38,
-                ColorSlot::Background => 48,
-                ColorSlot::Underline => 58,
-            };
-            push_fmt(out, format_args!(";{prefix};5;{index}"));
-        }
-        Color::Spec(rgb) => {
-            let prefix = match slot {
-                ColorSlot::Foreground => 38,
-                ColorSlot::Background => 48,
-                ColorSlot::Underline => 58,
-            };
-            push_fmt(
-                out,
-                format_args!(";{prefix};2;{};{};{}", rgb.r, rgb.g, rgb.b),
-            );
-        }
-    }
+        Color::Indexed(index) => SgrColor::Indexed(index),
+        Color::Spec(rgb) => SgrColor::Rgb(super::RgbColor::from_vte(rgb)),
+    };
+    push_fmt(out, format_args!(";{}", ColorParam(slot, color)));
 }
 
 /// Appends formatted text to `out`. `fmt::Write for String` only reports an

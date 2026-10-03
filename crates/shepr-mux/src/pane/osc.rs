@@ -372,7 +372,7 @@ fn foreground_job_is_shell(
     job: &shepr_agent::detect::ForegroundJob,
     shell_pid: shepr_platform::Pid,
 ) -> bool {
-    job.processes.iter().any(|process| process.pid == shell_pid)
+    super::process_probe::Foreground::from_job(Some(job), shell_pid).is_shell()
 }
 
 /// The process group of the foreground program when it is not the shell.
@@ -381,7 +381,10 @@ pub(super) fn current_transient_default_color_owner(
     shell_pid: shepr_platform::Pid,
 ) -> Option<shepr_platform::Pgid> {
     let job = shepr_agent::detect::foreground_job(shell_pid)?;
-    (!foreground_job_is_shell(&job, shell_pid)).then_some(job.process_group_id)
+    match super::process_probe::Foreground::from_job(Some(&job), shell_pid) {
+        super::process_probe::Foreground::Job(job) => Some(job.process_group_id),
+        super::process_probe::Foreground::Shell | super::process_probe::Foreground::Unknown => None,
+    }
 }
 
 pub(super) fn should_restore_host_terminal_theme(

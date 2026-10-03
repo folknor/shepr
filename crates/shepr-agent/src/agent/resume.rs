@@ -865,7 +865,7 @@ mod tests {
         for descriptor in crate::agent::AGENTS {
             assert!(
                 !descriptor
-                    .hook_session_policy
+                    .hook_session_policy()
                     .allows_replacement(ReportedSessionStart::Unrecognized),
                 "{}",
                 descriptor.label
@@ -874,7 +874,7 @@ mod tests {
         assert!(
             Agent::Antigravity
                 .descriptor()
-                .hook_session_policy
+                .hook_session_policy()
                 .allows_replacement(ReportedSessionStart::Omitted),
             "premise: some policy replaces on an omitted source"
         );

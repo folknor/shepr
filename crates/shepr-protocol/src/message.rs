@@ -279,7 +279,10 @@ pub enum ServerMessage {
 
     /// OSC 52 clipboard data forwarded from a PTY through the server.
     Clipboard {
-        /// Bytes decoded from OSC 52 and bounded by the terminal parser.
+        /// Bytes decoded from OSC 52 and capped by terminal parsing before this message is
+        /// created. The framed reader also caps the complete server message at
+        /// [`MAX_MESSAGE_SIZE`], so this byte buffer does not need
+        /// the codec's collection-item limit.
         #[serde(
             serialize_with = "codec::serialize_byte_vec",
             deserialize_with = "codec::deserialize_byte_vec"

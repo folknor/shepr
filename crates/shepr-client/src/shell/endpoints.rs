@@ -1,4 +1,4 @@
-use crate::endpoint::{ClientEndpointId, ClientEndpointStatus};
+use crate::endpoint::{ClientEndpointId, ClientEndpointStatus, EndpointFailureStatus};
 use crate::shell::ledger::DropReason;
 use crate::shell::presentation::surfaces::PaneSurfaces;
 use crate::shell::state::ClientShellState;
@@ -101,24 +101,16 @@ impl EndpointState {
         }
     }
 
-    fn set_status(&mut self, status: ClientEndpointStatus) {
+    /// A failure keeps the last snapshot for display only. There is deliberately no way to
+    /// set Online here, not even for test fixtures: a status carries no connection
+    /// generation, so promoting a retained snapshot would present one from a connection that
+    /// is gone. Online is reached only through `endpoint_connected` and that generation's
+    /// own snapshot, and tests arrange it the same way.
+    fn set_failure(&mut self, status: EndpointFailureStatus) {
         let last = self.last().cloned();
         *self = match status {
-            ClientEndpointStatus::Online => last.map_or(
-                Self::Connecting {
-                    last: None,
-                    connected: true,
-                    generation: None,
-                },
-                Self::Online,
-            ),
-            ClientEndpointStatus::Connecting => Self::Connecting {
-                last,
-                connected: false,
-                generation: None,
-            },
-            ClientEndpointStatus::Reconnecting => Self::Stale { last },
-            ClientEndpointStatus::Attention => Self::Attention { last },
+            EndpointFailureStatus::Reconnecting => Self::Stale { last },
+            EndpointFailureStatus::Attention => Self::Attention { last },
         };
     }
 
@@ -205,7 +197,7 @@ impl ClientShellState {
 
     /// A handshake starts a new presentation generation. Until its own snapshot arrives,
     /// the previous generation is retained only as stale display data.
-    pub(crate) fn endpoint_connected(&mut self, endpoint_id: &ClientEndpointId, generation: u64) {
+    pub fn endpoint_connected(&mut self, endpoint_id: &ClientEndpointId, generation: u64) {
         if let Some(endpoint) = self
             .endpoints
             .iter_mut()
@@ -229,7 +221,7 @@ impl ClientShellState {
     pub fn set_endpoint_status(
         &mut self,
         endpoint_id: &ClientEndpointId,
-        status: ClientEndpointStatus,
+        status: EndpointFailureStatus,
     ) {
         self.apply_endpoint_status(endpoint_id, status);
     }
@@ -241,7 +233,7 @@ impl ClientShellState {
     pub(crate) fn transition_endpoint_status(
         &mut self,
         endpoint_id: &ClientEndpointId,
-        status: ClientEndpointStatus,
+        status: EndpointFailureStatus,
     ) -> crate::endpoint::Lost {
         let lost = self.endpoints.choice.connection_lost(endpoint_id);
         self.apply_endpoint_status(endpoint_id, status);
@@ -254,12 +246,9 @@ impl ClientShellState {
     fn apply_endpoint_status(
         &mut self,
         endpoint_id: &ClientEndpointId,
-        status: ClientEndpointStatus,
+        status: EndpointFailureStatus,
     ) {
-        if status == ClientEndpointStatus::Online {
-            self.clear_machine_diagnostic(endpoint_id);
-        }
-        if endpoint_id == self.endpoints.presented() && status != ClientEndpointStatus::Online {
+        if endpoint_id == self.endpoints.presented() {
             self.pending_workspace_highlight = None;
         }
         let mut changed = false;
@@ -269,7 +258,7 @@ impl ClientShellState {
             .find(|endpoint| &endpoint.endpoint_id == endpoint_id)
         {
             let previous = endpoint.state.status();
-            endpoint.state.set_status(status);
+            endpoint.state.set_failure(status);
             changed = previous != endpoint.state.status();
         }
         if changed {
@@ -308,13 +297,24 @@ impl ClientShellState {
             return false;
         };
         let generation = endpoint.snapshot_generation();
-        let pending_agent_reveal = self
-            .pending_agent_reveal
-            .take_if(|(target_endpoint, _)| target_endpoint == endpoint_id);
         let agent_body_height = self.hits.agent_body.height;
         let switching_endpoint = endpoint_id != self.endpoints.presented();
         let agent_scroll = self.agent_scroll;
-        self.endpoints.choice = crate::endpoint::EndpointChoice::showing(endpoint_id.clone());
+        match self.endpoints.choice.preparing() {
+            Some(preparing) if &preparing.lease().endpoint_id == endpoint_id => {
+                if self.endpoints.choice.commit().is_none() {
+                    return false;
+                }
+            }
+            None if self.endpoints.choice.pending_start().is_none() => {
+                self.endpoints.choice =
+                    crate::endpoint::EndpointChoice::showing(endpoint_id.clone());
+            }
+            Some(_) | None => return false,
+        }
+        let pending_agent_reveal = self
+            .pending_agent_reveal
+            .take_if(|(target_endpoint, _)| target_endpoint == endpoint_id);
         if switching_endpoint {
             self.surfaces = PaneSurfaces::default();
         }
@@ -565,10 +565,22 @@ impl ClientShellEndpoint {
 #[cfg(test)]
 impl ClientShellState {
     pub(crate) fn mark_endpoint_disconnected(&mut self, endpoint_id: &ClientEndpointId) {
-        self.set_endpoint_status(endpoint_id, ClientEndpointStatus::Reconnecting);
+        self.set_endpoint_status(endpoint_id, EndpointFailureStatus::Reconnecting);
         if self.endpoint_is_active(endpoint_id) {
             self.drop_all_requests(DropReason::Interrupted);
         }
+    }
+
+    /// Brings an endpoint online the way a connection does: the handshake opens
+    /// `generation`, and that generation's snapshot makes the endpoint usable.
+    pub(crate) fn connect_endpoint_with_snapshot(
+        &mut self,
+        endpoint_id: &ClientEndpointId,
+        generation: u64,
+        snapshot: Box<ClientShellSnapshot>,
+    ) {
+        self.endpoint_connected(endpoint_id, generation);
+        self.set_endpoint_snapshot_for_generation(endpoint_id, generation, snapshot);
     }
 
     pub(crate) fn endpoint_has_snapshot(&self, endpoint_id: &ClientEndpointId) -> bool {
@@ -617,18 +629,40 @@ mod tests {
     }
 
     #[test]
-    fn online_requires_a_snapshot() {
-        let mut state = EndpointState::Connecting {
-            last: None,
-            connected: false,
-            generation: None,
-        };
-        state.set_status(ClientEndpointStatus::Online);
-        assert_eq!(state.status(), ClientEndpointStatus::Connecting);
-        assert!(!state.usable());
-        state.cache(snapshot(1));
-        assert_eq!(state.status(), ClientEndpointStatus::Online);
-        assert!(state.usable());
+    fn online_requires_a_connection_and_its_snapshot() {
+        let mut shell = ClientShellState::new(crate::shell::state::ClientShellConfig::from_config(
+            &shepr_config::ClientConfig::default(),
+        ));
+        let local = ClientEndpointId::Local;
+        shell.set_endpoint_status(&local, EndpointFailureStatus::Reconnecting);
+        shell.cache_endpoint_snapshot_for_generation(
+            &local,
+            1,
+            Arc::new(crate::shell::tests::snapshot()),
+        );
+        // A snapshot without a live connection is display data only.
+        assert_eq!(
+            shell.endpoint_status(&local),
+            Some(ClientEndpointStatus::Reconnecting)
+        );
+        assert!(!shell.endpoint_usable(&local));
+
+        shell.endpoint_connected(&local, 2);
+        assert_eq!(
+            shell.endpoint_status(&local),
+            Some(ClientEndpointStatus::Connecting)
+        );
+        assert!(!shell.endpoint_usable(&local));
+        shell.cache_endpoint_snapshot_for_generation(
+            &local,
+            2,
+            Arc::new(crate::shell::tests::snapshot()),
+        );
+        assert_eq!(
+            shell.endpoint_status(&local),
+            Some(ClientEndpointStatus::Online)
+        );
+        assert!(shell.endpoint_usable(&local));
     }
 
     #[test]
@@ -648,13 +682,13 @@ mod tests {
     #[test]
     fn caching_cannot_clear_a_failure_or_make_its_last_snapshot_usable() {
         for status in [
-            ClientEndpointStatus::Reconnecting,
-            ClientEndpointStatus::Attention,
+            EndpointFailureStatus::Reconnecting,
+            EndpointFailureStatus::Attention,
         ] {
             let mut state = EndpointState::Online(snapshot(1));
-            state.set_status(status);
+            state.set_failure(status);
             state.cache(snapshot(2));
-            assert_eq!(state.status(), status);
+            assert_eq!(state.status(), ClientEndpointStatus::from(status));
             assert!(state.stale());
             assert_eq!(state.last().expect("retained snapshot").generation, Some(2));
         }

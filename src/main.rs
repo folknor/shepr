@@ -1,7 +1,49 @@
 use std::io;
-use std::process::ExitCode;
 
 use cli::{CliError, CliResult};
+
+/// Exit contracts decoded at the CLI process boundary.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ProcessExit {
+    Success,
+    Failed,
+    Usage,
+    Stop(shepr_api::server_stop::ServerStopExit),
+}
+
+impl ProcessExit {
+    pub(crate) fn code(self) -> u8 {
+        match self {
+            Self::Success => 0,
+            Self::Failed => 1,
+            Self::Usage => 2,
+            // ServerStopExit encodes a closed set of process exit bytes, so the
+            // fallback to a plain failure is unreachable.
+            Self::Stop(exit) => u8::try_from(exit.code()).unwrap_or(1),
+        }
+    }
+
+    pub(crate) fn from_cli_code(code: i32) -> Self {
+        match code {
+            0 => Self::Success,
+            1 => Self::Failed,
+            2 => Self::Usage,
+            code => match shepr_api::server_stop::ServerStopExit::from_code(code) {
+                Some(exit) => Self::Stop(exit),
+                None => {
+                    tracing::error!(code, "CLI returned an invalid process exit status");
+                    Self::Failed
+                }
+            },
+        }
+    }
+}
+
+impl std::process::Termination for ProcessExit {
+    fn report(self) -> std::process::ExitCode {
+        std::process::ExitCode::from(self.code())
+    }
+}
 
 const NESTED_SHEPR_MESSAGES: &[&str] = &[
     "inception detected. we need to go deeper... said no one ever.",
@@ -42,49 +84,48 @@ where
 
 /// The one place the process ends. Every launch below returns its exit status
 /// or a typed [`CliError`]; the error is printed here, once, and its
-/// `exit_code` becomes the status. Returning from `main` rather than calling
+/// `exit_status` becomes the status. Returning from `main` rather than calling
 /// `std::process::exit` lets the destructors of everything `launch` held run
 /// first (the client's terminal guard, SSH teardown registrations).
-fn main() -> ExitCode {
-    let code = match launch() {
+fn main() -> ProcessExit {
+    match launch() {
         Ok(code) => code,
         Err(error) => {
             error.print();
-            error.exit_code()
+            error.exit_status()
         }
-    };
-    ExitCode::from(u8::try_from(code).unwrap_or(1))
+    }
 }
 
-fn launch() -> CliResult<i32> {
+fn launch() -> CliResult<ProcessExit> {
     let raw_args: Vec<String> = args_as_utf8(std::env::args_os()).map_err(CliError::Usage)?;
     launch_with_args(&raw_args)
 }
 
-fn launch_with_args(raw_args: &[String]) -> CliResult<i32> {
+fn launch_with_args(raw_args: &[String]) -> CliResult<ProcessExit> {
     // The one command-line parser: the clap spec in `cli/spec.rs`. It prints
     // its own usage errors and subcommand help, and hands back only the status.
     let launch = match cli::parse_launch(raw_args) {
         Ok(launch) => launch,
-        Err(exit_code) => return Ok(exit_code),
+        Err(exit_code) => return Ok(ProcessExit::from_cli_code(exit_code)),
     };
 
     let run_tui = match launch {
         cli::Launch::Help => {
             cli::print_help();
-            return Ok(0);
+            return Ok(ProcessExit::Success);
         }
         cli::Launch::Version => {
             shepr_platform::begin_cli_output();
             println!("shepr {}", shepr_protocol::build_version());
-            return Ok(0);
+            return Ok(ProcessExit::Success);
         }
         cli::Launch::ClientBridge => {
             let paths = resolve_bridge_paths()?;
             init_client_logging(&paths)?;
             return finish_bridge(shepr_remote::run_remote_client_bridge(&paths)?);
         }
-        cli::Launch::Cli(command) => return cli::run(&command),
+        cli::Launch::Cli(command) => return cli::run(&command).map(ProcessExit::from_cli_code),
         cli::Launch::Client => false,
         cli::Launch::Tui => true,
     };
@@ -101,7 +142,8 @@ fn launch_with_args(raw_args: &[String]) -> CliResult<i32> {
 
     if !run_tui {
         init_client_logging(paths)?;
-        return cli::finish_client(shepr_client::run_client(&loaded_config, paths));
+        return cli::finish_client(shepr_client::run_client(&loaded_config, paths))
+            .map(ProcessExit::from_cli_code);
     }
 
     autodetect::ensure_terminal_geometry()
@@ -117,16 +159,16 @@ fn launch_with_args(raw_args: &[String]) -> CliResult<i32> {
         shepr_remote::local_server::SERVER_READY_TIMEOUT,
         shepr_client::run_client,
     )
-    .map_err(|error| CliError::Client(shepr_client::ClientRunError::Launch(error)))?;
-    cli::finish_client(client)
+    .map_err(CliError::Launch)?;
+    cli::finish_client(client).map(ProcessExit::from_cli_code)
 }
 
 /// A bridge that ended on its idle watchdog logs the measured idle duration
 /// and ends the process with status 1. Its relay threads may still hold stdin
 /// and stdout, so the caller must not join them or write to stdout.
-fn finish_bridge(outcome: shepr_platform::RemoteBridgeOutcome) -> CliResult<i32> {
+fn finish_bridge(outcome: shepr_platform::RemoteBridgeOutcome) -> CliResult<ProcessExit> {
     match outcome {
-        shepr_platform::RemoteBridgeOutcome::Closed => Ok(0),
+        shepr_platform::RemoteBridgeOutcome::Closed => Ok(ProcessExit::Success),
         shepr_platform::RemoteBridgeOutcome::IdleExpired { idle_for } => {
             tracing::warn!(idle_for = ?idle_for, "remote bridge idle timeout expired");
             Err(CliError::BridgeIdle)

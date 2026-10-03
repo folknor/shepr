@@ -5,12 +5,13 @@ use shepr_protocol::command::SplitDirection;
 use crate::endpoint::ClientEndpointId;
 use crate::shell::endpoints::ClientEndpointFocusTarget;
 use crate::shell::ledger::Work;
-use crate::shell::overlays::notices::ClientEndpointNoticeKind;
+use crate::shell::overlays::notices::{ClientEndpointNoticeKind, NoticeCode};
 use crate::shell::overlays::text_editor::TextEditor;
 use crate::shell::state::{
     ClientHelpOverlay, ClientShellAction, ClientShellInput, ClientShellState,
 };
 use crate::shell::state::{ClientShellMode, ClientShellOverlay};
+use crate::shell::{EndpointNotice, EndpointNoticeKind};
 
 use shepr_protocol::command::EndpointCommand;
 
@@ -43,8 +44,10 @@ impl ClientShellState {
                     )
                 {
                     let open_workspace = self.open_workspace_hint();
-                    self.receive_endpoint_unavailable(format!(
-                        "Select an available workspace and {open_workspace} before renaming or closing it"
+                    let endpoint = self.endpoints.presented().clone();
+                    self.receive_endpoint_unavailable(&EndpointNotice::new(
+                        endpoint,
+                        EndpointNoticeKind::WorkspaceActionBlocked { open_workspace },
                     ));
                     outcome.repaint = true;
                     return;
@@ -195,7 +198,7 @@ impl ClientShellState {
     pub(in crate::shell) fn push_endpoint_notice(
         &mut self,
         kind: ClientEndpointNoticeKind,
-        code: impl Into<String>,
+        code: NoticeCode,
         title: impl Into<String>,
         body: impl Into<String>,
     ) -> bool {
@@ -213,7 +216,7 @@ impl ClientShellState {
         &mut self,
         boot_id: Option<shepr_protocol::BootId>,
         kind: ClientEndpointNoticeKind,
-        code: impl Into<String>,
+        code: NoticeCode,
         title: impl Into<String>,
         body: impl Into<String>,
     ) -> bool {
@@ -223,7 +226,7 @@ impl ClientShellState {
     pub(crate) fn receive_paste_rejection(&mut self, message: String) -> bool {
         self.push_endpoint_notice(
             ClientEndpointNoticeKind::Rejected,
-            "paste_rejected",
+            NoticeCode::PasteRejected,
             "Paste rejected",
             message,
         )
@@ -240,7 +243,7 @@ impl ClientShellState {
         self.queue_boot_notice(
             endpoint_id,
             boot_id,
-            "session_restore_incomplete",
+            NoticeCode::SessionRestoreIncomplete,
             "saved session not fully restored",
             notice.to_string(),
         )
@@ -256,7 +259,7 @@ impl ClientShellState {
         self.queue_boot_notice(
             endpoint_id,
             boot_id,
-            "session_saves_stopped",
+            NoticeCode::SessionSavesStopped,
             "session saves stopped",
             "The server stopped saving its session after an internal failure (see the server log). \
              Layout changes from now on are not restored when the server next starts."
@@ -270,7 +273,7 @@ impl ClientShellState {
         &mut self,
         endpoint_id: &ClientEndpointId,
         boot_id: &shepr_protocol::BootId,
-        code: &str,
+        code: NoticeCode,
         title: &str,
         body: String,
     ) -> bool {
@@ -282,18 +285,17 @@ impl ClientShellState {
     pub(crate) fn receive_server_notice(&mut self, kind: &shepr_protocol::NoticeKind) -> bool {
         let (code, title) = match kind {
             shepr_protocol::NoticeKind::PaneInputDropped { .. } => (
-                "pane_input_dropped".to_owned(),
+                NoticeCode::PaneInputDropped,
                 "Pane input dropped".to_owned(),
             ),
             shepr_protocol::NoticeKind::LimitExceeded(error) => match error.limit.kind() {
                 shepr_protocol::LimitKind::InputPayloadBytes => {
-                    ("paste_rejected".to_owned(), "Paste rejected".to_owned())
+                    (NoticeCode::PasteRejected, "Paste rejected".to_owned())
                 }
-                shepr_protocol::LimitKind::SurfaceMessageBytes => (
-                    "oversized_surface".to_owned(),
-                    "Screen too large".to_owned(),
-                ),
-                _ => ("size_limit".to_owned(), "Size limit reached".to_owned()),
+                shepr_protocol::LimitKind::SurfaceMessageBytes => {
+                    (NoticeCode::OversizedSurface, "Screen too large".to_owned())
+                }
+                _ => (NoticeCode::SizeLimit, "Size limit reached".to_owned()),
             },
         };
         self.push_endpoint_notice(
@@ -304,13 +306,13 @@ impl ClientShellState {
         )
     }
 
-    pub(crate) fn receive_endpoint_unavailable(&mut self, message: String) -> bool {
+    pub(crate) fn receive_endpoint_unavailable(&mut self, notice: &EndpointNotice) -> bool {
         self.push_endpoint_notice_at_boot(
             None,
             ClientEndpointNoticeKind::Unavailable,
-            message.clone(),
+            NoticeCode::EndpointUnavailable,
             "Endpoint unavailable",
-            message,
+            notice.body(),
         )
     }
 

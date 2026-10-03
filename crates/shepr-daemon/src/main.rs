@@ -42,7 +42,7 @@ fn main() -> ExitCode {
 fn usage_error(message: &str) -> ExitCode {
     eprintln!("error: {message}");
     eprintln!("usage: shepr-server [--version]");
-    ExitCode::from(2)
+    ServerProcessExit::Usage.into_exit_code()
 }
 
 /// Validates the config for the serving host and runs the server until it
@@ -81,10 +81,25 @@ fn serve(client_spawned: bool) -> ExitCode {
     }
 }
 
-fn exit_with(code: i32) -> ExitCode {
-    // The codes are small positive constants, so the conversion cannot fail;
-    // a failure would still end the process as a plain failure.
-    u8::try_from(code).map_or(ExitCode::FAILURE, ExitCode::from)
+enum ServerProcessExit {
+    Usage,
+    Server(DaemonExit),
+}
+
+impl ServerProcessExit {
+    fn into_exit_code(self) -> ExitCode {
+        let code = match self {
+            Self::Usage => 2,
+            // DaemonExit encodes a closed set of process exit bytes, so the
+            // fallback to a plain failure is unreachable.
+            Self::Server(class) => u8::try_from(class.code()).unwrap_or(1),
+        };
+        ExitCode::from(code)
+    }
+}
+
+fn exit_with(class: DaemonExit) -> ExitCode {
+    ServerProcessExit::Server(class).into_exit_code()
 }
 
 fn config_error<I, D>(diagnostics: I) -> ExitCode
@@ -96,7 +111,7 @@ where
     for diagnostic in diagnostics {
         eprintln!("  {diagnostic}");
     }
-    exit_with(DaemonExit::ConfigRefused.code())
+    exit_with(DaemonExit::ConfigRefused)
 }
 
 /// A server already holding the runtime, by either socket or by the data lock,
@@ -107,16 +122,22 @@ fn report_server_error(error: RunServerError) -> ExitCode {
         RunServerError::AlreadyRunning { path } => {
             eprintln!("error: {ALREADY_RUNNING}");
             eprintln!("socket: {}", path.display());
-            exit_with(DaemonExit::AlreadyRunning.code())
+            exit_with(DaemonExit::AlreadyRunning)
         }
         RunServerError::DataDirHeld { directory } => {
             eprintln!("error: {ALREADY_RUNNING}");
             eprintln!("data directory: {}", directory.display());
-            exit_with(DaemonExit::AlreadyRunning.code())
+            exit_with(DaemonExit::AlreadyRunning)
         }
-        RunServerError::Io(error) => {
+        RunServerError::SessionTarget(error)
+        | RunServerError::PaneLaunch(error)
+        | RunServerError::Socket(error)
+        | RunServerError::Runtime(error)
+        | RunServerError::Lease(error)
+        | RunServerError::Logging(error)
+        | RunServerError::Serve(error) => {
             eprintln!("error: {error}");
-            exit_with(DaemonExit::Failed.code())
+            exit_with(DaemonExit::Failed)
         }
     }
 }

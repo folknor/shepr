@@ -22,15 +22,15 @@ pub struct FileLoggingConfig {
 
 /// File logging could not be enabled. The caller supplies any operator-facing
 /// explanation; `reason` is the underlying filesystem error detail.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub struct FileLoggingUnavailable {
     pub path: PathBuf,
-    pub reason: String,
+    pub reason: std::sync::Arc<io::Error>,
 }
 
 /// Outcome of installing file logging. `unavailable` is present when setup
 /// failed without preventing the process from starting.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default)]
 pub struct FileLoggingOutcome {
     pub unavailable: Option<FileLoggingUnavailable>,
 }
@@ -79,7 +79,7 @@ pub fn init_file_logging_with_config(
             return Ok(FileLoggingOutcome {
                 unavailable: Some(FileLoggingUnavailable {
                     path: dir.join(file_name),
-                    reason: error.to_string(),
+                    reason: std::sync::Arc::new(error),
                 }),
             });
         }

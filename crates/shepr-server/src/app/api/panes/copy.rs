@@ -59,11 +59,8 @@ impl App {
         else {
             return Err(pane_missing(&params.pane_id));
         };
-        let selection = shepr_vt::selection::Selection::range(
-            pane_id,
-            shepr_vt::Point::new(params.anchor.row, params.anchor.col),
-            shepr_vt::Point::new(params.cursor.row, params.cursor.col),
-        );
+        let selection =
+            shepr_vt::selection::Selection::range(pane_id, params.anchor, params.cursor);
         let Some(text) = runtime.read().extract_selection(&selection) else {
             return Err(EndpointError::Rejected(
                 "selection text is unavailable".to_owned(),
@@ -94,70 +91,31 @@ impl App {
         else {
             return Err(pane_missing(&params.pane_id).into());
         };
-        let target = match params.motion {
-            PaneCopyMotion::Line(motion) => {
-                let width = runtime
-                    .read()
-                    .terminal_dimensions()
-                    .map_or(1, |(cols, _)| cols.max(1));
-                let selection = shepr_vt::selection::Selection::line_range(
-                    pane_id,
-                    params.cursor.row,
-                    params.cursor.row,
-                );
-                let Some(text) = runtime.read().extract_selection(&selection) else {
-                    return rejected("terminal row is unavailable");
-                };
-                let col = match motion {
-                    PaneLineMotion::End => {
-                        shepr_termio::copy_mode::last_character_col(&text).unwrap_or(0)
-                    }
-                    PaneLineMotion::FirstNonBlank => {
-                        shepr_termio::copy_mode::first_non_blank_col(&text).unwrap_or(0)
-                    }
-                };
-                shepr_mux::pane::TerminalTextPoint {
-                    row: params.cursor.row,
-                    col: col.min(width.saturating_sub(1)),
-                }
+        use shepr_mux::pane::{TerminalCopyMotion, TerminalLineMotion, TerminalParagraphMotion};
+        let motion = match params.motion {
+            PaneCopyMotion::Line(PaneLineMotion::End) => {
+                TerminalCopyMotion::Line(TerminalLineMotion::End)
             }
-            PaneCopyMotion::Word(motion) => runtime
-                .read()
-                .word_motion_target(
-                    params.cursor.row,
-                    params.cursor.col,
-                    terminal_word_motion(motion),
-                )
-                .unwrap_or(shepr_mux::pane::TerminalTextPoint {
-                    row: params.cursor.row,
-                    col: params.cursor.col,
-                }),
-            PaneCopyMotion::Paragraph(motion) => runtime
-                .read()
-                .paragraph_motion_target(
-                    params.cursor.row,
-                    match motion {
-                        PaneParagraphMotion::Previous => -1,
-                        PaneParagraphMotion::Next => 1,
-                    },
-                )
-                .map_or(
-                    shepr_mux::pane::TerminalTextPoint {
-                        row: params.cursor.row,
-                        col: params.cursor.col,
-                    },
-                    |target| shepr_mux::pane::TerminalTextPoint {
-                        row: target.row,
-                        col: params.cursor.col,
-                    },
-                ),
+            PaneCopyMotion::Line(PaneLineMotion::FirstNonBlank) => {
+                TerminalCopyMotion::Line(TerminalLineMotion::FirstNonBlank)
+            }
+            PaneCopyMotion::Word(motion) => TerminalCopyMotion::Word(terminal_word_motion(motion)),
+            PaneCopyMotion::Paragraph(PaneParagraphMotion::Previous) => {
+                TerminalCopyMotion::Paragraph(TerminalParagraphMotion::Previous)
+            }
+            PaneCopyMotion::Paragraph(PaneParagraphMotion::Next) => {
+                TerminalCopyMotion::Paragraph(TerminalParagraphMotion::Next)
+            }
+        };
+        let target = match runtime.read().copy_motion(params.cursor, motion) {
+            Ok(target) => target,
+            Err(shepr_mux::pane::TerminalCopyMotionError::RowUnavailable) => {
+                return rejected("terminal row is unavailable");
+            }
         };
         Handled::reply(EndpointReply::PaneCopyMotion {
             pane_id: params.pane_id,
-            cursor: PaneTextPoint {
-                row: target.row,
-                col: target.col,
-            },
+            cursor: target,
         })
     }
 
@@ -175,56 +133,46 @@ impl App {
         if params.query.len() > MAX_QUERY_BYTES {
             return rejected("copy search query is too large");
         }
-        let cursor = shepr_mux::pane::TerminalTextPoint {
-            row: params.cursor.row,
-            col: params.cursor.col,
-        };
-        let previous = params.previous.map(|previous| {
-            (
-                shepr_mux::pane::TerminalTextPoint {
-                    row: previous.start.row,
-                    col: previous.start.col,
-                },
-                shepr_mux::pane::TerminalTextPoint {
-                    row: previous.end.row,
-                    col: previous.end.col,
-                },
-            )
-        });
+        let previous = params
+            .previous
+            .map(|previous| shepr_mux::pane::TerminalTextRange {
+                start: previous.start,
+                end: previous.end,
+            });
         let direction = match params.direction {
             PaneCopySearchDirection::Forward => shepr_mux::pane::TerminalSearchDirection::Forward,
             PaneCopySearchDirection::Backward => shepr_mux::pane::TerminalSearchDirection::Backward,
         };
-        let result = runtime.read().search_text_window(
-            &params.query,
-            params.query.chars().any(char::is_uppercase),
-            direction,
-            cursor,
-            previous,
-            MAX_RETURNED_MATCHES,
-        );
+        let result = runtime
+            .read()
+            .search_text_window(shepr_mux::pane::TerminalTextSearch {
+                query: &params.query,
+                case: shepr_mux::pane::TerminalSearchCase::Smart,
+                direction,
+                cursor: params.cursor,
+                previous,
+                limit: shepr_mux::pane::TerminalSearchLimit::new(MAX_RETURNED_MATCHES),
+            });
         let matches = result
             .matches
             .into_iter()
             .map(|text_match| PaneTextRange {
-                start: PaneTextPoint {
-                    row: text_match.start.row,
-                    col: text_match.start.col,
-                },
-                end: PaneTextPoint {
-                    row: text_match.end.row,
-                    col: text_match.end.col,
-                },
+                start: text_match.start,
+                end: text_match.end,
             })
             .collect();
         Handled::reply(EndpointReply::PaneCopySearch {
             pane_id: params.pane_id,
-            matches,
-            total: u64::try_from(result.total).unwrap_or(u64::MAX),
-            current: result.current.and_then(|index| u32::try_from(index).ok()),
-            current_global: result
-                .current_global
-                .and_then(|index| u64::try_from(index).ok()),
+            search: shepr_protocol::command::PaneCopySearch {
+                matches,
+                total: result.total,
+                current: result.current.map(|position| {
+                    shepr_protocol::command::PaneCopySearchPosition {
+                        window_index: position.window_index,
+                        global_index: position.global_index,
+                    }
+                }),
+            },
         })
     }
 }

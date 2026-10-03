@@ -3,6 +3,7 @@ use crate::shell::endpoints::ClientEndpointFocusTarget;
 use crate::shell::endpoints::ClientShellEndpoint;
 use crate::shell::state::ClientShellMode;
 use crate::shell::state::{ClientShellInput, ClientShellState};
+use crate::shell::{EndpointNotice, EndpointNoticeKind};
 
 /// A client-only preview. Snapshot identity prevents Enter from using a reused workspace ID.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -187,9 +188,10 @@ impl ClientShellState {
             return;
         };
         if !self.navigation_target_valid(&target) {
-            self.receive_endpoint_unavailable(
-                "Workspace is no longer available; select a connected workspace".into(),
-            );
+            self.receive_endpoint_unavailable(&EndpointNotice::new(
+                target.endpoint_id.clone(),
+                EndpointNoticeKind::WorkspaceNoLongerAvailable,
+            ));
             outcome.repaint = true;
             return;
         }

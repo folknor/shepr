@@ -48,7 +48,7 @@ pub trait PreflightSsh: Sync {
 
     /// Runs interactive authentication for one machine in this terminal. Called
     /// for one machine at a time, from the calling thread.
-    fn authenticate(&self, machine: &MachineConfig) -> io::Result<()>;
+    fn authenticate(&self, machine: &MachineConfig) -> Result<(), AuthenticationError>;
 
     /// Stops the server instance `server` describes, if it is still the one
     /// running on the machine. Called for one machine at a time, from the
@@ -111,8 +111,64 @@ pub fn classify_check(result: io::Result<MachineSshCheck>) -> MachineCheck {
     }
 }
 
+/// The foreground SSH attempt failed before it could authenticate.
+#[derive(Debug)]
+pub enum AuthenticationError {
+    CouldNotRun(io::Error),
+    Exited(std::process::ExitStatus),
+}
+
+impl From<io::Error> for AuthenticationError {
+    fn from(error: io::Error) -> Self {
+        Self::CouldNotRun(error)
+    }
+}
+
+impl std::fmt::Display for AuthenticationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::CouldNotRun(error) => write!(f, "could not run ssh: {error}"),
+            Self::Exited(status) => write!(f, "ssh exited with {status}"),
+        }
+    }
+}
+
+impl std::error::Error for AuthenticationError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::CouldNotRun(error) => Some(error),
+            Self::Exited(_) => None,
+        }
+    }
+}
+
+/// A restart retains the stop failure until the operator notice is rendered.
+#[derive(Debug)]
+pub enum RestartFailure {
+    Local(shepr_api::server_stop::ServerStopError),
+    Remote(io::Error),
+}
+
+impl std::fmt::Display for RestartFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Local(error) => error.fmt(f),
+            Self::Remote(error) => error.fmt(f),
+        }
+    }
+}
+
+impl std::error::Error for RestartFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Local(error) => Some(error),
+            Self::Remote(error) => Some(error),
+        }
+    }
+}
+
 /// How one offer to restart a server of another build ended.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub enum RestartResult {
     /// No server of another build was found.
     NotNeeded,
@@ -128,7 +184,7 @@ pub enum RestartResult {
     /// instance was shutting down; it was not stopped as part of this offer.
     OccupantChanged,
     /// The stop failed; the server may still be running.
-    Failed(String),
+    Failed(RestartFailure),
 }
 
 impl RestartResult {
@@ -144,7 +200,7 @@ impl RestartResult {
         decide: Option<&mut dyn FnMut(&S) -> RestartDecision>,
         mut observe: impl FnMut() -> Option<S>,
         mut restartable: impl FnMut(&S) -> bool,
-        mut stop: impl FnMut(&S) -> Result<RemoteStop, String>,
+        mut stop: impl FnMut(&S) -> Result<RemoteStop, RestartFailure>,
     ) -> Self {
         let Some(mut server) = observe().filter(|server| restartable(server)) else {
             return Self::NotNeeded;
@@ -198,8 +254,8 @@ pub struct PreflightOutcome {
     /// restart.
     pub check: MachineCheck,
     /// `None` when no prompt was run for this machine; otherwise whether the
-    /// interactive ssh succeeded, with its failure text.
-    pub authentication: Option<Result<(), String>>,
+    /// interactive ssh succeeded, with its process status or setup error.
+    pub authentication: Option<Result<(), AuthenticationError>>,
     /// `None` until a restart of this machine's server was considered.
     pub restart: Option<RestartResult>,
 }
@@ -229,7 +285,7 @@ pub fn preflight(
             let authentication = if check.needs_authentication() {
                 if let Some(before_authentication) = before_authentication.as_deref_mut() {
                     before_authentication(machine);
-                    Some(ssh.authenticate(machine).map_err(|error| error.to_string()))
+                    Some(ssh.authenticate(machine))
                 } else {
                     None
                 }
@@ -365,7 +421,7 @@ pub fn restart_different_builds(
                 |check| match check {
                     MachineCheck::DifferentBuild(server) => ssh
                         .stop_server(machine, server)
-                        .map_err(|error| error.to_string()),
+                        .map_err(RestartFailure::Remote),
                     _ => Ok(RemoteStop::NoServer),
                 },
             )
@@ -431,7 +487,7 @@ impl PreflightSsh for MachineSshPreflight<'_> {
         probe.check(self.paths, &machine.ssh, deadline)
     }
 
-    fn authenticate(&self, machine: &MachineConfig) -> io::Result<()> {
+    fn authenticate(&self, machine: &MachineConfig) -> Result<(), AuthenticationError> {
         // The command's owner stays alive until the child has exited: OpenSSH
         // reads its temporary config after spawn.
         let mut authentication = crate::ssh_authentication_command(self.paths, &machine.ssh)?;
@@ -439,7 +495,7 @@ impl PreflightSsh for MachineSshPreflight<'_> {
         if status.success() {
             Ok(())
         } else {
-            Err(io::Error::other(format!("ssh exited with {status}")))
+            Err(AuthenticationError::Exited(status))
         }
     }
 
@@ -611,7 +667,7 @@ mod tests {
             }
         }
 
-        fn authenticate(&self, machine: &MachineConfig) -> io::Result<()> {
+        fn authenticate(&self, machine: &MachineConfig) -> Result<(), AuthenticationError> {
             enter(&self.prompts_active, &self.max_prompts_active);
             self.log(format!("prompt {}", machine.label));
             std::thread::sleep(Duration::from_millis(20));
@@ -620,7 +676,9 @@ mod tests {
                 .failing_authentication
                 .contains(&machine.label.as_str())
             {
-                Err(io::Error::other("ssh exited with exit status: 255"))
+                Err(AuthenticationError::Exited(
+                    std::os::unix::process::ExitStatusExt::from_raw(255 << 8),
+                ))
             } else {
                 locked(&self.authenticated).push(machine.label.to_string());
                 Ok(())
@@ -780,7 +838,10 @@ mod tests {
             .expect("a was prompted")
             .as_ref()
             .expect_err("a's ssh failed");
-        assert!(failure.contains("255"), "{failure}");
+        assert!(
+            matches!(failure, AuthenticationError::Exited(status) if status.code() == Some(crate::SSH_OWN_FAILURE_EXIT_CODE)),
+            "{failure}"
+        );
         assert!(matches!(outcomes[1].authentication, Some(Ok(()))));
     }
 
@@ -918,8 +979,8 @@ mod tests {
         // the boot that was observed.
         assert_eq!(asked, ["stale 17-1"]);
         assert_eq!(ssh.entries(), ["stop stale 17-1"]);
-        assert_eq!(outcomes[0].restart, None);
-        assert_eq!(outcomes[1].restart, Some(RestartResult::Stopped));
+        assert!(outcomes[0].restart.is_none());
+        assert!(matches!(outcomes[1].restart, Some(RestartResult::Stopped)));
         assert!(matches!(outcomes[1].check, MachineCheck::Ready));
     }
 
@@ -930,7 +991,7 @@ mod tests {
         let (outcomes, asked) = run_restarts(&machines, &ssh, true, &[RestartDecision::Keep]);
         assert_eq!(asked, ["stale 17-1"]);
         assert!(ssh.entries().is_empty(), "nothing was stopped");
-        assert_eq!(outcomes[0].restart, Some(RestartResult::Declined));
+        assert!(matches!(outcomes[0].restart, Some(RestartResult::Declined)));
         assert!(matches!(outcomes[0].check, MachineCheck::DifferentBuild(_)));
     }
 
@@ -941,7 +1002,10 @@ mod tests {
         let mut outcomes = preflight(&machines, &ssh, None);
         restart_different_builds(&mut outcomes, &ssh, None);
         assert!(ssh.entries().is_empty(), "nothing was stopped");
-        assert_eq!(outcomes[0].restart, Some(RestartResult::NoTerminal));
+        assert!(matches!(
+            outcomes[0].restart,
+            Some(RestartResult::NoTerminal)
+        ));
         assert!(matches!(outcomes[0].check, MachineCheck::DifferentBuild(_)));
     }
 
@@ -960,7 +1024,7 @@ mod tests {
         // second stop names that boot, not the first.
         assert_eq!(asked, ["stale 17-1", "stale 17-2"]);
         assert_eq!(ssh.entries(), ["stop stale 17-1", "stop stale 17-2"]);
-        assert_eq!(outcomes[0].restart, Some(RestartResult::Stopped));
+        assert!(matches!(outcomes[0].restart, Some(RestartResult::Stopped)));
     }
 
     #[test]
@@ -975,7 +1039,7 @@ mod tests {
         );
         assert_eq!(asked, ["stale 17-1", "stale 17-2"]);
         assert_eq!(ssh.entries(), ["stop stale 17-1"]);
-        assert_eq!(outcomes[0].restart, Some(RestartResult::Declined));
+        assert!(matches!(outcomes[0].restart, Some(RestartResult::Declined)));
         assert!(
             matches!(&outcomes[0].check, MachineCheck::DifferentBuild(now) if now.boot_id == "17-2")
         );
@@ -987,7 +1051,10 @@ mod tests {
         let ssh = FakeSsh::new(&[]).with_stops([StopScript::ChangedToReady]);
         let (outcomes, asked) = run_restarts(&machines, &ssh, true, &[RestartDecision::Restart]);
         assert_eq!(asked, ["stale 17-1"]);
-        assert_eq!(outcomes[0].restart, Some(RestartResult::OccupantChanged));
+        assert!(matches!(
+            outcomes[0].restart,
+            Some(RestartResult::OccupantChanged)
+        ));
         assert!(matches!(outcomes[0].check, MachineCheck::Ready));
     }
 
@@ -998,7 +1065,7 @@ mod tests {
         let (outcomes, asked) = run_restarts(&machines, &ssh, true, &[RestartDecision::Restart]);
         assert_eq!(asked, ["stale 17-1"]);
         assert_eq!(ssh.entries(), ["stop stale 17-1"]);
-        assert_eq!(outcomes[0].restart, Some(RestartResult::NoServer));
+        assert!(matches!(outcomes[0].restart, Some(RestartResult::NoServer)));
         assert!(matches!(outcomes[0].check, MachineCheck::Ready));
     }
 
@@ -1014,7 +1081,10 @@ mod tests {
             &[RestartDecision::Restart, RestartDecision::Restart],
         );
         assert_eq!(asked.len(), MAX_RESTART_OFFERS);
-        assert_eq!(outcomes[0].restart, Some(RestartResult::OccupantChanged));
+        assert!(matches!(
+            outcomes[0].restart,
+            Some(RestartResult::OccupantChanged)
+        ));
         assert!(
             matches!(&outcomes[0].check, MachineCheck::DifferentBuild(now) if now.boot_id == "17-3")
         );
@@ -1026,11 +1096,11 @@ mod tests {
         let ssh = FakeSsh::new(&[]).with_stops([StopScript::Fails]);
         let (outcomes, _) = run_restarts(&machines, &ssh, true, &[RestartDecision::Restart]);
         assert!(
-            matches!(&outcomes[0].restart, Some(RestartResult::Failed(error)) if error.contains("timed out"))
+            matches!(&outcomes[0].restart, Some(RestartResult::Failed(error)) if error.to_string().contains("timed out"))
         );
         assert!(matches!(outcomes[0].check, MachineCheck::DifferentBuild(_)));
         // The other machine is a plain ready one and is left out.
-        assert_eq!(outcomes[1].restart, None);
+        assert!(outcomes[1].restart.is_none());
     }
 
     #[test]
@@ -1040,7 +1110,7 @@ mod tests {
         let (outcomes, asked) = run_restarts(&machines, &ssh, true, &[RestartDecision::Restart]);
         assert_eq!(ssh.entries(), ["prompt authstale", "stop authstale 17-1"]);
         assert_eq!(asked, ["authstale 17-1"]);
-        assert_eq!(outcomes[0].restart, Some(RestartResult::Stopped));
+        assert!(matches!(outcomes[0].restart, Some(RestartResult::Stopped)));
     }
 
     #[test]

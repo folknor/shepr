@@ -8,8 +8,8 @@ use shepr_protocol::command::{
     EndpointReply, PaneCopyMotion, PaneCopyMotionParams, PaneCopySearchDirection,
     PaneCopySearchParams, PaneDirection, PaneFocusDirectionParams, PaneInputSetParams,
     PaneLineMotion, PaneParagraphMotion, PaneRenameParams, PaneResizeParams, PaneScrollParams,
-    PaneSelectionReadParams, PaneSplitParams, PaneSwapParams, PaneTarget, PaneTextPoint,
-    PaneTextRange, PaneWordMotion, PaneZoomParams,
+    PaneSelectionReadParams, PaneSplitParams, PaneSwapParams, PaneTarget, PaneTextRange,
+    PaneWordMotion, PaneZoomParams,
 };
 
 use super::super::api_helpers::{detect_state_from_api, normalized_user_label, pane_not_found};

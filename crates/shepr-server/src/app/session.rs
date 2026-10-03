@@ -29,6 +29,24 @@ use autosave::Autosave;
 use exit_checkpoint::{PaneExitCheckpoint, PreservedLayout};
 use host_checkpoint::HostShutdownCheckpoint;
 
+/// Identity of a pane-exit checkpoint request, minted by `PaneExitCheckpoint`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct CheckpointGeneration(u64);
+
+impl CheckpointGeneration {
+    fn first() -> Self {
+        Self(1)
+    }
+
+    fn next(self) -> Self {
+        Self(self.0.saturating_add(1))
+    }
+
+    fn is_released_by(self, through: Option<Self>) -> bool {
+        through.is_some_and(|through| self <= through)
+    }
+}
+
 /// A save the persister is running, and what it was asked to make durable.
 struct InFlightSave {
     pending: shepr_mux::persist::PendingSave,
@@ -52,7 +70,7 @@ struct CheckpointTicket {
 /// observed after the capture voids the layout but not the generation: the
 /// exit is still released when the save lands.
 struct ExitTicket {
-    generation: u64,
+    generation: CheckpointGeneration,
     /// The captured layout; `None` when it could not be paired with terminal
     /// identities, or a session mutation was observed after the capture.
     layout: Option<Box<PreservedLayout>>,
@@ -62,7 +80,7 @@ struct ExitTicket {
 enum NextSave {
     Autosave,
     Checkpoint {
-        exit_generation: Option<u64>,
+        exit_generation: Option<CheckpointGeneration>,
         host: bool,
     },
 }
@@ -617,7 +635,7 @@ impl App {
     /// generation so a save captured before that exit cannot release it when
     /// the save later finishes, and a later change to the session cannot hold
     /// it again.
-    pub(crate) fn request_pane_exit_checkpoint(&mut self) -> Option<u64> {
+    pub(crate) fn request_pane_exit_checkpoint(&mut self) -> Option<CheckpointGeneration> {
         if !self.session_saver.policy.allows_saves() {
             return None;
         }
@@ -628,7 +646,10 @@ impl App {
 
     /// Whether a held exit's generation is released: a checkpoint holding its
     /// pane is durable, or checkpoints were abandoned or frozen.
-    pub(crate) fn pane_exit_checkpoint_generation_settled(&self, generation: u64) -> bool {
+    pub(crate) fn pane_exit_checkpoint_generation_settled(
+        &self,
+        generation: CheckpointGeneration,
+    ) -> bool {
         !self.session_saver.policy.allows_saves() || self.session_saver.exit.is_released(generation)
     }
 
@@ -785,7 +806,7 @@ impl SessionSaver {
     /// preserved layout, finishing when the test completes the handle.
     pub(crate) fn hold_test_checkpoint_in_flight(
         &mut self,
-        generation: u64,
+        generation: CheckpointGeneration,
     ) -> shepr_mux::persist::SaveCompletion {
         self.hold_test_kind(SaveKind::Checkpoint(CheckpointTicket {
             exit: Some(ExitTicket {
@@ -1114,7 +1135,7 @@ mod tests {
         app.policy = super::super::AppPolicy::Suspended;
     }
 
-    fn exit_kind(generation: u64) -> SaveKind {
+    fn exit_kind(generation: CheckpointGeneration) -> SaveKind {
         SaveKind::Checkpoint(CheckpointTicket {
             exit: Some(ExitTicket {
                 generation,

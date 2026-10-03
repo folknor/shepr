@@ -19,10 +19,10 @@ use crate::limits::{
 
 // limits-exempt: ESC is the terminal-control introducer byte used by this parser.
 const ESC: u8 = 0x1b;
-pub const GHOSTTY_COLOR_SCHEME_DARK_REPORT: &[u8] = b"\x1b[?997;1n";
-pub const GHOSTTY_COLOR_SCHEME_LIGHT_REPORT: &[u8] = b"\x1b[?997;2n";
-pub const BRACKETED_PASTE_START: &[u8] = b"\x1b[200~";
-pub const BRACKETED_PASTE_END: &[u8] = b"\x1b[201~";
+pub const GHOSTTY_COLOR_SCHEME_DARK_REPORT: &[u8] = shepr_vt::ColorScheme::Dark.report();
+pub const GHOSTTY_COLOR_SCHEME_LIGHT_REPORT: &[u8] = shepr_vt::ColorScheme::Light.report();
+pub const BRACKETED_PASTE_START: &[u8] = shepr_vt::seq::BRACKETED_PASTE_START;
+pub const BRACKETED_PASTE_END: &[u8] = shepr_vt::seq::BRACKETED_PASTE_END;
 
 /// Length of the longest proper prefix of `needle` that `haystack` ends with,
 /// so a terminator split across reads is not lost when the rest is dropped.
@@ -1057,10 +1057,12 @@ fn extract_one_event(buffer: &[u8]) -> Option<(RawInputEvent, usize)> {
             ));
         }
 
-        match seq {
-            "\x1b[I" => return Some((RawInputEvent::OuterFocusGained, seq_len)),
-            "\x1b[O" => return Some((RawInputEvent::OuterFocusLost, seq_len)),
-            _ => {}
+        if let Some(focus) = shepr_vt::seq::focus_report(seq.as_bytes()) {
+            let event = match focus {
+                shepr_vt::FocusEvent::Gained => RawInputEvent::OuterFocusGained,
+                shepr_vt::FocusEvent::Lost => RawInputEvent::OuterFocusLost,
+            };
+            return Some((event, seq_len));
         }
 
         if let Some(appearance) = parse_host_color_scheme_report(&buffer[..seq_len]) {

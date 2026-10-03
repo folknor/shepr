@@ -47,11 +47,57 @@ pub use host::run_remote_client_bridge;
 pub use launch::{RemoteStop, shell_quote, stop_remote_server};
 pub use machine_ssh::*;
 pub use preflight::{
-    MachineCheck, MachineSshPreflight, PreflightOutcome, PreflightSsh, RestartDecider,
-    RestartDecision, RestartResult, classify_check, preflight, restart_different_builds,
+    AuthenticationError, MachineCheck, MachineSshPreflight, PreflightOutcome, PreflightSsh,
+    RestartDecider, RestartDecision, RestartFailure, RestartResult, classify_check, preflight,
+    restart_different_builds,
 };
 pub use server_lifecycle::{DifferentBuildServer, MachineSshCheck};
 pub use ssh::{release_ssh_resources_before_exit, ssh_authentication_command};
+
+/// OpenSSH's process result, decoded before endpoint policy sees it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SshExit {
+    SshFailed,
+    Remote(RemoteExit),
+    Signalled,
+}
+
+/// Remote exit bytes with meanings used by discovery and bridge launch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RemoteExit {
+    CandidateMissing,
+    NotExecutable,
+    NotFound,
+    /// The wrapper aliases native 254 and remote 255; neither can be inferred.
+    Remapped255Or254,
+    Code(i32),
+}
+
+impl SshExit {
+    pub fn from_code(code: Option<i32>) -> Self {
+        match code {
+            Some(SSH_OWN_FAILURE_EXIT_CODE) => Self::SshFailed,
+            Some(125) => Self::Remote(RemoteExit::CandidateMissing),
+            Some(126) => Self::Remote(RemoteExit::NotExecutable),
+            Some(127) => Self::Remote(RemoteExit::NotFound),
+            Some(REMAPPED_REMOTE_255_EXIT_CODE) => Self::Remote(RemoteExit::Remapped255Or254),
+            Some(code) => Self::Remote(RemoteExit::Code(code)),
+            None => Self::Signalled,
+        }
+    }
+}
+
+impl RemoteExit {
+    pub const fn code(self) -> i32 {
+        match self {
+            Self::CandidateMissing => 125,
+            Self::NotExecutable => 126,
+            Self::NotFound => 127,
+            Self::Remapped255Or254 => REMAPPED_REMOTE_255_EXIT_CODE,
+            Self::Code(code) => code,
+        }
+    }
+}
 
 /// SSH diagnostic classes. Endpoint operator policy lives in
 /// `EndpointFailure::disposition`, including failures outside SSH.
@@ -95,7 +141,7 @@ pub struct SshFailureDiagnostic {
 #[derive(Clone, Copy, Debug)]
 enum SshFailureOrigin {
     Io(std::io::ErrorKind),
-    SshOutput(Option<i32>),
+    SshOutput(SshExit),
     CommandTimeout,
     LocalSetup,
     RemoteCompatibility,
@@ -118,14 +164,15 @@ impl SshFailureDiagnostic {
     }
 
     pub fn from_ssh_output(exit_code: Option<i32>, message: &str) -> Self {
-        let failure = if exit_code == Some(SSH_OWN_FAILURE_EXIT_CODE) {
+        let exit = SshExit::from_code(exit_code);
+        let failure = if exit == SshExit::SshFailed {
             classify_ssh_diagnostic(message)
         } else {
             SshFailure::Other
         };
         Self {
             failure,
-            origin: SshFailureOrigin::SshOutput(exit_code),
+            origin: SshFailureOrigin::SshOutput(exit),
             message: RemoteText::from_untrusted(message),
         }
     }
@@ -184,7 +231,7 @@ impl SshFailureDiagnostic {
     pub fn failed_before_remote_result(&self) -> bool {
         match self.origin {
             SshFailureOrigin::Io(kind) => is_ssh_link_error_kind(kind),
-            SshFailureOrigin::SshOutput(exit_code) => exit_code == Some(SSH_OWN_FAILURE_EXIT_CODE),
+            SshFailureOrigin::SshOutput(exit) => exit == SshExit::SshFailed,
             SshFailureOrigin::CommandTimeout => true,
             SshFailureOrigin::LocalSetup
             | SshFailureOrigin::RemoteCompatibility
@@ -194,10 +241,12 @@ impl SshFailureDiagnostic {
     }
 
     fn evidence(&self) -> FailureEvidence {
-        if self
-            .remote_exit_code()
-            .is_some_and(|code| code == 126 || code == 127)
-        {
+        if matches!(
+            self.origin,
+            SshFailureOrigin::SshOutput(SshExit::Remote(
+                RemoteExit::NotExecutable | RemoteExit::NotFound
+            ))
+        ) {
             return FailureEvidence::InstallStale;
         }
         match self.origin {
@@ -206,7 +255,7 @@ impl SshFailureDiagnostic {
             SshFailureOrigin::Io(kind) if is_ssh_link_error_kind(kind) => {
                 FailureEvidence::NothingLearned
             }
-            SshFailureOrigin::SshOutput(Some(SSH_OWN_FAILURE_EXIT_CODE))
+            SshFailureOrigin::SshOutput(SshExit::SshFailed)
                 if matches!(
                     self.failure,
                     SshFailure::HostKey
@@ -217,7 +266,7 @@ impl SshFailureDiagnostic {
             {
                 FailureEvidence::TargetUntrusted
             }
-            SshFailureOrigin::SshOutput(Some(SSH_OWN_FAILURE_EXIT_CODE))
+            SshFailureOrigin::SshOutput(SshExit::SshFailed)
             | SshFailureOrigin::CommandTimeout
             | SshFailureOrigin::LocalSetup => FailureEvidence::NothingLearned,
             SshFailureOrigin::Io(_)
@@ -229,19 +278,14 @@ impl SshFailureDiagnostic {
     /// Whether OpenSSH exited with its own failure status before returning a
     /// remote command result.
     pub fn is_ssh_process_failure(&self) -> bool {
-        matches!(
-            self.origin,
-            SshFailureOrigin::SshOutput(Some(SSH_OWN_FAILURE_EXIT_CODE))
-        )
+        matches!(self.origin, SshFailureOrigin::SshOutput(SshExit::SshFailed))
     }
 
     /// The remote command's own nonzero exit status, when ssh ran the command
     /// and it failed (ssh's own exit 255 is not one).
     pub fn remote_exit_code(&self) -> Option<i32> {
         match self.origin {
-            SshFailureOrigin::SshOutput(Some(code)) if code != SSH_OWN_FAILURE_EXIT_CODE => {
-                Some(code)
-            }
+            SshFailureOrigin::SshOutput(SshExit::Remote(exit)) => Some(exit.code()),
             SshFailureOrigin::Io(_)
             | SshFailureOrigin::SshOutput(_)
             | SshFailureOrigin::CommandTimeout
@@ -370,16 +414,47 @@ fn is_ssh_link_error_kind(kind: std::io::ErrorKind) -> bool {
     )
 }
 
+/// Classifies platform policy while its typed error is still available.
+/// IO transports carry endpoint policy, never an unclassified platform payload.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "a map_err adapter: the error is handed over by value"
+)]
+pub(crate) fn ssh_runtime_error(error: shepr_platform::SshRuntimeError) -> std::io::Error {
+    let kind = error.kind();
+    let permanent = match &error {
+        shepr_platform::SshRuntimeError::UnsafeDirectory(_) => true,
+        shepr_platform::SshRuntimeError::Io(error) => {
+            error.kind() == std::io::ErrorKind::InvalidInput
+        }
+        shepr_platform::SshRuntimeError::RandomSource(_) => false,
+    };
+    let failure = if permanent {
+        EndpointFailure::fatal_local_setup(error.to_string())
+    } else {
+        EndpointFailure::local_setup(error.to_string())
+    };
+    std::io::Error::new(kind, failure)
+}
+
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "a map_err adapter: the error is handed over by value"
+)]
 pub(crate) fn local_setup_error(context: &str, error: std::io::Error) -> std::io::Error {
-    if error.get_ref().is_some_and(|source| {
-        source
-            .downcast_ref::<shepr_platform::UnsafeSshRuntimeDirectory>()
-            .is_some()
-    }) {
-        return error;
-    }
-    let diagnostic = EndpointFailure::local_setup(error.to_string()).with_context(context);
-    std::io::Error::new(error.kind(), diagnostic)
+    let failure = error
+        .get_ref()
+        .and_then(|source| source.downcast_ref::<EndpointFailure>())
+        .cloned()
+        .unwrap_or_else(|| {
+            if error.kind() == std::io::ErrorKind::InvalidInput {
+                EndpointFailure::fatal_local_setup(error.to_string())
+            } else {
+                EndpointFailure::local_setup(error.to_string())
+            }
+        })
+        .with_context(context);
+    std::io::Error::new(error.kind(), failure)
 }
 
 pub(crate) fn remote_compatibility_error(message: impl Into<String>) -> std::io::Error {

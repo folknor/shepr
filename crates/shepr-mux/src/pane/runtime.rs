@@ -299,6 +299,14 @@ impl PaneRuntime {
         self.child_liveness.has_exited()
     }
 
+    /// Detector evidence no longer belongs to an active pane once any source
+    /// has decided its ending, even if the child is still alive. Include an
+    /// unreaped exit before its watcher gets to record that decision.
+    /// This is event admission, not a per-tick process observation.
+    pub fn detector_observations_ended(&self) -> bool {
+        self.exit_arbiter.ending().is_some() || self.child_liveness.has_exited()
+    }
+
     /// Whether a panic broke the pane's terminal core. The server skips the
     /// exit checkpoint of a pane whose core is broken when it decides, whatever
     /// ended the pane: the watcher can report an ordinary exit before the
@@ -950,6 +958,15 @@ mod tests {
     }
 
     #[test]
+    fn arbitrated_ending_closes_detector_admission_without_child_exit() {
+        let (runtime, _rx) = PaneRuntime::test_with_channel(80, 24);
+        assert!(!runtime.detector_observations_ended());
+        assert!(runtime.exit_arbiter.decide(PaneEnding::Silent));
+        assert!(!runtime.child_has_exited());
+        assert!(runtime.detector_observations_ended());
+    }
+
+    #[test]
     fn follow_cwd_uses_osc_report_when_the_shell_owns_the_foreground_group() {
         let shell_cwd = std::path::PathBuf::from("/home/user/project");
         let reported_path = std::path::PathBuf::from("/work/project");
@@ -960,8 +977,8 @@ mod tests {
         };
         let read_foreground_group = Cell::new(false);
 
-        let cwd = follow_cwd_from_processes(
-            shepr_platform::Pid::new(42),
+        let cwd = follow_cwd_from_groups(
+            shepr_platform::Pgid::new(42),
             shepr_platform::Pgid::new(42),
             || ReportedCwd::resolve(Some(&reported), Some(shell_cwd)),
             |_| {

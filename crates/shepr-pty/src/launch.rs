@@ -22,7 +22,7 @@ use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 use std::io;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
 use crate::limits::{
@@ -277,7 +277,22 @@ struct Router {
     routes: Mutex<Routes>,
 }
 
-static SERVICE: OnceLock<Result<LaunchService, String>> = OnceLock::new();
+#[derive(Debug)]
+struct CachedLaunchFailure(Arc<io::Error>);
+
+impl std::fmt::Display for CachedLaunchFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "pane launch service unavailable: {}", self.0)
+    }
+}
+
+impl std::error::Error for CachedLaunchFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.0.as_ref())
+    }
+}
+
+static SERVICE: OnceLock<Result<LaunchService, Arc<io::Error>>> = OnceLock::new();
 
 /// Binds the status listener, starts its accept thread and reads the passwd
 /// home directory, once per process. The server calls this at startup so no
@@ -290,9 +305,9 @@ pub fn init() -> io::Result<()> {
 
 pub(crate) fn service() -> io::Result<&'static LaunchService> {
     SERVICE
-        .get_or_init(|| LaunchService::bind().map_err(|error| error.to_string()))
+        .get_or_init(|| LaunchService::bind().map_err(Arc::new))
         .as_ref()
-        .map_err(|error| io::Error::other(format!("pane launch service unavailable: {error}")))
+        .map_err(|error| io::Error::new(error.kind(), CachedLaunchFailure(Arc::clone(error))))
 }
 
 impl LaunchService {

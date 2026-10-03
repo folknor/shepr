@@ -1,6 +1,7 @@
 //! Notice suppression, boot-card queueing and drawn lifetimes have one owner.
 
 use crate::endpoint::ClientEndpointId;
+use shepr_protocol::command::CommandKind;
 use std::collections::{HashSet, VecDeque};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -8,6 +9,53 @@ pub(in crate::shell) enum ClientEndpointNoticeKind {
     Rejected,
     Timeout,
     Unavailable,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(in crate::shell) enum NoticeCode {
+    SelectionEmpty,
+    PasteRejected,
+    NavigateEndpointInactive,
+    Server,
+    Cancelled,
+    Command(CommandKind),
+    SessionRestoreIncomplete,
+    SessionSavesStopped,
+    PaneInputDropped,
+    OversizedSurface,
+    SizeLimit,
+    MachineDiagnostic,
+    EndpointUnavailable,
+}
+
+#[derive(Clone, Copy)]
+enum Deduplication {
+    None,
+    VisibleBody,
+    UntilSuccess,
+}
+
+impl NoticeCode {
+    fn deduplication(self, kind: ClientEndpointNoticeKind) -> Deduplication {
+        match (self, kind) {
+            (Self::Command(_), ClientEndpointNoticeKind::Timeout) => Deduplication::UntilSuccess,
+            (_, ClientEndpointNoticeKind::Rejected | ClientEndpointNoticeKind::Unavailable) => {
+                Deduplication::VisibleBody
+            }
+            _ => Deduplication::None,
+        }
+    }
+
+    pub(in crate::shell) fn automatic_body_row_limit(self) -> Option<usize> {
+        (self != Self::MachineDiagnostic).then_some(crate::limits::MAX_AUTOMATIC_NOTICE_BODY_ROWS)
+    }
+
+    fn is_boot_queued(self) -> bool {
+        matches!(
+            self,
+            Self::SessionRestoreIncomplete | Self::SessionSavesStopped
+        )
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -19,7 +67,7 @@ pub(in crate::shell) struct ClientEndpointNoticeKey {
     /// boot raised (no snapshot yet, or a configured machine's diagnostic).
     pub(in crate::shell) boot_id: Option<shepr_protocol::BootId>,
     pub(in crate::shell) kind: ClientEndpointNoticeKind,
-    pub(in crate::shell) code: String,
+    pub(in crate::shell) code: NoticeCode,
 }
 
 pub(in crate::shell) struct ClientVisibleEndpointNotice {
@@ -44,13 +92,13 @@ impl Notices {
     pub(in crate::shell) fn command_succeeded(
         &mut self,
         boot_id: &shepr_protocol::BootId,
-        method: &str,
+        command: CommandKind,
     ) {
         self.timeout_seen.remove(&ClientEndpointNoticeKey {
             endpoint_id: None,
             boot_id: Some(boot_id.clone()),
             kind: ClientEndpointNoticeKind::Timeout,
-            code: method.to_owned(),
+            code: NoticeCode::Command(command),
         });
     }
     pub(in crate::shell) fn reset_endpoint(&mut self) {
@@ -81,7 +129,7 @@ impl Notices {
         &mut self,
         boot_id: Option<shepr_protocol::BootId>,
         kind: ClientEndpointNoticeKind,
-        code: impl Into<String>,
+        code: NoticeCode,
         title: impl Into<String>,
         body: impl Into<String>,
     ) -> bool {
@@ -89,14 +137,13 @@ impl Notices {
             endpoint_id: None,
             boot_id,
             kind,
-            code: code.into(),
+            code,
         };
         let body = body.into();
-        // Only timeouts are suppressed until a later success. Availability and rejection notices
-        // can recur after dismissal or expiry, while identical visible cards do not keep resetting
-        // their lifetime.
-        match kind {
-            ClientEndpointNoticeKind::Rejected | ClientEndpointNoticeKind::Unavailable => {
+        // Code selects the duplicate policy; a repeated visible notice never extends its
+        // lifetime, while a timeout stays suppressed until that command later succeeds.
+        match code.deduplication(kind) {
+            Deduplication::VisibleBody => {
                 if self
                     .visible
                     .as_ref()
@@ -105,11 +152,12 @@ impl Notices {
                     return false;
                 }
             }
-            ClientEndpointNoticeKind::Timeout => {
+            Deduplication::UntilSuccess => {
                 if !self.timeout_seen.insert(key.clone()) {
                     return false;
                 }
             }
+            Deduplication::None => {}
         }
         // A matching notice can return after the previous card was dismissed. Its next draw
         // starts a fresh lifetime instead of inheriting the hidden card's deadline.
@@ -133,7 +181,7 @@ impl Notices {
         &mut self,
         endpoint_id: &ClientEndpointId,
         boot_id: &shepr_protocol::BootId,
-        code: &str,
+        code: NoticeCode,
         title: &str,
         body: String,
     ) -> bool {
@@ -141,8 +189,9 @@ impl Notices {
             endpoint_id: Some(endpoint_id.clone()),
             boot_id: Some(boot_id.clone()),
             kind: ClientEndpointNoticeKind::Rejected,
-            code: code.to_owned(),
+            code,
         };
+        assert!(code.is_boot_queued());
         if !self.boot_seen.insert(key.clone()) {
             return false;
         }
@@ -189,7 +238,7 @@ impl Notices {
         self.drawn_until
     }
     #[cfg(test)]
-    pub(in crate::shell) fn timeout_suppressed(&self, code: &str) -> bool {
+    pub(in crate::shell) fn timeout_suppressed(&self, code: NoticeCode) -> bool {
         self.timeout_seen
             .iter()
             .any(|key| key.kind == ClientEndpointNoticeKind::Timeout && key.code == code)

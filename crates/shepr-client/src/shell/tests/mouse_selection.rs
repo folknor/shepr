@@ -11,7 +11,8 @@ use shepr_protocol::{
 use shepr_termio::input::raw_input::RawInputEvent;
 
 use crate::shell::state::{
-    ClientContextMenuOverlay, ClientShellAction, ClientShellInput, ClientShellState,
+    ClientContextMenuOverlay, ClientShellAction, ClientShellInput, ClientShellRequest,
+    ClientShellState,
 };
 
 use shepr_protocol::{PaneSurfaceSplit, SurfaceRect};
@@ -747,8 +748,8 @@ fn reconnect_word_selection_tracks_content_changes() {
         let endpoint_id = state.active_endpoint_id().clone();
         let snapshot = std::sync::Arc::clone(state.snapshot.as_ref().expect("test precondition"));
         state.mark_endpoint_disconnected(&endpoint_id);
+        state.endpoint_connected(&endpoint_id, 1);
         state.cache_endpoint_snapshot_for_generation(&endpoint_id, 1, snapshot);
-        state.set_endpoint_status(&endpoint_id, crate::endpoint::ClientEndpointStatus::Online);
         assert!(state.activate_endpoint_projection(&endpoint_id));
         state.receive_pane_surface(next_surface);
 
@@ -1009,7 +1010,9 @@ fn pane_mouse_input_keeps_stable_target_and_endpoint_encoding() {
         row: pane.inner_rect.y + 1,
         modifiers: KeyModifiers::ALT,
     })]);
-    let [ClientMessage::ClientShellPaneInput { pane_id, events }] = &click.requests[..] else {
+    let [ClientShellRequest::Shown(ClientMessage::ClientShellPaneInput { pane_id, events })] =
+        &click.requests[..]
+    else {
         panic!("pane application click should use targeted canonical input");
     };
     assert_eq!(pane_id, "w1:p1");
@@ -1042,7 +1045,7 @@ fn pane_mouse_input_keeps_stable_target_and_endpoint_encoding() {
         })]);
     assert!(matches!(
         &release.requests[..],
-        [ClientMessage::ClientShellPaneInput { pane_id, events }]
+        [ClientShellRequest::Shown(ClientMessage::ClientShellPaneInput { pane_id, events })]
             if pane_id == "w1:p1"
                 && matches!(
                     &events[..],
@@ -1089,7 +1092,7 @@ fn pane_pixel_mouse_preserves_pane_relative_pixel_coordinates() {
     );
     assert!(matches!(
         &outcome.requests[..],
-        [ClientMessage::ClientShellPaneInput { pane_id, events }]
+        [ClientShellRequest::Shown(ClientMessage::ClientShellPaneInput { pane_id, events })]
             if pane_id == "w1:p1"
                 && matches!(
                     &events[..],
@@ -1107,8 +1110,8 @@ fn pane_pixel_mouse_preserves_pane_relative_pixel_coordinates() {
     assert!(matches!(
         &lost.requests[..],
         [
-            ClientMessage::ClientShellPaneInput { pane_id, events },
-            ClientMessage::ClientShellFocus { focused: false }
+            ClientShellRequest::Shown(ClientMessage::ClientShellPaneInput { pane_id, events }),
+            ClientShellRequest::Shown(ClientMessage::ClientShellFocus { focused: false })
         ] if pane_id == "w1:p1" && matches!(
             &events[..],
             [ClientPaneInputEvent::Mouse {
@@ -1142,7 +1145,8 @@ fn pane_owned_right_click_forwards_the_complete_gesture() {
     })]);
     assert!(matches!(
         &down.requests[..],
-        [ClientMessage::ClientShellPaneInput { pane_id, .. }] if pane_id == "w1:p1"
+        [ClientShellRequest::Shown(ClientMessage::ClientShellPaneInput { pane_id, .. })]
+            if pane_id == "w1:p1"
     ));
     assert!(state.overlay.is_none());
     assert!(state.pane_mouse_gesture.is_some());
@@ -1155,7 +1159,7 @@ fn pane_owned_right_click_forwards_the_complete_gesture() {
     })]);
     assert!(matches!(
         &up.requests[..],
-        [ClientMessage::ClientShellPaneInput { pane_id, events }]
+        [ClientShellRequest::Shown(ClientMessage::ClientShellPaneInput { pane_id, events })]
             if pane_id == "w1:p1"
                 && matches!(
                     &events[..],

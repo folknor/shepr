@@ -137,7 +137,12 @@ impl AgentOwnership {
         let session_replacement_allowed = origin.allows_session_replacement(session_start_source);
         let session_agent = origin.official_agent()?;
         let replacing_identity_only_session =
-            session_agent.descriptor().session_identity_only_integration
+            session_agent
+                .descriptor()
+                .integration
+                .is_some_and(|integration| {
+                    integration.capability == crate::agent::IntegrationCapability::IdentityOnly
+                })
                 && session_replacement_allowed
                 && self
                     .current_session_identity_for_persistence()

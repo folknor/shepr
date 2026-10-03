@@ -128,7 +128,7 @@ impl ReportOrigin {
         self.official_agent().is_some_and(|agent| {
             agent
                 .descriptor()
-                .hook_session_policy
+                .hook_session_policy()
                 .allows_replacement(start)
         })
     }
@@ -146,12 +146,14 @@ impl ReportOrigin {
 
 impl super::AgentDescriptor {
     pub const fn hook_authority_class(&self) -> HookAuthorityClass {
-        if self.reserves_native_state || self.session_identity_only_integration {
-            HookAuthorityClass::SessionOnly
-        } else if self.full_lifecycle_hook_authority {
-            HookAuthorityClass::FullLifecycle
-        } else {
-            HookAuthorityClass::PartialState
+        match self.integration {
+            Some(integration) => match integration.capability {
+                super::IntegrationCapability::ScreenOwnedSession
+                | super::IntegrationCapability::IdentityOnly => HookAuthorityClass::SessionOnly,
+                super::IntegrationCapability::FullLifecycle => HookAuthorityClass::FullLifecycle,
+                super::IntegrationCapability::PartialState => HookAuthorityClass::PartialState,
+            },
+            None => HookAuthorityClass::PartialState,
         }
     }
 }

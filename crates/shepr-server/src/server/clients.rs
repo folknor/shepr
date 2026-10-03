@@ -20,6 +20,26 @@ pub(crate) struct ClientPaneIdentity {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ClientId(u64);
 
+/// Identifies the workspace selected by one client shell.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct ClientShellLocationGeneration(u64);
+
+impl ClientShellLocationGeneration {
+    fn next(self) -> Self {
+        Self(self.0.saturating_add(1))
+    }
+}
+
+/// Identifies the current shared session projection inputs on this server.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct ShellSessionGeneration(u64);
+
+impl ShellSessionGeneration {
+    pub(crate) fn advance(&mut self) {
+        self.0 = self.0.saturating_add(1);
+    }
+}
+
 /// Shared allocator for transport threads; identities are never reused.
 #[derive(Clone)]
 pub(crate) struct ClientIdAllocator(std::sync::Arc<std::sync::atomic::AtomicU64>);
@@ -71,11 +91,11 @@ pub(crate) struct ClientShellState {
     /// Last coherent shell replacement sent to this client.
     pub(crate) snapshot: Option<shepr_protocol::ClientShellSnapshot>,
     /// Shared session-cache generation projected for this connection.
-    pub(crate) session_generation: u64,
+    pub(crate) session_generation: ShellSessionGeneration,
     /// The generation of `location` the last successful projection carried. A
     /// location change moves only this client's generation, so only its
     /// projection is invalidated.
-    pub(crate) projected_location_generation: u64,
+    pub(crate) projected_location_generation: ClientShellLocationGeneration,
     /// Monotonic shell replacement revision for this connection.
     pub(crate) projection_revision: shepr_protocol::ProjectionRevision,
 }
@@ -500,7 +520,7 @@ pub(crate) struct ClientShellHeldInput {
 pub(crate) struct ClientShellLocation {
     focused_workspace_id: Option<WorkspaceId>,
     index: usize,
-    generation: u64,
+    generation: ClientShellLocationGeneration,
 }
 
 /// The session's workspaces in order, and where a client with no location
@@ -522,7 +542,7 @@ impl ClientShellLocation {
 
     /// The generation of the viewed workspace: it moves on every change of
     /// which workspace this is, and only then.
-    pub(crate) fn generation(&self) -> u64 {
+    pub(crate) fn generation(&self) -> ClientShellLocationGeneration {
         self.generation
     }
 
@@ -546,7 +566,7 @@ impl ClientShellLocation {
         self.focused_workspace_id = id;
         self.index = index;
         if changed {
-            self.generation = self.generation.saturating_add(1);
+            self.generation = self.generation.next();
         }
         changed
     }
@@ -1056,16 +1076,20 @@ mod tests {
     fn a_location_moves_its_generation_only_when_the_viewed_workspace_changes() {
         let ids = workspace_ids(&[1, 2, 3]);
         let mut location = ClientShellLocation::initial(Some((ids[0].clone(), 0)));
-        assert_eq!(location.generation(), 1, "initialising is a change");
+        assert_eq!(
+            location.generation(),
+            ClientShellLocationGeneration(1),
+            "initialising is a change"
+        );
 
         // The same workspace at a new index (a reorder) refreshes the index
         // and leaves the projection valid.
         assert!(!location.navigate(ids[0].clone(), 2));
         assert_eq!(location.index(), 2);
-        assert_eq!(location.generation(), 1);
+        assert_eq!(location.generation(), ClientShellLocationGeneration(1));
 
         assert!(location.navigate(ids[1].clone(), 1));
-        assert_eq!(location.generation(), 2);
+        assert_eq!(location.generation(), ClientShellLocationGeneration(2));
     }
 
     #[test]
@@ -1110,6 +1134,6 @@ mod tests {
 
         let mut empty = ClientShellLocation::default();
         assert!(!empty.reconcile(&topology(&[], None)));
-        assert_eq!(empty.generation(), 0);
+        assert_eq!(empty.generation(), ClientShellLocationGeneration(0));
     }
 }

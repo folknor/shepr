@@ -42,22 +42,11 @@ pub(in crate::shell) fn status_glyph(
 }
 
 pub(in crate::shell) fn status_priority(status: shepr_protocol::AgentStatus) -> u8 {
-    use shepr_protocol::AgentStatus;
-    let state = match status {
-        AgentStatus::Blocked => shepr_agent::detect::AgentState::Blocked,
-        AgentStatus::Working => shepr_agent::detect::AgentState::Working,
-        AgentStatus::Idle => shepr_agent::detect::AgentState::Idle,
-    };
-    state.attention_rank()
+    status.attention_rank()
 }
 
 pub(in crate::shell) fn status_text(status: shepr_protocol::AgentStatus) -> &'static str {
-    use shepr_protocol::AgentStatus;
-    match status {
-        AgentStatus::Working => "working",
-        AgentStatus::Blocked => "blocked",
-        AgentStatus::Idle => "idle",
-    }
+    status.label()
 }
 
 pub(in crate::shell) fn panel_contrast_fg(palette: &Palette) -> ratatui::style::Color {

@@ -1,6 +1,7 @@
 pub use shepr_vt::{ColorScheme as HostAppearance, DefaultColor as DefaultColorKind, RgbColor};
 
 use shepr_core::limits::PALETTE_COLOR_COUNT;
+use shepr_vt::seq::parse_rgb_color;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TerminalTheme {
@@ -19,10 +20,12 @@ impl Default for TerminalTheme {
     }
 }
 
-pub const HOST_COLOR_QUERY_SEQUENCE: &str = "\x1b]10;?\x1b\\\x1b]11;?\x1b\\";
-pub const HOST_COLOR_SCHEME_QUERY_SEQUENCE: &str = "\x1b[?996n";
-pub const HOST_COLOR_SCHEME_REPORT_ENABLE_SEQUENCE: &str = "\x1b[?2031h";
-pub const HOST_COLOR_SCHEME_REPORT_DISABLE_SEQUENCE: &str = "\x1b[?2031l";
+pub const HOST_COLOR_QUERY_SEQUENCE: &str = shepr_vt::seq::HOST_COLOR_QUERY_SEQUENCE;
+pub const HOST_COLOR_SCHEME_QUERY_SEQUENCE: &str = shepr_vt::seq::COLOR_SCHEME_QUERY;
+pub const HOST_COLOR_SCHEME_REPORT_ENABLE_SEQUENCE: &str =
+    shepr_vt::seq::HOST_COLOR_SCHEME_REPORT_ENABLE_SEQUENCE;
+pub const HOST_COLOR_SCHEME_REPORT_DISABLE_SEQUENCE: &str =
+    shepr_vt::seq::HOST_COLOR_SCHEME_REPORT_DISABLE_SEQUENCE;
 
 impl TerminalTheme {
     pub fn with_color(mut self, kind: DefaultColorKind, color: RgbColor) -> Self {
@@ -56,7 +59,15 @@ pub fn host_terminal_theme_query_sequence() -> String {
     let mut sequence = String::from(HOST_COLOR_QUERY_SEQUENCE);
     for index in 0..=u8::MAX {
         // fmt::Write for String never returns an error.
-        write!(sequence, "\x1b]4;{index};?\x1b\\").ok();
+        write!(
+            sequence,
+            "{}",
+            shepr_vt::seq::ColorQuerySequence(
+                shepr_vt::ColorQueryTarget::Palette(index),
+                shepr_vt::seq::ReplyForm::St
+            )
+        )
+        .ok();
     }
     sequence
 }
@@ -84,65 +95,10 @@ pub fn parse_palette_color_response(sequence: &str) -> Option<(u8, RgbColor)> {
     Some((index.parse().ok()?, parse_rgb_color(value)?))
 }
 
-fn parse_rgb_color(value: &str) -> Option<RgbColor> {
-    if let Some(rgb) = value.strip_prefix("rgb:") {
-        let mut parts = rgb.split('/');
-        let color = RgbColor {
-            r: parse_hex_component(parts.next()?)?,
-            g: parse_hex_component(parts.next()?)?,
-            b: parse_hex_component(parts.next()?)?,
-        };
-        return if parts.next().is_none() {
-            Some(color)
-        } else {
-            None
-        };
-    }
-
-    if let Some(hex) = value.strip_prefix('#') {
-        let digits = hex.len() / 3;
-        if !matches!(digits, 1..=4) || hex.len() != digits * 3 {
-            return None;
-        }
-        return Some(RgbColor {
-            r: parse_hash_component(&hex[..digits])?,
-            g: parse_hash_component(&hex[digits..digits * 2])?,
-            b: parse_hash_component(&hex[digits * 2..])?,
-        });
-    }
-
-    None
-}
-
-fn parse_hash_component(component: &str) -> Option<u8> {
-    if component.is_empty()
-        || component.len() > 4
-        || !component.chars().all(|ch| ch.is_ascii_hexdigit())
-    {
-        return None;
-    }
-    let value = u32::from_str_radix(component, 16).ok()?;
-    // XParseColor treats # components as their most significant bits, unlike rgb:.
-    let high_byte = (value << (16 - component.len() * 4)) >> 8;
-    u8::try_from(high_byte).ok()
-}
-
-fn parse_hex_component(component: &str) -> Option<u8> {
-    if component.is_empty()
-        || component.len() > 4
-        || !component.chars().all(|ch| ch.is_ascii_hexdigit())
-    {
-        return None;
-    }
-    let value = u32::from_str_radix(component, 16).ok()?;
-    let max = (1u32 << (component.len() * 4)) - 1;
-    // Result is a value scaled into 0..=255, so this never truncates.
-    Some(u8::try_from((value * 255 + (max / 2)) / max).unwrap_or(u8::MAX))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use shepr_vt::seq::parse_hex_component;
 
     #[test]
     fn parses_st_terminated_rgb_response() {

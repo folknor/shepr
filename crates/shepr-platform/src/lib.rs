@@ -34,7 +34,7 @@ pub use client_stream::{ClientStreamReader, wait_client_stream_readable, write_c
 pub use clipboard::{read_clipboard_text, write_clipboard};
 pub use config_file::{config_file_link_count, create_config_temporary, write_config_temporary};
 pub use daemon::{SpawnedDaemon, create_private_directory_all, open_boot_log, read_boot_log_tail};
-pub use data_directory_lease::{DataDirectoryLease, DataDirectoryLeaseHeld};
+pub use data_directory_lease::{DataDirectoryLease, DataDirectoryLeaseHeld, LeaseAcquireError};
 pub use executable::has_execute_access;
 pub use file_stamp::FileStamp;
 pub use host::{
@@ -53,9 +53,10 @@ pub use remote_bridge_io::{
 };
 pub use ssh_paths::UnsafeSshRuntimeDirectory;
 pub use ssh_paths::{
-    RemoteSshConfigPaths, create_remote_ssh_config_dir, remote_bridge_endpoint_path,
-    remote_ssh_config_file_path, remote_ssh_config_paths, shared_ssh_control_path,
-    ssh_control_path_under, validate_remote_bridge_endpoint_path, validate_ssh_runtime_dir,
+    RemoteSshConfigPaths, SshRuntimeError, create_remote_ssh_config_dir,
+    remote_bridge_endpoint_path, remote_ssh_config_file_path, remote_ssh_config_paths,
+    shared_ssh_control_path, ssh_control_path_under, validate_remote_bridge_endpoint_path,
+    validate_ssh_runtime_dir,
 };
 pub use stderr_null::redirect_stderr_to_null;
 pub use terminal_environment::prefers_osc52_clipboard;

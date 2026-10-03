@@ -6,6 +6,44 @@ use shepr_protocol::{
 };
 use std::time::Instant;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ViewSerial(u64);
+
+impl ViewSerial {
+    fn new(value: u64) -> Self {
+        Self(value)
+    }
+}
+
+impl std::fmt::Display for ViewSerial {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.0, formatter)
+    }
+}
+
+#[derive(Debug)]
+pub struct ViewSerialAllocator {
+    next: u64,
+}
+
+impl Default for ViewSerialAllocator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ViewSerialAllocator {
+    pub fn new() -> Self {
+        Self { next: 1 }
+    }
+
+    pub fn allocate(&mut self) -> ViewSerial {
+        let serial = ViewSerial::new(self.next);
+        self.next = self.next.saturating_add(1);
+        serial
+    }
+}
+
 /// What a newly viewed connection is told about the host before its on request.
 pub struct HostBaseline<'a> {
     /// The one surface geometry every endpoint renders.
@@ -23,7 +61,7 @@ pub enum StartOutcome {
     /// `to` has no metadata for its current generation.
     Waiting,
     /// A machine without a connection while something is shown: the choice is back on
-    /// `from`; the caller shows "{label} is not ready".
+    /// `from`; the caller shows the target's not-ready notice.
     Abandoned(ClientEndpointId),
     /// `begin_preparing` ran, then `turn_on`. A failed send is already recorded as a
     /// connection failure and is handled as a lost target next turn.
@@ -110,7 +148,7 @@ pub fn start_move<'a>(
     endpoints: &mut EndpointRegistry,
     shell: &mut ClientShellState,
     baseline: impl FnOnce(&ClientShellState) -> HostBaseline<'a>,
-    serial: &mut u64,
+    serial: &mut ViewSerialAllocator,
     now: Instant,
 ) -> StartOutcome {
     let Some(pending) = shell.endpoints.choice.pending_start() else {
@@ -146,8 +184,7 @@ pub fn start_move<'a>(
         boot_id,
         minimum_revision,
     };
-    let request: RequestId = format!("client-shell-view:{serial}:on").into();
-    *serial = serial.saturating_add(1);
+    let request: RequestId = format!("client-shell-view:{}:on", serial.allocate()).into();
     shell
         .endpoints
         .choice
@@ -256,7 +293,7 @@ pub fn release_unwanted(
     choice: &EndpointChoice,
     endpoints: &mut EndpointRegistry,
     shell: &ClientShellState,
-    serial: &mut u64,
+    serial: &mut ViewSerialAllocator,
 ) -> usize {
     endpoints.release_unwanted_views(
         |id| choice.wants_view(id),

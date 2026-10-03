@@ -18,7 +18,7 @@ pub(super) struct ShellSessionCache {
 }
 
 pub(super) struct CachedShellProjection {
-    location_generation: u64,
+    location_generation: crate::server::clients::ClientShellLocationGeneration,
     projection_revision: u64,
     snapshot: shepr_protocol::ClientShellSnapshot,
 }
@@ -157,7 +157,7 @@ impl HeadlessServer {
             .is_some_and(|cache| cache.revision == app_revision);
         if !cache_is_current {
             self.rebuild_shell_session_cache();
-            self.shell_session_generation = self.shell_session_generation.saturating_add(1);
+            self.shell_session_generation.advance();
         }
     }
 
@@ -201,7 +201,7 @@ impl HeadlessServer {
             }
         }
         if changed {
-            self.shell_session_generation = self.shell_session_generation.saturating_add(1);
+            self.shell_session_generation.advance();
             if let Some(cache) = self.shell_session_cache.as_mut() {
                 cache.timer_projections = timer_projections;
             }
@@ -884,7 +884,7 @@ impl HeadlessServer {
             .iter()
             .map(|agent| shepr_protocol::ClientShellAgent {
                 pane_id: agent.pane_id.clone(),
-                agent: agent.agent.clone(),
+                agent: agent.agent,
                 terminal_title: agent.terminal_title.clone(),
                 terminal_title_stripped: agent.terminal_title_stripped.clone(),
                 agent_status: agent.agent_status,

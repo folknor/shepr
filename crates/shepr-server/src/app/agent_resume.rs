@@ -292,31 +292,7 @@ fn derived_pending_agent_resume_pane_infos(
     workspace: &Workspace,
     geometry: shepr_mux::workspace::PaneGeometry,
 ) -> Vec<shepr_mux::workspace::PaneChromeInfo> {
-    // Hidden panes still need their restored agent resumed. Give them their
-    // tiled size, while the visible zoomed pane starts at its full screen size.
-    let mut panes = geometry.visible_panes(workspace.layout(), false);
-    if workspace.zoomed() {
-        for zoomed in geometry.visible_panes(workspace.layout(), true) {
-            if let Some(info) = panes.iter_mut().find(|info| info.id == zoomed.id) {
-                *info = zoomed;
-            }
-        }
-    }
-    panes
-        .into_iter()
-        .map(|mut info| {
-            let pane_inner = shepr_mux::workspace::pane_inner_rect(info.rect, info.borders);
-            // The resume starts in a fresh shell, on the primary screen, so
-            // the content rect is the one a workspace surface gives a primary
-            // screen, and the one it gives a pane that has no runtime yet.
-            info.inner_rect = shepr_mux::workspace::terminal_content_rect(
-                pane_inner,
-                geometry.pane_scrollbars,
-                false,
-            );
-            info
-        })
-        .collect()
+    geometry.resume_panes(workspace.layout(), workspace.zoomed())
 }
 
 #[cfg(test)]

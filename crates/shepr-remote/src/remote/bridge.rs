@@ -39,7 +39,7 @@ impl SshStdioBridge {
         remote_shepr: &RemoteExecutable,
         local_socket: PathBuf,
         ssh_options: Option<&ManagedSshOptions>,
-    ) -> io::Result<Self> {
+    ) -> Result<Self, shepr_platform::ipc::BindError> {
         let target_id = target.as_str().to_owned();
         let executable_path = remote_shepr.as_str().to_owned();
         let bridge = Self::start_command(
@@ -62,10 +62,9 @@ impl SshStdioBridge {
         remote_command: AccountShellCommand,
         local_socket: PathBuf,
         ssh_options: Option<&ManagedSshOptions>,
-    ) -> io::Result<Self> {
-        // A held path comes back as `AddrInUse` carrying
-        // `shepr_platform::ipc::SocketBusy`, so SSH failure classification
-        // treats it as a link failure and the message names the path.
+    ) -> Result<Self, shepr_platform::ipc::BindError> {
+        // A busy bind retains its path until the machine boundary chooses
+        // whether to retry or report local setup failure.
         let (listener, socket_startup_lock, socket_identity) =
             shepr_platform::ipc::bind_single_use_private_socket(&local_socket)?;
         let teardown = SSH_TEARDOWN.register(TeardownResource::Socket {
@@ -548,12 +547,12 @@ pub(super) fn ssh_bridge_exit_error(status: std::process::ExitStatus, stderr: &[
     if let Some(error) = remote_daemon_boot_failure(stderr) {
         return error;
     }
-    let (failure, exit_status) = match status.code() {
-        Some(SSH_OWN_FAILURE_EXIT_CODE) => (
+    let (failure, exit_status) = match crate::SshExit::from_code(status.code()) {
+        crate::SshExit::SshFailed => (
             "remote SSH connection failed",
             format!("exit status {SSH_OWN_FAILURE_EXIT_CODE}"),
         ),
-        Some(REMAPPED_REMOTE_255_EXIT_CODE) => {
+        crate::SshExit::Remote(crate::RemoteExit::Remapped255Or254) => {
             // SSH exposes one exit byte, so remapping remote 255 to 254 aliases
             // a native remote 254. Name the mapping without guessing which ran.
             (
@@ -563,9 +562,11 @@ pub(super) fn ssh_bridge_exit_error(status: std::process::ExitStatus, stderr: &[
                 ),
             )
         }
-        code => {
-            let exit_status =
-                code.map_or_else(|| status.to_string(), |code| format!("exit status {code}"));
+        exit => {
+            let exit_status = match exit {
+                crate::SshExit::Remote(exit) => format!("exit status {}", exit.code()),
+                _ => status.to_string(),
+            };
             ("remote command failed", exit_status)
         }
     };

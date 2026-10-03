@@ -207,12 +207,6 @@ impl From<io::Error> for ServerStopError {
     }
 }
 
-impl From<ServerStopError> for String {
-    fn from(error: ServerStopError) -> Self {
-        error.to_string()
-    }
-}
-
 /// Stops the server the resolved address names, whatever its build. This never
 /// launches a server: with none listening it fails with
 /// [`ServerStopError::NotRunning`].

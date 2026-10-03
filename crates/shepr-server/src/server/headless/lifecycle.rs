@@ -59,6 +59,16 @@ impl std::fmt::Display for UnexpectedPhase {
 
 impl std::error::Error for UnexpectedPhase {}
 
+/// Identity of one logind shutdown warning.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct WarningGeneration(u64);
+
+impl WarningGeneration {
+    pub(super) fn as_u64(self) -> u64 {
+        self.0
+    }
+}
+
 /// Session-save freeze held from a host shutdown warning until shutdown
 /// completes or is cancelled.
 pub(super) struct HostShutdownFreeze {
@@ -66,7 +76,7 @@ pub(super) struct HostShutdownFreeze {
     pub(super) persist_session: bool,
     /// The warning this checkpoint answered. A cancellation followed quickly
     /// by another warning may never expose `requested = false` to the loop.
-    generation: Option<u64>,
+    generation: Option<WarningGeneration>,
 }
 
 impl HostShutdownFreeze {
@@ -215,7 +225,7 @@ impl ShutdownLifecycle {
         }
     }
 
-    pub(super) fn frozen_warning_generation(&self) -> Option<u64> {
+    pub(super) fn frozen_warning_generation(&self) -> Option<WarningGeneration> {
         if self.phase == ShutdownPhase::Frozen {
             self.freeze.as_ref().and_then(|freeze| freeze.generation)
         } else {
@@ -291,7 +301,7 @@ impl ShutdownLifecycle {
                 let generation = self
                     .monitor
                     .as_ref()
-                    .map(HostShutdownMonitor::warning_generation);
+                    .and_then(HostShutdownMonitor::warning_generation);
                 if self.frozen_warning_generation() != generation
                     && let Some(freeze) = self.restart_host_shutdown_warning()
                 {
@@ -317,7 +327,7 @@ impl ShutdownLifecycle {
         let generation = self
             .monitor
             .as_ref()
-            .map(HostShutdownMonitor::warning_generation);
+            .and_then(HostShutdownMonitor::warning_generation);
         let persist_session = app.policy.persists_session();
         if persist_session {
             let Some(saved) = app.take_host_shutdown_checkpoint_result() else {

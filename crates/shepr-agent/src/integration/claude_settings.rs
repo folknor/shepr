@@ -10,7 +10,7 @@ use jsonc_parser::{CollectOptions, ParseOptions, json, parse_to_ast};
 use serde_json::{Map, Value};
 
 use crate::agent::resume::AgentSessionStartSource;
-use crate::agent::{Agent, IntegrationHookAction, IntegrationHookEvent};
+use crate::agent::{Agent, CLAUDE_SESSION_START_EVENT, IntegrationHookAction};
 
 use super::command::{hook_command, is_hook_command_for_path};
 use super::config_edit::{
@@ -26,7 +26,7 @@ fn claude_session_start_sources() -> impl Iterator<Item = AgentSessionStartSourc
     std::iter::once(AgentSessionStartSource::Startup).chain(
         Agent::Claude
             .descriptor()
-            .hook_session_policy
+            .hook_session_policy()
             .replacement_starts
             .iter()
             .copied(),
@@ -49,10 +49,9 @@ pub(crate) fn install(
     content: &str,
     settings_path: &Path,
     hook_path: &Path,
-    events: &[IntegrationHookEvent],
     timeout: Duration,
 ) -> io::Result<String> {
-    let hook = claude_hook_event(events)?;
+    let hook = CLAUDE_SESSION_START_EVENT;
     let event = hook.event;
     let action = hook.action.map(IntegrationHookAction::as_str);
     let original = parse_value(content, settings_path)?;
@@ -88,17 +87,6 @@ pub(crate) fn install(
         action,
         timeout.as_secs(),
     )
-}
-
-fn claude_hook_event(events: &[IntegrationHookEvent]) -> io::Result<&IntegrationHookEvent> {
-    // This source-preserving editor handles one SessionStart matcher group.
-    match events {
-        [event] if event.event == "SessionStart" => Ok(event),
-        _ => Err(InstallIssue::io_error(
-            InstallErrorKind::ConfigShape,
-            "Claude settings integration requires exactly one SessionStart hook event",
-        )),
-    }
 }
 
 fn apply_value_removals(
@@ -631,7 +619,6 @@ mod tests {
             content,
             settings_path,
             hook_path,
-            super::super::registry::integration_hook_events(target),
             super::super::registry::integration_hook_timeout(target)?,
         )
     }
@@ -760,7 +747,7 @@ mod tests {
 
     #[test]
     fn claude_startup_reports_without_replacing_and_every_other_source_replaces() {
-        let policy = Agent::Claude.descriptor().hook_session_policy;
+        let policy = Agent::Claude.descriptor().hook_session_policy();
         for source in claude_session_start_sources() {
             assert_eq!(
                 policy.allows_replacement(ReportedSessionStart::Known(source)),

@@ -164,9 +164,6 @@ pub(super) fn terminal_collect_dirty_patch(
         }};
     }
 
-    let host_theme = core.host_terminal_theme;
-    let initial_default_foreground = core.initial_default_foreground;
-    let initial_default_background = core.initial_default_background;
     let PaneTerminalCore {
         terminal,
         render_state,
@@ -180,12 +177,11 @@ pub(super) fn terminal_collect_dirty_patch(
     }
 
     let colors = render_state.colors();
-    let default_bg = terminal_default_bg(colors.background, host_theme, initial_default_background);
-    let default_fg = terminal_default_fg(colors.foreground, host_theme, initial_default_foreground);
+    let default_bg = terminal_default_bg(colors.background, colors.background_source);
+    let default_fg = terminal_default_fg(colors.foreground, colors.foreground_source);
     let resolved_fg = Some(terminal_color(colors.foreground));
     let resolved_bg = Some(terminal_color(colors.background));
-    let default_palette = terminal.default_palette();
-    let palette_overrides = PaletteOverrides::new(&colors.palette, &default_palette);
+    let palette_overrides = PaletteOverrides::new(colors.palette_overrides());
 
     let mut symbol_scratch = String::new();
     let mut patch_rows = Vec::new();
@@ -597,38 +593,16 @@ pub(super) fn osc_rgb_response(command: &str, r: u8, g: u8, b: u8) -> Bytes {
 
 pub(super) fn terminal_default_fg(
     color: shepr_vt::RgbColor,
-    host_theme: shepr_termio::host_term::theme::TerminalTheme,
-    initial_default_foreground: shepr_vt::RgbColor,
+    source: shepr_vt::ColorSource,
 ) -> Option<WireColor> {
-    if let Some(host_foreground) = host_theme.foreground {
-        if host_foreground == color {
-            None
-        } else {
-            Some(terminal_color(color))
-        }
-    } else if initial_default_foreground != color {
-        Some(terminal_color(color))
-    } else {
-        None
-    }
+    (source == shepr_vt::ColorSource::Child).then(|| terminal_color(color))
 }
 
 pub(super) fn terminal_default_bg(
     color: shepr_vt::RgbColor,
-    host_theme: shepr_termio::host_term::theme::TerminalTheme,
-    initial_default_background: shepr_vt::RgbColor,
+    source: shepr_vt::ColorSource,
 ) -> Option<WireColor> {
-    if let Some(host_background) = host_theme.background {
-        if host_background == color {
-            None
-        } else {
-            Some(terminal_color(color))
-        }
-    } else if initial_default_background != color {
-        Some(terminal_color(color))
-    } else {
-        None
-    }
+    terminal_default_fg(color, source)
 }
 
 // Palette entries the program redefined with OSC 4. Forwarding a palette index to the
@@ -639,18 +613,12 @@ pub(super) struct PaletteOverrides([Option<shepr_vt::RgbColor>; PALETTE_COLOR_CO
 
 impl PaletteOverrides {
     pub(super) fn new(
-        active: &[shepr_vt::RgbColor; PALETTE_COLOR_COUNT],
-        default: &[shepr_vt::RgbColor; PALETTE_COLOR_COUNT],
+        overrides: &[Option<shepr_vt::RgbColor>; PALETTE_COLOR_COUNT],
     ) -> Option<Self> {
-        let mut overrides = [None; PALETTE_COLOR_COUNT];
-        let mut any = false;
-        for (index, (active, default)) in active.iter().zip(default.iter()).enumerate() {
-            if active != default {
-                overrides[index] = Some(*active);
-                any = true;
-            }
-        }
-        any.then_some(Self(overrides))
+        overrides
+            .iter()
+            .any(Option::is_some)
+            .then_some(Self(*overrides))
     }
 
     fn get(&self, index: u8) -> Option<shepr_vt::RgbColor> {

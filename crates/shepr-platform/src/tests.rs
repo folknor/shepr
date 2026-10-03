@@ -342,12 +342,7 @@ fn shared_ssh_control_path_validates_the_runtime_directory_first() {
             .to_string()
             .contains(&runtime_dir.display().to_string())
     );
-    assert!(
-        error
-            .get_ref()
-            .and_then(|source| source.downcast_ref::<UnsafeSshRuntimeDirectory>())
-            .is_some()
-    );
+    assert!(matches!(error, SshRuntimeError::UnsafeDirectory(_)));
     let relative = shared_ssh_control_path(
         Path::new("relative/runtime"),
         Path::new("/config/one"),
@@ -387,13 +382,10 @@ fn shared_ssh_directory_rejects_symlinks_and_public_modes() {
             .kind(),
         std::io::ErrorKind::PermissionDenied
     );
-    assert!(
-        validate_shared_ssh_dir(&link)
-            .expect_err("test precondition")
-            .get_ref()
-            .and_then(|source| source.downcast_ref::<UnsafeSshRuntimeDirectory>())
-            .is_some()
-    );
+    assert!(matches!(
+        validate_shared_ssh_dir(&link).expect_err("test precondition"),
+        SshRuntimeError::UnsafeDirectory(_)
+    ));
     std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755))
         .expect("test precondition");
     assert_eq!(

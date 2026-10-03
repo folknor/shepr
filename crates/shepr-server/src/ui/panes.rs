@@ -13,7 +13,7 @@ use super::text::truncate_end;
 use crate::app::AppState;
 use shepr_mux::pane::{PaneRuntime, PaneRuntimeRegistry};
 use shepr_mux::terminal::PaneStartFailure;
-use shepr_mux::workspace::{PaneChromeInfo as PaneInfo, pane_inner_rect};
+use shepr_mux::workspace::PaneChromeInfo as PaneInfo;
 use shepr_protocol::{CellData, FrameData, WireColor};
 
 pub(crate) fn pane_is_scrolled_back(rt: &PaneRuntime) -> bool {
@@ -39,42 +39,6 @@ fn pane_border_title(label: &str, pane_width: u16) -> Option<String> {
     }
     let max_label_width = pane_width.saturating_sub(4) as usize;
     Some(format!(" {} ", truncate_end(label, max_label_width)))
-}
-
-// Full view computation reaches this helper for active and background panes.
-// Keep terminal queries narrow, allocation-free, and short under the core lock.
-// The gutter rule itself is `terminal_content_rect`, shared with the size a
-// new pane's PTY is spawned at, so the two cannot drift.
-fn terminal_inner_rect(rt: &PaneRuntime, pane_inner: Rect, pane_scrollbars: bool) -> Rect {
-    shepr_mux::workspace::terminal_content_rect(
-        pane_inner,
-        pane_scrollbars,
-        pane_scrollbars && rt.read().alternate_screen_active(),
-    )
-}
-
-fn stable_scrollbar_gutter(
-    rt: &PaneRuntime,
-    pane_inner: Rect,
-    pane_scrollbars: bool,
-) -> (Rect, Option<Rect>) {
-    let inner_rect = terminal_inner_rect(rt, pane_inner, pane_scrollbars);
-    if inner_rect == pane_inner {
-        return (inner_rect, None);
-    }
-    let gutter = Rect::new(
-        pane_inner.x + pane_inner.width.saturating_sub(1),
-        pane_inner.y,
-        1,
-        pane_inner.height,
-    );
-    let scrollbar_rect = rt
-        .read()
-        .scroll_metrics()
-        .filter(|metrics| should_show_scrollbar(*metrics))
-        .map(|_| gutter);
-
-    (inner_rect, scrollbar_rect)
 }
 
 /// Apply a computed pane layout to every runtime it contains.
@@ -121,28 +85,15 @@ pub(super) fn compute_pane_infos_for_workspace(
         .visible_panes(workspace.layout(), workspace.zoomed());
 
     for info in &mut pane_infos {
-        let pane_inner = pane_inner_rect(info.rect, info.borders);
-
-        // A pane without a runtime (one waiting on agent resume, or whose
-        // restore failed) gets the content rect of a fresh shell on the
-        // primary screen: the gutter reserved, as the runtime it starts will
-        // have it. Its resume is spawned at exactly this size, so its first
-        // resize does not change it.
-        let (inner_rect, scrollbar_rect) =
-            match app.runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, info.id) {
-                Some(rt) => stable_scrollbar_gutter(rt, pane_inner, app.settings.pane_scrollbars),
-                None => (
-                    shepr_mux::workspace::terminal_content_rect(
-                        pane_inner,
-                        app.settings.pane_scrollbars,
-                        false,
-                    ),
-                    None,
-                ),
-            };
-
-        info.inner_rect = inner_rect;
-        info.scrollbar_rect = scrollbar_rect;
+        let runtime = app.runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, info.id);
+        let alternate_screen = app.settings.pane_scrollbars
+            && runtime.is_some_and(|rt| rt.read().alternate_screen_active());
+        let gutter = info.content_layout(app.settings.pane_scrollbars, alternate_screen);
+        info.scrollbar_rect = gutter.filter(|_| {
+            runtime
+                .and_then(|rt| rt.read().scroll_metrics())
+                .is_some_and(should_show_scrollbar)
+        });
     }
 
     pane_infos
@@ -625,6 +576,7 @@ mod tests {
     use shepr_mux::pane::PaneRuntime;
     use shepr_mux::terminal::TerminalState;
     use shepr_mux::workspace::Workspace;
+    use shepr_mux::workspace::pane_inner_rect;
 
     /// A registry holding `runtime` as the live runtime of `pane_id`, keyed
     /// by the pane's terminal id the way production registers runtimes.

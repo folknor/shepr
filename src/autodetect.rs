@@ -25,7 +25,7 @@ pub(crate) fn auto_detect_launch<T>(
     paths: &shepr_config::AppPaths,
     server_ready_timeout: Duration,
     run_client: impl FnOnce(&shepr_config::ValidatedClientConfig, &shepr_config::AppPaths) -> T,
-) -> io::Result<T> {
+) -> Result<T, shepr_remote::local_server::LaunchError> {
     let socket_path = paths.server_address().socket().to_path_buf();
     tracing::info!(path = %socket_path.display(), "auto-detect launch starting");
 
@@ -65,7 +65,7 @@ pub(crate) fn ensure_terminal_geometry() -> io::Result<()> {
 
 /// What the operator is told when Local fails to start or is refused while
 /// configured machines keep the client running.
-fn local_startup_notice(error: &io::Error) -> String {
+fn local_startup_notice(error: &dyn std::fmt::Display) -> String {
     format!("shepr: Local is unavailable; configured machines stay available.\n{error}")
 }
 

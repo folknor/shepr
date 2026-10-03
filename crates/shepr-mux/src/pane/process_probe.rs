@@ -123,11 +123,42 @@ pub(super) fn usable_process_cwd(pid: Pid) -> Option<UsableCwd> {
     readlink_process_cwd(pid).and_then(UsableCwd::new)
 }
 
+/// Classify an existing process snapshot without reading /proc again.
+/// Unknown is kept distinct from a job: lack of evidence is not shell absence.
+#[derive(Clone, Copy)]
+pub(super) enum Foreground<'a> {
+    Shell,
+    Job(&'a shepr_agent::detect::ForegroundJob),
+    Unknown,
+}
+
+impl<'a> Foreground<'a> {
+    pub(super) fn from_job(
+        job: Option<&'a shepr_agent::detect::ForegroundJob>,
+        shell_pid: Pid,
+    ) -> Self {
+        match job {
+            Some(job) if job.processes.iter().any(|process| process.pid == shell_pid) => {
+                Self::Shell
+            }
+            Some(job) => Self::Job(job),
+            None => Self::Unknown,
+        }
+    }
+
+    pub(super) fn is_shell(self) -> bool {
+        matches!(self, Self::Shell)
+    }
+}
+
 pub(super) fn foreground_member_cwd_different_from_shell(
     shell_pid: Pid,
     shell_cwd: Option<&std::path::PathBuf>,
 ) -> Option<std::path::PathBuf> {
     let job = shepr_agent::detect::foreground_job(shell_pid)?;
+    // This is a fallback when the group leader cwd is unreadable. Even a
+    // shell group can contain a nested shell with a different cwd; skipping
+    // the pane shell here is candidate selection, not job classification.
     for process in job.processes {
         if process.pid == shell_pid {
             continue;
@@ -1095,7 +1126,7 @@ fn process_probe_result(
 ) -> ProcessProbeResult {
     ProcessProbeResult {
         process_group_id: Some(job.process_group_id),
-        foreground_is_pane_shell: job.processes.iter().any(|process| process.pid == pid),
+        foreground_is_pane_shell: Foreground::from_job(Some(job), pid).is_shell(),
         suspended_agents: Vec::new(),
         identity: ProcessProbeIdentity::Agent {
             agent,
@@ -1121,7 +1152,7 @@ pub(super) fn probe_foreground_process_from_jobs(
         let identified = shepr_agent::detect::identify_agent_in_job(job);
         return ProcessProbeResult {
             process_group_id: Some(job.process_group_id),
-            foreground_is_pane_shell: job.processes.iter().any(|process| process.pid == pid),
+            foreground_is_pane_shell: Foreground::from_job(Some(job), pid).is_shell(),
             suspended_agents: Vec::new(),
             identity: identified.map_or(
                 ProcessProbeIdentity::Unidentified,

@@ -44,7 +44,7 @@ fn server_with_held_runtime_exit() -> (
     HeadlessServer,
     shepr_core::layout::PaneId,
     RuntimeGeneration,
-    u64,
+    crate::app::CheckpointGeneration,
 ) {
     let (mut server, pane_id, generation) = server_with_runtime_pane("checkpointed-runtime-exit");
     deliver_interrupted_exit(&mut server, pane_id, generation);

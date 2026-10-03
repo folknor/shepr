@@ -112,14 +112,33 @@ pub enum ClientEndpointStatus {
     Attention,
 }
 
-impl ClientEndpointStatus {
-    /// The status a failed connection attempt leaves: Attention for a failure that needs a
-    /// repair outside this client, Reconnecting for one a later attempt can outlive.
+/// The status a failed attempt or a lost connection leaves, the only status anything outside
+/// the endpoint's own connection lifecycle sets. An endpoint becomes Online only when a
+/// connection's handshake opens a generation and that generation's snapshot arrives, and
+/// starts Connecting only at launch, so neither is a status a caller can assign.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EndpointFailureStatus {
+    Reconnecting,
+    Attention,
+}
+
+impl EndpointFailureStatus {
+    /// Attention for a failure that needs a repair outside this client, Reconnecting for one
+    /// a later attempt can outlive.
     pub(crate) fn after_failure(failure: &shepr_remote::EndpointFailure) -> Self {
         if failure.disposition().needs_attention() {
             Self::Attention
         } else {
             Self::Reconnecting
+        }
+    }
+}
+
+impl From<EndpointFailureStatus> for ClientEndpointStatus {
+    fn from(status: EndpointFailureStatus) -> Self {
+        match status {
+            EndpointFailureStatus::Reconnecting => Self::Reconnecting,
+            EndpointFailureStatus::Attention => Self::Attention,
         }
     }
 }

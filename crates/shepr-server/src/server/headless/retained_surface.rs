@@ -118,7 +118,9 @@ fn retained_scrollbar_patch(
     metrics: Option<shepr_mux::pane::ScrollMetrics>,
 ) -> Option<Vec<shepr_protocol::PaneSurfacePatchRow>> {
     let next_rect = metrics
-        .filter(|metrics| metrics.max_offset_from_bottom > 0)
+        .filter(|metrics| {
+            shepr_mux::workspace::PaneChromeInfo::scrollbar_visible(metrics.max_offset_from_bottom)
+        })
         .filter(|_| app.state.settings.pane_scrollbars && !alternate_screen_active)
         .and(reserved_gutter)
         .filter(|rect| {
@@ -245,13 +247,12 @@ fn resolve_retained_panes<'a>(
         if pane_layout.id != identity.pane_id {
             return None;
         }
-        let pane_inner =
-            shepr_mux::workspace::pane_inner_rect(pane_layout.rect, pane_layout.borders);
-        let content = shepr_mux::workspace::terminal_content_rect(
-            pane_inner,
+        let mut content_layout = pane_layout.clone();
+        let gutter = content_layout.content_layout(
             app.state.settings.pane_scrollbars,
             pane.alternate_screen_active,
         );
+        let content = content_layout.inner_rect;
         let committed_rect = Rect::new(pane.rect.x, pane.rect.y, pane.rect.width, pane.rect.height);
         let committed_inner = Rect::new(
             pane.inner_rect.x,
@@ -263,18 +264,12 @@ fn resolve_retained_panes<'a>(
             return None;
         }
 
-        // The terminal content can end at the pane's right border when the
-        // pane is too narrow for a gutter. Derive the track only from the
-        // full layout's reserved gutter, never from that content endpoint.
-        let reserved_scrollbar_gutter =
-            (content != pane_inner).then(|| shepr_protocol::SurfaceRect {
-                x: pane_inner
-                    .x
-                    .saturating_add(pane_inner.width.saturating_sub(1)),
-                y: pane_inner.y,
-                width: 1,
-                height: pane_inner.height,
-            });
+        let reserved_scrollbar_gutter = gutter.map(|rect| shepr_protocol::SurfaceRect {
+            x: rect.x,
+            y: rect.y,
+            width: rect.width,
+            height: rect.height,
+        });
         if pane.scrollbar_rect.is_some() && pane.scrollbar_rect != reserved_scrollbar_gutter {
             return None;
         }

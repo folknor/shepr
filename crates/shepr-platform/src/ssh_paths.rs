@@ -2,6 +2,47 @@ use super::random::unpredictable_token;
 use shepr_core::socket_path::{UNIX_SOCKET_PATH_MAX, fits_unix_socket_path};
 use std::path::{Path, PathBuf};
 
+/// SSH runtime setup separates policy refusals from operational failures.
+#[derive(Debug)]
+pub enum SshRuntimeError {
+    UnsafeDirectory(UnsafeSshRuntimeDirectory),
+    RandomSource(std::io::Error),
+    Io(std::io::Error),
+}
+
+impl SshRuntimeError {
+    pub fn kind(&self) -> std::io::ErrorKind {
+        match self {
+            Self::UnsafeDirectory(_) => std::io::ErrorKind::PermissionDenied,
+            Self::RandomSource(error) | Self::Io(error) => error.kind(),
+        }
+    }
+}
+
+impl From<std::io::Error> for SshRuntimeError {
+    fn from(error: std::io::Error) -> Self {
+        Self::Io(error)
+    }
+}
+
+impl std::fmt::Display for SshRuntimeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnsafeDirectory(error) => error.fmt(f),
+            Self::RandomSource(error) | Self::Io(error) => error.fmt(f),
+        }
+    }
+}
+
+impl std::error::Error for SshRuntimeError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::UnsafeDirectory(error) => Some(error),
+            Self::RandomSource(error) | Self::Io(error) => Some(error),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct RemoteSshConfigPaths {
     pub user_config: Option<PathBuf>,
@@ -23,14 +64,19 @@ pub fn remote_ssh_config_paths(home_dir: Option<&Path>) -> RemoteSshConfigPaths 
 /// current-uid directories whose locked marker records a process `/proc` proves
 /// has exited. Unmarked directories (created when the owner identity could not be
 /// read) are retained because their owner cannot be established.
-pub fn create_remote_ssh_config_dir(runtime_dir: &Path) -> std::io::Result<PathBuf> {
+pub fn create_remote_ssh_config_dir(runtime_dir: &Path) -> Result<PathBuf, SshRuntimeError> {
     validate_ssh_runtime_dir(runtime_dir)?;
     super::owned_runtime::OwnedRuntimeEntry::create_directory(
         runtime_dir,
         super::owned_runtime::DirectoryKind::SshConfig,
     )
     .map(super::owned_runtime::OwnedRuntimeEntry::into_path)
-    .map_err(super::owned_runtime::RuntimeCreateError::into_io)
+    .map_err(|error| match error {
+        super::owned_runtime::RuntimeCreateError::RandomSource(error) => {
+            SshRuntimeError::RandomSource(error)
+        }
+        super::owned_runtime::RuntimeCreateError::Io(error) => SshRuntimeError::Io(error),
+    })
 }
 
 /// Resolves the config file owned by a directory from
@@ -53,15 +99,16 @@ pub fn remote_bridge_endpoint_path(
     runtime_dir: &Path,
     readable_name: &str,
     short_name: &str,
-) -> std::io::Result<PathBuf> {
+) -> Result<PathBuf, SshRuntimeError> {
     validate_ssh_runtime_dir(runtime_dir)?;
     // Token zero measures the name: `with_name_token` always formats 16 hex
     // digits, so any token gives the same length, and a path that cannot fit
     // is refused before the sweep runs or randomness is drawn.
     bridge_endpoint_path_with_token(runtime_dir, readable_name, short_name, 0)?;
     super::ipc::sweep_abandoned_single_use_sockets(runtime_dir);
-    let token = unpredictable_token()?;
+    let token = unpredictable_token().map_err(SshRuntimeError::RandomSource)?;
     bridge_endpoint_path_with_token(runtime_dir, readable_name, short_name, token)
+        .map_err(SshRuntimeError::Io)
 }
 
 /// Checks that a fresh endpoint socket path can fit without sweeping the
@@ -70,11 +117,13 @@ pub fn validate_remote_bridge_endpoint_path(
     runtime_dir: &Path,
     readable_name: &str,
     short_name: &str,
-) -> std::io::Result<()> {
+) -> Result<(), SshRuntimeError> {
     validate_ssh_runtime_dir(runtime_dir)?;
     // Token zero stands in for the real one; every token formats to the
     // same length.
-    bridge_endpoint_path_with_token(runtime_dir, readable_name, short_name, 0).map(|_| ())
+    bridge_endpoint_path_with_token(runtime_dir, readable_name, short_name, 0)
+        .map(|_| ())
+        .map_err(SshRuntimeError::Io)
 }
 
 fn bridge_endpoint_path_with_token(
@@ -128,9 +177,9 @@ pub fn shared_ssh_control_path(
     runtime_dir: &Path,
     namespace: &Path,
     target: &str,
-) -> std::io::Result<PathBuf> {
+) -> Result<PathBuf, SshRuntimeError> {
     validate_ssh_runtime_dir(runtime_dir)?;
-    ssh_control_path_under(runtime_dir, namespace, target)
+    ssh_control_path_under(runtime_dir, namespace, target).map_err(SshRuntimeError::Io)
 }
 
 /// [`shared_ssh_control_path`] without the runtime directory check: the name,
@@ -207,29 +256,24 @@ pub fn ssh_control_path_under(
 
 /// Refuses a runtime directory that may not hold shared SSH sockets: a
 /// relative path, a symlink, or a directory another uid owns or can reach.
-pub fn validate_ssh_runtime_dir(runtime_dir: &Path) -> std::io::Result<()> {
+pub fn validate_ssh_runtime_dir(runtime_dir: &Path) -> Result<(), SshRuntimeError> {
     if !runtime_dir.is_absolute() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             "SSH runtime directory must be an absolute path",
-        ));
+        )
+        .into());
     }
     validate_shared_ssh_dir(runtime_dir)
 }
 
-pub(super) fn validate_shared_ssh_dir(dir: &Path) -> std::io::Result<()> {
+pub(super) fn validate_shared_ssh_dir(dir: &Path) -> Result<(), SshRuntimeError> {
     match super::private_file::PrivateDir::require(dir) {
         Ok(()) => Ok(()),
-        Err(error) if super::private_file::PrivateDir::is_policy_refusal(&error) => {
-            // Keep this typed error as io::Error's direct payload: shepr-remote
-            // downcasts it to classify launch failures. Carry the rejected path
-            // so the operator can identify which runtime directory failed.
-            Err(std::io::Error::new(
-                std::io::ErrorKind::PermissionDenied,
-                UnsafeSshRuntimeDirectory::new(dir),
-            ))
-        }
-        Err(error) => Err(error),
+        Err(error) if super::private_file::PrivateDir::is_policy_refusal(&error) => Err(
+            SshRuntimeError::UnsafeDirectory(UnsafeSshRuntimeDirectory::new(dir)),
+        ),
+        Err(error) => Err(SshRuntimeError::Io(error)),
     }
 }
 

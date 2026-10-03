@@ -46,10 +46,19 @@ pub(crate) fn test_boot_id(name: &str) -> shepr_protocol::BootId {
 fn atomic_cell_size_keeps_width_and_height_in_one_snapshot() {
     let size = AtomicCellSize::new();
     assert_eq!(size.load(), None);
-    assert!(size.store(9, 18));
+    assert_eq!(
+        size.store(9, 18),
+        terminal_geometry::CellSizeUpdate::Changed
+    );
     assert_eq!(size.load(), Some((9, 18)));
-    assert!(!size.store(9, 18));
-    assert!(size.store(0, 18));
+    assert_eq!(
+        size.store(9, 18),
+        terminal_geometry::CellSizeUpdate::Unchanged
+    );
+    assert_eq!(
+        size.store(0, 18),
+        terminal_geometry::CellSizeUpdate::Changed
+    );
     assert_eq!(size.load(), None);
 }
 

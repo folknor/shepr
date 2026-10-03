@@ -553,10 +553,11 @@ pub(super) fn ensure_ssh_runtime_dir(app_paths: &shepr_config::AppPaths) -> io::
     // same validated XDG runtime root. A missing root returns its local setup
     // error, which the connector reports as Attention and retries; do not move
     // private SSH state to a fallback with a different lifetime or socket policy.
-    shepr_platform::validate_ssh_runtime_dir(app_paths.xdg_runtime_dir())?;
+    shepr_platform::validate_ssh_runtime_dir(app_paths.xdg_runtime_dir())
+        .map_err(crate::ssh_runtime_error)?;
     let runtime_dir = app_paths.runtime_dir();
     shepr_platform::create_private_directory_all(runtime_dir)?;
-    shepr_platform::validate_ssh_runtime_dir(runtime_dir)?;
+    shepr_platform::validate_ssh_runtime_dir(runtime_dir).map_err(crate::ssh_runtime_error)?;
     Ok(runtime_dir)
 }
 
@@ -577,8 +578,10 @@ pub(super) fn write_managed_ssh_config(
         target.as_str(),
     )?);
 
-    let dir =
-        ManagedSshConfigDirectory::new(shepr_platform::create_remote_ssh_config_dir(runtime_dir)?);
+    let dir = ManagedSshConfigDirectory::new(
+        shepr_platform::create_remote_ssh_config_dir(runtime_dir)
+            .map_err(crate::ssh_runtime_error)?,
+    );
     let path = shepr_platform::remote_ssh_config_file_path(&dir.path);
     let mut contents = String::new();
     for include in [

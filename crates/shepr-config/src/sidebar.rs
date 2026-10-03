@@ -2,7 +2,7 @@ mod rules;
 
 pub use rules::SidebarTokenRule;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 
 use serde::{Deserialize, de::MapAccess, de::Visitor};
@@ -330,24 +330,25 @@ type SpaceSidebarRows = Vec<Vec<SpaceSidebarToken>>;
 
 fn deserialize_rows_by_agent<'de, D>(
     deserializer: D,
-) -> Result<BTreeMap<String, AgentSidebarRows>, D::Error>
+) -> Result<HashMap<ConfigAgent, AgentSidebarRows>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
     let rows_by_agent = BTreeMap::<String, AgentSidebarRows>::deserialize(deserializer)?;
-    for (id, rows) in &rows_by_agent {
-        // This map is looked up with the detector's canonical Agent::label(),
-        // so aliases have no lookup meaning here. Unlike cjk_ime_agents, which
-        // is a membership list, accepting aliases would also require a rule
-        // for duplicate canonical and alias keys for the same agent.
-        if ConfigAgent::parse_canonical_label(id).is_none() {
-            return Err(serde::de::Error::custom(format!(
+    let mut parsed = HashMap::with_capacity(rows_by_agent.len());
+    for (id, rows) in rows_by_agent {
+        // Canonical labels only: unlike the cjk_ime_agents membership list,
+        // accepting aliases here would need a rule for a canonical key and an
+        // alias key that name the same agent.
+        let agent = ConfigAgent::parse_canonical_label(&id).ok_or_else(|| {
+            serde::de::Error::custom(format!(
                 "unknown canonical agent id `{id}` in sidebar rows_by_agent"
-            )));
-        }
-        validate_sidebar_rows(rows).map_err(serde::de::Error::custom)?;
+            ))
+        })?;
+        validate_sidebar_rows(&rows).map_err(serde::de::Error::custom)?;
+        parsed.insert(agent, rows);
     }
-    Ok(rows_by_agent)
+    Ok(parsed)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -356,15 +357,15 @@ pub struct AgentsSidebarConfig {
     #[serde(deserialize_with = "deserialize_sidebar_rows")]
     pub rows: AgentSidebarRows,
     #[serde(default, deserialize_with = "deserialize_rows_by_agent")]
-    pub rows_by_agent: BTreeMap<String, AgentSidebarRows>,
+    pub rows_by_agent: HashMap<ConfigAgent, AgentSidebarRows>,
     pub row_gap: u16,
 }
 
 impl AgentsSidebarConfig {
-    /// `rows_by_agent` uses canonical labels; callers pass `Agent::label()`.
-    pub fn rows_for_agent(&self, agent: Option<&str>) -> &AgentSidebarRows {
+    /// Overrides are keyed by the parsed agent identity.
+    pub fn rows_for_agent(&self, agent: Option<ConfigAgent>) -> &AgentSidebarRows {
         agent
-            .and_then(|agent| self.rows_by_agent.get(agent))
+            .and_then(|agent| self.rows_by_agent.get(&agent))
             .unwrap_or(&self.rows)
     }
 }
@@ -380,7 +381,7 @@ impl Default for AgentsSidebarConfig {
                 ],
                 vec![AgentSidebarToken::Agent],
             ],
-            rows_by_agent: BTreeMap::new(),
+            rows_by_agent: HashMap::new(),
             row_gap: DEFAULT_SIDEBAR_ROW_GAP,
         }
     }
@@ -482,7 +483,7 @@ row_gap = 3
             ]
         );
         assert_eq!(
-            config.ui.sidebar.agents.rows_by_agent["claude"],
+            config.ui.sidebar.agents.rows_by_agent[&ConfigAgent::Claude],
             vec![
                 vec![AgentSidebarToken::TerminalTitleStripped],
                 vec![AgentSidebarToken::Agent, AgentSidebarToken::Machine,],
@@ -524,7 +525,8 @@ rows = [[{ token = "git_status", fg = "#ff00aa" }], [{ token = "branch", bold = 
             AgentSidebarToken::Workspace
         );
 
-        let (token, style) = config.ui.sidebar.agents.rows_by_agent["claude"][0][0].parts();
+        let (token, style) =
+            config.ui.sidebar.agents.rows_by_agent[&ConfigAgent::Claude][0][0].parts();
         assert_eq!(token, &AgentSidebarToken::Agent);
         assert_eq!(style.bold, Some(true));
         assert_eq!(style.dim, Some(false));

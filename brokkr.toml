@@ -827,7 +827,7 @@ kinds = ["normal"]
 [[dependency_rule]]
 name = "shepr-protocol-layer"
 from = "shepr-protocol"
-allow = ["ratatui", "serde", "shepr-core", "shepr-vt", "tracing"]
+allow = ["ratatui", "serde", "shepr-agent", "shepr-core", "shepr-vt", "tracing"]
 kinds = ["normal"]
 
 [[dependency_rule]]
@@ -851,7 +851,7 @@ kinds = ["normal"]
 [[dependency_rule]]
 name = "shepr-client-layer"
 from = "shepr-client"
-allow = ["base64", "crossterm", "ctrlc", "ratatui", "serde", "serde_json", "shepr-agent", "shepr-config", "shepr-core", "shepr-platform", "shepr-protocol", "shepr-remote", "shepr-termio", "shepr-vt", "tokio", "toml", "tracing", "unicode-segmentation", "unicode-width"]
+allow = ["base64", "crossterm", "ctrlc", "ratatui", "serde", "serde_json", "shepr-config", "shepr-core", "shepr-platform", "shepr-protocol", "shepr-remote", "shepr-termio", "shepr-vt", "tokio", "toml", "tracing", "unicode-segmentation", "unicode-width"]
 kinds = ["normal"]
 
 # Git command environment and deadline policy are owned by mux, which uses the

@@ -2,6 +2,23 @@ use crossterm::event::KeyEventKind;
 use crossterm::event::{KeyCode, KeyModifiers};
 use unicode_segmentation::UnicodeSegmentation;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::shell) enum EditOutcome {
+    Unhandled,
+    Handled,
+    Changed,
+}
+
+impl EditOutcome {
+    pub(in crate::shell) fn is_handled(self) -> bool {
+        self != Self::Unhandled
+    }
+
+    pub(in crate::shell) fn changed(self) -> bool {
+        self == Self::Changed
+    }
+}
+
 #[derive(Clone, Default, PartialEq, Eq)]
 pub(in crate::shell) struct TextEditor {
     text: String,
@@ -156,12 +173,12 @@ impl TextEditor {
         self.repair_cursor();
     }
 
-    pub(crate) fn handle_key(&mut self, key: &shepr_termio::input::TerminalKey) -> Option<bool> {
+    pub(crate) fn handle_key(&mut self, key: &shepr_termio::input::TerminalKey) -> EditOutcome {
         if key.kind == KeyEventKind::Release {
-            return None;
+            return EditOutcome::Unhandled;
         }
         if matches!(key.code, KeyCode::Enter | KeyCode::Esc) {
-            return None;
+            return EditOutcome::Unhandled;
         }
         let previous_len = self.text.len();
         let mut content_changed = false;
@@ -226,11 +243,15 @@ impl TextEditor {
                             content_changed = self.insert(&ch.to_string());
                         }
                     }
-                    _ => return None,
+                    _ => return EditOutcome::Unhandled,
                 }
             }
         }
-        Some(content_changed || self.text.len() != previous_len)
+        if content_changed || self.text.len() != previous_len {
+            EditOutcome::Changed
+        } else {
+            EditOutcome::Handled
+        }
     }
 
     pub(crate) fn viewport(&self, width: u16) -> (&str, u16) {
@@ -301,16 +322,15 @@ mod tests {
     use shepr_termio::input::TerminalKey;
 
     fn key(editor: &mut TextEditor, code: KeyCode, modifiers: KeyModifiers) -> bool {
-        let result = editor
-            .handle_key(&TerminalKey::new(code, modifiers))
-            .expect("editor binding");
+        let result = editor.handle_key(&TerminalKey::new(code, modifiers));
+        assert_ne!(result, super::EditOutcome::Unhandled, "editor binding");
         assert!(
             editor.cursor == editor.len()
                 || editor
                     .grapheme_indices(true)
                     .any(|(i, _)| i == editor.cursor)
         );
-        result
+        result.changed()
     }
 
     #[test]
@@ -377,7 +397,14 @@ mod tests {
             let mut editor = TextEditor::new("default", true);
             let event = TerminalKey::new(KeyCode::Char('x'), KeyModifiers::NONE)
                 .with_generated_text(Some(replacement.into()));
-            assert_eq!(editor.handle_key(&event).expect("replacement"), changed);
+            assert_eq!(
+                editor.handle_key(&event),
+                if changed {
+                    super::EditOutcome::Changed
+                } else {
+                    super::EditOutcome::Handled
+                }
+            );
             assert_eq!(editor.as_str(), replacement);
             assert!(!editor.replace_on_type);
         }
@@ -458,15 +485,14 @@ mod tests {
         editor.handle_key(&event);
         assert_eq!(editor.as_str(), "a中   e\u{301}βb");
         let before = editor.clone();
-        assert!(
-            editor
-                .handle_key(&event.with_kind(KeyEventKind::Release))
-                .is_none()
+        assert_eq!(
+            editor.handle_key(&event.with_kind(KeyEventKind::Release)),
+            super::EditOutcome::Unhandled
         );
         assert_eq!(editor, before);
         let repeat =
             TerminalKey::new(KeyCode::Left, KeyModifiers::NONE).with_kind(KeyEventKind::Repeat);
-        assert!(editor.handle_key(&repeat).is_some());
+        assert!(editor.handle_key(&repeat).is_handled());
     }
 
     #[test]
@@ -476,7 +502,11 @@ mod tests {
             let before = editor.clone();
             let event = TerminalKey::new(code, KeyModifiers::NONE)
                 .with_generated_text(Some("printable".into()));
-            assert_eq!(editor.handle_key(&event), None, "{code:?}");
+            assert_eq!(
+                editor.handle_key(&event),
+                super::EditOutcome::Unhandled,
+                "{code:?}"
+            );
             assert_eq!(editor, before, "{code:?}");
         }
     }

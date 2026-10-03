@@ -169,11 +169,7 @@ pub struct PaneScrollParams {
 /// A terminal cell addressed by a stable absolute row: output and history
 /// eviction never make it name another line. Selections, copy-mode cursors
 /// and search matches all use it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PaneTextPoint {
-    pub row: shepr_vt::AbsRow,
-    pub col: u16,
-}
+pub type PaneTextPoint = shepr_vt::Point<shepr_vt::AbsRow>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaneTextRange {
@@ -237,6 +233,22 @@ pub struct PaneCopySearchParams {
     pub direction: PaneCopySearchDirection,
     pub cursor: PaneTextPoint,
     pub previous: Option<PaneTextRange>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaneCopySearchPosition {
+    /// The match's index in the returned window.
+    pub window_index: usize,
+    /// The match's index in the full result set.
+    pub global_index: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaneCopySearch {
+    pub matches: Vec<PaneTextRange>,
+    pub total: usize,
+    /// Absent when the search found no matches; both indexes travel together.
+    pub current: Option<PaneCopySearchPosition>,
 }
 
 /// `None` clears the manual label, as does a label that is empty once trimmed.
@@ -303,6 +315,13 @@ macro_rules! define_endpoint_commands {
             $($app_variant($app_params),)+
         }
 
+        /// The finite identity of an endpoint command, without its request data.
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+        pub enum CommandKind {
+            $($loop_variant,)+
+            $($app_variant,)+
+        }
+
         /// Commands the app handles after the server loop has routed its own work.
         #[derive(Debug, Clone, PartialEq)]
         pub enum EndpointAppCommand {
@@ -316,6 +335,13 @@ macro_rules! define_endpoint_commands {
         }
 
         impl EndpointCommand {
+            pub fn kind(&self) -> CommandKind {
+                match self {
+                    $(Self::$loop_variant(_) => CommandKind::$loop_variant,)+
+                    $(Self::$app_variant(_) => CommandKind::$app_variant,)+
+                }
+            }
+
             pub fn traits(&self) -> EndpointCommandTraits {
                 match self {
                     $(
@@ -355,6 +381,15 @@ macro_rules! define_endpoint_commands {
                             Ok(EndpointAppCommand::$app_variant(params))
                         }
                     )+
+                }
+            }
+        }
+
+        impl CommandKind {
+            pub fn name(self) -> &'static str {
+                match self {
+                    $(Self::$loop_variant => $loop_name,)+
+                    $(Self::$app_variant => $app_name,)+
                 }
             }
         }
@@ -532,10 +567,7 @@ pub enum EndpointReply {
     },
     PaneCopySearch {
         pane_id: PublicPaneId,
-        matches: Vec<PaneTextRange>,
-        total: u64,
-        current: Option<u32>,
-        current_global: Option<u64>,
+        search: PaneCopySearch,
     },
     /// Acknowledgement for the client-shell surface interest lease. Its
     /// revision-bearing result can establish an activation floor.

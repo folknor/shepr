@@ -3,7 +3,9 @@
 
 use crate::shell::ledger::Work;
 
-use crate::shell::state::{ClientShellEndpointError, ClientShellInput, ClientShellState, PaneHit};
+use crate::shell::state::{
+    ClientShellEndpointError, ClientShellInput, ClientShellState, PaneHit, Repaint,
+};
 
 use super::word_bounds::word_bounds_at_column;
 
@@ -13,9 +15,9 @@ use super::word_bounds::word_bounds_at_column;
 pub(in crate::shell) struct ClientWordSelection {
     pub(in crate::shell) pane_id: shepr_protocol::PublicPaneId,
     pub(in crate::shell) focus_confirmed: bool,
-    anchor: (shepr_vt::AbsRow, u16),
+    anchor: shepr_vt::Point<shepr_vt::AbsRow>,
     anchor_bounds: Option<(u16, u16)>,
-    cursor: (shepr_vt::AbsRow, u16),
+    cursor: shepr_vt::Point<shepr_vt::AbsRow>,
     end_col: u16,
     cached_row: Option<(shepr_vt::AbsRow, String)>,
     pending: Option<shepr_protocol::RequestId>,
@@ -40,9 +42,9 @@ impl ClientShellState {
                 .as_deref()
                 .and_then(|snapshot| snapshot.focused_pane_id.as_deref())
                 == Some(hit.pane_id.as_str()),
-            anchor: (row, col),
+            anchor: shepr_vt::Point::new(row, col),
             anchor_bounds: None,
-            cursor: (row, col),
+            cursor: shepr_vt::Point::new(row, col),
             end_col: hit.inner_rect.width.saturating_sub(1),
             cached_row: None,
             pending: None,
@@ -98,6 +100,7 @@ impl ClientShellState {
         let Some(gesture) = self.mouse_selection.word_gesture.as_mut() else {
             return;
         };
+        let cursor = shepr_vt::Point::new(cursor.0, cursor.1);
         if gesture.released || gesture.cursor == cursor {
             return;
         }
@@ -129,19 +132,21 @@ impl ClientShellState {
         let Some((_, text)) = gesture
             .cached_row
             .as_ref()
-            .filter(|(row, _)| *row == gesture.cursor.0)
+            .filter(|(row, _)| *row == gesture.cursor.row)
         else {
-            self.request_word_selection_row(gesture.cursor.0, outcome);
+            self.request_word_selection_row(gesture.cursor.row, outcome);
             return;
         };
-        let (start_col, end_col) = word_bounds_at_column(text, gesture.cursor.1)
-            .unwrap_or((gesture.cursor.1, gesture.cursor.1));
-        let start = (gesture.anchor.0, anchor_start).min((gesture.cursor.0, start_col));
-        let end = (gesture.anchor.0, anchor_end).max((gesture.cursor.0, end_col));
+        let (start_col, end_col) = word_bounds_at_column(text, gesture.cursor.col)
+            .unwrap_or((gesture.cursor.col, gesture.cursor.col));
+        let start = shepr_vt::Point::new(gesture.anchor.row, anchor_start)
+            .min(shepr_vt::Point::new(gesture.cursor.row, start_col));
+        let end = shepr_vt::Point::new(gesture.anchor.row, anchor_end)
+            .max(shepr_vt::Point::new(gesture.cursor.row, end_col));
         self.mouse_selection.selection = Some(shepr_vt::selection::Selection::range(
             gesture.pane_id.clone(),
-            shepr_vt::Point::new(start.0, start.1),
-            shepr_vt::Point::new(end.0, end.1),
+            start,
+            end,
         ));
         if gesture.released {
             let dragged = gesture.dragged;
@@ -170,7 +175,7 @@ impl ClientShellState {
     pub(in crate::shell) fn drop_word_selection(
         &mut self,
         request: &shepr_protocol::RequestId,
-    ) -> bool {
+    ) -> Repaint {
         if self
             .mouse_selection
             .word_gesture
@@ -178,9 +183,9 @@ impl ClientShellState {
             .is_some_and(|g| g.pending.as_ref() == Some(request))
         {
             self.cancel_word_selection();
-            true
+            Repaint::Needed
         } else {
-            false
+            Repaint::Unchanged
         }
     }
 
@@ -192,14 +197,14 @@ impl ClientShellState {
         result: Result<shepr_protocol::command::EndpointReply, ClientShellEndpointError>,
         now: std::time::Instant,
         outcome: &mut ClientShellInput,
-    ) -> bool {
+    ) -> Repaint {
         if self
             .mouse_selection
             .word_gesture
             .as_ref()
             .is_none_or(|g| g.pending.as_ref() != Some(request))
         {
-            return false;
+            return Repaint::Unchanged;
         }
         if self
             .snapshot
@@ -207,7 +212,7 @@ impl ClientShellState {
             .is_none_or(|snapshot| !snapshot.panes.iter().any(|pane| pane.pane_id == pane_id))
         {
             self.cancel_word_selection();
-            return true;
+            return Repaint::Needed;
         }
         let text = match result {
             Ok(shepr_protocol::command::EndpointReply::PaneSelection {
@@ -223,22 +228,23 @@ impl ClientShellState {
                     );
                 }
                 self.cancel_word_selection();
-                return true;
+                return Repaint::Needed;
             }
         };
         let Some(gesture) = self.mouse_selection.word_gesture.as_mut() else {
-            return false;
+            return Repaint::Unchanged;
         };
         gesture.pending = None;
         if gesture.anchor_bounds.is_none() {
-            gesture.anchor_bounds = word_bounds_at_column(&text, gesture.anchor.1);
+            gesture.anchor_bounds = word_bounds_at_column(&text, gesture.anchor.col);
             if gesture.anchor_bounds.is_none() {
                 self.cancel_word_selection();
-                return true;
+                return Repaint::Needed;
             }
         }
         gesture.cached_row = Some((absolute_row, text));
+        // The update records its own repaint in `outcome`.
         self.update_word_selection(outcome, now);
-        outcome.repaint
+        Repaint::Unchanged
     }
 }

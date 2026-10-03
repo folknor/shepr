@@ -57,8 +57,7 @@ fn dirty_full_collects_bounded_viewport_patch() {
 
 #[test]
 fn palette_overrides_are_none_without_an_osc4_write() {
-    let default = [rgb(1, 2, 3); 256];
-    assert!(PaletteOverrides::new(&default, &default).is_none());
+    assert!(PaletteOverrides::new(&[None; 256]).is_none());
 }
 
 #[test]
@@ -66,7 +65,10 @@ fn redefined_palette_entries_render_as_rgb_and_others_stay_indexed() {
     let default = [rgb(1, 2, 3); 256];
     let mut active = default;
     active[18] = rgb(169, 177, 214);
-    let overrides = PaletteOverrides::new(&active, &default).expect("index 18 differs");
+    let overrides = PaletteOverrides::new(&std::array::from_fn(|index| {
+        (index == 18).then_some(active[index])
+    }))
+    .expect("index 18 differs");
 
     assert_eq!(
         terminal_cell_color(shepr_vt::CellColor::Palette(18), Some(&overrides)),
@@ -89,7 +91,10 @@ fn direct_rgb_cells_are_unaffected_by_palette_overrides() {
     let default = [rgb(1, 2, 3); 256];
     let mut active = default;
     active[18] = rgb(169, 177, 214);
-    let overrides = PaletteOverrides::new(&active, &default).expect("index 18 differs");
+    let overrides = PaletteOverrides::new(&std::array::from_fn(|index| {
+        (index == 18).then_some(active[index])
+    }))
+    .expect("index 18 differs");
     assert_eq!(
         terminal_cell_color(
             shepr_vt::CellColor::Rgb(rgb(122, 162, 247)),
@@ -126,18 +131,42 @@ fn search_primary(
 ) -> Vec<TerminalTextMatch> {
     buffer
         .search_window(
-            query,
-            case_sensitive,
             shepr_vt::ActiveScreen::Primary,
-            TerminalSearchDirection::Forward,
-            TerminalTextPoint {
-                row: AbsRow(0),
-                col: 0,
-            },
-            None,
-            usize::MAX,
+            terminal_text_search(
+                query,
+                case_sensitive,
+                TerminalSearchDirection::Forward,
+                TerminalTextPoint {
+                    row: AbsRow(0),
+                    col: 0,
+                },
+                None,
+                usize::MAX,
+            ),
         )
         .matches
+}
+
+fn terminal_text_search<'a>(
+    query: &'a str,
+    case_sensitive: bool,
+    direction: TerminalSearchDirection,
+    cursor: TerminalTextPoint,
+    previous: Option<TerminalTextRange>,
+    limit: usize,
+) -> TerminalTextSearch<'a> {
+    TerminalTextSearch {
+        query,
+        case: if case_sensitive {
+            TerminalSearchCase::Sensitive
+        } else {
+            TerminalSearchCase::Insensitive
+        },
+        direction,
+        cursor,
+        previous,
+        limit: TerminalSearchLimit::new(limit),
+    }
 }
 
 fn write_numbered_lines(terminal: &mut shepr_vt::Terminal, count: usize) {
@@ -478,7 +507,13 @@ fn live_terminal_word_motion_expands_across_long_blank_history() {
     let pane = PaneTerminal::new(terminal);
 
     assert_eq!(
-        pane.word_motion_target(last_row, 0, TerminalWordMotion::PreviousStart),
+        pane.word_motion_target(
+            TerminalTextPoint {
+                row: last_row,
+                col: 0,
+            },
+            TerminalWordMotion::PreviousStart,
+        ),
         Some(TerminalTextPoint {
             row: AbsRow(0),
             col: 0,
@@ -493,7 +528,7 @@ fn live_terminal_word_end_expands_through_a_long_soft_wrap() {
     terminal.write(word.as_bytes());
     let pane = PaneTerminal::new(terminal);
     let text_match = pane
-        .search_text_window(
+        .search_text_window(terminal_text_search(
             &word,
             true,
             TerminalSearchDirection::Forward,
@@ -503,15 +538,11 @@ fn live_terminal_word_end_expands_through_a_long_soft_wrap() {
             },
             None,
             1,
-        )
+        ))
         .matches[0];
 
     assert_eq!(
-        pane.word_motion_target(
-            text_match.start.row,
-            text_match.start.col,
-            TerminalWordMotion::NextEnd,
-        ),
+        pane.word_motion_target(text_match.start, TerminalWordMotion::NextEnd),
         Some(text_match.end)
     );
 }
@@ -524,7 +555,7 @@ fn live_terminal_word_end_expands_through_a_long_wide_soft_wrap() {
     terminal.write(word.as_bytes());
     let pane = PaneTerminal::new(terminal);
     let text_match = pane
-        .search_text_window(
+        .search_text_window(terminal_text_search(
             &word,
             true,
             TerminalSearchDirection::Forward,
@@ -534,17 +565,13 @@ fn live_terminal_word_end_expands_through_a_long_wide_soft_wrap() {
             },
             None,
             1,
-        )
+        ))
         .matches[0];
 
     // The word end sits on the head cell of the final wide glyph, past the
     // initial read window, so the window has to expand to reach it.
     assert_eq!(
-        pane.word_motion_target(
-            text_match.start.row,
-            text_match.start.col,
-            TerminalWordMotion::NextEnd,
-        ),
+        pane.word_motion_target(text_match.start, TerminalWordMotion::NextEnd),
         Some(TerminalTextPoint {
             row: text_match.end.row,
             col: 2,
@@ -3679,7 +3706,7 @@ fn absolute_rows_survive_eviction() {
     );
 
     // Line i was written on absolute row i.
-    let found = pane.search_text_window(
+    let found = pane.search_text_window(terminal_text_search(
         "001050",
         true,
         TerminalSearchDirection::Forward,
@@ -3689,7 +3716,7 @@ fn absolute_rows_survive_eviction() {
         },
         None,
         8,
-    );
+    ));
     assert_eq!(found.total, 1);
     let line = found.matches[0].start.row;
     assert_eq!(line, AbsRow(1_050));
@@ -3717,7 +3744,10 @@ fn absolute_rows_survive_eviction() {
         Some("001050")
     );
     assert_eq!(
-        pane.word_motion_target(line, 0, TerminalWordMotion::NextEnd),
+        pane.word_motion_target(
+            TerminalTextPoint { row: line, col: 0 },
+            TerminalWordMotion::NextEnd,
+        ),
         Some(TerminalTextPoint { row: line, col: 5 })
     );
     let origin = pane
@@ -3734,10 +3764,25 @@ fn absolute_rows_survive_eviction() {
     );
     assert_eq!(pane.extract_selection(&gone), None);
     assert_eq!(
-        pane.word_motion_target(evicted, 0, TerminalWordMotion::NextStart),
+        pane.word_motion_target(
+            TerminalTextPoint {
+                row: evicted,
+                col: 0,
+            },
+            TerminalWordMotion::NextStart,
+        ),
         None
     );
-    assert_eq!(pane.paragraph_motion_target(evicted, 1), None);
+    assert_eq!(
+        pane.paragraph_motion_target(
+            TerminalTextPoint {
+                row: evicted,
+                col: 0,
+            },
+            TerminalParagraphMotion::Next,
+        ),
+        None
+    );
 }
 
 #[test]
@@ -3755,10 +3800,16 @@ fn paragraph_motion_finds_blank_rows_by_absolute_row() {
     );
     // Rows: ..., 001099 on row 1099, blank on 1100, "para" on 1101.
     assert_eq!(
-        pane.paragraph_motion_target(AbsRow(1_101), -1),
+        pane.paragraph_motion_target(
+            TerminalTextPoint {
+                row: AbsRow(1_101),
+                col: 5,
+            },
+            TerminalParagraphMotion::Previous,
+        ),
         Some(TerminalTextPoint {
             row: AbsRow(1_100),
-            col: 0
+            col: 5
         })
     );
 }
@@ -3799,25 +3850,22 @@ fn chunked_search_matches_a_whole_buffer_search() {
         ("nothing", TerminalSearchDirection::Forward, at(0)),
     ] {
         let expected = whole.search_window(
-            query,
-            true,
             shepr_vt::ActiveScreen::Primary,
-            direction,
-            cursor,
-            None,
-            16,
+            terminal_text_search(query, true, direction, cursor, None, 16),
         );
-        let actual = pane.search_text_window(query, true, direction, cursor, None, 16);
+        let actual = pane.search_text_window(terminal_text_search(
+            query, true, direction, cursor, None, 16,
+        ));
         assert_eq!(actual, expected, "{query} {direction:?} from {cursor:?}");
     }
-    let word = pane.search_text_window(
+    let word = pane.search_text_window(terminal_text_search(
         "abcdefghijklmnopqrstuvwxyz",
         true,
         TerminalSearchDirection::Forward,
         at(0),
         None,
         1,
-    );
+    ));
     assert_eq!(
         (word.matches[0].start, word.matches[0].end),
         (
@@ -3876,8 +3924,10 @@ fn match_window_agrees_with_the_complete_match_list() {
         let start = target.saturating_sub(retained / 2).min(total - retained);
         TerminalSearchWindow {
             matches: all[start..start + retained].to_vec(),
-            current: Some(target - start),
-            current_global: Some(target),
+            current: Some(TerminalSearchPosition {
+                window_index: target - start,
+                global_index: target,
+            }),
             total,
         }
     };

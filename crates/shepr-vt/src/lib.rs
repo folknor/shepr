@@ -46,7 +46,8 @@ mod render;
 mod rows;
 mod scan;
 pub mod selection;
-pub use cell::RenderColors;
+pub use cell::{ColorSource, RenderColors};
+pub mod seq;
 pub use cell::{
     CellBasicData, CellColor, CellStyle, CellView, CellWide, UnderlineStyle,
     is_halfwidth_katakana_voiced_grapheme, is_halfwidth_katakana_voiced_mark,
@@ -180,8 +181,8 @@ pub enum ColorScheme {
 impl ColorScheme {
     pub const fn report(self) -> &'static [u8] {
         match self {
-            Self::Dark => b"\x1b[?997;1n",
-            Self::Light => b"\x1b[?997;2n",
+            Self::Dark => seq::COLOR_SCHEME_DARK,
+            Self::Light => seq::COLOR_SCHEME_LIGHT,
         }
     }
 }
@@ -195,8 +196,6 @@ impl ColorScheme {
 pub(crate) const KITTY_UNICODE_PLACEHOLDER: u32 = 0x10EEEE;
 
 /// Fallback colours used until the program or host sets its own defaults.
-/// The pane layer compares these with the initial render colours to detect
-/// later default-colour overrides.
 const DEFAULT_FOREGROUND: RgbColor = RgbColor {
     r: 0xff,
     g: 0xff,
@@ -403,8 +402,8 @@ pub enum PtyResponse {
 
 pub fn encode_focus(event: FocusEvent) -> &'static [u8] {
     match event {
-        FocusEvent::Gained => b"\x1b[I",
-        FocusEvent::Lost => b"\x1b[O",
+        FocusEvent::Gained => seq::FOCUS_GAINED,
+        FocusEvent::Lost => seq::FOCUS_LOST,
     }
 }
 

@@ -216,13 +216,13 @@ impl RetainedTextBuffer {
 
     pub(super) fn word_motion(
         &self,
-        row: AbsRow,
-        col: u16,
+        cursor: TerminalTextPoint,
         motion: TerminalWordMotion,
     ) -> Option<TerminalTextPoint> {
         let current = self.atoms.iter().position(|atom| {
-            atom.point
-                .is_some_and(|point| point.row == row && col >= point.col && col <= atom.end_col)
+            atom.point.is_some_and(|point| {
+                point.row == cursor.row && cursor.col >= point.col && cursor.col <= atom.end_col
+            })
         })?;
         match motion {
             TerminalWordMotion::NextStart => self.next_word_start(current),
@@ -421,31 +421,28 @@ pub(super) struct TextSearch {
 }
 
 impl TextSearch {
-    pub(super) fn new(
-        query: &str,
-        case_sensitive: bool,
-        direction: TerminalSearchDirection,
-        cursor: TerminalTextPoint,
-        previous: Option<(TerminalTextPoint, TerminalTextPoint)>,
-        limit: usize,
-    ) -> Option<Self> {
-        if query.is_empty() || limit == 0 {
+    pub(super) fn new(search: TerminalTextSearch<'_>) -> Option<Self> {
+        if search.query.is_empty() || search.limit.get() == 0 {
             return None;
         }
-        let regex = regex::RegexBuilder::new(&regex::escape(query))
-            .case_insensitive(!case_sensitive)
+        let regex = regex::RegexBuilder::new(&regex::escape(search.query))
+            .case_insensitive(!search.case.is_sensitive(search.query))
             .build()
             .ok()?;
-        let origin = match direction {
-            TerminalSearchDirection::Forward => previous.map_or(cursor, |(_, end)| end),
-            TerminalSearchDirection::Backward => previous.map_or(cursor, |(start, _)| start),
+        let origin = match search.direction {
+            TerminalSearchDirection::Forward => {
+                search.previous.map_or(search.cursor, |range| range.end)
+            }
+            TerminalSearchDirection::Backward => {
+                search.previous.map_or(search.cursor, |range| range.start)
+            }
         };
         Some(Self {
             regex,
             window: MatchWindow {
-                direction,
+                direction: search.direction,
                 origin,
-                limit,
+                limit: search.limit.get(),
                 total: 0,
                 target: None,
                 first: Vec::new(),
@@ -588,8 +585,10 @@ impl MatchWindow {
         let end = start.saturating_add(retained);
         TerminalSearchWindow {
             matches: (start..end).filter_map(|index| self.get(index)).collect(),
-            current: Some(target - start),
-            current_global: Some(target),
+            current: Some(TerminalSearchPosition {
+                window_index: target - start,
+                global_index: target,
+            }),
             total,
         }
     }
@@ -623,7 +622,7 @@ pub(super) fn word_motion_in(
         let (buffer, first, last) = RetainedTextBuffer::live_words(terminal, start_row, end_row)?;
         let starts_in_continuation = first.wrap_continuation && start_row > 0;
         let ends_in_continuation = last.soft_wrapped && end_row < total_rows;
-        let target = buffer.word_motion(point.row, point.col, motion);
+        let target = buffer.word_motion(point, motion);
         let needs_more_history = backward
             && starts_in_continuation
             && target.is_some_and(|target| {
@@ -647,28 +646,26 @@ pub(super) fn word_motion_in(
     }
 }
 
-/// The next blank row above (`direction < 0`) or below absolute row `row`,
+/// The next blank row above or below the cursor, preserving its column and
 /// looking at most 1000 rows away.
 pub(super) fn paragraph_motion_in(
     terminal: &shepr_vt::Terminal,
-    row: AbsRow,
-    direction: i8,
+    cursor: TerminalTextPoint,
+    motion: TerminalParagraphMotion,
 ) -> Option<TerminalTextPoint> {
     let total_rows = terminal.total_rows();
-    let current = terminal.screen_row_for_absolute(row)?.0;
-    if direction == 0 {
-        return None;
-    }
+    let current = terminal.screen_row_for_absolute(cursor.row)?.0;
     let mut scratch = String::new();
     for distance in 1..total_rows.min(1000) {
-        let candidate = if direction < 0 {
-            current.checked_sub(distance)?
-        } else {
-            let candidate = current.saturating_add(distance);
-            if candidate >= total_rows {
-                return None;
+        let candidate = match motion {
+            TerminalParagraphMotion::Previous => current.checked_sub(distance)?,
+            TerminalParagraphMotion::Next => {
+                let candidate = current.saturating_add(distance);
+                if candidate >= total_rows {
+                    return None;
+                }
+                candidate
             }
-            candidate
         };
         let mut blank = true;
         terminal.visit_screen_row_text(ScreenRow(candidate), &mut scratch, |_, _, text| {
@@ -677,7 +674,7 @@ pub(super) fn paragraph_motion_in(
         if blank {
             return Some(TerminalTextPoint {
                 row: terminal.absolute_row_for_screen(ScreenRow(candidate)),
-                col: 0,
+                col: cursor.col,
             });
         }
     }
@@ -773,27 +770,21 @@ impl OwnedTextBuffer {
         col: u16,
         motion: TerminalWordMotion,
     ) -> Option<TerminalTextPoint> {
-        self.words.word_motion(row, col, motion)
+        self.words
+            .word_motion(TerminalTextPoint { row, col }, motion)
     }
 
     pub(super) fn search_window(
         &self,
-        query: &str,
-        case_sensitive: bool,
         active_screen: shepr_vt::ActiveScreen,
-        direction: TerminalSearchDirection,
-        cursor: TerminalTextPoint,
-        previous: Option<(TerminalTextPoint, TerminalTextPoint)>,
-        limit: usize,
+        search: TerminalTextSearch<'_>,
     ) -> TerminalSearchWindow {
-        let Some(mut search) =
-            TextSearch::new(query, case_sensitive, direction, cursor, previous, limit)
-        else {
+        let Some(mut text_search) = TextSearch::new(search) else {
             return TerminalSearchWindow::empty();
         };
         for line in &self.lines {
-            search.scan_line(line, self.cols, active_screen);
+            text_search.scan_line(line, self.cols, active_screen);
         }
-        search.finish()
+        text_search.finish()
     }
 }

@@ -2,32 +2,41 @@ use shepr_protocol::KittyKeyboardFlags;
 use shepr_vt::ModifyOtherKeysLevel;
 use std::io::{self, Write};
 
-const HOST_MOUSE_REPORTING_DISABLE_SEQUENCES: &[&[u8]] = &[
-    b"\x1b[?1006l",
-    b"\x1b[?1016l",
-    b"\x1b[?1015l",
-    b"\x1b[?1005l",
-    b"\x1b[?1003l",
-    b"\x1b[?1002l",
-    b"\x1b[?1000l",
-    b"\x1b[?9l",
+const HOST_MOUSE_REPORTING_DISABLE_MODES: &[shepr_vt::DecMode] = &[
+    shepr_vt::DecMode::MouseSgr,
+    shepr_vt::DecMode::MouseSgrPixels,
+    shepr_vt::DecMode::MouseUtf8,
+    shepr_vt::DecMode::MouseAnyMotion,
+    shepr_vt::DecMode::MouseButtonMotion,
+    shepr_vt::DecMode::MousePressRelease,
+    shepr_vt::DecMode::X10Mouse,
 ];
 
-pub const HOST_KEYBOARD_QUERY_SEQUENCE: &[u8] = b"\x1b[?u\x1b[c";
-pub const HOST_CELL_SIZE_QUERY_SEQUENCE: &[u8] = b"\x1b[16t";
-pub const HOST_MODIFY_OTHER_KEYS_RESET_SEQUENCE: &[u8] = b"\x1b[>4;0m";
-pub const HOST_KITTY_KEYBOARD_POP_SEQUENCE: &[u8] = b"\x1b[<1u";
-pub const HOST_CURSOR_SHAPE_DEFAULT_SEQUENCE: &[u8] = b"\x1b[0 q";
-pub const HOST_CURSOR_AND_SHAPE_RESTORE_SEQUENCE: &[u8] = b"\x1b[?25h\x1b[0 q";
-pub const HOST_MOUSE_SGR_PIXELS_ENABLE_SEQUENCE: &[u8] = b"\x1b[?1016h";
-pub const HOST_WINDOW_TITLE_PUSH_SEQUENCE: &[u8] = b"\x1b[22;0t";
-pub const HOST_WINDOW_TITLE_POP_SEQUENCE: &[u8] = b"\x1b[23;0t";
+pub const HOST_KEYBOARD_QUERY_SEQUENCE: &[u8] = shepr_vt::seq::HOST_KEYBOARD_QUERY_SEQUENCE;
+pub const HOST_CELL_SIZE_QUERY_SEQUENCE: &[u8] = shepr_vt::seq::HOST_CELL_SIZE_QUERY_SEQUENCE;
+pub const HOST_MODIFY_OTHER_KEYS_RESET_SEQUENCE: &[u8] = ModifyOtherKeysLevel::Off.set_sequence();
+pub const HOST_KITTY_KEYBOARD_POP_SEQUENCE: &[u8] = shepr_vt::seq::HOST_KITTY_KEYBOARD_POP_SEQUENCE;
+pub const HOST_CURSOR_SHAPE_DEFAULT_SEQUENCE: &[u8] =
+    shepr_vt::seq::HOST_CURSOR_SHAPE_DEFAULT_SEQUENCE;
+pub const HOST_CURSOR_AND_SHAPE_RESTORE_SEQUENCE: &[u8] =
+    shepr_vt::seq::HOST_CURSOR_AND_SHAPE_RESTORE_SEQUENCE;
+pub const HOST_MOUSE_SGR_PIXELS_ENABLE_SEQUENCE: &[u8] =
+    shepr_vt::seq::HOST_MOUSE_SGR_PIXELS_ENABLE_SEQUENCE;
+pub const HOST_WINDOW_TITLE_PUSH_SEQUENCE: &[u8] = shepr_vt::seq::HOST_WINDOW_TITLE_PUSH_SEQUENCE;
+pub const HOST_WINDOW_TITLE_POP_SEQUENCE: &[u8] = shepr_vt::seq::HOST_WINDOW_TITLE_POP_SEQUENCE;
 
 // 1015 remains in host cleanup for legacy urxvt terminals; the core does not
 // model that host-side mouse encoding.
 pub fn clear_host_mouse_reporting<W: Write>(writer: &mut W) -> io::Result<()> {
-    for sequence in HOST_MOUSE_REPORTING_DISABLE_SEQUENCES.iter().copied() {
-        writer.write_all(sequence)?;
+    for (index, mode) in HOST_MOUSE_REPORTING_DISABLE_MODES
+        .iter()
+        .copied()
+        .enumerate()
+    {
+        write!(writer, "{}", shepr_vt::seq::DecSet(mode, false))?;
+        if index == 1 {
+            writer.write_all(b"\x1b[?1015l")?;
+        }
     }
     writer.flush()
 }
@@ -129,7 +138,7 @@ pub fn set_host_keyboard_protocol<W: Write>(
             writer.write_all(HOST_KITTY_KEYBOARD_POP_SEQUENCE)?;
         }
         if !next_flags.is_empty() {
-            write!(writer, "\x1b[>{}u", next_flags.bits())?;
+            write!(writer, "{}", shepr_vt::seq::KittyPush(next_flags.bits()))?;
         }
     }
     if active.modify_other_keys_level != next_modify_other_keys_level {
@@ -264,9 +273,7 @@ mod tests {
         let mut output = Vec::new();
         clear_host_mouse_reporting(&mut output).expect("test precondition");
         let mut expected = Vec::new();
-        for sequence in HOST_MOUSE_REPORTING_DISABLE_SEQUENCES.iter().copied() {
-            expected.extend_from_slice(sequence);
-        }
+        expected.extend_from_slice(b"\x1b[?1006l\x1b[?1016l\x1b[?1015l\x1b[?1005l\x1b[?1003l\x1b[?1002l\x1b[?1000l\x1b[?9l");
         assert_eq!(output, expected);
     }
 }

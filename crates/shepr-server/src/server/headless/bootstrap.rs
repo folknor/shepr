@@ -5,13 +5,22 @@ use super::*;
 #[derive(Debug)]
 pub enum RunServerError {
     /// Another server already listens on `path`.
-    AlreadyRunning { path: PathBuf },
+    AlreadyRunning {
+        path: PathBuf,
+    },
     /// Another server already holds the lease on this profile's data
     /// directory, the canonical `directory`. The lease is taken before the
     /// socket is bound.
-    DataDirHeld { directory: PathBuf },
-    /// Startup or the event loop failed.
-    Io(io::Error),
+    DataDirHeld {
+        directory: PathBuf,
+    },
+    SessionTarget(io::Error),
+    PaneLaunch(io::Error),
+    Socket(io::Error),
+    Runtime(io::Error),
+    Lease(io::Error),
+    Logging(io::Error),
+    Serve(io::Error),
 }
 
 impl std::fmt::Display for RunServerError {
@@ -27,7 +36,13 @@ impl std::fmt::Display for RunServerError {
                 "another server holds the data directory {}",
                 directory.display()
             ),
-            Self::Io(error) => error.fmt(f),
+            Self::SessionTarget(error)
+            | Self::PaneLaunch(error)
+            | Self::Socket(error)
+            | Self::Runtime(error)
+            | Self::Lease(error)
+            | Self::Logging(error)
+            | Self::Serve(error) => error.fmt(f),
         }
     }
 }
@@ -35,15 +50,15 @@ impl std::fmt::Display for RunServerError {
 impl std::error::Error for RunServerError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::Io(error) => Some(error),
+            Self::SessionTarget(error)
+            | Self::PaneLaunch(error)
+            | Self::Socket(error)
+            | Self::Runtime(error)
+            | Self::Lease(error)
+            | Self::Logging(error)
+            | Self::Serve(error) => Some(error),
             Self::AlreadyRunning { .. } | Self::DataDirHeld { .. } => None,
         }
-    }
-}
-
-impl From<io::Error> for RunServerError {
-    fn from(error: io::Error) -> Self {
-        Self::Io(error)
     }
 }
 
@@ -119,13 +134,14 @@ pub fn run_server(
     // A session path no save can replace (a directory, a FIFO) refuses the
     // start before anything is restored or launched, rather than running
     // panes whose layout can never be saved.
-    shepr_mux::persist::check_session_target(&lease)?;
+    shepr_mux::persist::check_session_target(&lease).map_err(RunServerError::SessionTarget)?;
     // A log file that cannot be opened does not stop the server; the ready
     // notice says so instead of naming a log that is not being written.
     let file_logging = shepr_platform::logging::init_file_logging(
         data_dir,
         shepr_platform::logging::SERVER_LOG_FILE,
-    )?;
+    )
+    .map_err(RunServerError::Logging)?;
     if file_logging.unavailable.is_none() {
         log_panics();
     }
@@ -136,7 +152,7 @@ pub fn run_server(
     // Everything a pane launch would otherwise do on its first spawn that may
     // block (the launch status listener, the passwd lookup, resolving this
     // binary's path), done before any pane is restored or created.
-    shepr_mux::pane::init_pane_launches().map_err(startup_error)?;
+    shepr_mux::pane::init_pane_launches().map_err(RunServerError::PaneLaunch)?;
     spawn_integration_install();
     let api =
         shepr_api::start_server(api_tx, Arc::clone(&stop_signal), paths).map_err(startup_error)?;
@@ -149,7 +165,7 @@ pub fn run_server(
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
-        .map_err(io::Error::other)?;
+        .map_err(RunServerError::Runtime)?;
 
     let result = rt.block_on(async move {
         let Reserved {
@@ -178,7 +194,7 @@ pub fn run_server(
         server.run().await.map_err(|error| {
             // A client-spawned server's stderr is /dev/null by now.
             tracing::error!(%error, "the server event loop failed");
-            RunServerError::from(error)
+            RunServerError::Serve(error)
         })
     });
 
@@ -260,13 +276,15 @@ fn seed_startup_workspace_if_empty(app: &mut app::App, startup_cwd: Option<PathB
 /// server owns the path; any other error, including an unrelated `AddrInUse`,
 /// stays an IO failure. The refusal is recorded in the server log as well: a
 /// daemonized server's stderr goes nowhere.
-fn startup_error(error: io::Error) -> RunServerError {
-    let Some(busy) = shepr_platform::ipc::SocketBusy::from_io(&error) else {
-        return RunServerError::Io(error);
-    };
-    let path = busy.path().to_path_buf();
-    tracing::error!(path = %path.display(), "another server already listens on the socket");
-    RunServerError::AlreadyRunning { path }
+fn startup_error(error: shepr_platform::ipc::BindError) -> RunServerError {
+    match error {
+        shepr_platform::ipc::BindError::Busy(busy) => {
+            let path = busy.path().to_path_buf();
+            tracing::error!(path = %path.display(), "another server already listens on the socket");
+            RunServerError::AlreadyRunning { path }
+        }
+        shepr_platform::ipc::BindError::Io(error) => RunServerError::Socket(error),
+    }
 }
 
 /// Classifies a failure taking the data-directory lease. Only the
@@ -274,12 +292,12 @@ fn startup_error(error: io::Error) -> RunServerError {
 /// running; any other error stays an IO failure. Unlike [`startup_error`] this
 /// is not logged: file logging starts only once the lease is held, and the log
 /// file lives in the directory the other server owns.
-fn lease_error(error: io::Error) -> RunServerError {
-    let Some(held) = shepr_mux::persist::DataDirLeaseHeld::from_io(&error) else {
-        return RunServerError::Io(error);
-    };
-    RunServerError::DataDirHeld {
-        directory: held.directory().to_path_buf(),
+fn lease_error(error: shepr_platform::LeaseAcquireError) -> RunServerError {
+    match error {
+        shepr_platform::LeaseAcquireError::Held(held) => RunServerError::DataDirHeld {
+            directory: held.directory().to_path_buf(),
+        },
+        shepr_platform::LeaseAcquireError::Io(error) => RunServerError::Lease(error),
     }
 }
 

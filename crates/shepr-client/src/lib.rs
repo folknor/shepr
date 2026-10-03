@@ -56,7 +56,7 @@ use terminal_geometry::{
     HostGeometrySnapshot, SharedHostGeometry, initial_terminal_geometry, query_host_cell_size,
     query_host_terminal_theme, resize_poll_loop,
 };
-use terminal_setup::{HostMouseMode, TerminalGuard, setup_terminal, should_draw_host_cursor};
+use terminal_setup::{TerminalGuard, setup_terminal, should_draw_host_cursor};
 
 pub use errors::{ClientError, ClientExit, ClientRunError};
 use limits::CLIENT_EVENT_QUEUE_CAPACITY;
@@ -120,9 +120,13 @@ fn run_launched_client(
         true,
         &mismatch_guidance,
     );
+    let local_generation = shepr_protocol::ConnectionGeneration::new(1);
     let reconnect_local = local_failure_policy.reconnects_local();
-    let (initial, initial_local_failure) = match initial_attach {
-        Ok(attached) => (Some(attached), None),
+    let initial = match initial_attach {
+        Ok(endpoint) => LocalAtLaunch::Attached {
+            endpoint,
+            generation: local_generation,
+        },
         Err(failure) if reconnect_local => {
             match &failure {
                 LocalAttachFailure::Connection(error) => {
@@ -135,7 +139,10 @@ fn run_launched_client(
                     warn!(%error, "Local transport setup failed; keeping configured machines available");
                 }
             }
-            (None, failure.initial_failure())
+            LocalAtLaunch::Failed {
+                failure: failure.initial_failure(),
+                generation: local_generation,
+            }
         }
         Err(failure) => return Err(failure.into_launch_error()),
     };
@@ -184,7 +191,6 @@ fn run_launched_client(
 
         Ok(rt.block_on(run_client_loop(
             initial,
-            initial_local_failure,
             machines,
             local_failure_policy,
             initial_host_geometry,
@@ -253,13 +259,8 @@ fn run_launched_client(
 /// - server reader thread → reads ServerMessages and sends to main loop
 /// - one event channel: host input, resize, endpoint readers, connection supervisors, and quit
 /// - main loop: coordinates input, output, and server communication
-#[expect(
-    clippy::too_many_arguments,
-    reason = "the launch hands over every owner it set up: endpoints, policy, geometry, the quit and panic latches, the event channel, config and the terminal"
-)]
 async fn run_client_loop(
-    initial: Option<AttachedEndpoint>,
-    mut initial_local_failure: Option<shepr_remote::EndpointFailure>,
+    initial: LocalAtLaunch,
     machines: Vec<shepr_config::MachineConfig>,
     local_failure_policy: endpoint::LocalFailurePolicy,
     initial_host_geometry: HostGeometrySnapshot,
@@ -274,6 +275,20 @@ async fn run_client_loop(
     output_writer: terminal_setup::HostTerminalWriter,
     terminal_guard: &TerminalGuard,
 ) -> Result<(), ClientError> {
+    let (initial, local_generation, mut local_launch_state) = match initial {
+        LocalAtLaunch::Attached {
+            endpoint,
+            generation,
+        } => (Some(endpoint), generation, LocalLaunchState::Attached),
+        LocalAtLaunch::Failed {
+            failure,
+            generation,
+        } => (
+            None,
+            generation,
+            failure.map_or(LocalLaunchState::Unreached, LocalLaunchState::Failed),
+        ),
+    };
     let initial_geometry = initial_host_geometry.geometry;
     let host_geometry = SharedHostGeometry::new(initial_host_geometry);
     let (cols, rows) = (initial_geometry.cols(), initial_geometry.rows());
@@ -283,7 +298,6 @@ async fn run_client_loop(
         initial_geometry.exact,
     );
     let draw_host_cursor = should_draw_host_cursor(config.settings.host_cursor());
-    let mut local_unavailable = initial.is_none();
     let (initial_cell_width_px, initial_cell_height_px, initial_pixel_geometry_exact) =
         terminal_geometry::bounded_cell_geometry(
             initial_cell_width_px,
@@ -292,10 +306,6 @@ async fn run_client_loop(
         );
 
     let host_modes = terminal_guard.host_modes();
-    host_modes.configure_mouse_mode(HostMouseMode::new(
-        config.settings.mouse_capture_active(),
-        config.settings.mouse_capture_active(),
-    ));
     // client-clock-sample-ok: sample launch time for initial shell and endpoint state.
     let launch_now = std::time::Instant::now();
     let mut state = ClientState {
@@ -318,19 +328,21 @@ async fn run_client_loop(
         draw_host_cursor,
         frame_write_failure: HostWriteFailure::default(),
         title_write_failure: HostWriteFailure::default(),
+        mode_write_failure: HostWriteFailure::default(),
+        retry_host_modes: false,
     };
-    state.shell.endpoints.choice = if local_unavailable {
-        endpoint::EndpointChoice::waiting_for(endpoint::ClientEndpointId::Local)
-    } else {
-        endpoint::EndpointChoice::showing(endpoint::ClientEndpointId::Local)
+    state.shell.endpoints.choice = match &local_launch_state {
+        LocalLaunchState::Attached => {
+            endpoint::EndpointChoice::showing(endpoint::ClientEndpointId::Local)
+        }
+        LocalLaunchState::Unreached | LocalLaunchState::Failed(_) => {
+            endpoint::EndpointChoice::waiting_for(endpoint::ClientEndpointId::Local)
+        }
     };
     state.set_host_size(cols, rows);
     state.shell.set_machines(&machines);
-    if local_unavailable {
-        let status = initial_local_failure.as_ref().map_or(
-            endpoint::ClientEndpointStatus::Connecting,
-            endpoint::ClientEndpointStatus::after_failure,
-        );
+    if let LocalLaunchState::Failed(failure) = &local_launch_state {
+        let status = endpoint::EndpointFailureStatus::after_failure(failure);
         state
             .shell
             .set_endpoint_status(&endpoint::ClientEndpointId::Local, status);
@@ -338,36 +350,39 @@ async fn run_client_loop(
     // Cell size reported by the host terminal, packed as width<<32 | height.
     // Zero means the host has not reported one.
     let reported_cell_size = Arc::new(AtomicCellSize::new());
-    let (stdin_mouse_capture_active, stdin_sgr_pixels_active) =
-        state.host_modes.mouse_input_mirrors();
 
     // Channel shared by the host helpers, endpoint readers, supervisors and the signal handler.
     let stdin_tx = event_tx.clone();
 
     // Arm reply tracking only after the corresponding query was written successfully.
-    let host_color_query_sent = query_host_terminal_theme(&mut state.output_writer);
-    query_host_terminal_appearance(&mut state.output_writer);
+    let host_color_query_sent =
+        query_host_terminal_theme(&mut state.output_writer).map_err(ClientError::HostTerminal)?;
+    query_host_terminal_appearance(&mut state.output_writer).map_err(ClientError::HostTerminal)?;
     // Terminals that report no pixel size through the ioctl are asked directly
     // instead of falling back to an assumed cell size.
-    let will_query_host_cell_size =
-        !initial_geometry.exact && query_host_cell_size(&mut state.output_writer);
+    let will_query_host_cell_size = if initial_geometry.exact {
+        false
+    } else {
+        query_host_cell_size(&mut state.output_writer).map_err(ClientError::HostTerminal)?
+    };
+    let stdin_probe = input::HostInputProbe::new(
+        host_color_query_sent,
+        will_query_host_cell_size,
+        state.host_modes.mouse_input_probe(),
+        config.host_escape_disambiguation_active,
+    );
 
     // Spawn the stdin reader after query writes so a failed write does not make
     // its parser wait for a host reply that cannot arrive.
     let stdin_quit = Arc::clone(&should_quit);
-    let stdin_escape_disambiguation_active = config.host_escape_disambiguation_active;
     let stdin_initial_host_input = std::mem::take(&mut config.initial_host_input);
     let stdin_host_geometry = host_geometry.clone();
     std::thread::spawn(move || {
         input::stdin_reader_loop(
             &stdin_tx,
             &stdin_quit,
-            host_color_query_sent,
-            will_query_host_cell_size,
-            &stdin_mouse_capture_active,
-            &stdin_sgr_pixels_active,
+            &stdin_probe,
             &stdin_host_geometry,
-            stdin_escape_disambiguation_active,
             &stdin_initial_host_input,
         );
     });
@@ -394,15 +409,18 @@ async fn run_client_loop(
             &event_tx,
             &attached.writer,
             endpoint::ClientEndpointId::Local,
-            1,
+            local_generation.get(),
             surface_decoder,
         ) {
             Ok(()) => {
                 state
                     .shell
-                    .endpoint_connected(&endpoint::ClientEndpointId::Local, 1);
-                let mut registry =
-                    endpoint::EndpointRegistry::new_at(attached.writer, 1, launch_now);
+                    .endpoint_connected(&endpoint::ClientEndpointId::Local, local_generation.get());
+                let mut registry = endpoint::EndpointRegistry::new_at(
+                    attached.writer,
+                    local_generation.get(),
+                    launch_now,
+                );
                 registry.send_to(
                     &endpoint::ClientEndpointId::Local,
                     &ClientMessage::ClientShellFocus {
@@ -419,12 +437,11 @@ async fn run_client_loop(
                 let diagnostic = errors::endpoint_setup_failure(&error);
                 state.shell.set_endpoint_status(
                     &endpoint::ClientEndpointId::Local,
-                    endpoint::ClientEndpointStatus::after_failure(&diagnostic),
+                    endpoint::EndpointFailureStatus::after_failure(&diagnostic),
                 );
                 state.shell.endpoints.choice =
                     endpoint::EndpointChoice::waiting_for(endpoint::ClientEndpointId::Local);
-                initial_local_failure = Some(diagnostic);
-                local_unavailable = true;
+                local_launch_state = LocalLaunchState::Failed(diagnostic);
                 endpoint::EndpointRegistry::empty()
             }
             Err(error) => return Err(error),
@@ -440,40 +457,46 @@ async fn run_client_loop(
     let mut supervisors = endpoint::EndpointSupervisors::new(&config.paths, &machines, launch_now)
         .map_err(ClientError::EndpointSetup)?;
     if local_failure_policy.reconnects_local() {
-        let connected_generation = write_stream
-            .connection(&endpoint::ClientEndpointId::Local)
-            .map(|connection| connection.generation.get());
-        // A launch attempt that failed after connecting is recorded as the outcome of
-        // generation 1, the way a supervisor Status event would record it, so the retry
-        // follows the same backoff instead of starting a redundant attempt at once.
-        let seeded_failure = connected_generation
-            .is_none()
-            .then(|| {
-                initial_local_failure
-                    .as_ref()
-                    .map(endpoint::ClientEndpointStatus::after_failure)
-            })
-            .flatten();
-        let generation = seeded_failure.map_or(connected_generation, |_| Some(1));
+        // A connection or a failed handshake or setup occupies the first generation, and
+        // a failure is recorded as its outcome so the retry follows the normal backoff. An
+        // unreached socket used no generation, so the supervisor attempts at once.
+        let generation = match &local_launch_state {
+            LocalLaunchState::Attached | LocalLaunchState::Failed(_) => {
+                Some(local_generation.get())
+            }
+            LocalLaunchState::Unreached => None,
+        };
         supervisors.add_local(
             config.paths.server_address().socket().to_path_buf(),
             Arc::clone(&config.local_mismatch_guidance),
             generation,
             launch_now,
         );
-        if let Some(status) = seeded_failure {
-            supervisors.record_status(&endpoint::ClientEndpointId::Local, 1, status, launch_now);
+        if let LocalLaunchState::Failed(failure) = &local_launch_state {
+            let status = endpoint::EndpointFailureStatus::after_failure(failure);
+            supervisors.record_status(
+                &endpoint::ClientEndpointId::Local,
+                local_generation.get(),
+                status.into(),
+                launch_now,
+            );
         }
     }
-    if local_unavailable {
-        if let Some(failure) = initial_local_failure.as_ref() {
+    match &local_launch_state {
+        LocalLaunchState::Failed(failure) => {
             if failure.disposition().needs_attention() {
                 warn!(endpoint = "local", error = %failure, "endpoint needs attention");
             }
-            present_notice(&mut state, format!("Local: {failure}"));
-        } else {
-            state.mark_chrome_dirty();
+            present_notice(
+                &mut state,
+                &shell::EndpointNotice::new(
+                    endpoint::ClientEndpointId::Local,
+                    shell::EndpointNoticeKind::StatusFailure(failure.to_string()),
+                ),
+            );
         }
+        LocalLaunchState::Unreached => state.mark_chrome_dirty(),
+        LocalLaunchState::Attached => {}
     }
     state.present_pending();
     let mut client_loop = ClientLoop::new(
@@ -497,6 +520,35 @@ enum ClientLoopAction {
     Exit,
 }
 
+// The local socket is always attempted before the event loop; there is no launch state where
+// Local was deliberately omitted. A socket that refused the connection leaves no failure to
+// report (the supervisor simply retries it), while a failed handshake or setup carries one.
+enum LocalAtLaunch {
+    Attached {
+        endpoint: AttachedEndpoint,
+        generation: shepr_protocol::ConnectionGeneration,
+    },
+    Failed {
+        failure: Option<shepr_remote::EndpointFailure>,
+        generation: shepr_protocol::ConnectionGeneration,
+    },
+}
+
+enum LocalLaunchState {
+    Attached,
+    /// The socket could not be reached; no attempt outcome is recorded, so the supervisor
+    /// starts its first attempt at once.
+    Unreached,
+    Failed(shepr_remote::EndpointFailure),
+}
+
+enum ClientLoopWake {
+    Event(ClientLoopEvent),
+    Deadline,
+    FatalPanic,
+    QueueClosed,
+}
+
 struct ClientLoop {
     state: ClientState,
     local_failure_policy: endpoint::LocalFailurePolicy,
@@ -508,7 +560,7 @@ struct ClientLoop {
     write_stream: endpoint::EndpointRegistry,
     supervisors: endpoint::EndpointSupervisors,
     endpoint_commands: endpoint::commands::EndpointCommands,
-    next_view_serial: u64,
+    next_view_serial: endpoint::view::ViewSerialAllocator,
     reported_cell_size: Arc<AtomicCellSize>,
     event_tx: tokio::sync::mpsc::Sender<ClientLoopEvent>,
     event_rx: tokio::sync::mpsc::Receiver<ClientLoopEvent>,
@@ -518,7 +570,7 @@ struct ClientLoop {
 fn update_endpoint_status_presentation(
     state: &mut ClientState,
     endpoint_id: &endpoint::ClientEndpointId,
-    status: endpoint::ClientEndpointStatus,
+    status: endpoint::EndpointFailureStatus,
     message: &shepr_remote::EndpointFailure,
 ) {
     state.shell.set_endpoint_status(endpoint_id, status);
@@ -527,11 +579,16 @@ fn update_endpoint_status_presentation(
         .set_machine_diagnostic(endpoint_id, &message.diagnostic());
     // Handshake diagnostics carry only the failing phase; the status line supplies
     // the configured endpoint label once.
-    let unavailable = (status == endpoint::ClientEndpointStatus::Attention
+    let unavailable = (status == endpoint::EndpointFailureStatus::Attention
         && state.shell.endpoint_is_active(endpoint_id))
-    .then(|| format!("{}: {message}", endpoint_id.display_label()));
-    if let Some(message) = unavailable {
-        present_notice(state, message);
+    .then(|| {
+        shell::EndpointNotice::new(
+            endpoint_id.clone(),
+            shell::EndpointNoticeKind::StatusFailure(message.to_string()),
+        )
+    });
+    if let Some(notice) = unavailable {
+        present_notice(state, &notice);
     } else {
         state.mark_chrome_dirty();
     }
@@ -576,7 +633,7 @@ impl ClientLoop {
             write_stream,
             supervisors,
             endpoint_commands: endpoint::commands::EndpointCommands::default(),
-            next_view_serial: 1,
+            next_view_serial: endpoint::view::ViewSerialAllocator::new(),
             reported_cell_size,
             event_tx,
             event_rx,
@@ -596,19 +653,21 @@ impl ClientLoop {
 
     /// Returns a quit request at once, else waits for the timer armed from the earliest
     /// pending deadline as of `now` or the shared event queue.
-    async fn wait_for_next_event(&mut self, now: std::time::Instant) -> ClientLoopEvent {
+    async fn wait_for_next_event(&mut self, now: std::time::Instant) -> ClientLoopWake {
         let timer_deadline = self.next_timer_deadline(now);
         if self.should_quit.load(Ordering::Acquire) {
-            return ClientLoopEvent::Quit;
+            return ClientLoopWake::Event(ClientLoopEvent::Quit);
         }
 
         tokio::select! {
             biased;
-            // First, so a ready timer or event cannot postpone it; `run`
-            // checks the latch as soon as the wait returns.
-            () = self.fatal.latched() => ClientLoopEvent::Timer,
-            _ = wait_for_client_timer(timer_deadline) => ClientLoopEvent::Timer,
-            ev = self.event_rx.recv() => ev.unwrap_or(ClientLoopEvent::Timer),
+            // Keep wake reasons distinct: a panic and a closed queue are not elapsed timers.
+            () = self.fatal.latched() => ClientLoopWake::FatalPanic,
+            _ = wait_for_client_timer(timer_deadline) => ClientLoopWake::Deadline,
+            ev = self.event_rx.recv() => match ev {
+                Some(event) => ClientLoopWake::Event(event),
+                None => ClientLoopWake::QueueClosed,
+            },
         }
     }
 
@@ -649,10 +708,16 @@ impl ClientLoop {
                 },
                 &self.event_tx,
             );
-            let event = self.wait_for_next_event(loop_now).await;
+            let wake = self.wait_for_next_event(loop_now).await;
             if self.fatal.is_latched() {
                 return Err(ClientError::Panicked);
             }
+            let event = match wake {
+                ClientLoopWake::Event(event) => event,
+                ClientLoopWake::Deadline => ClientLoopEvent::Timer,
+                ClientLoopWake::FatalPanic => return Err(ClientError::Panicked),
+                ClientLoopWake::QueueClosed => return Ok(()),
+            };
             // client-clock-sample-ok: sample after waiting for the event to arrive.
             let now = std::time::Instant::now();
             if self.handle_event(event, now)? == ClientLoopAction::Exit {
@@ -695,6 +760,17 @@ impl ClientLoop {
             ClientLoopEvent::Timer => self.handle_timer(now),
         }?;
         if action == ClientLoopAction::NextEvent {
+            if self.state.retry_host_modes {
+                self.state.retry_host_modes = false;
+                let mouse = self.state.host_modes.apply_mouse(
+                    &mut self.state.output_writer,
+                    self.state.reported_geometry.exact,
+                    true,
+                );
+                self.state
+                    .record_host_mode_write("mouse mode retry", mouse)?;
+                sync_client_shell_keyboard_report_all(&mut self.state)?;
+            }
             self.state.present_pending();
         }
         Ok(action)
@@ -721,17 +797,21 @@ impl ClientLoop {
         }
         if shepr_termio::input::raw_input::events_require_host_mode_refresh(
             inputs.iter().map(|input| &input.event),
-        ) && let Err(err) = state.host_modes.apply_mouse(
+        ) && let Err(error) = state.host_modes.apply_mouse(
             &mut state.output_writer,
             state.reported_geometry.exact,
             true,
         ) {
-            warn!(error = %err, "failed to re-assert host mouse capture");
+            // Reassertion repeats a mode the host already accepted after a host event that
+            // may have reset it; a failure here is logged and never ends the session.
+            warn!(%error, "failed to re-assert host mouse capture");
         }
         let host_reports_all_keys = state.host_modes.keyboard_report_all_active();
         let shell = &mut state.shell;
         let outcome = shell.handle_host_input(inputs, host_reports_all_keys, now);
-        if finish_client_shell_input(state, outcome, write_stream, endpoint_commands, now)? {
+        if finish_client_shell_input(state, outcome, write_stream, endpoint_commands, now)?
+            == ShellInputDisposition::Detach
+        {
             return Ok(ClientLoopAction::Exit);
         }
         Ok(ClientLoopAction::NextEvent)
@@ -771,10 +851,11 @@ impl ClientLoop {
             cell_height_px,
             pixel_geometry_exact,
         );
-        state
-            .host_modes
-            .apply_mouse(&mut state.output_writer, pixel_geometry_exact, false)
-            .map_err(ClientError::HostTerminal)?;
+        let mouse =
+            state
+                .host_modes
+                .apply_mouse(&mut state.output_writer, pixel_geometry_exact, false);
+        state.record_host_mode_write("mouse mode resize", mouse)?;
         state.set_host_size(new_cols, new_rows);
         // Resizing invalidates the host-side blit baseline. The retained pane surface
         // stays: until the resized one arrives, `compose` draws it clipped to the new
@@ -810,10 +891,10 @@ impl ClientLoop {
                 connector,
             } => {
                 supervisors.return_connector(&endpoint_id, generation, connector);
-                if !supervisors.record_status(&endpoint_id, generation, status, now) {
+                if !supervisors.record_status(&endpoint_id, generation, status.into(), now) {
                     return Ok(ClientLoopAction::NextEvent);
                 }
-                if status == endpoint::ClientEndpointStatus::Attention {
+                if status == endpoint::EndpointFailureStatus::Attention {
                     warn!(endpoint = %endpoint_id, generation, error = %message, "endpoint needs attention");
                 }
                 update_endpoint_status_presentation(state, &endpoint_id, status, &message);
@@ -844,8 +925,8 @@ impl ClientLoop {
                     surface_decoder,
                 ) {
                     let failure = errors::endpoint_setup_failure(&error);
-                    let status = endpoint::ClientEndpointStatus::after_failure(&failure);
-                    supervisors.record_status(&endpoint_id, generation, status, now);
+                    let status = endpoint::EndpointFailureStatus::after_failure(&failure);
+                    supervisors.record_status(&endpoint_id, generation, status.into(), now);
                     update_endpoint_status_presentation(state, &endpoint_id, status, &failure);
                     return Ok(ClientLoopAction::NextEvent);
                 }
@@ -1016,11 +1097,13 @@ impl ClientLoop {
                 } else {
                     shell::ClientShellInput {
                         repaint: shell
-                            .drop_request(&completed.request_id, shell::DropReason::Interrupted),
+                            .drop_request(&completed.request_id, shell::DropReason::Interrupted)
+                            .is_needed(),
                         ..Default::default()
                     }
                 };
                 if finish_client_shell_input(state, outcome, write_stream, endpoint_commands, now)?
+                    == ShellInputDisposition::Detach
                 {
                     return Ok(ClientLoopAction::Exit);
                 }
@@ -1034,13 +1117,25 @@ impl ClientLoop {
                     state.settings.prefers_osc52_clipboard(),
                     &mut state.output_writer,
                 ) {
-                    warn!(
-                        endpoint = %endpoint_id,
-                        generation,
-                        bytes = data.len(),
-                        %error,
-                        "clipboard copy from the server did not reach the host clipboard"
-                    );
+                    match state::host_write_failure_action(
+                        state::HostWritePurpose::Clipboard,
+                        error.kind(),
+                    ) {
+                        state::HostWriteAction::Fatal => {
+                            return Err(ClientError::HostTerminal(error));
+                        }
+                        state::HostWriteAction::Retry
+                        | state::HostWriteAction::Continue
+                        | state::HostWriteAction::Succeeded => {
+                            warn!(
+                                endpoint = %endpoint_id,
+                                generation,
+                                bytes = data.len(),
+                                %error,
+                                "clipboard copy from the server did not reach the host clipboard"
+                            );
+                        }
+                    }
                 }
             }
             DecodedWireServerMessage::WindowTitle { title } => {
@@ -1053,9 +1148,12 @@ impl ClientLoop {
                 let written = state
                     .host_modes
                     .write_window_title(&mut state.output_writer, title.as_deref());
-                state
-                    .title_write_failure
-                    .observe("window title", &written, None);
+                state.title_write_failure.observe(
+                    state::HostWritePurpose::Title,
+                    "window title",
+                    &written,
+                    None,
+                );
             }
             DecodedWireServerMessage::MouseCapture {
                 enabled,
@@ -1064,25 +1162,21 @@ impl ClientLoop {
                 state
                     .host_modes
                     .set_mouse_endpoint_request(enabled, sgr_pixels);
-                state
-                    .host_modes
-                    .apply_mouse(
-                        &mut state.output_writer,
-                        state.reported_geometry.exact,
-                        false,
-                    )
-                    .map_err(ClientError::HostTerminal)?;
+                let result = state.host_modes.apply_mouse(
+                    &mut state.output_writer,
+                    state.reported_geometry.exact,
+                    false,
+                );
+                state.record_host_mode_write("endpoint mouse capture", result)?;
             }
             DecodedWireServerMessage::ClientShellKeyboardReportAll { enabled } => {
                 let shell_requests_report_all = state.shell.host_keyboard_report_all_requested();
-                state
-                    .host_modes
-                    .set_pane_keyboard_report_all(
-                        &mut state.output_writer,
-                        enabled,
-                        shell_requests_report_all,
-                    )
-                    .map_err(ClientError::HostTerminal)?;
+                let result = state.host_modes.set_pane_keyboard_report_all(
+                    &mut state.output_writer,
+                    enabled,
+                    shell_requests_report_all,
+                );
+                state.record_host_mode_write("keyboard report-all request", result)?;
             }
             DecodedWireServerMessage::HealthPong => {
                 return Ok(ClientLoopAction::NextEvent);
@@ -1143,7 +1237,9 @@ impl ClientLoop {
             ));
             outcome
         };
-        if finish_client_shell_input(state, outcome, write_stream, endpoint_commands, now)? {
+        if finish_client_shell_input(state, outcome, write_stream, endpoint_commands, now)?
+            == ShellInputDisposition::Detach
+        {
             return Ok(ClientLoopAction::Exit);
         }
         Ok(ClientLoopAction::NextEvent)
@@ -1265,7 +1361,7 @@ mod client_timer_tests {
             test_client_loop(now, endpoint::EndpointRegistry::empty());
         // The wait future borrows the loop, so it lives in its own scope and
         // the loop is free again to handle the event it produced.
-        let event = {
+        let wake = {
             let wait = client_loop.wait_for_next_event(now);
             tokio::pin!(wait);
             // Poll once so the loop is parked on its queue before quit arrives.
@@ -1280,6 +1376,9 @@ mod client_timer_tests {
                 "client event queue has room for quit"
             );
             wait.await
+        };
+        let ClientLoopWake::Event(event) = wake else {
+            panic!("quit input did not wake the client loop");
         };
         assert!(matches!(&event, ClientLoopEvent::Quit));
         assert!(matches!(
@@ -1333,7 +1432,7 @@ mod client_timer_tests {
         // that armed nothing, or armed a later deadline, runs out the second
         // timeout, and one that armed an earlier deadline wakes inside the
         // first.
-        let event = {
+        let wake = {
             let wait = client_loop.wait_for_next_event(now);
             tokio::pin!(wait);
             assert!(
@@ -1346,7 +1445,8 @@ mod client_timer_tests {
                 .await
                 .expect("the client loop arms its pending deadline")
         };
-        assert!(matches!(&event, ClientLoopEvent::Timer));
+        assert!(matches!(wake, ClientLoopWake::Deadline));
+        let event = ClientLoopEvent::Timer;
         let fired_at = tokio::time::Instant::now().into_std();
         client_loop
             .handle_event(event, fired_at)
@@ -1367,7 +1467,9 @@ mod client_timer_tests {
             ))
             .await
             .expect("client event receiver remains open");
-        let event = client_loop.wait_for_next_event(fired_at).await;
+        let ClientLoopWake::Event(event) = client_loop.wait_for_next_event(fired_at).await else {
+            panic!("resize input did not wake the client loop");
+        };
         assert!(matches!(event, ClientLoopEvent::Resize(_)));
         assert_eq!(
             sent.lock()
@@ -1400,7 +1502,9 @@ mod client_timer_tests {
             ))
             .await
             .expect("client event receiver remains open");
-        let event = wait.await;
+        let ClientLoopWake::Event(event) = wait.await else {
+            panic!("resize input did not wake the client loop");
+        };
         assert!(matches!(event, ClientLoopEvent::Resize(_)));
     }
 }

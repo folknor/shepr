@@ -149,7 +149,7 @@ pub(crate) fn test_headless_server() -> HeadlessServer {
         client_view_keys: HashMap::new(),
         client_shell_boot_id: shepr_test_fixtures::fixed_boot_id(1),
         shell_session_cache: None,
-        shell_session_generation: 0,
+        shell_session_generation: crate::server::clients::ShellSessionGeneration::default(),
         focused_panes: HashSet::new(),
         immediate_pty_sources_dirty: true,
         host_input_modes_dirty: true,

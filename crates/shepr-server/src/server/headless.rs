@@ -29,7 +29,8 @@ use crate::app;
 use crate::limits::SERVER_EVENT_CHANNEL_CAPACITY;
 use crate::server::client_transport::ServerEvent;
 use crate::server::clients::{
-    ClientConnection, ClientDeparture, ClientRegistry, ClientShellState, render_targets,
+    ClientConnection, ClientDeparture, ClientRegistry, ClientShellLocationGeneration,
+    ClientShellState, ShellSessionGeneration, render_targets,
 };
 use crate::server::outbox::{ClientOutbox, Delivery, ReleaseMode, ReplyTicket};
 use crate::server::pane_input::apply_client_pane_input_events;
@@ -78,7 +79,7 @@ enum LoopEvent {
 
 struct PendingCheckpointedPaneExit {
     event: shepr_mux::events::AppEvent,
-    checkpoint_generation: u64,
+    checkpoint_generation: app::CheckpointGeneration,
 }
 
 // ---------------------------------------------------------------------------
@@ -91,7 +92,7 @@ struct PendingCheckpointedPaneExit {
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct ClientViewKey {
     presenting: bool,
-    location_generation: u64,
+    location_generation: ClientShellLocationGeneration,
     terminal_size: shepr_core::geometry::GridSize,
     cell_size: shepr_termio::host_term::cell_size::HostCellSize,
     pixel_mouse: bool,
@@ -127,7 +128,7 @@ pub struct HeadlessServer {
     /// rebuilt for a new application revision, or the cwd timer found a
     /// projection that changed. Each shell client records the generation it
     /// last projected.
-    shell_session_generation: u64,
+    shell_session_generation: ShellSessionGeneration,
     /// Panes last told they hold terminal focus (`sync_pane_focus`), derived
     /// from the clients' views; the record of what the panes were sent, not a
     /// view of its own.
@@ -179,7 +180,7 @@ pub struct HeadlessServer {
     pending_checkpointed_pane_exits: VecDeque<PendingCheckpointedPaneExit>,
     /// Set only while a ready held exit is routed back through the forwarding
     /// handler, which then skips its initial App preparation step.
-    replaying_checkpointed_pane_exit: Option<u64>,
+    replaying_checkpointed_pane_exit: Option<app::CheckpointGeneration>,
     /// Raised by client outboxes on closure or control-lane progress, client
     /// writers after a render drains, and the host shutdown monitor. Wakes an
     /// idle loop to reap, release replies, refresh surfaces, or sync shutdown.
@@ -209,7 +210,7 @@ impl HeadlessServer {
             client_view_keys: HashMap::new(),
             client_shell_boot_id: shepr_protocol::BootId::for_this_process(),
             shell_session_cache: None,
-            shell_session_generation: 0,
+            shell_session_generation: ShellSessionGeneration::default(),
             focused_panes: HashSet::new(),
             immediate_pty_sources_dirty: true,
             host_input_modes_dirty: true,

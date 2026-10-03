@@ -5,9 +5,8 @@ use std::io;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum RemoteServerStatus {
     Running {
-        version: Option<String>,
-        build_id: Option<shepr_protocol::BuildIdentity>,
-        boot_id: Option<shepr_protocol::BootId>,
+        build_id: shepr_protocol::BuildIdentity,
+        boot_id: shepr_protocol::BootId,
     },
     NotRunning,
 }
@@ -41,42 +40,26 @@ pub struct DifferentBuildServer {
 /// fails its preamble on every retry. A stopped server passes: the bridge starts
 /// one from the discovered executable, whose build discovery already matched.
 ///
-/// A running server of another build that reported both a printable build and a
-/// boot identity that parses as a [`shepr_protocol::BootId`] is a
-/// [`MachineSshCheck::DifferentBuild`], which can be restarted. One that did not
-/// (an unknown build, no boot identity, or one in a form the remote stop command
-/// refuses) cannot be stopped as a specific instance, so it is an error the
-/// operator has to act on.
+/// A running server of another build is a
+/// [`MachineSshCheck::DifferentBuild`], which can be restarted by its boot
+/// identity. The JSON schema requires both identities whenever a server is
+/// starting or running, so this intermediate state cannot represent a partial
+/// identity.
 pub(super) fn judge_remote_server(
-    target: &SshTarget,
     executable: &RemoteExecutable,
     status: &RemoteServerStatus,
-) -> io::Result<MachineSshCheck> {
-    let RemoteServerStatus::Running {
-        version,
-        build_id,
-        boot_id,
-    } = status
-    else {
-        return Ok(MachineSshCheck::Ready);
+) -> MachineSshCheck {
+    let RemoteServerStatus::Running { build_id, boot_id } = status else {
+        return MachineSshCheck::Ready;
     };
-    if build_id.is_some_and(shepr_protocol::BuildIdentity::is_this_build) {
-        return Ok(MachineSshCheck::Ready);
+    if build_id.is_this_build() {
+        return MachineSshCheck::Ready;
     }
-    let build = *build_id;
-    let boot = boot_id.clone();
-    if let (Some(build_id), Some(boot_id)) = (build, boot) {
-        return Ok(MachineSshCheck::DifferentBuild(DifferentBuildServer {
-            executable: executable.clone(),
-            build_id,
-            boot_id,
-        }));
-    }
-    Err(remote_server_compatibility_error(
-        target,
-        version.as_deref(),
-        build_id.map(|identity| identity.to_string()).as_deref(),
-    ))
+    MachineSshCheck::DifferentBuild(DifferentBuildServer {
+        executable: executable.clone(),
+        build_id: *build_id,
+        boot_id: boot_id.clone(),
+    })
 }
 
 /// Queries the remote server's state without judging its build.
@@ -116,9 +99,8 @@ pub(super) fn parse_remote_server_status_json(status: &str) -> io::Result<Remote
         ServerStatus::Gone | ServerStatus::Stopping(_) => Ok(RemoteServerStatus::NotRunning),
         ServerStatus::Starting(identity) | ServerStatus::Running(identity) => {
             Ok(RemoteServerStatus::Running {
-                version: Some(identity.version),
-                build_id: Some(identity.build_id),
-                boot_id: Some(identity.boot_id),
+                build_id: identity.build_id,
+                boot_id: identity.boot_id,
             })
         }
         // Not a link failure kind: SSH answered, the remote server did not.
@@ -127,20 +109,6 @@ pub(super) fn parse_remote_server_status_json(status: &str) -> io::Result<Remote
             remote_display_value(Some(&parsed.socket))
         ))),
     }
-}
-
-pub(super) fn remote_server_compatibility_error(
-    target: &SshTarget,
-    version: Option<&str>,
-    build_id: Option<&str>,
-) -> io::Error {
-    let version = remote_display_value(version);
-    let build_id = remote_display_value(build_id);
-    crate::remote_compatibility_error(format!(
-        "remote Shepr server compatibility error on {target}: found version {version} build {build_id}; this client is version {} build {}. To use this build, stop the remote server and retry",
-        shepr_protocol::build_version(),
-        shepr_protocol::BUILD_ID
-    ))
 }
 
 /// A remote-reported display value (a version, build id or socket path),
@@ -158,15 +126,10 @@ pub(super) fn remote_display_value(value: Option<&str>) -> crate::RemoteText {
 mod tests {
     use super::*;
 
-    fn running(
-        version: Option<String>,
-        build_id: Option<&str>,
-        boot_id: Option<&str>,
-    ) -> RemoteServerStatus {
+    fn running(build_id: &str, boot_id: &str) -> RemoteServerStatus {
         RemoteServerStatus::Running {
-            version,
-            build_id: build_id.and_then(|id| id.parse().ok()),
-            boot_id: boot_id.and_then(|id| id.parse().ok()),
+            build_id: build_id.parse().expect("build identity"),
+            boot_id: boot_id.parse().expect("boot identity"),
         }
     }
 
@@ -174,12 +137,8 @@ mod tests {
         RemoteExecutable::parse("/home/u/.cargo/bin/shepr").expect("test precondition")
     }
 
-    fn target() -> SshTarget {
-        SshTarget::parse("host").expect("test precondition")
-    }
-
-    fn judge(status: &RemoteServerStatus) -> io::Result<MachineSshCheck> {
-        judge_remote_server(&target(), &executable(), status)
+    fn judge(status: &RemoteServerStatus) -> MachineSshCheck {
+        judge_remote_server(&executable(), status)
     }
 
     fn other_build() -> &'static str {
@@ -192,27 +151,19 @@ mod tests {
 
     #[test]
     fn a_stopped_or_same_build_server_is_ready() {
-        // The build id alone decides; the version string is only reported.
-        let this_build = running(
-            Some("0.0.0-old".into()),
-            Some(shepr_protocol::BUILD_ID),
-            Some("17-23"),
-        );
+        let this_build = running(shepr_protocol::BUILD_ID, "17-23");
+        assert_eq!(judge(&this_build), MachineSshCheck::Ready);
         assert_eq!(
-            judge(&this_build).expect("same build"),
-            MachineSshCheck::Ready
-        );
-        assert_eq!(
-            judge(&RemoteServerStatus::NotRunning).expect("stopped"),
+            judge(&RemoteServerStatus::NotRunning),
             MachineSshCheck::Ready
         );
     }
 
     #[test]
     fn a_server_of_another_build_with_a_boot_identity_can_be_restarted() {
-        let stale = running(Some("0.0.0-old".into()), Some(other_build()), Some("17-23"));
+        let stale = running(other_build(), "17-23");
         assert_eq!(
-            judge(&stale).expect("restartable"),
+            judge(&stale),
             MachineSshCheck::DifferentBuild(DifferentBuildServer {
                 executable: executable(),
                 build_id: other_build().parse().expect("build identity"),
@@ -222,37 +173,8 @@ mod tests {
     }
 
     #[test]
-    fn a_server_that_cannot_be_named_as_an_instance_is_an_error() {
-        for stale in [
-            running(Some("v".into()), Some(other_build()), None),
-            running(Some("v".into()), Some(other_build()), Some("has space")),
-            // A printable token the remote stop command's boot id parser refuses.
-            running(Some("v".into()), Some(other_build()), Some("not-a-boot")),
-            running(Some("v".into()), None, Some("17-23")),
-            running(None, None, None),
-        ] {
-            let error = judge(&stale).expect_err("not restartable");
-            assert_eq!(error.kind(), io::ErrorKind::Unsupported);
-            assert!(error.to_string().contains("compatibility error on host"));
-        }
-    }
-
-    #[test]
-    fn remote_version_text_is_filtered_before_local_output() {
+    fn invalid_remote_status_json_error_does_not_echo_control_bytes() {
         let injected = "\x1b[2J";
-        let error = judge(&running(
-            Some(injected.into()),
-            Some(injected),
-            Some("17-23"),
-        ))
-        .expect_err("different build is rejected");
-        assert!(
-            error
-                .to_string()
-                .contains("found version unknown build unknown")
-        );
-        assert!(!error.to_string().contains('\x1b'));
-
         let parse_error = parse_remote_server_status_json(injected).expect_err("invalid JSON");
         assert!(!parse_error.to_string().contains('\x1b'));
     }
@@ -278,22 +200,6 @@ mod tests {
             remote_display_value(Some("bad\tvalue")).to_string(),
             "unknown"
         );
-    }
-
-    #[test]
-    fn server_build_mismatch_says_to_stop_the_remote_server() {
-        let stale = running(
-            Some(shepr_protocol::build_version()),
-            Some(other_build()),
-            None,
-        );
-        let error = judge(&stale).expect_err("stale daemon");
-        let message = error.to_string();
-        assert!(
-            message.contains("stop the remote server and retry"),
-            "{message}"
-        );
-        assert!(!message.contains("session"), "{message}");
     }
 }
 

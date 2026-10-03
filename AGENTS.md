@@ -156,11 +156,13 @@ orientation, and nothing checks them:
 - `shepr-agent`: detection manifests and agent integrations.
 - `shepr-config`: configuration parsing and validation.
 - `shepr-protocol`: compact wire types and codec; it uses `shepr-core` for
-  shared grid and input-batch resource budgets that config also borrows.
+  shared grid and input-batch resource budgets that config also borrows, and
+  `shepr-agent` for the agent identity the client projection carries.
 - `shepr-api`: JSON API schema and client, and the server socket: its listener
   tells JSON requests from TUI connections and hands the latter to the server's
   client protocol.
-- `shepr-termio`: terminal input encoding and parsing, copy-mode text
+- `shepr-termio`: terminal input encoding and parsing, the fixed key binding
+  tables the client's modes and overlays route by, copy-mode keys and text
   helpers, scrolling, selection rendering, frame blitting and host terminal
   helpers.
 - `shepr-remote`: configured machines and SSH connections.

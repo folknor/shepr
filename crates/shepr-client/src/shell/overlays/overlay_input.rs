@@ -13,7 +13,7 @@ use crossterm::event::KeyCode;
 
 use crate::shell::state::{
     ClientConfirmCloseOverlay, ClientHelpOverlay, ClientNavigatorOverlay, ClientRenameOverlay,
-    ClientShellInput, ClientShellState,
+    ClientShellInput, ClientShellState, Repaint,
 };
 
 impl ClientShellState {
@@ -218,14 +218,14 @@ impl ClientShellState {
 
     /// Applies the answer to a `workspace.checkout_root` request. An answer for
     /// an overlay that is gone or was reopened since is ignored, and a failed
-    /// lookup keeps the path-based suggestion. Returns whether to repaint.
+    /// lookup keeps the path-based suggestion. Returns a repaint decision.
     pub(in crate::shell) fn complete_workspace_label_lookup(
         &mut self,
         request: &shepr_protocol::RequestId,
         result: Option<shepr_protocol::command::EndpointReply>,
-    ) -> bool {
+    ) -> Repaint {
         let Some(ClientShellOverlay::Rename(rename)) = self.overlay.as_mut() else {
-            return false;
+            return Repaint::Unchanged;
         };
         let ClientRenameTarget::NewWorkspace {
             cwd,
@@ -234,19 +234,19 @@ impl ClientShellState {
             ..
         } = &mut rename.target
         else {
-            return false;
+            return Repaint::Unchanged;
         };
         if label_lookup.as_ref() != Some(request) {
-            return false;
+            return Repaint::Unchanged;
         }
         *label_lookup = None;
         let Some(shepr_protocol::command::EndpointReply::WorkspaceCheckoutRoot { root, home }) =
             result
         else {
-            return false;
+            return Repaint::Unchanged;
         };
         let Some(cwd) = cwd.as_deref() else {
-            return false;
+            return Repaint::Unchanged;
         };
         // Only a cwd outside Git can be labelled `~`.
         let home = if root.is_none() { home } else { None };
@@ -259,7 +259,7 @@ impl ClientShellState {
             rename.input = TextEditor::new(&label, true);
         }
         *suggested_name = label;
-        true
+        Repaint::Needed
     }
 
     pub(in crate::shell) fn open_rename_workspace_overlay(&mut self) {
@@ -388,7 +388,6 @@ impl ClientShellState {
         }
 
         if matches!(self.overlay, Some(ClientShellOverlay::Navigator(_))) {
-            let (code, modifiers) = shepr_config::normalize_key_combo((key.code, key.modifiers));
             let search_focused = matches!(
                 self.overlay,
                 Some(ClientShellOverlay::Navigator(ClientNavigatorOverlay {
@@ -396,142 +395,157 @@ impl ClientShellState {
                     ..
                 }))
             );
-            if code == KeyCode::Esc {
-                if search_focused {
-                    if let Some(ClientShellOverlay::Navigator(navigator)) = self.overlay.as_mut() {
-                        navigator.search_focused = false;
+            let command = if search_focused {
+                super::fixed_keys::navigator_command_for_search(key)
+            } else {
+                super::fixed_keys::navigator_command_for_main(key)
+            };
+            if let Some(
+                command @ (super::fixed_keys::NavigatorCommand::BackOrClose
+                | super::fixed_keys::NavigatorCommand::Open),
+            ) = command
+            {
+                match command {
+                    super::fixed_keys::NavigatorCommand::BackOrClose => {
+                        if search_focused {
+                            if let Some(ClientShellOverlay::Navigator(navigator)) =
+                                self.overlay.as_mut()
+                            {
+                                navigator.search_focused = false;
+                            }
+                        } else {
+                            self.overlay = None;
+                        }
+                        outcome.repaint = true;
                     }
-                } else {
-                    self.overlay = None;
+                    super::fixed_keys::NavigatorCommand::Open => {
+                        self.accept_navigator_selection(outcome);
+                    }
+                    _ => {}
                 }
-                outcome.repaint = true;
-                return;
-            }
-            if code == KeyCode::Enter {
-                self.accept_navigator_selection(outcome);
                 return;
             }
             if search_focused {
-                if let Some(ClientShellOverlay::Navigator(navigator)) = self.overlay.as_mut()
-                    && let Some(content_changed) = navigator.query.handle_key(key)
-                {
-                    if content_changed {
-                        navigator.filter = None;
+                if let Some(ClientShellOverlay::Navigator(navigator)) = self.overlay.as_mut() {
+                    let edit = navigator.query.handle_key(key);
+                    if edit.is_handled() {
+                        if edit.changed() {
+                            navigator.filter = None;
+                            navigator.selected = None;
+                        }
+                        outcome.repaint = true;
+                        return;
+                    }
+                }
+                match command {
+                    Some(super::fixed_keys::NavigatorCommand::MoveUp) => {
+                        self.move_navigator_selection(-1);
+                        outcome.repaint = true;
+                    }
+                    Some(super::fixed_keys::NavigatorCommand::MoveDown) => {
+                        self.move_navigator_selection(1);
+                        outcome.repaint = true;
+                    }
+                    _ => {}
+                }
+                return;
+            }
+            match command {
+                Some(super::fixed_keys::NavigatorCommand::MoveWorkspaceLeft) => {
+                    self.move_navigator_workspace(false);
+                    outcome.repaint = true;
+                }
+                Some(super::fixed_keys::NavigatorCommand::MoveWorkspaceRight) => {
+                    self.move_navigator_workspace(true);
+                    outcome.repaint = true;
+                }
+                Some(super::fixed_keys::NavigatorCommand::ClearFilter) => {
+                    if let Some(ClientShellOverlay::Navigator(navigator)) = self.overlay.as_mut()
+                        && navigator.filter.take().is_some()
+                    {
                         navigator.selected = None;
                     }
                     outcome.repaint = true;
-                    return;
                 }
-                if code == KeyCode::Up
-                    || code == KeyCode::Char('p') && modifiers == KeyModifiers::CONTROL
-                {
+                Some(super::fixed_keys::NavigatorCommand::Top) => {
+                    if let Some(ClientShellOverlay::Navigator(navigator)) = self.overlay.as_mut() {
+                        navigator.selected = None;
+                        navigator.scroll = 0;
+                    }
+                    outcome.repaint = true;
+                }
+                Some(super::fixed_keys::NavigatorCommand::Bottom) => {
+                    let last = self.overlay.as_ref().and_then(|overlay| match overlay {
+                        ClientShellOverlay::Navigator(navigator) => self
+                            .navigator_index
+                            .rows(self.endpoints.presented(), navigator)
+                            .last()
+                            .map(|row| row.target.clone()),
+                        _ => None,
+                    });
+                    if let Some(ClientShellOverlay::Navigator(navigator)) = self.overlay.as_mut() {
+                        navigator.selected = last;
+                    }
+                    outcome.repaint = true;
+                }
+                Some(super::fixed_keys::NavigatorCommand::Search) => {
+                    if let Some(ClientShellOverlay::Navigator(navigator)) = self.overlay.as_mut() {
+                        navigator.search_focused = true;
+                        navigator.filter = None;
+                    }
+                    outcome.repaint = true;
+                }
+                Some(super::fixed_keys::NavigatorCommand::MoveUp) => {
                     self.move_navigator_selection(-1);
                     outcome.repaint = true;
-                    return;
                 }
-                if code == KeyCode::Down
-                    || code == KeyCode::Char('n') && modifiers == KeyModifiers::CONTROL
-                {
+                Some(super::fixed_keys::NavigatorCommand::MoveDown) => {
                     self.move_navigator_selection(1);
                     outcome.repaint = true;
-                    return;
                 }
-                return;
-            }
-            if matches!(code, KeyCode::Left | KeyCode::Right) && modifiers.is_empty() {
-                self.move_navigator_workspace(code == KeyCode::Right);
-                outcome.repaint = true;
-                return;
-            }
-            if code == KeyCode::Backspace && modifiers.is_empty() {
-                if let Some(ClientShellOverlay::Navigator(navigator)) = self.overlay.as_mut()
-                    && navigator.filter.take().is_some()
-                {
-                    navigator.selected = None;
+                Some(super::fixed_keys::NavigatorCommand::PageDown) => {
+                    self.move_navigator_selection(8);
+                    outcome.repaint = true;
                 }
-                outcome.repaint = true;
-                return;
-            }
-            if code == KeyCode::Home && modifiers.is_empty() {
-                if let Some(ClientShellOverlay::Navigator(navigator)) = self.overlay.as_mut() {
-                    navigator.selected = None;
-                    navigator.scroll = 0;
+                Some(super::fixed_keys::NavigatorCommand::PageUp) => {
+                    self.move_navigator_selection(-8);
+                    outcome.repaint = true;
                 }
-                outcome.repaint = true;
-                return;
-            }
-            if matches!(code, KeyCode::End | KeyCode::Char('G')) && modifiers.is_empty() {
-                let last = self.overlay.as_ref().and_then(|overlay| match overlay {
-                    ClientShellOverlay::Navigator(navigator) => self
-                        .navigator_index
-                        .rows(self.endpoints.presented(), navigator)
-                        .last()
-                        .map(|row| row.target.clone()),
-                    _ => None,
-                });
-                if let Some(ClientShellOverlay::Navigator(navigator)) = self.overlay.as_mut() {
-                    navigator.selected = last;
+                Some(
+                    command @ (super::fixed_keys::NavigatorCommand::FilterBlocked
+                    | super::fixed_keys::NavigatorCommand::FilterWorking
+                    | super::fixed_keys::NavigatorCommand::FilterIdle
+                    | super::fixed_keys::NavigatorCommand::FilterAll),
+                ) => {
+                    let filter = match command {
+                        super::fixed_keys::NavigatorCommand::FilterBlocked => {
+                            Some(ClientNavigatorFilter::Blocked)
+                        }
+                        super::fixed_keys::NavigatorCommand::FilterWorking => {
+                            Some(ClientNavigatorFilter::Working)
+                        }
+                        super::fixed_keys::NavigatorCommand::FilterIdle => {
+                            Some(ClientNavigatorFilter::Idle)
+                        }
+                        _ => None,
+                    };
+                    if let Some(ClientShellOverlay::Navigator(navigator)) = self.overlay.as_mut() {
+                        navigator.query.clear();
+                        navigator.filter = filter;
+                        navigator.selected = None;
+                    }
+                    outcome.repaint = true;
                 }
-                outcome.repaint = true;
-                return;
-            }
-            if code == KeyCode::Char('/') && modifiers.is_empty() {
-                if let Some(ClientShellOverlay::Navigator(navigator)) = self.overlay.as_mut() {
-                    navigator.search_focused = true;
-                    navigator.filter = None;
-                }
-                outcome.repaint = true;
-                return;
-            }
-            if matches!(code, KeyCode::Down | KeyCode::Char('j')) && modifiers.is_empty() {
-                self.move_navigator_selection(1);
-                outcome.repaint = true;
-                return;
-            }
-            if matches!(code, KeyCode::Up | KeyCode::Char('k')) && modifiers.is_empty() {
-                self.move_navigator_selection(-1);
-                outcome.repaint = true;
-                return;
-            }
-            if code == KeyCode::Char('d') && modifiers.contains(KeyModifiers::CONTROL) {
-                self.move_navigator_selection(8);
-                outcome.repaint = true;
-                return;
-            }
-            if code == KeyCode::Char('u') && modifiers.contains(KeyModifiers::CONTROL) {
-                self.move_navigator_selection(-8);
-                outcome.repaint = true;
-                return;
-            }
-            if let Some(filter) = match code {
-                KeyCode::Char('b') if modifiers.is_empty() => Some(ClientNavigatorFilter::Blocked),
-                KeyCode::Char('w') if modifiers.is_empty() => Some(ClientNavigatorFilter::Working),
-                KeyCode::Char('i') if modifiers.is_empty() => Some(ClientNavigatorFilter::Idle),
-                _ => None,
-            } {
-                if let Some(ClientShellOverlay::Navigator(navigator)) = self.overlay.as_mut() {
-                    navigator.query.clear();
-                    navigator.filter = Some(filter);
-                    navigator.selected = None;
-                }
-                outcome.repaint = true;
-                return;
-            }
-            if code == KeyCode::Char('a') && modifiers.is_empty() {
-                if let Some(ClientShellOverlay::Navigator(navigator)) = self.overlay.as_mut() {
-                    navigator.query.clear();
-                    navigator.filter = None;
-                    navigator.selected = None;
-                }
-                outcome.repaint = true;
-                return;
+                Some(
+                    super::fixed_keys::NavigatorCommand::BackOrClose
+                    | super::fixed_keys::NavigatorCommand::Open,
+                )
+                | None => {}
             }
             return;
         }
 
         if matches!(self.overlay, Some(ClientShellOverlay::Help(_))) {
-            let text_character = shepr_termio::input::keybind_help_text_char(key);
-            let (code, modifiers) = shepr_config::normalize_key_combo((key.code, key.modifiers));
             let search_focused = matches!(
                 self.overlay,
                 Some(ClientShellOverlay::Help(ClientHelpOverlay {
@@ -540,38 +554,40 @@ impl ClientShellState {
                 }))
             );
             if search_focused {
-                if let Some(ClientShellOverlay::Help(help)) = self.overlay.as_mut()
-                    && let Some(content_changed) = help.query.handle_key(key)
+                let command = super::fixed_keys::help_command_for_search(key);
+                if (command == Some(super::fixed_keys::HelpCommand::Edit) || command.is_none())
+                    && let Some(ClientShellOverlay::Help(help)) = self.overlay.as_mut()
                 {
-                    if content_changed {
-                        help.scroll = 0;
+                    let edit = help.query.handle_key(key);
+                    if edit.is_handled() {
+                        if edit.changed() {
+                            help.scroll = 0;
+                        }
+                        outcome.repaint = true;
+                        return;
                     }
-                    outcome.repaint = true;
-                    return;
                 }
-                match code {
-                    KeyCode::Esc => {
+                match command {
+                    Some(super::fixed_keys::HelpCommand::Back) => {
                         if let Some(ClientShellOverlay::Help(help)) = self.overlay.as_mut() {
                             help.search_focused = false;
                             help.query.clear();
                             help.scroll = 0;
                         }
                     }
-                    KeyCode::Enter => self.overlay = None,
-                    KeyCode::Up
-                    | KeyCode::Down
-                    | KeyCode::PageUp
-                    | KeyCode::PageDown
-                    | KeyCode::Char('n' | 'p')
-                        if !matches!(code, KeyCode::Char(_))
-                            || modifiers == KeyModifiers::CONTROL =>
-                    {
-                        let delta = match code {
-                            KeyCode::Up | KeyCode::Char('p') => -1,
-                            KeyCode::Down | KeyCode::Char('n') => 1,
-                            KeyCode::PageUp => -8,
-                            KeyCode::PageDown => 8,
-                            _ => unreachable!(),
+                    Some(super::fixed_keys::HelpCommand::Close) => self.overlay = None,
+                    Some(
+                        super::fixed_keys::HelpCommand::ScrollUp
+                        | super::fixed_keys::HelpCommand::ScrollDown
+                        | super::fixed_keys::HelpCommand::PageUp
+                        | super::fixed_keys::HelpCommand::PageDown,
+                    ) => {
+                        let delta = match command {
+                            Some(super::fixed_keys::HelpCommand::ScrollUp) => -1,
+                            Some(super::fixed_keys::HelpCommand::ScrollDown) => 1,
+                            Some(super::fixed_keys::HelpCommand::PageUp) => -8,
+                            Some(super::fixed_keys::HelpCommand::PageDown) => 8,
+                            _ => 0,
                         };
                         if let Some(ClientShellOverlay::Help(help)) = self.overlay.as_mut() {
                             help.scroll = help
@@ -580,35 +596,43 @@ impl ClientShellState {
                                 .min(self.hits.help_max_scroll);
                         }
                     }
-                    _ => {}
+                    Some(
+                        super::fixed_keys::HelpCommand::Edit
+                        | super::fixed_keys::HelpCommand::Search
+                        | super::fixed_keys::HelpCommand::Top
+                        | super::fixed_keys::HelpCommand::Bottom,
+                    )
+                    | None => {}
                 }
                 outcome.repaint = true;
                 return;
             }
 
-            match code {
-                KeyCode::Esc | KeyCode::Enter => self.overlay = None,
-                KeyCode::Home => {
+            let command = super::fixed_keys::help_command_for_main(key);
+            match command {
+                Some(super::fixed_keys::HelpCommand::Close) => self.overlay = None,
+                Some(super::fixed_keys::HelpCommand::Top) => {
                     if let Some(ClientShellOverlay::Help(help)) = self.overlay.as_mut() {
                         help.scroll = 0;
                     }
                 }
-                KeyCode::End => {
+                Some(super::fixed_keys::HelpCommand::Bottom) => {
                     if let Some(ClientShellOverlay::Help(help)) = self.overlay.as_mut() {
                         help.scroll = self.hits.help_max_scroll;
                     }
                 }
-                KeyCode::Up
-                | KeyCode::Down
-                | KeyCode::Char('k' | 'j')
-                | KeyCode::PageUp
-                | KeyCode::PageDown => {
-                    let delta = match code {
-                        KeyCode::Up | KeyCode::Char('k') => -1,
-                        KeyCode::Down | KeyCode::Char('j') => 1,
-                        KeyCode::PageUp => -8,
-                        KeyCode::PageDown => 8,
-                        _ => unreachable!(),
+                Some(
+                    super::fixed_keys::HelpCommand::ScrollUp
+                    | super::fixed_keys::HelpCommand::ScrollDown
+                    | super::fixed_keys::HelpCommand::PageUp
+                    | super::fixed_keys::HelpCommand::PageDown,
+                ) => {
+                    let delta = match command {
+                        Some(super::fixed_keys::HelpCommand::ScrollUp) => -1,
+                        Some(super::fixed_keys::HelpCommand::ScrollDown) => 1,
+                        Some(super::fixed_keys::HelpCommand::PageUp) => -8,
+                        Some(super::fixed_keys::HelpCommand::PageDown) => 8,
+                        _ => 0,
                     };
                     if let Some(ClientShellOverlay::Help(help)) = self.overlay.as_mut() {
                         help.scroll = help
@@ -617,14 +641,16 @@ impl ClientShellState {
                             .min(self.hits.help_max_scroll);
                     }
                 }
-                _ if text_character == Some('/') => {
+                Some(super::fixed_keys::HelpCommand::Search) => {
                     if let Some(ClientShellOverlay::Help(help)) = self.overlay.as_mut() {
                         help.search_focused = true;
                         help.scroll = 0;
                     }
                 }
-                _ if text_character == Some('?') => self.overlay = None,
-                _ => {}
+                Some(
+                    super::fixed_keys::HelpCommand::Back | super::fixed_keys::HelpCommand::Edit,
+                )
+                | None => {}
             }
             outcome.repaint = true;
             return;
@@ -670,7 +696,7 @@ impl ClientShellState {
             .as_deref()
             .is_some_and(|text| !text.is_empty())
         {
-            outcome.repaint |= rename.input.handle_key(key).is_some();
+            outcome.repaint |= rename.input.handle_key(key).is_handled();
             return;
         }
         if key.code == KeyCode::Char('c') && key.modifiers == KeyModifiers::CONTROL {
@@ -683,7 +709,7 @@ impl ClientShellState {
             outcome.repaint = true;
             return;
         }
-        if rename.input.handle_key(key).is_some() {
+        if rename.input.handle_key(key).is_handled() {
             outcome.repaint = true;
         }
     }

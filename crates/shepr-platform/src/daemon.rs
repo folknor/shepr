@@ -109,13 +109,11 @@ impl SpawnedDaemon {
         Self { child: Some(child) }
     }
 
-    /// The daemon's pid while it has not been seen to exit.
-    pub fn id(&self) -> Option<u32> {
-        self.child.as_ref().map(Child::id)
-    }
-
+    /// The daemon's process id while it has not been seen to exit.
     pub fn process_id(&self) -> Option<crate::Pid> {
-        self.id().and_then(crate::Pid::new)
+        self.child
+            .as_ref()
+            .and_then(|child| crate::Pid::new(child.id()))
     }
 
     /// Polls the child without waiting and reports its exit status once. A
@@ -277,7 +275,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         };
         assert_eq!(status.code(), Some(7));
-        assert_eq!(guard.id(), None);
+        assert_eq!(guard.process_id(), None);
         assert!(guard.try_wait().expect("poll again").is_none());
     }
 

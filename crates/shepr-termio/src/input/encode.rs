@@ -900,7 +900,7 @@ mod tests {
         ] {
             let key = TerminalKey::new(KeyCode::Char(base), KeyModifiers::SHIFT);
             assert_eq!(
-                crate::copy_mode::copy_mode_command_char(&key),
+                crate::copy_mode::copy_mode_key_char(&key),
                 Some(shifted),
                 "copy mode base={base}"
             );

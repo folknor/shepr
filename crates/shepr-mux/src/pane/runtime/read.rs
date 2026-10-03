@@ -12,39 +12,58 @@ impl PaneRead<'_> {
 
     pub fn search_text_window(
         &self,
-        query: &str,
-        case_sensitive: bool,
-        direction: crate::pane::TerminalSearchDirection,
-        cursor: crate::pane::TerminalTextPoint,
-        previous: Option<(
-            crate::pane::TerminalTextPoint,
-            crate::pane::TerminalTextPoint,
-        )>,
-        limit: usize,
+        search: crate::pane::TerminalTextSearch<'_>,
     ) -> crate::pane::TerminalSearchWindow {
-        self.terminal
-            .search_text_window(query, case_sensitive, direction, cursor, previous, limit)
+        self.terminal.search_text_window(search)
     }
 
-    pub fn word_motion_target(
+    /// Resolve every copy-mode motion against the same stable cursor point.
+    /// Line motions need retained row text; word and paragraph motions stay at
+    /// the cursor when the requested target is unavailable.
+    pub fn copy_motion(
         &self,
-        row: shepr_vt::AbsRow,
-        col: u16,
-        motion: crate::pane::TerminalWordMotion,
-    ) -> Option<crate::pane::TerminalTextPoint> {
-        self.terminal.word_motion_target(row, col, motion)
+        cursor: crate::pane::TerminalTextPoint,
+        motion: crate::pane::TerminalCopyMotion,
+    ) -> Result<crate::pane::TerminalTextPoint, crate::pane::TerminalCopyMotionError> {
+        use crate::pane::{TerminalCopyMotion, TerminalLineMotion};
+
+        match motion {
+            TerminalCopyMotion::Line(motion) => {
+                let selection =
+                    shepr_vt::selection::Selection::line_range((), cursor.row, cursor.row);
+                let Some(text) = self.extract_selection(&selection) else {
+                    return Err(crate::pane::TerminalCopyMotionError::RowUnavailable);
+                };
+                let width = self
+                    .terminal
+                    .dimensions()
+                    .map_or(1, |(cols, _)| cols.max(1));
+                let col = match motion {
+                    TerminalLineMotion::End => {
+                        shepr_termio::copy_mode::last_character_col(&text).unwrap_or(0)
+                    }
+                    TerminalLineMotion::FirstNonBlank => {
+                        shepr_termio::copy_mode::first_non_blank_col(&text).unwrap_or(0)
+                    }
+                };
+                Ok(shepr_vt::Point::new(
+                    cursor.row,
+                    col.min(width.saturating_sub(1)),
+                ))
+            }
+            TerminalCopyMotion::Word(motion) => Ok(self
+                .terminal
+                .word_motion_target(cursor, motion)
+                .unwrap_or(cursor)),
+            TerminalCopyMotion::Paragraph(motion) => Ok(self
+                .terminal
+                .paragraph_motion_target(cursor, motion)
+                .unwrap_or(cursor)),
+        }
     }
 
     pub fn terminal_dimensions(&self) -> Option<(u16, u16)> {
         self.terminal.dimensions()
-    }
-
-    pub fn paragraph_motion_target(
-        &self,
-        row: shepr_vt::AbsRow,
-        direction: i8,
-    ) -> Option<crate::pane::TerminalTextPoint> {
-        self.terminal.paragraph_motion_target(row, direction)
     }
 
     pub fn bracketed_paste_enabled(&self) -> bool {

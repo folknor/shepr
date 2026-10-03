@@ -184,7 +184,7 @@ fn client_presentation_regression_notice_card_keeps_diagnostic_lines_visible() {
     state.set_snapshot(Box::new(snapshot()));
     assert!(state.push_endpoint_notice(
         ClientEndpointNoticeKind::Unavailable,
-        crate::shell::overlays::machine_diagnostics::MACHINE_DIAGNOSTIC_NOTICE_CODE,
+        crate::shell::overlays::notices::NoticeCode::MachineDiagnostic,
         "Buildbox: restart shepr to authenticate",
         "first diagnostic line\nsecond diagnostic line\nthird diagnostic line",
     ));

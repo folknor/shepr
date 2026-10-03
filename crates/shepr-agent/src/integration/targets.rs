@@ -103,13 +103,7 @@ pub(super) fn install(paths: &AgentIntegrationPaths, target: Target) -> io::Resu
                     paths,
                     "{}",
                     |content, path| {
-                        super::claude_settings::install(
-                            content,
-                            path,
-                            &hook_path,
-                            target.hook_events(),
-                            timeout,
-                        )
+                        super::claude_settings::install(content, path, &hook_path, timeout)
                     },
                 )?);
             } else {

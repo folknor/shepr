@@ -7,12 +7,12 @@ use shepr_protocol::ClientMessage;
 use shepr_protocol::command::EndpointCommand;
 use shepr_termio::input::raw_input::RawInputEvent;
 
-use crate::endpoint::ClientEndpointStatus;
+use crate::endpoint::{ClientEndpointStatus, EndpointFailureStatus};
 use crate::shell::endpoints::ClientEndpointFocusTarget;
 use crate::shell::presentation::render;
 use crate::shell::state::{
     ClientChromeDrag, ClientNavigatorTarget, ClientShellAction, ClientShellConfig,
-    ClientShellInput, ClientShellMode, ClientShellOverlay,
+    ClientShellInput, ClientShellMode, ClientShellOverlay, ClientShellRequest,
 };
 use crossterm::event::MouseButton;
 use crossterm::event::MouseEventKind;
@@ -51,7 +51,7 @@ pub(in crate::shell) fn agent(
 ) -> ClientShellAgent {
     ClientShellAgent {
         pane_id: "w1:p1".parse().expect("test precondition"),
-        agent: Some("pi".into()),
+        agent: Some(shepr_config::ConfigAgent::Pi),
         terminal_title: None,
         terminal_title_stripped: None,
         agent_status: status,
@@ -88,13 +88,12 @@ fn state_with_machines(
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     let endpoint_id = ClientEndpointId::Ssh(machines[0].label.clone());
     state.set_machines(machines);
-    state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Online);
     state.set_snapshot(Box::new(snapshot()));
     state.receive_pane_surface(surface());
     let mut remote = snapshot();
     remote.boot_id = crate::tests::test_boot_id("remote-boot");
     remote.workspaces[0].label = "remote-workspace".into();
-    state.set_endpoint_snapshot(&endpoint_id, Box::new(remote));
+    state.connect_endpoint_with_snapshot(&endpoint_id, 1, Box::new(remote));
     (state, endpoint_id)
 }
 
@@ -165,12 +164,11 @@ fn a_failed_handshake_marks_only_its_endpoint() {
     other_snapshot.boot_id = crate::tests::test_boot_id("remote-boot");
     other_snapshot.workspaces[0].label = "other-workspace".into();
     let client_prefix = prefix_key(&state);
-    state.set_endpoint_snapshot(&other, Box::new(other_snapshot));
-    state.set_endpoint_status(&other, ClientEndpointStatus::Online);
+    state.connect_endpoint_with_snapshot(&other, 1, Box::new(other_snapshot));
 
     // A malformed welcome fails that endpoint's handshake:
     // the loop reports it as an Attention diagnostic, like any handshake failure.
-    state.set_endpoint_status(&failed, ClientEndpointStatus::Attention);
+    state.set_endpoint_status(&failed, EndpointFailureStatus::Attention);
     state.set_machine_diagnostic(
         &failed,
         &shepr_remote::SshFailureDiagnostic::from_message(
@@ -340,7 +338,7 @@ fn revealing_an_active_workspace_ignores_a_same_id_on_another_endpoint() {
 #[test]
 fn machine_diagnostic_badge_reopens_notice_without_collapsing_machine() {
     let (mut state, id) = state_with_remote();
-    state.set_endpoint_status(&id, ClientEndpointStatus::Attention);
+    state.set_endpoint_status(&id, EndpointFailureStatus::Attention);
     // ssh exits 255 for its own failures; this is how an auth prompt failure arrives.
     state.set_machine_diagnostic(
         &id,
@@ -374,7 +372,8 @@ fn machine_diagnostic_badge_reopens_notice_without_collapsing_machine() {
                 .contains("Build: restart shepr to authenticate")
         );
     }
-    state.set_endpoint_status(&id, ClientEndpointStatus::Online);
+    // A successful handshake clears the diagnostic.
+    state.endpoint_connected(&id, 2);
     state.compose(120, 40).expect("test precondition");
     assert!(
         !state.machine_diagnostics.required_for(
@@ -390,7 +389,7 @@ fn machine_diagnostic_badge_reopens_notice_without_collapsing_machine() {
 #[test]
 fn machine_diagnostic_card_replaces_tabs_and_preserves_lines() {
     let (mut state, id) = state_with_remote();
-    state.set_endpoint_status(&id, ClientEndpointStatus::Attention);
+    state.set_endpoint_status(&id, EndpointFailureStatus::Attention);
     state.set_machine_diagnostic(
         &id,
         &shepr_remote::SshFailureDiagnostic::from_message(
@@ -642,9 +641,10 @@ fn agent_indices_keep_stale_rows_and_skip_agents_the_sidebar_cannot_render() {
         ..stale.panes[0].clone()
     });
     state.set_endpoint_snapshot(&stale_id, Box::new(stale));
-    state.set_endpoint_status(&stale_id, ClientEndpointStatus::Reconnecting);
-    state.set_endpoint_snapshot(
+    state.set_endpoint_status(&stale_id, EndpointFailureStatus::Reconnecting);
+    state.connect_endpoint_with_snapshot(
         &other_id,
+        1,
         Box::new(snapshot_with_agent(
             "shared-server-boot",
             "w1:p3",
@@ -652,7 +652,6 @@ fn agent_indices_keep_stale_rows_and_skip_agents_the_sidebar_cannot_render() {
             3,
         )),
     );
-    state.set_endpoint_status(&other_id, ClientEndpointStatus::Online);
 
     state.compose(100, 28).expect("aggregate endpoint frame");
     let rendered = state
@@ -828,7 +827,7 @@ fn switching_machines_from_copy_mode_restores_terminal_input() {
     )]);
     assert!(matches!(
         input.requests.as_slice(),
-        [ClientMessage::ClientShellPaneInput { pane_id, events }]
+        [ClientShellRequest::Shown(ClientMessage::ClientShellPaneInput { pane_id, events })]
             if pane_id == "w1:p1" && events.len() == 1
     ));
 }
@@ -856,9 +855,11 @@ fn machine_navigation_does_not_require_a_local_snapshot_or_surface() {
         let machine = remote_machine();
         let remote = ClientEndpointId::Ssh(machine.label.clone());
         state.set_machines(&[machine]);
-        state.set_endpoint_status(&ClientEndpointId::Local, ClientEndpointStatus::Reconnecting);
-        state.set_endpoint_status(&remote, ClientEndpointStatus::Online);
-        state.set_endpoint_snapshot(&remote, Box::new(snapshot()));
+        state.set_endpoint_status(
+            &ClientEndpointId::Local,
+            EndpointFailureStatus::Reconnecting,
+        );
+        state.connect_endpoint_with_snapshot(&remote, 1, Box::new(snapshot()));
         assert!(state.snapshot.is_none());
         assert!(state.pane_surface().is_none());
         let frame = state
@@ -1238,7 +1239,6 @@ fn aggregate_agents_use_configured_rows_machine_token_and_status_colors() {
     let machine = remote_machine();
     let endpoint_id = ClientEndpointId::Ssh(machine.label.clone());
     state.set_machines(&[machine]);
-    state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Online);
 
     let mut local = snapshot();
     local.agents = vec![agent(AgentStatus::Idle, 1)];
@@ -1247,7 +1247,7 @@ fn aggregate_agents_use_configured_rows_machine_token_and_status_colors() {
     let mut remote = snapshot();
     remote.boot_id = crate::tests::test_boot_id("remote-boot");
     remote.agents = vec![agent(AgentStatus::Blocked, 1)];
-    state.set_endpoint_snapshot(&endpoint_id, Box::new(remote));
+    state.connect_endpoint_with_snapshot(&endpoint_id, 1, Box::new(remote));
 
     let frame = state.compose(100, 28).expect("combined endpoint frame");
     let text = frame
@@ -1298,7 +1298,6 @@ fn aggregate_priority_uses_client_observed_recency_across_machines() {
     let machine = remote_machine();
     let endpoint_id = ClientEndpointId::Ssh(machine.label.clone());
     state.set_machines(&[machine]);
-    state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Online);
 
     let mut local = snapshot();
     local.agents = vec![agent(AgentStatus::Idle, 1)];
@@ -1307,7 +1306,7 @@ fn aggregate_priority_uses_client_observed_recency_across_machines() {
     let mut remote = snapshot();
     remote.boot_id = crate::tests::test_boot_id("remote-boot");
     remote.agents = vec![agent(AgentStatus::Idle, 1)];
-    state.set_endpoint_snapshot(&endpoint_id, Box::new(remote.clone()));
+    state.connect_endpoint_with_snapshot(&endpoint_id, 1, Box::new(remote.clone()));
 
     let mut local = snapshot();
     local.agents = vec![agent(AgentStatus::Idle, 2)];
@@ -1420,7 +1419,7 @@ fn clicking_remote_machine_name_requests_activation_without_mutating_projection(
 fn clicking_an_offline_active_machine_row_only_toggles_its_collapse_state() {
     let (mut state, endpoint_id) = state_with_remote();
     assert!(state.activate_endpoint_projection(&endpoint_id));
-    state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Reconnecting);
+    state.set_endpoint_status(&endpoint_id, EndpointFailureStatus::Reconnecting);
     state.compose(100, 28).expect("active remote frame");
     let hit = state
         .hits
@@ -1447,7 +1446,7 @@ fn clicking_an_offline_active_machine_row_only_toggles_its_collapse_state() {
 fn selecting_an_offline_active_machine_in_the_navigator_is_silent() {
     let (mut state, endpoint_id) = state_with_remote();
     assert!(state.activate_endpoint_projection(&endpoint_id));
-    state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Reconnecting);
+    state.set_endpoint_status(&endpoint_id, EndpointFailureStatus::Reconnecting);
     state.open_navigator_overlay();
     let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_mut() else {
         panic!("expected navigator");
@@ -1583,16 +1582,15 @@ fn reconnecting_local_selection_still_reaches_the_runtime() {
 #[test]
 fn machine_arrow_toggles_inactive_machine_without_switching() {
     for sidebar_collapsed in [false, true] {
-        for status in [
-            ClientEndpointStatus::Online,
-            ClientEndpointStatus::Reconnecting,
-        ] {
+        // None leaves the remote Online.
+        for failure in [None, Some(EndpointFailureStatus::Reconnecting)] {
             let other_machine = machine_named("Other", "dev@other.example");
             let other_id = ClientEndpointId::Ssh(other_machine.label.clone());
             let (mut state, remote_id) = state_with_machines(&[remote_machine(), other_machine]);
-            state.set_endpoint_status(&other_id, ClientEndpointStatus::Online);
-            state.set_endpoint_snapshot(&other_id, Box::new(snapshot()));
-            state.set_endpoint_status(&remote_id, status);
+            state.connect_endpoint_with_snapshot(&other_id, 1, Box::new(snapshot()));
+            if let Some(failure) = failure {
+                state.set_endpoint_status(&remote_id, failure);
+            }
             state.chrome.set_collapsed(sidebar_collapsed);
 
             for collapsed in [true, false] {
@@ -1814,6 +1812,7 @@ fn reconnect_same_endpoint_accepts_new_generation_surface_revision() {
         state.agent_scroll = 7;
 
         state.mark_endpoint_disconnected(&endpoint_id);
+        state.endpoint_connected(&endpoint_id, 5);
         let mut reconnected = snapshot();
         reconnected.boot_id = crate::tests::test_boot_id("shared-server-boot");
         reconnected.revision = shepr_protocol::ProjectionRevision::new(1);
@@ -1830,7 +1829,6 @@ fn reconnect_same_endpoint_accepts_new_generation_surface_revision() {
             9
         );
 
-        state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Online);
         assert!(state.activate_endpoint_projection(&endpoint_id));
         assert!(state.compose(106, 20).is_none());
         let mut reconnected_surface = surface();
@@ -1877,9 +1875,10 @@ fn reconnect_snapshot_waits_for_coherent_activation_before_replacing_projection(
     );
 
     state.mark_endpoint_disconnected(&endpoint_id);
+    state.endpoint_connected(&endpoint_id, 2);
     let mut replacement = snapshot();
     replacement.boot_id = crate::tests::test_boot_id("replacement-boot");
-    state.cache_endpoint_snapshot(&endpoint_id, Box::new(replacement));
+    state.cache_endpoint_snapshot_for_generation(&endpoint_id, 2, Box::new(replacement));
     assert_eq!(
         state
             .snapshot
@@ -1889,7 +1888,6 @@ fn reconnect_snapshot_waits_for_coherent_activation_before_replacing_projection(
         crate::tests::test_boot_id("remote-boot")
     );
 
-    state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Online);
     assert!(state.activate_endpoint_projection(&endpoint_id));
     assert_eq!(
         state
@@ -2185,7 +2183,7 @@ fn focus_agent_index_uses_the_rendered_aggregate_rows() {
     // A stale machine's rows stay in the sidebar, so they keep their numbers;
     // picking one reports the machine as not ready instead of shifting the
     // numbers of every row after it.
-    state.set_endpoint_status(&endpoint_id, ClientEndpointStatus::Reconnecting);
+    state.set_endpoint_status(&endpoint_id, EndpointFailureStatus::Reconnecting);
     assert!(state.indexed_navigation_target_exists(&focus_agent(0)));
     assert!(!state.indexed_navigation_target_exists(&focus_agent(1)));
 }

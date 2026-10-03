@@ -46,6 +46,9 @@ pub(super) struct ClientState {
     pub(super) frame_write_failure: HostWriteFailure,
     /// Window title writes, which repeat on every title change.
     pub(super) title_write_failure: HostWriteFailure,
+    /// A transient mode write is retried after the next client event.
+    pub(super) mode_write_failure: HostWriteFailure,
+    pub(super) retry_host_modes: bool,
 }
 
 impl ClientState {
@@ -90,6 +93,30 @@ impl ClientState {
             self.reported_geometry.cell_height(),
             self.reported_geometry.exact,
         );
+    }
+
+    pub(super) fn record_host_mode_write(
+        &mut self,
+        operation: &'static str,
+        result: io::Result<()>,
+    ) -> Result<(), ClientError> {
+        let action = self.mode_write_failure.observe(
+            HostWritePurpose::TerminalMode,
+            operation,
+            &result,
+            None,
+        );
+        let Err(error) = result else {
+            return Ok(());
+        };
+        match action {
+            HostWriteAction::Fatal => Err(ClientError::HostTerminal(error)),
+            HostWriteAction::Retry => {
+                self.retry_host_modes = true;
+                Ok(())
+            }
+            HostWriteAction::Succeeded | HostWriteAction::Continue => Ok(()),
+        }
     }
 
     pub(super) fn record_host_theme_update(
@@ -150,16 +177,16 @@ impl ClientState {
     pub(super) fn present_surface_patch(
         &mut self,
         patch: shell::ClientComposedSurfacePatch,
-    ) -> io::Result<bool> {
+    ) -> io::Result<SurfacePatchPresentation> {
         if self.repaint_pending {
-            return Ok(false);
+            return Ok(SurfacePatchPresentation::FullFrameRequired);
         }
         let rows = if self.draw_host_cursor {
             let Some(rows) = self
                 .blit_encoder
                 .patch_rows_with_drawn_cursor(&patch.rows, patch.cursor.as_ref())
             else {
-                return Ok(false);
+                return Ok(SurfacePatchPresentation::FullFrameRequired);
             };
             rows
         } else {
@@ -169,7 +196,7 @@ impl ClientState {
             self.blit_encoder
                 .encode_patch(&rows, patch.cursor.clone(), self.draw_host_cursor)
         else {
-            return Ok(false);
+            return Ok(SurfacePatchPresentation::FullFrameRequired);
         };
         if !encoded.bytes.is_empty() {
             self.write_composed_output(&encoded.bytes)?;
@@ -177,7 +204,11 @@ impl ClientState {
         let committed = self
             .blit_encoder
             .commit_patch(&rows, patch.cursor, &encoded);
-        Ok(committed)
+        Ok(if committed {
+            SurfacePatchPresentation::Presented
+        } else {
+            SurfacePatchPresentation::FullFrameRequired
+        })
     }
 
     fn write_composed_output(&mut self, encoded: &[u8]) -> io::Result<()> {
@@ -215,8 +246,8 @@ impl ClientState {
                 Some(patch) => {
                     let context = self.shell.presentation_log_context();
                     match self.present_surface_patch(patch) {
-                        Ok(true) => {}
-                        Ok(false) => {
+                        Ok(SurfacePatchPresentation::Presented) => {}
+                        Ok(SurfacePatchPresentation::FullFrameRequired) => {
                             if let Some(frame) = self.shell.compose(
                                 self.reported_geometry.cols(),
                                 self.reported_geometry.rows(),
@@ -226,6 +257,7 @@ impl ClientState {
                         }
                         Err(error) => {
                             self.frame_write_failure.observe(
+                                HostWritePurpose::Frame,
                                 "pane surface patch",
                                 &Err(error),
                                 Some(&context),
@@ -260,9 +292,12 @@ impl ClientState {
         let context = written
             .is_err()
             .then(|| self.shell.presentation_log_context());
-        if !self
-            .frame_write_failure
-            .observe("client frame", &written, context.as_ref())
+        if self.frame_write_failure.observe(
+            HostWritePurpose::Frame,
+            "client frame",
+            &written,
+            context.as_ref(),
+        ) != HostWriteAction::Succeeded
         {
             self.repaint_pending = true;
             return;
@@ -272,12 +307,63 @@ impl ClientState {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum SurfacePatchPresentation {
+    Presented,
+    FullFrameRequired,
+}
+
 /// Tracks a host terminal write that repeats on every frame or event, so a persistent failure
 /// is logged once per cause instead of once per write. A cause is the error kind: a change of
 /// kind logs again, and the first success after a failure logs the recovery.
 #[derive(Debug, Default)]
 pub(super) struct HostWriteFailure {
     failing: Option<io::ErrorKind>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum HostWritePurpose {
+    TerminalMode,
+    Frame,
+    Title,
+    Clipboard,
+    Probe,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum HostWriteAction {
+    Succeeded,
+    Retry,
+    Continue,
+    Fatal,
+}
+
+/// The client can retry stateful input modes because their desired state is retained. A
+/// permanent mode failure ends the session because the host may now interpret keys or mouse
+/// reports differently from the client. Frames retain a repaint request; title and probe
+/// writes have later updates or a fallback; clipboard writes report the lost copy, so those
+/// failures leave the client running.
+pub(super) fn host_write_failure_action(
+    purpose: HostWritePurpose,
+    error: io::ErrorKind,
+) -> HostWriteAction {
+    if matches!(
+        error,
+        io::ErrorKind::Interrupted | io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+    ) {
+        return if purpose == HostWritePurpose::TerminalMode {
+            HostWriteAction::Retry
+        } else {
+            HostWriteAction::Continue
+        };
+    }
+    if purpose == HostWritePurpose::TerminalMode {
+        // A permanent failure while changing input modes leaves host key and mouse
+        // interpretation uncertain; cosmetic and repaintable output can be retried locally.
+        HostWriteAction::Fatal
+    } else {
+        HostWriteAction::Continue
+    }
 }
 
 struct EndpointLogValue<'a>(Option<&'a endpoint::ClientEndpointId>);
@@ -292,13 +378,14 @@ impl std::fmt::Display for EndpointLogValue<'_> {
 }
 
 impl HostWriteFailure {
-    /// Records one write's outcome and returns whether it succeeded.
+    /// Records one write and applies the shared failure policy for its purpose.
     pub(super) fn observe(
         &mut self,
+        purpose: HostWritePurpose,
         write: &'static str,
         result: &io::Result<()>,
         context: Option<&shell::ClientPresentationLogContext>,
-    ) -> bool {
+    ) -> HostWriteAction {
         match result {
             Ok(()) => {
                 if let Some(kind) = self.failing.take() {
@@ -308,24 +395,24 @@ impl HostWriteFailure {
                         "host terminal write recovered"
                     );
                 }
-                true
+                HostWriteAction::Succeeded
             }
             Err(error) => {
                 if self.failing != Some(error.kind()) {
                     tracing::warn!(
                         write,
                         endpoint = %EndpointLogValue(context.map(|context| &context.endpoint)),
-                        generation = ?context.and_then(|context| context.generation),
-                        projection_revision = ?context.and_then(|context| context.projection_revision),
-                        surface_revision = ?context.and_then(|context| context.surface_revision),
-                        boot_id = ?context.and_then(|context| context.boot_id.as_deref()),
+                        generation = ?context.and_then(|context| context.generation.as_ref()),
+                        projection_revision = ?context.and_then(|context| context.projection_revision.as_ref()),
+                        surface_revision = ?context.and_then(|context| context.surface_revision.as_ref()),
+                        boot_id = ?context.and_then(|context| context.boot_id.as_ref()),
                         pane_ids = ?context.map(|context| &context.pane_ids),
                         error = %error,
                         "host terminal write failed; repeats of this failure are not logged until a write succeeds"
                     );
                     self.failing = Some(error.kind());
                 }
-                false
+                host_write_failure_action(purpose, error.kind())
             }
         }
     }
@@ -352,6 +439,8 @@ impl ClientState {
             draw_host_cursor: false,
             frame_write_failure: HostWriteFailure::default(),
             title_write_failure: HostWriteFailure::default(),
+            mode_write_failure: HostWriteFailure::default(),
+            retry_host_modes: false,
         }
     }
 
@@ -425,7 +514,7 @@ mod tests {
             })
             .expect("surface patch writes through the injected writer");
 
-        assert!(presented);
+        assert_eq!(presented, SurfacePatchPresentation::Presented);
         assert!(output.lock().expect("test output lock").contains(&b'b'));
     }
 }

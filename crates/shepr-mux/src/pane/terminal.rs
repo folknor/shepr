@@ -29,10 +29,12 @@ use super::osc::{
 
 /// A cell position in terminal text, on a stable absolute row: output and
 /// history eviction never make it name another line.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct TerminalTextPoint {
-    pub row: AbsRow,
-    pub col: u16,
+pub type TerminalTextPoint = Point<AbsRow>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TerminalTextRange {
+    pub start: TerminalTextPoint,
+    pub end: TerminalTextPoint,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,11 +52,64 @@ pub enum TerminalSearchDirection {
     Backward,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TerminalSearchCase {
+    Sensitive,
+    Insensitive,
+    /// Search case-sensitively only when the query contains an uppercase letter.
+    Smart,
+}
+
+impl TerminalSearchCase {
+    fn is_sensitive(self, query: &str) -> bool {
+        match self {
+            Self::Sensitive => true,
+            Self::Insensitive => false,
+            Self::Smart => query.chars().any(char::is_uppercase),
+        }
+    }
+}
+
+/// The maximum number of matches to keep around the current search result.
+/// Zero disables the search.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TerminalSearchLimit(usize);
+
+impl TerminalSearchLimit {
+    pub const fn new(limit: usize) -> Self {
+        Self(limit)
+    }
+
+    pub const fn get(self) -> usize {
+        self.0
+    }
+}
+
+/// One text search request. Keeping its cursor, continuation match and window
+/// limit together prevents callers from swapping unrelated primitive values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TerminalTextSearch<'a> {
+    pub query: &'a str,
+    pub case: TerminalSearchCase,
+    pub direction: TerminalSearchDirection,
+    pub cursor: TerminalTextPoint,
+    pub previous: Option<TerminalTextRange>,
+    pub limit: TerminalSearchLimit,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TerminalSearchPosition {
+    /// The match's index in the returned window.
+    pub window_index: usize,
+    /// The match's index in the full result set.
+    pub global_index: usize,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TerminalSearchWindow {
     pub matches: Vec<TerminalTextMatch>,
-    pub current: Option<usize>,
-    pub current_global: Option<usize>,
+    /// Absent when the search found no matches; both indexes travel together.
+    pub current: Option<TerminalSearchPosition>,
     pub total: usize,
 }
 
@@ -63,10 +118,15 @@ impl TerminalSearchWindow {
         Self {
             matches: Vec::new(),
             current: None,
-            current_global: None,
             total: 0,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TerminalLineMotion {
+    End,
+    FirstNonBlank,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -77,6 +137,24 @@ pub enum TerminalWordMotion {
     NextBigStart,
     PreviousBigStart,
     NextBigEnd,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TerminalParagraphMotion {
+    Previous,
+    Next,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TerminalCopyMotion {
+    Line(TerminalLineMotion),
+    Word(TerminalWordMotion),
+    Paragraph(TerminalParagraphMotion),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TerminalCopyMotionError {
+    RowUnavailable,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -219,8 +297,6 @@ pub(crate) struct PaneTerminalCore {
     /// (`history.rs`).
     history_epoch: u64,
     pub render_state: shepr_vt::RenderState,
-    pub initial_default_foreground: shepr_vt::RgbColor,
-    pub initial_default_background: shepr_vt::RgbColor,
     pub host_terminal_theme: shepr_termio::host_term::theme::TerminalTheme,
     /// Process group of the foreground program that last overrode a default
     /// colour (OSC 10/11); its overrides are dropped once the shell is back
@@ -373,27 +449,26 @@ impl PaneTerminal {
         self.negotiated_keyboard_protocol().unwrap_or(fallback)
     }
 
-    /// Where a copy-mode word motion from `row`/`col` lands. `None` when the
+    /// Where a copy-mode word motion from the cursor lands. `None` when its
     /// row is no longer retained.
     pub(crate) fn word_motion_target(
         &self,
-        row: AbsRow,
-        col: u16,
+        cursor: TerminalTextPoint,
         motion: TerminalWordMotion,
     ) -> Option<TerminalTextPoint> {
         let core = shepr_vt::lock_terminal_core(&self.core).ok()?;
-        word_motion_in(&core.terminal, TerminalTextPoint { row, col }, motion)
+        word_motion_in(&core.terminal, cursor, motion)
     }
 
-    /// The next blank row above (`direction < 0`) or below `row`, looking at
-    /// most 1000 rows away. `None` when the row is no longer retained.
+    /// The next blank row above or below the cursor, looking at most 1000 rows
+    /// away. `None` when its row is no longer retained.
     pub(crate) fn paragraph_motion_target(
         &self,
-        row: AbsRow,
-        direction: i8,
+        cursor: TerminalTextPoint,
+        motion: TerminalParagraphMotion,
     ) -> Option<TerminalTextPoint> {
         let core = shepr_vt::lock_terminal_core(&self.core).ok()?;
-        paragraph_motion_in(&core.terminal, row, direction)
+        paragraph_motion_in(&core.terminal, cursor, motion)
     }
 }
 

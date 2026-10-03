@@ -47,6 +47,29 @@ pub struct PaneChromeInfo {
     pub is_focused: bool,
 }
 
+impl PaneChromeInfo {
+    /// Set drawable content and return the reserved scrollbar track. Empty
+    /// drawable rects stay empty; the PTY grid minimum belongs to PaneGeometry.
+    pub fn content_layout(&mut self, scrollbars: bool, alternate_screen: bool) -> Option<Rect> {
+        let inner = pane_inner_rect(self.rect, self.borders);
+        self.inner_rect = terminal_content_rect(inner, scrollbars, alternate_screen);
+        self.scrollbar_rect = None;
+        (self.inner_rect != inner).then(|| {
+            Rect::new(
+                inner.x.saturating_add(inner.width.saturating_sub(1)),
+                inner.y,
+                1,
+                inner.height,
+            )
+        })
+    }
+
+    /// Whether a reserved track has scrollback to display.
+    pub fn scrollbar_visible(max_offset_from_bottom: usize) -> bool {
+        max_offset_from_bottom > 0
+    }
+}
+
 impl From<LayoutPaneInfo> for PaneChromeInfo {
     fn from(pane: LayoutPaneInfo) -> Self {
         Self {
@@ -220,9 +243,31 @@ pub fn terminal_content_rect(
 }
 
 impl PaneGeometry {
+    /// The sole pane shown by zoom, shared by ID and geometry projections.
+    pub fn zoomed_pane(layout: &TileLayout, zoomed: bool) -> Option<PaneId> {
+        zoomed.then(|| layout.focused())
+    }
+
+    /// Restore every pane: hidden panes use tiled geometry, while the visible
+    /// zoomed pane uses its surface geometry. Resumes start on the primary screen.
+    pub fn resume_panes(&self, layout: &TileLayout, zoomed: bool) -> Vec<PaneChromeInfo> {
+        let mut panes = self.visible_panes(layout, false);
+        if zoomed {
+            for visible in self.visible_panes(layout, true) {
+                if let Some(pane) = panes.iter_mut().find(|pane| pane.id == visible.id) {
+                    *pane = visible;
+                }
+            }
+        }
+        for pane in &mut panes {
+            pane.content_layout(self.pane_scrollbars, false);
+        }
+        panes
+    }
+
     /// The visible panes of a workspace with their chrome applied: outer rect and
-    /// borders. `inner_rect` and `scrollbar_rect` are not settled here;
-    /// callers derive the content rect from `rect` and `borders`.
+    /// borders. Call `PaneChromeInfo::content_layout` to settle content using
+    /// the pane's screen mode; scroll metrics then select whether its track draws.
     ///
     /// A zoomed workspace shows only its focused pane, filling `area`. Every
     /// edge of that pane is an outer edge, so it is framed on all sides exactly
@@ -231,14 +276,14 @@ impl PaneGeometry {
     /// View computation, background resizing and spawn sizing all go through
     /// here, so the zoomed rule exists once.
     pub fn visible_panes(&self, layout: &TileLayout, zoomed: bool) -> Vec<PaneChromeInfo> {
-        if !zoomed {
+        let Some(zoomed_pane) = Self::zoomed_pane(layout, zoomed) else {
             return apply_pane_chrome(
                 &layout.panes(layout_rect(self.area)),
                 self.pane_borders,
                 self.pane_gaps,
                 self.pane_outer_borders,
             );
-        }
+        };
         let borders = if self.pane_borders.shows_borders(layout.pane_count() > 1)
             && self.pane_outer_borders
         {
@@ -247,7 +292,7 @@ impl PaneGeometry {
             Borders::NONE
         };
         vec![PaneChromeInfo {
-            id: layout.focused(),
+            id: zoomed_pane,
             rect: self.area,
             inner_rect: self.area,
             scrollbar_rect: None,
@@ -266,13 +311,17 @@ impl PaneGeometry {
         zoomed: bool,
         pane_id: PaneId,
     ) -> Option<(u16, u16)> {
-        let info = self
+        let mut info = self
             .visible_panes(layout, zoomed)
             .into_iter()
             .find(|info| info.id == pane_id)?;
-        let pane_inner = pane_inner_rect(info.rect, info.borders);
-        let content = terminal_content_rect(pane_inner, self.pane_scrollbars, false);
-        Some((content.height.max(1), content.width.max(1)))
+        info.content_layout(self.pane_scrollbars, false);
+        let grid = shepr_core::geometry::PaneGeometry::with_cell(
+            info.inner_rect.width,
+            info.inner_rect.height,
+            None,
+        );
+        Some((grid.rows(), grid.cols()))
     }
 
     /// `(rows, cols)` for the only pane of a new workspace.
@@ -328,6 +377,52 @@ mod tests {
             pane_gaps: false,
             pane_outer_borders: true,
             pane_scrollbars: scrollbars,
+        }
+    }
+
+    #[test]
+    fn empty_drawable_content_uses_the_same_minimum_grid_at_spawn_and_resize() {
+        let geometry = PaneGeometry {
+            area: Rect::new(0, 0, 0, 0),
+            ..geometry(shepr_config::PaneBordersConfig::Always, true)
+        };
+        let (layout, root) = TileLayout::new();
+        let mut pane = geometry.visible_panes(&layout, false).remove(0);
+        assert_eq!(pane.content_layout(true, false), None);
+        assert_eq!((pane.inner_rect.width, pane.inner_rect.height), (0, 0));
+        let resized = shepr_core::geometry::PaneGeometry::with_cell(
+            pane.inner_rect.width,
+            pane.inner_rect.height,
+            None,
+        );
+        assert_eq!(
+            geometry.pane_size(&layout, false, root),
+            Some((resized.rows(), resized.cols()))
+        );
+        // The shared pane grid minimum, not the empty drawable rect.
+        assert_eq!((resized.rows(), resized.cols()), (2, 4));
+    }
+
+    #[test]
+    fn content_layout_reserves_only_primary_wide_pane_gutters() {
+        let (layout, _) = TileLayout::new();
+        for width in [0, 1, 4, 5, 20] {
+            for alternate in [false, true] {
+                for scrollbars in [false, true] {
+                    let geometry = PaneGeometry {
+                        area: Rect::new(10, 3, width, 8),
+                        ..geometry(shepr_config::PaneBordersConfig::Off, scrollbars)
+                    };
+                    let mut pane = geometry.visible_panes(&layout, false).remove(0);
+                    let gutter = pane.content_layout(scrollbars, alternate);
+                    let reserved = scrollbars && !alternate && width > 4;
+                    assert_eq!(gutter.is_some(), reserved);
+                    assert_eq!(pane.inner_rect.width, width - u16::from(reserved));
+                    if let Some(gutter) = gutter {
+                        assert_eq!(gutter, Rect::new(10 + width - 1, 3, 1, 8));
+                    }
+                }
+            }
         }
     }
 

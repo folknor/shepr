@@ -19,6 +19,7 @@ pub use title_activity::{TITLE_ACTIVITY_GLYPHS, TitleActivityGlyphs};
 
 /// The detected state of a terminal pane.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum AgentState {
     /// Agent finished, prompt visible, nothing happening.
     Idle,
@@ -30,13 +31,7 @@ pub enum AgentState {
     Unknown,
 }
 
-/// An agent state after applying the user-facing presentation policy.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PresentedAgentState {
-    Idle,
-    Working,
-    Blocked,
-}
+pub use shepr_core::agent_state::PresentedAgentState;
 
 impl AgentState {
     /// Collapse an unknown state to idle for user-facing presentation.
@@ -51,17 +46,6 @@ impl AgentState {
     /// Rank agent states for attention, from least to most urgent.
     pub const fn attention_rank(self) -> u8 {
         self.presentation_state().attention_rank()
-    }
-}
-
-impl PresentedAgentState {
-    /// Rank presented states for attention, from least to most urgent.
-    pub const fn attention_rank(self) -> u8 {
-        match self {
-            Self::Idle => 0,
-            Self::Working => 1,
-            Self::Blocked => 2,
-        }
     }
 }
 
@@ -174,6 +158,8 @@ pub fn identify_agent(process_name: &str) -> Option<Agent> {
 
 /// Blocking: path-shaped argv tokens are resolved on the filesystem (through
 /// `/proc/<pid>/cwd` for relative ones). Call from a blocking context.
+/// The string is the selected process's display name, preserving a comm alias;
+/// identification and ranking carry `Agent` and provenance before producing it.
 pub fn identify_agent_in_job(job: &ForegroundJob) -> Option<(Agent, String)> {
     if let Some(process) = job
         .processes
@@ -181,27 +167,35 @@ pub fn identify_agent_in_job(job: &ForegroundJob) -> Option<(Agent, String)> {
         .find(|process| process.pid == job.process_group_id.leader_pid())
         && let Some(identified) = identify_process(process)
     {
-        return Some(identified);
+        return Some((
+            identified.agent,
+            identified_display_name(process, identified),
+        ));
     }
 
-    let mut best: Option<(ProcessPriority, Agent, String)> = None;
+    let mut best: Option<(ProcessPriority, Identified, &ForegroundProcess)> = None;
 
     for process in &job.processes {
         if process.pid == job.process_group_id.leader_pid() {
             continue;
         }
-        let Some((agent, candidate)) = identify_process(process) else {
+        let Some(identified) = identify_process(process) else {
             continue;
         };
-        let score = process_priority(process, &candidate);
+        let score = process_priority(identified);
 
         match &best {
             Some((best_score, _, _)) if *best_score >= score => {}
-            _ => best = Some((score, agent, candidate)),
+            _ => best = Some((score, identified, process)),
         }
     }
 
-    best.map(|(_, agent, name)| (agent, name))
+    best.map(|(_, identified, process)| {
+        (
+            identified.agent,
+            identified_display_name(process, identified),
+        )
+    })
 }
 
 /// Blocking: scans descendants of the pane shell for job-control-stopped
@@ -209,11 +203,11 @@ pub fn identify_agent_in_job(job: &ForegroundJob) -> Option<(Agent, String)> {
 pub fn suspended_agent_processes(child_pid: Pid) -> Vec<Agent> {
     let mut agents = Vec::new();
     for process in proc_tree::suspended_processes(child_pid) {
-        let Some((agent, _)) = identify_process(&process) else {
+        let Some(identified) = identify_process(&process) else {
             continue;
         };
-        if !agents.contains(&agent) {
-            agents.push(agent);
+        if !agents.contains(&identified.agent) {
+            agents.push(identified.agent);
         }
     }
     agents
@@ -247,50 +241,108 @@ pub fn detect_agent_with_osc(
 // detection task is async, so it has to reach these through a blocking
 // section rather than calling them on a runtime worker.
 
-fn normalized_process_name(process: &ForegroundProcess) -> String {
-    let effective = process.name.as_str();
-    let lower_effective = effective.to_lowercase();
-    let cwd_pid = Some(process.pid);
-
-    if is_generic_runtime_or_shell(&lower_effective)
-        && let Some(wrapped_agent) =
-            wrapped_agent_name_from_runtime_argv(&lower_effective, process.argv.as_deref(), cwd_pid)
-    {
-        return wrapped_agent;
-    }
-
-    if identify_agent(effective).is_some() {
-        return effective.to_string();
-    }
-
-    if let Some(runtime) = process.argv.as_deref().and_then(|argv| argv.first()) {
-        let runtime_name = normalized_agent_lookup_name(path_basename(runtime));
-        if matches!(runtime_name.as_str(), "node" | "bun")
-            && let Some(wrapped_agent) =
-                wrapped_agent_name_from_runtime_argv(runtime, process.argv.as_deref(), cwd_pid)
-            && matches!(
-                identify_agent(&wrapped_agent),
-                Some(Agent::Qwen | Agent::Cline | Agent::Letta)
-            )
-        {
-            return wrapped_agent;
-        }
-    }
-
-    if let Some(wrapped_agent) = argv0_agent_name(process.argv.as_deref(), cwd_pid) {
-        return wrapped_agent;
-    }
-
-    effective.to_string()
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Runtime {
+    Node,
+    Bun,
+    Python,
+    Shell,
+    Tmux,
 }
 
-fn identify_process(process: &ForegroundProcess) -> Option<(Agent, String)> {
-    let candidate = normalized_process_name(process);
-    let agent = identify_agent(&candidate)?;
-    if agent == Agent::Letta && !is_interactive_letta_process(process) {
+impl Runtime {
+    fn classify(name: &str) -> Option<Self> {
+        let name = path_basename(name).trim();
+        // Runtime spelling uses the same executable suffixes as agent lookup,
+        // but classification borrows the name instead of allocating per probe.
+        let name = [".exe", ".js"]
+            .into_iter()
+            .find_map(|suffix| {
+                let end = name.len().checked_sub(suffix.len())?;
+                name.get(end..)
+                    .filter(|tail| tail.eq_ignore_ascii_case(suffix))
+                    .map(|_| &name[..end])
+            })
+            .unwrap_or(name);
+        if name.eq_ignore_ascii_case("node") {
+            Some(Self::Node)
+        } else if name.eq_ignore_ascii_case("bun") {
+            Some(Self::Bun)
+        } else if name.eq_ignore_ascii_case("tmux") {
+            Some(Self::Tmux)
+        } else if is_python_runtime(name) {
+            Some(Self::Python)
+        } else if is_pane_shell_process_name(name) {
+            Some(Self::Shell)
+        } else {
+            None
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IdentifiedVia {
+    Comm,
+    Argv0,
+    WrappedScript { runtime: Runtime },
+    PackagePath,
+    ResolvedSymlink,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Identified {
+    agent: Agent,
+    via: IdentifiedVia,
+}
+
+fn process_identity(process: &ForegroundProcess) -> Option<Identified> {
+    let cwd_pid = Some(process.pid);
+    if let Some(runtime) = Runtime::classify(&process.name)
+        && let Some(identified) =
+            wrapped_agent_from_runtime_argv(runtime, process.argv.as_deref(), cwd_pid)
+    {
+        return Some(identified);
+    }
+
+    if let Some(agent) = identify_agent(&process.name) {
+        return Some(Identified {
+            agent,
+            via: IdentifiedVia::Comm,
+        });
+    }
+
+    if let Some(runtime) = process
+        .argv
+        .as_deref()
+        .and_then(|argv| argv.first())
+        .and_then(|name| Runtime::classify(name))
+        && matches!(runtime, Runtime::Node | Runtime::Bun)
+        && let Some(identified) =
+            wrapped_agent_from_runtime_argv(runtime, process.argv.as_deref(), cwd_pid)
+        && matches!(identified.agent, Agent::Qwen | Agent::Cline | Agent::Letta)
+    {
+        return Some(identified);
+    }
+
+    argv0_agent(process.argv.as_deref(), cwd_pid)
+}
+
+fn identify_process(process: &ForegroundProcess) -> Option<Identified> {
+    let identified = process_identity(process)?;
+    if identified.agent == Agent::Letta && !is_interactive_letta_process(process) {
         return None;
     }
-    Some((agent, candidate))
+    Some(identified)
+}
+
+fn identified_display_name(process: &ForegroundProcess, identified: Identified) -> String {
+    // Comm preserves aliases such as opencode2 for the probe's displayed process
+    // name. Inferred entrypoints display the canonical label; neither is parsed
+    // back into an identity.
+    match identified.via {
+        IdentifiedVia::Comm => process.name.clone(),
+        _ => identified.agent.label().to_owned(),
+    }
 }
 
 /// Node and Bun options that run inline code instead of a script.
@@ -306,36 +358,32 @@ const NODE_VALUE_FLAGS: &[&str] = &[
 ];
 const PYTHON_VALUE_FLAGS: &[&str] = &["-W", "-X", "--check-hash-based-pycs"];
 
-fn wrapped_agent_name_from_runtime_argv(
-    runtime: &str,
+fn wrapped_agent_from_runtime_argv(
+    runtime: Runtime,
     argv: Option<&[String]>,
     cwd_pid: Option<Pid>,
-) -> Option<String> {
+) -> Option<Identified> {
     let argv = argv?;
-    let runtime_name = normalized_agent_lookup_name(path_basename(runtime));
-
-    match runtime_name.as_str() {
-        "node" | "bun" => {
-            script_arg_agent_name(argv, NODE_EVAL_FLAGS, &[], NODE_VALUE_FLAGS, cwd_pid)
+    let mut identified = match runtime {
+        Runtime::Node | Runtime::Bun => {
+            script_arg_agent(argv, NODE_EVAL_FLAGS, &[], NODE_VALUE_FLAGS, cwd_pid)
         }
-        name if is_python_runtime(name) => {
-            script_arg_agent_name(argv, &["-c"], &["-m"], PYTHON_VALUE_FLAGS, cwd_pid)
-        }
-        name if is_pane_shell_process_name(name) => {
-            shell_agent_name_from_runtime_argv(argv, cwd_pid)
-        }
-        _ => None,
-    }
+        Runtime::Python => script_arg_agent(argv, &["-c"], &["-m"], PYTHON_VALUE_FLAGS, cwd_pid),
+        Runtime::Shell => shell_agent_from_runtime_argv(argv, cwd_pid),
+        Runtime::Tmux => None,
+    }?;
+    identified.via = IdentifiedVia::WrappedScript { runtime };
+    Some(identified)
 }
 
 /// Inspect only a direct command word from shell `-c` input; do not parse shell grammar.
-fn shell_agent_name_from_runtime_argv(argv: &[String], cwd_pid: Option<Pid>) -> Option<String> {
+fn shell_agent_from_runtime_argv(argv: &[String], cwd_pid: Option<Pid>) -> Option<Identified> {
     let mut args = argv.iter().skip(1);
     while let Some(arg) = args.next() {
         if arg == "--" {
             return args
                 .next()
-                .and_then(|token| agent_name_from_path_token(token, cwd_pid));
+                .and_then(|token| agent_from_path_token(token, cwd_pid));
         }
 
         // `-c` alone or inside a short-flag cluster such as `-lc`.
@@ -345,7 +393,7 @@ fn shell_agent_name_from_runtime_argv(argv: &[String], cwd_pid: Option<Pid>) -> 
         {
             return args
                 .next()
-                .and_then(|command| shell_command_agent_name(command, cwd_pid));
+                .and_then(|command| shell_command_agent(command, cwd_pid));
         }
 
         if shell_option_takes_value(arg) {
@@ -357,13 +405,13 @@ fn shell_agent_name_from_runtime_argv(argv: &[String], cwd_pid: Option<Pid>) -> 
             continue;
         }
 
-        return agent_name_from_path_token(arg, cwd_pid);
+        return agent_from_path_token(arg, cwd_pid);
     }
 
     None
 }
 
-fn shell_command_agent_name(command: &str, cwd_pid: Option<Pid>) -> Option<String> {
+fn shell_command_agent(command: &str, cwd_pid: Option<Pid>) -> Option<Identified> {
     let mut words = command.split_whitespace();
     let first = words.next()?;
     let executable = if first == "exec" {
@@ -372,18 +420,18 @@ fn shell_command_agent_name(command: &str, cwd_pid: Option<Pid>) -> Option<Strin
     } else {
         first
     };
-    agent_name_from_path_token(executable, cwd_pid)
+    agent_from_path_token(executable, cwd_pid)
 }
 
-fn script_arg_agent_name(
+fn script_arg_agent(
     argv: &[String],
     eval_flags: &[&str],
     module_flags: &[&str],
     value_flags: &[&str],
     cwd_pid: Option<Pid>,
-) -> Option<String> {
+) -> Option<Identified> {
     let index = script_arg_index(argv, eval_flags, module_flags, value_flags)?;
-    agent_name_from_path_token(argv.get(index)?, cwd_pid)
+    agent_from_path_token(argv.get(index)?, cwd_pid)
 }
 
 fn script_arg_index(
@@ -474,27 +522,36 @@ fn shell_option_takes_value(arg: &str) -> bool {
     matches!(arg, "-o" | "-O" | "+o" | "+O")
 }
 
-fn argv0_agent_name(argv: Option<&[String]>, cwd_pid: Option<Pid>) -> Option<String> {
-    agent_name_from_path_token(argv?.first()?, cwd_pid)
+fn argv0_agent(argv: Option<&[String]>, cwd_pid: Option<Pid>) -> Option<Identified> {
+    agent_from_path_token(argv?.first()?, cwd_pid)
 }
 
 /// `cwd_pid` is the process the token came from; relative paths resolve
-/// against its working directory (see `resolved_agent_name_from_path_token`).
-fn agent_name_from_path_token(token: &str, cwd_pid: Option<Pid>) -> Option<String> {
+/// against its working directory (see `resolved_agent_from_path_token`).
+fn agent_from_path_token(token: &str, cwd_pid: Option<Pid>) -> Option<Identified> {
     let trimmed = token.trim_matches(|c| matches!(c, '"' | '\''));
     if trimmed.is_empty() || trimmed.starts_with('-') {
         return None;
     }
 
-    agent_name_from_basename(path_basename(trimmed))
-        .or_else(|| agent_name_from_known_package_path(trimmed))
-        .or_else(|| resolved_agent_name_from_path_token(trimmed, cwd_pid))
+    agent_from_basename(path_basename(trimmed))
+        .map(|agent| Identified {
+            agent,
+            via: IdentifiedVia::Argv0,
+        })
+        .or_else(|| {
+            agent_from_known_package_path(trimmed).map(|agent| Identified {
+                agent,
+                via: IdentifiedVia::PackagePath,
+            })
+        })
+        .or_else(|| resolved_agent_from_path_token(trimmed, cwd_pid))
 }
 
 // The package layouts matched here are upstream npm layouts, which can change
 // between releases. The `identify_agent_in_job_detects_*` tests use constructed
 // paths, so nothing here notices when an upstream layout moves.
-fn agent_name_from_known_package_path(path: &str) -> Option<String> {
+fn agent_from_known_package_path(path: &str) -> Option<Agent> {
     let raw_components: Vec<&str> = path
         .split('/')
         .filter(|component| !component.is_empty())
@@ -520,7 +577,7 @@ fn agent_name_from_known_package_path(path: &str) -> Option<String> {
         "bundle",
         "cli.js",
     ]) {
-        return Some(agent_label(Agent::Pi).to_string());
+        return Some(Agent::Pi);
     }
     if ends_with(&[
         "node_modules",
@@ -529,7 +586,7 @@ fn agent_name_from_known_package_path(path: &str) -> Option<String> {
         "dist",
         "cli.js",
     ]) {
-        return Some(agent_label(Agent::Omp).to_string());
+        return Some(Agent::Omp);
     }
     if ends_with(&[
         "node_modules",
@@ -538,7 +595,7 @@ fn agent_name_from_known_package_path(path: &str) -> Option<String> {
         "dist",
         "main.mjs",
     ]) {
-        return Some(agent_label(Agent::Kimi).to_string());
+        return Some(Agent::Kimi);
     }
 
     let components: Vec<String> = raw_components
@@ -547,15 +604,15 @@ fn agent_name_from_known_package_path(path: &str) -> Option<String> {
         .collect();
     for window in components.windows(5) {
         if window == ["node_modules", "@qwen-code", "qwen-code", "dist", "index"] {
-            return Some(agent_label(Agent::Qwen).to_string());
+            return Some(Agent::Qwen);
         }
     }
     for window in components.windows(4) {
         if window == ["node_modules", "mastracode", "dist", "cli"] {
-            return Some(agent_label(Agent::Mastracode).to_string());
+            return Some(Agent::Mastracode);
         }
         if window == ["node_modules", "@letta-ai", "letta-code", "letta"] {
-            return Some(agent_label(Agent::Letta).to_string());
+            return Some(Agent::Letta);
         }
     }
     None
@@ -563,16 +620,15 @@ fn agent_name_from_known_package_path(path: &str) -> Option<String> {
 
 fn letta_entrypoint_index(argv: &[String], cwd_pid: Option<Pid>) -> Option<usize> {
     let is_letta = |arg: &str| {
-        agent_name_from_path_token(arg, cwd_pid).as_deref() == Some(agent_label(Agent::Letta))
+        agent_from_path_token(arg, cwd_pid)
+            .is_some_and(|identified| identified.agent == Agent::Letta)
     };
     if argv.first().is_some_and(|arg| is_letta(arg)) {
         return Some(0);
     }
 
-    let runtime = argv
-        .first()
-        .map(|arg| normalized_agent_lookup_name(path_basename(arg)))?;
-    if !matches!(runtime.as_str(), "node" | "bun") {
+    let runtime = Runtime::classify(argv.first()?)?;
+    if !matches!(runtime, Runtime::Node | Runtime::Bun) {
         return None;
     }
 
@@ -654,7 +710,7 @@ fn is_interactive_letta_process(process: &ForegroundProcess) -> bool {
 /// foreground-process probe (`identify_agent_in_job` and the `/proc` readers
 /// behind `foreground_job`), so async callers must run the probe off the
 /// runtime's worker threads, e.g. inside `tokio::task::spawn_blocking`.
-fn resolved_agent_name_from_path_token(token: &str, cwd_pid: Option<Pid>) -> Option<String> {
+fn resolved_agent_from_path_token(token: &str, cwd_pid: Option<Pid>) -> Option<Identified> {
     let path = std::path::Path::new(token);
     if path.components().count() < 2 {
         return None;
@@ -667,12 +723,14 @@ fn resolved_agent_name_from_path_token(token: &str, cwd_pid: Option<Pid>) -> Opt
         std::fs::canonicalize(std::path::Path::new(&format!("/proc/{pid}/cwd")).join(path)).ok()?
     };
     let basename = resolved.file_name()?.to_str()?;
-    agent_name_from_basename(basename)
+    agent_from_basename(basename).map(|agent| Identified {
+        agent,
+        via: IdentifiedVia::ResolvedSymlink,
+    })
 }
 
-fn agent_name_from_basename(basename: &str) -> Option<String> {
-    let agent = parse_agent_label(basename)?;
-    Some(agent_label(agent).to_string())
+fn agent_from_basename(basename: &str) -> Option<Agent> {
+    parse_agent_label(basename)
 }
 
 fn normalized_agent_lookup_name(name: &str) -> String {
@@ -696,37 +754,32 @@ fn path_basename(path: &str) -> &str {
 /// Candidate preference from weakest to strongest; declaration order is rank.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum ProcessPriority {
-    GenericRuntime,
     NormalizedAlias,
     AgentExecutable,
 }
 
-fn process_priority(process: &ForegroundProcess, normalized_name: &str) -> ProcessPriority {
-    let lower_name = normalized_name.to_lowercase();
-    if lower_name != process.name.to_lowercase() {
-        return ProcessPriority::NormalizedAlias;
+fn process_priority(identified: Identified) -> ProcessPriority {
+    match identified.via {
+        IdentifiedVia::Comm => ProcessPriority::AgentExecutable,
+        IdentifiedVia::Argv0
+        | IdentifiedVia::WrappedScript { .. }
+        | IdentifiedVia::PackagePath
+        | IdentifiedVia::ResolvedSymlink => ProcessPriority::NormalizedAlias,
     }
-    if !is_generic_runtime_or_shell(&lower_name) {
-        return ProcessPriority::AgentExecutable;
-    }
-    ProcessPriority::GenericRuntime
-}
-
-fn is_generic_runtime_or_shell(name: &str) -> bool {
-    let name = normalized_agent_lookup_name(path_basename(name));
-    is_pane_shell_process_name(&name)
-        || is_python_runtime(&name)
-        || matches!(name.as_str(), "tmux" | "node" | "bun")
 }
 
 fn is_python_runtime(name: &str) -> bool {
-    name == "python"
-        || name.strip_prefix("python").is_some_and(|version| {
-            !version.is_empty()
-                && version
-                    .split('.')
-                    .all(|part| !part.is_empty() && part.chars().all(|ch| ch.is_ascii_digit()))
-        })
+    name.eq_ignore_ascii_case("python")
+        || name
+            .get(..6)
+            .filter(|prefix| prefix.eq_ignore_ascii_case("python"))
+            .and_then(|_| name.get(6..))
+            .is_some_and(|version| {
+                !version.is_empty()
+                    && version
+                        .split('.')
+                        .all(|part| !part.is_empty() && part.chars().all(|ch| ch.is_ascii_digit()))
+            })
 }
 
 /// Detect the state of an agent from the live terminal tail snapshot.
@@ -1456,10 +1509,57 @@ mod tests {
     }
 
     #[test]
-    fn wrapped_agent_name_from_runtime_argv_ignores_plain_shell_flags() {
+    fn runtime_classification_covers_wrappers_without_accepting_similar_names() {
+        for (name, expected) in [
+            ("/usr/bin/NODE.exe", Runtime::Node),
+            ("bun", Runtime::Bun),
+            ("Python3.12", Runtime::Python),
+            ("-bash", Runtime::Shell),
+            ("tmux", Runtime::Tmux),
+        ] {
+            assert_eq!(Runtime::classify(name), Some(expected));
+        }
+        for name in [
+            "node-helper",
+            "python3.",
+            "python3.x",
+            "pythonista",
+            "codex",
+        ] {
+            assert_eq!(Runtime::classify(name), None);
+        }
+    }
+
+    #[test]
+    fn identification_ranks_provenance_and_keeps_comm_aliases() {
+        let direct = foreground_process(42, "opencode2", &["opencode2"]);
+        let wrapped = foreground_process(43, "node", &["node", "opencode.js"]);
+        let direct_identity = identify_process(&direct).expect("comm identifies the agent");
+        let wrapped_identity = identify_process(&wrapped).expect("script identifies the agent");
+        assert_eq!(direct_identity.agent, wrapped_identity.agent);
+        assert_eq!(direct_identity.via, IdentifiedVia::Comm);
         assert_eq!(
-            wrapped_agent_name_from_runtime_argv(
-                "bash",
+            wrapped_identity.via,
+            IdentifiedVia::WrappedScript {
+                runtime: Runtime::Node
+            }
+        );
+        assert!(process_priority(direct_identity) > process_priority(wrapped_identity));
+        assert_eq!(
+            identified_display_name(&direct, direct_identity),
+            "opencode2"
+        );
+        assert_eq!(
+            identified_display_name(&wrapped, wrapped_identity),
+            "opencode"
+        );
+    }
+
+    #[test]
+    fn wrapped_agent_from_runtime_argv_ignores_plain_shell_flags() {
+        assert_eq!(
+            wrapped_agent_from_runtime_argv(
+                Runtime::Shell,
                 Some(&["bash".into(), "-lc".into()]),
                 None
             ),
@@ -1563,25 +1663,27 @@ mod tests {
             .spawn()
             .expect("the fixture should spawn");
         let child_pid = Pid::new(child.id()).expect("test child pid");
-        let resolved_via_target = agent_name_from_path_token("bin/agent", Some(child_pid));
-        let resolved_via_dot = agent_name_from_path_token("./bin/agent", Some(child_pid));
+        let resolved_via_target =
+            agent_from_path_token("bin/agent", Some(child_pid)).map(|identified| identified.agent);
+        let resolved_via_dot = agent_from_path_token("./bin/agent", Some(child_pid))
+            .map(|identified| identified.agent);
         child.kill().expect("kill the stand-in process");
         child.wait().expect("reap the stand-in process");
 
-        assert_eq!(resolved_via_target, Some("cursor".to_string()));
-        assert_eq!(resolved_via_dot, Some("cursor".to_string()));
+        assert_eq!(resolved_via_target, Some(Agent::Cursor));
+        assert_eq!(resolved_via_dot, Some(Agent::Cursor));
     }
 
     #[test]
     fn relative_argv_path_is_not_resolved_without_a_target_pid() {
         // Without the target's pid the only cwd available is the server's own,
         // which says nothing about where the agent was launched.
-        assert_eq!(agent_name_from_path_token("bin/agent", None), None);
-        assert_eq!(agent_name_from_path_token("./agent", None), None);
+        assert_eq!(agent_from_path_token("bin/agent", None), None);
+        assert_eq!(agent_from_path_token("./agent", None), None);
         // Basename matches never needed the filesystem and still work.
         assert_eq!(
-            agent_name_from_path_token("./bin/codex", None),
-            Some("codex".to_string())
+            agent_from_path_token("./bin/codex", None).map(|identified| identified.agent),
+            Some(Agent::Codex)
         );
     }
 

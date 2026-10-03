@@ -202,7 +202,7 @@ impl NavigatorIndex {
                     let status = agent.map_or(shepr_protocol::AgentStatus::Idle, |agent| {
                         agent.agent_status
                     });
-                    let agent_kind = agent.and_then(|agent| agent.agent.as_deref());
+                    let agent_kind = agent.and_then(|agent| agent.agent);
                     let title = agent.and_then(|agent| agent.terminal_title_stripped.as_deref());
                     let meta = pane
                         .foreground_cwd
@@ -220,7 +220,7 @@ impl NavigatorIndex {
                             .label
                             .as_deref()
                             .or(title)
-                            .or(agent_kind)
+                            .or(agent_kind.map(shepr_config::ConfigAgent::label))
                             .unwrap_or("terminal");
                         format!("{pane_name} · {}", index + 1)
                     };
@@ -229,7 +229,7 @@ impl NavigatorIndex {
                         label: label.clone(),
                         meta: meta.to_owned(),
                         detail: format!("{} / {}", workspace.label, pane.pane_id),
-                        agent: agent_kind.map(str::to_owned),
+                        agent: agent_kind,
                         status: Some(status),
                         stale: false,
                         current: false,
@@ -247,7 +247,7 @@ impl NavigatorIndex {
                         search_fields.push(cwd.to_lowercase());
                     }
                     if let Some(agent_kind) = agent_kind {
-                        search_fields.push(agent_kind.to_lowercase());
+                        search_fields.push(agent_kind.label().to_lowercase());
                     }
                     if let Some(title) = title {
                         search_fields.push(title.to_lowercase());
@@ -371,11 +371,7 @@ fn search_matches(fields: &[String], words: &[&str]) -> bool {
 }
 
 fn filter_status(filter: ClientNavigatorFilter, status: shepr_protocol::AgentStatus) -> bool {
-    match filter {
-        ClientNavigatorFilter::Blocked => status == shepr_protocol::AgentStatus::Blocked,
-        ClientNavigatorFilter::Working => status == shepr_protocol::AgentStatus::Working,
-        ClientNavigatorFilter::Idle => status == shepr_protocol::AgentStatus::Idle,
-    }
+    filter == status
 }
 
 pub(in crate::shell) fn navigator_selected_index(

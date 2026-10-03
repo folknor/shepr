@@ -51,27 +51,100 @@ const LAUNCH_LOCK_FILE_NAME: &str = "launch.lock";
 /// directory.
 const BOOT_LOG_FILE_NAME: &str = "server-boot.log";
 
-/// Retains the daemon's startup exit class across the launcher boundary so
-/// the SSH bridge can report it as an endpoint failure.
+/// A local launch failure retains its cause and the full operator diagnostic.
 #[derive(Debug)]
-struct DaemonBootFailure {
-    class: DaemonExit,
-    message: String,
+pub enum LaunchError {
+    Unresponsive {
+        message: String,
+    },
+    DifferentBuild {
+        status: RuntimeStatus,
+        message: String,
+    },
+    OverrideMissing {
+        message: String,
+    },
+    TransitionTimeout {
+        timeout: Duration,
+        message: String,
+    },
+    DaemonFailed {
+        class: DaemonExit,
+        status: ExitStatus,
+        message: String,
+    },
+    BootLogOverflow {
+        message: String,
+    },
+    BootTimeout {
+        timeout: Duration,
+        occupant_only: bool,
+        message: String,
+    },
+    SiblingBuildMismatch {
+        status: RuntimeStatus,
+        message: String,
+    },
+    Executable(io::Error),
+    LaunchLock(io::Error),
+    Io(io::Error),
 }
 
-impl std::fmt::Display for DaemonBootFailure {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(&self.message)
+impl LaunchError {
+    pub fn kind(&self) -> io::ErrorKind {
+        match self {
+            Self::TransitionTimeout { .. } | Self::BootTimeout { .. } => io::ErrorKind::TimedOut,
+            Self::OverrideMissing { .. } => io::ErrorKind::NotFound,
+            Self::Executable(error) | Self::LaunchLock(error) | Self::Io(error) => error.kind(),
+            _ => io::ErrorKind::Other,
+        }
     }
 }
 
-impl std::error::Error for DaemonBootFailure {}
+impl std::fmt::Display for LaunchError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unresponsive { message }
+            | Self::DifferentBuild { message, .. }
+            | Self::OverrideMissing { message }
+            | Self::TransitionTimeout { message, .. }
+            | Self::DaemonFailed { message, .. }
+            | Self::BootLogOverflow { message }
+            | Self::BootTimeout { message, .. }
+            | Self::SiblingBuildMismatch { message, .. } => f.write_str(message),
+            Self::Executable(error) | Self::LaunchLock(error) | Self::Io(error) => error.fmt(f),
+        }
+    }
+}
 
-pub(super) fn daemon_boot_exit_class(error: &io::Error) -> Option<DaemonExit> {
-    error
-        .get_ref()?
-        .downcast_ref::<DaemonBootFailure>()
-        .map(|failure| failure.class)
+impl std::error::Error for LaunchError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Executable(error) | Self::LaunchLock(error) | Self::Io(error) => Some(error),
+            _ => None,
+        }
+    }
+}
+
+impl From<io::Error> for LaunchError {
+    fn from(error: io::Error) -> Self {
+        Self::Io(error)
+    }
+}
+
+// IO-only presentation boundaries retain the OS kind and full diagnostic;
+// launch policy must inspect LaunchError before converting it.
+impl From<LaunchError> for io::Error {
+    fn from(error: LaunchError) -> Self {
+        io::Error::new(error.kind(), error.to_string())
+    }
+}
+
+pub(super) fn daemon_boot_exit_class(error: &LaunchError) -> Option<DaemonExit> {
+    match error {
+        LaunchError::DaemonFailed { class, .. } => Some(*class),
+        _ => None,
+    }
 }
 
 /// A direct client checks the build before attaching. An SSH bridge accepts a
@@ -94,7 +167,7 @@ pub fn ensure_running(
     paths: &shepr_config::AppPaths,
     timeout: Duration,
     build_check: BuildCheck,
-) -> io::Result<RuntimeStatus> {
+) -> Result<RuntimeStatus, LaunchError> {
     match probe_server(paths)? {
         Probed::Running(status) => {
             info!("server already running");
@@ -107,9 +180,10 @@ pub fn ensure_running(
         Probed::NoServer | Probed::Starting | Probed::Stopping => {}
     }
     require_own_runtime_address(paths)?;
-    let server = server_executable()?;
+    let server = server_executable().map_err(LaunchError::Executable)?;
 
-    let _lock = acquire_launch_lock(paths, timeout.saturating_add(LAUNCH_LOCK_WAIT_GRACE))?;
+    let _lock = acquire_launch_lock(paths, timeout.saturating_add(LAUNCH_LOCK_WAIT_GRACE))
+        .map_err(LaunchError::LaunchLock)?;
     // One budget covers every socket transition while this client owns the
     // launch lock; a server that repeatedly starts and releases cannot reset it.
     // clock-io-ok: the launch budget measures real elapsed waiting on the socket
@@ -156,7 +230,7 @@ pub fn running_server_status(paths: &shepr_config::AppPaths) -> io::Result<Optio
         // There is no stable server status to offer; the launch that follows
         // resolves the transition under the profile lock.
         Probed::NoServer | Probed::Starting | Probed::Stopping => Ok(None),
-        Probed::Unresponsive => Err(unresponsive_error(paths)),
+        Probed::Unresponsive => Err(io::Error::other(unresponsive_error(paths).to_string())),
     }
 }
 
@@ -210,7 +284,7 @@ fn wait_for_server_socket_to_settle_until(
     paths: &shepr_config::AppPaths,
     deadline: Instant,
     timeout: Duration,
-) -> io::Result<Probed> {
+) -> Result<Probed, LaunchError> {
     // clock-io-ok: bounds a wait on another process's real socket.
     loop {
         match probe_server(paths)? {
@@ -228,15 +302,15 @@ fn wait_for_server_socket_to_settle_until(
     }
 }
 
-fn server_transition_timeout(paths: &shepr_config::AppPaths, timeout: Duration) -> io::Error {
-    io::Error::new(
-        io::ErrorKind::TimedOut,
-        format!(
+fn server_transition_timeout(paths: &shepr_config::AppPaths, timeout: Duration) -> LaunchError {
+    LaunchError::TransitionTimeout {
+        timeout,
+        message: format!(
             "the shepr server at {} did not finish starting or release its socket within {}ms",
             paths.server_address().socket().display(),
             timeout.as_millis()
         ),
-    )
+    }
 }
 
 /// An override names an existing server and can never launch one. If that
@@ -246,7 +320,7 @@ fn wait_for_overridden_server(
     paths: &shepr_config::AppPaths,
     timeout: Duration,
     build_check: BuildCheck,
-) -> io::Result<RuntimeStatus> {
+) -> Result<RuntimeStatus, LaunchError> {
     // clock-io-ok: the launch budget measures real elapsed waiting on the socket
     let deadline = Instant::now() + timeout;
     let mut settled = wait_for_server_socket_to_settle_until(paths, deadline, timeout)?;
@@ -264,12 +338,14 @@ fn wait_for_overridden_server(
     }
 }
 
-fn unresponsive_error(paths: &shepr_config::AppPaths) -> io::Error {
-    io::Error::other(format!(
-        "a shepr server is listening at {}, but it is not answering status requests, so its build cannot be confirmed and no second server is started.\n\n{}\nIf that fails, stop the server process manually.",
-        paths.server_address().socket().display(),
-        build_mismatch_guidance(paths)
-    ))
+fn unresponsive_error(paths: &shepr_config::AppPaths) -> LaunchError {
+    LaunchError::Unresponsive {
+        message: format!(
+            "a shepr server is listening at {}, but it is not answering status requests, so its build cannot be confirmed and no second server is started.\n\n{}\nIf that fails, stop the server process manually.",
+            paths.server_address().socket().display(),
+            build_mismatch_guidance(paths)
+        ),
+    }
 }
 
 /// Applies the caller's policy to a running server's build.
@@ -277,7 +353,7 @@ fn accept_running(
     paths: &shepr_config::AppPaths,
     status: RuntimeStatus,
     build_check: BuildCheck,
-) -> io::Result<RuntimeStatus> {
+) -> Result<RuntimeStatus, LaunchError> {
     if status.build_id.is_this_build() {
         return Ok(status);
     }
@@ -287,20 +363,23 @@ fn accept_running(
     }
 }
 
-fn running_build_mismatch(paths: &shepr_config::AppPaths, status: &RuntimeStatus) -> io::Error {
+fn running_build_mismatch(paths: &shepr_config::AppPaths, status: &RuntimeStatus) -> LaunchError {
     let summary = if paths.server_address().is_runtime_address() {
         "the running shepr server is a different build; restart it before attaching."
     } else {
         "the running shepr server is a different build, and this client cannot start a replacement at the selected socket override."
     };
-    io::Error::other(format!(
-        "{summary}\n\nserver: v{} build {}\nclient: v{} build {}\n\n{}",
-        status.version,
-        status.build_id,
-        shepr_protocol::build_version(),
-        shepr_protocol::BUILD_ID,
-        build_mismatch_guidance(paths)
-    ))
+    LaunchError::DifferentBuild {
+        status: status.clone(),
+        message: format!(
+            "{summary}\n\nserver: v{} build {}\nclient: v{} build {}\n\n{}",
+            status.version,
+            status.build_id,
+            shepr_protocol::build_version(),
+            shepr_protocol::BUILD_ID,
+            build_mismatch_guidance(paths)
+        ),
+    }
 }
 
 fn build_mismatch_guidance(paths: &shepr_config::AppPaths) -> String {
@@ -313,7 +392,7 @@ fn build_mismatch_guidance(paths: &shepr_config::AppPaths) -> String {
 /// socket override names a server that is already running (a pane's own, or a
 /// test's); a server started for it would only meet the data directory lease
 /// the profile's real server holds.
-fn require_own_runtime_address(paths: &shepr_config::AppPaths) -> io::Result<()> {
+fn require_own_runtime_address(paths: &shepr_config::AppPaths) -> Result<(), LaunchError> {
     let address = paths.server_address();
     if address.is_runtime_address() {
         return Ok(());
@@ -321,17 +400,16 @@ fn require_own_runtime_address(paths: &shepr_config::AppPaths) -> io::Result<()>
     Err(no_server_at_override(paths))
 }
 
-fn no_server_at_override(paths: &shepr_config::AppPaths) -> io::Error {
+fn no_server_at_override(paths: &shepr_config::AppPaths) -> LaunchError {
     let address = paths.server_address();
     let selected_by = EnvVar::SheprSocketPath;
-    io::Error::new(
-        io::ErrorKind::NotFound,
-        format!(
+    LaunchError::OverrideMissing {
+        message: format!(
             "no shepr server is running at {}, which {selected_by} selects. A client starts a server only for its own runtime address ({}); a socket override names a server that is already running.",
             address.socket().display(),
             paths.runtime_dir().display()
         ),
-    )
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -586,7 +664,7 @@ fn launch_daemon(
     paths: &shepr_config::AppPaths,
     server: &Path,
     timeout: Duration,
-) -> io::Result<RuntimeStatus> {
+) -> Result<RuntimeStatus, LaunchError> {
     let boot_log = paths.runtime_dir().join(BOOT_LOG_FILE_NAME);
     let server_log = paths
         .data_dir()
@@ -641,7 +719,7 @@ fn launch_with(
     mut probe: impl FnMut() -> io::Result<Probed>,
     now: &mut impl FnMut() -> Instant,
     sleep: &mut impl FnMut(Duration),
-) -> io::Result<RuntimeStatus> {
+) -> Result<RuntimeStatus, LaunchError> {
     let boot_log = shepr_platform::open_boot_log(files.boot_log).map_err(|error| {
         io::Error::new(
             error.kind(),
@@ -707,7 +785,10 @@ fn launch_with(
         let probed = match probe() {
             Ok(probed) => probed,
             Err(error) => {
-                return Err(failed.map_or(error, |status| boot_failure(files, status)));
+                return Err(failed.map_or_else(
+                    || LaunchError::Io(error),
+                    |status| boot_failure(files, status),
+                ));
             }
         };
         let nothing_listens = matches!(probed, Probed::NoServer);
@@ -783,28 +864,32 @@ fn boot_id_process_id(boot_id: &shepr_protocol::BootId) -> Option<shepr_platform
 }
 
 /// The daemon exited during boot: how, and what it printed.
-fn boot_failure(files: &LaunchFiles<'_>, status: ExitStatus) -> io::Error {
+fn boot_failure(files: &LaunchFiles<'_>, status: ExitStatus) -> LaunchError {
     let class = DaemonExit::from_code(status.code());
     let mut message = format!(
         "{SERVER_BINARY_NAME} {} ({status})",
         class.describe_boot_end()
     );
     append_boot_log(&mut message, files);
-    io::Error::other(DaemonBootFailure { class, message })
+    LaunchError::DaemonFailed {
+        class,
+        status,
+        message,
+    }
 }
 
 /// The daemon printed more than [`BOOT_LOG_MAX_BYTES`] while booting; the
 /// caller's guard stops it.
-fn boot_log_overflow(files: &LaunchFiles<'_>) -> io::Error {
+fn boot_log_overflow(files: &LaunchFiles<'_>) -> LaunchError {
     let mut message = format!(
         "{SERVER_BINARY_NAME} wrote more than {BOOT_LOG_MAX_BYTES} bytes to its boot log while starting and was stopped"
     );
     append_boot_log(&mut message, files);
-    io::Error::other(message)
+    LaunchError::BootLogOverflow { message }
 }
 
 /// The daemon did not answer with this build's identity in time.
-fn boot_timeout(files: &LaunchFiles<'_>, timeout: Duration, occupant_only: bool) -> io::Error {
+fn boot_timeout(files: &LaunchFiles<'_>, timeout: Duration, occupant_only: bool) -> LaunchError {
     let mut message = if occupant_only {
         format!(
             "{SERVER_BINARY_NAME} found another server already running, but that server did not answer a status request within {}s",
@@ -817,7 +902,11 @@ fn boot_timeout(files: &LaunchFiles<'_>, timeout: Duration, occupant_only: bool)
         )
     };
     append_boot_log(&mut message, files);
-    io::Error::new(io::ErrorKind::TimedOut, message)
+    LaunchError::BootTimeout {
+        timeout,
+        occupant_only,
+        message,
+    }
 }
 
 fn append_boot_log(message: &mut String, files: &LaunchFiles<'_>) {
@@ -843,15 +932,18 @@ fn append_boot_log(message: &mut String, files: &LaunchFiles<'_>) {
 
 /// The daemon this client just started answered as another build, so the
 /// installed pair is inconsistent.
-fn sibling_build_mismatch(files: &LaunchFiles<'_>, status: &RuntimeStatus) -> io::Error {
-    io::Error::other(format!(
-        "{} is a different build than this shepr and was stopped; install shepr and {SERVER_BINARY_NAME} together (`brokkr install`).\n\nserver: v{} build {}\nclient: v{} build {}",
-        files.server.display(),
-        status.version,
-        status.build_id,
-        shepr_protocol::build_version(),
-        shepr_protocol::BUILD_ID
-    ))
+fn sibling_build_mismatch(files: &LaunchFiles<'_>, status: &RuntimeStatus) -> LaunchError {
+    LaunchError::SiblingBuildMismatch {
+        status: status.clone(),
+        message: format!(
+            "{} is a different build than this shepr and was stopped; install shepr and {SERVER_BINARY_NAME} together (`brokkr install`).\n\nserver: v{} build {}\nclient: v{} build {}",
+            files.server.display(),
+            status.version,
+            status.build_id,
+            shepr_protocol::build_version(),
+            shepr_protocol::BUILD_ID
+        ),
+    }
 }
 
 /// The working directory the server daemon runs in: the user's home

@@ -205,7 +205,7 @@ fn restart_local(
             Ok(()) => Ok(RemoteStop::Stopped),
             Err(ServerStopError::NotRunning { .. }) => Ok(RemoteStop::NoServer),
             Err(error) if error.is_boot_mismatch() => Ok(RemoteStop::BootChanged),
-            Err(error) => Err(error.to_string()),
+            Err(error) => Err(shepr_remote::RestartFailure::Local(error)),
         },
     )
 }
@@ -376,7 +376,7 @@ mod tests {
     fn outcome(
         machine: &MachineConfig,
         check: MachineCheck,
-        authentication: Option<Result<(), String>>,
+        authentication: Option<Result<(), shepr_remote::AuthenticationError>>,
     ) -> PreflightOutcome {
         PreflightOutcome {
             machine: machine.clone(),
@@ -427,7 +427,9 @@ mod tests {
             outcome(
                 &machines[3],
                 MachineCheck::NeedsAuthentication(diagnostic("Permission denied (publickey)")),
-                Some(Err("ssh exited with exit status: 255".into())),
+                Some(Err(shepr_remote::AuthenticationError::Exited(
+                    std::os::unix::process::ExitStatusExt::from_raw(255 << 8),
+                ))),
             ),
             outcome(
                 &machines[4],
@@ -525,7 +527,12 @@ mod tests {
         for (restart, extra) in [
             (RestartResult::Declined, ""),
             (RestartResult::NoTerminal, "interactive terminal"),
-            (RestartResult::Failed("timed out".into()), "timed out"),
+            (
+                RestartResult::Failed(shepr_remote::RestartFailure::Remote(io::Error::other(
+                    "timed out",
+                ))),
+                "timed out",
+            ),
         ] {
             let notices = restart_notices(
                 restart,
@@ -711,7 +718,7 @@ mod tests {
     fn a_local_server_of_this_build_or_none_needs_no_restart() {
         for probe in [None, Some(status(shepr_protocol::BUILD_ID, "1-1"))] {
             let mut script = LocalScript::new(vec![probe], vec![], vec![]);
-            assert_eq!(script.run(true), RestartResult::NotNeeded);
+            assert!(matches!(script.run(true), RestartResult::NotNeeded));
             assert!(script.asked.is_empty());
         }
     }
@@ -723,7 +730,7 @@ mod tests {
             vec![Ok(())],
             vec![true],
         );
-        assert_eq!(script.run(true), RestartResult::Stopped);
+        assert!(matches!(script.run(true), RestartResult::Stopped));
         assert_eq!(script.asked, ["1-1"]);
         // The stop names the boot that was observed.
         assert_eq!(script.stopped, ["1-1"]);
@@ -736,14 +743,14 @@ mod tests {
             vec![],
             vec![false],
         );
-        assert_eq!(script.run(true), RestartResult::Declined);
+        assert!(matches!(script.run(true), RestartResult::Declined));
         assert!(script.stopped.is_empty());
     }
 
     #[test]
     fn without_a_terminal_the_local_server_is_left_alone_unasked() {
         let mut script = LocalScript::new(vec![Some(status(other_build(), "1-1"))], vec![], vec![]);
-        assert_eq!(script.run(false), RestartResult::NoTerminal);
+        assert!(matches!(script.run(false), RestartResult::NoTerminal));
         assert!(script.asked.is_empty());
         assert!(script.stopped.is_empty());
     }
@@ -758,7 +765,7 @@ mod tests {
             vec![Err(boot_mismatch()), Ok(())],
             vec![true, true],
         );
-        assert_eq!(script.run(true), RestartResult::Stopped);
+        assert!(matches!(script.run(true), RestartResult::Stopped));
         assert_eq!(script.asked, ["1-1", "2-2"]);
         assert_eq!(script.stopped, ["1-1", "2-2"]);
     }
@@ -776,7 +783,10 @@ mod tests {
                 vec![Err(boot_mismatch())],
                 vec![true],
             );
-            assert_eq!(script.run(true), expected);
+            assert_eq!(
+                std::mem::discriminant(&script.run(true)),
+                std::mem::discriminant(&expected)
+            );
             assert_eq!(script.stopped, ["1-1"]);
         }
     }
@@ -792,7 +802,7 @@ mod tests {
             vec![Err(boot_mismatch()), Err(boot_mismatch())],
             vec![true, true],
         );
-        assert_eq!(script.run(true), RestartResult::OccupantChanged);
+        assert!(matches!(script.run(true), RestartResult::OccupantChanged));
         assert_eq!(script.asked.len(), crate::limits::MAX_LOCAL_OFFERS);
     }
 
@@ -807,7 +817,7 @@ mod tests {
             })],
             vec![true],
         );
-        assert_eq!(script.run(true), RestartResult::NoServer);
+        assert!(matches!(script.run(true), RestartResult::NoServer));
         assert_eq!(script.stopped, ["1-1"]);
         let notice = local_notice(&RestartResult::NoServer).expect("a notice");
         assert!(notice.contains("already stopped"), "{notice}");
@@ -820,8 +830,13 @@ mod tests {
             vec![Err(ServerStopError::Protocol("refused".into()))],
             vec![true],
         );
-        assert_eq!(script.run(true), RestartResult::Failed("refused".into()));
-        let notice = local_notice(&RestartResult::Failed("refused".into())).expect("a notice");
+        assert!(
+            matches!(script.run(true), RestartResult::Failed(shepr_remote::RestartFailure::Local(ServerStopError::Protocol(detail))) if detail == "refused")
+        );
+        let notice = local_notice(&RestartResult::Failed(shepr_remote::RestartFailure::Local(
+            ServerStopError::Protocol("refused".into()),
+        )))
+        .expect("a notice");
         assert!(notice.contains("refused"), "{notice}");
     }
 

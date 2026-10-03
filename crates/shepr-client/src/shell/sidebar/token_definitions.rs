@@ -50,7 +50,7 @@ pub(crate) struct AgentTokenContext<'a> {
     pub(crate) agent_label: Option<&'a str>,
     pub(crate) terminal_title: Option<&'a str>,
     pub(crate) terminal_title_stripped: Option<&'a str>,
-    pub(crate) canonical_agent: Option<shepr_agent::detect::Agent>,
+    pub(crate) canonical_agent: Option<shepr_config::ConfigAgent>,
 }
 
 pub(crate) fn agent_rows(
@@ -59,11 +59,7 @@ pub(crate) fn agent_rows(
     state_text: &str,
 ) -> Vec<Vec<ResolvedToken>> {
     config
-        .rows_for_agent(
-            context
-                .canonical_agent
-                .map(shepr_agent::agent::Agent::label),
-        )
+        .rows_for_agent(context.canonical_agent)
         .iter()
         .filter_map(|row| {
             let resolved = row
@@ -189,7 +185,7 @@ mod tests {
         agent_label: Option<String>,
         terminal_title: Option<String>,
         terminal_title_stripped: Option<String>,
-        canonical_agent: Option<shepr_agent::detect::Agent>,
+        canonical_agent: Option<shepr_config::ConfigAgent>,
     }
 
     fn entry() -> Entry {
@@ -199,7 +195,7 @@ mod tests {
             agent_label: Some("pi".into()),
             terminal_title: None,
             terminal_title_stripped: None,
-            canonical_agent: Some(shepr_agent::detect::Agent::Pi),
+            canonical_agent: Some(shepr_config::ConfigAgent::Pi),
         }
     }
 
@@ -357,7 +353,7 @@ rows = [[{ token = "workspace", rules = [{ lt = 50, hide = true }] }], ["state_t
                 ResolvedTokenKind::Agent("pi".into())
             );
         }
-        entry.canonical_agent = Some(shepr_agent::detect::Agent::Pi);
+        entry.canonical_agent = Some(shepr_config::ConfigAgent::Pi);
         for (value, count) in [("20", 1), ("90", 2)] {
             entry.workspace = value.into();
             assert_eq!(
@@ -473,9 +469,10 @@ rows = [[{ token = "workspace", rules = [{ lt = 50, hide = true }] }], ["state_t
             rows: vec![vec![AgentSidebarToken::Workspace]],
             ..Default::default()
         };
-        config
-            .rows_by_agent
-            .insert("pi".into(), vec![vec![AgentSidebarToken::Agent]]);
+        config.rows_by_agent.insert(
+            shepr_config::ConfigAgent::Pi,
+            vec![vec![AgentSidebarToken::Agent]],
+        );
         let mut pi = entry();
         pi.agent_label = Some("renamed pi".into());
 

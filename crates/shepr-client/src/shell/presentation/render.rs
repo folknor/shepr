@@ -147,15 +147,29 @@ pub(in crate::shell) fn render_mode_bar(
                 ]);
             }
             ClientShellMode::Resize => {
-                // Resize controls are fixed in input routing, not [keys] bindings.
                 segments.extend([
                     (" RESIZE ".to_owned(), mode_style),
                     ("  ".to_owned(), base),
-                    ("h/l".to_owned(), key),
+                    (
+                        crate::shell::input::resize_help_keys(
+                            crate::shell::input::ResizeHelpGroup::Width,
+                        ),
+                        key,
+                    ),
                     (" width  ".to_owned(), base),
-                    ("j/k".to_owned(), key),
+                    (
+                        crate::shell::input::resize_help_keys(
+                            crate::shell::input::ResizeHelpGroup::Height,
+                        ),
+                        key,
+                    ),
                     (" height  ".to_owned(), base),
-                    ("esc".to_owned(), key),
+                    (
+                        crate::shell::input::resize_help_keys(
+                            crate::shell::input::ResizeHelpGroup::Finish,
+                        ),
+                        key,
+                    ),
                     (" done".to_owned(), base),
                 ]);
             }
@@ -177,9 +191,17 @@ pub(in crate::shell) fn render_mode_bar(
                     if bar.width >= 8 {
                         put_text(buffer, bar.x + 7, bar.y, 1, marker, key);
                     }
-                    let footer = "  enter search  esc cancel";
+                    let footer = format!(
+                        "  {} search  {} cancel",
+                        shepr_termio::copy_mode::copy_mode_help_keys(
+                            shepr_termio::copy_mode::CopyModeHelpGroup::SearchPromptSubmit,
+                        ),
+                        shepr_termio::copy_mode::copy_mode_help_keys(
+                            shepr_termio::copy_mode::CopyModeHelpGroup::SearchPromptCancel,
+                        ),
+                    );
                     let footer_width = if bar.width >= 50 {
-                        display_width(footer)
+                        display_width(&footer)
                     } else {
                         0
                     };
@@ -204,7 +226,7 @@ pub(in crate::shell) fn render_mode_bar(
                             bar.right() - footer_width,
                             bar.y,
                             footer_width,
-                            footer,
+                            &footer,
                             base,
                         );
                     }
@@ -228,28 +250,68 @@ pub(in crate::shell) fn render_mode_bar(
                             .then(|| " 0/0".to_owned())
                     })
                     .unwrap_or_default();
+                let quit_keys = shepr_termio::copy_mode::copy_mode_help_keys(
+                    shepr_termio::copy_mode::CopyModeHelpGroup::Exit,
+                );
+                let clear_keys = shepr_termio::copy_mode::copy_mode_help_keys(
+                    shepr_termio::copy_mode::CopyModeHelpGroup::Clear,
+                );
                 let (exit_keys, exit_label) = if search.is_none_or(|search| search.query.is_empty())
                     && copy_mode.selection.is_none()
                 {
-                    ("q/esc", " exit")
+                    (format!("{quit_keys}/{clear_keys}"), " exit".to_owned())
                 } else {
-                    ("esc", " clear  q exit")
+                    (clear_keys, format!(" clear  {quit_keys} exit"))
                 };
                 segments.extend([
                     (" COPY ".to_owned(), mode_style),
                     (" ".to_owned(), base),
-                    ("h/j/k/l w/b/e { }".to_owned(), key),
+                    (
+                        format!(
+                            "{} {} {}",
+                            shepr_termio::copy_mode::copy_mode_help_keys(
+                                shepr_termio::copy_mode::CopyModeHelpGroup::Cursor,
+                            ),
+                            shepr_termio::copy_mode::copy_mode_help_keys(
+                                shepr_termio::copy_mode::CopyModeHelpGroup::Word,
+                            ),
+                            shepr_termio::copy_mode::copy_mode_help_keys(
+                                shepr_termio::copy_mode::CopyModeHelpGroup::Paragraph,
+                            ),
+                        ),
+                        key,
+                    ),
                     (" move  ".to_owned(), base),
-                    ("/ ?".to_owned(), key),
+                    (
+                        shepr_termio::copy_mode::copy_mode_help_keys(
+                            shepr_termio::copy_mode::CopyModeHelpGroup::Search,
+                        ),
+                        key,
+                    ),
                     (" search  ".to_owned(), base),
-                    ("n/N".to_owned(), key),
+                    (
+                        shepr_termio::copy_mode::copy_mode_help_keys(
+                            shepr_termio::copy_mode::CopyModeHelpGroup::Repeat,
+                        ),
+                        key,
+                    ),
                     (format!(" repeat{match_status}  "), base),
-                    ("v/space".to_owned(), key),
+                    (
+                        shepr_termio::copy_mode::copy_mode_help_keys(
+                            shepr_termio::copy_mode::CopyModeHelpGroup::Selection,
+                        ),
+                        key,
+                    ),
                     (format!(" {select}  "), base),
-                    ("y/enter".to_owned(), key),
+                    (
+                        shepr_termio::copy_mode::copy_mode_help_keys(
+                            shepr_termio::copy_mode::CopyModeHelpGroup::Copy,
+                        ),
+                        key,
+                    ),
                     (" copy  ".to_owned(), base),
-                    (exit_keys.to_owned(), key),
-                    (exit_label.to_owned(), base),
+                    (exit_keys, key),
+                    (exit_label, base),
                 ]);
             }
             // Terminal mode without an error returned at the top.

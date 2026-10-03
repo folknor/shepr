@@ -3,8 +3,8 @@ use super::*;
 pub(super) fn cancel_endpoint_commands(
     shell: &mut shell::ClientShellState,
     cancelled: endpoint::commands::EndpointCommandCancellation,
-) -> bool {
-    let mut repaint = false;
+) -> shell::Repaint {
+    let mut repaint = shell::Repaint::Unchanged;
     for request_id in cancelled.unsent {
         repaint |= shell.drop_request(&request_id, shell::DropReason::Unsent);
     }
@@ -32,8 +32,9 @@ pub(super) fn settle_expired_endpoint_commands(
         if !endpoints.accepts(&expired.endpoint_id, expired.generation)
             || !shell.endpoint_is_active(&expired.endpoint_id)
         {
-            outcome.repaint |=
-                shell.drop_request(&expired.request_id, shell::DropReason::Interrupted);
+            outcome.repaint |= shell
+                .drop_request(&expired.request_id, shell::DropReason::Interrupted)
+                .is_needed();
             continue;
         }
         outcome.merge(shell.answer_request(
@@ -63,8 +64,8 @@ pub(super) fn dispatch_client_shell_actions(
     prefers_osc52_clipboard: bool,
     shell: &mut shell::ClientShellState,
     now: std::time::Instant,
-) -> bool {
-    let mut repaint = false;
+) -> Result<shell::Repaint, ClientError> {
+    let mut repaint = shell::Repaint::Unchanged;
     let mut actions = std::collections::VecDeque::from(actions);
     while let Some(action) = actions.pop_front() {
         match action {
@@ -96,11 +97,23 @@ pub(super) fn dispatch_client_shell_actions(
                     prefers_osc52_clipboard,
                     output_writer,
                 ) {
-                    warn!(
-                        bytes = bytes.len(),
-                        %error,
-                        "clipboard copy did not reach the host clipboard"
-                    );
+                    match crate::state::host_write_failure_action(
+                        crate::state::HostWritePurpose::Clipboard,
+                        error.kind(),
+                    ) {
+                        crate::state::HostWriteAction::Fatal => {
+                            return Err(ClientError::HostTerminal(error));
+                        }
+                        crate::state::HostWriteAction::Retry
+                        | crate::state::HostWriteAction::Continue
+                        | crate::state::HostWriteAction::Succeeded => {
+                            warn!(
+                                bytes = bytes.len(),
+                                %error,
+                                "clipboard copy did not reach the host clipboard"
+                            );
+                        }
+                    }
                 }
             }
             shell::ClientShellAction::ActivateEndpoint {
@@ -110,7 +123,7 @@ pub(super) fn dispatch_client_shell_actions(
                 endpoint::Selection::Unchanged => {}
                 endpoint::Selection::FocusShown(target) => {
                     actions.extend(shell.focus_endpoint_target(target));
-                    repaint = true;
+                    repaint = shell::Repaint::Needed;
                 }
                 endpoint::Selection::Moving => {
                     if endpoint::view::selection_wait_notice_needed(
@@ -120,10 +133,12 @@ pub(super) fn dispatch_client_shell_actions(
                         shell,
                     ) {
                         let notice = waiting_notice(
-                            endpoint_id.display_label(),
+                            endpoint_id.clone(),
                             shell.endpoint_status(&endpoint_id),
                         );
-                        repaint |= shell.receive_endpoint_unavailable(notice);
+                        if shell.receive_endpoint_unavailable(&notice) {
+                            repaint = shell::Repaint::Needed;
+                        }
                     }
                 }
             },
@@ -133,29 +148,20 @@ pub(super) fn dispatch_client_shell_actions(
         let cancelled = endpoint_commands.send_next(shown, endpoints, now);
         repaint |= cancel_endpoint_commands(shell, cancelled);
     }
-    repaint
+    Ok(repaint)
 }
 
 /// The notice for a pick that has to wait for its endpoint's connection or metadata. It names
 /// the current status, so an attention diagnostic does not read like a promise that waiting
 /// will repair it.
 pub(super) fn waiting_notice(
-    label: &str,
+    endpoint: endpoint::ClientEndpointId,
     status: Option<endpoint::ClientEndpointStatus>,
-) -> String {
-    use endpoint::ClientEndpointStatus::*;
-    match status {
-        Some(Connecting) => {
-            format!("{label} is connecting; selection will resume when it is ready")
-        }
-        Some(Reconnecting) => {
-            format!("{label} is reconnecting; selection will resume when it is ready")
-        }
-        Some(Attention) => format!("{label} needs attention"),
-        _ => format!(
-            "{label} is waiting for its workspace snapshot; selection will resume when it is ready"
-        ),
-    }
+) -> shell::EndpointNotice {
+    shell::EndpointNotice::new(
+        endpoint,
+        shell::EndpointNoticeKind::WaitingForSelection(status),
+    )
 }
 
 /// The geometry every endpoint is asked to render: the host size under the client's own layout.
@@ -200,19 +206,17 @@ pub(super) fn resize_views(state: &mut ClientState, endpoints: &mut endpoint::En
 pub(super) fn sync_client_shell_keyboard_report_all(
     state: &mut ClientState,
 ) -> Result<(), ClientError> {
-    state
-        .host_modes
-        .sync_shell_keyboard_report_all(
-            &mut state.output_writer,
-            state.shell.host_keyboard_report_all_requested(),
-        )
-        .map_err(ClientError::HostTerminal)
+    let result = state.host_modes.sync_shell_keyboard_report_all(
+        &mut state.output_writer,
+        state.shell.host_keyboard_report_all_requested(),
+    );
+    state.record_host_mode_write("keyboard report-all", result)
 }
 
-/// Drops the host terminal effects a lost or retired endpoint asked for. Every step runs even
-/// after one fails, so a failed mouse reset still clears report-all and the title; the first
-/// failure is then returned as a host terminal error, like every other host mode write on the
-/// client loop.
+/// Drops host terminal effects requested by a lost or retired endpoint. Every step runs even
+/// after one fails, so a failed mouse reset still clears report-all and the title. Each result
+/// passes through the shared policy: a transient failure queues a retry, while a permanent
+/// stateful-mode failure ends the client after all resets have been attempted.
 pub(super) fn clear_endpoint_host_effects(state: &mut ClientState) -> Result<(), ClientError> {
     state.host_modes.clear_mouse_endpoint_request();
     let mouse = state.host_modes.apply_mouse(
@@ -229,10 +233,15 @@ pub(super) fn clear_endpoint_host_effects(state: &mut ClientState) -> Result<(),
     let title = state
         .host_modes
         .reset_window_title(&mut state.output_writer);
-    mouse
-        .and(report_all)
-        .and(title)
-        .map_err(ClientError::HostTerminal)
+    let mouse = state.record_host_mode_write("mouse capture reset", mouse);
+    let report_all = state.record_host_mode_write("keyboard report-all reset", report_all);
+    state.title_write_failure.observe(
+        crate::state::HostWritePurpose::Title,
+        "window title reset",
+        &title,
+        None,
+    );
+    mouse.and(report_all)
 }
 
 pub(super) fn install_client_shell_snapshot(
@@ -262,20 +271,26 @@ pub(super) fn install_client_shell_snapshot(
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ShellInputDisposition {
+    Continue,
+    Detach,
+}
+
 pub(super) fn finish_client_shell_input(
     state: &mut ClientState,
     outcome: shell::ClientShellInput,
     endpoints: &mut endpoint::EndpointRegistry,
     endpoint_commands: &mut endpoint::commands::EndpointCommands,
     now: std::time::Instant,
-) -> Result<bool, ClientError> {
+) -> Result<ShellInputDisposition, ClientError> {
     if outcome.detach {
         // A failed send is recorded against the endpoint. The registry remembers a sent
         // Detach, so its Drop on the way out only flushes this connection.
         if let Some(shown) = state.shell.endpoints.choice.live() {
             endpoints.send_to(shown, &ClientMessage::Detach);
         }
-        return Ok(true);
+        return Ok(ShellInputDisposition::Detach);
     }
     let repaint = outcome.repaint;
     if outcome.resize {
@@ -287,10 +302,11 @@ pub(super) fn finish_client_shell_input(
         state.request_repaint();
     }
     if outcome.query_host_appearance {
-        query_host_terminal_appearance(&mut state.output_writer);
+        query_host_terminal_appearance(&mut state.output_writer)
+            .map_err(ClientError::HostTerminal)?;
     }
     if outcome.query_host_theme {
-        query_host_terminal_theme(&mut state.output_writer);
+        query_host_terminal_theme(&mut state.output_writer).map_err(ClientError::HostTerminal)?;
     }
     sync_client_shell_keyboard_report_all(state)?;
     let dispatch_repaint = dispatch_client_shell_actions(
@@ -301,26 +317,27 @@ pub(super) fn finish_client_shell_input(
         state.settings.prefers_osc52_clipboard(),
         &mut state.shell,
         now,
-    );
+    )?;
     for request in outcome.requests {
-        match &request {
-            ClientMessage::ClientShellHostTheme { update } => {
-                state.record_host_theme_update(update);
-                endpoints.send_viewed(&request);
+        match request {
+            shell::ClientShellRequest::HostTheme(update) => {
+                state.record_host_theme_update(&update);
+                endpoints.send_viewed(&ClientMessage::ClientShellHostTheme { update });
             }
-            // Pane input and host focus reach only the shown endpoint. A target learns of host
-            // focus at its commit, and a released endpoint was sent focus-loss with its release.
-            _ => {
+            shell::ClientShellRequest::Shown(request) => {
+                // Pane input and host focus reach only the shown endpoint. A target learns of
+                // host focus at its commit, and a released endpoint was sent focus-loss with
+                // its release.
                 if let Some(shown) = input_endpoint(&state.shell.endpoints.choice, endpoints) {
                     endpoints.send_to(shown, &request);
                 }
             }
         }
     }
-    if repaint || dispatch_repaint {
+    if repaint || dispatch_repaint.is_needed() {
         state.mark_pane_dirty();
     }
-    Ok(false)
+    Ok(ShellInputDisposition::Continue)
 }
 
 #[cfg(test)]
@@ -329,16 +346,24 @@ mod tests {
 
     #[test]
     fn waiting_notice_names_the_endpoint_and_its_current_status() {
+        let local = endpoint::ClientEndpointId::Local;
+        let build = endpoint::ClientEndpointId::Ssh(
+            shepr_config::MachineLabel::parse("build").expect("machine label"),
+        );
         assert_eq!(
-            waiting_notice("Local", Some(endpoint::ClientEndpointStatus::Attention)),
+            waiting_notice(local, Some(endpoint::ClientEndpointStatus::Attention)).body(),
             "Local needs attention"
         );
         assert_eq!(
-            waiting_notice("build", Some(endpoint::ClientEndpointStatus::Reconnecting)),
+            waiting_notice(
+                build.clone(),
+                Some(endpoint::ClientEndpointStatus::Reconnecting)
+            )
+            .body(),
             "build is reconnecting; selection will resume when it is ready"
         );
         assert_eq!(
-            waiting_notice("build", Some(endpoint::ClientEndpointStatus::Online)),
+            waiting_notice(build, Some(endpoint::ClientEndpointStatus::Online)).body(),
             "build is waiting for its workspace snapshot; selection will resume when it is ready"
         );
     }

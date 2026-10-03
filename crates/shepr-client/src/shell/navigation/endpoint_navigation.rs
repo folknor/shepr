@@ -3,6 +3,7 @@ use crate::shell::state::ClientShellAction;
 use crate::endpoint::ClientEndpointId;
 use crate::shell::endpoints::ClientEndpointFocusTarget;
 use crate::shell::state::{ClientShellInput, ClientShellState, ClientWorkspacePress};
+use crate::shell::{EndpointNotice, EndpointNoticeKind};
 
 impl ClientShellState {
     pub(in crate::shell) fn active_endpoint_workspace_at(
@@ -77,8 +78,10 @@ impl ClientShellState {
                 target: None,
             });
         } else {
-            let label = endpoint_id.display_label().to_owned();
-            self.receive_endpoint_unavailable(format!("{label} is not ready"));
+            self.receive_endpoint_unavailable(&EndpointNotice::new(
+                endpoint_id,
+                EndpointNoticeKind::NotReady,
+            ));
             outcome.repaint = true;
         }
         true
@@ -206,8 +209,10 @@ impl ClientShellState {
         self.pending_agent_reveal = None;
         if !self.endpoint_can_select(&endpoint_id) {
             if endpoint_id != *self.endpoints.presented() {
-                let label = endpoint_id.display_label().to_owned();
-                self.receive_endpoint_unavailable(format!("{label} is not ready"));
+                self.receive_endpoint_unavailable(&EndpointNotice::new(
+                    endpoint_id,
+                    EndpointNoticeKind::NotReady,
+                ));
                 outcome.repaint = true;
             }
             return false;
@@ -228,8 +233,10 @@ impl ClientShellState {
         self.pending_workspace_highlight = None;
         self.pending_agent_reveal = None;
         if !self.endpoint_can_select(&endpoint_id) {
-            let label = endpoint_id.display_label().to_owned();
-            self.receive_endpoint_unavailable(format!("{label} is not ready"));
+            self.receive_endpoint_unavailable(&EndpointNotice::new(
+                endpoint_id,
+                EndpointNoticeKind::NotReady,
+            ));
             outcome.repaint = true;
             return false;
         }

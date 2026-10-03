@@ -15,7 +15,7 @@ use crossterm::event::MouseEventKind;
 use crate::shell::state::{
     ClientChromeDrag, ClientHelpOverlay, ClientPaneClick, ClientPaneMouseGesture,
     ClientSelectionAutoscroll, ClientShellEndpointError, ClientShellInput, ClientShellState,
-    ClientWorkspacePress, PaneHit, PaneSplitHit,
+    ClientWorkspacePress, PaneHit, PaneSplitHit, Repaint,
 };
 
 use shepr_protocol::ClientMousePosition;
@@ -192,7 +192,7 @@ impl ClientShellState {
         result: Result<shepr_protocol::command::EndpointReply, ClientShellEndpointError>,
         now: std::time::Instant,
         outcome: &mut ClientShellInput,
-    ) -> bool {
+    ) -> Repaint {
         match result {
             Ok(shepr_protocol::command::EndpointReply::PaneInfo { pane })
                 if &pane.pane_id == pane_id =>
@@ -204,7 +204,7 @@ impl ClientShellState {
                 ) {
                     self.dispatch_pane_scroll(pane_id.clone(), offset, outcome);
                 }
-                false
+                Repaint::Unchanged
             }
             Ok(_) => {
                 if self.scroll_lanes.failed(pane_id, request) {
@@ -212,20 +212,30 @@ impl ClientShellState {
                         "endpoint returned an unexpected pane-scroll result",
                         now,
                     );
-                    true
+                    Repaint::Needed
                 } else {
-                    false
+                    Repaint::Unchanged
                 }
             }
-            Err(_) => self.scroll_lanes.failed(pane_id, request),
+            Err(_) => {
+                if self.scroll_lanes.failed(pane_id, request) {
+                    Repaint::Needed
+                } else {
+                    Repaint::Unchanged
+                }
+            }
         }
     }
     pub(in crate::shell) fn drop_pane_scroll(
         &mut self,
         request: &shepr_protocol::RequestId,
         pane: &shepr_protocol::PublicPaneId,
-    ) -> bool {
-        self.scroll_lanes.failed(pane, request)
+    ) -> Repaint {
+        if self.scroll_lanes.failed(pane, request) {
+            Repaint::Needed
+        } else {
+            Repaint::Unchanged
+        }
     }
 
     pub(in crate::shell) fn stop_selection_autoscroll(&mut self) {

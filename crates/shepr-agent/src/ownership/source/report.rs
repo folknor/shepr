@@ -25,7 +25,7 @@ impl AgentOwnership {
         if origin.official_agent().is_some_and(|agent| {
             agent
                 .descriptor()
-                .hook_session_policy
+                .hook_session_policy()
                 .state_requires_session_ref
         }) && session_ref.is_none()
         {
@@ -44,7 +44,7 @@ impl AgentOwnership {
         if origin.official_agent().is_some_and(|agent| {
             agent
                 .descriptor()
-                .hook_session_policy
+                .hook_session_policy()
                 .state_requires_current_session
         }) && let Some(incoming) = session_ref.as_ref()
             && self

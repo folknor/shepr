@@ -1,7 +1,7 @@
 use crate::shell::overlays::text_editor::TextEditor;
 use crate::shell::state::{
     ClientRenameTarget, ClientShellAction, ClientShellConfig, ClientShellInput, ClientShellMode,
-    ClientShellOverlay,
+    ClientShellOverlay, ClientShellRequest,
 };
 use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEventKind};
 use ratatui::buffer::Buffer;
@@ -91,12 +91,12 @@ fn host_theme_updates_are_forwarded_to_the_server() {
     assert!(inferred.repaint);
     assert!(matches!(
         inferred.requests.as_slice(),
-        [ClientMessage::ClientShellHostTheme {
-            update: shepr_protocol::ClientHostThemeUpdate::DefaultColor {
+        [ClientShellRequest::HostTheme(
+            shepr_protocol::ClientHostThemeUpdate::DefaultColor {
                 kind: shepr_protocol::ClientHostDefaultColorKind::Background,
                 ..
-            }
-        }]
+            },
+        )]
     ));
     assert_eq!(
         state.host_background,
@@ -112,11 +112,11 @@ fn host_theme_updates_are_forwarded_to_the_server() {
     )]);
     assert!(matches!(
         explicit.requests.as_slice(),
-        [ClientMessage::ClientShellHostTheme {
-            update: shepr_protocol::ClientHostThemeUpdate::Appearance(
+        [ClientShellRequest::HostTheme(
+            shepr_protocol::ClientHostThemeUpdate::Appearance(
                 shepr_protocol::ClientHostAppearance::Dark
-            )
-        }]
+            ),
+        )]
     ));
 
     let repeated = state.handle_raw_events(vec![RawInputEvent::HostDefaultColor {
@@ -216,9 +216,7 @@ fn full_host_palette_response_is_sent_as_one_theme_update() {
     let outcome = state.handle_input_bytes(responses.as_bytes());
 
     let [
-        ClientMessage::ClientShellHostTheme {
-            update: shepr_protocol::ClientHostThemeUpdate::PaletteColors(colors),
-        },
+        ClientShellRequest::HostTheme(shepr_protocol::ClientHostThemeUpdate::PaletteColors(colors)),
     ] = outcome.requests.as_slice()
     else {
         panic!(
@@ -399,7 +397,7 @@ fn pixel_host_reports_use_cells_without_target_pixel_mode_and_release_outside() 
     let down = state.handle_pixel_mouse_bytes(format!("\x1b[<0;{x};{y}M").as_bytes(), geometry);
     assert!(matches!(
         &down.requests[..],
-        [ClientMessage::ClientShellPaneInput { events, .. }]
+        [ClientShellRequest::Shown(ClientMessage::ClientShellPaneInput { events, .. })]
             if matches!(
                 &events[..],
                 [ClientPaneInputEvent::Mouse {
@@ -413,7 +411,7 @@ fn pixel_host_reports_use_cells_without_target_pixel_mode_and_release_outside() 
     let release = state.handle_pixel_mouse_bytes(b"\x1b[<0;1;1m", geometry);
     assert!(matches!(
         &release.requests[..],
-        [ClientMessage::ClientShellPaneInput { pane_id, events }]
+        [ClientShellRequest::Shown(ClientMessage::ClientShellPaneInput { pane_id, events })]
             if pane_id == "w1:p1"
                 && matches!(
                     &events[..],
@@ -437,7 +435,9 @@ fn shell_targets_unconsumed_input_and_keeps_prefix_local() {
 
     let text = state.handle_input_bytes(b"hello");
     assert_eq!(text.requests.len(), 1);
-    let ClientMessage::ClientShellPaneInput { pane_id, events } = &text.requests[0] else {
+    let ClientShellRequest::Shown(ClientMessage::ClientShellPaneInput { pane_id, events }) =
+        &text.requests[0]
+    else {
         panic!("expected targeted pane input");
     };
     assert_eq!(pane_id, "w1:p1");
@@ -453,7 +453,9 @@ fn shell_targets_unconsumed_input_and_keeps_prefix_local() {
 
     let interrupt = state.handle_input_bytes(b"\x1b[99;5u");
     assert_eq!(interrupt.requests.len(), 1);
-    let ClientMessage::ClientShellPaneInput { events, .. } = &interrupt.requests[0] else {
+    let ClientShellRequest::Shown(ClientMessage::ClientShellPaneInput { events, .. }) =
+        &interrupt.requests[0]
+    else {
         panic!("expected semantic interrupt");
     };
     assert!(matches!(
@@ -467,7 +469,9 @@ fn shell_targets_unconsumed_input_and_keeps_prefix_local() {
     ));
 
     let alt = state.handle_input_bytes(b"\x1b[120;3u");
-    let ClientMessage::ClientShellPaneInput { events, .. } = &alt.requests[0] else {
+    let ClientShellRequest::Shown(ClientMessage::ClientShellPaneInput { events, .. }) =
+        &alt.requests[0]
+    else {
         panic!("expected semantic alt key");
     };
     assert!(matches!(
@@ -491,17 +495,17 @@ fn pane_key_release_keeps_the_press_target() {
 
     let press = state.handle_input_bytes(b"\x1b[99;5u");
     let release = state.handle_input_bytes(b"\x1b[99;5:3u");
-    let ClientMessage::ClientShellPaneInput {
+    let ClientShellRequest::Shown(ClientMessage::ClientShellPaneInput {
         pane_id: press_target,
         ..
-    } = &press.requests[0]
+    }) = &press.requests[0]
     else {
         panic!("expected targeted press");
     };
-    let ClientMessage::ClientShellPaneInput {
+    let ClientShellRequest::Shown(ClientMessage::ClientShellPaneInput {
         pane_id: release_target,
         events,
-    } = &release.requests[0]
+    }) = &release.requests[0]
     else {
         panic!("expected targeted release");
     };
@@ -527,7 +531,7 @@ fn text_key_release_follows_its_press_only_while_the_host_reports_all_keys() {
     let press = state.handle_input_bytes(press_bytes);
     assert!(matches!(
         &press.requests[..],
-        [ClientMessage::ClientShellPaneInput { pane_id, events }]
+        [ClientShellRequest::Shown(ClientMessage::ClientShellPaneInput { pane_id, events })]
             if pane_id == "w1:p1"
                 && matches!(
                     &events[..],
@@ -538,7 +542,7 @@ fn text_key_release_follows_its_press_only_while_the_host_reports_all_keys() {
     assert!(
         matches!(
             &release.requests[..],
-            [ClientMessage::ClientShellPaneInput { pane_id, events }]
+            [ClientShellRequest::Shown(ClientMessage::ClientShellPaneInput { pane_id, events })]
                 if pane_id == "w1:p1"
                     && matches!(
                         &events[..],

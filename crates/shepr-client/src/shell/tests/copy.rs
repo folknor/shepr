@@ -1,4 +1,4 @@
-use crate::endpoint::{ClientEndpointId, ClientEndpointStatus};
+use crate::endpoint::{ClientEndpointId, EndpointFailureStatus};
 use crate::shell::endpoints::ClientEndpointFocusTarget;
 use crate::shell::ledger::DropReason;
 use crate::shell::overlays::text_editor::TextEditor;
@@ -6,7 +6,7 @@ use crate::shell::presentation::render;
 use crate::shell::state::{
     ClientChromeDrag, ClientCopyOperation, ClientCopySelection, ClientNavigatorFilter,
     ClientNavigatorTarget, ClientShellAction, ClientShellConfig, ClientShellEndpointError,
-    ClientShellInput, ClientShellMode, ClientShellOverlay,
+    ClientShellInput, ClientShellMode, ClientShellOverlay, ClientShellRequest,
 };
 use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEventKind};
 use ratatui::buffer::Buffer;
@@ -202,7 +202,7 @@ fn client_selection_uses_host_background_and_repaints_when_it_changes() {
                 outcome
                     .requests
                     .iter()
-                    .any(|request| matches!(request, ClientMessage::ClientShellHostTheme { .. }))
+                    .any(|request| matches!(request, ClientShellRequest::HostTheme(_)))
             );
             let frame = state.compose(106, 20).expect("host-colored selection");
             let cell = &frame.cells[cell_index];
@@ -908,7 +908,7 @@ fn keys_after_an_exit_key_reach_the_pane_once_an_in_flight_copy_motion_replays()
     assert!(
         replayed.requests.iter().any(|request| matches!(
             request,
-            ClientMessage::ClientShellPaneInput { pane_id, events }
+            ClientShellRequest::Shown(ClientMessage::ClientShellPaneInput { pane_id, events })
                 if pane_id == "w1:p1"
                     && events.iter().any(|event| matches!(
                         event,
@@ -1354,7 +1354,7 @@ fn navigator_searches_ancestor_context_and_keeps_split_agents_individually_actio
     projected.panes.push(second);
     let first_agent = ClientShellAgent {
         pane_id: test_pane_id("w1:p1"),
-        agent: Some("pi".into()),
+        agent: Some(shepr_config::ConfigAgent::Pi),
         terminal_title: None,
         terminal_title_stripped: None,
         agent_status: AgentStatus::Working,
@@ -1362,7 +1362,7 @@ fn navigator_searches_ancestor_context_and_keeps_split_agents_individually_actio
     };
     let mut second_agent = first_agent.clone();
     second_agent.pane_id = "w1:p2".parse().expect("test precondition");
-    second_agent.agent = Some("claude".into());
+    second_agent.agent = Some(shepr_config::ConfigAgent::Claude);
     second_agent.terminal_title_stripped = Some("checking navigation".into());
     second_agent.agent_status = AgentStatus::Blocked;
     projected.agents = vec![first_agent, second_agent];
@@ -1824,8 +1824,7 @@ fn navigator_grouping_keeps_snapshot_order_with_interleaved_panes() {
     };
     let remote_id = ClientEndpointId::Ssh(remote.label.clone());
     state.set_machines(&[remote]);
-    state.set_endpoint_status(&remote_id, ClientEndpointStatus::Online);
-    state.set_endpoint_snapshot(&remote_id, Box::new(snapshot.clone()));
+    state.connect_endpoint_with_snapshot(&remote_id, 1, Box::new(snapshot.clone()));
     state.set_snapshot(Box::new(snapshot));
     state.open_navigator_overlay();
     let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_ref() else {
@@ -2494,11 +2493,14 @@ fn cancelled_copy_requests_discard_dependent_input_without_starting_work() {
                 assert!(buffered.requests.is_empty());
                 assert!(!state.copy_pipeline.keys_is_empty());
 
-                assert!(if unsent {
-                    state.drop_request(&request_id, DropReason::Unsent)
-                } else {
-                    state.drop_request(&request_id, DropReason::Interrupted)
-                });
+                assert_eq!(
+                    if unsent {
+                        state.drop_request(&request_id, DropReason::Unsent)
+                    } else {
+                        state.drop_request(&request_id, DropReason::Interrupted)
+                    },
+                    crate::shell::state::Repaint::Needed
+                );
 
                 assert!(state.ledger.is_empty());
                 assert!(!state.copy_pipeline.in_flight());
@@ -2649,7 +2651,8 @@ fn copy_operation_does_not_capture_input_after_focus_moves() {
 
     assert!(input.requests.iter().any(|request| matches!(
         request,
-        ClientMessage::ClientShellPaneInput { pane_id, .. } if pane_id == "w1:p2"
+        ClientShellRequest::Shown(ClientMessage::ClientShellPaneInput { pane_id, .. })
+            if pane_id == "w1:p2"
     )));
 
     let failed = state.handle_endpoint_result(
@@ -2657,12 +2660,10 @@ fn copy_operation_does_not_capture_input_after_focus_moves() {
         &request_id,
         Err(ClientShellEndpointError::Timeout),
     );
-    assert!(
-        !failed
-            .requests
-            .iter()
-            .any(|request| matches!(request, ClientMessage::ClientShellPaneInput { .. }))
-    );
+    assert!(!failed.requests.iter().any(|request| matches!(
+        request,
+        ClientShellRequest::Shown(ClientMessage::ClientShellPaneInput { .. })
+    )));
     assert!(state.copy_pipeline.keys_is_empty());
 }
 
@@ -3013,7 +3014,10 @@ fn a_failed_submit_drops_the_queued_operations_and_keeps_the_invariant() {
         .copy_after_result = true;
     state.handle_input_bytes(b"v");
     assert_eq!(state.copy_pipeline.keys_len(), 1);
-    state.set_endpoint_status(&ClientEndpointId::Local, ClientEndpointStatus::Reconnecting);
+    state.set_endpoint_status(
+        &ClientEndpointId::Local,
+        EndpointFailureStatus::Reconnecting,
+    );
     let cursor = state.copy_mode.as_ref().expect("copy").cursor;
     state.handle_endpoint_result(
         &crate::tests::test_boot_id("boot-1"),
@@ -3060,10 +3064,11 @@ fn a_search_that_exits_copy_mode_does_not_replay_or_dispatch() {
         &id,
         Ok(EndpointReply::PaneCopySearch {
             pane_id: test_pane_id("w1:p1"),
-            matches: vec![],
-            total: 0,
-            current: None,
-            current_global: None,
+            search: shepr_protocol::command::PaneCopySearch {
+                matches: vec![],
+                total: 0,
+                current: None,
+            },
         }),
     );
     assert!(state.copy_mode.is_none());

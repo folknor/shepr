@@ -11,12 +11,7 @@ pub(super) fn pane_not_found(pane_id: &str) -> ApiError {
 pub(super) fn detect_state_from_api(
     state: shepr_api::schema::PaneAgentState,
 ) -> shepr_agent::detect::AgentState {
-    match state {
-        shepr_api::schema::PaneAgentState::Idle => shepr_agent::detect::AgentState::Idle,
-        shepr_api::schema::PaneAgentState::Working => shepr_agent::detect::AgentState::Working,
-        shepr_api::schema::PaneAgentState::Blocked => shepr_agent::detect::AgentState::Blocked,
-        shepr_api::schema::PaneAgentState::Unknown => shepr_agent::detect::AgentState::Unknown,
-    }
+    state
 }
 
 pub(super) fn pane_agent_status(
@@ -28,15 +23,7 @@ pub(super) fn pane_agent_status(
 pub(super) fn presented_agent_status(
     state: shepr_agent::detect::PresentedAgentState,
 ) -> shepr_api::schema::AgentStatus {
-    match state {
-        shepr_agent::detect::PresentedAgentState::Idle => shepr_api::schema::AgentStatus::Idle,
-        shepr_agent::detect::PresentedAgentState::Working => {
-            shepr_api::schema::AgentStatus::Working
-        }
-        shepr_agent::detect::PresentedAgentState::Blocked => {
-            shepr_api::schema::AgentStatus::Blocked
-        }
-    }
+    state
 }
 
 /// A user-given workspace or pane label as the server stores it: trimmed, and

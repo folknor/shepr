@@ -60,6 +60,41 @@ impl std::fmt::Debug for TypedText {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum Repaint {
+    #[default]
+    Unchanged,
+    Needed,
+}
+
+impl Repaint {
+    pub(crate) fn is_needed(self) -> bool {
+        self == Self::Needed
+    }
+
+    pub(in crate::shell) fn apply_to(self, outcome: &mut ClientShellInput) {
+        outcome.repaint |= self.is_needed();
+    }
+}
+
+impl std::ops::BitOr for Repaint {
+    type Output = Self;
+
+    fn bitor(self, rhs: Self) -> Self::Output {
+        if self == Self::Needed || rhs == Self::Needed {
+            Self::Needed
+        } else {
+            Self::Unchanged
+        }
+    }
+}
+
+impl std::ops::BitOrAssign for Repaint {
+    fn bitor_assign(&mut self, rhs: Self) {
+        *self = *self | rhs;
+    }
+}
+
 pub struct ClientShellConfig {
     pub(in crate::shell) sidebar_width: shepr_config::SidebarWidth,
     pub(in crate::shell) sidebar_bounds: shepr_config::SidebarBounds,
@@ -245,6 +280,8 @@ pub(crate) enum ClientShellAction {
 
 #[derive(Default)]
 pub(crate) struct ClientShellInput {
+    // These are independent one-shot effects accumulated with OR semantics, rather than
+    // phases of a state machine. Requests carry their routing in `ClientShellRequest` below.
     pub detach: bool,
     pub repaint: bool,
     /// Present the next frame in full rather than diffed against what the
@@ -253,8 +290,14 @@ pub(crate) struct ClientShellInput {
     pub resize: bool,
     pub query_host_appearance: bool,
     pub query_host_theme: bool,
-    pub requests: Vec<ClientMessage>,
+    pub requests: Vec<ClientShellRequest>,
     pub actions: Vec<ClientShellAction>,
+}
+
+#[derive(Debug)]
+pub(crate) enum ClientShellRequest {
+    Shown(ClientMessage),
+    HostTheme(shepr_protocol::ClientHostThemeUpdate),
 }
 
 impl ClientShellInput {
@@ -351,12 +394,7 @@ pub(in crate::shell) struct ClientRenameOverlay {
     pub(in crate::shell) target: ClientRenameTarget,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(in crate::shell) enum ClientNavigatorFilter {
-    Blocked,
-    Working,
-    Idle,
-}
+pub(in crate::shell) type ClientNavigatorFilter = shepr_protocol::AgentStatus;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(in crate::shell) enum ClientNavigatorTarget {
@@ -379,7 +417,7 @@ pub(in crate::shell) struct ClientNavigatorRow {
     pub(in crate::shell) label: String,
     pub(in crate::shell) meta: String,
     pub(in crate::shell) detail: String,
-    pub(in crate::shell) agent: Option<String>,
+    pub(in crate::shell) agent: Option<shepr_config::ConfigAgent>,
     pub(in crate::shell) status: Option<shepr_protocol::AgentStatus>,
     pub(in crate::shell) stale: bool,
     pub(in crate::shell) current: bool,
@@ -511,10 +549,10 @@ pub(crate) struct ClientPresentationLogContext {
     /// Owned: the context is taken before a presentation step that borrows
     /// the shell mutably, and is logged only if that step fails.
     pub(crate) endpoint: ClientEndpointId,
-    pub(crate) generation: Option<u64>,
-    pub(crate) boot_id: Option<String>,
-    pub(crate) projection_revision: Option<u64>,
-    pub(crate) surface_revision: Option<u64>,
+    pub(crate) generation: Option<shepr_protocol::ConnectionGeneration>,
+    pub(crate) boot_id: Option<shepr_protocol::BootId>,
+    pub(crate) projection_revision: Option<shepr_protocol::ProjectionRevision>,
+    pub(crate) surface_revision: Option<shepr_protocol::SurfaceRevision>,
     pub(crate) pane_ids: Vec<shepr_protocol::PublicPaneId>,
 }
 
@@ -839,14 +877,14 @@ impl ClientShellState {
         let snapshot = self.snapshot.as_deref();
         ClientPresentationLogContext {
             endpoint: self.endpoints.presented().clone(),
-            generation: self.active_snapshot_generation,
+            generation: self.active_snapshot_generation.map(Into::into),
             boot_id: surface
-                .map(|surface| surface.boot_id.to_string())
-                .or_else(|| snapshot.map(|snapshot| snapshot.boot_id.to_string())),
+                .map(|surface| surface.boot_id.clone())
+                .or_else(|| snapshot.map(|snapshot| snapshot.boot_id.clone())),
             projection_revision: surface
-                .map(|surface| surface.projection_revision.get())
-                .or_else(|| snapshot.map(|snapshot| snapshot.revision.get())),
-            surface_revision: surface.map(|surface| surface.surface_revision.get()),
+                .map(|surface| surface.projection_revision)
+                .or_else(|| snapshot.map(|snapshot| snapshot.revision)),
+            surface_revision: surface.map(|surface| surface.surface_revision),
             pane_ids,
         }
     }

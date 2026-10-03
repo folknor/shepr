@@ -239,28 +239,57 @@ fn peek_first_byte_with_clock(
 /// non-socket path already present during probing is reported as unreachable
 /// with `AlreadyExists`, not as busy.
 ///
-/// Every refusal classified as busy is an [`io::ErrorKind::AddrInUse`] error
-/// carrying this payload, so the path survives whichever caller sees it and
-/// nobody gets a bare "address in use". Callers that word the refusal
-/// themselves find it with [`SocketBusy::from_io`].
+/// Busy refusals carry their path in [`BindError::Busy`].
 #[derive(Debug)]
 pub struct SocketBusy {
     path: PathBuf,
 }
 
-impl SocketBusy {
-    fn error(path: &Path) -> io::Error {
-        io::Error::new(
-            io::ErrorKind::AddrInUse,
-            Self {
-                path: path.to_path_buf(),
-            },
-        )
-    }
+/// A private listener could not be bound.
+#[derive(Debug)]
+pub enum BindError {
+    Busy(SocketBusy),
+    Io(io::Error),
+}
 
-    /// The busy refusal inside `error`, if it is one.
-    pub fn from_io(error: &io::Error) -> Option<&Self> {
-        error.get_ref()?.downcast_ref::<Self>()
+impl BindError {
+    pub fn kind(&self) -> io::ErrorKind {
+        match self {
+            Self::Busy(_) => io::ErrorKind::AddrInUse,
+            Self::Io(error) => error.kind(),
+        }
+    }
+}
+
+impl From<io::Error> for BindError {
+    fn from(error: io::Error) -> Self {
+        Self::Io(error)
+    }
+}
+
+impl std::fmt::Display for BindError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Busy(error) => error.fmt(f),
+            Self::Io(error) => error.fmt(f),
+        }
+    }
+}
+
+impl std::error::Error for BindError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Busy(error) => Some(error),
+            Self::Io(error) => Some(error),
+        }
+    }
+}
+
+impl SocketBusy {
+    fn error(path: &Path) -> BindError {
+        BindError::Busy(Self {
+            path: path.to_path_buf(),
+        })
     }
 
     /// The socket path another process holds.
@@ -386,7 +415,7 @@ pub(crate) fn flock_exclusive(file: &fs::File, blocking: bool) -> io::Result<()>
 /// The lock file has `.lock` appended to the socket path, so it shares the
 /// socket's parent directory without counting against the socket path limit
 /// (`shepr_core::socket_path`).
-fn acquire_socket_startup_lock(socket_path: &Path) -> io::Result<SocketStartupLock> {
+fn acquire_socket_startup_lock(socket_path: &Path) -> Result<SocketStartupLock, BindError> {
     socket_parent(socket_path)?;
     let lock_path = socket_startup_lock_path(socket_path);
     let lock = match acquire_flock_lock(&lock_path, false) {
@@ -401,7 +430,7 @@ fn acquire_socket_startup_lock(socket_path: &Path) -> io::Result<SocketStartupLo
             );
             return Err(SocketBusy::error(socket_path));
         }
-        Err(error) => return Err(error),
+        Err(error) => return Err(error.into()),
     };
     tracing::info!(
         event = "ipc.socket_lock",
@@ -426,7 +455,7 @@ fn acquire_socket_startup_lock(socket_path: &Path) -> io::Result<SocketStartupLo
 /// chooses any operator-facing wording.
 pub fn bind_private_socket(
     path: &Path,
-) -> io::Result<(LocalListener, SocketStartupLock, SocketFileIdentity)> {
+) -> Result<(LocalListener, SocketStartupLock, SocketFileIdentity), BindError> {
     let startup_lock = acquire_socket_startup_lock(path)?;
     bind_private_socket_with_lock(startup_lock)
 }
@@ -435,7 +464,7 @@ pub fn bind_private_socket(
 /// comes from the guard, so a lock for another socket cannot be used.
 fn bind_private_socket_with_lock(
     startup_lock: SocketStartupLock,
-) -> io::Result<(LocalListener, SocketStartupLock, SocketFileIdentity)> {
+) -> Result<(LocalListener, SocketStartupLock, SocketFileIdentity), BindError> {
     let path = startup_lock.socket_path.as_path();
     prepare_socket_path(path)?;
     let listener = bind_private_local_listener(path)?;
@@ -457,7 +486,7 @@ fn bind_private_socket_with_lock(
 /// removes both when it is done, while still holding the returned lock.
 pub fn bind_single_use_private_socket(
     path: &Path,
-) -> io::Result<(LocalListener, SocketStartupLock, SocketFileIdentity)> {
+) -> Result<(LocalListener, SocketStartupLock, SocketFileIdentity), BindError> {
     let startup_lock = acquire_single_use_socket_lock(path)?;
     let mut listener_bound = false;
     let bound = prepare_socket_path(path)
@@ -484,7 +513,7 @@ pub fn bind_single_use_private_socket(
 
 /// Creates, locks and owner-marks the sidecar of a single-use socket path.
 /// A sidecar created here and then not locked is removed again.
-fn acquire_single_use_socket_lock(socket_path: &Path) -> io::Result<SocketStartupLock> {
+fn acquire_single_use_socket_lock(socket_path: &Path) -> Result<SocketStartupLock, BindError> {
     let parent = socket_parent(socket_path)?;
     super::create_private_directory_all(parent)?;
     let entry = match super::owned_runtime::OwnedRuntimeEntry::create_socket(socket_path) {
@@ -492,7 +521,7 @@ fn acquire_single_use_socket_lock(socket_path: &Path) -> io::Result<SocketStartu
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
             return Err(SocketBusy::error(socket_path));
         }
-        Err(error) => return Err(error),
+        Err(error) => return Err(error.into()),
     };
     let file = entry.into_hold();
     tracing::info!(
@@ -706,7 +735,7 @@ pub fn probe(path: &Path) -> Liveness {
 /// where nothing listens, and refuses a live one. Only [`bind_private_socket`]
 /// calls it, under the startup lock, so a stale socket is never reclaimed by a
 /// caller that does not own the path.
-fn prepare_socket_path(path: &Path) -> io::Result<()> {
+fn prepare_socket_path(path: &Path) -> Result<(), BindError> {
     if let Some(parent) = path.parent() {
         super::create_private_directory_all(parent)?;
     }
@@ -715,13 +744,13 @@ fn prepare_socket_path(path: &Path) -> io::Result<()> {
         Liveness::Absent => return Ok(()),
         Liveness::Live => return Err(SocketBusy::error(path)),
         Liveness::Stale => {}
-        Liveness::Unreachable(error) => return Err(error),
+        Liveness::Unreachable(error) => return Err(error.into()),
     }
 
     if let Err(error) = fs::remove_file(path)
         && error.kind() != io::ErrorKind::NotFound
     {
-        return Err(error);
+        return Err(error.into());
     }
 
     Ok(())
@@ -748,7 +777,7 @@ const PRIVATE_SOCKET_MODE: u32 = super::limits::PRIVATE_FILE_MODE;
 /// or re-apply the mode afterwards. Access is also checked per connection by
 /// [`accept_peer`] with [`PeerAdmission::OwnerOrRoot`]; the file mode is not
 /// the only control.
-pub fn bind_private_local_listener(path: &Path) -> io::Result<LocalListener> {
+pub fn bind_private_local_listener(path: &Path) -> Result<LocalListener, BindError> {
     let parent = socket_parent(path)?;
     match bind_via_private_staging(path, parent) {
         Ok(listener) => {
@@ -763,7 +792,7 @@ pub fn bind_private_local_listener(path: &Path) -> io::Result<LocalListener> {
             Ok(listener)
         }
         Err(StagedBindError::Busy) => Err(SocketBusy::error(path)),
-        Err(StagedBindError::RandomSource(error)) => Err(error),
+        Err(StagedBindError::RandomSource(error)) => Err(error.into()),
         Err(StagedBindError::Unavailable(err)) => {
             tracing::warn!(
                 event = "ipc.socket_bind",
@@ -787,12 +816,12 @@ pub fn bind_private_local_listener(path: &Path) -> io::Result<LocalListener> {
     }
 }
 
-fn bind_in_place_then_restrict(path: &Path) -> io::Result<LocalListener> {
+fn bind_in_place_then_restrict(path: &Path) -> Result<LocalListener, BindError> {
     let listener = bind_local_listener(path).map_err(|error| {
         if error.kind() == io::ErrorKind::AddrInUse {
             SocketBusy::error(path)
         } else {
-            error
+            BindError::Io(error)
         }
     })?;
     if let Err(error) = restrict_socket_permissions(path, PRIVATE_SOCKET_MODE) {
@@ -806,7 +835,7 @@ fn bind_in_place_then_restrict(path: &Path) -> io::Result<LocalListener> {
                 "failed to remove socket after restricting its mode failed"
             );
         }
-        return Err(error);
+        return Err(error.into());
     }
     Ok(listener)
 }
@@ -1479,9 +1508,11 @@ mod tests {
     }
 
     /// Every busy refusal is `AddrInUse` and names the path it refused.
-    fn assert_busy_at(error: &io::Error, path: &Path) {
+    fn assert_busy_at(error: &BindError, path: &Path) {
         assert_eq!(error.kind(), io::ErrorKind::AddrInUse);
-        let busy = SocketBusy::from_io(error).expect("a busy refusal carries its path");
+        let BindError::Busy(busy) = error else {
+            panic!("expected busy refusal: {error}")
+        };
         assert_eq!(busy.path(), path);
         assert_eq!(
             error.to_string(),

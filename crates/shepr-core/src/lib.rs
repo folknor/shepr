@@ -1,4 +1,5 @@
 pub mod agent_session;
+pub mod agent_state;
 pub mod env;
 pub mod geometry;
 pub mod layout;

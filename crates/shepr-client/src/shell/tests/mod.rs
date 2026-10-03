@@ -170,15 +170,18 @@ pub(in crate::shell) fn pane_scroll_result(
 
 pub(in crate::shell) fn copy_search_result(
     matches: Vec<shepr_protocol::command::PaneTextRange>,
-    current: Option<u32>,
+    current: Option<usize>,
 ) -> EndpointReply {
-    let total = matches.len() as u64;
     EndpointReply::PaneCopySearch {
         pane_id: shepr_test_fixtures::id("w1:p1"),
-        matches,
-        total,
-        current,
-        current_global: current.map(u64::from),
+        search: shepr_protocol::command::PaneCopySearch {
+            total: matches.len(),
+            matches,
+            current: current.map(|index| shepr_protocol::command::PaneCopySearchPosition {
+                window_index: index,
+                global_index: index,
+            }),
+        },
     }
 }
 

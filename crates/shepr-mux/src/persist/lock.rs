@@ -1,6 +1,5 @@
 //! Exclusive ownership of a session state directory.
 
-use std::io;
 use std::path::Path;
 
 /// Config owns the lease filename used to build API paths; platform is below
@@ -14,7 +13,7 @@ pub struct DataDirLease {
 }
 
 impl DataDirLease {
-    pub fn acquire(directory: &Path) -> io::Result<Self> {
+    pub fn acquire(directory: &Path) -> Result<Self, shepr_platform::LeaseAcquireError> {
         Ok(Self {
             inner: shepr_platform::DataDirectoryLease::acquire(directory, LOCK_FILE_NAME)?,
         })
@@ -43,8 +42,10 @@ mod tests {
         let refusal = DataDirLease::acquire(&directory)
             .err()
             .expect("a held lease refuses a second owner");
-        assert_eq!(refusal.kind(), io::ErrorKind::ResourceBusy);
-        let held = DataDirLeaseHeld::from_io(&refusal).expect("the refusal names the directory");
+        assert_eq!(refusal.kind(), std::io::ErrorKind::ResourceBusy);
+        let shepr_platform::LeaseAcquireError::Held(held) = refusal else {
+            panic!("expected held lease")
+        };
         assert_eq!(held.directory(), lease.directory());
         drop(lease);
         DataDirLease::acquire(&directory).expect("lease after release");

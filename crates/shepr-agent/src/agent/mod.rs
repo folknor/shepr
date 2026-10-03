@@ -172,11 +172,9 @@ const KIMI_HOOK_EVENTS: &[IntegrationHookEvent] = &[
     hook_event("Interrupt", None, Some(IntegrationHookAction::Idle)),
 ];
 const COPILOT_HOOK_EVENTS: &[IntegrationHookEvent] = &[hook_event("SessionStart", None, None)];
-const CLAUDE_HOOK_EVENTS: &[IntegrationHookEvent] = &[hook_event(
-    "SessionStart",
-    None,
-    Some(IntegrationHookAction::Session),
-)];
+pub(crate) const CLAUDE_SESSION_START_EVENT: IntegrationHookEvent =
+    hook_event("SessionStart", None, Some(IntegrationHookAction::Session));
+const CLAUDE_HOOK_EVENTS: &[IntegrationHookEvent] = &[CLAUDE_SESSION_START_EVENT];
 const CODEX_HOOK_EVENTS: &[IntegrationHookEvent] = &[
     hook_event("SessionStart", None, Some(IntegrationHookAction::Session)),
     hook_event(
@@ -376,16 +374,10 @@ pub struct AgentDescriptor {
     pub label: &'static str,
     pub aliases: &'static [&'static str],
     pub executable: &'static str,
-    pub integration_target: Option<IntegrationTarget>,
-    pub integration_source: Option<&'static str>,
-    pub reserves_native_state: bool,
-    pub full_lifecycle_hook_authority: bool,
-    pub session_identity_only_integration: bool,
-    pub hook_session_policy: HookSessionPolicy,
+    pub integration: Option<IntegrationDescriptor>,
     pub resume_support: Option<ResumeSupport>,
     /// Bundled screen-detection rules, embedded with the owning agent descriptor.
     pub screen_manifest: Option<&'static str>,
-    pub integration_hook_events: &'static [IntegrationHookEvent],
 }
 
 pub const AGENTS: [AgentDescriptor; 23] = [
@@ -394,397 +386,314 @@ pub const AGENTS: [AgentDescriptor; 23] = [
         label: "pi",
         aliases: &[],
         executable: "pi",
-        integration_target: Some(IntegrationTarget::Pi),
-        integration_source: Some(IntegrationTarget::Pi.source()),
-        reserves_native_state: false,
-        full_lifecycle_hook_authority: true,
-        session_identity_only_integration: false,
-        hook_session_policy: HookSessionPolicy::PI,
+        integration: Some(IntegrationDescriptor::new(
+            IntegrationTarget::Pi,
+            IntegrationCapability::FullLifecycle,
+            HookSessionPolicy::PI,
+            &[],
+        )),
         resume_support: Some(ResumeSupport::new(
             SessionRefPolicy::IdOrPath,
             ResumeArgs::FlagValue("--session"),
         )),
         screen_manifest: Some(include_str!("../detect/manifests/pi.toml")),
-        integration_hook_events: &[],
     },
     AgentDescriptor {
         agent: Agent::Claude,
         label: "claude",
         aliases: &["claude-code"],
         executable: "claude",
-        integration_target: Some(IntegrationTarget::Claude),
-        integration_source: Some(IntegrationTarget::Claude.source()),
-        reserves_native_state: true,
-        full_lifecycle_hook_authority: false,
-        session_identity_only_integration: false,
-        hook_session_policy: HookSessionPolicy::CLAUDE,
+        integration: Some(IntegrationDescriptor::claude()),
         resume_support: Some(ResumeSupport::new(
             SessionRefPolicy::Id,
             ResumeArgs::FlagValue("--resume"),
         )),
         screen_manifest: Some(include_str!("../detect/manifests/claude.toml")),
-        integration_hook_events: &[],
-    }
-    .with_integration_hook_events(CLAUDE_HOOK_EVENTS),
+    },
     AgentDescriptor {
         agent: Agent::Codex,
         label: "codex",
         aliases: &[],
         executable: "codex",
-        integration_target: Some(IntegrationTarget::Codex),
-        integration_source: Some(IntegrationTarget::Codex.source()),
-        reserves_native_state: false,
-        full_lifecycle_hook_authority: false,
-        session_identity_only_integration: false,
-        hook_session_policy: HookSessionPolicy::CODEX,
+        integration: Some(IntegrationDescriptor::new(
+            IntegrationTarget::Codex,
+            IntegrationCapability::PartialState,
+            HookSessionPolicy::CODEX,
+            CODEX_HOOK_EVENTS,
+        )),
         resume_support: Some(ResumeSupport::new(
             SessionRefPolicy::Id,
             ResumeArgs::Subcommand("resume"),
         )),
         screen_manifest: Some(include_str!("../detect/manifests/codex.toml")),
-        integration_hook_events: &[],
-    }
-    .with_integration_hook_events(CODEX_HOOK_EVENTS),
+    },
     AgentDescriptor {
         agent: Agent::Gemini,
         label: "gemini",
         aliases: &[],
         executable: "gemini",
-        integration_target: None,
-        integration_source: None,
-        reserves_native_state: false,
-        full_lifecycle_hook_authority: false,
-        session_identity_only_integration: false,
-        hook_session_policy: HookSessionPolicy::DEFAULT,
+        integration: None,
         resume_support: None,
         screen_manifest: Some(include_str!("../detect/manifests/gemini.toml")),
-        integration_hook_events: &[],
     },
     AgentDescriptor {
         agent: Agent::Cursor,
         label: "cursor",
         aliases: &["cursor-agent"],
         executable: "cursor-agent",
-        integration_target: Some(IntegrationTarget::Cursor),
-        integration_source: Some(IntegrationTarget::Cursor.source()),
-        reserves_native_state: true,
-        full_lifecycle_hook_authority: false,
-        session_identity_only_integration: false,
-        hook_session_policy: HookSessionPolicy::DEFAULT,
+        integration: Some(IntegrationDescriptor::new(
+            IntegrationTarget::Cursor,
+            IntegrationCapability::ScreenOwnedSession,
+            HookSessionPolicy::DEFAULT,
+            CURSOR_HOOK_EVENTS,
+        )),
         resume_support: Some(ResumeSupport::new(
             SessionRefPolicy::Id,
             ResumeArgs::FlagValue("--resume"),
         )),
         screen_manifest: Some(include_str!("../detect/manifests/cursor.toml")),
-        integration_hook_events: &[],
-    }
-    .with_integration_hook_events(CURSOR_HOOK_EVENTS),
+    },
     AgentDescriptor {
         agent: Agent::Devin,
         label: "devin",
         aliases: &["devin-cli", "devin cli"],
         executable: "devin",
-        integration_target: Some(IntegrationTarget::Devin),
-        integration_source: Some(IntegrationTarget::Devin.source()),
-        reserves_native_state: true,
-        full_lifecycle_hook_authority: false,
-        session_identity_only_integration: false,
-        hook_session_policy: HookSessionPolicy::DEFAULT,
+        integration: Some(IntegrationDescriptor::new(
+            IntegrationTarget::Devin,
+            IntegrationCapability::ScreenOwnedSession,
+            HookSessionPolicy::DEFAULT,
+            DEVIN_HOOK_EVENTS,
+        )),
         resume_support: Some(ResumeSupport::new(
             SessionRefPolicy::Id,
             ResumeArgs::FlagValue("--resume"),
         )),
         screen_manifest: Some(include_str!("../detect/manifests/devin.toml")),
-        integration_hook_events: &[],
-    }
-    .with_integration_hook_events(DEVIN_HOOK_EVENTS),
+    },
     AgentDescriptor {
         agent: Agent::Antigravity,
         label: "agy",
         aliases: &["antigravity", "antigravity-cli"],
         executable: "agy",
-        integration_target: Some(IntegrationTarget::AntigravityCli),
-        integration_source: Some(IntegrationTarget::AntigravityCli.source()),
-        reserves_native_state: false,
-        full_lifecycle_hook_authority: false,
-        session_identity_only_integration: true,
-        hook_session_policy: HookSessionPolicy::ANTIGRAVITY,
+        integration: Some(IntegrationDescriptor::new(
+            IntegrationTarget::AntigravityCli,
+            IntegrationCapability::IdentityOnly,
+            HookSessionPolicy::ANTIGRAVITY,
+            ANTIGRAVITY_HOOK_EVENTS,
+        )),
         resume_support: Some(ResumeSupport::new(
             SessionRefPolicy::Id,
             ResumeArgs::FlagValue(CONVERSATION_FLAG),
         )),
         screen_manifest: Some(include_str!("../detect/manifests/antigravity.toml")),
-        integration_hook_events: &[],
-    }
-    .with_integration_hook_events(ANTIGRAVITY_HOOK_EVENTS),
+    },
     AgentDescriptor {
         agent: Agent::Cline,
         label: "cline",
         aliases: &[".cline"],
         executable: "cline",
-        integration_target: None,
-        integration_source: None,
-        reserves_native_state: false,
-        full_lifecycle_hook_authority: false,
-        session_identity_only_integration: false,
-        hook_session_policy: HookSessionPolicy::DEFAULT,
+        integration: None,
         resume_support: None,
         screen_manifest: Some(include_str!("../detect/manifests/cline.toml")),
-        integration_hook_events: &[],
     },
     AgentDescriptor {
         agent: Agent::Omp,
         label: "omp",
         aliases: &[],
         executable: "omp",
-        integration_target: Some(IntegrationTarget::Omp),
-        integration_source: Some(IntegrationTarget::Omp.source()),
-        reserves_native_state: false,
-        full_lifecycle_hook_authority: true,
-        session_identity_only_integration: false,
-        hook_session_policy: HookSessionPolicy::OMP,
+        integration: Some(IntegrationDescriptor::new(
+            IntegrationTarget::Omp,
+            IntegrationCapability::FullLifecycle,
+            HookSessionPolicy::OMP,
+            &[],
+        )),
         resume_support: Some(ResumeSupport::new(
             SessionRefPolicy::IdOrPath,
             ResumeArgs::InlineFlag("--resume="),
         )),
         screen_manifest: None,
-        integration_hook_events: &[],
     },
     AgentDescriptor {
         agent: Agent::Mastracode,
         label: "mastracode",
         aliases: &["mastra-code", "mastra code"],
         executable: "mastracode",
-        integration_target: Some(IntegrationTarget::Mastracode),
-        integration_source: Some(IntegrationTarget::Mastracode.source()),
-        reserves_native_state: false,
-        full_lifecycle_hook_authority: true,
-        session_identity_only_integration: false,
-        hook_session_policy: HookSessionPolicy::MASTRACODE,
+        integration: Some(IntegrationDescriptor::new(
+            IntegrationTarget::Mastracode,
+            IntegrationCapability::FullLifecycle,
+            HookSessionPolicy::MASTRACODE,
+            MASTRACODE_HOOK_EVENTS,
+        )),
         resume_support: Some(ResumeSupport::new(
             SessionRefPolicy::Id,
             ResumeArgs::FlagValue("--thread"),
         )),
         screen_manifest: None,
-        integration_hook_events: &[],
-    }
-    .with_integration_hook_events(MASTRACODE_HOOK_EVENTS),
+    },
     AgentDescriptor {
         agent: Agent::OpenCode,
         label: "opencode",
         aliases: &["opencode2", "open-code"],
         executable: "opencode",
-        integration_target: Some(IntegrationTarget::Opencode),
-        integration_source: Some(IntegrationTarget::Opencode.source()),
-        reserves_native_state: false,
-        full_lifecycle_hook_authority: true,
-        session_identity_only_integration: false,
-        hook_session_policy: HookSessionPolicy::OPENCODE,
+        integration: Some(IntegrationDescriptor::new(
+            IntegrationTarget::Opencode,
+            IntegrationCapability::FullLifecycle,
+            HookSessionPolicy::OPENCODE,
+            &[],
+        )),
         resume_support: Some(ResumeSupport::new(
             SessionRefPolicy::Id,
             ResumeArgs::FlagValue("--session"),
         )),
         screen_manifest: Some(include_str!("../detect/manifests/opencode.toml")),
-        integration_hook_events: &[],
     },
     AgentDescriptor {
         agent: Agent::GithubCopilot,
         label: "copilot",
         aliases: &["github-copilot", "ghcs"],
         executable: "copilot",
-        integration_target: Some(IntegrationTarget::Copilot),
-        integration_source: Some(IntegrationTarget::Copilot.source()),
-        reserves_native_state: true,
-        full_lifecycle_hook_authority: false,
-        session_identity_only_integration: false,
-        hook_session_policy: HookSessionPolicy::DEFAULT,
+        integration: Some(IntegrationDescriptor::new(
+            IntegrationTarget::Copilot,
+            IntegrationCapability::ScreenOwnedSession,
+            HookSessionPolicy::DEFAULT,
+            COPILOT_HOOK_EVENTS,
+        )),
         resume_support: Some(ResumeSupport::new(
             SessionRefPolicy::Id,
             ResumeArgs::InlineFlag("--resume="),
         )),
         screen_manifest: Some(include_str!("../detect/manifests/github-copilot.toml")),
-        integration_hook_events: &[],
-    }
-    .with_integration_hook_events(COPILOT_HOOK_EVENTS),
+    },
     AgentDescriptor {
         agent: Agent::Kimi,
         label: "kimi",
         aliases: &["kimi-code", "kimi code"],
         executable: "kimi",
-        integration_target: Some(IntegrationTarget::Kimi),
-        integration_source: Some(IntegrationTarget::Kimi.source()),
-        reserves_native_state: false,
-        full_lifecycle_hook_authority: true,
-        session_identity_only_integration: false,
-        hook_session_policy: HookSessionPolicy::KIMI,
+        integration: Some(IntegrationDescriptor::new(
+            IntegrationTarget::Kimi,
+            IntegrationCapability::FullLifecycle,
+            HookSessionPolicy::KIMI,
+            KIMI_HOOK_EVENTS,
+        )),
         resume_support: Some(ResumeSupport::new(
             SessionRefPolicy::Id,
             ResumeArgs::FlagValue("--session"),
         )),
         screen_manifest: Some(include_str!("../detect/manifests/kimi.toml")),
-        integration_hook_events: &[],
-    }
-    .with_integration_hook_events(KIMI_HOOK_EVENTS),
+    },
     AgentDescriptor {
         agent: Agent::Kiro,
         label: "kiro",
         aliases: &["kiro-cli"],
         executable: "kiro-cli",
-        integration_target: None,
-        integration_source: None,
-        reserves_native_state: false,
-        full_lifecycle_hook_authority: false,
-        session_identity_only_integration: false,
-        hook_session_policy: HookSessionPolicy::DEFAULT,
+        integration: None,
         resume_support: None,
         screen_manifest: Some(include_str!("../detect/manifests/kiro.toml")),
-        integration_hook_events: &[],
     },
     AgentDescriptor {
         agent: Agent::Droid,
         label: "droid",
         aliases: &[],
         executable: "droid",
-        integration_target: Some(IntegrationTarget::Droid),
-        integration_source: Some(IntegrationTarget::Droid.source()),
-        reserves_native_state: true,
-        full_lifecycle_hook_authority: false,
-        session_identity_only_integration: false,
-        hook_session_policy: HookSessionPolicy::DEFAULT,
+        integration: Some(IntegrationDescriptor::new(
+            IntegrationTarget::Droid,
+            IntegrationCapability::ScreenOwnedSession,
+            HookSessionPolicy::DEFAULT,
+            DROID_HOOK_EVENTS,
+        )),
         resume_support: Some(ResumeSupport::new(
             SessionRefPolicy::Id,
             ResumeArgs::FlagValue("--resume"),
         )),
         screen_manifest: Some(include_str!("../detect/manifests/droid.toml")),
-        integration_hook_events: &[],
-    }
-    .with_integration_hook_events(DROID_HOOK_EVENTS),
+    },
     AgentDescriptor {
         agent: Agent::Amp,
         label: "amp",
         aliases: &["amp-local"],
         executable: "amp",
-        integration_target: None,
-        integration_source: None,
-        reserves_native_state: false,
-        full_lifecycle_hook_authority: false,
-        session_identity_only_integration: false,
-        hook_session_policy: HookSessionPolicy::DEFAULT,
+        integration: None,
         resume_support: None,
         screen_manifest: Some(include_str!("../detect/manifests/amp.toml")),
-        integration_hook_events: &[],
     },
     AgentDescriptor {
         agent: Agent::Grok,
         label: "grok",
         aliases: &["grok-build"],
         executable: "grok",
-        integration_target: Some(IntegrationTarget::Grok),
-        integration_source: Some(IntegrationTarget::Grok.source()),
-        reserves_native_state: true,
-        full_lifecycle_hook_authority: false,
-        session_identity_only_integration: false,
-        hook_session_policy: HookSessionPolicy::GROK,
+        integration: Some(IntegrationDescriptor::new(
+            IntegrationTarget::Grok,
+            IntegrationCapability::ScreenOwnedSession,
+            HookSessionPolicy::GROK,
+            GROK_HOOK_EVENTS,
+        )),
         resume_support: Some(ResumeSupport::new(
             SessionRefPolicy::Id,
             ResumeArgs::FlagValue("--resume"),
         )),
         screen_manifest: Some(include_str!("../detect/manifests/grok.toml")),
-        integration_hook_events: &[],
-    }
-    .with_integration_hook_events(GROK_HOOK_EVENTS),
+    },
     AgentDescriptor {
         agent: Agent::Kilo,
         label: "kilo",
         aliases: &["kilo-code", "kilo code"],
         executable: "kilo",
-        integration_target: Some(IntegrationTarget::Kilo),
-        integration_source: Some(IntegrationTarget::Kilo.source()),
-        reserves_native_state: false,
-        full_lifecycle_hook_authority: true,
-        session_identity_only_integration: false,
-        hook_session_policy: HookSessionPolicy::KILO,
+        integration: Some(IntegrationDescriptor::new(
+            IntegrationTarget::Kilo,
+            IntegrationCapability::FullLifecycle,
+            HookSessionPolicy::KILO,
+            &[],
+        )),
         resume_support: Some(ResumeSupport::new(
             SessionRefPolicy::Id,
             ResumeArgs::FlagValue("--session"),
         )),
         screen_manifest: Some(include_str!("../detect/manifests/kilo.toml")),
-        integration_hook_events: &[],
     },
     AgentDescriptor {
         agent: Agent::Qodercli,
         label: "qodercli",
         aliases: &["qoderclicn", "qoder", "qodercn"],
         executable: "qodercli",
-        integration_target: None,
-        integration_source: None,
-        reserves_native_state: false,
-        full_lifecycle_hook_authority: false,
-        session_identity_only_integration: false,
-        hook_session_policy: HookSessionPolicy::DEFAULT,
+        integration: None,
         resume_support: None,
         screen_manifest: Some(include_str!("../detect/manifests/qodercli.toml")),
-        integration_hook_events: &[],
     },
     AgentDescriptor {
         agent: Agent::Qwen,
         label: "qwen",
         aliases: &["qwen-code", "qwen code"],
         executable: "qwen",
-        integration_target: None,
-        integration_source: None,
-        reserves_native_state: false,
-        full_lifecycle_hook_authority: false,
-        session_identity_only_integration: false,
-        hook_session_policy: HookSessionPolicy::DEFAULT,
+        integration: None,
         resume_support: None,
         screen_manifest: Some(include_str!("../detect/manifests/qwen.toml")),
-        integration_hook_events: &[],
     },
     AgentDescriptor {
         agent: Agent::Letta,
         label: "letta",
         aliases: &["letta-code", "letta code"],
         executable: "letta",
-        integration_target: None,
-        integration_source: None,
-        reserves_native_state: false,
-        full_lifecycle_hook_authority: false,
-        session_identity_only_integration: false,
-        hook_session_policy: HookSessionPolicy::DEFAULT,
+        integration: None,
         resume_support: None,
         screen_manifest: Some(include_str!("../detect/manifests/letta.toml")),
-        integration_hook_events: &[],
     },
     AgentDescriptor {
         agent: Agent::Maki,
         label: "maki",
         aliases: &[],
         executable: "maki",
-        integration_target: None,
-        integration_source: None,
-        reserves_native_state: false,
-        full_lifecycle_hook_authority: false,
-        session_identity_only_integration: false,
-        hook_session_policy: HookSessionPolicy::DEFAULT,
+        integration: None,
         resume_support: None,
         screen_manifest: Some(include_str!("../detect/manifests/maki.toml")),
-        integration_hook_events: &[],
     },
     AgentDescriptor {
         agent: Agent::Muse,
         label: "muse",
         aliases: &["muse-code", "muse-cli"],
         executable: "muse",
-        integration_target: None,
-        integration_source: None,
-        reserves_native_state: false,
-        full_lifecycle_hook_authority: false,
-        session_identity_only_integration: false,
-        hook_session_policy: HookSessionPolicy::DEFAULT,
+        integration: None,
         resume_support: None,
         screen_manifest: Some(include_str!("../detect/manifests/muse.toml")),
-        integration_hook_events: &[],
     },
 ];
 
@@ -832,13 +741,56 @@ const _: () = {
     }
 };
 
-impl AgentDescriptor {
-    const fn with_integration_hook_events(
-        mut self,
+/// The four installed integration classes; absence is the fifth capability class.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IntegrationCapability {
+    ScreenOwnedSession,
+    IdentityOnly,
+    PartialState,
+    FullLifecycle,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct IntegrationDescriptor {
+    target: IntegrationTarget,
+    pub capability: IntegrationCapability,
+    session_policy: HookSessionPolicy,
+    events: &'static [IntegrationHookEvent],
+}
+
+impl IntegrationDescriptor {
+    const fn new(
+        target: IntegrationTarget,
+        capability: IntegrationCapability,
+        session_policy: HookSessionPolicy,
         events: &'static [IntegrationHookEvent],
     ) -> Self {
-        self.integration_hook_events = events;
-        self
+        // Claude's source-preserving editor supports only its SessionStart group.
+        assert!(!matches!(target, IntegrationTarget::Claude));
+        Self {
+            target,
+            capability,
+            session_policy,
+            events,
+        }
+    }
+
+    const fn claude() -> Self {
+        Self {
+            target: IntegrationTarget::Claude,
+            capability: IntegrationCapability::ScreenOwnedSession,
+            session_policy: HookSessionPolicy::CLAUDE,
+            events: CLAUDE_HOOK_EVENTS,
+        }
+    }
+}
+
+impl AgentDescriptor {
+    pub const fn hook_session_policy(&self) -> HookSessionPolicy {
+        match self.integration {
+            Some(integration) => integration.session_policy,
+            None => HookSessionPolicy::DEFAULT,
+        }
     }
 }
 
@@ -860,15 +812,24 @@ impl Agent {
     }
 
     pub const fn integration_target(self) -> Option<IntegrationTarget> {
-        self.descriptor().integration_target
+        match self.descriptor().integration {
+            Some(integration) => Some(integration.target),
+            None => None,
+        }
     }
 
     pub const fn integration_source(self) -> Option<&'static str> {
-        self.descriptor().integration_source
+        match self.integration_target() {
+            Some(target) => Some(target.source()),
+            None => None,
+        }
     }
 
     pub const fn integration_hook_events(self) -> &'static [IntegrationHookEvent] {
-        self.descriptor().integration_hook_events
+        match self.descriptor().integration {
+            Some(integration) => integration.events,
+            None => &[],
+        }
     }
 
     pub const fn screen_manifest(self) -> bool {
@@ -1125,16 +1086,16 @@ mod tests {
             assert_eq!(agent.descriptor(), descriptor);
             assert_eq!(Agent::parse_canonical_label(descriptor.label), Some(agent));
             assert_eq!(Agent::parse_label(descriptor.label), Some(agent));
-            if let Some(target) = descriptor.integration_target {
+            if let Some(target) = agent.integration_target() {
                 assert_eq!(target.agent(), agent);
                 assert_eq!(target.label(), descriptor.label);
                 assert_eq!(target.hook_events(), agent.integration_hook_events());
-                assert!(descriptor.integration_source.is_some());
+                assert!(agent.integration_source().is_some());
             } else {
-                assert!(descriptor.integration_hook_events.is_empty());
+                assert!(agent.integration_hook_events().is_empty());
             }
             // Official sources identify installable integration targets.
-            if let Some(source) = descriptor.integration_source {
+            if let Some(source) = agent.integration_source() {
                 assert_eq!(
                     AgentSource::from_pair(source, descriptor.label),
                     agent.integration_target().map(AgentSource::Official)
@@ -1147,6 +1108,57 @@ mod tests {
                 .filter(|agent| agent.integration_target().is_some())
                 .count()
         );
+    }
+
+    #[test]
+    fn integration_classes_preserve_authority_for_every_agent() {
+        use IntegrationCapability::{
+            FullLifecycle, IdentityOnly, PartialState, ScreenOwnedSession,
+        };
+        let expected = [
+            Some(FullLifecycle),
+            Some(ScreenOwnedSession),
+            Some(PartialState),
+            None,
+            Some(ScreenOwnedSession),
+            Some(ScreenOwnedSession),
+            Some(IdentityOnly),
+            None,
+            Some(FullLifecycle),
+            Some(FullLifecycle),
+            Some(FullLifecycle),
+            Some(ScreenOwnedSession),
+            Some(FullLifecycle),
+            None,
+            Some(ScreenOwnedSession),
+            None,
+            Some(ScreenOwnedSession),
+            Some(FullLifecycle),
+            None,
+            None,
+            None,
+            None,
+            None,
+        ];
+        for (descriptor, expected) in AGENTS.iter().zip(expected) {
+            assert_eq!(
+                descriptor
+                    .integration
+                    .map(|integration| integration.capability),
+                expected
+            );
+            let authority = match expected {
+                Some(ScreenOwnedSession | IdentityOnly) => HookAuthorityClass::SessionOnly,
+                Some(FullLifecycle) => HookAuthorityClass::FullLifecycle,
+                Some(PartialState) | None => HookAuthorityClass::PartialState,
+            };
+            assert_eq!(
+                descriptor.hook_authority_class(),
+                authority,
+                "{}",
+                descriptor.label
+            );
+        }
     }
 
     #[test]

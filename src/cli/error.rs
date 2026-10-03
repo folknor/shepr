@@ -1,7 +1,9 @@
 use shepr_api::schema::ErrorResponse;
 
+use crate::ProcessExit;
+
 /// Every way a shepr invocation fails, rendered once by [`CliError::print`]
-/// and turned into the process exit status by [`CliError::exit_code`]. Code
+/// and turned into the process exit status by [`CliError::exit_status`]. Code
 /// below `main` returns one of these rather than printing and exiting itself.
 #[derive(Debug)]
 pub(crate) enum CliError {
@@ -10,6 +12,7 @@ pub(crate) enum CliError {
     ServerStop(shepr_api::server_stop::ServerStopError),
     Usage(String),
     Io(std::io::Error),
+    Launch(shepr_remote::local_server::LaunchError),
     /// `client.toml` could not be loaded; one entry per diagnostic, each
     /// carrying its file, key path and reason.
     Config(Vec<shepr_config::ConfigDiagnostic>),
@@ -29,19 +32,19 @@ pub(crate) enum CliError {
 }
 
 impl CliError {
-    pub(crate) fn exit_code(&self) -> i32 {
+    pub(crate) fn exit_status(&self) -> ProcessExit {
         match self {
-            Self::Usage(_) => 2,
+            Self::Usage(_) => ProcessExit::Usage,
             // A caller that ran a conditional stop over SSH can identify a
             // different boot at the stop request or during shutdown with this.
             Self::ServerStop(error) if error.is_boot_mismatch() => {
-                shepr_api::server_stop::ServerStopExit::BootMismatch.code()
+                ProcessExit::Stop(shepr_api::server_stop::ServerStopExit::BootMismatch)
             }
             // Likewise "there was no server to stop" (it had already exited).
             Self::ServerStop(error) if error.is_not_running() => {
-                shepr_api::server_stop::ServerStopExit::NoServer.code()
+                ProcessExit::Stop(shepr_api::server_stop::ServerStopExit::NoServer)
             }
-            _ => 1,
+            _ => ProcessExit::Failed,
         }
     }
 
@@ -65,6 +68,7 @@ impl CliError {
                 eprintln!("run 'shepr --help' for usage");
             }
             Self::Io(error) => eprintln!("error: {error}"),
+            Self::Launch(error) => eprintln!("shepr: {error}"),
             Self::Config(diagnostics) => {
                 eprintln!("shepr: configuration error:");
                 for diagnostic in diagnostics {
@@ -136,6 +140,7 @@ impl std::fmt::Display for CliError {
             Self::ServerStop(error) => error.fmt(f),
             Self::Usage(message) => f.write_str(message),
             Self::Io(error) => error.fmt(f),
+            Self::Launch(error) => error.fmt(f),
             Self::Config(diagnostics) => {
                 f.write_str("configuration error:")?;
                 for diagnostic in diagnostics {
@@ -162,6 +167,7 @@ impl std::error::Error for CliError {
         match self {
             Self::ServerStop(error) => Some(error),
             Self::Io(error) => Some(error),
+            Self::Launch(error) => Some(error),
             Self::Client(error) => Some(error),
             Self::Paths(error) => Some(error),
             _ => None,
@@ -187,14 +193,14 @@ mod tests {
 
     #[test]
     fn only_usage_errors_exit_two() {
-        assert_eq!(CliError::Usage("bad".into()).exit_code(), 2);
+        assert_eq!(CliError::Usage("bad".into()).exit_status().code(), 2);
         for error in [
             CliError::Io(std::io::Error::other("io")),
             CliError::Config(vec![shepr_config::ConfigDiagnostic::parse("bad key")]),
             CliError::Nested { quip: "deeper" },
             CliError::BridgeIdle,
         ] {
-            assert_eq!(error.exit_code(), 1, "{error}");
+            assert_eq!(error.exit_status().code(), 1, "{error}");
         }
     }
 
@@ -206,8 +212,8 @@ mod tests {
             detail: "this server is boot 2-2".into(),
         });
         assert_eq!(
-            refused.exit_code(),
-            shepr_api::server_stop::ServerStopExit::BootMismatch.code()
+            refused.exit_status().code(),
+            ProcessExit::Stop(shepr_api::server_stop::ServerStopExit::BootMismatch).code()
         );
         let replaced =
             CliError::ServerStop(shepr_api::server_stop::ServerStopError::OccupantChanged {
@@ -215,12 +221,12 @@ mod tests {
                 expected_boot_id: "1-1".parse().expect("expected boot identity"),
                 actual_boot_id: "2-2".parse().expect("replacement boot identity"),
             });
-        assert_eq!(refused.exit_code(), 3);
-        assert_eq!(replaced.exit_code(), 3);
+        assert_eq!(refused.exit_status().code(), 3);
+        assert_eq!(replaced.exit_status().code(), 3);
         let failed = CliError::ServerStop(shepr_api::server_stop::ServerStopError::Protocol(
             "bad".into(),
         ));
-        assert_eq!(failed.exit_code(), 1);
+        assert_eq!(failed.exit_status().code(), 1);
     }
 
     #[test]
@@ -231,8 +237,8 @@ mod tests {
             source: std::io::Error::from(std::io::ErrorKind::NotFound),
         });
         assert_eq!(
-            none.exit_code(),
-            shepr_api::server_stop::ServerStopExit::NoServer.code()
+            none.exit_status().code(),
+            ProcessExit::Stop(shepr_api::server_stop::ServerStopExit::NoServer).code()
         );
     }
 }

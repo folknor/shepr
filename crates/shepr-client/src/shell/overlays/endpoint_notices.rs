@@ -4,6 +4,7 @@ use crate::shell::overlays::notices::ClientVisibleEndpointNotice;
 use ratatui::buffer::Buffer;
 use ratatui::style::{Modifier, Style};
 
+use crate::endpoint::ClientEndpointId;
 use crate::shell::endpoints::endpoint_status_presentation;
 use ratatui::layout::Rect;
 use shepr_config::theme::Palette;
@@ -13,6 +14,69 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph, Widget, Wrap},
 };
+
+/// A closed reason for endpoint-unavailable text. The endpoint label and the
+/// sentence are composed here so callers cannot quietly invent competing wording.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum EndpointNoticeKind {
+    NotReady,
+    WorkspaceActionBlocked { open_workspace: String },
+    WorkspaceNoLongerAvailable,
+    WaitingForSelection(Option<ClientEndpointStatus>),
+    StatusFailure(String),
+    MoveRejected(String),
+    MoveSurfaceTimedOut,
+    ConnectionLost(String),
+    MoveInterrupted(String),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct EndpointNotice {
+    pub(crate) endpoint: ClientEndpointId,
+    pub(crate) kind: EndpointNoticeKind,
+}
+
+impl EndpointNotice {
+    pub(crate) fn new(endpoint: ClientEndpointId, kind: EndpointNoticeKind) -> Self {
+        Self { endpoint, kind }
+    }
+
+    pub(crate) fn body(&self) -> String {
+        let label = self.endpoint.display_label();
+        match &self.kind {
+            EndpointNoticeKind::NotReady => format!("{label} is not ready"),
+            EndpointNoticeKind::WorkspaceActionBlocked { open_workspace } => format!(
+                "Select an available workspace and {open_workspace} before renaming or closing it"
+            ),
+            EndpointNoticeKind::WorkspaceNoLongerAvailable => {
+                "Workspace is no longer available; select a connected workspace".to_owned()
+            }
+            EndpointNoticeKind::WaitingForSelection(status) => match status {
+                Some(ClientEndpointStatus::Connecting) => {
+                    format!("{label} is connecting; selection will resume when it is ready")
+                }
+                Some(ClientEndpointStatus::Reconnecting) => {
+                    format!("{label} is reconnecting; selection will resume when it is ready")
+                }
+                Some(ClientEndpointStatus::Attention) => format!("{label} needs attention"),
+                Some(ClientEndpointStatus::Online) | None => format!(
+                    "{label} is waiting for its workspace snapshot; selection will resume when it is ready"
+                ),
+            },
+            EndpointNoticeKind::StatusFailure(reason)
+            | EndpointNoticeKind::MoveRejected(reason) => {
+                format!("{label}: {reason}")
+            }
+            EndpointNoticeKind::MoveSurfaceTimedOut => {
+                format!("{label} did not produce a coherent surface in time")
+            }
+            EndpointNoticeKind::ConnectionLost(reason) => format!("{label} {reason}"),
+            EndpointNoticeKind::MoveInterrupted(reason) => {
+                format!("machine switch interrupted: {label} {reason}")
+            }
+        }
+    }
+}
 
 /// Draws a notice card anchored to the top-right corner of `area`.
 fn render_notification_card(
@@ -135,9 +199,7 @@ pub(in crate::shell) fn render_notice(
         &notice.title,
         &notice.body,
         top_offset,
-        (notice.key.code
-            != crate::shell::overlays::machine_diagnostics::MACHINE_DIAGNOSTIC_NOTICE_CODE)
-            .then_some(crate::limits::MAX_AUTOMATIC_NOTICE_BODY_ROWS),
+        notice.key.code.automatic_body_row_limit(),
         match notice.key.kind {
             ClientEndpointNoticeKind::Rejected => palette.red,
             ClientEndpointNoticeKind::Timeout | ClientEndpointNoticeKind::Unavailable => {

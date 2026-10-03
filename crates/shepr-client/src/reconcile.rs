@@ -6,16 +6,9 @@ use endpoint::{
 
 /// Shows an endpoint notice and presents the chrome. It decides nothing about what is shown:
 /// the choice already says that.
-pub(super) fn present_notice(state: &mut ClientState, message: String) {
-    state.shell.receive_endpoint_unavailable(message);
+pub(super) fn present_notice(state: &mut ClientState, notice: &shell::EndpointNotice) {
+    state.shell.receive_endpoint_unavailable(notice);
     state.mark_chrome_dirty();
-}
-
-/// The notice when the endpoint a move targets disconnects before the move commits.
-/// The predicate is fixed UI text; remote diagnostics stay in machine diagnostics, and every
-/// raw transport error stays in the log.
-fn move_interrupted_notice(label: &str, notice: &str) -> String {
-    format!("machine switch interrupted: {label} {notice}")
 }
 
 impl ClientLoop {
@@ -50,11 +43,9 @@ impl ClientLoop {
         if let Some(preparing) = self.state.shell.endpoints.choice.preparing() {
             if let Some(rejection) = preparing.rejection() {
                 let rejection = rejection.to_owned();
-                self.fail_move(|label| format!("{label}: {rejection}"));
+                self.fail_move(shell::EndpointNoticeKind::MoveRejected(rejection));
             } else if now >= preparing.deadline() {
-                self.fail_move(|label| {
-                    format!("{label} did not produce a coherent surface in time")
-                });
+                self.fail_move(shell::EndpointNoticeKind::MoveSurfaceTimedOut);
             }
         }
         let host_geometry = self.state.reported_geometry;
@@ -77,8 +68,10 @@ impl ClientLoop {
             &mut self.next_view_serial,
             now,
         ) {
-            let message = format!("{} is not ready", to.display_label());
-            present_notice(&mut self.state, message);
+            present_notice(
+                &mut self.state,
+                &shell::EndpointNotice::new(to, shell::EndpointNoticeKind::NotReady),
+            );
         }
         view::send_focus(
             &mut self.state.shell.endpoints.choice,
@@ -89,16 +82,22 @@ impl ClientLoop {
                 if let Some(previous) = committed.previous {
                     clear_endpoint_host_effects(&mut self.state)?;
                     let cancelled = self.endpoint_commands.retire_lane(&previous);
-                    cancel_endpoint_commands(&mut self.state.shell, cancelled);
+                    if cancel_endpoint_commands(&mut self.state.shell, cancelled).is_needed() {
+                        self.state.mark_chrome_dirty();
+                    }
                 }
                 let cancelled =
                     self.endpoint_commands
                         .send_next(&committed.shown, &mut self.write_stream, now);
-                cancel_endpoint_commands(&mut self.state.shell, cancelled);
+                if cancel_endpoint_commands(&mut self.state.shell, cancelled).is_needed() {
+                    self.state.mark_chrome_dirty();
+                }
                 self.state.request_repaint();
                 self.state.mark_pane_dirty();
             }
-            Err(reason) => self.fail_move(|label| format!("{label}: {reason}")),
+            Err(reason) => {
+                self.fail_move(shell::EndpointNoticeKind::MoveRejected(reason));
+            }
             Ok(None) => {}
         }
         view::release_unwanted(
@@ -111,13 +110,15 @@ impl ClientLoop {
         Ok(())
     }
 
-    /// Fails the move being prepared and reports it. `notice` builds the message from the
-    /// target's label. The target needs no cleanup: it is no longer wanted, so the release
-    /// step of this same turn turns it off.
-    fn fail_move(&mut self, notice: impl FnOnce(&str) -> String) {
+    /// Fails the move being prepared and reports `notice` against its target. The target
+    /// needs no cleanup: it is no longer wanted, so the release step of this same turn turns
+    /// it off.
+    fn fail_move(&mut self, notice: shell::EndpointNoticeKind) {
         if let Some(failed) = self.state.shell.endpoints.choice.fail_move() {
-            let message = notice(failed.to.display_label());
-            present_notice(&mut self.state, message);
+            present_notice(
+                &mut self.state,
+                &shell::EndpointNotice::new(failed.to, notice),
+            );
         }
     }
 
@@ -131,23 +132,37 @@ impl ClientLoop {
         let id = &failure.endpoint_id;
         let notice = failure.failure.disconnect_notice();
         let diagnostic = failure.failure.diagnostic();
-        let status = endpoint::ClientEndpointStatus::after_failure(&failure.failure);
+        let status = endpoint::EndpointFailureStatus::after_failure(&failure.failure);
         self.supervisors
-            .record_status(id, failure.generation, status, now);
+            .record_status(id, failure.generation, status.into(), now);
         self.state.shell.set_machine_diagnostic(id, &diagnostic);
         let lost = self.state.shell.transition_endpoint_status(id, status);
         let cancelled = self.endpoint_commands.disconnect(id);
-        cancel_endpoint_commands(&mut self.state.shell, cancelled);
-        let label = id.display_label();
+        let cancellation_repaint = cancel_endpoint_commands(&mut self.state.shell, cancelled);
+        if cancellation_repaint.is_needed() {
+            self.state.mark_chrome_dirty();
+        }
+        // The disconnect predicate is fixed UI text; remote diagnostics stay in machine
+        // diagnostics, and every raw transport error stays in the log.
         match lost {
             Lost::Shown => {
-                let message = format!("{label} {notice}");
-                present_notice(&mut self.state, message);
+                present_notice(
+                    &mut self.state,
+                    &shell::EndpointNotice::new(
+                        id.clone(),
+                        shell::EndpointNoticeKind::ConnectionLost(notice.to_owned()),
+                    ),
+                );
                 clear_endpoint_host_effects(&mut self.state)?;
             }
             Lost::Target => {
-                let message = move_interrupted_notice(label, notice);
-                present_notice(&mut self.state, message);
+                present_notice(
+                    &mut self.state,
+                    &shell::EndpointNotice::new(
+                        id.clone(),
+                        shell::EndpointNoticeKind::MoveInterrupted(notice.to_owned()),
+                    ),
+                );
             }
             Lost::Unrelated => {
                 self.state.mark_chrome_dirty();
@@ -163,8 +178,17 @@ mod tests {
 
     #[test]
     fn an_interrupted_machine_switch_names_the_machine_and_reads_as_one_sentence() {
+        let buildbox = endpoint::ClientEndpointId::Ssh(
+            shepr_config::MachineLabel::parse("buildbox").expect("machine label"),
+        );
         assert_eq!(
-            move_interrupted_notice("buildbox", "connection was lost; reconnecting"),
+            shell::EndpointNotice::new(
+                buildbox,
+                shell::EndpointNoticeKind::MoveInterrupted(
+                    "connection was lost; reconnecting".to_owned(),
+                ),
+            )
+            .body(),
             "machine switch interrupted: buildbox connection was lost; reconnecting"
         );
     }

@@ -145,10 +145,9 @@ struct Coordinator<'a> {
 /// the launch settled.
 ///
 /// This task is the pane's only publisher, so a panic in it would leave the
-/// app never hearing that the pane ended. That is accepted as a bug class,
-/// not given a recovery path: nothing here indexes unchecked or unwraps, IO
-/// errors become settlements, and failed sends return. A panic in the old
-/// watcher-side publisher had the same outcome.
+/// app never hearing that the pane ended. There is no recovery path for a
+/// panic: nothing here indexes unchecked or unwraps, IO errors become
+/// settlements, and failed sends return.
 async fn coordinate<Claim>(
     coordinator: Coordinator<'_>,
     settling: impl std::future::Future<Output = LaunchOutcome>,

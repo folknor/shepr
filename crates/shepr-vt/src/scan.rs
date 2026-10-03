@@ -296,7 +296,9 @@ impl Scanner {
     fn dispatch_csi(&mut self, final_byte: u8, index: usize, events: &mut Vec<ScannedEvent>) {
         let params = self.buffer.as_slice();
         let event = match final_byte {
-            b'n' if params == b"?996" => Some(ScanEvent::ColorSchemeQuery),
+            b'n' if crate::seq::is_color_scheme_query(params, final_byte) => {
+                Some(ScanEvent::ColorSchemeQuery)
+            }
             b'J' if params == b"?3" => Some(ScanEvent::EraseScrollback),
             // CSI > 4 n: modifyOtherKeys back to its default (off).
             b'n' if params

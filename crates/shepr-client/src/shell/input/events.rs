@@ -1,4 +1,4 @@
-use crate::shell::state::ClientShellInput;
+use crate::shell::state::{ClientShellInput, ClientShellRequest};
 use shepr_protocol::{ClientMessage, ClientPaneInputEvent};
 
 use shepr_protocol::InputBatchCharge;
@@ -37,10 +37,10 @@ pub(in crate::shell) fn push_target_event(
 ) {
     let request_index = outcome.requests.len().checked_sub(1);
     let event_charge = InputBatchCharge::of(&event);
-    if let Some(ClientMessage::ClientShellPaneInput {
+    if let Some(ClientShellRequest::Shown(ClientMessage::ClientShellPaneInput {
         pane_id: pending_pane,
         events,
-    }) = outcome.requests.last_mut()
+    })) = outcome.requests.last_mut()
         && *pending_pane == target
     {
         let cached = request_index.is_some_and(|index| accounting.request_index == Some(index));
@@ -58,7 +58,11 @@ pub(in crate::shell) fn push_target_event(
             return;
         }
     }
-    outcome.requests.push(target_event_message(target, event));
+    outcome
+        .requests
+        .push(ClientShellRequest::Shown(target_event_message(
+            target, event,
+        )));
     if let Some(request_index) = outcome.requests.len().checked_sub(1) {
         accounting.record(request_index, event_charge);
     }
@@ -67,7 +71,7 @@ pub(in crate::shell) fn push_target_event(
 #[cfg(test)]
 mod tests {
     use crate::shell::input::events::{PaneInputBatchAccounting, push_target_event};
-    use crate::shell::state::ClientShellInput;
+    use crate::shell::state::{ClientShellInput, ClientShellRequest};
     use shepr_protocol::InputBatchCharge;
     use shepr_protocol::{ClientMessage, ClientPaneInputEvent};
     use shepr_protocol::{MAX_INPUT_EVENT_BATCH, MAX_INPUT_PAYLOAD};
@@ -79,7 +83,16 @@ mod tests {
         for event in events {
             push_target_event(pane.clone(), event, &mut outcome, &mut accounting);
         }
-        outcome.requests
+        outcome
+            .requests
+            .into_iter()
+            .map(|request| match request {
+                ClientShellRequest::Shown(message) => message,
+                ClientShellRequest::HostTheme(_) => {
+                    panic!("pane input batch unexpectedly contains a host theme request")
+                }
+            })
+            .collect()
     }
 
     /// The expanded count and text bytes of each message, as the server

@@ -75,7 +75,6 @@ use vte::ansi::{
 use crate::limits::{KEYBOARD_MODE_STACK_MAX_DEPTH, MAX_TITLE_BYTES};
 
 use super::ExtraModes;
-use super::color::color_query_format;
 use super::modes::{self, ExtraMode};
 use super::rows::RowOrigin;
 use super::{ColorQuery, ColorQueryTarget, HistoryCapacity, RgbColor, TerminalEvent};
@@ -614,7 +613,7 @@ impl<T: EventListener> Handler for CoreHandler<'_, T> {
         Handler::set_color(self.term, index, color);
     }
 
-    fn dynamic_color_sequence(&mut self, prefix: String, index: usize, terminator: &str) {
+    fn dynamic_color_sequence(&mut self, _prefix: String, index: usize, terminator: &str) {
         let Some(target) = ColorQueryTarget::from_index(index) else {
             return;
         };
@@ -644,7 +643,11 @@ impl<T: EventListener> Handler for CoreHandler<'_, T> {
             target,
             core_color,
             child_override,
-            format: color_query_format(prefix, terminator),
+            reply_form: if terminator == "\x07" {
+                crate::seq::ReplyForm::Bel
+            } else {
+                crate::seq::ReplyForm::St
+            },
         };
         super::lock_auxiliary(self.events).push(TerminalEvent::ColorQuery(query));
     }
@@ -744,12 +747,9 @@ impl<T: EventListener> Handler for CoreHandler<'_, T> {
 
     /// Answered here; the pinned alacritty leaves it a no-op.
     fn report_modify_other_keys(&mut self) {
-        let level = match self.modes.modify_other_keys {
-            super::ModifyOtherKeysLevel::Off => 0,
-            super::ModifyOtherKeysLevel::ExceptWellDefined => 1,
-            super::ModifyOtherKeysLevel::All => 2,
-        };
-        self.reply(format!("\x1b[>4;{level}m"));
+        self.reply(
+            String::from_utf8_lossy(self.modes.modify_other_keys.set_sequence()).into_owned(),
+        );
     }
 
     fn set_scp(&mut self, char_path: ScpCharPath, update_mode: ScpUpdateMode) {

@@ -24,9 +24,6 @@ impl PaneTerminal {
 
         let mut render_state = shepr_vt::RenderState::new();
         render_state.update(&terminal);
-        let initial_colors = render_state.colors();
-        let initial_default_foreground = initial_colors.foreground;
-        let initial_default_background = initial_colors.background;
         Self {
             core: Mutex::new(PaneTerminalCore {
                 content_revision: 0,
@@ -36,8 +33,6 @@ impl PaneTerminal {
                 synchronized_output_epoch: 0,
                 history_epoch: 0,
                 render_state,
-                initial_default_foreground,
-                initial_default_background,
                 host_terminal_theme: shepr_termio::host_term::theme::TerminalTheme::default(),
                 transient_default_color_owner_pgid: None,
                 default_color_generation: 0,
@@ -126,9 +121,6 @@ impl PaneTerminal {
         pane_id: PaneId,
         child_liveness: &ChildLiveness,
     ) -> bool {
-        let Some(shell_pid) = child_liveness.live_process_id() else {
-            return false;
-        };
         {
             // A read stays silent: the PTY actor reports a poisoned core and
             // closes the pane. Only the mutating lock below reports.
@@ -140,10 +132,11 @@ impl PaneTerminal {
             }
         }
 
-        let foreground_job = shepr_agent::detect::foreground_job(shell_pid);
-        if child_liveness.live_process_id() != Some(shell_pid) {
+        let Some((shell_pid, foreground_job)) =
+            child_liveness.observe(|pid| (pid, shepr_agent::detect::foreground_job(pid)))
+        else {
             return false;
-        }
+        };
         let Ok(mut core) = shepr_vt::lock_terminal_core(&self.core) else {
             self.report_terminal_mutation_failure("host theme restore");
             return false;
@@ -278,15 +271,12 @@ impl PaneTerminal {
         child_liveness: &ChildLiveness,
         generation: DefaultColorGeneration,
     ) {
-        let Some(shell_pid) = child_liveness.live_process_id() else {
+        let Some(owner_pgid) = child_liveness
+            .observe(current_transient_default_color_owner)
+            .flatten()
+        else {
             return;
         };
-        let Some(owner_pgid) = current_transient_default_color_owner(shell_pid) else {
-            return;
-        };
-        if child_liveness.live_process_id() != Some(shell_pid) {
-            return;
-        }
         let Ok(mut core) = shepr_vt::lock_terminal_core(&self.core) else {
             self.report_terminal_mutation_failure("default color owner update");
             return;
@@ -514,16 +504,9 @@ impl PaneTerminal {
     /// chunks; rows are absolute, so output meanwhile does not move them.
     pub(crate) fn search_text_window(
         &self,
-        query: &str,
-        case_sensitive: bool,
-        direction: TerminalSearchDirection,
-        cursor: TerminalTextPoint,
-        previous: Option<(TerminalTextPoint, TerminalTextPoint)>,
-        limit: usize,
+        request: TerminalTextSearch<'_>,
     ) -> TerminalSearchWindow {
-        let Some(mut search) =
-            TextSearch::new(query, case_sensitive, direction, cursor, previous, limit)
-        else {
+        let Some(mut search) = TextSearch::new(request) else {
             return TerminalSearchWindow::empty();
         };
         let mut builder = TextBufferBuilder::new(true, false);
@@ -698,9 +681,7 @@ impl PaneTerminal {
         {
             return;
         }
-        let host_theme = core.host_terminal_theme;
-        let initial_default_foreground = core.initial_default_foreground;
-        let initial_default_background = core.initial_default_background;
+
         let PaneTerminalCore {
             terminal,
             render_state,
@@ -709,14 +690,11 @@ impl PaneTerminal {
         let terminal: &shepr_vt::Terminal = terminal;
         render_state.update(terminal);
         let colors = render_state.colors();
-        let default_bg =
-            terminal_default_bg(colors.background, host_theme, initial_default_background);
-        let default_fg =
-            terminal_default_fg(colors.foreground, host_theme, initial_default_foreground);
+        let default_bg = terminal_default_bg(colors.background, colors.background_source);
+        let default_fg = terminal_default_fg(colors.foreground, colors.foreground_source);
         let resolved_fg = Some(terminal_color(colors.foreground));
         let resolved_bg = Some(terminal_color(colors.background));
-        let default_palette = terminal.default_palette();
-        let palette_overrides = PaletteOverrides::new(&colors.palette, &default_palette);
+        let palette_overrides = PaletteOverrides::new(colors.palette_overrides());
 
         let frame_width = usize::from(frame.width);
         if frame.cells.len() != frame_width * usize::from(frame.height) {

@@ -48,6 +48,34 @@ symlink policy and the meaning of a failed dir sync differ. Owner: platform
 refuse_symlink_target, durability })`; `config_file.rs` is the start of it but is
 named for one consumer. (foundation)
 
+## CON-027 - A few VT spellings still bypass the shared builders
+
+`crates/shepr-vt/src/seq.rs` now holds one spelling for underline, colour
+parameters and replies, focus, DSR, and DEC and kitty mode builders, used by vt
+and the termio blitter and host side. Still open: mux `osc_rgb_response`
+(`crates/shepr-mux/src/pane/terminal/helpers.rs`) keeps its own target mapping
+and formatter instead of `query.reply(color, ReplyForm::St)`;
+`crates/shepr-client/src/terminal_setup.rs` writes focus, paste, line-wrap and
+alternate-screen modes through crossterm; and some fixed startup constants still
+spell DEC modes as literals. (terminal)
+
+## CON-051 - The detection task does not stop on the arbitrated ending
+
+`ChildLiveness::observe` covers seven observation paths, and the server
+detector-event gates refuse updates after an arbitrated ending even with the
+child alive. Still open: `DetectionTask` (`crates/shepr-mux/src/pane/detection_task.rs`)
+stops through child liveness or cancellation, not when the exit arbiter has
+decided; wiring that needs a cancellation from the arbiter, not an arbiter lock
+at every tick checkpoint. (mux-panes)
+
+## CON-056 - Pane chrome is built with provisional content fields
+
+Content and gutter layout are one `PaneChromeInfo::content_layout` used by spawn
+sizing, UI geometry, resume geometry and retained surfaces, with one scrollbar
+visibility rule. Still open: `PaneChromeInfo` is constructed with provisional
+`inner_rect` and scrollbar fields until the screen mode is known, which callers
+overwrite. (mux-state, server-app, server-serving)
+
 ## CON-013 - The socket path type is thrown away after the check
 
 `SocketPath` in `crates/shepr-core/src/socket_path.rs` owns the length check
@@ -136,25 +164,6 @@ publishes per-client extents while the child was told the geometry-source
 client's. Owner: `PaneGeometry`, with the wire carrying `Option<PixelExtent>`
 from it. (terminal)
 
-## CON-027 - How are styles, colours and colour replies spelled in VT sequences?
-
-`UnderlineStyle` to SGR is in `format.rs` `UNDERLINE_SGR` and `blit.rs`
-`style_to_sgr_parts`; colour numbering in `format.rs` `push_color` and `blit.rs`
-`color_to_sgr_fg/bg`. OSC colour replies: vt `color_query_format` (`{:02x}{:02x}`)
-and mux `osc_rgb_response` (`{:04x}` of `x * 257`, with its own target-to-OSC
-mapping), and termio `host_term/theme.rs` parses the same form. Focus `CSI
-I`/`CSI O` in vt `encode_focus` and termio `raw_input`; DSR 997 reports in vt
-`ColorScheme::report()` and termio constants, DSR 996 in `scan.rs` and
-`HOST_COLOR_SCHEME_QUERY_SEQUENCE`; modifyOtherKeys `CSI > 4 ; n m` in vt
-`apply_scan_event`, handler `report_modify_other_keys`,
-`set_host_keyboard_protocol` and `HOST_MODIFY_OTHER_KEYS_RESET_SEQUENCE`; kitty
-flag bits in vt (inline), protocol `KittyKeyboardFlags` and crossterm
-(`from_bits_retain`); DEC mode numbers as literals in `blit.rs` and
-`host_term/modes.rs` although `DecMode::number()` exists; bracketed paste markers.
-All agree today. Owner: `UnderlineStyle::sgr_param()`, a small shared SGR writer,
-`ColorQuery::reply(color, ReplyForm)` in vt, and a `seq` module of typed builders
-and matchers used by both the pane side and the host side. (terminal)
-
 ## CON-029 - What character does a key produce?
 
 `copy_mode_command_char` (also used by `keybind_help_text_char`), encode's
@@ -242,45 +251,6 @@ decoders only. (agents)
 
 ## Pane runtime and workspace
 
-## CON-051 - Is this observation still about our live child?
-
-`ChildLiveness::live_pid()` is the declared gate, but the "sample pid, do the
-/proc read, check the pid is still live" protocol is re-implemented in
-`PaneRuntime::cwd`, `follow_cwd`, `foreground_cwd` (twice), `PaneCwdProbe::read`,
-`publish_reported_cwd`, `PaneTerminal::maybe_restore_host_terminal_theme`,
-`resolve_default_color_owner`, and `DetectionTask::live` (eight times in
-`tick`). Two later gates answer a neighbouring question with different facts:
-the server drops `StateChanged`/`AgentProcessDetected` when
-`child_has_exited()` (which counts a zombie), and
-`TerminalState::transition_detector_observation` drops them once `pane_ended`
-(the applied exit) is set; they agree on today's paths by event ordering. Owner:
-`ChildLiveness::observe(|pid| ..) -> Option<T>`, and for detector events the
-runtime (the detection task stops and the coordinator drops later output once the
-exit arbiter has decided). (mux-panes)
-
-## CON-052 - Is the pane shell in the foreground?
-
-`follow_cwd_from_processes` (`shell_pid != foreground_pgid`),
-`osc::foreground_job_is_shell` (membership), `process_probe_result` and
-`probe_foreground_process_from_jobs` (the membership test inline, twice),
-`osc::current_transient_default_color_owner` (via `foreground_job_is_shell`) and
-`foreground_member_cwd_different_from_shell` (skips the shell's pid). The
-comparison and the membership test are equivalent only because the shell is its
-own group leader. Owner: one probe returning `Foreground::{Shell, Job { pgid,
-processes }, Unknown}`. (mux-panes)
-
-## CON-053 - What is a process's cwd, and what is a pane's or workspace's cwd?
-
-One `ProcessCwd::{Live, Deleted, Unavailable}` reader, a purpose-based terminal
-cwd resolution (identity, follow, save, resume), capture through the workspace
-identity resolver and `AppPaths::fallback_cwd()` now exist. Still open:
-`Workspace::cwd_for_pane` (in the mux workspace pane tree) builds its own
-fallback onto the terminal cwd instead of the purpose-based resolution, and the
-runtime's arbitrated cwd (`PaneCwdState::reported`) and `TerminalState::cwd`
-remain two copies of the last OSC 7 report kept in step by the event (kept
-deliberately so save probes survive without terminal state; the reason is at
-the code). Reported by mux-panes, mux-state and server-app.
-
 ## CON-054 - Pane counter bookkeeping is partly outside the one rule
 
 `backend.rs` now records every mutation through one `CoreMutation` and
@@ -291,44 +261,6 @@ helpers in `crates/shepr-mux/src/pane/agent_detection.rs` (free functions on
 `pub`/`pub(super)`, so `DetectionTask::tick` and the osc tests read
 `core.detection_content_seq` directly. The counter types are filed among the
 types. Reported by mux-panes, terminal and server-serving.
-
-## CON-056 - What content rect does a pane's terminal get, and where is its scrollbar?
-
-The composition `visible_panes` then `pane_inner_rect` then
-`terminal_content_rect` is done independently by `ui::panes::compute_pane_infos_for_workspace`
-(with `alt` from the runtime and a "no runtime means a fresh primary shell"
-branch; it feeds rendering and the PTY size rule), mux
-`PaneGeometry::pane_size` (spawn sizing, `alt = false`, clamped to at least 1),
-`agent_resume::derived_pending_agent_resume_pane_infos` (`alt = false`, with its
-own zoom override giving hidden panes the tiled size), and the server's
-`retained_surface::resolve_retained_panes` and `retained_pane_layout` (from the
-wire pane's alternate-screen flag), plus `ui/panes.rs` twice more.
-`PaneChromeInfo::inner_rect` and `scrollbar_rect` are placeholders at
-construction ("not settled here") that every caller overwrites. The "narrow pane"
-threshold `<= 4` columns is in `terminal_content_rect` and again in
-`ui/panes.rs`. Held together by the shared helper and the pairwise tests
-`rendered_content_rect_matches_the_size_new_panes_are_spawned_at` and
-`pending_agent_resume_launches_at_the_size_its_first_resize_keeps`. They already
-disagree: `pane_size` clamps to 1 and the ui path does not, so a degenerate pane
-gets different answers at spawn and first resize; the zoom treatment differs by
-design between render and resume and nothing names it. The scrollbar gutter is
-derived in `ui::panes::stable_scrollbar_gutter` and again in
-`resolve_retained_panes`, and visibility in `ui::scrollbar::should_show_scrollbar`
-and again in `retained_scrollbar_patch` (`max_offset_from_bottom > 0 &&
-pane_scrollbars && !alternate_screen`). Owner: one mux function such as
-`PaneGeometry::content_layout(layout, zoomed, include_hidden, screen_mode) ->
-Vec<PaneContent { id, rect, borders, content, gutter }>` with
-`ScreenMode::{Primary, Alternate, NotStarted}`, and one `scrollbar_visible`.
-Reported by mux-state, server-app and server-serving.
-
-## CON-057 - Which panes does a surface of a workspace show?
-
-`Workspace::visible_pane_ids()` now answers it for `sync_immediate_pty_sources`
-and `visible_pane_runtimes`. Still answering it themselves:
-`retained_pane_layout` in `server/headless/retained_surface.rs` and the surface
-pane builder in `ui::panes`, which pass `workspace.zoomed()` to
-`PaneGeometry::visible_panes` (which assumes the zoomed pane is the focus).
-(server-serving)
 
 ## CON-059 - How does a layout tree collapse, and which panes are adjacent?
 
@@ -346,17 +278,6 @@ the two differ at the right or bottom edge of a `u16::MAX` area. (mux-state)
 directly (outside the creation, restore and removal paths that maintain the
 index) still falls back to a scan, so the index is a second record kept in step
 by hand. Reported by server-app and mux-panes.
-
-## CON-062 - Where does a copy-mode motion land?
-
-Line motions (`End`, `FirstNonBlank`) are composed in the server's
-`handle_pane_copy_motion` from `extract_selection` plus
-`shepr_termio::copy_mode::last_character_col`/`first_non_blank_col`, clamped to
-`terminal_dimensions()`; word and paragraph motions and search are
-`PaneRuntime` methods in mux `pane/terminal/text.rs`; the paragraph result's
-column is patched in the handler. Owner: one `PaneRuntime::copy_motion(cursor,
-CopyMotion) -> Point`, or the text engine moving to termio with mux supplying row
-text. Reported by mux-panes and server-app.
 
 ## Persistence and session saves
 
@@ -420,16 +341,6 @@ contracts and server-serving.
 
 ## Config and keybindings
 
-## CON-088 - Fixed-key surfaces: routing and help text
-
-Copy-mode keys are routed by char literals in `route_copy_mode_key` and described
-by literals in `render_mode_bar` (`"h/j/k/l w/b/e { }"`, `"y/enter"`); resize keys
-by `route_resize_key` and the resize bar text; navigator and Help footers state
-their keys as literals with a comment pointing at `route_overlay_key`.
-`copy_mode_command_char -> Option<char>` is a char-typed enum. Owner: a small
-command table per fixed-key surface (commands, keys, labels) that routing and
-help both read. (client-shell)
-
 ## Edges
 
 ## CON-093 - Command lines: producers and parsers are separate copies
@@ -457,28 +368,6 @@ and `server_stop` (or clap derive); printed commands render the same value.
 Reported by edges and contracts.
 
 ## Client
-
-## CON-103 - Is a host terminal write failure fatal?
-
-Mouse mode writes (`handle_resize`, the `MouseCapture` arm,
-`clear_endpoint_host_effects`) and keyboard report-all writes map failure to
-`ClientError::HostTerminal` and end the client; frame and patch writes, window
-titles, clipboard writes and host queries log once and carry on. Owner:
-`ClientState` or `HostModes` with a single policy. Mouse mode is also set up
-twice (`setup_terminal` builds `HostModes::new(false, mouse_capture)` with a
-placeholder, then `run_client_loop` replaces it and swaps the `Arc` mirrors), and
-clipboard writes go through `forward_clipboard` and the `ClipboardWrite` arm with
-their own logging. (client-core)
-
-## CON-104 - Notices: wording, deduplication and lifetime
-
-A `Notices` component in the client shell now owns suppression, the boot-card
-queue, diagnostic replacement, dismissal and drawn expiry. Still open: the
-wording. `"{label}: {message}"` is assembled in `handle_endpoint_supervisor`'s
-`Status` arm, its `Connected` failure branch, `run_client_loop`,
-`reconcile::fail_move` callers, `endpoint_lost` and `waiting_notice`; a typed
-`EndpointNotice { endpoint, kind }` rendered once would end that. Reported by
-client-core and client-shell.
 
 ## CON-108 - What does compose draw over pane cells?
 

@@ -30,7 +30,7 @@ pub(super) fn setup_terminal(
     modify_other_keys_mode: Option<shepr_vt::ModifyOtherKeysLevel>,
 ) -> io::Result<(TerminalGuard, HostTerminalWriter)> {
     let output_writer = HostTerminalWriter::from_stdout()?;
-    let host_modes = HostModes::new(false, mouse_capture);
+    let host_modes = HostModes::new(mouse_capture, mouse_capture);
     // Built before raw mode so a failure anywhere below still restores through Drop. Raw mode
     // and the alternate screen go through crossterm and this writer directly rather than
     // `ratatui::init`, whose own panic hook would restore through `io::stdout()`.
@@ -42,6 +42,9 @@ pub(super) fn setup_terminal(
         restored: false,
         restore_state: restore_terminal_state,
     };
+    // The runtime policy can retry a mode change while the event loop is live. Startup must
+    // abort if raw mode, the alternate screen, or required input modes cannot be established;
+    // the armed guard restores any setup changes that reached the host.
     crossterm::terminal::enable_raw_mode()?;
     let mut output = output_writer.clone();
     execute!(output, EnterAlternateScreen)?;
@@ -208,18 +211,40 @@ pub(super) fn effective_sgr_pixel_mouse(
     enabled && requested && exact_geometry
 }
 
-#[derive(Clone, Copy)]
-struct EndpointMouseRequest {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct EndpointMouseRequest {
     enabled: bool,
     sgr_pixels: bool,
+}
+
+#[derive(Clone, Copy)]
+enum MouseSource {
+    Initial,
+    Preference,
+    Endpoint(EndpointMouseRequest),
+}
+
+#[derive(Clone)]
+pub(super) struct HostMouseInputProbe {
+    capture_active: Arc<AtomicBool>,
+    sgr_pixels_active: Arc<AtomicBool>,
+}
+
+impl HostMouseInputProbe {
+    pub(super) fn capture_active(&self) -> bool {
+        self.capture_active.load(Ordering::Acquire)
+    }
+
+    pub(super) fn sgr_pixels_active(&self) -> bool {
+        self.sgr_pixels_active.load(Ordering::Acquire)
+    }
 }
 
 /// Tracks endpoint mouse requests, local preferences, and mirrors read by stdin.
 /// The containing `HostModes` owner performs terminal teardown.
 pub(super) struct HostMouseMode {
     shell_preference: bool,
-    endpoint_request: Option<EndpointMouseRequest>,
-    use_preference: bool,
+    source: MouseSource,
     capture_active: Arc<AtomicBool>,
     sgr_pixels_active: Arc<AtomicBool>,
 }
@@ -228,18 +253,17 @@ impl HostMouseMode {
     pub(super) fn new(shell_preference: bool, initially_active: bool) -> Self {
         Self {
             shell_preference,
-            endpoint_request: None,
-            use_preference: false,
+            source: MouseSource::Initial,
             capture_active: Arc::new(AtomicBool::new(initially_active)),
             sgr_pixels_active: Arc::new(AtomicBool::new(false)),
         }
     }
 
-    pub(super) fn input_mirrors(&self) -> (Arc<AtomicBool>, Arc<AtomicBool>) {
-        (
-            Arc::clone(&self.capture_active),
-            Arc::clone(&self.sgr_pixels_active),
-        )
+    pub(super) fn input_probe(&self) -> HostMouseInputProbe {
+        HostMouseInputProbe {
+            capture_active: Arc::clone(&self.capture_active),
+            sgr_pixels_active: Arc::clone(&self.sgr_pixels_active),
+        }
     }
 
     pub(super) fn shell_preference(&self) -> bool {
@@ -255,27 +279,28 @@ impl HostMouseMode {
     }
 
     pub(super) fn set_endpoint_request(&mut self, enabled: bool, sgr_pixels: bool) {
-        self.endpoint_request = Some(EndpointMouseRequest {
+        self.source = MouseSource::Endpoint(EndpointMouseRequest {
             enabled,
             sgr_pixels,
         });
-        self.use_preference = false;
     }
 
     pub(super) fn clear_endpoint_request(&mut self) {
-        self.endpoint_request = None;
-        self.use_preference = true;
+        self.source = MouseSource::Preference;
     }
 
-    pub(super) fn desired(&self) -> (bool, bool) {
-        let (enabled, sgr_pixels_requested) = if let Some(request) = self.endpoint_request {
-            (request.enabled, request.sgr_pixels)
-        } else if self.use_preference {
-            (self.shell_preference, false)
-        } else {
-            (self.capture_active(), self.sgr_pixels_active())
-        };
-        (enabled, sgr_pixels_requested)
+    pub(super) fn desired(&self) -> EndpointMouseRequest {
+        match self.source {
+            MouseSource::Initial => EndpointMouseRequest {
+                enabled: self.capture_active(),
+                sgr_pixels: self.sgr_pixels_active(),
+            },
+            MouseSource::Preference => EndpointMouseRequest {
+                enabled: self.shell_preference,
+                sgr_pixels: false,
+            },
+            MouseSource::Endpoint(request) => request,
+        }
     }
 
     fn apply(
@@ -284,13 +309,14 @@ impl HostMouseMode {
         exact_geometry: bool,
         reassert: bool,
     ) -> io::Result<()> {
-        let (enabled, sgr_pixels_requested) = self.desired();
-        let sgr_pixels = effective_sgr_pixel_mouse(enabled, sgr_pixels_requested, exact_geometry);
+        let request = self.desired();
+        let enabled = request.enabled;
+        let sgr_pixels = effective_sgr_pixel_mouse(enabled, request.sgr_pixels, exact_geometry);
         let changed = host_mouse_capture_update(
             self.capture_active(),
             self.sgr_pixels_active(),
             enabled,
-            sgr_pixels_requested,
+            request.sgr_pixels,
             exact_geometry,
         );
         if changed.is_some() || reassert {
@@ -302,21 +328,57 @@ impl HostMouseMode {
     }
 }
 
-// limits-exempt: each value is a bit position in the terminal restore mask.
-const RESTORE_KITTY_KEYBOARD_ENTRY: u8 = 1 << 0;
-// limits-exempt: each value is a bit position in the terminal restore mask.
-const RESTORE_MODIFY_OTHER_KEYS: u8 = 1 << 1;
-// limits-exempt: each value is a bit position in the terminal restore mask.
-const RESTORE_COLOR_SCHEME_REPORTS: u8 = 1 << 2;
-// limits-exempt: each value is a bit position in the terminal restore mask.
-const RESTORE_FOCUS_CHANGE: u8 = 1 << 3;
-// limits-exempt: each value is a bit position in the terminal restore mask.
-const RESTORE_BRACKETED_PASTE: u8 = 1 << 4;
-// limits-exempt: each value is a bit position in the terminal restore mask.
-const RESTORE_LINE_WRAP: u8 = 1 << 5;
-// limits-exempt: each value is a bit position in the terminal restore mask.
-const RESTORE_MOUSE_CAPTURE: u8 = 1 << 6;
-const RESTORE_KEYBOARD_MASK: u8 = RESTORE_KITTY_KEYBOARD_ENTRY | RESTORE_MODIFY_OTHER_KEYS;
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HostRestoreFlag {
+    KittyKeyboardEntry,
+    ModifyOtherKeys,
+    ColorSchemeReports,
+    FocusChange,
+    BracketedPaste,
+    LineWrap,
+    MouseCapture,
+}
+
+impl HostRestoreFlag {
+    const fn bit(self) -> u8 {
+        match self {
+            Self::KittyKeyboardEntry => 1 << 0,
+            Self::ModifyOtherKeys => 1 << 1,
+            Self::ColorSchemeReports => 1 << 2,
+            Self::FocusChange => 1 << 3,
+            Self::BracketedPaste => 1 << 4,
+            Self::LineWrap => 1 << 5,
+            Self::MouseCapture => 1 << 6,
+        }
+    }
+}
+
+/// Atomic restoration uses a compact bitset; named flags keep those bits local to this owner.
+#[derive(Clone, Copy, Debug, Default)]
+struct HostRestoreMask(u8);
+
+impl HostRestoreMask {
+    fn contains(self, flag: HostRestoreFlag) -> bool {
+        self.0 & flag.bit() != 0
+    }
+
+    fn replace_keyboard(self, kitty_entry: bool, modify_other_keys: bool) -> Self {
+        let keyboard_bits =
+            HostRestoreFlag::KittyKeyboardEntry.bit() | HostRestoreFlag::ModifyOtherKeys.bit();
+        let mut next = self.0 & !keyboard_bits;
+        if kitty_entry {
+            next |= HostRestoreFlag::KittyKeyboardEntry.bit();
+        }
+        if modify_other_keys {
+            next |= HostRestoreFlag::ModifyOtherKeys.bit();
+        }
+        Self(next)
+    }
+
+    fn bits(self) -> u8 {
+        self.0
+    }
+}
 
 struct HostModesState {
     mouse: HostMouseMode,
@@ -365,7 +427,20 @@ impl HostKeyboardUpdate {
     }
 }
 
-type HostRestoreAction<W> = (Option<u8>, fn(&HostModes, &mut W) -> io::Result<()>);
+enum HostRestoreAction<W> {
+    IfSet(HostRestoreFlag, fn(&HostModes, &mut W) -> io::Result<()>),
+    Always(fn(&HostModes, &mut W) -> io::Result<()>),
+}
+
+impl<W> HostRestoreAction<W> {
+    fn action(self, mask: HostRestoreMask) -> Option<fn(&HostModes, &mut W) -> io::Result<()>> {
+        match self {
+            Self::IfSet(flag, action) if mask.contains(flag) => Some(action),
+            Self::Always(action) => Some(action),
+            _ => None,
+        }
+    }
+}
 
 struct HostModesInner {
     state: Mutex<HostModesState>,
@@ -407,42 +482,39 @@ impl HostModes {
     }
 
     fn record_keyboard_restore_state(&self, kitty_entry: bool, modify_other_keys: bool) {
-        let mut state = 0;
-        if kitty_entry {
-            state |= RESTORE_KITTY_KEYBOARD_ENTRY;
-        }
-        if modify_other_keys {
-            state |= RESTORE_MODIFY_OTHER_KEYS;
-        }
         self.inner
             .restore_state
             .update(Ordering::AcqRel, Ordering::Acquire, |current| {
-                (current & !RESTORE_KEYBOARD_MASK) | state
+                HostRestoreMask(current)
+                    .replace_keyboard(kitty_entry, modify_other_keys)
+                    .bits()
             });
     }
 
     fn record_keyboard_entry(&self) {
         self.inner
             .restore_state
-            .fetch_or(RESTORE_KITTY_KEYBOARD_ENTRY, Ordering::AcqRel);
+            .fetch_or(HostRestoreFlag::KittyKeyboardEntry.bit(), Ordering::AcqRel);
     }
 
-    fn record_restore_flag(&self, flag: u8) {
-        self.inner.restore_state.fetch_or(flag, Ordering::AcqRel);
+    fn record_restore_flag(&self, flag: HostRestoreFlag) {
+        self.inner
+            .restore_state
+            .fetch_or(flag.bit(), Ordering::AcqRel);
     }
 
     pub(super) fn enable_bracketed_paste(&self, writer: &mut impl io::Write) -> io::Result<()> {
-        self.record_restore_flag(RESTORE_BRACKETED_PASTE);
+        self.record_restore_flag(HostRestoreFlag::BracketedPaste);
         execute!(writer, EnableBracketedPaste)
     }
 
     pub(super) fn enable_focus_change(&self, writer: &mut impl io::Write) -> io::Result<()> {
-        self.record_restore_flag(RESTORE_FOCUS_CHANGE);
+        self.record_restore_flag(HostRestoreFlag::FocusChange);
         execute!(writer, EnableFocusChange)
     }
 
     pub(super) fn disable_line_wrap(&self, writer: &mut impl io::Write) -> io::Result<()> {
-        self.record_restore_flag(RESTORE_LINE_WRAP);
+        self.record_restore_flag(HostRestoreFlag::LineWrap);
         execute!(writer, DisableLineWrap)
     }
 
@@ -450,16 +522,12 @@ impl HostModes {
         &self,
         writer: &mut impl io::Write,
     ) -> io::Result<()> {
-        self.record_restore_flag(RESTORE_COLOR_SCHEME_REPORTS);
+        self.record_restore_flag(HostRestoreFlag::ColorSchemeReports);
         write_host_color_scheme_report_mode(writer, true)
     }
 
-    pub(super) fn configure_mouse_mode(&self, mouse: HostMouseMode) {
-        self.state().mouse = mouse;
-    }
-
-    pub(super) fn mouse_input_mirrors(&self) -> (Arc<AtomicBool>, Arc<AtomicBool>) {
-        self.state().mouse.input_mirrors()
+    pub(super) fn mouse_input_probe(&self) -> HostMouseInputProbe {
+        self.state().mouse.input_probe()
     }
 
     pub(super) fn mouse_shell_preference(&self) -> bool {
@@ -481,8 +549,8 @@ impl HostModes {
         reassert: bool,
     ) -> io::Result<()> {
         let state = self.state();
-        if state.mouse.desired().0 {
-            self.record_restore_flag(RESTORE_MOUSE_CAPTURE);
+        if state.mouse.desired().enabled {
+            self.record_restore_flag(HostRestoreFlag::MouseCapture);
         }
         state.mouse.apply(writer, exact_geometry, reassert)
     }
@@ -511,9 +579,10 @@ impl HostModes {
         let mut state = self.state();
         // The restore mask is raised before the write and narrowed only when it
         // succeeds (the report-all paths raise it and never narrow it), so a
-        // write that fails part way leaves it a superset of what shepr owns. The keyboard state helper does not update its own record
-        // on failure; restoration reads this mask, never that record, and a
-        // failed host write ends the client, so the mask is what decides.
+        // write that fails part way leaves it a superset of what shepr owns. The keyboard state
+        // helper does not update its own record on failure; restoration reads this mask, never
+        // that record. A transient mode write can be retried, while a permanent one ends the
+        // session, so either path restores every mode the write may have reached.
         let (kitty_entry, modify_other_keys) = update.restore_state(&state.keyboard);
         self.record_keyboard_restore_state(
             state.keyboard.has_kitty_keyboard_entry() || kitty_entry,
@@ -609,32 +678,35 @@ impl HostModes {
 
     pub(super) fn restore<W: io::Write>(&self, writer: &mut W) -> io::Result<()> {
         // Taken, so a second restore writes nothing.
-        let restore_state = self.inner.restore_state.swap(0, Ordering::AcqRel);
+        let restore_state = HostRestoreMask(self.inner.restore_state.swap(0, Ordering::AcqRel));
         let restores: [HostRestoreAction<W>; 9] = [
-            (
-                Some(RESTORE_MODIFY_OTHER_KEYS),
+            HostRestoreAction::IfSet(
+                HostRestoreFlag::ModifyOtherKeys,
                 restore_modify_other_keys::<W>,
             ),
-            (
-                Some(RESTORE_KITTY_KEYBOARD_ENTRY),
+            HostRestoreAction::IfSet(
+                HostRestoreFlag::KittyKeyboardEntry,
                 restore_kitty_keyboard_entry::<W>,
             ),
-            (
-                Some(RESTORE_COLOR_SCHEME_REPORTS),
+            HostRestoreAction::IfSet(
+                HostRestoreFlag::ColorSchemeReports,
                 restore_color_scheme_reports::<W>,
             ),
-            (Some(RESTORE_FOCUS_CHANGE), restore_focus_change::<W>),
-            (Some(RESTORE_BRACKETED_PASTE), restore_bracketed_paste::<W>),
-            (Some(RESTORE_LINE_WRAP), restore_line_wrap::<W>),
-            (Some(RESTORE_MOUSE_CAPTURE), restore_mouse_capture::<W>),
-            (None, restore_window_title::<W>),
-            (None, restore_window_title_stack::<W>),
+            HostRestoreAction::IfSet(HostRestoreFlag::FocusChange, restore_focus_change::<W>),
+            HostRestoreAction::IfSet(
+                HostRestoreFlag::BracketedPaste,
+                restore_bracketed_paste::<W>,
+            ),
+            HostRestoreAction::IfSet(HostRestoreFlag::LineWrap, restore_line_wrap::<W>),
+            HostRestoreAction::IfSet(HostRestoreFlag::MouseCapture, restore_mouse_capture::<W>),
+            HostRestoreAction::Always(restore_window_title::<W>),
+            HostRestoreAction::Always(restore_window_title_stack::<W>),
         ];
         let mut first_error = None;
-        for (flag, action) in restores {
-            if flag.is_some_and(|flag| restore_state & flag == 0) {
+        for restore in restores {
+            let Some(action) = restore.action(restore_state) else {
                 continue;
-            }
+            };
             // Every action runs even after a failure; the first error wins.
             let result = action(self, writer);
             first_error = first_error.or(result.err());
@@ -1094,7 +1166,7 @@ mod tests {
             assert!(output.starts_with(&expected_setup), "{output:?}");
 
             // Mouse capture is enabled on stdout; mark it as the setup does.
-            modes.record_restore_flag(RESTORE_MOUSE_CAPTURE);
+            modes.record_restore_flag(HostRestoreFlag::MouseCapture);
             output.clear();
             modes.restore(&mut output).expect("write to a Vec");
             let expected_restore = [
@@ -1128,10 +1200,28 @@ mod tests {
     fn host_mouse_mode_owns_request_and_preference_resolution() {
         let mut mode = HostMouseMode::new(true, true);
 
-        assert_eq!(mode.desired(), (true, false));
+        assert_eq!(
+            mode.desired(),
+            EndpointMouseRequest {
+                enabled: true,
+                sgr_pixels: false,
+            }
+        );
         mode.set_endpoint_request(false, true);
-        assert_eq!(mode.desired(), (false, true));
+        assert_eq!(
+            mode.desired(),
+            EndpointMouseRequest {
+                enabled: false,
+                sgr_pixels: true,
+            }
+        );
         mode.clear_endpoint_request();
-        assert_eq!(mode.desired(), (true, false));
+        assert_eq!(
+            mode.desired(),
+            EndpointMouseRequest {
+                enabled: true,
+                sgr_pixels: false,
+            }
+        );
     }
 }

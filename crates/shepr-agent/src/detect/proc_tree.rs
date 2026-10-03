@@ -345,6 +345,10 @@ fn process_argv(pid: Pid) -> Option<Vec<String>> {
         .saturating_add(1);
     let mut bytes = Vec::new();
     file.take(read_limit).read_to_end(&mut bytes).ok()?;
+    parse_process_argv(&bytes)
+}
+
+fn parse_process_argv(bytes: &[u8]) -> Option<Vec<String>> {
     if bytes.is_empty() || bytes.len() > PROCESS_CMDLINE_BYTE_LIMIT {
         return None;
     }

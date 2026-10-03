@@ -53,8 +53,7 @@ impl MachineProbe {
             |candidate| verify_remote_shepr(ssh, candidate),
             |progress| resume_installed_remote_shepr_discovery(ssh, progress),
             |remote| {
-                remote_server_status(ssh, remote)
-                    .and_then(|status| judge_remote_server(ssh.target(), remote, &status))
+                remote_server_status(ssh, remote).map(|status| judge_remote_server(remote, &status))
             },
         )
     }
@@ -308,7 +307,8 @@ impl MachineSshConnector {
                 runtime_dir,
                 &self.paths.client_config_file(),
                 self.target.as_str(),
-            )?;
+            )
+            .map_err(crate::ssh_runtime_error)?;
             Ok(())
         })();
         result.map_err(|error| crate::local_setup_error("could not prepare local SSH paths", error))
@@ -404,10 +404,11 @@ impl MachineSshConnector {
             path.clone(),
             Some(ssh.options()),
         )
-        .map_err(|error| {
-            if shepr_platform::ipc::SocketBusy::from_io(&error).is_some() {
-                error
-            } else {
+        .map_err(|error| match error {
+            shepr_platform::ipc::BindError::Busy(busy) => {
+                io::Error::new(io::ErrorKind::AddrInUse, busy.to_string())
+            }
+            shepr_platform::ipc::BindError::Io(error) => {
                 crate::local_setup_error("could not start local SSH bridge", error)
             }
         })?;
@@ -455,6 +456,7 @@ fn bridge_name_fragment(label: &MachineLabel) -> String {
 fn machine_bridge_path(runtime_dir: &std::path::Path, label: &MachineLabel) -> io::Result<PathBuf> {
     let (readable, short) = machine_bridge_names(label);
     shepr_platform::remote_bridge_endpoint_path(runtime_dir, &readable, short)
+        .map_err(crate::ssh_runtime_error)
 }
 
 fn validate_machine_bridge_path(
@@ -463,6 +465,7 @@ fn validate_machine_bridge_path(
 ) -> io::Result<()> {
     let (readable, short) = machine_bridge_names(label);
     shepr_platform::validate_remote_bridge_endpoint_path(runtime_dir, &readable, short)
+        .map_err(crate::ssh_runtime_error)
 }
 
 fn machine_bridge_names(label: &MachineLabel) -> (String, &'static str) {
@@ -478,16 +481,14 @@ fn is_launch_fatal_setup_error(error: &io::Error) -> bool {
     // errors never reach it. This is launch admission, not the endpoint attention
     // policy: an actionable filesystem failure may still recover while the client
     // runs, whereas an impossible path must reject launch before taking the terminal.
-    // Invalid input, such as a runtime directory that can never hold the bridge
-    // socket, is permanent.
-    if error.kind() == io::ErrorKind::InvalidInput {
-        return true;
-    }
-    // A policy violation cannot recover on retry, while an OS permission error can.
-    error
+    if let Some(failure) = error
         .get_ref()
-        .and_then(|source| source.downcast_ref::<shepr_platform::UnsafeSshRuntimeDirectory>())
-        .is_some()
+        .and_then(|source| source.downcast_ref::<crate::EndpointFailure>())
+    {
+        return failure.is_launch_fatal_setup();
+    }
+    // Raw invalid input, such as an impossible config path, is permanent.
+    error.kind() == io::ErrorKind::InvalidInput
 }
 
 #[cfg(test)]
@@ -504,10 +505,9 @@ mod tests {
 
     #[test]
     fn launch_setup_input_and_runtime_policy_errors_are_fatal() {
-        let policy = io::Error::new(
-            io::ErrorKind::PermissionDenied,
+        let policy = crate::ssh_runtime_error(shepr_platform::SshRuntimeError::UnsafeDirectory(
             shepr_platform::UnsafeSshRuntimeDirectory::new(std::path::Path::new("/runtime")),
-        );
+        ));
         assert!(is_launch_fatal_setup_error(&policy));
         let ordinary = io::Error::new(io::ErrorKind::PermissionDenied, policy.to_string());
         assert!(!is_launch_fatal_setup_error(&ordinary));
@@ -841,17 +841,15 @@ mod tests {
             "ffffffffffffffff"
         };
         let status = super::super::server_lifecycle::RemoteServerStatus::Running {
-            version: Some("old".into()),
-            build_id: Some(other_build.parse().expect("canonical build fingerprint")),
-            boot_id: Some("17-23".parse().expect("canonical boot identity")),
+            build_id: other_build.parse().expect("canonical build fingerprint"),
+            boot_id: "17-23".parse().expect("canonical boot identity"),
         };
-        let target = SshTarget::parse("build.example").expect("test precondition");
         let (_, check) = probe
             .advance_with(
                 &cache,
                 |_| panic!("empty cache"),
                 |_| Ok(executable("/found/shepr")),
-                |remote| judge_remote_server(&target, remote, &status),
+                |remote| Ok(judge_remote_server(remote, &status)),
             )
             .expect("startup can offer a restart");
         assert!(matches!(check, MachineSshCheck::DifferentBuild(_)));

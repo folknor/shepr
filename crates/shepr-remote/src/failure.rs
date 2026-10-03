@@ -75,6 +75,7 @@ enum Cause {
     Io(io::ErrorKind),
     Incompatible,
     LocalSetup,
+    InvalidLocalSetup,
     /// The remote host's shepr ran and refused to serve for a reason the
     /// operator must fix on that host, such as its own config.
     RemoteRepair,
@@ -106,13 +107,6 @@ impl EndpointFailure {
         {
             return Self::from_ssh(diagnostic.clone());
         }
-        if error.get_ref().is_some_and(|source| {
-            source
-                .downcast_ref::<shepr_platform::UnsafeSshRuntimeDirectory>()
-                .is_some()
-        }) {
-            return Self::local_setup(error.to_string());
-        }
         Self {
             cause: Cause::Io(error.kind()),
             message: RemoteText::from_untrusted(&error.to_string()),
@@ -132,6 +126,17 @@ impl EndpointFailure {
             cause: Cause::Incompatible,
             message: RemoteText::from_untrusted(&message),
         }
+    }
+
+    pub(crate) fn fatal_local_setup(message: impl Into<String>) -> Self {
+        Self {
+            message: RemoteText::from_untrusted(&message.into()),
+            cause: Cause::InvalidLocalSetup,
+        }
+    }
+
+    pub(crate) fn is_launch_fatal_setup(&self) -> bool {
+        matches!(self.cause, Cause::InvalidLocalSetup)
     }
 
     pub fn local_setup(message: impl Into<String>) -> Self {
@@ -210,7 +215,7 @@ impl EndpointFailure {
             Cause::Io(io::ErrorKind::InvalidData | io::ErrorKind::Unsupported)
             | Cause::Incompatible => D::Incompatible,
             Cause::Io(kind) if crate::is_ssh_link_error_kind(*kind) => D::Offline,
-            Cause::LocalSetup | Cause::RemoteRepair => D::Repair,
+            Cause::LocalSetup | Cause::InvalidLocalSetup | Cause::RemoteRepair => D::Repair,
             Cause::Io(_) | Cause::Backpressure | Cause::Retry | Cause::Shutdown(_) => D::Retry,
         }
     }
@@ -221,7 +226,7 @@ impl EndpointFailure {
     pub(crate) fn evidence(&self) -> FailureEvidence {
         match &self.cause {
             Cause::Ssh(diagnostic) => diagnostic.evidence(),
-            Cause::LocalSetup => FailureEvidence::NothingLearned,
+            Cause::LocalSetup | Cause::InvalidLocalSetup => FailureEvidence::NothingLearned,
             Cause::Incompatible => FailureEvidence::InstallChanged,
             Cause::Io(kind) if crate::is_ssh_link_error_kind(*kind) => {
                 FailureEvidence::NothingLearned
@@ -276,7 +281,7 @@ impl EndpointFailure {
             origin: match self.cause {
                 Cause::Io(kind) => SshFailureOrigin::Io(kind),
                 Cause::Incompatible => SshFailureOrigin::RemoteCompatibility,
-                Cause::LocalSetup => SshFailureOrigin::LocalSetup,
+                Cause::LocalSetup | Cause::InvalidLocalSetup => SshFailureOrigin::LocalSetup,
                 _ => SshFailureOrigin::Message,
             },
             message: self.message.clone(),

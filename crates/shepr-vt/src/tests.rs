@@ -2082,3 +2082,32 @@ fn explicit_viewport_directions_saturate_at_both_ends() {
     terminal.scroll_viewport_delta(ScrollTowards::Newer(usize::MAX));
     assert_eq!(terminal.scrollbar().offset_from_bottom, 0);
 }
+
+#[test]
+fn explicit_equal_colours_preserve_child_provenance_until_reset() {
+    let mut terminal = Terminal::new(8, 3, 0);
+    let mut state = RenderState::new();
+    terminal.write(b"\x1b]10;#ffffff\x07");
+    state.update(&terminal);
+    assert_eq!(state.colors().foreground_source, ColorSource::Child);
+    assert_eq!(state.colors().foreground, DEFAULT_FOREGROUND);
+
+    let host = RgbColor { r: 1, g: 2, b: 3 };
+    terminal.set_default_colors(Some(host), Some(host));
+    let mut palette = default_palette();
+    palette[18] = host;
+    terminal.set_default_palette(&palette);
+    terminal.write(b"\x1b]10;#010203\x07\x1b]11;#010203\x07\x1b]4;18;#010203\x07");
+    state.update(&terminal);
+    let colors = state.colors();
+    assert_eq!(colors.foreground_source, ColorSource::Child);
+    assert_eq!(colors.background_source, ColorSource::Child);
+    assert_eq!(colors.palette_overrides()[18], Some(host));
+
+    terminal.write(b"\x1b]110\x07\x1b]111\x07\x1b]104;18\x07");
+    state.update(&terminal);
+    let colors = state.colors();
+    assert_eq!(colors.foreground_source, ColorSource::Host);
+    assert_eq!(colors.background_source, ColorSource::Host);
+    assert_eq!(colors.palette_overrides()[18], None);
+}

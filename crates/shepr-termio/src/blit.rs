@@ -40,7 +40,6 @@ use shepr_protocol::{
     CellData, CursorState, FrameData, GridCellWidth, PaneSurfacePatchRow, WireColor, WireStyle,
     WireStyleFlags,
 };
-use shepr_vt::UnderlineStyle;
 
 /// Bytes produced by a [`BlitEncoder`] for one terminal frame.
 pub struct EncodedBlit {
@@ -281,106 +280,76 @@ pub fn frame_with_drawn_cursor(mut frame: FrameData) -> FrameData {
 // ---------------------------------------------------------------------------
 
 /// Returns a foreground SGR fragment for a typed wire color.
-fn color_to_sgr_fg(color: WireColor) -> String {
+fn sgr_color(color: WireColor) -> shepr_vt::seq::SgrColor {
+    use shepr_vt::seq::SgrColor;
     match color {
-        WireColor::Reset => "39".to_owned(),
-        WireColor::Black => "30".to_owned(),
-        WireColor::Red => "31".to_owned(),
-        WireColor::Green => "32".to_owned(),
-        WireColor::Yellow => "33".to_owned(),
-        WireColor::Blue => "34".to_owned(),
-        WireColor::Magenta => "35".to_owned(),
-        WireColor::Cyan => "36".to_owned(),
-        WireColor::Gray => "37".to_owned(),
-        WireColor::DarkGray => "90".to_owned(),
-        WireColor::LightRed => "91".to_owned(),
-        WireColor::LightGreen => "92".to_owned(),
-        WireColor::LightYellow => "93".to_owned(),
-        WireColor::LightBlue => "94".to_owned(),
-        WireColor::LightMagenta => "95".to_owned(),
-        WireColor::LightCyan => "96".to_owned(),
-        WireColor::White => "97".to_owned(),
-        WireColor::Indexed(index) => format!("38;5;{index}"),
-        WireColor::Rgb(red, green, blue) => format!("38;2;{red};{green};{blue}"),
+        WireColor::Reset => SgrColor::Default,
+        WireColor::Indexed(index) => SgrColor::Indexed(index),
+        WireColor::Rgb(r, g, b) => SgrColor::Rgb(shepr_vt::RgbColor { r, g, b }),
+        named => SgrColor::Named(match named {
+            WireColor::Black => 0,
+            WireColor::Red => 1,
+            WireColor::Green => 2,
+            WireColor::Yellow => 3,
+            WireColor::Blue => 4,
+            WireColor::Magenta => 5,
+            WireColor::Cyan => 6,
+            WireColor::Gray => 7,
+            WireColor::DarkGray => 8,
+            WireColor::LightRed => 9,
+            WireColor::LightGreen => 10,
+            WireColor::LightYellow => 11,
+            WireColor::LightBlue => 12,
+            WireColor::LightMagenta => 13,
+            WireColor::LightCyan => 14,
+            WireColor::White => 15,
+            _ => return SgrColor::Default,
+        }),
     }
 }
 
-/// Returns a background SGR fragment for a typed wire color.
-fn color_to_sgr_bg(color: WireColor) -> String {
-    match color {
-        WireColor::Reset => "49".to_owned(),
-        WireColor::Black => "40".to_owned(),
-        WireColor::Red => "41".to_owned(),
-        WireColor::Green => "42".to_owned(),
-        WireColor::Yellow => "43".to_owned(),
-        WireColor::Blue => "44".to_owned(),
-        WireColor::Magenta => "45".to_owned(),
-        WireColor::Cyan => "46".to_owned(),
-        WireColor::Gray => "47".to_owned(),
-        WireColor::DarkGray => "100".to_owned(),
-        WireColor::LightRed => "101".to_owned(),
-        WireColor::LightGreen => "102".to_owned(),
-        WireColor::LightYellow => "103".to_owned(),
-        WireColor::LightBlue => "104".to_owned(),
-        WireColor::LightMagenta => "105".to_owned(),
-        WireColor::LightCyan => "106".to_owned(),
-        WireColor::White => "107".to_owned(),
-        WireColor::Indexed(index) => format!("48;5;{index}"),
-        WireColor::Rgb(red, green, blue) => format!("48;2;{red};{green};{blue}"),
+fn style_parts(style: WireStyle, mut emit: impl FnMut(&'static str)) {
+    for (flag, param) in [
+        (WireStyleFlags::BOLD, "1"),
+        (WireStyleFlags::DIM, "2"),
+        (WireStyleFlags::ITALIC, "3"),
+    ] {
+        if style.flags.contains(flag) {
+            emit(param);
+        }
+    }
+    if let Some(param) = style.underline.sgr_param() {
+        emit(param);
+    }
+    for (flag, param) in [
+        (WireStyleFlags::SLOW_BLINK, "5"),
+        (WireStyleFlags::RAPID_BLINK, "6"),
+        (WireStyleFlags::REVERSED, "7"),
+        (WireStyleFlags::HIDDEN, "8"),
+        (WireStyleFlags::CROSSED_OUT, "9"),
+    ] {
+        if style.flags.contains(flag) {
+            emit(param);
+        }
     }
 }
 
-// ---------------------------------------------------------------------------
-// Modifier → SGR
-// ---------------------------------------------------------------------------
-
-/// Converts semantic style flags to SGR escape sequence fragments.
-fn style_to_sgr_parts(style: WireStyle) -> Vec<&'static str> {
-    let mut parts = Vec::new();
-
-    if style.flags.contains(WireStyleFlags::BOLD) {
-        parts.push("1");
-    }
-    if style.flags.contains(WireStyleFlags::DIM) {
-        parts.push("2");
-    }
-    if style.flags.contains(WireStyleFlags::ITALIC) {
-        parts.push("3");
-    }
-    match style.underline {
-        UnderlineStyle::None => {}
-        UnderlineStyle::Single => parts.push("4"),
-        UnderlineStyle::Double => parts.push("4:2"),
-        UnderlineStyle::Curly => parts.push("4:3"),
-        UnderlineStyle::Dotted => parts.push("4:4"),
-        UnderlineStyle::Dashed => parts.push("4:5"),
-    }
-    if style.flags.contains(WireStyleFlags::SLOW_BLINK) {
-        parts.push("5");
-    }
-    if style.flags.contains(WireStyleFlags::RAPID_BLINK) {
-        parts.push("6");
-    }
-    if style.flags.contains(WireStyleFlags::REVERSED) {
-        parts.push("7");
-    }
-    if style.flags.contains(WireStyleFlags::HIDDEN) {
-        parts.push("8");
-    }
-    if style.flags.contains(WireStyleFlags::CROSSED_OUT) {
-        parts.push("9");
-    }
-
-    parts
-}
-
-/// Builds a complete SGR escape sequence for a cell's style.
-fn build_sgr(fg: WireColor, bg: WireColor, style: WireStyle) -> String {
-    let mut parts = vec!["0".to_owned()];
-    parts.extend(style_to_sgr_parts(style).into_iter().map(str::to_owned));
-    parts.push(color_to_sgr_fg(fg));
-    parts.push(color_to_sgr_bg(bg));
-    format!("\x1b[{}m", parts.join(";"))
+fn write_sgr(out: &mut String, fg: WireColor, bg: WireColor, style: WireStyle) {
+    use shepr_vt::seq::{ColorParam, ColorSlot};
+    use std::fmt::Write as _;
+    out.clear();
+    out.push_str("\x1b[0");
+    style_parts(style, |param| {
+        out.push(';');
+        out.push_str(param);
+    });
+    write!(
+        out,
+        ";{};{}m",
+        ColorParam(ColorSlot::Foreground, sgr_color(fg)),
+        ColorParam(ColorSlot::Background, sgr_color(bg))
+    )
+    .ok();
 }
 
 // ---------------------------------------------------------------------------
@@ -445,7 +414,12 @@ fn blit_patch_to(
     last_cursor_shape: &mut u8,
     suppress_visible_cursor: bool,
 ) -> io::Result<()> {
-    writer.write_all(b"\x1b[?2026h\x1b[?25l\x1b]8;;\x1b\\")?;
+    write!(
+        writer,
+        "{}{}\x1b]8;;\x1b\\",
+        shepr_vt::seq::DecSet(shepr_vt::DecMode::SynchronizedOutput, true),
+        shepr_vt::seq::DecSet(shepr_vt::DecMode::ShowCursor, false)
+    )?;
     let mut state = CellWriterState::default();
     let source = CellPaintSource {
         frame,
@@ -476,7 +450,11 @@ fn blit_patch_to(
         host_cursor.visible = false;
     }
     write_host_cursor_state(&mut writer, host_cursor, last_cursor_shape)?;
-    writer.write_all(b"\x1b[?2026l")?;
+    write!(
+        writer,
+        "{}",
+        shepr_vt::seq::DecSet(shepr_vt::DecMode::SynchronizedOutput, false)
+    )?;
     write_ime_anchor_cursor_state(&mut writer, host_cursor)?;
     writer.flush()
 }
@@ -509,11 +487,19 @@ fn blit_frame_to_with_cursor_memory_and_clear_policy(
     // Ask terminals that support synchronized output to apply the whole frame
     // atomically. This keeps IMEs and cursor trackers from observing the
     // intermediate CUP positions used while painting changed cells.
-    writer.write_all(b"\x1b[?2026h")?;
+    write!(
+        writer,
+        "{}",
+        shepr_vt::seq::DecSet(shepr_vt::DecMode::SynchronizedOutput, true)
+    )?;
 
     // Hide cursor before any cell writes to avoid stray cursor artifacts
     // on terminals that render the hardware cursor at intermediate CUP positions.
-    writer.write_all(b"\x1b[?25l")?;
+    write!(
+        writer,
+        "{}",
+        shepr_vt::seq::DecSet(shepr_vt::DecMode::ShowCursor, false)
+    )?;
 
     // Start each frame from a known OSC 8 state. If a previous write was
     // interrupted or the outer terminal had an active hyperlink, unlinked cells
@@ -539,7 +525,11 @@ fn blit_frame_to_with_cursor_memory_and_clear_policy(
 
     // End the synchronized output block immediately after the final cursor
     // state is emitted so supporting terminals can present the frame atomically.
-    writer.write_all(b"\x1b[?2026l")?;
+    write!(
+        writer,
+        "{}",
+        shepr_vt::seq::DecSet(shepr_vt::DecMode::SynchronizedOutput, false)
+    )?;
 
     // Some native IMEs track candidate-window placement from normal terminal
     // cursor updates and may not observe cursor moves emitted inside synchronized
@@ -650,9 +640,17 @@ fn write_host_cursor_state(
     }
     if cursor.visible {
         // Show cursor only after it is already at the final position.
-        writer.write_all(b"\x1b[?25h")
+        write!(
+            writer,
+            "{}",
+            shepr_vt::seq::DecSet(shepr_vt::DecMode::ShowCursor, true)
+        )
     } else {
-        writer.write_all(b"\x1b[?25l")
+        write!(
+            writer,
+            "{}",
+            shepr_vt::seq::DecSet(shepr_vt::DecMode::ShowCursor, false)
+        )
     }
 }
 
@@ -662,9 +660,17 @@ fn write_ime_anchor_cursor_state(
 ) -> io::Result<()> {
     write_cursor_position(writer, cursor.position)?;
     if cursor.visible {
-        writer.write_all(b"\x1b[?25h")
+        write!(
+            writer,
+            "{}",
+            shepr_vt::seq::DecSet(shepr_vt::DecMode::ShowCursor, true)
+        )
     } else {
-        writer.write_all(b"\x1b[?25l")
+        write!(
+            writer,
+            "{}",
+            shepr_vt::seq::DecSet(shepr_vt::DecMode::ShowCursor, false)
+        )
     }
 }
 
@@ -743,11 +749,8 @@ fn write_cell(
 
     let style = (cell.fg, cell.bg, cell.style);
     if *last_style != Some(style) {
-        let sgr = build_sgr(cell.fg, cell.bg, cell.style);
-        if sgr != *last_sgr {
-            writer.write_all(sgr.as_bytes())?;
-            *last_sgr = sgr;
-        }
+        write_sgr(last_sgr, cell.fg, cell.bg, cell.style);
+        writer.write_all(last_sgr.as_bytes())?;
         *last_style = Some(style);
     }
 
@@ -932,51 +935,6 @@ fn paint_row_cells(
 // Blitting
 // ---------------------------------------------------------------------------
 
-/// Output-frame placement width comes from the pane's grid or, for chrome,
-/// from Ratatui's grapheme convention.
-#[cfg(test)]
-fn frame_cell_width(frame: &FrameData, col: u16, row: u16) -> usize {
-    frame_cell_index(frame, col, row)
-        .and_then(|index| frame.cells.get(index))
-        .map_or(0, cell_grid_width)
-}
-
-/// Blits a frame to a writer, diffing against the previous frame.
-#[cfg(test)]
-fn blit_frame_to(writer: impl Write, frame: &FrameData, prev: Option<&FrameData>) {
-    let mut last_visible_cursor = None;
-    let mut last_cursor_shape = 0;
-    blit_frame_to_with_cursor_memory(
-        writer,
-        frame,
-        prev,
-        &mut last_visible_cursor,
-        &mut last_cursor_shape,
-        false,
-    );
-}
-
-#[cfg(test)]
-fn blit_frame_to_with_cursor_memory(
-    writer: impl Write,
-    frame: &FrameData,
-    prev: Option<&FrameData>,
-    last_visible_cursor: &mut Option<(u16, u16)>,
-    last_cursor_shape: &mut u8,
-    suppress_visible_cursor: bool,
-) {
-    blit_frame_to_with_cursor_memory_and_clear_policy(
-        writer,
-        frame,
-        prev,
-        last_visible_cursor,
-        last_cursor_shape,
-        true,
-        suppress_visible_cursor,
-    )
-    .expect("tests blit into a Vec, which cannot fail to write");
-}
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -985,6 +943,71 @@ fn blit_frame_to_with_cursor_memory(
 mod tests {
     use super::*;
     use shepr_protocol::{CellData, CursorState};
+
+    fn color_to_sgr_fg(color: WireColor) -> String {
+        shepr_vt::seq::ColorParam(shepr_vt::seq::ColorSlot::Foreground, sgr_color(color))
+            .to_string()
+    }
+
+    fn color_to_sgr_bg(color: WireColor) -> String {
+        shepr_vt::seq::ColorParam(shepr_vt::seq::ColorSlot::Background, sgr_color(color))
+            .to_string()
+    }
+
+    fn style_to_sgr_parts(style: WireStyle) -> Vec<&'static str> {
+        let mut parts = Vec::new();
+        style_parts(style, |param| parts.push(param));
+        parts
+    }
+
+    fn build_sgr(fg: WireColor, bg: WireColor, style: WireStyle) -> String {
+        let mut out = String::new();
+        write_sgr(&mut out, fg, bg, style);
+        out
+    }
+
+    /// Output-frame placement width comes from the pane's grid or, for chrome,
+    /// from Ratatui's grapheme convention.
+    fn frame_cell_width(frame: &FrameData, col: u16, row: u16) -> usize {
+        frame_cell_index(frame, col, row)
+            .and_then(|index| frame.cells.get(index))
+            .map_or(0, cell_grid_width)
+    }
+
+    /// Blits a frame to a writer, diffing against the previous frame.
+    fn blit_frame_to(writer: impl Write, frame: &FrameData, prev: Option<&FrameData>) {
+        let mut last_visible_cursor = None;
+        let mut last_cursor_shape = 0;
+        blit_frame_to_with_cursor_memory(
+            writer,
+            frame,
+            prev,
+            &mut last_visible_cursor,
+            &mut last_cursor_shape,
+            false,
+        );
+    }
+
+    fn blit_frame_to_with_cursor_memory(
+        writer: impl Write,
+        frame: &FrameData,
+        prev: Option<&FrameData>,
+        last_visible_cursor: &mut Option<(u16, u16)>,
+        last_cursor_shape: &mut u8,
+        suppress_visible_cursor: bool,
+    ) {
+        blit_frame_to_with_cursor_memory_and_clear_policy(
+            writer,
+            frame,
+            prev,
+            last_visible_cursor,
+            last_cursor_shape,
+            true,
+            suppress_visible_cursor,
+        )
+        .expect("tests blit into a Vec, which cannot fail to write");
+    }
+    use shepr_vt::UnderlineStyle;
 
     const WIDE_GRAPHEME: &str = "\u{1F4A1}";
     const HALFWIDTH_VOICED_KANA: &str = "ｶ\u{ff9e}";

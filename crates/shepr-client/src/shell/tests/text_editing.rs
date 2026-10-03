@@ -1,7 +1,7 @@
 use crate::endpoint::ClientEndpointId;
 use crate::shell::state::{
     ClientNavigatorTarget, ClientRenameTarget, ClientShellAction, ClientShellConfig,
-    ClientShellEndpointError, ClientShellMode, ClientShellOverlay,
+    ClientShellEndpointError, ClientShellMode, ClientShellOverlay, ClientShellRequest,
 };
 use shepr_config::ClientConfig;
 use shepr_protocol::command::EndpointCommand;
@@ -342,7 +342,7 @@ fn copy_search_owns_prefix_but_parked_prompt_does_not_steal_input() {
     assert!(!state.modal_paste_target_active());
     let input = state.handle_raw_events(vec![RawInputEvent::Paste("terminal".into())]);
     assert!(
-        matches!(&input.requests[..], [ClientMessage::ClientShellPaneInput { events, .. }] if matches!(&events[..], [ClientPaneInputEvent::Paste(text)] if text == "terminal"))
+        matches!(&input.requests[..], [ClientShellRequest::Shown(ClientMessage::ClientShellPaneInput { events, .. })] if matches!(&events[..], [ClientPaneInputEvent::Paste(text)] if text == "terminal"))
     );
     assert_eq!(editor(&mut state).as_str(), "aXb");
     state.mode = ClientShellMode::Copy;

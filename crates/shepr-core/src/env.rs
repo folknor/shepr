@@ -465,6 +465,9 @@ impl std::error::Error for EnvError {}
 
 impl From<EnvError> for io::Error {
     fn from(error: EnvError) -> Self {
+        // IO-only callers propagate this diagnostic without inspecting its
+        // payload. Readers that choose policy from a refusal use EnvError
+        // directly; the environment reader already returns that typed result.
         io::Error::new(io::ErrorKind::InvalidInput, error)
     }
 }

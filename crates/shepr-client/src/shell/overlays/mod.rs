@@ -1,5 +1,4 @@
 use crate::endpoint::ClientEndpointStatus;
-use crate::shell::state::ClientNavigatorFilter;
 use ratatui::style::Modifier;
 use ratatui::text::Line;
 use ratatui::text::Span;
@@ -7,6 +6,7 @@ use ratatui::widgets::Paragraph;
 use ratatui::widgets::Widget;
 mod context_menu;
 pub(in crate::shell) mod endpoint_notices;
+mod fixed_keys;
 pub(in crate::shell) mod global_menu;
 pub(in crate::shell) mod machine_diagnostics;
 pub(in crate::shell) mod notices;
@@ -385,14 +385,7 @@ fn render_navigator_overlay(
     let search = if n.search_focused {
         " / ".to_owned()
     } else if let Some(f) = n.filter {
-        format!(
-            " / {}",
-            match f {
-                ClientNavigatorFilter::Blocked => "blocked",
-                ClientNavigatorFilter::Working => "working",
-                ClientNavigatorFilter::Idle => "idle",
-            }
-        )
+        format!(" / {}", f.label())
     } else if n.query.is_empty() {
         " / search agents and terminals".to_owned()
     } else {
@@ -603,7 +596,7 @@ fn render_navigator_overlay(
                     rect.right() - columns + 1,
                     rect.y,
                     11,
-                    r.agent.as_deref().unwrap_or("terminal"),
+                    r.agent.map_or("terminal", shepr_config::ConfigAgent::label),
                     meta_style,
                 );
             }
@@ -688,18 +681,12 @@ fn render_navigator_overlay(
             Style::default().fg(p.overlay0).bg(p.panel_bg),
         );
     }
-    // Navigator controls are fixed by `route_overlay_key`; none are [keys] actions.
     put_text(
         b,
         i.x,
         i.bottom() - 1,
         i.width,
-        if n.search_focused {
-            " search type · move ↑↓/ctrl+n/p · open enter · back esc"
-        } else {
-            // Filters cover all agents or one of the three agent states; Ctrl+D pages by eight.
-            " ↑↓/j/k rows · ←→ workspace · / search · a/b/w/i filter · enter open · esc close"
-        },
+        fixed_keys::navigator_footer(n.search_focused),
         Style::default().fg(p.overlay0).bg(p.panel_bg),
     );
     Some(OverlayRender {
@@ -870,18 +857,12 @@ fn render_help_overlay(
         );
     }
 
-    // Help search and scrolling controls are fixed by `route_overlay_key`; they are not
-    // configurable keybinding actions.
     put_text(
         b,
         i.x,
         i.bottom() - 1,
         i.width,
-        if h.search_focused {
-            " edit ←→/home/end · kill ^u/^k · yank ^y · scroll ↑↓ · back esc"
-        } else {
-            " search / · scroll j/k/↑↓/pgup/pgdn · close esc/enter"
-        },
+        fixed_keys::help_footer(h.search_focused),
         Style::default().fg(p.overlay0).bg(p.panel_bg),
     );
     Some(OverlayRender {

@@ -22,6 +22,7 @@ mod terminal_titles;
 mod window_title;
 
 pub(crate) use events::PreparedPaneExit;
+pub(crate) use session::CheckpointGeneration;
 
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};

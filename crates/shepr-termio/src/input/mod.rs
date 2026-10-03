@@ -1,4 +1,5 @@
 mod encode;
+pub mod fixed_keys;
 mod keybind_help;
 mod keybindings;
 mod lease;

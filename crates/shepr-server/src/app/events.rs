@@ -1,4 +1,4 @@
-use super::App;
+use super::{App, CheckpointGeneration};
 use shepr_agent::detect::{Agent, AgentState};
 use shepr_core::layout::PaneId;
 use shepr_mux::events::AppEvent;
@@ -55,12 +55,12 @@ pub(crate) enum PreparedPaneExit {
     Settled,
     /// Checkpointed, and held until the checkpoint of this generation is
     /// durable.
-    Held(u64),
+    Held(CheckpointGeneration),
 }
 
 impl PreparedPaneExit {
     /// The checkpoint generation the exit is held for, if it is held.
-    pub(crate) fn held_generation(self) -> Option<u64> {
+    pub(crate) fn held_generation(self) -> Option<CheckpointGeneration> {
         match self {
             Self::Held(generation) => Some(generation),
             Self::Unchecked | Self::Settled => None,
@@ -246,15 +246,16 @@ impl App {
         }
 
         // A detector tick can finish before the watcher publishes PaneDied.
-        // Once the pane child is dead, only its exit reason can decide whether
-        // to release the resume identity. Ignore all queued detector updates,
+        // Once any observer decided the pane ended, or the child exited before
+        // its watcher records that decision, only the exit reason can decide
+        // whether to release the resume identity. Ignore queued detector updates,
         // including the identity-clear tick following its process-exit report.
         if let AppEvent::StateChanged { pane_id, .. }
         | AppEvent::AgentProcessDetected { pane_id, .. } = &ev
             && self
                 .state
                 .runtime_of(&self.terminal_runtimes, *pane_id)
-                .is_some_and(shepr_mux::pane::PaneRuntime::child_has_exited)
+                .is_some_and(shepr_mux::pane::PaneRuntime::detector_observations_ended)
         {
             return false;
         }

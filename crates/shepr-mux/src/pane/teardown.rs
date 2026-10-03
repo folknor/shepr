@@ -139,6 +139,20 @@ impl ChildLiveness {
         }
     }
 
+    /// Accept an observation only while the same child remains observable.
+    /// Never hold the lifecycle lock across /proc I/O or terminal work.
+    /// This brackets an observation; it does not lease a pid against reaping.
+    pub(super) fn observe<T>(&self, read: impl FnOnce(shepr_platform::Pid) -> T) -> Option<T> {
+        let pid = self.live_process_id()?;
+        let observed = read(pid);
+        self.is_live_process(pid).then_some(observed)
+    }
+
+    /// A checkpoint for work already bracketed by a sampled child identity.
+    pub(super) fn is_live_process(&self, pid: shepr_platform::Pid) -> bool {
+        self.live_process_id() == Some(pid)
+    }
+
     pub(super) fn mark_wait_completed(&self) {
         let mut state = shepr_vt::lock_auxiliary(&self.state);
         state.phase = ChildPhase::WaitEnded(state.phase.launch());
@@ -389,6 +403,26 @@ impl ChildLiveness {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn observation_is_discarded_when_wait_ends_during_read() {
+        let child = ChildLiveness::running_unhandled(42);
+        let observed = child.observe(|pid| {
+            assert_eq!(pid.get(), 42);
+            child.mark_wait_completed();
+            "stale"
+        });
+        assert_eq!(observed, None);
+    }
+
+    #[test]
+    fn absent_child_never_runs_the_observation() {
+        let child = ChildLiveness::absent();
+        assert_eq!(
+            child.observe(|_| panic!("must not read an absent child")),
+            None::<()>
+        );
+    }
 
     #[test]
     fn settlement_after_wait_completion_never_reopens_observation() {

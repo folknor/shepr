@@ -20,6 +20,17 @@ pub enum UnderlineStyle {
 }
 
 impl UnderlineStyle {
+    pub const fn sgr_param(self) -> Option<&'static str> {
+        match self {
+            Self::None => None,
+            Self::Single => Some("4"),
+            Self::Double => Some("4:2"),
+            Self::Curly => Some("4:3"),
+            Self::Dotted => Some("4:4"),
+            Self::Dashed => Some("4:5"),
+        }
+    }
+
     pub(super) fn from_flags(flags: Flags) -> Self {
         if flags.contains(Flags::UNDERLINE) {
             Self::Single
@@ -51,11 +62,31 @@ pub struct CellStyle {
     pub underline: UnderlineStyle,
 }
 
+/// The tier supplying a resolved default colour. Equal RGB values do not erase ownership.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColorSource {
+    Child,
+    Host,
+    Builtin,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RenderColors {
     pub background: RgbColor,
     pub foreground: RgbColor,
     pub palette: [RgbColor; shepr_core::limits::PALETTE_COLOR_COUNT],
+    pub foreground_source: ColorSource,
+    pub background_source: ColorSource,
+    pub(super) child_palette: [Option<RgbColor>; shepr_core::limits::PALETTE_COLOR_COUNT],
+}
+
+impl RenderColors {
+    /// Explicit child OSC 4 slots, including writes equal to the host palette.
+    pub fn palette_overrides(
+        &self,
+    ) -> &[Option<RgbColor>; shepr_core::limits::PALETTE_COLOR_COUNT] {
+        &self.child_palette
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

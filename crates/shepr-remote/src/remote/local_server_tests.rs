@@ -116,7 +116,7 @@ fn launch_fixture(
     steps: &[Step],
     timeout: Duration,
     probe: impl FnMut() -> io::Result<Probed>,
-) -> (io::Result<RuntimeStatus>, FixtureDaemonGuard) {
+) -> (Result<RuntimeStatus, LaunchError>, FixtureDaemonGuard) {
     let server = dir.join("shepr-server");
     let boot_log = dir.join("server-boot.log");
     let server_log = dir.join("shepr-server.log");
@@ -603,7 +603,10 @@ fn a_daemon_that_dies_during_boot_reports_its_exit_and_output() {
     );
     let error = result.expect_err("a dead daemon is a failed launch");
     assert_eq!(
-        daemon_boot_exit_class(&error),
+        match &error {
+            LaunchError::DaemonFailed { class, .. } => Some(*class),
+            _ => None,
+        },
         Some(shepr_api::daemon_exit::DaemonExit::ConfigRefused)
     );
     let message = error.to_string();
@@ -687,7 +690,7 @@ fn launch_after_a_refused_first_daemon(
     dir: &ScratchDir,
     timeout: Duration,
     mut probe: impl FnMut(u32) -> io::Result<Probed>,
-) -> (io::Result<RuntimeStatus>, u32, FixtureDaemonGuard) {
+) -> (Result<RuntimeStatus, LaunchError>, u32, FixtureDaemonGuard) {
     let server = dir.join("shepr-server");
     let boot_log = dir.join("server-boot.log");
     let server_log = dir.join("shepr-server.log");
@@ -848,7 +851,7 @@ fn launch_against_other_build(
     steps: &[Step],
     timeout: Duration,
     answering_pid: impl Fn(u32) -> u32,
-) -> (io::Result<RuntimeStatus>, FixtureDaemonGuard) {
+) -> (Result<RuntimeStatus, LaunchError>, FixtureDaemonGuard) {
     let server = dir.join("shepr-server");
     let boot_log = dir.join("server-boot.log");
     let server_log = dir.join("shepr-server.log");

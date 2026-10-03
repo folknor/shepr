@@ -121,9 +121,11 @@ impl DetectionTask {
         .await
     }
 
+    // Keep checkpoints around side effects as well as observations: a single
+    // observe around the whole tick would validate its return value only after
+    // stale work had already cleared OSC evidence or restored the theme.
     fn live(&self, pid: Pid) -> bool {
-        !self.cancelled.load(Ordering::Acquire)
-            && self.handles.child_liveness.live_process_id() == Some(pid)
+        !self.cancelled.load(Ordering::Acquire) && self.handles.child_liveness.is_live_process(pid)
     }
 
     fn tick(&mut self, now: Instant) -> Option<TickOutput> {

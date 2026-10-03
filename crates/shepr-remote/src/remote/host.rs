@@ -64,13 +64,13 @@ fn ensure_remote_server_running(
     ) {
         Err(error) => {
             let Some(class) = super::local_server::daemon_boot_exit_class(&error) else {
-                return Err(error);
+                return Err(error.into());
             };
             Err(io::Error::new(
                 error.kind(),
                 format!("{DAEMON_BOOT_EXIT_MARKER}{}\n{error}", class.code()),
             ))
         }
-        result => result,
+        result => result.map_err(io::Error::from),
     }
 }

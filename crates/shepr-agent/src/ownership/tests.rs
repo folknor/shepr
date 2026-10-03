@@ -41,7 +41,7 @@ fn official_state_reports_require_the_session_reference_declared_by_the_descript
         assert!(
             agent
                 .descriptor()
-                .hook_session_policy
+                .hook_session_policy()
                 .state_requires_session_ref
         );
         let mut terminal = test_terminal();

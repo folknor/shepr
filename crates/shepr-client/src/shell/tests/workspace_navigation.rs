@@ -1,4 +1,4 @@
-use crate::endpoint::ClientEndpointStatus;
+use crate::endpoint::EndpointFailureStatus;
 use crate::shell::endpoints::ClientEndpointFocusTarget;
 use crate::shell::ledger::DropReason;
 use crate::shell::state::{
@@ -297,7 +297,8 @@ fn foreign_preview_blocks_keyboard_actions_but_keeps_active_action_context() {
     assert_selected(&state, &remote, "w1");
     let mut remote_snapshot = workspaces(2);
     remote_snapshot.boot_id = crate::tests::test_boot_id("remote-boot");
-    state.set_endpoint_snapshot(&remote, Box::new(remote_snapshot));
+    // A later snapshot over the same connection.
+    state.set_endpoint_snapshot_for_generation(&remote, 1, Box::new(remote_snapshot));
     preview_key(&mut state, b"\x1b[B");
     assert_selected(&state, &remote, "w2");
     assert_eq!(state.workspace_action_id().as_deref(), Some("w1"));
@@ -469,7 +470,7 @@ fn foreign_preview_survives_local_updates_and_rejects_stale_enter() {
         state.set_snapshot(Box::new(local));
         assert_eq!(state.navigate_workspace_id, selected);
         match invalidation {
-            "offline" => state.set_endpoint_status(&remote_id, ClientEndpointStatus::Reconnecting),
+            "offline" => state.set_endpoint_status(&remote_id, EndpointFailureStatus::Reconnecting),
             "deleted" => {
                 remote.revision = remote.revision.checked_next().expect("test precondition");
                 remote.workspaces.pop();
@@ -578,7 +579,7 @@ fn aggregate_navigation_reveals_overflow_and_preserves_order() {
         assert_selected(&state, &ClientEndpointId::Local, "w1");
         preview_key(&mut state, b"\x1b[A");
         assert_selected(&state, &remote_id, "w15");
-        state.set_endpoint_status(&remote_id, ClientEndpointStatus::Reconnecting);
+        state.set_endpoint_status(&remote_id, EndpointFailureStatus::Reconnecting);
         preview_key(&mut state, b"\x1b[B");
         assert_selected(&state, &ClientEndpointId::Local, "w1");
     }
@@ -697,7 +698,10 @@ fn failed_local_navigation_releases_only_its_own_highlight() {
         let request_id = request_local_navigation(&mut state, 2);
         assert_local_highlight(&mut state, "w3");
         if failure == "cancelled" {
-            assert!(state.drop_request(&request_id, DropReason::Interrupted));
+            assert_eq!(
+                state.drop_request(&request_id, DropReason::Interrupted),
+                crate::shell::state::Repaint::Needed
+            );
         } else {
             state.handle_endpoint_result(
                 &crate::tests::test_boot_id("boot-1"),
@@ -745,8 +749,11 @@ fn pending_navigation_highlight_does_not_survive_identity_changes() {
         match change {
             "disconnect" => {
                 state.mark_endpoint_disconnected(&ClientEndpointId::Local);
-                state.set_endpoint_status(&ClientEndpointId::Local, ClientEndpointStatus::Online);
-                state.set_snapshot(Box::new(snapshot));
+                state.connect_endpoint_with_snapshot(
+                    &ClientEndpointId::Local,
+                    1,
+                    Box::new(snapshot),
+                );
             }
             "boot" => {
                 snapshot.boot_id = crate::tests::test_boot_id("replacement-boot");
@@ -766,8 +773,7 @@ fn pending_navigation_highlight_does_not_survive_identity_changes() {
                 let machine = remote_machine();
                 let remote = ClientEndpointId::Ssh(machine.label.clone());
                 state.set_machines(&[machine]);
-                state.set_endpoint_status(&remote, ClientEndpointStatus::Online);
-                state.set_endpoint_snapshot(&remote, Box::new(snapshot));
+                state.connect_endpoint_with_snapshot(&remote, 1, Box::new(snapshot));
                 assert!(state.activate_endpoint_projection(&remote));
                 assert!(state.pending_workspace_highlight.is_none());
                 assert!(state.activate_endpoint_projection(&ClientEndpointId::Local));

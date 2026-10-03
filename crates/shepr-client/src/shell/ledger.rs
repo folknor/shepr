@@ -1,13 +1,14 @@
 //! Request ownership. Work can carry typed text; log ids and kinds only.
 
-use crate::shell::overlays::notices::ClientEndpointNoticeKind;
+use crate::shell::overlays::notices::{ClientEndpointNoticeKind, NoticeCode};
 use crate::shell::state::ClientShellAction;
 use crate::shell::state::{
     ClientShellEndpointError, ClientShellEndpointRequest, ClientShellInput, ClientShellState,
-    TypedText,
+    Repaint, TypedText,
 };
+use crate::shell::{EndpointNotice, EndpointNoticeKind};
 use shepr_protocol::command::EndpointError;
-use shepr_protocol::command::{EndpointCommand, EndpointReply};
+use shepr_protocol::command::{CommandKind, EndpointCommand, EndpointReply};
 use shepr_protocol::{BootId, RequestId};
 use std::collections::HashMap;
 use std::time::Instant;
@@ -27,7 +28,7 @@ impl Default for Ledger {
 }
 pub(in crate::shell) struct Entry {
     pub(in crate::shell) boot_id: BootId,
-    pub(in crate::shell) method: String,
+    pub(in crate::shell) command: CommandKind,
     pub(in crate::shell) work: Work,
 }
 impl Ledger {
@@ -35,7 +36,7 @@ impl Ledger {
     pub(in crate::shell) fn open(
         &mut self,
         boot_id: BootId,
-        method: String,
+        command: CommandKind,
         work: Work,
     ) -> RequestId {
         let id = Self::id_for(self.next);
@@ -45,7 +46,7 @@ impl Ledger {
             id.clone(),
             Entry {
                 boot_id,
-                method,
+                command,
                 work,
             },
         );
@@ -125,11 +126,11 @@ pub(crate) enum DropReason {
 }
 impl Work {
     /// The request ends without an answer. Restores exactly the state this request owns
-    /// and returns whether to repaint. It has no `outcome` sink, so it cannot dispatch the
+    /// and returns a repaint decision. It has no `outcome` sink, so it cannot dispatch the
     /// queued work its caller may no longer have a connection for.
-    fn dropped(self, shell: &mut ClientShellState, request: &RequestId) -> bool {
+    fn dropped(self, shell: &mut ClientShellState, request: &RequestId) -> Repaint {
         match self {
-            Self::Plain | Self::SelectionCopy => true,
+            Self::Plain | Self::SelectionCopy => Repaint::Needed,
             Self::WorkspaceLabel => shell.complete_workspace_label_lookup(request, None),
             Self::PaneScroll { pane_id } => shell.drop_pane_scroll(request, &pane_id),
             Self::WordSelection { .. } => shell.drop_word_selection(request),
@@ -149,7 +150,13 @@ impl Work {
         let repaint = match self {
             // Close confirmation is client-owned (`open_confirm_close_overlay` runs before
             // the close is sent); endpoints close without asking back.
-            Self::Plain => result.is_err(),
+            Self::Plain => {
+                if result.is_err() {
+                    Repaint::Needed
+                } else {
+                    Repaint::Unchanged
+                }
+            }
             Self::WorkspaceLabel => shell.complete_workspace_label_lookup(request, result.ok()),
             Self::PaneScroll { pane_id } => {
                 shell.answer_pane_scroll(request, &pane_id, result, now, outcome)
@@ -159,22 +166,28 @@ impl Work {
                     outcome
                         .actions
                         .push(ClientShellAction::ClipboardWrite(text.into_bytes()));
-                    false
+                    Repaint::Unchanged
                 }
-                Ok(EndpointReply::PaneSelection { .. }) => shell.push_endpoint_notice(
-                    ClientEndpointNoticeKind::Rejected,
-                    "selection_empty",
-                    "Nothing copied",
-                    "The selection contained no text.",
-                ),
+                Ok(EndpointReply::PaneSelection { .. }) => {
+                    if shell.push_endpoint_notice(
+                        ClientEndpointNoticeKind::Rejected,
+                        NoticeCode::SelectionEmpty,
+                        "Nothing copied",
+                        "The selection contained no text.",
+                    ) {
+                        Repaint::Needed
+                    } else {
+                        Repaint::Unchanged
+                    }
+                }
                 Ok(_) => {
                     shell.set_endpoint_error(
                         "endpoint returned an unexpected selection result",
                         now,
                     );
-                    true
+                    Repaint::Needed
                 }
-                Err(_) => true,
+                Err(_) => Repaint::Needed,
             },
             Self::WordSelection { pane_id, row } => {
                 shell.complete_word_selection_row(request, &pane_id, row, result, now, outcome)
@@ -194,9 +207,10 @@ impl Work {
                 outcome,
             ),
         };
-        outcome.repaint |= repaint;
+        repaint.apply_to(outcome);
     }
 }
+
 impl ClientShellState {
     /// Opens a ledger entry for `command` at the current snapshot's boot and appends the
     /// endpoint action. `None` (and no entry) when the endpoint is not online or has no
@@ -211,15 +225,18 @@ impl ClientShellState {
             outcome.repaint |= self.pending_workspace_highlight.take().is_some();
         }
         if !self.endpoint_usable(self.endpoints.presented()) {
-            let label = self.active_endpoint_label().to_owned();
-            outcome.repaint |= self.receive_endpoint_unavailable(format!("{label} is not ready"));
+            let endpoint = self.endpoints.presented().clone();
+            outcome.repaint |= self.receive_endpoint_unavailable(&EndpointNotice::new(
+                endpoint,
+                EndpointNoticeKind::NotReady,
+            ));
             return None;
         }
-        let method_name = command.name().to_owned();
+        let command_kind = command.kind();
         let snapshot = self.snapshot.as_deref()?;
         let request_id = self
             .ledger
-            .open(snapshot.boot_id.clone(), method_name, work);
+            .open(snapshot.boot_id.clone(), command_kind, work);
         outcome.actions.push(ClientShellAction::Endpoint {
             endpoint_id: self.endpoints.presented().clone(),
             boot_id: snapshot.boot_id.clone(),
@@ -238,16 +255,16 @@ impl ClientShellState {
     ) {
         self.submit(command, Work::Plain, outcome);
     }
-    fn release_highlight(&mut self, request: &str) -> bool {
+    fn release_highlight(&mut self, request: &str) -> Repaint {
         if self
             .pending_workspace_highlight
             .as_ref()
             .is_some_and(|h| h.request_id == request)
         {
             self.pending_workspace_highlight = None;
-            true
+            Repaint::Needed
         } else {
-            false
+            Repaint::Unchanged
         }
     }
     /// Notices report the server answer even if a feature no longer awaits it.
@@ -269,32 +286,33 @@ impl ClientShellState {
                 .as_deref()
                 .is_none_or(|s| s.boot_id != *boot_id)
         {
-            outcome.repaint = self.dropped_entry(entry, &request, DropReason::WrongBoot);
+            self.dropped_entry(entry, &request, DropReason::WrongBoot)
+                .apply_to(&mut outcome);
             return outcome;
         }
         if result.is_ok() {
             self.notices
-                .command_succeeded(&entry.boot_id, &entry.method);
+                .command_succeeded(&entry.boot_id, entry.command);
         }
         if let Err(error) = &result {
-            outcome.repaint |= self.release_highlight(request_id);
+            self.release_highlight(request_id).apply_to(&mut outcome);
             let message = error.to_string();
             let (kind, code, title, body) = match error {
                 ClientShellEndpointError::Timeout => (
                     ClientEndpointNoticeKind::Timeout,
-                    entry.method.clone(),
+                    NoticeCode::Command(entry.command),
                     "Server timed out",
-                    format!("This server did not respond to {}.", entry.method),
+                    format!("This server did not respond to {}.", entry.command.name()),
                 ),
                 ClientShellEndpointError::Server(EndpointError::ShuttingDown) => (
                     ClientEndpointNoticeKind::Unavailable,
-                    "server".to_owned(),
+                    NoticeCode::Server,
                     "Server unavailable",
                     message,
                 ),
                 ClientShellEndpointError::Server(_) => (
                     ClientEndpointNoticeKind::Rejected,
-                    format!("{}:{message}", entry.method),
+                    NoticeCode::Command(entry.command),
                     "Action rejected",
                     message,
                 ),
@@ -307,16 +325,19 @@ impl ClientShellState {
             .answered(self, &request, result, now, &mut outcome);
         outcome
     }
-    fn dropped_entry(&mut self, entry: Entry, request: &RequestId, reason: DropReason) -> bool {
+    fn dropped_entry(&mut self, entry: Entry, request: &RequestId, reason: DropReason) -> Repaint {
         let mut repaint = self.release_highlight(request);
-        if matches!(reason, DropReason::Interrupted) && matches!(entry.work, Work::Plain) {
-            repaint |= self.push_endpoint_notice_at_boot(
+        if matches!(reason, DropReason::Interrupted)
+            && matches!(entry.work, Work::Plain)
+            && self.push_endpoint_notice_at_boot(
                 Some(entry.boot_id),
                 ClientEndpointNoticeKind::Unavailable,
-                "cancelled",
+                NoticeCode::Cancelled,
                 "Action interrupted",
                 "This server action was interrupted. Check its state before retrying.",
-            );
+            )
+        {
+            repaint |= Repaint::Needed;
         }
         let mark = self.ledger.mark();
         repaint |= entry.work.dropped(self, request);
@@ -339,18 +360,18 @@ impl ClientShellState {
         repaint
     }
     /// Ends a request without an answer: releases its highlight, shows the interruption
-    /// notice where `reason` calls for it and runs its rollback. Returns whether to repaint.
-    pub(crate) fn drop_request(&mut self, request_id: &str, reason: DropReason) -> bool {
+    /// notice where `reason` calls for it and runs its rollback. Returns a repaint decision.
+    pub(crate) fn drop_request(&mut self, request_id: &str, reason: DropReason) -> Repaint {
         let Some(entry) = self.ledger.take(request_id) else {
-            return false;
+            return Repaint::Unchanged;
         };
         self.dropped_entry(entry, &request_id.into(), reason)
     }
-    pub(in crate::shell) fn drop_all_requests(&mut self, reason: DropReason) -> bool {
+    pub(in crate::shell) fn drop_all_requests(&mut self, reason: DropReason) -> Repaint {
         if self.ledger.is_empty() {
-            return false;
+            return Repaint::Unchanged;
         }
-        let mut repaint = false;
+        let mut repaint = Repaint::Unchanged;
         for id in self.ledger.ids() {
             repaint |= self.drop_request(&id, reason);
         }
@@ -401,14 +422,15 @@ impl ClientShellState {
 #[cfg(test)]
 mod tests {
     use crate::shell::ledger::{Ledger, Work};
+    use shepr_protocol::command::CommandKind;
 
     #[test]
     fn ids_are_unique_and_never_reused() {
         let mut l = Ledger::default();
         let boot = crate::tests::test_boot_id("boot");
-        let a = l.open(boot.clone(), "action".into(), Work::Plain);
+        let a = l.open(boot.clone(), CommandKind::WorkspaceRename, Work::Plain);
         l.take(&a);
-        let b = l.open(boot, "action".into(), Work::Plain);
+        let b = l.open(boot, CommandKind::WorkspaceRename, Work::Plain);
         assert_ne!(a, b);
     }
     #[test]
@@ -416,7 +438,7 @@ mod tests {
         let mut l = Ledger::default();
         let id = l.open(
             crate::tests::test_boot_id("boot"),
-            "action".into(),
+            CommandKind::WorkspaceRename,
             Work::Plain,
         );
         assert!(l.take(&id).is_some());

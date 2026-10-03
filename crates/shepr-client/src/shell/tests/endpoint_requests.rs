@@ -66,7 +66,10 @@ fn cancelled_scroll_rolls_back_queued_target_even_without_a_presented_snapshot()
             state.snapshot = None;
         }
 
-        assert!(state.drop_request(&id, DropReason::Interrupted));
+        assert_eq!(
+            state.drop_request(&id, DropReason::Interrupted),
+            crate::shell::state::Repaint::Needed
+        );
         assert!(state.ledger.is_empty());
         assert!(state.scroll_lanes.is_idle());
         assert!(state.notices.visible().is_none());
@@ -171,7 +174,8 @@ fn a_pick_is_applied_at_once_without_an_event_round_trip() {
         false,
         &mut shell,
         std::time::Instant::now(),
-    );
+    )
+    .expect("dispatch writes nothing to the host");
     assert_eq!(
         shell
             .endpoints
@@ -230,7 +234,8 @@ fn selecting_the_shown_endpoint_is_a_noop_but_with_nothing_shown_it_reproves() {
             false,
             &mut shell,
             std::time::Instant::now(),
-        );
+        )
+        .expect("dispatch writes nothing to the host");
         if shown {
             assert!(shell.endpoints.choice.pending_start().is_none());
             assert_eq!(
@@ -269,8 +274,9 @@ fn dispatcher_cancels_pending_requests_on_an_unviewed_endpoint_or_failed_send() 
             false,
             &mut state,
             std::time::Instant::now(),
-        );
-        assert!(repaint);
+        )
+        .expect("dispatch writes nothing to the host");
+        assert!(repaint.is_needed());
         assert!(state.ledger.is_empty());
         // A request refused before it entered the send queue has a known
         // outcome and is not reported as interrupted; one whose send failed
@@ -457,7 +463,7 @@ fn server_errors_become_unavailable_or_rejected_notices() {
         let notice = state.notices.visible().expect("notice");
         (
             notice.key.kind,
-            notice.key.code.clone(),
+            notice.key.code,
             notice.title.clone(),
             notice.body.clone(),
         )
@@ -465,7 +471,7 @@ fn server_errors_become_unavailable_or_rejected_notices() {
 
     let (kind, code, title, body) = answer(EndpointError::ShuttingDown);
     assert_eq!(kind, ClientEndpointNoticeKind::Unavailable);
-    assert_eq!(code, "server");
+    assert_eq!(code, crate::shell::overlays::notices::NoticeCode::Server);
     assert_eq!(title, "Server unavailable");
     assert_eq!(body, EndpointError::ShuttingDown.to_string());
 
@@ -480,7 +486,12 @@ fn server_errors_become_unavailable_or_rejected_notices() {
     ] {
         let (kind, code, title, body) = answer(error.clone());
         assert_eq!(kind, ClientEndpointNoticeKind::Rejected);
-        assert_eq!(code, format!("workspace.rename:{error}"));
+        assert_eq!(
+            code,
+            crate::shell::overlays::notices::NoticeCode::Command(
+                shepr_protocol::command::CommandKind::WorkspaceRename
+            )
+        );
         assert_eq!(title, "Action rejected");
         assert_eq!(body, error.to_string());
     }
@@ -650,14 +661,24 @@ fn an_ignored_answer_still_reports_its_server_error() {
     assert!(out.repaint);
     assert!(out.actions.is_empty());
     assert!(s.copy_pipeline.is_awaiting(&current.clone().into()));
-    assert!(s.notices.timeout_suppressed("pane.copy_search"));
+    assert!(
+        s.notices
+            .timeout_suppressed(crate::shell::overlays::notices::NoticeCode::Command(
+                shepr_protocol::command::CommandKind::PaneCopySearch
+            ))
+    );
     s.reset_copy_pipeline();
     let another = copy_search(&mut s);
     s.reset_copy_pipeline();
     let current = s.handle_input_bytes(b"w");
     let current = request_id(&current.actions).to_owned();
     answer(&mut s, &another, Ok(EndpointReply::Done));
-    assert!(!s.notices.timeout_suppressed("pane.copy_search"));
+    assert!(
+        !s.notices
+            .timeout_suppressed(crate::shell::overlays::notices::NoticeCode::Command(
+                shepr_protocol::command::CommandKind::PaneCopySearch
+            ))
+    );
     assert!(s.copy_pipeline.is_awaiting(&current.into()));
 }
 #[test]
@@ -760,8 +781,8 @@ fn a_word_selection_answer_for_a_replaced_gesture_is_ignored() {
     );
     assert!(!out.repaint);
     assert!(s.mouse_selection.selection.is_none());
-    assert!(!s.drop_word_selection(&old.into()));
-    assert!(s.drop_word_selection(&current.into()));
+    assert!(!s.drop_word_selection(&old.into()).is_needed());
+    assert!(s.drop_word_selection(&current.into()).is_needed());
 }
 #[test]
 fn a_workspace_label_answer_for_a_reopened_overlay_is_ignored() {

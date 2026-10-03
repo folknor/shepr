@@ -1,4 +1,4 @@
-use crate::shell::overlays::notices::ClientEndpointNoticeKind;
+use crate::shell::overlays::notices::{ClientEndpointNoticeKind, NoticeCode};
 use crate::shell::overlays::text_editor::TextEditor;
 use crate::shell::state::{
     ClientShellConfig, ClientShellInput, ClientShellOverlay, ClientShellState,
@@ -15,7 +15,7 @@ fn endpoint_notice_expires_without_a_click() {
     state.set_snapshot(Box::new(snapshot()));
     assert!(state.push_endpoint_notice(
         ClientEndpointNoticeKind::Rejected,
-        "code",
+        NoticeCode::SelectionEmpty,
         "title",
         "body",
     ));
@@ -30,7 +30,7 @@ fn endpoint_notice_expires_without_a_click() {
     // A replacement does not inherit its predecessor's lifetime.
     assert!(state.push_endpoint_notice(
         ClientEndpointNoticeKind::Rejected,
-        "other",
+        NoticeCode::PasteRejected,
         "title",
         "body",
     ));
@@ -53,7 +53,7 @@ fn transient_shell_deadlines_schedule_their_expiry() {
 
     assert!(state.push_endpoint_notice(
         ClientEndpointNoticeKind::Rejected,
-        "code",
+        NoticeCode::SelectionEmpty,
         "title",
         "body",
     ));

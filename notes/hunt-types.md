@@ -161,6 +161,12 @@ client-shell and edges.
 
 ## TYP-008 - Protocol counters convert freely to and from `u64`
 
+(Also the server-side carrier of the projection revision:
+`AppState::shell_projection_revision` and `ShellSessionCache.revision` in
+`crates/shepr-server/src/server/headless/render.rs` are raw `u64`s mirroring it,
+and `CachedShellProjection.projection_revision` and `snapshot_from_session`'s
+`revision` parameter carry it raw.)
+
 `ProjectionRevision`, `SurfaceRevision` and `ConnectionGeneration` come from
 `revision.rs::counter!` with `From<u64>`, `Into<u64>`, `PartialEq<u64>` both
 ways, `PartialOrd<u64>` and a public `get()`; with the cross-type comparisons a
@@ -195,25 +201,6 @@ value on the wire, newtypes for content revision and state change sequence, and
 the connection generation owned by the client's supervisor allocator. Reported
 by contracts, client-core, client-shell and server-serving.
 
-## TYP-009 - Server-side generations and revisions as raw `u64`
-
-Each of these is compared across structs with nothing preventing a swap:
-`ClientShellLocation::generation()` copied into `projected_location_generation`
-and `CachedShellProjection.location_generation`; `shell_session_generation`
-against `ClientShellState.session_generation`; pane-exit checkpoint generations
-through `PreparedPaneExit::Held(u64)`, `request_pane_exit_checkpoint() ->
-Option<u64>`, `pane_exit_checkpoint_generation_settled(u64)`,
-`ExitTicket::generation`, `NextSave::Checkpoint { exit_generation }`,
-`PendingCheckpointedPaneExit.checkpoint_generation`,
-`replaying_checkpointed_pane_exit: Option<u64>` and the `PaneExitCheckpoint`
-machine, whose `through: 0` is the "nothing released" sentinel; logind warning
-generations in `HostShutdownFreeze.generation: Option<u64>`,
-`warning_generation()`, `release_delay_lock(u64)`, with `0` meaning "no warning
-yet" compared as `Option<u64>` across that sentinel. Proposal: a newtype per
-counter (`CheckpointGeneration` minted only by the machine with
-`is_released_by(through)`, a warning generation, a location generation, a
-session generation). Reported by server-app and server-serving.
-
 ## TYP-011 - `SshTarget` still derefs to `str`
 
 The remote crate now uses `SshTarget::append_to`, typed target accessors and
@@ -227,40 +214,6 @@ contracts.
 
 ## Agent identity and state
 
-## TYP-013 - Agent identity still travels as text at two sites
-
-Hook reports are parsed once at the API boundary into `ReportOrigin` and
-`ReportedAgent`, which mux ownership, arbitration and the server handlers now
-carry. Two sites still use the label text: the saved snapshot's
-`SnapshotAgent::agent: Option<String>`, and `surface_cursor`, which compares
-`configured.label() == agent.label()` although `ConfigAgent` is the same enum.
-(agents, server-app)
-
-## TYP-014 - Agent capability on the descriptor is three bools and correlated options
-
-`AgentDescriptor` carries `integration_target: Option<IntegrationTarget>`,
-`integration_source: Option<&str>`, `integration_hook_events`,
-`hook_session_policy`, `reserves_native_state`,
-`full_lifecycle_hook_authority` and `session_identity_only_integration`. The
-legal combinations are five classes (none; session-only with screen-owned
-state: claude, cursor, devin, copilot, droid, grok; identity-only: agy; partial
-state hooks plus screen: codex, expressed only by every flag being false; full
-lifecycle: pi, omp, mastracode, opencode, kimi, kilo). Nothing prevents two
-flags at once, a target without a source, or events without a target;
-`descriptors_are_the_domain_source_for_agent_views` checks some correlations
-pairwise. `.with_integration_hook_events(..)` exists only because the literal
-sets the field to `&[]`. `screen_manifest: bool` and `title_activity_glyphs:
-&'static str` (with `""` meaning none) sit beside them. Proposal:
-`integration: Option<IntegrationDescriptor { target, source, authority:
-HookAuthorityClass::{SessionOnly, PartialState, FullLifecycle}, hook_events,
-session_policy }>`, `screen: Option<ScreenManifest>`, `resume:
-Option<ResumeSupport>`. `IntegrationHookEvent`'s Claude editor enforces "exactly
-one SessionStart" at runtime (`claude_hook_event`), so the descriptor permits a
-Claude list the editor cannot install. A `HookAuthorityClass` now exists for
-state-report admission, but it is derived from the flags, which remain, and
-`source/start.rs` still reads `session_identity_only_integration` directly.
-(agents)
-
 ## TYP-015 - The published state event splits the screen verdict again
 
 The screen verdict is typed from manifest compilation through the mux
@@ -271,38 +224,13 @@ carrying the typed detection across that contract (mux events and the server
 app event handling in `crates/shepr-server/src/app/`) finishes it. Reported by
 agents and mux-panes.
 
-## TYP-016 - Agent state exists as five enums plus string spellings
+## TYP-016 - Agent state still has three mirror spellings
 
-`AgentState` (4 variants, serde), `PresentedAgentState` (3),
-`shepr_protocol::AgentStatus` (3, re-exported as the API's `AgentStatus`),
-`shepr_api::schema::PaneAgentState` (4, an exact mirror of `AgentState`),
-`ManifestState` (4), with `IntegrationHookAction` overlapping on three names,
-the JS `type AgentState`, `agent_state_label` (a third lowercase spelling) and
-the client's `ClientNavigatorFilter::{Blocked, Working, Idle}`.
-`api_helpers.rs` hand-converts `PresentedAgentState` to `AgentStatus`
-(`presented_agent_status`) and `PaneAgentState` to `AgentState`
-(`detect_state_from_api`); `record_agent_state_change_seq` compares
-`presentation_state()`s; the client's `status_priority` maps `AgentStatus` back
-into `AgentState` only to call `attention_rank`, and `status_text` and the
-navigator filter label spell the variants again. Proposal: `AgentState` in the
-API schema with a serde rename, one presented enum low enough for the client and
-the wire carrying `attention_rank` and its label, and `Option<AgentStatus>` for
-the navigator filter. Reported by agents, contracts, client-shell and
-server-app.
-
-## TYP-017 - The agent kind crosses the wire as a display string
-
-`ClientShellAgent::agent: Option<String>` carries `Agent::label()` text. The
-client runs `shepr_agent::detect::parse_agent_label` (the process-name
-heuristic) to recover the `Agent`, calls `label()` to get a string again, and
-indexes `AgentsSidebarConfig::rows_by_agent: BTreeMap<String, ..>` through
-`rows_for_agent(Option<&str>)`; config validates each key with
-`ConfigAgent::parse_canonical_label` and throws the parsed agent away. The
-navigator substitutes `"terminal"` for `None`. Proposal: `Option<Agent>` on the
-wire (agent sits below protocol; client-shell asks to verify against
-`brokkr.toml`) and `rows_by_agent: BTreeMap<Agent, ..>`. Removing this and the
-status mapping removes the shell's dependency on `shepr-agent`. Reported by
-contracts and client-shell.
+Protocol `AgentStatus` and API `PaneAgentState` are now aliases of the shared
+presented and detection states. Still open: `ManifestState` in shepr-agent
+manifests, the hook action names that overlap three state names, and the
+`DetectionState` mirror in `crates/shepr-api/src/schema/detection.rs`.
+(agents, contracts)
 
 ## TYP-018 - A persisted agent session can still be built around its validation
 
@@ -310,21 +238,6 @@ The four session copies now share one type with validating decode, and resume
 plans keep their argv private. Still open: `PersistedAgentSession`
 (`crates/shepr-agent/src/agent/resume.rs`) keeps three public fields, so a
 direct struct literal bypasses the validating constructor. (agents)
-
-## TYP-019 - Process identification passes names, not identities
-
-`identify_agent_in_job` returns `Option<(Agent, String)>`;
-`normalized_process_name`, `agent_name_from_basename`,
-`agent_name_from_known_package_path` and `resolved_agent_name_from_path_token`
-return strings that are always `agent_label(agent).to_string()`, and
-`identify_agent` re-parses them; `process_priority` ranks a candidate by
-comparing that string with `process.name`. Runtime classification is stringly:
-`"node" | "bun"` is matched in `normalized_process_name`,
-`wrapped_agent_name_from_runtime_argv`, `letta_entrypoint_index` and
-`is_generic_runtime_or_shell` (which adds `"tmux"`), and `is_python_runtime`
-parses `pythonX.Y`. Proposal: `Identified { agent, via: IdentifiedVia::{Comm,
-Argv0, WrappedScript { runtime }, PackagePath, ResolvedSymlink} }` with priority
-a function of `via`, and one `enum Runtime` classifier. (agents)
 
 ## TYP-020 - CLI requests return untyped JSON
 
@@ -446,20 +359,14 @@ validation and carried to `PtyCommand`. Still open: the raw
 validation callback because pty cannot depend on config. Reported by
 foundation, mux-panes, contracts and server-app.
 
-## TYP-033 - Copy-mode and text-search APIs take primitives
+## TYP-033 - Client copy search state keeps loose counts
 
-`paragraph_motion_target(row, direction: i8)` with `0` as "no motion" in
-`paragraph_motion_in`, while the caller has a typed `PaneParagraphMotion`;
-`search_text_window(query, case_sensitive: bool, direction, cursor, previous:
-Option<(TerminalTextPoint, TerminalTextPoint)>, limit)` with an unnamed pair;
-`TerminalSearchWindow { current: Option<usize>, current_global: Option<usize> }`
-which are `None` together; `PaneCopySearch { total: u64, current: Option<u32>,
-current_global: Option<u64> }` mixes widths for one count; the smart-case rule is
-computed in `handle_pane_copy_search`. `{ row: AbsRow, col: u16 }` exists three
-times (`shepr_vt::Point<AbsRow>`, `TerminalTextPoint`, protocol `PaneTextPoint`)
-and the copy handlers copy fields between them about ten times; the client's
-word selection stores `(AbsRow, u16)` tuples. Reported by mux-panes, server-app,
-contracts and client-shell.
+Pane text points are one `shepr_vt::Point<AbsRow>` across vt, mux, protocol and
+the client word selection, and mux search takes a typed request. Still open:
+the client copy search state in `crates/shepr-client/src/shell/state.rs` stores
+total, window index and global index as separate fields of mixed widths, and
+the word-selection drag takes an `(AbsRow, u16)` tuple at its mouse boundary.
+(client-shell)
 
 ## TYP-034 - Tuples standing in for named pairs in the pane and workspace APIs
 
@@ -658,18 +565,6 @@ outcome (`"busy"`, `"acquired"`, `"released"`) by hand in three places.
 
 ## Terminal values
 
-## TYP-055 - Colour provenance is erased and rebuilt by comparing values
-
-`RenderColors` gives resolved colours and the palette as plain `RgbColor`. mux
-rebuilds which tier answered: `terminal_default_fg/bg` compare with
-`host_theme.foreground/background` and with `initial_default_*`, and
-`PaletteOverrides::new` compares the active palette with `default_palette()`
-entry by entry. vt knows exactly (`term.colors()[i].is_some()`). With no host
-theme, a child setting the foreground to white reads as no override; OSC 4 set to
-the host's own value reads as not overridden. Proposal: `ResolvedColor { rgb,
-source: ColorSource::{Child, Host, Builtin} }` and
-`RenderColors::palette_overrides()`. (terminal)
-
 ## TYP-056 - Progress reports and OSC evidence are bytes and empty strings
 
 `ProgressReport(pub Vec<u8>)` holds the ConEmu `4;state;percent` payload; mux
@@ -784,59 +679,21 @@ client-core, mux-state and foundation.
 
 ## Remote and launch
 
-## TYP-072 - Exit statuses are bare `i32` with in-band sentinels
+## TYP-073 - Some launch and serve outcomes are still grouped
 
-ssh's own failure `255` (`SSH_OWN_FAILURE_EXIT_CODE`) checked in `lib.rs` three
-times, `bridge.rs` and `discovery.rs` (which reads `output.status.code()`
-directly); the remote wrapper's remap of 255 to `254`, which aliases a native
-254; `125` (`CANDIDATE_NOT_EXECUTABLE`) minted to mean "vanished"; `126 | 127`
-literals in `remote_executable_must_be_rediscovered`; `3` and `4`
-(`BOOT_MISMATCH_EXIT_CODE`, `NO_SERVER_EXIT_CODE`) produced by
-`CliError::exit_code` and matched by `stop_remote_server` (folding "no server"
-into "boot changed"); `10`, `11`, `1` (`daemon_exit`) produced by the daemon and
-read by `local_server.rs`; `2` for usage in two binaries; `main`'s
-`u8::try_from(code).unwrap_or(1)`. Proposal: parse `ExitStatus` once at the SSH
-boundary into `SshExit::{SshFailed, Remote(RemoteExit::{NotExecutable, NotFound,
-CandidateMissing, Remapped255Or254, Code})}`, a `ServerStopExit` with `code()`
-and `from_code()` like `DaemonExit`, and `main` returning an exit enum. Reported
-by edges and contracts.
+`LaunchError` (eleven variants) and `RunServerError` (nine cases) carry launch
+outcomes typed through autodetect and the CLI. Still open: the Local endpoint
+status in the client is not seeded from `LaunchError`; low-level launch IO is
+one group; and signal-install, loop and shutdown failures are grouped in
+`RunServerError::Serve(io::Error)`, where `complete_shutdown` still erases
+`UnexpectedPhase`. (edges, server-serving)
 
-## TYP-073 - Remote and launch outcomes reach the operator only as prose
+## TYP-074 - One platform policy error still rides in io::Error
 
-`RestartResult::Failed(String)` and `LocalRestart::Failed(String)` flatten a
-`ServerStopError` or a diagnostic-carrying `io::Error`;
-`PreflightOutcome::authentication: Option<Result<(), String>>` with
-`authenticate` returning `io::Error::other(format!("ssh exited with {status}"))`,
-so "could not spawn" and "exited 255" read the same;
-`local_server::ensure_running` has about a dozen distinct failures (unresponsive,
-different build, override with no server, transition timeout, boot failure with
-a `DaemonExit` class it already has, boot log overflow, boot timeout with or
-without an occupant, sibling build mismatch, sibling missing or not executable,
-launch lock timeout), every one a formatted `io::Error` that `autodetect.rs` can
-only print, so the Local endpoint rediscovers a mismatch through its own
-handshake. `RunServerError::Io` folds a bad session target, pane-launch init, a
-failed runtime build, a failed signal-handler install and loop failures, and its
-two typed outcomes are recovered by downcasting `io::Error` payloads
-(`SocketBusy::from_io`, `DataDirLeaseHeld::from_io`); `complete_shutdown` turns
-the typed `UnexpectedPhase` into `io::Error::other`. Proposal:
-`AuthenticationOutcome::{Succeeded, SshExited(ExitStatus), CouldNotRun}`, a
-`LaunchError` enum that lets autodetect seed the Local status, and typed errors
-from `DataDirLease::acquire` and `shepr_api::start_server`. Reported by edges and
-server-serving.
-
-## TYP-074 - Typed platform failures are smuggled through `io::Error` payloads
-
-`SocketBusy` is an `AddrInUse` payload recovered by downcast in
-`shepr-api/src/server.rs`, `bootstrap.rs` and `machine_ssh.rs`;
-`UnsafeSshRuntimeDirectory` is a `PermissionDenied` payload downcast in
-`shepr-remote/src/lib.rs` twice and `machine_ssh.rs`;
-`RuntimeCreateError::into_io` erases the random-source distinction it just made;
-`FileLoggingUnavailable.reason: String`; `EnvError` has `From` into `io::Error`
-and most readers go straight through `io::Result`; pty's `SERVICE:
-OnceLock<Result<LaunchService, String>>` stringifies the bind error so every
-later spawn reports `io::Error::other` with the kind lost. Proposal: `bind_*`
-returning `Result<BoundSocket, BindError::{Busy, Io}>` and SSH path helpers
-returning `SshRuntimeError` with an `UnsafeDirectory` arm. (foundation)
+Bind, lease-acquisition and SSH-runtime errors are typed and their downcasts
+gone. Still open: `crates/shepr-platform/src/private_file.rs` embeds
+`PrivateDirectoryPolicyError` in an `io::Error` and recovers it in
+`PrivateDir::is_policy_refusal`. (foundation)
 
 ## TYP-075 - The launch builders still pass shell text as `&str`
 
@@ -864,33 +721,6 @@ FocusMismatch, LostPair, ProjectionUnavailable, TimedOut, TargetLost}` (with the
 deadline failure one more variant), and typed launch and exit outcomes.
 (client-core)
 
-## TYP-079 - Client state machines encoded as options and bools
-
-- `HostMouseMode { endpoint_request: Option<EndpointMouseRequest>,
-  use_preference: bool }` encodes initial, preference and endpoint sources, and
-  `desired()` returns `(bool, bool)`: `MouseSource::{Initial, Preference,
-  Endpoint { enabled, sgr_pixels }}`.
-- Local's launch outcome is `initial_stream`, `initial`,
-  `initial_local_failure`, `local_unavailable: bool`, `connected_generation:
-  Option<u64>`, `seeded_failure` and `add_local(.., generation: Option<u64>,
-  ..)`: one `LocalAtLaunch::{Attached(transport, generation), Absent,
-  Failed(failure)}`.
-- `ClientShellInput` is six bools plus `requests: Vec<ClientMessage>` and
-  `actions`, and `finish_client_shell_input` reinterprets the messages by
-  variant with a wildcard routing rule (viewed versus shown): a typed
-  `ShellEffect` list with routing attached to the variant.
-- `ClientLoop::wait_for_next_event` returns `ClientLoopEvent::Timer` as the
-  sentinel for "the panic latch fired" and "the channel closed".
-- `EndpointReadActivity` packs nanoseconds and a "snapshot seen" bit into one
-  `AtomicU64` (sound and documented) but `observed()` returns `(Option<Instant>,
-  bool)`.
-- Terminal restore mask as `u8` constants and `HostRestoreAction<W> =
-  (Option<u8>, fn ..)`.
-- `ClientLoop::next_view_serial: u64` passed around as `&mut u64`.
-- `ClientPresentationLogContext` holds typed values stringified for logging.
-
-(client-core)
-
 ## TYP-080 - Endpoint-qualified addresses are spelled six ways in the shell
 
 `ClientEndpointFocusTarget::{Workspace, Pane}` (no endpoint),
@@ -902,31 +732,6 @@ Vec<(Rect, ClientEndpointId, PublicPaneId)>` beside `agents: Vec<(Rect,
 PublicPaneId)>`, `WorkspaceHit` and `ClientWorkspacePress`. Proposal: `Location
 { endpoint, target: Target::{Machine, Workspace, Pane} }` and a `PinnedLocation`
 adding the snapshot identity. (client-shell)
-
-## TYP-081 - Notice and command identity in the shell are strings
-
-`ClientEndpointNoticeKey { boot_id, kind, code: String }` with codes
-`"selection_empty"`, `"paste_rejected"` (twice, deliberately equal),
-`"navigate_endpoint_inactive"`, `"server"`, `"cancelled"`, the command's dotted
-name, `format!("{method}:{message}")`,
-`format!("session_restore_incomplete:{storage_key}")`,
-`format!("machine-diagnostic:{label}")`, and the human message itself in
-`receive_endpoint_unavailable`; `render_notice` caps a body with
-`code.starts_with(MACHINE_DIAGNOSTIC_NOTICE_PREFIX)`. `ledger::Entry.method:
-String` is `command.name().to_owned()`. Proposal: a closed `NoticeCode` enum
-whose methods answer capping, queueing and deduplication, and a fieldless
-`CommandKind` generated beside `EndpointCommand`. (client-shell)
-
-## TYP-082 - Shell outcomes are `bool` and `Option<bool>`
-
-`TextEditor::handle_key -> Option<bool>` (unhandled, handled unchanged,
-changed); `Work::dropped`, `answer_pane_scroll`, `drop_*` and `complete_*`
-return a bare `bool` meaning repaint; client core returns
-`finish_client_shell_input -> Result<bool, _>` (true means exit),
-`cancel_endpoint_commands -> bool`, `present_surface_patch -> io::Result<bool>`,
-`AtomicCellSize::store -> bool`. The `outcome.repaint |= ..` plumbing can drop
-one silently. Proposal: an `EditOutcome` and a `Repaint` value, or writing into
-the outcome directly. Reported by client-shell and client-core.
 
 ## Bool parameters, tuples and sentinels
 

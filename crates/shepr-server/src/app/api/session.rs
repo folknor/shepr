@@ -28,7 +28,7 @@ pub(crate) struct SnapshotPane {
 pub(crate) struct SnapshotAgent {
     pub(crate) pane_id: PublicPaneId,
     pub(crate) workspace_id: WorkspaceId,
-    pub(crate) agent: Option<String>,
+    pub(crate) agent: Option<shepr_agent::agent::Agent>,
     pub(crate) terminal_title: Option<String>,
     pub(crate) terminal_title_stripped: Option<String>,
     pub(crate) agent_status: AgentStatus,

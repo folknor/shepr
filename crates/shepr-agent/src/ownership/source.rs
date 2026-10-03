@@ -1104,9 +1104,12 @@ impl AgentOwnership {
     ) -> bool {
         seq.is_none()
             && session_start_source == ReportedSessionStart::Known(AgentSessionStartSource::Select)
-            && origin
-                .official_agent()
-                .is_some_and(|agent| agent.descriptor().hook_session_policy.unsequenced_selection)
+            && origin.official_agent().is_some_and(|agent| {
+                agent
+                    .descriptor()
+                    .hook_session_policy()
+                    .unsequenced_selection
+            })
     }
 }
 
@@ -1124,7 +1127,7 @@ impl AgentOwnership {
     ) -> bool {
         origin
             .official_agent()
-            .is_some_and(|agent| agent.descriptor().hook_session_policy.foreground_takeover)
+            .is_some_and(|agent| agent.descriptor().hook_session_policy().foreground_takeover)
             && Self::session_start_source_is_recognized(session_start_source)
             && self.foreground_agent_confirms_session_owner(origin, session_ref)
     }

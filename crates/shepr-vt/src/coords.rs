@@ -35,7 +35,9 @@ pub struct ScreenRow(pub usize);
 pub struct AbsRow(pub u64);
 
 /// A terminal cell position whose row coordinate space is carried by `R`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct Point<R> {
     pub row: R,
     pub col: u16,

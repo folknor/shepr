@@ -384,3 +384,23 @@ fn pane_shell_process_names_reject_exec_replacement_programs() {
         assert!(!is_pane_shell_process_name(program), "{program}");
     }
 }
+
+#[test]
+fn process_argv_refuses_empty_and_oversized_input() {
+    assert_eq!(parse_process_argv(&[]), None);
+    assert_eq!(parse_process_argv(&[0, 0]), None);
+    let oversized = vec![b'a'; PROCESS_CMDLINE_BYTE_LIMIT + 1];
+    assert_eq!(parse_process_argv(&oversized), None);
+    assert_eq!(
+        parse_process_argv(&oversized[..PROCESS_CMDLINE_BYTE_LIMIT]),
+        Some(vec!["a".repeat(PROCESS_CMDLINE_BYTE_LIMIT)])
+    );
+}
+
+#[test]
+fn process_argv_parses_nul_separated_arguments() {
+    assert_eq!(
+        parse_process_argv(b"codex\0--resume\0session\0"),
+        Some(vec!["codex".into(), "--resume".into(), "session".into()])
+    );
+}

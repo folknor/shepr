@@ -235,12 +235,9 @@ impl<'a> AgentRowIndex<'a> {
     ) -> Option<AgentRow> {
         let workspace = self.workspace(agent.pane_id.workspace_id())?;
         let pane = self.pane(&agent.pane_id);
-        let agent_label = agent.agent.as_deref();
+        let agent_label = agent.agent.map(shepr_config::ConfigAgent::label);
         let state_text = status_text(agent.agent_status);
-        let canonical_agent = agent
-            .agent
-            .as_deref()
-            .and_then(shepr_agent::detect::parse_agent_label);
+        let canonical_agent = agent.agent;
         let rows = sidebar_agent_rows(
             &config.agents,
             &AgentTokenContext {

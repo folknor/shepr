@@ -118,12 +118,7 @@ pub(crate) fn pane_cursor(
                 .and_then(|ws| ws.terminal_id(pane_id))
                 .and_then(|terminal_id| app.terminals.get(terminal_id))
                 .and_then(|terminal| terminal.ownership().detected_agent());
-            detected.is_some_and(|agent| {
-                app.settings
-                    .cjk_ime_agents
-                    .iter()
-                    .any(|configured| configured.label() == agent.label())
-            })
+            detected.is_some_and(|agent| app.settings.cjk_ime_agents.contains(&agent))
         });
 
     if let Some(cursor) = runtime.read().cursor_state(area) {

@@ -107,7 +107,7 @@ pub fn start_server(
     api_tx: ApiRequestSender,
     server_stop: Arc<crate::ServerStopSignal>,
     paths: &shepr_config::AppPaths,
-) -> std::io::Result<ServerHandle> {
+) -> Result<ServerHandle, shepr_platform::ipc::BindError> {
     let path = paths.server_address().socket().to_path_buf();
     let (listener, startup_lock, identity) = bind_private_socket(&path)?;
     info!(path = %path.display(), "server socket listening");
@@ -769,12 +769,10 @@ mod tests {
             _startup_lock: startup_lock,
         };
         let refusal = bind_private_socket(&path).err().expect("path stays locked");
-        assert_eq!(
-            shepr_platform::ipc::SocketBusy::from_io(&refusal)
-                .expect("busy")
-                .path(),
-            path
-        );
+        let shepr_platform::ipc::BindError::Busy(busy) = refusal else {
+            panic!("expected a busy socket")
+        };
+        assert_eq!(busy.path(), path);
         drop(handle);
         assert_eq!(Arc::strong_count(&alive), 1, "listener has exited");
         assert!(!path.try_exists().expect("socket removed"));

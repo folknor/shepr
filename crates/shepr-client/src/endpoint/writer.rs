@@ -22,6 +22,12 @@ pub(crate) struct EndpointReadActivity {
     stamp: AtomicU64,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct EndpointReadObservation {
+    pub(crate) last_frame_at: Option<Instant>,
+    pub(crate) snapshot_seen: bool,
+}
+
 impl EndpointReadActivity {
     pub(super) fn new(started_at: Instant) -> Self {
         Self {
@@ -41,7 +47,7 @@ impl EndpointReadActivity {
     }
 
     /// When the last frame arrived, if any has, and whether a snapshot has.
-    pub(crate) fn observed(&self) -> (Option<Instant>, bool) {
+    pub(crate) fn observed(&self) -> EndpointReadObservation {
         let stamp = self.stamp.load(Ordering::Acquire);
         let received_at = (stamp >> 1 > 0)
             .then(|| {
@@ -49,7 +55,10 @@ impl EndpointReadActivity {
                     .checked_add(Duration::from_nanos(stamp >> 1))
             })
             .flatten();
-        (received_at, stamp & 1 == 1)
+        EndpointReadObservation {
+            last_frame_at: received_at,
+            snapshot_seen: stamp & 1 == 1,
+        }
     }
 }
 

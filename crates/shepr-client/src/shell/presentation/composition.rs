@@ -684,7 +684,7 @@ fn render_client_copy_search_highlights(
 #[cfg(test)]
 mod tests {
     use crate::endpoint::ClientEndpointId;
-    use crate::endpoint::ClientEndpointStatus;
+    use crate::endpoint::EndpointFailureStatus;
     use crate::shell::overlays::notices::ClientEndpointNoticeKind;
     use crate::shell::state::ClientShellConfig;
     use ratatui::buffer::Buffer;
@@ -793,10 +793,13 @@ mod tests {
             ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
         state.config.sidebar_collapsed_mode = SidebarCollapsedModeConfig::Hidden;
         state.chrome.set_collapsed(true);
-        state.set_endpoint_status(&ClientEndpointId::Local, ClientEndpointStatus::Reconnecting);
+        state.set_endpoint_status(
+            &ClientEndpointId::Local,
+            EndpointFailureStatus::Reconnecting,
+        );
         assert!(state.push_endpoint_notice(
             ClientEndpointNoticeKind::Unavailable,
-            "unavailable",
+            crate::shell::overlays::notices::NoticeCode::EndpointUnavailable,
             "Server unavailable",
             "Waiting for the server",
         ));
@@ -819,7 +822,7 @@ mod tests {
         state.set_snapshot(Box::new(crate::shell::tests::snapshot()));
         assert!(state.push_endpoint_notice(
             ClientEndpointNoticeKind::Unavailable,
-            "unavailable",
+            crate::shell::overlays::notices::NoticeCode::EndpointUnavailable,
             "Server unavailable",
             "Waiting for the server",
         ));

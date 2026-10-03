@@ -980,7 +980,6 @@ mod registration_tests {
             "{}",
             &settings_path,
             &hook,
-            integration_hook_events(target),
             integration_hook_timeout(target).expect("test precondition"),
         )
         .expect("test precondition");

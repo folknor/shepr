@@ -12,20 +12,23 @@ pub struct DataDirectoryLease {
 impl DataDirectoryLease {
     /// Creates and locks `file_name` in `directory`, returning a busy error if
     /// another process already owns it.
-    pub fn acquire(directory: &Path, file_name: &str) -> io::Result<Self> {
+    pub fn acquire(directory: &Path, file_name: &str) -> Result<Self, LeaseAcquireError> {
         if file_name.is_empty() || file_name == "." || file_name == ".." || file_name.contains('/')
         {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "lease file name must be a single path component",
-            ));
+            )
+            .into());
         }
 
         crate::create_private_directory_all(directory)?;
         let directory = std::fs::canonicalize(directory)?;
         let path = directory.join(file_name);
         let Some(lock) = try_acquire(&path)? else {
-            return Err(DataDirectoryLeaseHeld::error(directory));
+            return Err(LeaseAcquireError::Held(DataDirectoryLeaseHeld {
+                directory,
+            }));
         };
         Ok(Self {
             directory,
@@ -57,6 +60,46 @@ fn try_acquire(path: &Path) -> io::Result<Option<FlockLock>> {
     }
 }
 
+/// Ownership refusal is distinct from filesystem or lock failures.
+#[derive(Debug)]
+pub enum LeaseAcquireError {
+    Held(DataDirectoryLeaseHeld),
+    Io(io::Error),
+}
+
+impl LeaseAcquireError {
+    pub fn kind(&self) -> io::ErrorKind {
+        match self {
+            Self::Held(_) => io::ErrorKind::ResourceBusy,
+            Self::Io(error) => error.kind(),
+        }
+    }
+}
+
+impl From<io::Error> for LeaseAcquireError {
+    fn from(error: io::Error) -> Self {
+        Self::Io(error)
+    }
+}
+
+impl std::fmt::Display for LeaseAcquireError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Held(error) => error.fmt(f),
+            Self::Io(error) => error.fmt(f),
+        }
+    }
+}
+
+impl std::error::Error for LeaseAcquireError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Held(error) => Some(error),
+            Self::Io(error) => Some(error),
+        }
+    }
+}
+
 /// Another process already holds the lease on a session data directory.
 #[derive(Debug)]
 pub struct DataDirectoryLeaseHeld {
@@ -64,15 +107,6 @@ pub struct DataDirectoryLeaseHeld {
 }
 
 impl DataDirectoryLeaseHeld {
-    fn error(directory: PathBuf) -> io::Error {
-        io::Error::new(io::ErrorKind::ResourceBusy, Self { directory })
-    }
-
-    /// The held-lease refusal inside `error`, if it is one.
-    pub fn from_io(error: &io::Error) -> Option<&Self> {
-        error.get_ref()?.downcast_ref::<Self>()
-    }
-
     /// The canonical session data directory another process holds.
     pub fn directory(&self) -> &Path {
         &self.directory

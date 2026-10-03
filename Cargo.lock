@@ -1309,7 +1309,6 @@ dependencies = [
  "ratatui",
  "serde",
  "serde_json",
- "shepr-agent",
  "shepr-config",
  "shepr-core",
  "shepr-platform",
@@ -1404,6 +1403,7 @@ version = "0.1.0"
 dependencies = [
  "ratatui",
  "serde",
+ "shepr-agent",
  "shepr-core",
  "shepr-test-support",
  "shepr-vt",

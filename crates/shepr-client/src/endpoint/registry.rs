@@ -5,6 +5,7 @@ use std::time::Instant;
 
 use super::ClientEndpointId;
 use super::health::{EndpointHealth, HealthAction};
+use super::view::ViewSerialAllocator;
 use super::writer::{EndpointReadActivity, NativeEndpointTransport};
 use crate::limits::ENDPOINT_DETACH_FLUSH_TIMEOUT;
 use shepr_protocol::ClientMessage;
@@ -170,8 +171,9 @@ impl EndpointRegistry {
             .filter_map(|connection| {
                 let health = connection.health.as_mut()?;
                 if let Some(read_activity) = &connection.read_activity {
-                    let (received_at, snapshot_received) = read_activity.observed();
-                    health.sync_reader_activity(received_at, snapshot_received);
+                    let observation = read_activity.observed();
+                    health
+                        .sync_reader_activity(observation.last_frame_at, observation.snapshot_seen);
                 }
                 Some(health.next_deadline())
             })
@@ -185,8 +187,9 @@ impl EndpointRegistry {
             .filter_map(|(endpoint_id, connection)| {
                 let health = connection.health.as_mut()?;
                 if let Some(read_activity) = &connection.read_activity {
-                    let (received_at, snapshot_received) = read_activity.observed();
-                    health.sync_reader_activity(received_at, snapshot_received);
+                    let observation = read_activity.observed();
+                    health
+                        .sync_reader_activity(observation.last_frame_at, observation.snapshot_seen);
                 }
                 Some((endpoint_id.clone(), health.action(now)))
             })
@@ -258,7 +261,7 @@ impl EndpointRegistry {
         &mut self,
         wanted: impl Fn(&ClientEndpointId) -> bool,
         boot_id_of: impl Fn(&ClientEndpointId) -> Option<&'a shepr_protocol::BootId>,
-        serial: &mut u64,
+        serial: &mut ViewSerialAllocator,
     ) -> usize {
         let mut failures = Vec::new();
         let mut released = 0;
@@ -271,8 +274,7 @@ impl EndpointRegistry {
             };
             connection.viewed = false;
             released += 1;
-            let request_id = format!("client-shell-view:{serial}:off").into();
-            *serial = serial.saturating_add(1);
+            let request_id = format!("client-shell-view:{}:off", serial.allocate()).into();
             let request = super::view::surface_interest_request(boot, request_id, false);
             // A transport that failed the focus-loss is a lost connection; its server drops the
             // view with it, so the release is not sent after it.
@@ -473,12 +475,12 @@ mod tests {
         for (failure, status, notice) in [
             (
                 shepr_remote::EndpointFailure::incompatible("patch baseline rejected"),
-                super::super::ClientEndpointStatus::Attention,
+                super::super::EndpointFailureStatus::Attention,
                 "connection failed; needs attention",
             ),
             (
                 shepr_remote::EndpointFailure::backpressure("endpoint output queue is full"),
-                super::super::ClientEndpointStatus::Reconnecting,
+                super::super::EndpointFailureStatus::Reconnecting,
                 "local output queue filled; reconnecting",
             ),
         ] {
@@ -493,7 +495,7 @@ mod tests {
             let failures = registry.take_failures();
             assert_eq!(failures.len(), 1);
             assert_eq!(
-                super::super::ClientEndpointStatus::after_failure(&failures[0].failure),
+                super::super::EndpointFailureStatus::after_failure(&failures[0].failure),
                 status
             );
             assert_eq!(failures[0].failure.disconnect_notice(), notice);
@@ -981,7 +983,7 @@ mod tests {
         for (id, transport) in ids.iter().zip(&transports) {
             registry.insert(id.clone(), transport.clone(), 7, true, Instant::now());
         }
-        let mut serial = 1;
+        let mut serial = ViewSerialAllocator::new();
         assert_eq!(
             registry.release_unwanted_views(
                 |id| id == &ids[3],
@@ -990,7 +992,7 @@ mod tests {
             ),
             2
         );
-        assert_eq!(serial, 3);
+        assert_eq!(serial.allocate().to_string(), "3");
         for index in 0..2 {
             assert!(!registry.viewed(&ids[index]));
             assert!(matches!(

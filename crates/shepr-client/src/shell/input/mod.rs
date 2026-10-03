@@ -1,7 +1,7 @@
 use shepr_termio::input::KeybindAction;
 use shepr_termio::input::KeybindDispatch;
 
-use crate::shell::overlays::notices::ClientEndpointNoticeKind;
+use crate::shell::overlays::notices::{ClientEndpointNoticeKind, NoticeCode};
 use crate::shell::state::ClientShellOverlay;
 use crossterm::event::KeyEventKind;
 pub(in crate::shell) mod copy_mode;
@@ -14,7 +14,7 @@ pub(in crate::shell) mod word_selection;
 
 use crate::shell::state::{
     ClientHelpOverlay, ClientInputContext, ClientNavigatorOverlay, ClientShellInput,
-    ClientShellMode, ClientShellState,
+    ClientShellMode, ClientShellRequest, ClientShellState,
 };
 use shepr_protocol::ClientMessage;
 
@@ -24,7 +24,74 @@ use crate::input_wire::WirePaneInput;
 use crate::limits::{CLIPBOARD_RESULT_QUEUE_CAPACITY, MODAL_PASTE_CLIPBOARD_TIMEOUT};
 use crossterm::event::{KeyCode, KeyModifiers};
 use shepr_protocol::ClientPaneInputEvent;
+use shepr_termio::input::fixed_keys::{self, FixedKey, KeyBinding, ModifierMatch};
 use shepr_termio::input::raw_input::RawInputEvent;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ResizeCommand {
+    Finish,
+    Left,
+    Down,
+    Up,
+    Right,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(in crate::shell) enum ResizeHelpGroup {
+    Width,
+    Height,
+    Finish,
+}
+
+const fn resize_binding(
+    command: ResizeCommand,
+    code: KeyCode,
+    help_group: Option<ResizeHelpGroup>,
+) -> KeyBinding<ResizeCommand, ResizeHelpGroup> {
+    KeyBinding {
+        command,
+        key: FixedKey::RawCode(code, ModifierMatch::Any),
+        help_group,
+    }
+}
+
+// The mode bar names one key per action; arrows and Enter stay unlisted.
+const RESIZE_BINDINGS: &[KeyBinding<ResizeCommand, ResizeHelpGroup>] = &[
+    resize_binding(
+        ResizeCommand::Finish,
+        KeyCode::Esc,
+        Some(ResizeHelpGroup::Finish),
+    ),
+    resize_binding(ResizeCommand::Finish, KeyCode::Enter, None),
+    resize_binding(
+        ResizeCommand::Left,
+        KeyCode::Char('h'),
+        Some(ResizeHelpGroup::Width),
+    ),
+    resize_binding(ResizeCommand::Left, KeyCode::Left, None),
+    resize_binding(
+        ResizeCommand::Down,
+        KeyCode::Char('j'),
+        Some(ResizeHelpGroup::Height),
+    ),
+    resize_binding(ResizeCommand::Down, KeyCode::Down, None),
+    resize_binding(
+        ResizeCommand::Up,
+        KeyCode::Char('k'),
+        Some(ResizeHelpGroup::Height),
+    ),
+    resize_binding(ResizeCommand::Up, KeyCode::Up, None),
+    resize_binding(
+        ResizeCommand::Right,
+        KeyCode::Char('l'),
+        Some(ResizeHelpGroup::Width),
+    ),
+    resize_binding(ResizeCommand::Right, KeyCode::Right, None),
+];
+
+pub(in crate::shell) fn resize_help_keys(group: ResizeHelpGroup) -> String {
+    fixed_keys::help_keys(RESIZE_BINDINGS, group, "/")
+}
 
 // limits-exempt: this fixed tag identifies the local input source in the lease table.
 const LOCAL_INPUT_SOURCE: u8 = 0;
@@ -205,19 +272,19 @@ fn host_theme_update(event: &RawInputEvent) -> Option<shepr_protocol::ClientHost
 }
 
 fn push_host_theme_update(
-    requests: &mut Vec<ClientMessage>,
+    requests: &mut Vec<ClientShellRequest>,
     update: shepr_protocol::ClientHostThemeUpdate,
 ) {
     if let shepr_protocol::ClientHostThemeUpdate::PaletteColors(colors) = &update
-        && let Some(ClientMessage::ClientShellHostTheme {
-            update: shepr_protocol::ClientHostThemeUpdate::PaletteColors(pending),
-        }) = requests.last_mut()
+        && let Some(ClientShellRequest::HostTheme(
+            shepr_protocol::ClientHostThemeUpdate::PaletteColors(pending),
+        )) = requests.last_mut()
         && pending.len() + colors.len() <= shepr_core::limits::PALETTE_COLOR_COUNT
     {
         pending.extend_from_slice(colors);
         return;
     }
-    requests.push(ClientMessage::ClientShellHostTheme { update });
+    requests.push(ClientShellRequest::HostTheme(update));
 }
 
 impl ClientShellState {
@@ -313,7 +380,9 @@ impl ClientShellState {
                 }
                 outcome
                     .requests
-                    .push(ClientMessage::ClientShellFocus { focused: true });
+                    .push(ClientShellRequest::Shown(ClientMessage::ClientShellFocus {
+                        focused: true,
+                    }));
             }
             RawInputEvent::OuterFocusLost => {
                 self.outer_focused = Some(false);
@@ -324,7 +393,9 @@ impl ClientShellState {
                 self.release_input_leases(outcome, accounting);
                 outcome
                     .requests
-                    .push(ClientMessage::ClientShellFocus { focused: false });
+                    .push(ClientShellRequest::Shown(ClientMessage::ClientShellFocus {
+                        focused: false,
+                    }));
             }
             RawInputEvent::HostDefaultColor {
                 kind: shepr_termio::host_term::theme::DefaultColorKind::Background,
@@ -748,7 +819,7 @@ impl ClientShellState {
             let open_workspace = self.open_workspace_hint();
             self.push_endpoint_notice(
                 ClientEndpointNoticeKind::Rejected,
-                "navigate_endpoint_inactive",
+                NoticeCode::NavigateEndpointInactive,
                 "Confirm workspace first",
                 format!(
                     "Select an available workspace and {open_workspace} before using workspace or pane actions"
@@ -890,33 +961,30 @@ impl ClientShellState {
         outcome: &mut ClientShellInput,
     ) {
         let resize_bindings = &self.config.keybinds.keybinds.resize_mode;
-        if key.code == KeyCode::Esc
-            || key.code == KeyCode::Enter
-            || resize_bindings.matches_prefix_key(key)
-            || resize_bindings.matches_direct_key(key)
-        {
+        if resize_bindings.matches_prefix_key(key) || resize_bindings.matches_direct_key(key) {
             self.mode = self.copy_or_terminal_mode();
             outcome.repaint = true;
             return;
         }
-
-        let action = match key.code {
-            KeyCode::Char('h') | KeyCode::Left => {
-                Some(shepr_termio::input::KeybindAction::ResizePaneLeft)
+        match fixed_keys::command_for(RESIZE_BINDINGS, key) {
+            Some(ResizeCommand::Finish) => {
+                self.mode = self.copy_or_terminal_mode();
+                outcome.repaint = true;
             }
-            KeyCode::Char('j') | KeyCode::Down => {
-                Some(shepr_termio::input::KeybindAction::ResizePaneDown)
+            Some(ResizeCommand::Left) => {
+                self.record_binding(&shepr_termio::input::KeybindAction::ResizePaneLeft, outcome);
             }
-            KeyCode::Char('k') | KeyCode::Up => {
-                Some(shepr_termio::input::KeybindAction::ResizePaneUp)
+            Some(ResizeCommand::Down) => {
+                self.record_binding(&shepr_termio::input::KeybindAction::ResizePaneDown, outcome);
             }
-            KeyCode::Char('l') | KeyCode::Right => {
-                Some(shepr_termio::input::KeybindAction::ResizePaneRight)
+            Some(ResizeCommand::Up) => {
+                self.record_binding(&shepr_termio::input::KeybindAction::ResizePaneUp, outcome);
             }
-            _ => None,
-        };
-        if let Some(action) = action {
-            self.record_binding(&action, outcome);
+            Some(ResizeCommand::Right) => self.record_binding(
+                &shepr_termio::input::KeybindAction::ResizePaneRight,
+                outcome,
+            ),
+            None => {}
         }
     }
 
@@ -1063,7 +1131,8 @@ mod tests {
     use super::{navigate_indexed_binding_index, read_clipboard_text_bounded_with};
     use crate::shell::input::events::PaneInputBatchAccounting;
     use crate::shell::state::{
-        ClientCopyModeState, ClientShellInput, ClientShellMode, ClientShellState,
+        ClientCopyModeState, ClientShellInput, ClientShellMode, ClientShellRequest,
+        ClientShellState,
     };
     use crossterm::event::{KeyCode, KeyModifiers};
     use shepr_protocol::ClientMessage;
@@ -1109,9 +1178,10 @@ mod tests {
         }
     }
 
-    fn message_text_bytes(message: &ClientMessage) -> usize {
-        let ClientMessage::ClientShellPaneInput { events, .. } = message else {
-            panic!("expected targeted pane input, got {message:?}");
+    fn message_text_bytes(request: &ClientShellRequest) -> usize {
+        let ClientShellRequest::Shown(ClientMessage::ClientShellPaneInput { events, .. }) = request
+        else {
+            panic!("expected targeted pane input, got {request:?}");
         };
         events.iter().map(ClientPaneInputEvent::text_bytes).sum()
     }

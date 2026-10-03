@@ -6,12 +6,11 @@ use crate::shell::ledger::Work;
 use crate::shell::overlays::text_editor::TextEditor;
 use crate::shell::state::{ClientCopySearch, ClientCopySelection, ClientShellMode};
 use crossterm::event::KeyCode;
-use crossterm::event::KeyModifiers;
 
 use crate::shell::input::events::PaneInputBatchAccounting;
 use crate::shell::state::{
     ClientCopyModeState, ClientCopyOperation, ClientCopySearchPrompt, ClientCopySearchResult,
-    ClientShellEndpointError, ClientShellInput, ClientShellState, PaneHit, TypedText,
+    ClientShellEndpointError, ClientShellInput, ClientShellState, PaneHit, Repaint, TypedText,
 };
 
 use std::collections::VecDeque;
@@ -132,25 +131,32 @@ impl ClientShellState {
         result: Result<shepr_protocol::command::EndpointReply, ClientShellEndpointError>,
         now: std::time::Instant,
         outcome: &mut ClientShellInput,
-    ) -> bool {
+    ) -> Repaint {
         use shepr_protocol::command::EndpointReply;
         if !self.copy_pipeline.is_awaiting(request) {
-            return false;
+            return Repaint::Unchanged;
         }
         let (repaint, continue_queue) = match result {
             Ok(EndpointReply::PaneCopyMotion {
                 pane_id: returned_pane_id,
                 cursor,
-            }) if &returned_pane_id == pane_id => (
-                self.apply_copy_motion_target(pane_id, origin, cursor, outcome),
-                true,
-            ),
-            Ok(EndpointReply::PaneCopyMotion { .. }) => (false, false),
+            }) if &returned_pane_id == pane_id => {
+                let applied = self.apply_copy_motion_target(pane_id, origin, cursor, outcome);
+                (
+                    if applied {
+                        Repaint::Needed
+                    } else {
+                        Repaint::Unchanged
+                    },
+                    true,
+                )
+            }
+            Ok(EndpointReply::PaneCopyMotion { .. }) => (Repaint::Unchanged, false),
             Ok(_) => {
                 self.set_endpoint_error("endpoint returned an unexpected copy-motion result", now);
-                (true, false)
+                (Repaint::Needed, false)
             }
-            Err(_) => (true, false),
+            Err(_) => (Repaint::Needed, false),
         };
         // The apply can reset the pipeline (a search with `copy_after_search` exits copy
         // mode); then nothing queued behind this request may replay or dispatch.
@@ -171,20 +177,18 @@ impl ClientShellState {
         result: Result<shepr_protocol::command::EndpointReply, ClientShellEndpointError>,
         now: std::time::Instant,
         outcome: &mut ClientShellInput,
-    ) -> bool {
+    ) -> Repaint {
         use shepr_protocol::command::EndpointReply;
         if !self.copy_pipeline.is_awaiting(request) {
-            return false;
+            return Repaint::Unchanged;
         }
         let (repaint, continue_queue) = match result {
             Ok(EndpointReply::PaneCopySearch {
                 pane_id: returned_pane_id,
-                matches,
-                total,
-                current,
-                current_global,
+                search,
             }) if &returned_pane_id == pane_id => {
-                let repaint = self.apply_copy_search_result(
+                let current = search.current;
+                let applied = self.apply_copy_search_result(
                     pane_id,
                     origin,
                     query,
@@ -192,30 +196,33 @@ impl ClientShellState {
                     repeat,
                     generation,
                     ClientCopySearchResult {
-                        matches,
-                        total,
-                        current: current.and_then(|index| usize::try_from(index).ok()),
-                        current_global,
+                        matches: search.matches,
+                        total: u64::try_from(search.total).unwrap_or(u64::MAX),
+                        current: current.map(|position| position.window_index),
+                        current_global: current
+                            .and_then(|position| u64::try_from(position.global_index).ok()),
                     },
                     outcome,
                 );
-                if !repaint {
+                if applied {
+                    (Repaint::Needed, true)
+                } else {
                     self.cancel_deferred_copy_after_search(generation);
+                    (Repaint::Unchanged, false)
                 }
-                (repaint, repaint)
             }
             Ok(EndpointReply::PaneCopySearch { .. }) => {
                 self.cancel_deferred_copy_after_search(generation);
-                (false, false)
+                (Repaint::Unchanged, false)
             }
             Ok(_) => {
                 self.cancel_deferred_copy_after_search(generation);
                 self.set_endpoint_error("endpoint returned an unexpected copy-search result", now);
-                (true, false)
+                (Repaint::Needed, false)
             }
             Err(_) => {
                 self.cancel_deferred_copy_after_search(generation);
-                (true, false)
+                (Repaint::Needed, false)
             }
         };
         // The apply can reset the pipeline (a search with `copy_after_search` exits copy
@@ -228,9 +235,9 @@ impl ClientShellState {
     pub(in crate::shell) fn drop_copy_operation(
         &mut self,
         request: &shepr_protocol::RequestId,
-    ) -> bool {
+    ) -> Repaint {
         if !self.copy_pipeline.is_awaiting(request) {
-            return false;
+            return Repaint::Unchanged;
         }
         // Buffered keys depend on a result that will never be applied. Discard them rather
         // than replaying exits, new motions or pane input into a frozen presentation.
@@ -242,7 +249,7 @@ impl ClientShellState {
         {
             search.copy_after_result = false;
         }
-        true
+        Repaint::Needed
     }
 
     /// Copy accepts input only when its explicit mode is active, no overlay
@@ -280,7 +287,8 @@ impl ClientShellState {
             return false;
         }
         shepr_config::terminal_key_matches_combo(key, self.config.keybinds.prefix)
-            || shepr_termio::copy_mode::copy_mode_command_char(key) == Some('q')
+            || shepr_termio::copy_mode::copy_mode_command(key)
+                == Some(shepr_termio::copy_mode::CopyModeCommand::Exit)
     }
 
     /// Gives up on the in-flight copy operation and every key queued behind it. The
@@ -383,8 +391,11 @@ impl ClientShellState {
         if self.route_copy_search_prompt_key(key, outcome) {
             return;
         }
-        match key.code {
-            KeyCode::Esc => {
+        let Some(command) = shepr_termio::copy_mode::copy_mode_command(key) else {
+            return;
+        };
+        match command {
+            shepr_termio::copy_mode::CopyModeCommand::CancelOrClear => {
                 let should_clear = self.copy_mode.as_ref().is_some_and(|copy_mode| {
                     copy_mode.selection.is_some()
                         || copy_mode.search.as_ref().is_some_and(|search| {
@@ -405,100 +416,44 @@ impl ClientShellState {
                     self.exit_copy_mode(false, outcome);
                 }
                 outcome.repaint = true;
-                return;
             }
-            KeyCode::Enter => {
+            shepr_termio::copy_mode::CopyModeCommand::Exit => {
+                self.exit_copy_mode(false, outcome);
+            }
+            shepr_termio::copy_mode::CopyModeCommand::Copy => {
                 if !self.defer_copy_until_search_result() {
                     self.exit_copy_mode(true, outcome);
                 }
-                return;
             }
-            KeyCode::Left => {
+            shepr_termio::copy_mode::CopyModeCommand::MoveLeft => {
                 self.move_copy_cursor(0, -1, outcome);
-                return;
             }
-            KeyCode::Down => {
+            shepr_termio::copy_mode::CopyModeCommand::MoveDown => {
                 self.move_copy_cursor(1, 0, outcome);
-                return;
             }
-            KeyCode::Up => {
+            shepr_termio::copy_mode::CopyModeCommand::MoveUp => {
                 self.move_copy_cursor(-1, 0, outcome);
-                return;
             }
-            KeyCode::Right => {
+            shepr_termio::copy_mode::CopyModeCommand::MoveRight => {
                 self.move_copy_cursor(0, 1, outcome);
-                return;
             }
-            KeyCode::PageUp => {
+            shepr_termio::copy_mode::CopyModeCommand::PageUp => {
                 self.move_copy_page(-1, false, outcome);
-                return;
             }
-            KeyCode::PageDown => {
+            shepr_termio::copy_mode::CopyModeCommand::PageDown => {
                 self.move_copy_page(1, false, outcome);
-                return;
             }
-            KeyCode::Home => {
-                self.set_copy_cursor_col(0);
-                self.sync_copy_selection();
-                outcome.repaint = true;
-                return;
-            }
-            KeyCode::End => {
-                self.request_copy_motion(
-                    shepr_protocol::command::PaneCopyMotion::Line(
-                        shepr_protocol::command::PaneLineMotion::End,
-                    ),
-                    outcome,
-                );
-                return;
-            }
-            _ => {}
-        }
-
-        match (key.code, key.modifiers) {
-            (KeyCode::Char('b'), modifiers) if modifiers.contains(KeyModifiers::CONTROL) => {
-                self.move_copy_page(-1, false, outcome);
-                return;
-            }
-            (KeyCode::Char('f'), modifiers) if modifiers.contains(KeyModifiers::CONTROL) => {
-                self.move_copy_page(1, false, outcome);
-                return;
-            }
-            (KeyCode::Char('u'), modifiers) if modifiers.contains(KeyModifiers::CONTROL) => {
+            shepr_termio::copy_mode::CopyModeCommand::HalfPageUp => {
                 self.move_copy_page(-1, true, outcome);
-                return;
             }
-            (KeyCode::Char('d'), modifiers) if modifiers.contains(KeyModifiers::CONTROL) => {
+            shepr_termio::copy_mode::CopyModeCommand::HalfPageDown => {
                 self.move_copy_page(1, true, outcome);
-                return;
             }
-            _ => {}
-        }
-
-        let Some(command) = shepr_termio::copy_mode::copy_mode_command_char(key) else {
-            return;
-        };
-        match command {
-            'q' => self.exit_copy_mode(false, outcome),
-            'y' => {
-                if !self.defer_copy_until_search_result() {
-                    self.exit_copy_mode(true, outcome);
-                }
-            }
-            'v' | ' ' => self.begin_copy_selection(false),
-            'V' => self.begin_copy_selection(true),
-            'h' => self.move_copy_cursor(0, -1, outcome),
-            'j' => self.move_copy_cursor(1, 0, outcome),
-            'k' => self.move_copy_cursor(-1, 0, outcome),
-            'l' => self.move_copy_cursor(0, 1, outcome),
-            'g' => self.move_copy_history(true, outcome),
-            'G' => self.move_copy_history(false, outcome),
-            '0' => {
+            shepr_termio::copy_mode::CopyModeCommand::LineStart => {
                 self.set_copy_cursor_col(0);
                 self.sync_copy_selection();
-                outcome.repaint = true;
             }
-            '$' => {
+            shepr_termio::copy_mode::CopyModeCommand::LineEnd => {
                 self.request_copy_motion(
                     shepr_protocol::command::PaneCopyMotion::Line(
                         shepr_protocol::command::PaneLineMotion::End,
@@ -506,7 +461,13 @@ impl ClientShellState {
                     outcome,
                 );
             }
-            '^' => {
+            shepr_termio::copy_mode::CopyModeCommand::HistoryStart => {
+                self.move_copy_history(true, outcome);
+            }
+            shepr_termio::copy_mode::CopyModeCommand::HistoryEnd => {
+                self.move_copy_history(false, outcome);
+            }
+            shepr_termio::copy_mode::CopyModeCommand::FirstNonBlank => {
                 self.request_copy_motion(
                     shepr_protocol::command::PaneCopyMotion::Line(
                         shepr_protocol::command::PaneLineMotion::FirstNonBlank,
@@ -514,13 +475,25 @@ impl ClientShellState {
                     outcome,
                 );
             }
-            '/' => self.open_copy_search(shepr_protocol::command::PaneCopySearchDirection::Forward),
-            '?' => {
+            shepr_termio::copy_mode::CopyModeCommand::SearchForward => {
+                self.open_copy_search(shepr_protocol::command::PaneCopySearchDirection::Forward);
+            }
+            shepr_termio::copy_mode::CopyModeCommand::SearchBackward => {
                 self.open_copy_search(shepr_protocol::command::PaneCopySearchDirection::Backward);
             }
-            'n' => self.repeat_copy_search(false, outcome),
-            'N' => self.repeat_copy_search(true, outcome),
-            'w' => {
+            shepr_termio::copy_mode::CopyModeCommand::RepeatSearchForward => {
+                self.repeat_copy_search(false, outcome);
+            }
+            shepr_termio::copy_mode::CopyModeCommand::RepeatSearchBackward => {
+                self.repeat_copy_search(true, outcome);
+            }
+            shepr_termio::copy_mode::CopyModeCommand::BeginSelection => {
+                self.begin_copy_selection(false);
+            }
+            shepr_termio::copy_mode::CopyModeCommand::BeginLineSelection => {
+                self.begin_copy_selection(true);
+            }
+            shepr_termio::copy_mode::CopyModeCommand::WordNextStart => {
                 self.request_copy_motion(
                     shepr_protocol::command::PaneCopyMotion::Word(
                         shepr_protocol::command::PaneWordMotion::NextStart,
@@ -528,13 +501,15 @@ impl ClientShellState {
                     outcome,
                 );
             }
-            'b' => self.request_copy_motion(
-                shepr_protocol::command::PaneCopyMotion::Word(
-                    shepr_protocol::command::PaneWordMotion::PreviousStart,
-                ),
-                outcome,
-            ),
-            'e' => {
+            shepr_termio::copy_mode::CopyModeCommand::WordPreviousStart => {
+                self.request_copy_motion(
+                    shepr_protocol::command::PaneCopyMotion::Word(
+                        shepr_protocol::command::PaneWordMotion::PreviousStart,
+                    ),
+                    outcome,
+                );
+            }
+            shepr_termio::copy_mode::CopyModeCommand::WordNextEnd => {
                 self.request_copy_motion(
                     shepr_protocol::command::PaneCopyMotion::Word(
                         shepr_protocol::command::PaneWordMotion::NextEnd,
@@ -542,19 +517,23 @@ impl ClientShellState {
                     outcome,
                 );
             }
-            'W' => self.request_copy_motion(
-                shepr_protocol::command::PaneCopyMotion::Word(
-                    shepr_protocol::command::PaneWordMotion::NextBigStart,
-                ),
-                outcome,
-            ),
-            'B' => self.request_copy_motion(
-                shepr_protocol::command::PaneCopyMotion::Word(
-                    shepr_protocol::command::PaneWordMotion::PreviousBigStart,
-                ),
-                outcome,
-            ),
-            'E' => {
+            shepr_termio::copy_mode::CopyModeCommand::BigWordNextStart => {
+                self.request_copy_motion(
+                    shepr_protocol::command::PaneCopyMotion::Word(
+                        shepr_protocol::command::PaneWordMotion::NextBigStart,
+                    ),
+                    outcome,
+                );
+            }
+            shepr_termio::copy_mode::CopyModeCommand::BigWordPreviousStart => {
+                self.request_copy_motion(
+                    shepr_protocol::command::PaneCopyMotion::Word(
+                        shepr_protocol::command::PaneWordMotion::PreviousBigStart,
+                    ),
+                    outcome,
+                );
+            }
+            shepr_termio::copy_mode::CopyModeCommand::BigWordNextEnd => {
                 self.request_copy_motion(
                     shepr_protocol::command::PaneCopyMotion::Word(
                         shepr_protocol::command::PaneWordMotion::NextBigEnd,
@@ -562,13 +541,15 @@ impl ClientShellState {
                     outcome,
                 );
             }
-            '{' => self.request_copy_motion(
-                shepr_protocol::command::PaneCopyMotion::Paragraph(
-                    shepr_protocol::command::PaneParagraphMotion::Previous,
-                ),
-                outcome,
-            ),
-            '}' => {
+            shepr_termio::copy_mode::CopyModeCommand::ParagraphPrevious => {
+                self.request_copy_motion(
+                    shepr_protocol::command::PaneCopyMotion::Paragraph(
+                        shepr_protocol::command::PaneParagraphMotion::Previous,
+                    ),
+                    outcome,
+                );
+            }
+            shepr_termio::copy_mode::CopyModeCommand::ParagraphNext => {
                 self.request_copy_motion(
                     shepr_protocol::command::PaneCopyMotion::Paragraph(
                         shepr_protocol::command::PaneParagraphMotion::Next,
@@ -576,7 +557,8 @@ impl ClientShellState {
                     outcome,
                 );
             }
-            _ => return,
+            shepr_termio::copy_mode::CopyModeCommand::SubmitSearch
+            | shepr_termio::copy_mode::CopyModeCommand::CancelSearch => return,
         }
         outcome.repaint = true;
     }
@@ -595,8 +577,8 @@ impl ClientShellState {
             return false;
         };
         let mut submit = None;
-        match key.code {
-            KeyCode::Esc => {
+        match shepr_termio::copy_mode::copy_mode_prompt_command(key) {
+            Some(shepr_termio::copy_mode::CopyModeCommand::CancelSearch) => {
                 if let Some(copy_mode) = self.copy_mode.as_mut() {
                     let discard_search = if let Some(search) = copy_mode.search.as_mut() {
                         search.prompt = None;
@@ -611,7 +593,7 @@ impl ClientShellState {
                     }
                 }
             }
-            KeyCode::Enter => {
+            Some(shepr_termio::copy_mode::CopyModeCommand::SubmitSearch) => {
                 submit = Some((prompt.query.to_string(), prompt.direction));
                 if let Some(copy_mode) = self.copy_mode.as_mut()
                     && let Some(search) = copy_mode.search.as_mut()

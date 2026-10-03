@@ -37,28 +37,35 @@ raw reports are in the commit that precedes this file's.
 
 (wave-1 review and gate, wave-3 review, wave-5 fixer and review, wave-7 and wave-8 reviews)
 
-## CLN-029 - Leftovers from the sixth light-loop wave
+## CLN-030 - Leftovers from the seventh light-loop wave
 
-- `SpawnedDaemon` (`crates/shepr-platform/src/daemon.rs`) keeps both
-  `id() -> Option<u32>` and `process_id() -> Option<Pid>`.
-- `EndpointState::set_status(Online)` (client shell endpoints) promotes a
-  retained snapshot to Online with no generation check; no production path
-  sets Online through it any more, only tests.
-- `activate_endpoint_projection` overwrites `endpoints.choice` with `Showing`,
-  bypassing `EndpointChoice::commit`, which is now used only by tests.
-- `RemoteServerStatus::Running` keeps `Option` identity fields that are always
-  `Some` now that `ServerStatusJson` guarantees the identity.
-- `client_status_json` puts `build_version()` (`version+id`) into
-  `BuildVersion.version`, so its `Display` would print the build id twice.
-- Clipboard payloads are no longer bounded by `MAX_COLLECTION_ITEMS`, only by
-  the OSC parser and the message size; decide whether that is the intended
-  bound.
-- `process_argv`'s oversized and empty refusal has no test; splitting the parse
-  from the `/proc` read would make it testable.
-- The `coordinate` doc in `crates/shepr-mux/src/pane/launch_status.rs` ends with
-  a sentence about an old watcher-side publisher.
+- `crates/shepr-termio/src/host_term/modes.rs` `clear_host_mouse_reporting`
+  inserts mode 1015 with an `index == 1` special case because `DecMode` has no
+  urxvt variant; a plain host-only mode list would read better.
+- `dispatch_client_shell_actions` returns `Result` only for a clipboard `Fatal`
+  arm the host write policy never produces; the same unreachable arm sits in the
+  server clipboard path of client `lib.rs`.
+- `src/cli/status.rs` reports the root package `CARGO_PKG_VERSION` while
+  `shepr_protocol::build_version()` uses shepr-protocol's; one const would give
+  one source.
+- In the `Frozen` branch of `server/headless/lifecycle.rs`, a cancellation
+  between `host_shutdown_requested()` and `warning_generation()` now reads
+  `None` and restarts the warning for one turn (benign; the next sync cancels).
+- `EndpointNoticeKind::{ConnectionLost, MoveInterrupted}` take a `String` though
+  every source is a `&'static str` from `EndpointFailure::disconnect_notice()`.
+- shepr-vt `report_modify_other_keys` goes through
+  `String::from_utf8_lossy(set_sequence()).into_owned()`; a `&'static str`
+  sequence would do.
 
-(wave-6 review)
+- The server still accepts and tracks free-label custom report origins
+  (`ReportedAgent::Custom`, non-`shepr:` sources in `ReportOrigin::parse`, the
+  API agent label in pane info), though the TUI projection now carries only a
+  known `Agent` and shepr installs no third-party reporter. Rejecting
+  non-official sources at `app/api/panes/reports.rs` and deleting
+  `ReportedAgent::Custom` would make the server agree with the TUI; it cuts
+  across shepr-agent ownership, mux persistence and their tests.
+
+(wave-7 review and adjudication)
 
 ## Test-only twins and test seams in production
 

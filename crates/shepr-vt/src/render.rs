@@ -130,6 +130,9 @@ impl RenderState {
                 background: DEFAULT_BACKGROUND,
                 foreground: DEFAULT_FOREGROUND,
                 palette: default_palette(),
+                foreground_source: ColorSource::Builtin,
+                background_source: ColorSource::Builtin,
+                child_palette: [None; shepr_core::limits::PALETTE_COLOR_COUNT],
             },
         }
     }

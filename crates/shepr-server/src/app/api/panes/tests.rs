@@ -3,7 +3,7 @@ use crate::app::SpawnGeometry;
 use crate::test_support::*;
 use shepr_config::ServerConfig;
 use shepr_mux::workspace::Workspace;
-use shepr_protocol::command::{EndpointCommand, EndpointError};
+use shepr_protocol::command::{EndpointCommand, EndpointError, PaneTextPoint};
 use shepr_protocol::{PublicPaneId, WorkspaceId};
 use shepr_termio::host_term::cell_size::HostCellSize;
 
@@ -264,10 +264,10 @@ async fn copy_motion_and_search_keep_their_line_across_eviction() {
                 previous: None,
             })
             .expect("the search runs");
-        let EndpointReply::PaneCopySearch { matches, .. } = handled.reply else {
+        let EndpointReply::PaneCopySearch { search, .. } = handled.reply else {
             panic!("expected copy search, got {:?}", handled.reply);
         };
-        matches
+        search.matches
     };
     let found = search(&mut app);
     assert_eq!(found.len(), 1);
@@ -381,35 +381,33 @@ async fn copy_search_uses_endpoint_terminal_matches_and_wraps() {
         })
         .expect("the search runs");
 
-    let EndpointReply::PaneCopySearch {
-        pane_id,
-        matches,
-        current,
-        total,
-        current_global,
-    } = handled.reply
-    else {
+    let EndpointReply::PaneCopySearch { pane_id, search } = handled.reply else {
         panic!("expected copy search");
     };
     assert_eq!(pane_id, public_pane_id);
-    assert_eq!(matches.len(), 2);
+    assert_eq!(search.matches.len(), 2);
     assert_eq!(
-        matches[0].start,
+        search.matches[0].start,
         PaneTextPoint {
             row: shepr_vt::AbsRow(0),
             col: 0
         }
     );
     assert_eq!(
-        matches[1].start,
+        search.matches[1].start,
         PaneTextPoint {
             row: shepr_vt::AbsRow(0),
             col: 11
         }
     );
-    assert_eq!(current, Some(1));
-    assert_eq!(current_global, Some(1));
-    assert_eq!(total, 2);
+    assert_eq!(
+        search.current,
+        Some(shepr_protocol::command::PaneCopySearchPosition {
+            window_index: 1,
+            global_index: 1,
+        })
+    );
+    assert_eq!(search.total, 2);
 }
 
 #[tokio::test]
@@ -433,11 +431,11 @@ async fn copy_search_bounds_returned_matches_but_keeps_exact_total() {
             previous: None,
         })
         .expect("the search runs");
-    let EndpointReply::PaneCopySearch { matches, total, .. } = handled.reply else {
+    let EndpointReply::PaneCopySearch { search, .. } = handled.reply else {
         panic!("expected copy search");
     };
-    assert_eq!(total, 1500);
-    assert_eq!(matches.len(), 1024);
+    assert_eq!(search.total, 1500);
+    assert_eq!(search.matches.len(), 1024);
 }
 
 #[test]

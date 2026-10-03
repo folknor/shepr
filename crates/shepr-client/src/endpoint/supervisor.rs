@@ -5,7 +5,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use super::{ClientEndpointId, ClientEndpointStatus, NativeEndpointTransport};
+use super::{
+    ClientEndpointId, ClientEndpointStatus, EndpointFailureStatus, NativeEndpointTransport,
+};
 use crate::events::ClientLoopEvent;
 pub(crate) use crate::limits::MAX_RETRY_DELAY;
 use crate::limits::{
@@ -25,7 +27,7 @@ pub(crate) enum EndpointSupervisorEvent {
     Status {
         endpoint_id: ClientEndpointId,
         generation: u64,
-        status: ClientEndpointStatus,
+        status: EndpointFailureStatus,
         message: shepr_remote::EndpointFailure,
         connector: Option<OwnedConnector>,
     },
@@ -277,7 +279,7 @@ impl EndpointSupervisors {
                         EndpointSupervisorEvent::Status {
                             endpoint_id: task_endpoint_id,
                             generation,
-                            status: ClientEndpointStatus::after_failure(&failure),
+                            status: EndpointFailureStatus::after_failure(&failure),
                             message: failure,
                             connector,
                         }
@@ -289,7 +291,7 @@ impl EndpointSupervisors {
                         EndpointSupervisorEvent::Status {
                             endpoint_id: task_endpoint_id,
                             generation,
-                            status: ClientEndpointStatus::after_failure(&failure),
+                            status: EndpointFailureStatus::after_failure(&failure),
                             message: failure,
                             connector: None,
                         }
