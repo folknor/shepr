@@ -9,6 +9,7 @@ use crate::status::{
     GitStatusCache, GitStatusCacheEntry, GitStatusDiscovery, git_status_discovery,
     git_status_snapshot_for_cwd, git_status_snapshot_for_discovery,
 };
+use crate::worker::RefreshProgress;
 use crate::{GitReadError, GitStatus, GitStatusKey};
 
 /// One cwd to refresh. `owner` is whatever the caller associates the answer
@@ -81,7 +82,9 @@ impl GitRefresher {
     /// Refreshes `targets`. The pass is computed against the cache without
     /// changing it, then committed: the visited entries replace the cache's,
     /// unvisited ones are released, and read errors are deduplicated against
-    /// those the retained entries carry.
+    /// those the retained entries carry. Each step, one target's checkout
+    /// discovery or one checkout's status, is reported to `progress` with the
+    /// paths it reads before it starts.
     ///
     /// This is where a panicking refresh is contained, and a caught panic
     /// becomes an empty outcome, so a caller waiting for the answer always
@@ -89,8 +92,12 @@ impl GitRefresher {
     /// left it, since nothing was written. A panic while committing may have
     /// written part of the pass, so the cache is cleared and the next refresh
     /// rebuilds it.
-    pub fn refresh<T>(&mut self, targets: Vec<RefreshTarget<T>>) -> RefreshOutcome<T> {
-        self.refresh_with(targets, compute_refresh)
+    pub fn refresh<T>(
+        &mut self,
+        targets: Vec<RefreshTarget<T>>,
+        progress: &RefreshProgress,
+    ) -> RefreshOutcome<T> {
+        self.refresh_with(targets, progress, compute_refresh)
     }
 
     /// [`Self::refresh`] with the computing pass handed in, so a test can
@@ -98,7 +105,12 @@ impl GitRefresher {
     fn refresh_with<T>(
         &mut self,
         targets: Vec<RefreshTarget<T>>,
-        compute: impl FnOnce(Vec<RefreshTarget<T>>, &GitStatusCache) -> ComputedRefresh<T>,
+        progress: &RefreshProgress,
+        compute: impl FnOnce(
+            Vec<RefreshTarget<T>>,
+            &GitStatusCache,
+            &RefreshProgress,
+        ) -> ComputedRefresh<T>,
     ) -> RefreshOutcome<T> {
         let cache = &mut self.cache;
         let mut committing = false;
@@ -110,7 +122,7 @@ impl GitRefresher {
                       cleared if the panic interrupted a commit"
         )]
         let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let computed = compute(targets, cache);
+            let computed = compute(targets, cache, progress);
             committing = true;
             let new_read_errors = cache.apply_refresh(computed.cache_updates);
             RefreshOutcome {
@@ -136,7 +148,11 @@ impl GitRefresher {
 /// Groups targets by checkout key. A target with a known key joins that
 /// key's cached entry; one without discovers its checkout, and a group any
 /// such target joins drops the cached entry so the status is read afresh.
-fn group_targets<T>(targets: Vec<RefreshTarget<T>>, cache: &GitStatusCache) -> Vec<RefreshJob<T>> {
+fn group_targets<T>(
+    targets: Vec<RefreshTarget<T>>,
+    cache: &GitStatusCache,
+    progress: &RefreshProgress,
+) -> Vec<RefreshJob<T>> {
     let mut indexes = HashMap::<GitStatusKey, usize>::new();
     let mut jobs = Vec::<RefreshJob<T>>::new();
 
@@ -145,6 +161,7 @@ fn group_targets<T>(targets: Vec<RefreshTarget<T>>, cache: &GitStatusCache) -> V
         let (key, discovery) = match target.known_key {
             Some(key) => (key, None),
             None => {
+                progress.step(vec![target.cwd.clone()]);
                 let discovery = git_status_discovery(&target.cwd);
                 (discovery.cache_key().clone(), Some(discovery))
             }
@@ -174,11 +191,17 @@ fn group_targets<T>(targets: Vec<RefreshTarget<T>>, cache: &GitStatusCache) -> V
 fn compute_refresh<T>(
     targets: Vec<RefreshTarget<T>>,
     cache: &GitStatusCache,
+    progress: &RefreshProgress,
 ) -> ComputedRefresh<T> {
     let mut statuses = Vec::new();
     let mut cache_updates = Vec::new();
 
-    for job in group_targets(targets, cache) {
+    for job in group_targets(targets, cache, progress) {
+        progress.step(
+            std::iter::once(job.key.as_path().to_path_buf())
+                .chain(job.targets.iter().map(|(_, cwd)| cwd.clone()))
+                .collect(),
+        );
         let (snapshot, cache_entry) = match job.discovery {
             Some(discovery) => git_status_snapshot_for_discovery(discovery),
             None => git_status_snapshot_for_cwd(job.key.as_path(), job.cached.as_ref()),
@@ -233,6 +256,7 @@ mod tests {
                 target(2, other.clone(), None),
             ],
             &GitStatusCache::default(),
+            &RefreshProgress::default(),
         );
 
         assert_eq!(computed.cache_updates.len(), 1);
@@ -269,7 +293,7 @@ mod tests {
 
         let mut cache = GitStatusCache::default();
         cache.apply_refresh(vec![(GitStatusKey::Checkout(cache_key), cached)]);
-        let computed = compute_refresh(targets, &cache);
+        let computed = compute_refresh(targets, &cache, &RefreshProgress::default());
 
         assert_eq!(computed.cache_updates.len(), 1);
         assert_eq!(computed.statuses.len(), 2);
@@ -286,6 +310,39 @@ mod tests {
     }
 
     #[test]
+    fn a_checkout_step_reports_its_key_and_every_cwd_in_it() {
+        let key = PathBuf::from("/nonexistent/repo");
+        // A pending retry answers from the cache, so the step touches nothing.
+        let cached = GitStatusCacheEntry::Miss {
+            retry_after: Instant::now() + Duration::from_secs(30),
+            repo_root: Some(key.clone()),
+            read_errors: Vec::new(),
+        };
+        let mut cache = GitStatusCache::default();
+        cache.apply_refresh(vec![(GitStatusKey::Checkout(key.clone()), cached)]);
+        let cwds = [key.join("a"), key.join("b")];
+        let targets = cwds
+            .iter()
+            .enumerate()
+            .map(|(owner, cwd)| {
+                target(
+                    owner,
+                    cwd.clone(),
+                    Some(GitStatusKey::Checkout(key.clone())),
+                )
+            })
+            .collect();
+        let progress = RefreshProgress::default();
+
+        compute_refresh(targets, &cache, &progress);
+
+        let stalled = progress
+            .stalled_paths(Instant::now() + crate::limits::GIT_REFRESH_STALL_BOUND)
+            .expect("the step is the last progress");
+        assert_eq!(stalled, [key, cwds[0].clone(), cwds[1].clone()]);
+    }
+
+    #[test]
     fn rediscovery_ignores_the_cached_entry_of_the_discovered_key() {
         let _env = shepr_test_support::IsolatedEnv::new();
         let cwd = temp_test_dir("git-refresh-rediscover");
@@ -297,7 +354,11 @@ mod tests {
         let mut cache = GitStatusCache::default();
         cache.apply_refresh(vec![(GitStatusKey::Outside(cwd.clone()), cached)]);
 
-        let jobs = group_targets(vec![target(1, cwd, None)], &cache);
+        let jobs = group_targets(
+            vec![target(1, cwd, None)],
+            &cache,
+            &RefreshProgress::default(),
+        );
 
         assert_eq!(jobs.len(), 1);
         assert!(jobs[0].cached.is_none());
@@ -309,7 +370,10 @@ mod tests {
         let cwd = temp_test_dir("git-refresh-commit");
         let mut refresher = GitRefresher::default();
 
-        let outcome = refresher.refresh(vec![target(7, cwd.clone(), None)]);
+        let outcome = refresher.refresh(
+            vec![target(7, cwd.clone(), None)],
+            &RefreshProgress::default(),
+        );
 
         assert_eq!(outcome.statuses.len(), 1);
         assert_eq!(outcome.statuses[0].owner, 7);
@@ -333,14 +397,21 @@ mod tests {
         let _env = shepr_test_support::IsolatedEnv::new();
         let cwd = temp_test_dir("git-refresh-panic");
         let mut refresher = GitRefresher::default();
-        refresher.refresh(vec![target(1, cwd.clone(), None)]);
+        refresher.refresh(
+            vec![target(1, cwd.clone(), None)],
+            &RefreshProgress::default(),
+        );
         let before = refresher.cache.clone();
         assert!(!before.is_empty());
 
-        let outcome = refresher.refresh_with(vec![target(2, cwd, None)], |_, cache| {
-            assert!(!cache.is_empty());
-            panic!("simulated git refresh failure")
-        });
+        let outcome = refresher.refresh_with(
+            vec![target(2, cwd, None)],
+            &RefreshProgress::default(),
+            |_, cache, _| {
+                assert!(!cache.is_empty());
+                panic!("simulated git refresh failure")
+            },
+        );
 
         assert_eq!(outcome, RefreshOutcome::empty());
         assert_eq!(refresher.cache, before);

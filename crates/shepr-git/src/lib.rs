@@ -7,7 +7,10 @@
 //! admitted for it, and an owner value of their own) and get back one status
 //! per target with the read errors the refresh saw first. Nothing here knows
 //! what an owner is or how often a refresh is due: associating results with
-//! their owners and scheduling refreshes stay with the caller.
+//! their owners and scheduling refreshes stay with the caller. The caller
+//! also decides when to ask the worker whether a refresh has stalled; how long
+//! a refresh may go without progress, and which paths a stalled one keeps out
+//! of later refreshes, are the worker's.
 
 use std::path::PathBuf;
 
@@ -29,7 +32,7 @@ pub(crate) enum RefBackend {
 pub use self::{
     discovery::{discover_checkout_root, fallback_label_from_cwd},
     refresh::{GitRefresher, RefreshOutcome, RefreshTarget, RefreshedStatus},
-    worker::GitStatusWorker,
+    worker::{GitStatusWorker, RefreshProgress},
 };
 pub use runner::{GitCommandError, run_git};
 

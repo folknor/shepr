@@ -17,7 +17,7 @@ pub(crate) struct GitRefreshScheduler {
     pub(crate) git_refresh_due_after_in_flight: bool,
     pub(crate) git_identity_refresh_requested: bool,
     /// While a refresh is in flight, when the loop next wakes to ask the
-    /// worker whether that refresh was lost.
+    /// worker whether that refresh was lost or has stalled.
     lost_refresh_check_at: Instant,
     worker: shepr_git::GitStatusWorker<WorkspaceId>,
 }
@@ -59,14 +59,21 @@ impl GitRefreshScheduler {
         (!self.git_refresh_in_flight).then_some(self.next_git_remote_status_refresh)
     }
 
-    /// Settles an in-flight refresh the worker lost, and moves the next
-    /// lost-refresh check past `now` so the loop does not spin on it.
+    /// Settles an in-flight refresh the worker lost, or one that stalled and
+    /// was abandoned, and moves the next check past `now` so the loop does not
+    /// spin on it. An abandoned refresh never publishes, so without this a
+    /// refresh blocked on one workspace's hung mount would hold back Git
+    /// status for every workspace; the worker leaves that workspace's stuck
+    /// path out of the refreshes that follow.
     fn observe_worker(&mut self, now: Instant) {
         if self.worker.take_lost_refresh() {
             tracing::warn!(
                 "git status worker stopped without publishing an accepted refresh; \
                  scheduling the next refresh on a new worker"
             );
+            self.finish(now);
+        }
+        if self.git_refresh_in_flight && self.worker.abandon_stalled(now) {
             self.finish(now);
         }
         if self.git_refresh_in_flight && now >= self.lost_refresh_check_at {
@@ -134,7 +141,7 @@ impl App {
         // `git_refresh_in_flight` is cleared by `GitStatusRefreshed`, which
         // the worker publishes once for every refresh it accepts, a
         // panicking one included, or by `observe_worker` when the worker
-        // thread stopped before publishing. A worker that cannot be started
+        // thread stopped before publishing or was abandoned stalled. A worker that cannot be started
         // accepts nothing, so the flag stays clear and the next refresh is
         // scheduled here. Otherwise one bad refresh would stop Git status
         // updates for the rest of the process.
@@ -161,7 +168,8 @@ impl App {
 
     /// Poll Git status and the workspace identity while workspaces exist.
     /// Runtime cwd changes without OSC 7 are discovered on this schedule too.
-    /// While a refresh is in flight this is the next lost-refresh check.
+    /// While a refresh is in flight this is the next check for a lost or
+    /// stalled refresh.
     pub(crate) fn git_refresh_deadline(&self) -> Option<Instant> {
         self.git_refresh.deadline(!self.state.workspaces.is_empty())
     }
@@ -523,6 +531,139 @@ mod tests {
             .recv_timeout(std::time::Duration::from_secs(30))
             .expect("refresh on a new worker publishes");
         assert_eq!(outcome.statuses.len(), 1);
+    }
+
+    #[test]
+    fn a_stalled_refresh_frees_the_other_workspaces_and_skips_its_own_until_it_returns() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        use std::time::Duration;
+
+        const WAIT: Duration = Duration::from_secs(30);
+        let mut app = test_app(&shepr_config::ServerConfig::default());
+        let scratch = crate::test_support::ScratchDir::new("git-refresh-stalled");
+        let stuck_cwd = scratch.join("stuck");
+        for cwd in [stuck_cwd.clone(), scratch.join("live")] {
+            let mut ws = Workspace::test_new("test");
+            ws.identity_cwd = cwd;
+            app.state.test_push_workspace(ws);
+        }
+        let stuck_id = app.state.workspaces[0].id;
+        let live_id = app.state.workspaces[1].id;
+
+        // The first refresh blocks in a step on the stuck workspace's cwd, as
+        // a filesystem call on a hung mount would, until released. Each
+        // outcome is labelled with the call that produced it.
+        let (entered, entered_rx) = std::sync::mpsc::channel();
+        let released = Arc::new(AtomicBool::new(false));
+        let double_released = Arc::clone(&released);
+        let calls = AtomicUsize::new(0);
+        let event_tx = app.event_tx.clone();
+        let double_stuck_cwd = stuck_cwd.clone();
+        app.git_refresh.worker = shepr_git::GitStatusWorker::with_refresh(
+            move |outcome| {
+                event_tx
+                    .blocking_send(AppEvent::GitStatusRefreshed { outcome })
+                    .ok();
+            },
+            move |_, targets: Vec<shepr_git::RefreshTarget<WorkspaceId>>, progress| {
+                let call = calls.fetch_add(1, Ordering::SeqCst);
+                if call == 0
+                    && let Some(stuck) = targets.iter().find(|t| t.cwd == double_stuck_cwd)
+                {
+                    progress.step(vec![stuck.cwd.clone()]);
+                    entered.send(()).ok();
+                    let give_up = Instant::now() + WAIT;
+                    while !double_released.load(Ordering::SeqCst) && Instant::now() < give_up {
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+                }
+                shepr_git::RefreshOutcome {
+                    statuses: targets
+                        .into_iter()
+                        .map(|target| shepr_git::RefreshedStatus {
+                            owner: target.owner,
+                            status: GitStatus {
+                                key: GitStatusKey::Outside(target.cwd.clone()),
+                                cwd: target.cwd,
+                                label: format!("call-{call}"),
+                                branch: GitBranch::OutsideRepository,
+                                ahead_behind: None,
+                            },
+                        })
+                        .collect(),
+                    new_read_errors: Vec::new(),
+                }
+            },
+        );
+        let owners = |outcome: &shepr_git::RefreshOutcome<WorkspaceId>| {
+            outcome
+                .statuses
+                .iter()
+                .map(|status| status.owner)
+                .collect::<Vec<_>>()
+        };
+
+        let start = Instant::now();
+        app.mark_git_status_refresh_due(start);
+        app.start_git_status_refresh_if_due(start);
+        assert!(app.git_refresh.git_refresh_in_flight);
+        entered_rx.recv_timeout(WAIT).expect("the refresh stalls");
+
+        // Within the worker's stall bound the refresh is only slow.
+        app.start_git_status_refresh_if_due(Instant::now());
+        assert!(app.git_refresh.git_refresh_in_flight);
+
+        // Past it, the refresh is abandoned and the next one is scheduled.
+        let stalled_at = Instant::now() + Duration::from_secs(3600);
+        app.start_git_status_refresh_if_due(stalled_at);
+        assert!(!app.git_refresh.git_refresh_in_flight);
+        let next = app
+            .git_refresh
+            .refresh_due_at()
+            .expect("next refresh is scheduled");
+        assert!(next > stalled_at);
+
+        // It runs on a new worker, without the stuck workspace.
+        app.start_git_status_refresh_if_due(next);
+        assert!(app.git_refresh.git_refresh_in_flight);
+        let outcome = refreshed(app.event_rx.blocking_recv().expect("refresh"));
+        assert_eq!(owners(&outcome), [live_id]);
+        assert_eq!(outcome.statuses[0].status.label, "call-1");
+        app.handle_internal_event(AppEvent::GitStatusRefreshed { outcome });
+        assert!(!app.git_refresh.git_refresh_in_flight);
+
+        // Once the stalled thread returns, its workspace is refreshed again,
+        // and its own late outcome is never delivered.
+        released.store(true, Ordering::SeqCst);
+        let give_up = Instant::now() + WAIT;
+        let mut now = next;
+        loop {
+            now += Duration::from_secs(60);
+            app.start_git_status_refresh_if_due(now);
+            assert!(app.git_refresh.git_refresh_in_flight);
+            let outcome = refreshed(app.event_rx.blocking_recv().expect("refresh"));
+            assert!(
+                outcome
+                    .statuses
+                    .iter()
+                    .all(|status| status.status.label != "call-0"),
+                "an abandoned refresh was published"
+            );
+            let refreshed_owners = owners(&outcome);
+            app.handle_internal_event(AppEvent::GitStatusRefreshed { outcome });
+            if refreshed_owners.contains(&stuck_id) {
+                assert_eq!(refreshed_owners, [stuck_id, live_id]);
+                break;
+            }
+            assert_eq!(refreshed_owners, [live_id]);
+            assert!(
+                Instant::now() < give_up,
+                "the stuck workspace stayed skipped"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(app.event_rx.try_recv().is_err());
     }
 
     fn test_app(config: &shepr_config::ServerConfig) -> super::super::App {
