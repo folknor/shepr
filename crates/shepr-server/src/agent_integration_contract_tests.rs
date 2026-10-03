@@ -228,6 +228,67 @@ fn every_bundled_agent_asset_replays_through_server_report_validation() {
     );
 }
 
+#[test]
+fn unknown_session_start_source_records_a_session_but_never_replaces_one() {
+    let _environment = IsolatedEnv::new();
+    let scratch = ScratchDir::new("unknown-session-start-source");
+    // Antigravity's policy replaces its session on a report with no start
+    // source, so an unknown source read as an omitted one would replace here.
+    // A dropped report would instead leave the pane with nothing to resume.
+    let mut app = AgentReportHarness::new(scratch.path(), Agent::Antigravity, clock_sample(0))
+        .expect("build App");
+    let pane_id = app.pane_id().to_owned();
+    let request = |session_id: &str, session_start_source: Option<&str>, seq: u64| -> Request {
+        let mut params = serde_json::json!({
+            "pane_id": pane_id.clone(),
+            "source": "shepr:agy",
+            "agent": "agy",
+            "agent_session_id": session_id,
+            "seq": seq
+        });
+        if let Some(source) = session_start_source {
+            params["session_start_source"] = source.into();
+        }
+        serde_json::from_value(serde_json::json!({
+            "id": format!("test:{seq}"),
+            "method": "pane.report_agent_session",
+            "params": params
+        }))
+        .expect("build session report")
+    };
+    let current_session = |app: &AgentReportHarness| {
+        app.terminal_state()
+            .expect("test pane keeps terminal")
+            .current_session_identity_for_persistence()
+            .expect("a session is stored")
+            .session_ref
+            .value_str()
+            .to_owned()
+    };
+
+    app.apply_request(
+        request("first-session", Some("future-source"), 1),
+        clock_sample(1),
+    )
+    .expect("apply first session with an unknown start source");
+    assert_eq!(
+        current_session(&app),
+        "first-session",
+        "an unknown start source still records a session when none conflicts"
+    );
+    app.apply_request(
+        request("unknown-session", Some("future-source"), 2),
+        clock_sample(2),
+    )
+    .expect("unknown session start is accepted");
+    assert_eq!(current_session(&app), "first-session");
+
+    // The premise: the same report with no start source does replace.
+    app.apply_request(request("omitted-session", None, 3), clock_sample(3))
+        .expect("apply session report without a start source");
+    assert_eq!(current_session(&app), "omitted-session");
+}
+
 fn shell_session_steps(contract: &AssetContract) -> Vec<ShellStep> {
     let ContractSessionRef::Id(session_id) = contract.session else {
         panic!("shell asset {} must use an id session", contract.asset);

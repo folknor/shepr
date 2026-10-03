@@ -95,7 +95,7 @@ pub(crate) struct AppSettings {
     pub(crate) cjk_ime_agents: Vec<shepr_config::ConfigAgent>,
     /// DECSCUSR shape parameter (1-6) for the IME anchor cursor.
     pub(crate) cjk_ime_cursor_shape: u8,
-    pub(crate) default_shell: String,
+    pub(crate) default_shell: shepr_core::shell::ResolvedShell,
     pub(crate) login_shell: bool,
     pub(crate) new_terminal_cwd: NewTerminalCwd,
     pub(crate) pane_scrollback_limit_bytes: usize,
@@ -247,13 +247,6 @@ impl AppState {
         geometry: SpawnGeometry,
     ) {
         self.workspace_geometry.insert(id.number(), geometry);
-    }
-
-    /// Whether some workspace has no recorded geometry yet.
-    pub(crate) fn has_workspace_without_area(&self) -> bool {
-        self.workspaces
-            .iter()
-            .any(|workspace| !self.workspace_geometry.contains_key(&workspace.id.number()))
     }
 
     /// Drops the recorded geometry of workspaces that no longer exist.
@@ -496,8 +489,8 @@ mod tests {
         let config = shepr_config::ValidatedServerConfig::from_values(values, paths)
             .expect("shell resolves");
         assert_eq!(
-            AppSettings::from_config(&config).default_shell,
-            shell.to_string_lossy()
+            AppSettings::from_config(&config).default_shell.path(),
+            shell.as_path()
         );
     }
 
@@ -550,7 +543,6 @@ mod tests {
             Some(first_cell)
         );
         assert_eq!(state.workspace_area(1), None);
-        assert!(state.has_workspace_without_area());
         assert_eq!(
             state.workspace_layout_area(1),
             state.settings.headless_rect()
@@ -566,7 +558,7 @@ mod tests {
             },
         );
         state.retain_live_workspace_geometry();
-        assert!(!state.has_workspace_without_area());
+        assert!(state.workspace_area(0).is_some());
         assert_eq!(state.workspace_geometry.len(), 1);
     }
 

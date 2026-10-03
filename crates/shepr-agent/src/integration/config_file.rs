@@ -8,6 +8,7 @@ use crate::limits::MAX_CONFIG_SYMLINK_DEPTH;
 
 use super::atomic_replace::{AtomicReplace, PermissionPolicy};
 use super::env::AgentIntegrationPaths;
+use super::types::{InstallErrorKind, InstallIssue};
 
 /// Holds the persistent lock for one user-owned config file.
 pub(super) struct ConfigUpdateLock {
@@ -102,10 +103,13 @@ fn reject_hard_links(path: &Path) -> io::Result<()> {
         Err(error) => return Err(error),
     };
     if metadata.is_file() && shepr_platform::config_file_link_count(path)? > 1 {
-        return Err(io::Error::other(format!(
-            "cannot update {}: config has multiple hard links; use a separate file or a symlink before retrying",
-            path.display()
-        )));
+        return Err(InstallIssue::io_error(
+            InstallErrorKind::HardLinked,
+            format!(
+                "cannot update {}: config has multiple hard links; use a separate file or a symlink before retrying",
+                path.display()
+            ),
+        ));
     }
     Ok(())
 }
@@ -124,20 +128,23 @@ fn resolve_target(path: &Path) -> io::Result<PathBuf> {
                 };
             }
             Ok(metadata) if !metadata.is_file() => {
-                return Err(io::Error::other(format!(
-                    "cannot update {}: config is not a regular file",
-                    path.display()
-                )));
+                return Err(InstallIssue::io_error(
+                    InstallErrorKind::NotRegularFile,
+                    format!(
+                        "cannot update {}: config is not a regular file",
+                        path.display()
+                    ),
+                ));
             }
             Ok(_) => return Ok(current),
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(current),
             Err(error) => return Err(error),
         }
     }
-    Err(io::Error::other(format!(
-        "cannot update {}: too many symbolic links",
-        path.display()
-    )))
+    Err(InstallIssue::io_error(
+        InstallErrorKind::TooManySymlinks,
+        format!("cannot update {}: too many symbolic links", path.display()),
+    ))
 }
 
 pub(super) fn write_config_for_update(

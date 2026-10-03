@@ -358,8 +358,10 @@ export default function (pi) {
     activateBlocked();
   });
 
-  pi.on("session_start", (_event, ctx) => {
-    if (!activateRootSession(ctx, "startup")) {
+  pi.on("session_start", (event, ctx) => {
+    // Use Pi's reported reason when present; a bare session_start event marks
+    // the root startup needed to establish this pane's initial session.
+    if (!activateRootSession(ctx, event?.reason || "startup")) {
       return;
     }
     // A reload can replace this extension mid-run without emitting another agent_start.
@@ -368,6 +370,7 @@ export default function (pi) {
   });
 
   pi.on("session_switch", (event, ctx) => {
+    // A source-less session_switch is a resume of the selected root.
     if (!activateRootSession(ctx, event?.reason || "resume")) {
       return;
     }

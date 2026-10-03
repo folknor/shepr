@@ -1281,6 +1281,17 @@ impl PaneRuntime {
         self.terminal.alternate_screen_active()
     }
 
+    /// Whether output has flipped the active screen since the last
+    /// `take_screen_flip`. A lock-free load, for the server's per-plan check.
+    pub fn screen_flip_pending(&self) -> bool {
+        self.terminal.screen_flip_pending()
+    }
+
+    /// Takes the screen-flip flag; the caller is about to re-apply geometry.
+    pub fn take_screen_flip(&self) -> bool {
+        self.terminal.take_screen_flip()
+    }
+
     pub fn cursor_state(&self, area: Rect) -> Option<TerminalCursorState> {
         let cursor = self.terminal.cursor_state()?;
         if cursor.x >= area.width || cursor.y >= area.height {
@@ -2317,8 +2328,7 @@ mod tests {
                 Step::Exit(0),
             ],
         );
-        let cmd =
-            PtyCommand::interactive_shell(program.to_str().expect("fixture path is UTF-8"), false);
+        let cmd = PtyCommand::interactive_shell(&fixture::resolved_shell(&program), false);
         let mut spawned = shepr_pty::backend::spawn_pty(
             shepr_core::geometry::PaneGeometry::new(80, 24, 0, 0),
             &cmd,
@@ -2536,8 +2546,7 @@ mod tests {
                 Step::PrintEnv("COLORTERM".into()),
             ],
         );
-        let mut cmd =
-            PtyCommand::interactive_shell(process.to_str().expect("fixture path is UTF-8"), false);
+        let mut cmd = PtyCommand::interactive_shell(&fixture::resolved_shell(&process), false);
         cmd.cwd(scratch.path());
         cmd.env("TERM", "xterm-ghostty");
         cmd.env("COLORTERM", "falsecolor");
@@ -2567,8 +2576,9 @@ mod tests {
             "shepr-login-shell",
             &[Step::Sleep(std::time::Duration::from_secs(30))],
         );
+        let resolved = fixture::resolved_shell(&shell);
         let shell = shell.to_str().expect("scratch shell path is UTF-8");
-        let mut cmd = pane_shell_command_builder(PaneShellConfig::new(shell, true));
+        let mut cmd = pane_shell_command_builder(PaneShellConfig::new(&resolved, true));
         cmd.cwd(scratch.path());
 
         let mut spawned = shepr_pty::backend::spawn_pty(
@@ -2608,8 +2618,9 @@ mod tests {
             "fake-shell",
             &[Step::Sleep(std::time::Duration::from_secs(30))],
         );
+        let resolved = fixture::resolved_shell(&shell);
         let shell = shell.to_str().expect("scratch shell path is UTF-8");
-        let cmd = pane_shell_command_builder(PaneShellConfig::new(shell, false));
+        let cmd = pane_shell_command_builder(PaneShellConfig::new(&resolved, false));
         let mut spawned = shepr_pty::backend::spawn_pty(
             shepr_core::geometry::PaneGeometry::new(80, 24, 0, 0),
             &cmd,
@@ -2641,8 +2652,8 @@ mod tests {
 
     #[test]
     fn a_missing_configured_shell_fails_in_the_child_not_at_the_fork() {
-        let cmd =
-            pane_shell_command_builder(PaneShellConfig::new("/__shepr_missing_shell__", true));
+        let shell = fixture::resolved_shell("/__shepr_missing_shell__");
+        let cmd = pane_shell_command_builder(PaneShellConfig::new(&shell, true));
         let mut spawned = shepr_pty::backend::spawn_pty(
             shepr_core::geometry::PaneGeometry::new(80, 24, 0, 0),
             &cmd,
@@ -2651,21 +2662,6 @@ mod tests {
         .expect("the fork does not wait for exec");
         let status = spawned.child.wait().expect("reap the failed launch");
         assert_eq!(status.code(), Some(127));
-    }
-
-    #[test]
-    fn pane_shell_spawn_refuses_a_bare_name() {
-        // Config validation resolves the shell to an absolute path; the
-        // launch does no PATH walk of its own.
-        let cmd = pane_shell_command_builder(PaneShellConfig::new("fake-shell", false));
-        let err = shepr_pty::backend::spawn_pty(
-            shepr_core::geometry::PaneGeometry::new(80, 24, 0, 0),
-            &cmd,
-            Box::new(drop),
-        )
-        .err()
-        .expect("a bare name is refused");
-        assert_eq!(err.kind(), std::io::ErrorKind::InvalidInput);
     }
 
     /// The child's command line once it exec'd a program whose argv0 is
@@ -3156,8 +3152,7 @@ mod tests {
             pane_id,
             StateChangedUpdate {
                 agent: Some(Agent::Pi),
-                state: AgentState::Idle,
-                visible_blocker: false,
+                detection: shepr_agent::detect::Detection::Idle { visible: false },
                 process_exited: false,
                 observed_at: std::time::Instant::now(),
             },

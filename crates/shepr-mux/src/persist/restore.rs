@@ -842,6 +842,7 @@ fn take_restore_plan_for_snapshot(
 
 #[cfg(test)]
 mod tests {
+    use shepr_test_support::fixture::resolved_shell as test_shell;
     use std::path::{Path, PathBuf};
 
     use super::*;
@@ -980,7 +981,7 @@ mod tests {
             None,
             test_geometry(5, 40),
             4096,
-            crate::pane::PaneShellConfig::new(test_restore_shell(), false),
+            crate::pane::PaneShellConfig::new(&test_shell(test_restore_shell()), false),
             std::path::Path::new(TEST_SOCKET),
             false,
             &events,
@@ -1053,11 +1054,11 @@ mod tests {
                 test_geometry(5, 40),
                 4096,
                 crate::pane::PaneShellConfig::new(
-                    if missing_shell {
-                        "__shepr_missing_restore_shell__"
+                    &test_shell(if missing_shell {
+                        "/__shepr_missing_restore_shell__\0"
                     } else {
                         test_restore_shell()
-                    },
+                    }),
                     false,
                 ),
                 std::path::Path::new(TEST_SOCKET),
@@ -1248,7 +1249,7 @@ mod tests {
         assert!(plan.restore_damage);
     }
 
-    /// Restores with a shell the launch refuses before any fork, so every pane
+    /// An injected NUL makes command encoding fail before any fork, so every pane
     /// comes back as a placeholder without a runtime.
     fn restore_runtimeless(snapshot: &SessionSnapshot) -> RestoredSession {
         let (events, _rx) = mpsc::channel(8);
@@ -1257,7 +1258,10 @@ mod tests {
             None,
             test_geometry(5, 40),
             0,
-            crate::pane::PaneShellConfig::new("__shepr_refused_restore_shell__", false),
+            crate::pane::PaneShellConfig::new(
+                &test_shell("/__shepr_refused_restore_shell__\0"),
+                false,
+            ),
             std::path::Path::new(TEST_SOCKET),
             false,
             &events,
@@ -1750,11 +1754,11 @@ mod tests {
                 test_geometry(24, 80),
                 0,
                 crate::pane::PaneShellConfig::new(
-                    if missing_shell {
-                        "__shepr_missing_restore_shell__"
+                    &test_shell(if missing_shell {
+                        "/__shepr_missing_restore_shell__\0"
                     } else {
                         test_restore_shell()
-                    },
+                    }),
                     false,
                 ),
                 std::path::Path::new(TEST_SOCKET),
@@ -1896,7 +1900,7 @@ mod tests {
             None,
             test_geometry(24, 80),
             0,
-            crate::pane::PaneShellConfig::new(test_restore_shell(), false),
+            crate::pane::PaneShellConfig::new(&test_shell(test_restore_shell()), false),
             std::path::Path::new(TEST_SOCKET),
             false,
             &events,
@@ -1974,7 +1978,7 @@ mod tests {
             None,
             test_geometry(24, 80),
             0,
-            crate::pane::PaneShellConfig::new(test_restore_shell(), false),
+            crate::pane::PaneShellConfig::new(&test_shell(test_restore_shell()), false),
             std::path::Path::new(TEST_SOCKET),
             false,
             &events,
@@ -2062,7 +2066,7 @@ mod tests {
             None,
             test_geometry(24, 80),
             0,
-            crate::pane::PaneShellConfig::new(test_restore_shell(), false),
+            crate::pane::PaneShellConfig::new(&test_shell(test_restore_shell()), false),
             std::path::Path::new(TEST_SOCKET),
             false,
             &events,
@@ -2127,7 +2131,7 @@ mod tests {
             None,
             test_geometry(24, 80),
             0,
-            crate::pane::PaneShellConfig::new(test_restore_shell(), false),
+            crate::pane::PaneShellConfig::new(&test_shell(test_restore_shell()), false),
             std::path::Path::new(TEST_SOCKET),
             true,
             &events,
@@ -2197,7 +2201,7 @@ mod tests {
                 None,
                 test_geometry(24, 80),
                 0,
-                crate::pane::PaneShellConfig::new(test_restore_shell(), false),
+                crate::pane::PaneShellConfig::new(&test_shell(test_restore_shell()), false),
                 std::path::Path::new(TEST_SOCKET),
                 false,
                 &events,
@@ -2252,7 +2256,7 @@ mod tests {
             Some(&history),
             test_geometry(5, 40),
             4096,
-            crate::pane::PaneShellConfig::new(test_restore_shell(), false),
+            crate::pane::PaneShellConfig::new(&test_shell(test_restore_shell()), false),
             std::path::Path::new(TEST_SOCKET),
             false,
             &events,
@@ -2299,7 +2303,7 @@ mod tests {
             None,
             test_geometry(5, 40),
             4096,
-            crate::pane::PaneShellConfig::new(test_restore_shell(), false),
+            crate::pane::PaneShellConfig::new(&test_shell(test_restore_shell()), false),
             std::path::Path::new(TEST_SOCKET),
             false,
             &events,

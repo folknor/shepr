@@ -827,7 +827,7 @@ impl ClientShellState {
             && mouse.kind == MouseEventKind::Down(MouseButton::Left)
             && crate::shell::input::hit_test::contains(self.hits.notification_toast, point)
         {
-            self.notices.dismiss();
+            self.notices.advance();
             outcome.repaint = true;
             return;
         }
@@ -1634,12 +1634,7 @@ impl ClientShellState {
                     return;
                 }
                 if crate::shell::input::hit_test::contains(self.hits.new_workspace, point) {
-                    self.record_binding(
-                        &shepr_termio::input::KeybindMatch::Action(
-                            shepr_termio::input::KeybindAction::NewWorkspace,
-                        ),
-                        outcome,
-                    );
+                    self.record_binding(&shepr_termio::input::KeybindAction::NewWorkspace, outcome);
                     return;
                 }
                 if crate::shell::input::hit_test::contains(self.hits.sidebar_toggle, point) {

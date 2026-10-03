@@ -16,7 +16,7 @@ mod types;
 
 pub use actions::install_present_integrations;
 pub use env::AgentIntegrationPaths;
-pub(crate) use types::{IntegrationStatus, IntegrationStatusKind};
+pub(crate) use types::{InstallErrorKind, IntegrationStatus, IntegrationStatusKind};
 
 const PI_EXTENSION_INSTALL_NAME: &str = "shepr-agent-state.ts";
 const PI_EXTENSION_ASSET: &str = include_str!("assets/pi/shepr-agent-state.ts");

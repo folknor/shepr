@@ -1,4 +1,4 @@
-use crossterm::event::{KeyCode, KeyModifiers};
+use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEventKind};
 
 // Only keys emitted by shepr belong here. Host-only kitty keys stay in the
 // parser; accepting them does not promise that pane encoding supports them.
@@ -107,6 +107,71 @@ pub(super) fn modifiers_from_bits(bits: u8) -> KeyModifiers {
                 KeyModifiers::empty()
             }
         })
+}
+
+// Only mouse forms both the parser and the encoder use belong in these tables.
+// The parser's extended buttons (8 and up) and their drags stay in
+// `parse_mouse_cb`: crossterm has no value for them, so the encoder never
+// produces them and there is nothing to share.
+const MOUSE_BUTTONS: [(MouseButton, u8); 3] = [
+    (MouseButton::Left, 0),
+    (MouseButton::Middle, 1),
+    (MouseButton::Right, 2),
+];
+
+// The values are decoded button numbers; their low two bits are stored with the 0x40 scroll bit.
+const MOUSE_SCROLLS: [(MouseEventKind, u8); 4] = [
+    (MouseEventKind::ScrollUp, 4),
+    (MouseEventKind::ScrollDown, 5),
+    (MouseEventKind::ScrollLeft, 6),
+    (MouseEventKind::ScrollRight, 7),
+];
+
+// The xterm mouse report control byte: button field, modifier bits, drag
+// (motion) bit and the scroll and extended-button high bits.
+pub(super) const MOUSE_BUTTON_RELEASE: u8 = 3; // limits-exempt: xterm mouse report encoding
+pub(super) const MOUSE_DRAG_OFFSET: u16 = 32; // limits-exempt: xterm mouse report encoding
+pub(super) const MOUSE_DRAG_BIT: u8 = 0b0010_0000; // limits-exempt: xterm mouse report encoding
+pub(super) const MOUSE_SCROLL_BASE: u8 = 0b0100_0000; // limits-exempt: xterm mouse report encoding
+pub(super) const MOUSE_BUTTON_FIELD_MASK: u8 = 0b0000_0011; // limits-exempt: xterm mouse report encoding
+pub(super) const MOUSE_EXTENDED_BUTTON_FIELD_MASK: u8 = 0b1100_0000; // limits-exempt: xterm mouse report encoding
+pub(super) const MOUSE_EXTENDED_BUTTON_SHIFT: u32 = 4; // limits-exempt: xterm mouse report encoding
+pub(super) const MOUSE_MODIFIER_SHIFT: u32 = 2; // limits-exempt: xterm mouse report encoding
+
+pub(super) fn mouse_button_code(button: MouseButton) -> Option<u16> {
+    MOUSE_BUTTONS
+        .iter()
+        .find_map(|(known_button, code)| (*known_button == button).then_some(u16::from(*code)))
+}
+
+pub(super) fn mouse_button_from_code(code: u8) -> Option<MouseButton> {
+    MOUSE_BUTTONS
+        .iter()
+        .find_map(|(button, known_code)| (*known_code == code).then_some(*button))
+}
+
+pub(super) fn mouse_scroll_code(kind: MouseEventKind) -> Option<u16> {
+    MOUSE_SCROLLS.iter().find_map(|(known_kind, code)| {
+        (*known_kind == kind).then_some(u16::from(
+            MOUSE_SCROLL_BASE | (*code & MOUSE_BUTTON_FIELD_MASK),
+        ))
+    })
+}
+
+pub(super) fn mouse_scroll_from_code(code: u8) -> Option<MouseEventKind> {
+    MOUSE_SCROLLS
+        .iter()
+        .find_map(|(kind, known_code)| (*known_code == code).then_some(*kind))
+}
+
+pub(super) fn mouse_modifier_bits(modifiers: KeyModifiers) -> u16 {
+    // Only the three xterm modifier bits are taken, so the shifted value is
+    // at most 28 and the conversion cannot fail.
+    u16::try_from(modifier_bits(modifiers, false) << MOUSE_MODIFIER_SHIFT).unwrap_or_default()
+}
+
+pub(super) fn mouse_modifiers_from_bits(control_byte: u8) -> KeyModifiers {
+    modifiers_from_bits((control_byte >> MOUSE_MODIFIER_SHIFT) & 0b0000_0111)
 }
 
 // Control bytes are many-to-one. The first spelling is the parser's canonical

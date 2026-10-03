@@ -389,6 +389,7 @@ mod tests {
     use shepr_protocol::command::{
         EndpointCommand, EndpointReply, PaneSplitParams, PaneTarget, SplitDirection,
     };
+    use shepr_test_support::fixture::resolved_shell as test_shell;
 
     // Test constructors say why session restore and persistence are disabled;
     // the runtime policy name `Suspended` describes a different server state.
@@ -455,7 +456,7 @@ mod tests {
 
     fn test_app() -> App {
         let mut app = App::new(&ServerConfig::default(), crate::app::AppPolicy::Test);
-        app.state.settings.default_shell = exiting_test_command().into();
+        app.state.settings.default_shell = test_shell(exiting_test_command());
         app
     }
 
@@ -807,7 +808,7 @@ mod tests {
         );
 
         let mut app = test_app();
-        app.state.settings.default_shell = shell.to_str().expect("test precondition").into();
+        app.state.settings.default_shell = test_shell(&shell);
         // Its next public number differs from both its raw pane ids and its
         // pane count, so only the number the split took can match.
         app.state.workspaces = vec![Workspace::test_adversarial_identity_state()];

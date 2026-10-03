@@ -30,13 +30,13 @@ status and are retried as ordinary failures. (edges)
 
 ## Latent defects
 
-## BUG-077 - A line selection copied outside copy mode would copy one column
+## BUG-078 - An agent exit owed when the user runs a command is never reported
 
-`request_selection_copy` in the client shell resolves a `SelectionShape::Lines`
-selection to the pane's current width from the copy hit or copy mode, and falls
-back to width 1 when it has neither. Only copy mode builds line selections
-today, and copy-mode exit copies before taking `copy_mode`, so this is
-unreachable; a linewise mouse gesture would hit it. (wave-1 review)
+In `crates/shepr-mux/src/pane/process_probe.rs`, when a confirmed-miss agent
+exit is still owed and the next probe sees a non-shell, non-agent foreground
+(a command run right after the agent quit), the owed exit report is dropped
+along with the agent identity and no `agent_changed` is raised. The pane never
+reports that the agent exited. No test covers the sequence. (wave-2 review)
 
 ## BUG-071 - Parked hook starts have no expiry or process attribution
 

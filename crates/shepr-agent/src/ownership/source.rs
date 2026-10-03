@@ -22,7 +22,7 @@ pub(super) enum HookEvent {
         origin: ReportOrigin,
         session_ref: Option<crate::agent::resume::AgentSessionRef>,
         seq: Option<u64>,
-        session_start_source: Option<AgentSessionStartSource>,
+        session_start_source: ReportedSessionStart,
         sample: HookClockSample,
     },
     Detection {
@@ -1078,7 +1078,7 @@ impl AgentOwnership {
         &self,
         origin: &ReportOrigin,
         session_ref: &crate::agent::resume::AgentSessionRef,
-        session_start_source: Option<AgentSessionStartSource>,
+        session_start_source: ReportedSessionStart,
     ) -> Option<crate::agent::resume::AgentSessionRef> {
         origin.official_agent()?;
         let current = self.current_session_identity_for_persistence()?;
@@ -1090,19 +1090,20 @@ impl AgentOwnership {
         .then_some(current.session_ref)
     }
 
-    fn session_start_source_is_recognized(
-        session_start_source: Option<AgentSessionStartSource>,
-    ) -> bool {
-        session_start_source.is_some()
+    /// Only a known start confirms a start. An omitted source and one this
+    /// build does not know are both unconfirmed: neither parks an ordered
+    /// start nor confirms a takeover from another owner.
+    fn session_start_source_is_recognized(session_start_source: ReportedSessionStart) -> bool {
+        matches!(session_start_source, ReportedSessionStart::Known(_))
     }
 
     fn is_unsequenced_opencode_selection(
         origin: &ReportOrigin,
-        session_start_source: Option<AgentSessionStartSource>,
+        session_start_source: ReportedSessionStart,
         seq: Option<u64>,
     ) -> bool {
         seq.is_none()
-            && session_start_source == Some(AgentSessionStartSource::Select)
+            && session_start_source == ReportedSessionStart::Known(AgentSessionStartSource::Select)
             && origin
                 .official_agent()
                 .is_some_and(|agent| agent.descriptor().hook_session_policy.unsequenced_selection)
@@ -1119,7 +1120,7 @@ impl AgentOwnership {
         &self,
         origin: &ReportOrigin,
         session_ref: &crate::agent::resume::AgentSessionRef,
-        session_start_source: Option<AgentSessionStartSource>,
+        session_start_source: ReportedSessionStart,
     ) -> bool {
         origin
             .official_agent()
@@ -1628,7 +1629,7 @@ mod transition_tests {
                 ReportOrigin::official(Agent::Pi).expect("Pi integration"),
                 Some(identity("new")),
                 Some(20),
-                Some(AgentSessionStartSource::Startup),
+                ReportedSessionStart::Known(AgentSessionStartSource::Startup),
                 start_clock,
             )
             .expect("parked start");
@@ -1995,7 +1996,7 @@ impl AgentOwnership {
             ReportOrigin::parse(source, agent_label).ok()?,
             session_ref,
             seq,
-            crate::agent::resume::normalize_session_start_source(session_start_source),
+            ReportedSessionStart::from_wire(session_start_source),
             Instant::now(),
         )
     }

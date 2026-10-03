@@ -285,6 +285,7 @@ pub(in crate::shell) enum ClientShellMode {
 /// The live mouse range, pending focus, gestures and timers form one lifecycle.
 /// Copy-mode anchors stay in `ClientCopyModeState` so focus return can rebuild
 /// the projected range; click history can outlive a cleared range for double-clicks.
+#[derive(Default)]
 pub(in crate::shell) struct MouseSelection {
     pub(in crate::shell) selection:
         Option<shepr_vt::selection::Selection<shepr_protocol::PublicPaneId>>,
@@ -783,16 +784,7 @@ impl ClientShellState {
             reveal_focused_workspace: true,
             last_composed_size: None,
             last_composed_at: None,
-            mouse_selection: MouseSelection {
-                selection: None,
-                focus_pending: None,
-                last_pane_click: None,
-                autoscroll: None,
-                autoscroll_deadline: None,
-                highlight_clear_deadline: None,
-                repaint_deadline: None,
-                word_gesture: None,
-            },
+            mouse_selection: MouseSelection::default(),
             hits: ShellHitMap::default(),
             endpoints,
             active_endpoint_id: ClientEndpointId::Local,

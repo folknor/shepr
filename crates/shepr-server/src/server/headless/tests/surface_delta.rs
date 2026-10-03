@@ -441,7 +441,7 @@ async fn a_failed_source_collection_promotes_only_clients_viewing_that_pane() {
 }
 
 #[tokio::test]
-async fn a_subset_pass_resizes_a_workspace_from_its_source_client() {
+async fn mode_geometry_is_settled_before_the_render_plan() {
     let mut pair = Pair::new();
     pair.damage(b"\x1b[?1049h");
     pair.server
@@ -450,10 +450,23 @@ async fn a_subset_pass_resizes_a_workspace_from_its_source_client() {
         .expect("client")
         .render_state
         .owe();
-    let plan = pair.server.render_plan(false);
-    assert_eq!(plan.full, vec![ClientId::test_new(8)]);
+    let size_before = pair.server.app.test_runtime(pair.pane).current_size();
+    let plan = pair.server.render_plan(true);
+    assert_eq!(
+        plan.full,
+        vec![ClientId::test_new(7), ClientId::test_new(8)]
+    );
+    let settled_size = pair.server.app.test_runtime(pair.pane).current_size();
+    assert_ne!(settled_size, size_before, "settlement precedes drawing");
     let report = pair.server.render_pass(&plan, &HashSet::new());
-    assert_eq!(report.full, vec![ClientId::test_new(8)]);
+    assert_eq!(
+        pair.server.app.test_runtime(pair.pane).current_size(),
+        settled_size
+    );
+    assert_eq!(
+        report.full,
+        vec![ClientId::test_new(7), ClientId::test_new(8)]
+    );
     let geometry = pair.server.app.test_runtime(pair.pane).current_size();
     let surface = pair.server.clients[&8]
         .render_state
@@ -469,7 +482,7 @@ async fn a_subset_pass_resizes_a_workspace_from_its_source_client() {
 }
 
 #[tokio::test]
-async fn a_subset_pass_resize_invalidates_viewers_outside_the_pass() {
+async fn mode_geometry_includes_all_viewers_in_the_same_plan() {
     let mut pair = Pair::new();
     pair.damage(b"\x1b[?1049h");
     pair.server
@@ -478,11 +491,13 @@ async fn a_subset_pass_resize_invalidates_viewers_outside_the_pass() {
         .expect("client")
         .render_state
         .owe();
-    pair.pass(false);
+    let plan = pair.server.render_plan(true);
     assert_eq!(
-        pair.server.render_plan(false).full,
-        vec![ClientId::test_new(7)]
+        plan.full,
+        vec![ClientId::test_new(7), ClientId::test_new(8)]
     );
+    pair.server.render_pass(&plan, &HashSet::new());
+    assert!(!pair.server.render_plan(false).has_full());
 }
 
 #[tokio::test]
@@ -499,8 +514,8 @@ async fn a_geometry_application_that_resizes_nothing_invalidates_nobody() {
     } else {
         ClientId::test_new(7)
     };
-    // The source has no baseline and a busy slot, so every geometry step
-    // reads its workspace as changed while the source itself stays unserved.
+    // A busy source with no baseline must not make geometry settlement
+    // invalidate its co-viewer repeatedly.
     let client = pair.server.clients.get_mut(&source).expect("source");
     client.request_repaint();
     assert_eq!(
@@ -546,16 +561,13 @@ async fn replies_follow_the_snapshot_when_a_pass_renders_a_subset() {
 }
 
 #[tokio::test]
-async fn with_no_client_attached_a_workspace_is_laid_out_once_per_epoch() {
+async fn with_no_client_attached_planning_lays_out_a_workspace_without_owing_a_pass() {
     let mut server = test_headless_server();
     install_shared_view_test_runtime(&mut server);
-    let plan = server.render_plan(false);
-    assert!(plan.headless_geometry);
-    server.render_pass(&plan, &HashSet::new());
     assert!(!server.render_plan(false).has_full());
     assert!(server.app.state.workspace_area(0).is_some());
     server.mark_view_changed();
-    assert!(server.render_plan(false).headless_geometry);
+    assert!(!server.render_plan(false).has_full());
     shutdown_test_runtimes(&mut server);
 }
 

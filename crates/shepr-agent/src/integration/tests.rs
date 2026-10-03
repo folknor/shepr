@@ -299,7 +299,7 @@ fn launch_install_covers_present_agents_only() {
     env.set("HOME", &home);
     let paths = AgentIntegrationPaths::resolve();
 
-    install_present_integrations(&paths, "release");
+    install_present_integrations(&paths);
 
     assert_eq!(status_of(Target::Claude), IntegrationStatusKind::Current);
     assert_eq!(status_of(Target::Pi), IntegrationStatusKind::Current);
@@ -320,13 +320,13 @@ fn launch_install_covers_present_agents_only() {
         fs::metadata(path).expect("stat hook").ino()
     };
     let before = inode(&hook);
-    install_present_integrations(&paths, "release");
+    install_present_integrations(&paths);
     assert_eq!(inode(&hook), before);
 
     // A registration the user removed is put back.
     fs::write(claude_dir.join("settings.json"), "{}").expect("test precondition");
     assert_eq!(status_of(Target::Claude), IntegrationStatusKind::Outdated);
-    install_present_integrations(&paths, "release");
+    install_present_integrations(&paths);
     assert_eq!(status_of(Target::Claude), IntegrationStatusKind::Current);
 }
 
@@ -345,7 +345,7 @@ fn launch_install_leaves_a_current_hook_alone_when_its_config_cannot_be_read() {
     let broken_settings = "{ not json";
     fs::write(&settings_path, broken_settings).expect("test precondition");
 
-    install_present_integrations(&paths, "release");
+    install_present_integrations(&paths);
 
     assert_eq!(
         fs::read_to_string(&settings_path).expect("settings remain readable"),
@@ -372,7 +372,7 @@ fn launch_install_failure_for_one_agent_leaves_the_others() {
     fs::write(claude_dir.join("settings.json"), "{ not json").expect("test precondition");
     env.set("HOME", &home);
 
-    install_present_integrations(&AgentIntegrationPaths::resolve(), "release");
+    install_present_integrations(&AgentIntegrationPaths::resolve());
 
     assert_eq!(
         status_of(Target::Claude),
@@ -1680,12 +1680,12 @@ fn omp_root_activation_requires_ui_context() {
 #[test]
 fn omp_session_start_and_switch_use_root_activation() {
     let session_start = OMP_EXTENSION_ASSET
-        .find("pi.on(\"session_start\", (_event, ctx)")
+        .find("pi.on(\"session_start\", (event, ctx)")
         .expect("omp extension registers session_start handler");
     let session_start_handler = &OMP_EXTENSION_ASSET[session_start..];
     session_start_handler
-        .find("if (!activateRootSession(ctx, \"startup\"))")
-        .expect("omp session_start handler should activate root session as a startup");
+        .find("if (!activateRootSession(ctx, event?.reason || \"startup\"))")
+        .expect("omp session_start handler should activate root session with its reason");
 
     // Per-turn activation must not claim a startup: only session_start and
     // session_switch select a session.
@@ -3285,24 +3285,15 @@ fn hook_assets_share_one_envelope() {
 }
 
 #[test]
-fn dev_launch_preserves_release_assets_and_registrations() {
+fn installer_ignores_the_inherited_build_profile_marker() {
     let env = IsolatedEnv::new();
     let dir = env.home().join(".claude");
-    fs::create_dir_all(dir.join("hooks")).expect("test precondition");
-    let hook = dir.join("hooks").join(CLAUDE_HOOK_INSTALL_NAME);
-    let settings = dir.join(CLAUDE_SETTINGS_NAME);
-    fs::write(&hook, "release asset with different bytes").expect("test precondition");
-    fs::write(&settings, "release registration with different events").expect("test precondition");
-    // An inherited release marker must not enable a dev server's installer.
-    env.set("SHEPR_BUILD_PROFILE", "release");
-    install_present_integrations(&AgentIntegrationPaths::resolve(), "dev");
+    fs::create_dir_all(&dir).expect("test precondition");
+    env.set("SHEPR_BUILD_PROFILE", "dev");
+    install_present_integrations(&AgentIntegrationPaths::resolve());
     assert_eq!(
-        fs::read_to_string(hook).expect("read hook"),
-        "release asset with different bytes"
-    );
-    assert_eq!(
-        fs::read_to_string(settings).expect("read settings"),
-        "release registration with different events"
+        status_of(crate::agent::IntegrationTarget::Claude),
+        IntegrationStatusKind::Current
     );
 }
 

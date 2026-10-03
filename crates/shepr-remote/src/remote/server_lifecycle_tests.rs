@@ -2,13 +2,11 @@ use super::*;
 
 fn status_json(presence: &str, identity: bool) -> String {
     let identity = if identity {
-        r#""version":"0.6.0","build_id":"0123456789abcdef","boot_id":"4242-1700000000","compatible":true"#
+        r#""version":"0.6.0","build_id":"0123456789abcdef","boot_id":"4242-1700000000""#
     } else {
-        r#""version":null,"build_id":null,"boot_id":null,"compatible":null"#
+        r#""version":null,"build_id":null,"boot_id":null"#
     };
-    format!(
-        r#"{{"presence":"{presence}",{identity},"socket":"/run/shepr.sock","restart_needed":false}}"#
-    )
+    format!(r#"{{"presence":"{presence}",{identity},"socket":"/run/shepr.sock"}}"#)
 }
 
 fn answered() -> RemoteServerStatus {

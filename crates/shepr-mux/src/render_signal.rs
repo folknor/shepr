@@ -104,20 +104,20 @@ impl RenderSignal {
 }
 
 #[cfg(test)]
-impl RenderSignal {
-    /// Returns true when the signal becomes pending or visible PTY work joins it.
-    pub(crate) fn request_pty(&self, pane_id: PaneId) -> bool {
-        let mut state = shepr_vt::lock_auxiliary(&self.state);
-        let source_added = state.request.pty_sources.insert(pane_id);
-        let wake_for_source = source_added && state.immediate_pty_sources.contains(&pane_id);
-        let became_pending = !self.pending.swap(true, Ordering::AcqRel);
-        became_pending || wake_for_source
-    }
-}
-
-#[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
+
+    fn enqueue_pty(
+        signal: &RenderSignal,
+        pane_id: PaneId,
+        queued_flags: &mut HashMap<PaneId, Arc<AtomicBool>>,
+    ) -> bool {
+        let queued = queued_flags
+            .entry(pane_id)
+            .or_insert_with(|| Arc::new(AtomicBool::new(false)));
+        signal.request_pty_coalesced(pane_id, queued)
+    }
 
     #[test]
     fn repeated_pty_reads_do_not_lock_and_collection_rearms_the_pane() {
@@ -152,12 +152,13 @@ mod tests {
     #[test]
     fn coalesces_pty_sources_until_taken() {
         let signal = RenderSignal::new();
+        let mut queued_flags = HashMap::new();
         let first = shepr_test_fixtures::fixed_pane_id(10);
         let second = shepr_test_fixtures::fixed_pane_id(20);
 
-        assert!(signal.request_pty(first));
-        assert!(!signal.request_pty(first));
-        assert!(!signal.request_pty(second));
+        assert!(enqueue_pty(&signal, first, &mut queued_flags));
+        assert!(!enqueue_pty(&signal, first, &mut queued_flags));
+        assert!(!enqueue_pty(&signal, second, &mut queued_flags));
 
         let request = signal.take();
         assert!(!request.generic);
@@ -169,10 +170,17 @@ mod tests {
     #[test]
     fn hidden_pty_sources_coalesce_to_one_wake() {
         let signal = RenderSignal::new();
+        let mut queued_flags = HashMap::new();
         signal.set_immediate_pty_sources(HashSet::from([shepr_test_fixtures::fixed_pane_id(100)]));
 
         let wakes = (1..=50)
-            .filter(|pane_id| signal.request_pty(shepr_test_fixtures::fixed_pane_id(*pane_id)))
+            .filter(|pane_id| {
+                enqueue_pty(
+                    &signal,
+                    shepr_test_fixtures::fixed_pane_id(*pane_id),
+                    &mut queued_flags,
+                )
+            })
             .count();
 
         assert_eq!(wakes, 1);
@@ -181,23 +189,29 @@ mod tests {
     #[test]
     fn immediate_pty_source_wakes_pending_hidden_work() {
         let signal = RenderSignal::new();
+        let mut queued_flags = HashMap::new();
         let hidden = shepr_test_fixtures::fixed_pane_id(10);
         let visible = shepr_test_fixtures::fixed_pane_id(20);
         signal.set_immediate_pty_sources(HashSet::from([visible]));
 
-        assert!(signal.request_pty(hidden));
-        assert!(!signal.request_pty(shepr_test_fixtures::fixed_pane_id(30)));
-        assert!(signal.request_pty(visible));
-        assert!(!signal.request_pty(visible));
+        assert!(enqueue_pty(&signal, hidden, &mut queued_flags));
+        assert!(!enqueue_pty(
+            &signal,
+            shepr_test_fixtures::fixed_pane_id(30),
+            &mut queued_flags
+        ));
+        assert!(enqueue_pty(&signal, visible, &mut queued_flags));
+        assert!(!enqueue_pty(&signal, visible, &mut queued_flags));
     }
 
     #[test]
     fn newly_visible_queued_pty_work_is_immediate_before_the_loop_checks_it() {
         let signal = RenderSignal::new();
+        let mut queued_flags = HashMap::new();
         let pane_id = shepr_test_fixtures::fixed_pane_id(10);
 
         signal.set_immediate_pty_sources(HashSet::new());
-        assert!(signal.request_pty(pane_id));
+        assert!(enqueue_pty(&signal, pane_id, &mut queued_flags));
         assert!(!signal.has_immediate_work());
 
         signal.set_immediate_pty_sources(HashSet::from([pane_id]));
@@ -208,11 +222,12 @@ mod tests {
     #[test]
     fn terminal_title_source_wakes_pending_pty_work() {
         let signal = RenderSignal::new();
+        let mut queued_flags = HashMap::new();
         let hidden = shepr_test_fixtures::fixed_pane_id(10);
         let first_title = shepr_test_fixtures::fixed_pane_id(20);
         let second_title = shepr_test_fixtures::fixed_pane_id(30);
 
-        assert!(signal.request_pty(hidden));
+        assert!(enqueue_pty(&signal, hidden, &mut queued_flags));
         assert!(signal.request_terminal_title(first_title));
         assert!(!signal.request_terminal_title(second_title));
         assert_eq!(
@@ -241,10 +256,11 @@ mod tests {
     #[test]
     fn keeps_generic_and_pty_requests_distinct() {
         let signal = RenderSignal::new();
+        let mut queued_flags = HashMap::new();
         let pane_id = shepr_test_fixtures::fixed_pane_id(10);
 
         signal.request_generic();
-        assert!(!signal.request_pty(pane_id));
+        assert!(!enqueue_pty(&signal, pane_id, &mut queued_flags));
 
         let request = signal.take();
         assert!(request.generic);

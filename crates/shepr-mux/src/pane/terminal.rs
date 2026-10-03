@@ -159,6 +159,13 @@ pub(crate) struct PaneTerminal {
     /// a failure return log their skipped operation once per pane.
     pub core: Mutex<PaneTerminalCore>,
     pub render_queued: std::sync::Arc<AtomicBool>,
+    /// Set when parsing output (a read, or a synchronized update flushed by
+    /// its timeout) leaves the terminal on the other screen than before, and
+    /// cleared by the server once it has re-applied the pane's workspace
+    /// geometry (pane chrome differs between the screens). The parse path
+    /// compares the active screen once per read, not per byte, and stores
+    /// only on an actual flip; the server reads it without the core lock.
+    screen_flipped: AtomicBool,
     /// Set on production construction so mutations without a pane-id
     /// argument can identify their owner in a failure report.
     pane_id: Option<PaneId>,
@@ -270,6 +277,24 @@ impl PaneTerminalCore {
 }
 
 impl PaneTerminal {
+    /// Records an active-screen flip across one parse. Relaxed is enough: the
+    /// render wake the same parse raises orders it before the server's read.
+    fn note_screen_flip(&self, before: shepr_vt::ActiveScreen, after: shepr_vt::ActiveScreen) {
+        if before != after {
+            self.screen_flipped.store(true, Ordering::Relaxed);
+        }
+    }
+
+    /// Whether output flipped the active screen since the flag was last taken.
+    pub(crate) fn screen_flip_pending(&self) -> bool {
+        self.screen_flipped.load(Ordering::Relaxed)
+    }
+
+    /// Takes the screen-flip flag; see `screen_flipped`.
+    pub(crate) fn take_screen_flip(&self) -> bool {
+        self.screen_flipped.swap(false, Ordering::Relaxed)
+    }
+
     fn report_terminal_mutation_failure(&self, operation: &'static str) {
         if !self.mutation_failure_reported.swap(true, Ordering::Relaxed) {
             if let Some(pane_id) = self.pane_id {
@@ -371,21 +396,6 @@ use text::*;
 
 #[cfg(test)]
 mod invariant_tests;
-
-/// Scroll metrics together with the row origin read under one terminal lock.
-/// Only tests read it; production paths take [`ScrollMetrics`] directly.
-#[cfg(test)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct ScrollPosition {
-    pub metrics: ScrollMetrics,
-}
-
-#[cfg(test)]
-impl ScrollPosition {
-    pub(crate) fn viewport_top_row(self) -> shepr_vt::AbsRow {
-        self.metrics.viewport_top_row()
-    }
-}
 
 #[cfg(test)]
 mod tests;

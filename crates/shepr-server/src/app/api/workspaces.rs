@@ -146,11 +146,12 @@ mod tests {
     use shepr_mux::workspace::Workspace;
     use shepr_protocol::WorkspaceId;
     use shepr_termio::host_term::cell_size::HostCellSize;
+    use shepr_test_support::fixture::resolved_shell as test_shell;
 
     fn app() -> App {
         let mut app = App::new(&ServerConfig::default(), crate::app::AppPolicy::Test);
         app.state.settings.default_shell =
-            super::super::test_support::exiting_test_command().into();
+            test_shell(super::super::test_support::exiting_test_command());
         app.state.settings.login_shell = false;
         app
     }

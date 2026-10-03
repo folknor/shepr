@@ -16,6 +16,7 @@ use super::command::{hook_command, is_hook_command_for_path};
 use super::config_edit::{
     ensure_command_hook, ensure_hooks_object, remove_hook_path_commands_preserving,
 };
+use super::types::{InstallErrorKind, InstallIssue};
 
 /// Claude's SessionStart sources: `startup`, which replaces nothing, then the
 /// sources Claude's hook session policy treats as replacements. Deriving the
@@ -93,7 +94,8 @@ fn claude_hook_event(events: &[IntegrationHookEvent]) -> io::Result<&Integration
     // This source-preserving editor handles one SessionStart matcher group.
     match events {
         [event] if event.event == "SessionStart" => Ok(event),
-        _ => Err(io::Error::other(
+        _ => Err(InstallIssue::io_error(
+            InstallErrorKind::ConfigShape,
             "Claude settings integration requires exactly one SessionStart hook event",
         )),
     }
@@ -120,31 +122,40 @@ fn rewrite(
     timeout_seconds: u64,
 ) -> io::Result<String> {
     let root = CstRootNode::parse(content, &strict_parse_options()).map_err(|err| {
-        io::Error::other(format!(
-            "failed to parse {}: {err}",
-            settings_path.display()
-        ))
+        InstallIssue::io_error(
+            InstallErrorKind::ConfigUnparseable,
+            format!("failed to parse {}: {err}", settings_path.display()),
+        )
     })?;
     let root_value = root.value().ok_or_else(|| {
-        io::Error::other(format!(
-            "claude settings at {} must be a JSON object",
-            settings_path.display()
-        ))
+        InstallIssue::io_error(
+            InstallErrorKind::ConfigShape,
+            format!(
+                "claude settings at {} must be a JSON object",
+                settings_path.display()
+            ),
+        )
     })?;
     reject_duplicate_keys(&root_value, settings_path)?;
     let root_object = root_value.as_object().ok_or_else(|| {
-        io::Error::other(format!(
-            "claude settings at {} must be a JSON object",
-            settings_path.display()
-        ))
+        InstallIssue::io_error(
+            InstallErrorKind::ConfigShape,
+            format!(
+                "claude settings at {} must be a JSON object",
+                settings_path.display()
+            ),
+        )
     })?;
 
     let hooks = match root_object.get("hooks") {
         Some(property) => property.object_value().ok_or_else(|| {
-            io::Error::other(format!(
-                "claude settings hooks at {} must be a JSON object",
-                settings_path.display()
-            ))
+            InstallIssue::io_error(
+                InstallErrorKind::ConfigShape,
+                format!(
+                    "claude settings hooks at {} must be a JSON object",
+                    settings_path.display()
+                ),
+            )
         })?,
         None if direct_children_are_compact(&root_object.children()) => {
             let updated = append_hooks_property_compact(
@@ -161,7 +172,12 @@ fn rewrite(
         None => root_object
             .append("hooks", CstInputValue::Object(Vec::new()))
             .object_value()
-            .ok_or_else(|| io::Error::other("failed to create claude settings hooks object"))?,
+            .ok_or_else(|| {
+                InstallIssue::io_error(
+                    InstallErrorKind::ConfigShape,
+                    "failed to create claude settings hooks object",
+                )
+            })?,
     };
 
     let canonical = canonical_hook_value(hook_path, matcher, action, timeout_seconds);
@@ -171,7 +187,10 @@ fn rewrite(
         match hooks.get(event) {
             Some(property) => {
                 let session_start = property.array_value().ok_or_else(|| {
-                    io::Error::other(format!("hook entries for {event} must be an array"))
+                    InstallIssue::io_error(
+                        InstallErrorKind::ConfigShape,
+                        format!("hook entries for {event} must be an array"),
+                    )
                 })?;
                 if direct_children_are_compact(&session_start.children()) {
                     let updated = append_session_entry_compact(
@@ -209,7 +228,10 @@ fn rewrite(
                     .append(event, CstInputValue::Array(Vec::new()))
                     .array_value()
                     .ok_or_else(|| {
-                        io::Error::other(format!("failed to create {event} hook array"))
+                        InstallIssue::io_error(
+                            InstallErrorKind::ConfigShape,
+                            format!("failed to create {event} hook array"),
+                        )
                     })?;
                 session_start.append(canonical_hook_input(
                     hook_path,
@@ -233,7 +255,10 @@ fn remove_hook_path_commands(
     let mut canonical_preserved = false;
     for event_property in hooks.properties() {
         let property_event = event_property.decoded_name().ok_or_else(|| {
-            io::Error::other("Claude settings hooks contain an undecodable event name")
+            InstallIssue::io_error(
+                InstallErrorKind::ConfigShape,
+                "Claude settings hooks contain an undecodable event name",
+            )
         })?;
         let Some(entries) = event_property.value().and_then(|value| value.as_array()) else {
             continue;
@@ -354,10 +379,13 @@ fn append_session_property_compact(
 ) -> io::Result<String> {
     let root = parse_ast_root_object(content, settings_path)?;
     let hooks = root.get_object("hooks").ok_or_else(|| {
-        io::Error::other(format!(
-            "claude settings hooks at {} must be a JSON object",
-            settings_path.display()
-        ))
+        InstallIssue::io_error(
+            InstallErrorKind::ConfigShape,
+            format!(
+                "claude settings hooks at {} must be a JSON object",
+                settings_path.display()
+            ),
+        )
     })?;
     let value = format!(
         "[{}]",
@@ -379,7 +407,12 @@ fn append_session_entry_compact(
     let event_entries = root
         .get_object("hooks")
         .and_then(|hooks| hooks.get_array(event))
-        .ok_or_else(|| io::Error::other(format!("hook entries for {event} must be an array")))?;
+        .ok_or_else(|| {
+            InstallIssue::io_error(
+                InstallErrorKind::ConfigShape,
+                format!("hook entries for {event} must be an array"),
+            )
+        })?;
     Ok(append_array_element(
         content,
         event_entries,
@@ -390,17 +423,20 @@ fn append_session_entry_compact(
 fn parse_ast_root_object<'a>(content: &'a str, settings_path: &Path) -> io::Result<AstObject<'a>> {
     let parsed = parse_to_ast(content, &CollectOptions::default(), &strict_parse_options())
         .map_err(|err| {
-            io::Error::other(format!(
-                "failed to parse {}: {err}",
-                settings_path.display()
-            ))
+            InstallIssue::io_error(
+                InstallErrorKind::ConfigUnparseable,
+                format!("failed to parse {}: {err}", settings_path.display()),
+            )
         })?;
     match parsed.value {
         Some(AstValue::Object(object)) => Ok(object),
-        _ => Err(io::Error::other(format!(
-            "claude settings at {} must be a JSON object",
-            settings_path.display()
-        ))),
+        _ => Err(InstallIssue::io_error(
+            InstallErrorKind::ConfigShape,
+            format!(
+                "claude settings at {} must be a JSON object",
+                settings_path.display()
+            ),
+        )),
     }
 }
 
@@ -504,10 +540,13 @@ fn canonical_hook_json(
 fn verify_updated(updated: String, settings_path: &Path, desired: &Value) -> io::Result<String> {
     let actual = parse_value(&updated, settings_path)?;
     if &actual != desired {
-        return Err(io::Error::other(format!(
-            "failed to safely update claude settings at {}",
-            settings_path.display()
-        )));
+        return Err(InstallIssue::io_error(
+            InstallErrorKind::ConfigShape,
+            format!(
+                "failed to safely update claude settings at {}",
+                settings_path.display()
+            ),
+        ));
     }
     Ok(updated)
 }
@@ -518,10 +557,10 @@ fn direct_children_are_compact(children: &[CstNode]) -> bool {
 
 fn parse_value(content: &str, settings_path: &Path) -> io::Result<Value> {
     serde_json::from_str(content).map_err(|err| {
-        io::Error::other(format!(
-            "failed to parse {}: {err}",
-            settings_path.display()
-        ))
+        InstallIssue::io_error(
+            InstallErrorKind::ConfigUnparseable,
+            format!("failed to parse {}: {err}", settings_path.display()),
+        )
     })
 }
 
@@ -531,14 +570,27 @@ fn reject_duplicate_keys(node: &CstNode, settings_path: &Path) -> io::Result<()>
         for property in object.properties() {
             let name = property
                 .name()
-                .ok_or_else(|| io::Error::other("JSON object property is missing a name"))?
+                .ok_or_else(|| {
+                    InstallIssue::io_error(
+                        InstallErrorKind::ConfigUnparseable,
+                        "JSON object property is missing a name",
+                    )
+                })?
                 .decoded_value()
-                .map_err(|err| io::Error::other(format!("failed to decode JSON key: {err}")))?;
+                .map_err(|err| {
+                    InstallIssue::io_error(
+                        InstallErrorKind::ConfigUnparseable,
+                        format!("failed to decode JSON key: {err}"),
+                    )
+                })?;
             if !names.insert(name.clone()) {
-                return Err(io::Error::other(format!(
-                    "claude settings at {} contains duplicate key {name:?}",
-                    settings_path.display()
-                )));
+                return Err(InstallIssue::io_error(
+                    InstallErrorKind::ConfigShape,
+                    format!(
+                        "claude settings at {} contains duplicate key {name:?}",
+                        settings_path.display()
+                    ),
+                ));
             }
             if let Some(value) = property.value() {
                 reject_duplicate_keys(&value, settings_path)?;
@@ -567,6 +619,7 @@ fn strict_parse_options() -> ParseOptions {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::resume::ReportedSessionStart;
 
     fn install_for_test(
         content: &str,
@@ -710,12 +763,14 @@ mod tests {
         let policy = Agent::Claude.descriptor().hook_session_policy;
         for source in claude_session_start_sources() {
             assert_eq!(
-                policy.allows_replacement(Some(source)),
+                policy.allows_replacement(ReportedSessionStart::Known(source)),
                 source != AgentSessionStartSource::Startup,
                 "Claude source: {source:?}"
             );
         }
-        assert!(policy.allows_replacement(Some(AgentSessionStartSource::Fork)));
+        assert!(
+            policy.allows_replacement(ReportedSessionStart::Known(AgentSessionStartSource::Fork))
+        );
     }
 
     #[test]

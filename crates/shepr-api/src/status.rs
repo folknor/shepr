@@ -64,27 +64,19 @@ pub(crate) fn read_runtime_status_until(
     ApiClient::for_socket(socket_path).status_until(deadline)
 }
 
-/// A transport close, refusal or timeout means the socket gave no status
-/// answer. Decoded API failures are not that: they are errors, never evidence
-/// that a server went away.
+/// A closed stream, missing listener or timed-out operation means the socket
+/// gave no status answer. Decoded API failures are not that: they are errors,
+/// never evidence that a server went away.
 pub(crate) fn status_probe_has_no_answer(error: &ApiClientDeadlineError) -> bool {
-    let no_answer_kind = |kind| {
-        matches!(
-            kind,
-            io::ErrorKind::ConnectionRefused
-                | io::ErrorKind::NotFound
-                | io::ErrorKind::BrokenPipe
-                | io::ErrorKind::ConnectionReset
-                | io::ErrorKind::UnexpectedEof
-                | io::ErrorKind::NotConnected
-                | io::ErrorKind::TimedOut
-                | io::ErrorKind::WouldBlock
-        )
-    };
     match error {
         ApiClientDeadlineError::Connect(error)
         | ApiClientDeadlineError::Request(ApiClientError::Io(error)) => {
-            no_answer_kind(error.kind())
+            matches!(
+                shepr_platform::ipc::classify_stream_error(error),
+                shepr_platform::ipc::StreamFailure::PeerGone
+                    | shepr_platform::ipc::StreamFailure::NoListener
+                    | shepr_platform::ipc::StreamFailure::TimedOut
+            )
         }
         ApiClientDeadlineError::Request(ApiClientError::EmptyResponse) => true,
         ApiClientDeadlineError::Request(

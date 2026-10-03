@@ -9,7 +9,10 @@ use super::command::is_hook_command_for_path;
 use super::config_edit::HOOK_COMMAND_FIELDS;
 use super::env::{AgentIntegrationPaths, DirectoryKey};
 use super::registration::{HooksRoot, JsonShape, Registration};
-use super::types::{ArtifactRole, InstallOutcome};
+use super::types::{
+    ArtifactRole, InstallError, InstallErrorKind, InstallIssue, InstallOutcome,
+    IntegrationOutdatedReason,
+};
 
 #[derive(Clone, Copy)]
 pub(super) struct ManagedAsset {
@@ -300,9 +303,10 @@ fn installed_path(paths: &AgentIntegrationPaths, spec: &IntegrationSpec) -> io::
 pub(crate) fn integration_status(
     paths: &AgentIntegrationPaths,
     target: Target,
-) -> io::Result<super::IntegrationStatus> {
+) -> Result<super::IntegrationStatus, InstallError> {
     let spec = spec_for(target);
-    integration_status_at_with_paths(target, installed_path(paths, spec)?, paths)
+    let path = installed_path(paths, spec)?;
+    integration_status_at_with_paths(target, path, paths)
 }
 
 /// Whether `target`'s agent is present on this host: its own config
@@ -344,8 +348,8 @@ fn grok_hook_config_is_valid(
         return Ok(false);
     };
     let config = serde_json::from_str::<serde_json::Value>(&content).map_err(|error| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
+        InstallIssue::io_error(
+            InstallErrorKind::ConfigUnparseable,
             format!("cannot parse {}: {error}", config_path.display()),
         )
     })?;
@@ -397,8 +401,8 @@ fn read_json(path: &Path) -> io::Result<Option<serde_json::Value>> {
         return Ok(None);
     };
     serde_json::from_str(&content).map(Some).map_err(|error| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
+        InstallIssue::io_error(
+            InstallErrorKind::ConfigUnparseable,
             format!("cannot parse {}: {error}", path.display()),
         )
     })
@@ -501,8 +505,8 @@ fn read_toml(path: &Path) -> io::Result<Option<toml::Value>> {
         return Ok(None);
     };
     toml::from_str(&content).map(Some).map_err(|error| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
+        InstallIssue::io_error(
+            InstallErrorKind::ConfigUnparseable,
             format!("cannot parse {}: {error}", path.display()),
         )
     })
@@ -529,8 +533,8 @@ fn kimi_hooks_registered(
     // The registration comparison preserves TOML source text. Parse the full
     // file here so syntax errors inside the managed block are surfaced too.
     let _config = toml::from_str::<toml::Value>(&content).map_err(|error| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
+        InstallIssue::io_error(
+            InstallErrorKind::ConfigUnparseable,
             format!("cannot parse {}: {error}", config_path.display()),
         )
     })?;
@@ -610,7 +614,7 @@ fn file_matches_asset(path: &Path, asset: &str) -> io::Result<bool> {
 fn integration_state_for_path(
     path: &Path,
     expected_asset: &str,
-) -> io::Result<(super::IntegrationStatusKind, Option<u32>)> {
+) -> io::Result<(Option<bool>, Option<u32>)> {
     let installed = super::file_ops::is_file(path).map_err(|error| {
         io::Error::new(
             error.kind(),
@@ -618,7 +622,7 @@ fn integration_state_for_path(
         )
     })?;
     if !installed {
-        return Ok((super::IntegrationStatusKind::NotInstalled, None));
+        return Ok((None, None));
     }
 
     let content = fs::read(path).map_err(|error| {
@@ -633,13 +637,10 @@ fn integration_state_for_path(
     // Only release launches install these shared artifacts. Exact bytes detect
     // edits without trusting a larger version marker or requiring a manual bump.
     // Dev launches must skip status-driven installation altogether.
-    let state = if content.as_slice() == expected_asset.as_bytes() {
-        super::IntegrationStatusKind::Current
-    } else {
-        super::IntegrationStatusKind::Outdated
-    };
-
-    Ok((state, installed_version))
+    Ok((
+        Some(content.as_slice() == expected_asset.as_bytes()),
+        installed_version,
+    ))
 }
 
 /// The status of the integration installed at `path`. A stat or read error on
@@ -650,21 +651,41 @@ fn integration_status_at_with_paths(
     target: crate::agent::IntegrationTarget,
     path: PathBuf,
     paths: &AgentIntegrationPaths,
-) -> io::Result<super::IntegrationStatus> {
+) -> Result<super::IntegrationStatus, InstallError> {
     let spec = spec_for(target);
     let expected_asset = spec.primary_asset.contents;
-    let (mut state, installed_version) = integration_state_for_path(&path, expected_asset)?;
-
-    if state == super::IntegrationStatusKind::Current
-        && !hook_registration_is_current(spec, &path, paths)?
-    {
-        state = super::IntegrationStatusKind::Outdated;
-    }
+    let (asset_current, installed_version) = integration_state_for_path(&path, expected_asset)?;
+    let Some(asset_current) = asset_current else {
+        return Ok(super::IntegrationStatus {
+            target,
+            path,
+            state: super::IntegrationStatusKind::NotInstalled,
+            outdated_reason: None,
+            installed_version,
+        });
+    };
+    let registration_current = hook_registration_is_current(spec, &path, paths)?;
+    let (state, outdated_reason) = match (asset_current, registration_current) {
+        (true, true) => (super::IntegrationStatusKind::Current, None),
+        (true, false) => (
+            super::IntegrationStatusKind::Outdated,
+            Some(IntegrationOutdatedReason::Registration),
+        ),
+        (false, true) => (
+            super::IntegrationStatusKind::Outdated,
+            Some(IntegrationOutdatedReason::Asset),
+        ),
+        (false, false) => (
+            super::IntegrationStatusKind::Outdated,
+            Some(IntegrationOutdatedReason::AssetAndRegistration),
+        ),
+    };
 
     Ok(super::IntegrationStatus {
         target,
         path,
         state,
+        outdated_reason,
         installed_version,
     })
 }
@@ -712,7 +733,7 @@ pub(crate) fn integration_hook_events(
 pub(crate) fn integration_status_at(
     target: crate::agent::IntegrationTarget,
     path: PathBuf,
-) -> io::Result<super::IntegrationStatus> {
+) -> Result<super::IntegrationStatus, InstallError> {
     let paths = AgentIntegrationPaths::resolve();
     integration_status_at_with_paths(target, path, &paths)
 }
@@ -721,7 +742,7 @@ pub(crate) fn integration_status_at(
 #[cfg(test)]
 pub(crate) fn integration_status_rows(
     paths: &AgentIntegrationPaths,
-) -> Vec<io::Result<super::IntegrationStatus>> {
+) -> Vec<Result<super::IntegrationStatus, InstallError>> {
     Target::all()
         .map(|target| integration_status(paths, target))
         .collect()
@@ -946,6 +967,12 @@ mod registration_tests {
             state(IntegrationTarget::Claude, &hook),
             IntegrationStatusKind::Outdated
         );
+        assert_eq!(
+            integration_status_at(IntegrationTarget::Claude, hook.clone())
+                .expect("stat hook")
+                .outdated_reason,
+            Some(IntegrationOutdatedReason::Registration)
+        );
 
         let settings_path = dir.join("settings.json");
         let target = Target::Claude;
@@ -963,12 +990,29 @@ mod registration_tests {
             IntegrationStatusKind::Current
         );
 
+        fs::write(&hook, "edited managed asset").expect("test precondition");
+        assert_eq!(
+            integration_status_at(IntegrationTarget::Claude, hook.clone())
+                .expect("stat edited hook")
+                .outdated_reason,
+            Some(IntegrationOutdatedReason::Asset)
+        );
+        fs::write(&hook, super::super::CLAUDE_HOOK_ASSET).expect("restore managed asset");
+
         // The user deleting the entry leaves the hook file current but inert.
         fs::write(&settings_path, "{\"hooks\":{}}").expect("test precondition");
         assert_eq!(
             state(IntegrationTarget::Claude, &hook),
             IntegrationStatusKind::Outdated
         );
+        fs::write(&hook, "edited managed asset").expect("test precondition");
+        assert_eq!(
+            integration_status_at(IntegrationTarget::Claude, hook.clone())
+                .expect("stat edited hook")
+                .outdated_reason,
+            Some(IntegrationOutdatedReason::AssetAndRegistration)
+        );
+        fs::write(&hook, super::super::CLAUDE_HOOK_ASSET).expect("restore managed asset");
         fs::write(&settings_path, "{ not json").expect("test precondition");
         let error = integration_status_at(IntegrationTarget::Claude, hook.clone())
             .expect_err("invalid config must be reported");

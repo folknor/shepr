@@ -18,14 +18,13 @@ use super::launch::LaunchPurpose;
 use super::terminal::PaneTerminal;
 use crate::UsableCwd;
 use crate::events::AppEvent;
-use shepr_agent::detect::{Agent, AgentDetection, AgentState};
+use shepr_agent::detect::{Agent, AgentState, Detection};
 use shepr_core::layout::PaneId;
 
 #[derive(Debug, Clone, Copy)]
 pub(super) struct StateChangedUpdate {
     pub(super) agent: Option<Agent>,
-    pub(super) state: AgentState,
-    pub(super) visible_blocker: bool,
+    pub(super) detection: Detection,
     // This observes agent absence, not the pane child's exit reason. The app
     // applies it under a live child; after child death the watcher decides
     // whether the resume identity belongs in the pane-exit checkpoint.
@@ -40,14 +39,15 @@ pub(super) async fn publish_state_changed_event(
 ) {
     // This runs on the async detector task, not the PTY reader thread.
     // Waiting for queue space here preserves correctness-critical state transitions
-    // without blocking pane I/O.
+    // without blocking pane I/O. The application event exposes only the state
+    // and blocker evidence it arbitrates; derive both from the same verdict.
     if let Err(e) = state_events
         .into()
         .send(AppEvent::StateChanged {
             pane_id,
             agent: update.agent,
-            state: update.state,
-            visible_blocker: update.visible_blocker,
+            state: update.detection.state(),
+            visible_blocker: update.detection.visible_blocker(),
             process_exited: update.process_exited,
             observed_at: update.observed_at,
         })
@@ -454,10 +454,7 @@ impl ProcessProbeResult {
 
 #[derive(Debug, Clone, Copy)]
 pub(super) struct AgentDetectionPublishUpdate {
-    pub(super) state: AgentState,
-    pub(super) visible_idle: bool,
-    pub(super) visible_blocker: bool,
-    pub(super) visible_working: bool,
+    pub(super) detection: Detection,
     pub(super) process_exited: bool,
 }
 
@@ -533,6 +530,37 @@ pub(super) struct TickOutput {
     pub(super) next_wake: std::time::Duration,
 }
 
+/// An exit is reported against its identity before that identity is withdrawn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AgentExitPhase {
+    Observing,
+    ReportOwed { agent: Agent },
+    ClearOwed { agent: Agent },
+}
+
+impl AgentExitPhase {
+    fn agent(self) -> Option<Agent> {
+        match self {
+            Self::Observing => None,
+            Self::ReportOwed { agent } | Self::ClearOwed { agent } => Some(agent),
+        }
+    }
+
+    fn clear_pending(self) -> bool {
+        !matches!(self, Self::Observing)
+    }
+
+    fn reported(self) -> bool {
+        matches!(self, Self::ClearOwed { .. })
+    }
+
+    fn report(&mut self) {
+        if let Self::ReportOwed { agent } = *self {
+            *self = Self::ClearOwed { agent };
+        }
+    }
+}
+
 /// The detector's mutable state, independent of the PTY runtime and terminal.
 /// Its transitions can be exercised with fake times and process observations.
 pub(super) struct DetectorState {
@@ -540,21 +568,13 @@ pub(super) struct DetectorState {
     tick_agent_changed: bool,
     tick_group_changed: bool,
     agent_presence: AgentDetectionPresence,
-    state: AgentState,
-    last_visible_idle: bool,
-    last_visible_blocker: bool,
-    last_visible_working: bool,
+    last_published: Option<Detection>,
     last_visible_signal_refresh: Option<std::time::Instant>,
     scheduler: ProcessProbeScheduler,
     transient_color_recheck_until: Option<std::time::Instant>,
-    pending_foreground_shell_clear: bool,
-    foreground_shell_exit_reported: bool,
-    // Keep the confirmed-missing identity available for the required exit
-    // report after the presence counter has already cleared it.
-    pending_confirmed_process_exit: Option<Agent>,
+    exit_phase: AgentExitPhase,
     last_screen_scan_detection_content_seq: Option<u64>,
     last_screen_detection: Option<ScreenDetectionCacheEntry>,
-    has_detection_baseline: bool,
     agent_startup_grace_until: Option<std::time::Instant>,
     pending_idle: PendingIdleConfirmation,
     agent_absence_hold_until: Option<std::time::Instant>,
@@ -565,13 +585,13 @@ struct ScreenDetectionCacheEntry {
     agent: Option<Agent>,
     process_exited: bool,
     detection_content_seq: u64,
-    result: Option<AgentDetection>,
+    result: Option<Detection>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ScreenDetectionCacheLookup {
     Miss,
-    Hit(Option<AgentDetection>),
+    Hit(Option<Detection>),
 }
 
 impl DetectorState {
@@ -585,21 +605,13 @@ impl DetectorState {
             tick_agent_changed: false,
             tick_group_changed: false,
             agent_presence: AgentDetectionPresence::from_agent(None),
-            // Keep the pre-detection state distinct from Unknown so the first
-            // absent-agent report can withdraw a restored pane's seeded agent.
-            state: AgentState::Idle,
-            last_visible_idle: false,
-            last_visible_blocker: false,
-            last_visible_working: false,
+            last_published: None,
             last_visible_signal_refresh: None,
             scheduler: ProcessProbeScheduler::new(now),
             transient_color_recheck_until: None,
-            pending_foreground_shell_clear: false,
-            foreground_shell_exit_reported: false,
-            pending_confirmed_process_exit: None,
+            exit_phase: AgentExitPhase::Observing,
             last_screen_scan_detection_content_seq: None,
             last_screen_detection: None,
-            has_detection_baseline: false,
             agent_startup_grace_until: None,
             pending_idle: PendingIdleConfirmation::default(),
             agent_absence_hold_until,
@@ -665,7 +677,7 @@ impl DetectorState {
         output: &mut TickOutput,
     ) {
         let agent = self.current_agent();
-        let process_exited = self.process_exited(agent);
+        let process_exited = self.process_exited();
         if !self.may_scan_screen(ScreenScanGate {
             now: input.now,
             lifecycle_authority_active: input.lifecycle_authority_active,
@@ -717,10 +729,7 @@ impl DetectorState {
             return;
         }
         if let DetectionPublishDecision::Publish {
-            state,
-            visible_idle,
-            visible_blocker,
-            visible_working,
+            detection,
             process_exited,
         } = self.screen_publish_decision(
             detection,
@@ -733,10 +742,7 @@ impl DetectorState {
             output.state_changed = Some(self.apply_publish_update(
                 agent,
                 AgentDetectionPublishUpdate {
-                    state,
-                    visible_idle,
-                    visible_blocker,
-                    visible_working,
+                    detection,
                     process_exited,
                 },
                 input.now,
@@ -747,7 +753,8 @@ impl DetectorState {
     fn current_agent(&self) -> Option<Agent> {
         // The server must receive the exit against the identity that just
         // passed miss confirmation, before the detector withdraws it.
-        self.pending_confirmed_process_exit
+        self.exit_phase
+            .agent()
             .or_else(|| self.agent_presence.current_agent())
     }
 
@@ -796,18 +803,14 @@ impl DetectorState {
         // idempotent: the suspended-presence path in `observe_process_probe`
         // clears the exit bookkeeping without publishing a presence event, so
         // the same agent can be reported gone again later.
-        self.state = AgentState::Unknown;
-        self.last_visible_idle = false;
+        self.last_published = Some(Detection::Unknown);
         self.scheduler.reset();
         self.transient_color_recheck_until = None;
-        self.last_visible_blocker = false;
-        self.last_visible_working = false;
         self.last_visible_signal_refresh = None;
         self.last_screen_scan_detection_content_seq = None;
         self.last_screen_detection = None;
-        // Reset establishes Unknown as a real baseline; new() starts from a
-        // placeholder and must keep reading until its first report publishes.
-        self.has_detection_baseline = true;
+        // Reset establishes Unknown as a baseline; a new detector has no
+        // baseline and keeps reading until its first report publishes.
         self.agent_startup_grace_until = None;
         self.pending_idle.clear();
     }
@@ -818,7 +821,7 @@ impl DetectorState {
             agent: self.current_agent(),
             observed_foreground_group: request.observed_foreground_group,
             lifecycle_authority_active: request.lifecycle_authority_active,
-            shell_clear_pending: self.pending_foreground_shell_clear,
+            shell_clear_pending: self.exit_phase.clear_pending(),
         })
     }
 
@@ -843,7 +846,7 @@ impl DetectorState {
             previous_agent,
             identified_agent,
             foreground_is_pane_shell,
-            process_exit_reported: self.foreground_shell_exit_reported,
+            process_exit_reported: self.exit_phase.reported(),
         };
         let suspended_agent_is_present = foreground_is_pane_shell
             && previous_agent.is_some_and(|agent| probe.suspended_agents.contains(&agent));
@@ -853,41 +856,35 @@ impl DetectorState {
         );
         let agent_changed = match action {
             ForegroundShellAgentAction::ReportReplacementProcess => {
-                self.pending_foreground_shell_clear = false;
-                self.foreground_shell_exit_reported = false;
-                self.pending_confirmed_process_exit = None;
+                self.exit_phase = AgentExitPhase::Observing;
                 self.agent_presence.observe_process_probe(previous_agent);
                 true
             }
             ForegroundShellAgentAction::ReportProcessExit => {
-                self.pending_foreground_shell_clear = true;
+                if let Some(agent) = previous_agent {
+                    self.exit_phase = AgentExitPhase::ReportOwed { agent };
+                }
                 false
             }
             ForegroundShellAgentAction::ClearAgent => {
-                self.pending_foreground_shell_clear = false;
-                self.foreground_shell_exit_reported = false;
-                let had_confirmed_exit = self.pending_confirmed_process_exit.take().is_some();
-                self.agent_presence.clear_current_agent() || had_confirmed_exit
+                let had_exit = self.exit_phase.clear_pending();
+                self.exit_phase = AgentExitPhase::Observing;
+                self.agent_presence.clear_current_agent() || had_exit
             }
             ForegroundShellAgentAction::ObserveProbe => {
-                self.pending_foreground_shell_clear = false;
-                self.foreground_shell_exit_reported = false;
+                self.exit_phase = AgentExitPhase::Observing;
                 let changed = self.agent_presence.observe_process_probe(identified_agent);
                 if changed && identified_agent.is_none() {
-                    self.pending_confirmed_process_exit = previous_agent;
-                    self.pending_foreground_shell_clear = previous_agent.is_some();
+                    if let Some(agent) = previous_agent {
+                        self.exit_phase = AgentExitPhase::ReportOwed { agent };
+                    }
                     false
                 } else {
-                    if identified_agent.is_some() {
-                        self.pending_confirmed_process_exit = None;
-                    }
                     changed
                 }
             }
             ForegroundShellAgentAction::Suspended => {
-                self.pending_foreground_shell_clear = false;
-                self.foreground_shell_exit_reported = false;
-                self.pending_confirmed_process_exit = None;
+                self.exit_phase = AgentExitPhase::Observing;
                 if let Some(agent) = previous_agent {
                     self.agent_presence.observe_process_probe(Some(agent));
                 }
@@ -920,10 +917,7 @@ impl DetectorState {
             if agent.is_some() {
                 self.agent_absence_hold_until = None;
                 self.agent_startup_grace_until = Some(now + AGENT_STARTUP_GRACE_WINDOW);
-                self.state = AgentState::Unknown;
-                self.last_visible_idle = false;
-                self.last_visible_blocker = false;
-                self.last_visible_working = false;
+                self.last_published = self.last_published.map(|_| Detection::Unknown);
                 self.last_visible_signal_refresh = None;
             } else {
                 self.agent_startup_grace_until = None;
@@ -945,10 +939,8 @@ impl DetectorState {
         self.pending_idle.clear();
     }
 
-    fn process_exited(&self, agent: Option<Agent>) -> bool {
-        self.pending_foreground_shell_clear
-            && agent.is_some()
-            && !self.foreground_shell_exit_reported
+    fn process_exited(&self) -> bool {
+        matches!(self.exit_phase, AgentExitPhase::ReportOwed { .. })
     }
 
     fn may_scan_screen(&mut self, gate: ScreenScanGate) -> bool {
@@ -973,15 +965,16 @@ impl DetectorState {
     }
 
     fn should_read_screen(&self, request: ScreenReadRequest) -> bool {
-        // The initial Idle value is only a transition sentinel. Do not let it
-        // suppress the first screen report, especially while a restore hold is
-        // waiting to expire.
-        if !self.has_detection_baseline {
+        // Without a published baseline the first report must read the screen,
+        // including while a restored agent's absence hold is waiting to expire.
+        if self.last_published.is_none() {
             return true;
         }
         matches!(
             decide_detection_screen_read(DetectionScreenReadInput {
-                state: self.state,
+                state: self
+                    .last_published
+                    .map_or(AgentState::Unknown, Detection::state),
                 agent: request.agent,
                 pending_idle_active: self.pending_idle.active(),
                 agent_changed: request.agent_changed,
@@ -1022,7 +1015,7 @@ impl DetectorState {
         agent: Option<Agent>,
         process_exited: bool,
         detection_content_seq: u64,
-        result: Option<AgentDetection>,
+        result: Option<Detection>,
     ) {
         self.last_screen_detection = Some(ScreenDetectionCacheEntry {
             agent,
@@ -1043,16 +1036,13 @@ impl DetectorState {
 
     fn screen_publish_decision(
         &mut self,
-        screen_detection: shepr_agent::detect::AgentDetection,
+        screen_detection: Detection,
         context: ScreenPublishContext,
     ) -> DetectionPublishDecision {
         decide_screen_detection_publish(
             ScreenDetectionPublishInput {
                 screen_detection,
-                current_state: self.state,
-                last_visible_idle: self.last_visible_idle,
-                last_visible_blocker: self.last_visible_blocker,
-                last_visible_working: self.last_visible_working,
+                previous: self.last_published,
                 last_visible_signal_refresh: self.last_visible_signal_refresh,
                 process_exited: context.process_exited,
                 agent_changed: context.agent_changed,
@@ -1068,23 +1058,19 @@ impl DetectorState {
         update: AgentDetectionPublishUpdate,
         observed_at: std::time::Instant,
     ) -> StateChangedUpdate {
-        self.state = update.state;
-        self.has_detection_baseline = true;
-        self.last_visible_idle = update.visible_idle;
-        self.last_visible_blocker = update.visible_blocker;
-        self.last_visible_working = update.visible_working;
-        self.last_visible_signal_refresh = if update.visible_blocker || update.visible_working {
-            Some(observed_at)
-        } else {
-            None
-        };
+        self.last_published = Some(update.detection);
+        self.last_visible_signal_refresh =
+            if update.detection.visible_blocker() || update.detection.visible_working() {
+                Some(observed_at)
+            } else {
+                None
+            };
         if update.process_exited {
-            self.foreground_shell_exit_reported = true;
+            self.exit_phase.report();
         }
         StateChangedUpdate {
             agent,
-            state: update.state,
-            visible_blocker: update.visible_blocker,
+            detection: update.detection,
             process_exited: update.process_exited,
             observed_at,
         }
@@ -1270,7 +1256,7 @@ mod tests {
             .state_changed
             .expect("absence publishes without a core read");
         assert_eq!(update.agent, None);
-        assert_eq!(update.state, AgentState::Unknown);
+        assert_eq!(update.detection.state(), AgentState::Unknown);
     }
 
     #[test]
@@ -1306,7 +1292,11 @@ mod tests {
             }),
         ));
         assert_eq!(
-            result.state_changed.expect("working report").state,
+            result
+                .state_changed
+                .expect("working report")
+                .detection
+                .state(),
             AgentState::Working
         );
         let cached = detector.tick(&tick_input(
@@ -1342,7 +1332,7 @@ mod tests {
                 let update = result.state_changed.expect("confirmed exit");
                 assert_eq!(update.agent, Some(Agent::Pi));
                 assert!(update.process_exited);
-                assert_eq!(update.state, AgentState::Idle);
+                assert_eq!(update.detection.state(), AgentState::Idle);
             } else {
                 assert!(
                     result
@@ -1673,14 +1663,22 @@ mod tests {
         let now = std::time::Instant::now();
         let mut detector = DetectorState::new(now, LaunchPurpose::Fresh);
         detector.agent_presence = AgentDetectionPresence::from_agent(Some(Agent::Claude));
-        detector.pending_foreground_shell_clear = true;
+        detector.exit_phase = AgentExitPhase::ReportOwed {
+            agent: Agent::Claude,
+        };
 
         detector.reset();
 
         assert_eq!(detector.current_agent(), Some(Agent::Claude));
         // The exit still to report survives the reset.
-        assert!(detector.process_exited(detector.current_agent()));
-        assert_eq!(detector.state, AgentState::Unknown);
+        assert_eq!(
+            detector.exit_phase,
+            AgentExitPhase::ReportOwed {
+                agent: Agent::Claude
+            }
+        );
+        assert!(detector.process_exited());
+        assert_eq!(detector.last_published, Some(Detection::Unknown));
         assert!(
             detector
                 .schedule_process_probe(&ProcessProbeRequest {
@@ -1697,14 +1695,16 @@ mod tests {
         let now = std::time::Instant::now();
         let mut detector = DetectorState::new(now, LaunchPurpose::Fresh);
         detector.agent_presence = AgentDetectionPresence::from_agent(None);
-        detector.pending_confirmed_process_exit = Some(Agent::Pi);
-        detector.pending_foreground_shell_clear = true;
-        detector.foreground_shell_exit_reported = true;
+        detector.exit_phase = AgentExitPhase::ClearOwed { agent: Agent::Pi };
 
         detector.reset();
 
         assert_eq!(detector.current_agent(), Some(Agent::Pi));
-        assert!(!detector.process_exited(detector.current_agent()));
+        assert_eq!(
+            detector.exit_phase,
+            AgentExitPhase::ClearOwed { agent: Agent::Pi }
+        );
+        assert!(!detector.process_exited());
         // Presence is not rebuilt from the exited identity.
         assert_eq!(detector.agent_presence.current_agent(), None);
         let probe = ProcessProbeResult {
@@ -1722,7 +1722,7 @@ mod tests {
                 had_previous_probe: true,
             },
         );
-        assert!(!detector.process_exited(detector.current_agent()));
+        assert!(!detector.process_exited());
     }
 
     #[test]
@@ -1748,11 +1748,11 @@ mod tests {
                 },
             );
             if attempt < AGENT_MISS_CONFIRMATION_ATTEMPTS {
-                assert!(!detector.process_exited(detector.current_agent()));
+                assert!(!detector.process_exited());
                 assert!(!change.agent_changed);
                 assert_eq!(detector.current_agent(), Some(Agent::Pi));
             } else {
-                assert!(detector.process_exited(detector.current_agent()));
+                assert!(detector.process_exited());
                 assert!(!change.agent_changed);
                 assert_eq!(detector.current_agent(), Some(Agent::Pi));
             }
@@ -1782,7 +1782,7 @@ mod tests {
         );
 
         assert_eq!(detector.current_agent(), Some(Agent::Claude));
-        assert!(!detector.process_exited(detector.current_agent()));
+        assert!(!detector.process_exited());
         assert!(!change.agent_changed);
         assert_eq!(change.process_detected, None);
 

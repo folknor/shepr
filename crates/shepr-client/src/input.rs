@@ -8,7 +8,7 @@ use std::os::fd::{AsRawFd, RawFd};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use shepr_termio::input::raw_input::{HostReplies, RawInputFramer};
+use shepr_termio::input::raw_input::RawInputFramer;
 use tokio::sync::mpsc;
 
 use super::{ClientLoopEvent, ParsedHostInput};
@@ -43,7 +43,7 @@ pub(crate) fn stdin_reader_loop(
     // Bypass StdinLock's shared buffer so polling and reading observe the same bytes.
     let stdin_fd = stdin.as_raw_fd();
     let mut scratch = [0u8; HOST_INPUT_READ_CHUNK_BYTES];
-    let mut framer: RawInputFramer<HostReplies> = RawInputFramer::for_host_input();
+    let mut framer = RawInputFramer::for_host_input();
     framer.set_host_escape_disambiguation_active(host_escape_disambiguation_active);
     if host_color_query_sent {
         framer.host_color_query_sent();
@@ -139,7 +139,7 @@ fn report_terminal_unavailable(event_tx: &mpsc::Sender<ClientLoopEvent>, error: 
 
 fn consume_input_bytes(
     data: &[u8],
-    framer: &mut RawInputFramer<HostReplies>,
+    framer: &mut RawInputFramer,
     event_tx: &mpsc::Sender<ClientLoopEvent>,
     pending_palette: &mut Vec<ParsedHostInput>,
     pending_mode: &mut Option<bool>,
@@ -167,7 +167,7 @@ fn consume_input_bytes(
 
 fn flush_idle_input(
     stdin_fd: RawFd,
-    framer: &mut RawInputFramer<HostReplies>,
+    framer: &mut RawInputFramer,
     event_tx: &mpsc::Sender<ClientLoopEvent>,
     pending_palette: &mut Vec<ParsedHostInput>,
     pending_mode: &mut Option<bool>,
@@ -309,8 +309,8 @@ fn flush_unix_palette_input(
         .is_ok()
 }
 
-fn idle_flush_timeout_ms<P: shepr_termio::input::raw_input::HostReplyPolicy>(
-    framer: &shepr_termio::input::raw_input::RawInputFramer<P>,
+fn idle_flush_timeout_ms(
+    framer: &shepr_termio::input::raw_input::RawInputFramer,
     host_mouse_capture_active: bool,
 ) -> i32 {
     if !host_mouse_capture_active {
@@ -347,9 +347,7 @@ mod tests {
     use super::*;
 
     fn framed(raw: &[u8]) -> Vec<shepr_termio::input::raw_input::FramedRawInputEvent> {
-        let mut framer = shepr_termio::input::raw_input::RawInputFramer::<
-            shepr_termio::input::raw_input::NoHostReplies,
-        >::default();
+        let mut framer = shepr_termio::input::raw_input::RawInputFramer::default();
         let mut inputs = framer.push_framed(raw);
         inputs.extend(framer.flush_timeout_framed());
         inputs
@@ -455,25 +453,15 @@ mod tests {
 
     #[test]
     fn mouse_active_escape_sequences_get_longer_reassembly_window() {
-        let mut escape = shepr_termio::input::raw_input::RawInputFramer::<
-            shepr_termio::input::raw_input::NoHostReplies,
-        >::default();
+        let mut escape = shepr_termio::input::raw_input::RawInputFramer::default();
         assert!(escape.push_framed(b"\x1b").is_empty());
-        let mut sgr_mouse = shepr_termio::input::raw_input::RawInputFramer::<
-            shepr_termio::input::raw_input::NoHostReplies,
-        >::default();
+        let mut sgr_mouse = shepr_termio::input::raw_input::RawInputFramer::default();
         assert!(sgr_mouse.push_framed(b"\x1b[<3").is_empty());
-        let mut default_mouse = shepr_termio::input::raw_input::RawInputFramer::<
-            shepr_termio::input::raw_input::NoHostReplies,
-        >::default();
+        let mut default_mouse = shepr_termio::input::raw_input::RawInputFramer::default();
         assert!(default_mouse.push_framed(b"\x1b[MC").is_empty());
-        let mut unrelated = shepr_termio::input::raw_input::RawInputFramer::<
-            shepr_termio::input::raw_input::NoHostReplies,
-        >::default();
+        let mut unrelated = shepr_termio::input::raw_input::RawInputFramer::default();
         assert!(unrelated.push_framed(b"\x1b[49:33;2:").is_empty());
-        let mut csi = shepr_termio::input::raw_input::RawInputFramer::<
-            shepr_termio::input::raw_input::NoHostReplies,
-        >::default();
+        let mut csi = shepr_termio::input::raw_input::RawInputFramer::default();
         assert!(csi.push_framed(b"\x1b[").is_empty());
 
         assert_eq!(
@@ -503,8 +491,7 @@ mod tests {
         assert!(mouse_timeout_ms > 100);
     }
 
-    type HostFramer =
-        shepr_termio::input::raw_input::RawInputFramer<shepr_termio::input::raw_input::HostReplies>;
+    type HostFramer = shepr_termio::input::raw_input::RawInputFramer;
 
     fn raw_bytes(events: Vec<shepr_termio::input::raw_input::FramedRawInputEvent>) -> Vec<Vec<u8>> {
         events.into_iter().map(|event| event.raw).collect()

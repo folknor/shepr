@@ -13,7 +13,13 @@ impl AgentOwnership {
         // All official session-only integrations use the same admission path.
         // A state report may contribute its session, but never state authority.
         if !origin.authority_class().admits_state_report() {
-            return self.transition_start(&origin, session_ref, seq, None, sample);
+            return self.transition_start(
+                &origin,
+                session_ref,
+                seq,
+                ReportedSessionStart::Omitted,
+                sample,
+            );
         }
         // Preserve the stricter session contract enforced by bundled hook assets.
         if origin.official_agent().is_some_and(|agent| {
@@ -81,8 +87,12 @@ impl AgentOwnership {
             if origin.is_full_lifecycle() {
                 session_ref
             } else {
-                self.conflicting_same_owner_session_ref(&origin, &session_ref, None)
-                    .unwrap_or(session_ref)
+                self.conflicting_same_owner_session_ref(
+                    &origin,
+                    &session_ref,
+                    ReportedSessionStart::Omitted,
+                )
+                .unwrap_or(session_ref)
             }
         });
         let reanchor_sequence = match self.route_full_lifecycle_hook_report(

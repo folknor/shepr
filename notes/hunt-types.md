@@ -344,23 +344,14 @@ state-report admission, but it is derived from the flags, which remain, and
 `source/start.rs` still reads `session_identity_only_integration` directly.
 (agents)
 
-## TYP-015 - The screen verdict is a state plus four bools
+## TYP-015 - The published state event splits the screen verdict again
 
-`AgentDetection { state, skip_state_update, visible_idle, visible_blocker,
-visible_working }` admits 64 combinations of which the meaningful ones are skip,
-unknown, or one state optionally visible. The manifest validator enforces it at
-load (`validate_manifest`), `rule_detection` re-masks it per match, and mux
-masks it a third time in `decide_screen_detection_publish`, then spreads the
-three bools over `DetectionPublishState`, `DetectionPublishDecision::Publish`,
-`AgentDetectionPublishUpdate`, `ScreenDetectionPublishInput.last_visible_*`,
-`DetectorState::last_visible_*` and the `AgentDetection` the pane runtime
-synthesizes for a process exit. `detection_update_for_publish_with_osc` turns
-`skip_state_update` into an `Option` immediately. `DetectorState` also encodes
-"no published baseline yet" twice (`state: AgentState::Idle` as a sentinel and
-`has_detection_baseline: false`). Proposal: `ScreenVerdict::{Skip, Unknown,
-Idle { visible }, Working { visible }, Blocked { visible }}` produced by
-manifest compilation (agents), or `Option<Detection { state, visible }>`
-(mux-panes), with `Option<Detection>` for the last published value. Reported by
+The screen verdict is typed from manifest compilation through the mux
+publisher, and the baseline sentinel is an `Option<Detection>`. Still open:
+`AppEvent::StateChanged` and the server's `StateEvent::StateChanged` carry a
+state plus a blocker bool, which the publisher derives from the one verdict;
+carrying the typed detection across that contract (mux events and the server
+app event handling in `crates/shepr-server/src/app/`) finishes it. Reported by
 agents and mux-panes.
 
 ## TYP-016 - Agent state exists as five enums plus string spellings
@@ -453,38 +444,6 @@ trims, so explain echoes an untrimmed spelling). `send_request` returns
 display and the state source of the explain consolidation), used for the wire
 and the printer. Reported by agents, contracts, edges and server-app.
 
-## TYP-021 - The installer takes the build profile as a string
-
-`install_present_integrations(paths, build_profile: &str)` compares against
-`"release"`; the server flattens `BuildProfile::current().marker()` for the call
-(`bootstrap.rs`). Agent sits below config, so it cannot take the enum. The
-agents hunter prefers moving the release-only decision to the caller (only
-release servers own agent configs is server policy) over moving `BuildProfile`
-down. (agents)
-
-## TYP-022 - Integration install and status failures are prose
-
-The config-changed retry and non-regular reads are typed, and directory errors
-keep their source, but most install failures are still
-`io::Error::other(format!(..))` ("directory not found ... install X first",
-"must be a JSON object", "registers the Shepr hook outside its managed block",
-"config has multiple hard links"). `IntegrationStatusKind::Outdated` collapses
-"asset bytes differ" and "registration missing or edited", and
-`logging::integration_action(.., outcome: &'static str)` uses `"ok"`/`"error"`.
-Proposal: `InstallError { ConfigChanged, ConfigUnparseable, ConfigShape,
-ManagedBlockConflict, HardLinked, NotRegularFile, TooManySymlinks,
-AgentDirMissing, Io }` and `Outdated { asset, registration }`. (agents)
-
-## TYP-023 - Session start sources are parsed leniently
-
-`AgentSessionStartSource::parse` trims and matches strings; assets invent
-`"startup"` defaults (Kimi, MastraCode, Kilo, OpenCode's chat hook, OMP) and
-`"select"` (OpenCode TUI). An unknown value is silently `None`, which changes
-replacement semantics (`allows_replacement(None)` falls back to
-`replace_without_start`). A typed `Option<Result<Source, Unrecognized>>` at the
-API would let the server log an asset sending a value it does not know.
-(agents)
-
 ## Hook arbitration and detector state
 
 ## TYP-024 - Hook report outcomes collapse a dozen reasons into `None`
@@ -504,16 +463,6 @@ pure queries answered through effect variants (`OrderAllowed(bool)`,
 `DetectorObservationAllowed(bool)`, `Report(route)`, `Start(route)`) that
 callers destructure with `let .. else { return None }`; queries should be
 methods. (mux-panes)
-
-## TYP-025 - The detector's agent-exit lifecycle is three loose fields
-
-`DetectorState` has `pending_foreground_shell_clear: bool`,
-`foreground_shell_exit_reported: bool` and `pending_confirmed_process_exit:
-Option<Agent>`, which with `AgentDetectionPresence { current_agent,
-consecutive_misses }` encode "present / exit confirmed, report owed / exit
-reported, clear owed / cleared". `observe_process_probe` sets them in five
-combinations per `ForegroundShellAgentAction`. Proposal: an `AgentExitPhase`
-enum with explicit transitions. (mux-panes)
 
 ## Pane runtime
 
@@ -613,23 +562,14 @@ settlement policy and records `PaneStartFailure { stage: StartStage::{
 EnterDirectory { path }, ExecShell { program }, ResumeUnavailable }, cause:
 Errno }`. Reported by foundation and mux-panes.
 
-## TYP-032 - The resolved pane shell travels as `&str` and is re-derived
+## TYP-032 - The raw shell setting uses an empty string for unset
 
-Config validation (`resolve_recognized_shell`: PATH search, access check,
-recognized basename) resolves an absolute path, then `shell_path_string` makes it
-a `String`, which is why a non-UTF-8 shell path must be refused.
-`ValidatedTerminalConfig::default_shell: String`; the raw
-`TerminalConfig::default_shell` uses `""` for "use `$SHELL`". `AppSettings`
-stores `default_shell: String`, and `PaneShellConfig::new(&default_shell,
-login_shell)` is rebuilt at four sites (`App::with_paths`,
-`create_workspace_without_save`, `handle_pane_split`,
-`start_pending_agent_resume`). `PaneShellConfig { default_shell: &str }` carries
-it on; `PtyCommand::interactive_shell` trims it again and writes `SHELL`;
-`launch_spec` re-checks `is_absolute()` and overwrites `SHELL` a second time.
-Proposal: `ResolvedShell(PathBuf)` (absolute, executable, recognized, with a
-login flag or invocation enum) minted only by config validation, stored in
-settings, accepted by `PtyCommand::new`, with `Option<String>` for the raw
-setting. Reported by foundation, mux-panes, contracts and server-app.
+`ResolvedShell` (in `crates/shepr-core/src/shell.rs`) is minted by config
+validation and carried to `PtyCommand`. Still open: the raw
+`TerminalConfig::default_shell` uses `""` for "use `$SHELL`" where an
+`Option<String>` would say it, and `ResolvedShell`'s constructor takes a
+validation callback because pty cannot depend on config. Reported by
+foundation, mux-panes, contracts and server-app.
 
 ## TYP-033 - Copy-mode and text-search APIs take primitives
 

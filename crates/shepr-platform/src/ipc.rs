@@ -981,16 +981,32 @@ pub fn poll_local_stream_read_count(
     }
 }
 
-pub fn is_connection_closed_error(err: &io::Error) -> bool {
-    matches!(
-        err.kind(),
+/// The transport meaning of an error reported while using a local stream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StreamFailure {
+    /// The stream was connected, but its peer has closed or disappeared.
+    PeerGone,
+    /// The stream path is absent or has no listener to answer a connection attempt.
+    NoListener,
+    /// The operation timed out or is not ready to proceed yet.
+    TimedOut,
+    /// The error does not establish a stream transport outcome.
+    Other,
+}
+
+/// Gives common local stream errors one transport meaning for all consumers.
+pub fn classify_stream_error(error: &io::Error) -> StreamFailure {
+    match error.kind() {
         io::ErrorKind::BrokenPipe
-            | io::ErrorKind::ConnectionAborted
-            | io::ErrorKind::ConnectionReset
-            | io::ErrorKind::NotConnected
-            | io::ErrorKind::UnexpectedEof
-            | io::ErrorKind::WriteZero
-    )
+        | io::ErrorKind::ConnectionAborted
+        | io::ErrorKind::ConnectionReset
+        | io::ErrorKind::NotConnected
+        | io::ErrorKind::UnexpectedEof
+        | io::ErrorKind::WriteZero => StreamFailure::PeerGone,
+        io::ErrorKind::ConnectionRefused | io::ErrorKind::NotFound => StreamFailure::NoListener,
+        io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock => StreamFailure::TimedOut,
+        _ => StreamFailure::Other,
+    }
 }
 
 pub fn socket_file_identity(path: &Path) -> io::Result<SocketFileIdentity> {

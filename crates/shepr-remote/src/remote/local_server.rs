@@ -245,19 +245,14 @@ fn wait_for_overridden_server(
     // clock-io-ok: the launch budget measures real elapsed waiting on the socket
     let deadline = Instant::now() + timeout;
     loop {
+        wait_for_server_socket_to_settle_until(paths, deadline, timeout)?;
         match probe_server(paths)? {
             Probed::Running(status) => return accept_running(paths, status, build_check),
             Probed::NoServer => return Err(no_server_at_override(paths)),
             Probed::Unresponsive => return Err(unresponsive_error(paths)),
-            Probed::Starting | Probed::Stopping => {
-                // clock-io-ok: measures the real time left of the socket wait.
-                let remaining = deadline.saturating_duration_since(Instant::now());
-                if remaining.is_zero() {
-                    return Err(server_transition_timeout(paths, timeout));
-                }
-                // clock-io-ok: waits for a real socket transition.
-                std::thread::sleep(SOCKET_POLL_INTERVAL.min(remaining));
-            }
+            // A new transition began after the shared wait observed a stable
+            // state. Keep using the original deadline for that next transition.
+            Probed::Starting | Probed::Stopping => {}
         }
     }
 }

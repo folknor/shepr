@@ -630,7 +630,7 @@ mod tests {
     fn fixture_command(steps: &[Step]) -> PtyCommand {
         let scratch = shepr_test_support::ScratchDir::new("pty-backend-fixture");
         let path = fixture::stand_in(scratch.path(), "shepr-fixture", steps);
-        PtyCommand::interactive_shell(path.to_str().expect("fixture path is UTF-8"), false)
+        PtyCommand::interactive_shell(&fixture::resolved_shell(&path), false)
     }
 
     fn test_geometry() -> shepr_core::geometry::PaneGeometry {
@@ -848,7 +848,10 @@ mod tests {
     #[test]
     fn a_missing_shell_is_reported_as_an_exec_failure() {
         let _guard = crate::locks::lock_auxiliary(pty_fd_test_lock());
-        let cmd = PtyCommand::interactive_shell("/__shepr_missing_program__", false);
+        let cmd = PtyCommand::interactive_shell(
+            &fixture::resolved_shell("/__shepr_missing_program__"),
+            false,
+        );
         let (mut spawned, records) = spawn_and_read_status(&cmd);
         assert!(matches!(records.as_slice(), [
             LaunchRecord::ChdirOk(_),

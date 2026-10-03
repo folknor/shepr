@@ -1,4 +1,4 @@
-use super::resume::{AgentSessionRef, AgentSessionStartSource, PersistedAgentSession};
+use super::resume::{AgentSessionRef, PersistedAgentSession, ReportedSessionStart};
 use super::{Agent, AgentSource};
 
 /// A report label is either a resolved built-in agent or an open custom name.
@@ -124,7 +124,7 @@ impl ReportOrigin {
         self.authority_class() == HookAuthorityClass::FullLifecycle
     }
 
-    pub fn allows_session_replacement(&self, start: Option<AgentSessionStartSource>) -> bool {
+    pub fn allows_session_replacement(&self, start: ReportedSessionStart) -> bool {
         self.official_agent().is_some_and(|agent| {
             agent
                 .descriptor()

@@ -56,7 +56,7 @@ impl Notices {
             .as_ref()
             .is_some_and(|notice| self.boot_seen.contains(&notice.key))
         {
-            self.dismiss();
+            self.advance();
         }
     }
     pub(in crate::shell) fn open_diagnostic(
@@ -149,7 +149,7 @@ impl Notices {
             body,
         });
         if self.visible.is_none() {
-            self.dismiss();
+            self.advance();
         }
         true
     }
@@ -167,17 +167,15 @@ impl Notices {
     pub(in crate::shell) fn tick(&mut self, now: std::time::Instant) -> bool {
         let notice_expired = self.deadline().is_some_and(|deadline| now >= deadline);
         if notice_expired {
-            self.dismiss();
+            self.advance();
             return true;
         }
 
         false
     }
 
-    /// Replace the visible card with the next queued boot card (a restore or
-    /// saves-stopped card), if any. Every path that retires the visible card
-    /// (expiry, dismissal, a seen boot card) goes through here so the queue never waits on an unrelated timer.
-    pub(in crate::shell) fn dismiss(&mut self) {
+    /// Retire the visible card and show the next queued boot card, if any.
+    pub(in crate::shell) fn advance(&mut self) {
         self.visible = self.boot_queue.pop_front();
         self.drawn_until = None;
     }

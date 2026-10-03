@@ -64,27 +64,89 @@ impl PresentedAgentState {
     }
 }
 
-/// Screen-derived agent state plus confidence metadata used for source arbitration.
+/// A screen state with evidence that can only belong to that state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct AgentDetection {
-    pub state: AgentState,
-    /// True when the current screen is an agent-owned viewer that shows
-    /// transcript/history instead of the live prompt state.
-    pub skip_state_update: bool,
-    /// True when the current screen visibly shows live idle chrome. The pane's
-    /// detection loop uses it to publish a Working -> Idle change at once
-    /// instead of waiting for the idle to be confirmed over several ticks.
-    pub visible_idle: bool,
-    /// True when the current screen visibly shows live UI chrome that needs
-    /// human input. This is stronger than arbitrary prompt-like text in the
-    /// scrollback and may override a non-blocked integration state.
-    pub visible_blocker: bool,
-    /// True when the current screen visibly shows live working chrome. The
-    /// pane detector carries this through its publish decision to track screen
-    /// evidence and refresh its local state. Screen detection can supply a
-    /// `Working` state when source arbitration accepts it, but screen working
-    /// evidence never overrides a hook's report.
-    pub visible_working: bool,
+pub enum Detection {
+    /// No recognized live state or visibility evidence.
+    Unknown,
+    /// Visible live idle chrome bypasses the working-to-idle confirmation hold.
+    Idle { visible: bool },
+    /// Visible working chrome refreshes screen evidence, but never overrides hooks.
+    Working { visible: bool },
+    /// Visible input controls may override a non-blocked integration report.
+    Blocked { visible: bool },
+}
+
+impl Detection {
+    pub const fn new(state: AgentState, visible: bool) -> Self {
+        match state {
+            AgentState::Unknown => Self::Unknown,
+            AgentState::Idle => Self::Idle { visible },
+            AgentState::Working => Self::Working { visible },
+            AgentState::Blocked => Self::Blocked { visible },
+        }
+    }
+
+    pub const fn state(self) -> AgentState {
+        match self {
+            Self::Unknown => AgentState::Unknown,
+            Self::Idle { .. } => AgentState::Idle,
+            Self::Working { .. } => AgentState::Working,
+            Self::Blocked { .. } => AgentState::Blocked,
+        }
+    }
+
+    pub const fn visible_idle(self) -> bool {
+        matches!(self, Self::Idle { visible: true })
+    }
+
+    pub const fn visible_blocker(self) -> bool {
+        matches!(self, Self::Blocked { visible: true })
+    }
+
+    pub const fn visible_working(self) -> bool {
+        matches!(self, Self::Working { visible: true })
+    }
+}
+
+/// An agent-owned history viewer preserves the previous live state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentDetection {
+    /// Transcript or history chrome carries no live state update.
+    Skip,
+    State(Detection),
+}
+
+impl AgentDetection {
+    pub const fn detection(self) -> Option<Detection> {
+        match self {
+            Self::Skip => None,
+            Self::State(detection) => Some(detection),
+        }
+    }
+
+    pub const fn state(self) -> AgentState {
+        match self {
+            Self::Skip => AgentState::Unknown,
+            Self::State(detection) => detection.state(),
+        }
+    }
+
+    pub const fn skip_state_update(self) -> bool {
+        matches!(self, Self::Skip)
+    }
+
+    pub const fn visible_idle(self) -> bool {
+        matches!(self, Self::State(Detection::Idle { visible: true }))
+    }
+
+    pub const fn visible_blocker(self) -> bool {
+        matches!(self, Self::State(Detection::Blocked { visible: true }))
+    }
+
+    pub const fn visible_working(self) -> bool {
+        matches!(self, Self::State(Detection::Working { visible: true }))
+    }
 }
 
 /// The detector module keeps its public label facade while `Agent` owns the
@@ -164,13 +226,7 @@ pub fn detect_agent_with_osc(
     osc_progress: &str,
 ) -> AgentDetection {
     let Some(agent) = agent else {
-        return AgentDetection {
-            state: AgentState::Unknown,
-            skip_state_update: false,
-            visible_idle: false,
-            visible_blocker: false,
-            visible_working: false,
-        };
+        return AgentDetection::State(Detection::Unknown);
     };
     manifest::detect_with_osc(
         agent,
@@ -676,7 +732,7 @@ fn is_python_runtime(name: &str) -> bool {
 /// If `agent` is `None`, returns `Unknown`.
 #[cfg(test)]
 pub fn detect_state(agent: Option<Agent>, screen_content: &str) -> AgentState {
-    detect_agent_with_osc(agent, screen_content, "", "").state
+    detect_agent_with_osc(agent, screen_content, "", "").state()
 }
 
 // ---------------------------------------------------------------------------
@@ -1568,8 +1624,10 @@ mod tests {
             "shepr-fixture",
             &[Step::Sleep(Duration::from_secs(999))],
         );
-        let command =
-            PtyCommand::interactive_shell(process.to_str().expect("fixture path is UTF-8"), false);
+        let command = PtyCommand::interactive_shell(
+            &shepr_test_support::fixture::resolved_shell(&process),
+            false,
+        );
         let mut spawned = spawn_pty(
             shepr_core::geometry::PaneGeometry::new(80, 24, 0, 0),
             &command,
@@ -1620,8 +1678,10 @@ mod tests {
                 ),
             ],
         );
-        let cmd =
-            PtyCommand::interactive_shell(shell.to_str().expect("shell path is UTF-8"), false);
+        let cmd = PtyCommand::interactive_shell(
+            &shepr_test_support::fixture::resolved_shell(&shell),
+            false,
+        );
         let mut spawned = spawn_pty(
             shepr_core::geometry::PaneGeometry::new(80, 24, 0, 0),
             &cmd,
@@ -1675,8 +1735,10 @@ mod tests {
                 Step::Wait,
             ],
         );
-        let cmd =
-            PtyCommand::interactive_shell(wrapper.to_str().expect("wrapper path is UTF-8"), false);
+        let cmd = PtyCommand::interactive_shell(
+            &shepr_test_support::fixture::resolved_shell(&wrapper),
+            false,
+        );
         let mut spawned = spawn_pty(
             shepr_core::geometry::PaneGeometry::new(80, 24, 0, 0),
             &cmd,

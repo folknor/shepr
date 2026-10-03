@@ -17,9 +17,8 @@ use crate::schema::{
 };
 use crate::{ApiRequestMessage, ApiRequestSender};
 use shepr_platform::ipc::{
-    LocalStream, LocalStreamDeadlineReader, SocketFileIdentity, SocketStartupLock,
-    bind_private_socket, is_connection_closed_error, remove_socket_file_if_owned,
-    socket_file_identity,
+    LocalStream, LocalStreamDeadlineReader, SocketFileIdentity, SocketStartupLock, StreamFailure,
+    bind_private_socket, classify_stream_error, remove_socket_file_if_owned, socket_file_identity,
 };
 
 const ORDINARY_REQUEST_TIMEOUT_MESSAGE: &str =
@@ -278,7 +277,9 @@ fn finish_api_response(
     // the log must not claim the response's outcome for an answer nobody got.
     let outcome = match write_text_line(stream, &response.body) {
         Ok(()) => response.outcome.as_str(),
-        Err(err) if is_connection_closed_error(&err) => "client_disconnected",
+        Err(err) if matches!(classify_stream_error(&err), StreamFailure::PeerGone) => {
+            "client_disconnected"
+        }
         Err(err) => {
             crate::logging::api_request_failed(request_id, method.name, &err.to_string());
             return Err(err);
@@ -461,7 +462,7 @@ fn write_text_line(stream: &mut LocalStream, value: &str) -> std::io::Result<()>
 
 fn write_text_line_allow_disconnect(stream: &mut LocalStream, value: &str) -> std::io::Result<()> {
     match write_text_line(stream, value) {
-        Err(err) if is_connection_closed_error(&err) => Ok(()),
+        Err(err) if matches!(classify_stream_error(&err), StreamFailure::PeerGone) => Ok(()),
         result => result,
     }
 }
@@ -481,7 +482,7 @@ fn write_api_json_line_allow_disconnect<T: serde::Serialize>(
     value: &T,
 ) -> std::io::Result<()> {
     match write_api_json_line(stream, request_id, value) {
-        Err(err) if is_connection_closed_error(&err) => Ok(()),
+        Err(err) if matches!(classify_stream_error(&err), StreamFailure::PeerGone) => Ok(()),
         result => result,
     }
 }

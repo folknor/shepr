@@ -31,8 +31,6 @@ pub struct DifferentBuildServer {
     /// The remote `shepr` discovery verified as this build (with its sibling
     /// server), through which the stop runs.
     pub executable: RemoteExecutable,
-    /// The running server's version, printable or `unknown`.
-    pub version: String,
     /// The running server's build id, printable.
     pub build_id: String,
     /// The running server's boot identity, which the conditional stop names.
@@ -79,7 +77,6 @@ pub(super) fn judge_remote_server(
     if let (Some(build_id), Some(boot_id)) = (build, boot) {
         return Ok(MachineSshCheck::DifferentBuild(DifferentBuildServer {
             executable: executable.clone(),
-            version: remote_display_value(version.as_deref()).to_string(),
             build_id,
             boot_id,
         }));
@@ -240,7 +237,6 @@ mod tests {
             judge(&stale).expect("restartable"),
             MachineSshCheck::DifferentBuild(DifferentBuildServer {
                 executable: executable(),
-                version: "0.0.0-old".into(),
                 build_id: other_build().into(),
                 boot_id: "17-23".into(),
             })

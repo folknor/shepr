@@ -6,7 +6,7 @@ impl AgentOwnership {
         origin: &ReportOrigin,
         session_ref: Option<crate::agent::resume::AgentSessionRef>,
         seq: Option<u64>,
-        session_start_source: Option<crate::agent::resume::AgentSessionStartSource>,
+        session_start_source: ReportedSessionStart,
         sample: impl Into<HookClockSample>,
     ) -> Option<AgentOwnershipMutation> {
         let sample = sample.into();

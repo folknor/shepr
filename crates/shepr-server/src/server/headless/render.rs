@@ -47,13 +47,10 @@ pub(super) struct RenderPlan {
     /// Clients with a current baseline that can take pending PTY damage as a
     /// retained patch.
     pub(super) patch: Vec<ClientId>,
-    /// With no client attached, whether the PTY size rule is due for this
-    /// epoch.
-    pub(super) headless_geometry: bool,
 }
 impl RenderPlan {
     pub(super) fn has_full(&self) -> bool {
-        !self.full.is_empty() || self.headless_geometry
+        !self.full.is_empty()
     }
 }
 
@@ -344,49 +341,19 @@ impl HeadlessServer {
         })
     }
 
-    /// The runtimes of the panes a surface of the workspace `target` names
-    /// shows: the focused pane when zoomed, every layout pane otherwise.
-    fn visible_pane_runtimes(
-        &self,
-        target: &shepr_protocol::WorkspaceId,
-    ) -> Vec<&shepr_mux::pane::PaneRuntime> {
-        let Some(workspace_index) = self.app.state.workspace_index(target) else {
-            return Vec::new();
-        };
-        let Some(workspace) = self.app.state.workspaces.get(workspace_index) else {
-            return Vec::new();
-        };
-        workspace
-            .visible_pane_ids()
-            .into_iter()
-            .filter_map(|pane_id| {
-                self.app.state.runtime_for_pane_in_workspace(
-                    &self.app.terminal_runtimes,
-                    workspace_index,
-                    pane_id,
-                )
-            })
-            .collect()
-    }
-
-    /// Whether a visible pane of the workspace `target` names is inside a
-    /// synchronized update, which a resize would tear.
-    fn workspace_has_synchronized_pane(&self, target: &shepr_protocol::WorkspaceId) -> bool {
-        self.visible_pane_runtimes(target)
-            .into_iter()
-            .any(shepr_mux::pane::PaneRuntime::synchronized_output_active)
-    }
-
     /// What each attached client is owed this iteration, derived from its own
     /// settle point, location, baseline and slot plus the server-wide epoch.
     /// The checks run cheapest first: a client already due for a full pass
     /// never reaches `surface_deliverable`, which may lock terminal cores.
-    pub(super) fn render_plan(&self, render_signal_pending: bool) -> RenderPlan {
+    pub(super) fn render_plan(&mut self, render_signal_pending: bool) -> RenderPlan {
+        self.settle_workspace_geometry_before_plan(render_signal_pending);
         let targets = render_targets(&self.clients);
+        // With no client attached nothing is drawn: settlement above already
+        // laid out every workspace without a recorded area at the headless
+        // geometry, so no render pass is owed for that.
         let mut plan = RenderPlan {
             full: Vec::new(),
             patch: Vec::new(),
-            headless_geometry: targets.is_empty() && self.headless_settled != self.view_epoch,
         };
         let mut held = HashMap::new();
         for target in targets {
@@ -425,18 +392,6 @@ impl HeadlessServer {
                     .synchronized_output_state()
                     .is_none_or(|(active, _)| active)
             })
-    }
-
-    /// The visible panes' PTY grid sizes, to tell whether a geometry
-    /// application resized any of them.
-    fn visible_pane_grid_sizes(
-        &self,
-        target: &shepr_protocol::WorkspaceId,
-    ) -> Vec<shepr_core::geometry::GridSize> {
-        self.visible_pane_runtimes(target)
-            .into_iter()
-            .map(shepr_mux::pane::PaneRuntime::grid_size)
-            .collect()
     }
 
     /// Whether `id` can take a surface now: its slot is free and the
@@ -498,12 +453,6 @@ impl HeadlessServer {
         full.sort_unstable();
         full.dedup();
         self.render_full(&full, epoch, &mut report, boundary);
-        if plan.headless_geometry {
-            if self.app.state.has_workspace_without_area() {
-                self.apply_all_workspace_geometry();
-            }
-            self.headless_settled = epoch;
-        }
         if let Some(cache) = self.shell_session_cache.as_mut() {
             cache.timer_projections.clear();
         }
@@ -552,98 +501,6 @@ impl HeadlessServer {
             let shell_target = self.shell_target_for_client(target.client_id);
             let key = pane_surface_render_key(shell_target.as_ref(), area, target.cell_size);
             *shared.remaining.entry(key).or_insert(0usize) += 1;
-        }
-
-        // Resize a workspace from its geometry source before drawing any observer.
-        // Retained updates fall back here when a pane changes alternate screens.
-        let workspaces = ids
-            .iter()
-            .filter_map(|&id| self.shell_target_for_client(id))
-            .collect::<HashSet<_>>();
-        for surface_target in workspaces {
-            let Some(super::client_views::GeometrySource::Client(client_id)) =
-                self.workspace_geometry_source(&surface_target)
-            else {
-                continue;
-            };
-            let Some(client) = self.clients.get(&client_id) else {
-                continue;
-            };
-            if !client.presents_surface() {
-                continue;
-            }
-            let changed = client
-                .render_state
-                .last_pane_surface()
-                .is_none_or(|surface| {
-                    let identities = &client.surface_pane_identities;
-                    if identities.len() != surface.panes.len() {
-                        return true;
-                    }
-                    let Some(first_identity) = identities.first() else {
-                        return false;
-                    };
-                    if first_identity.workspace_id != surface_target {
-                        return true;
-                    }
-                    let Some(workspace_index) =
-                        self.app.resolve_workspace_id(&first_identity.workspace_id)
-                    else {
-                        return false;
-                    };
-                    if identities
-                        .iter()
-                        .any(|identity| identity.workspace_id != first_identity.workspace_id)
-                    {
-                        return true;
-                    }
-                    surface
-                        .panes
-                        .iter()
-                        .zip(identities)
-                        .any(|(pane, identity)| {
-                            self.app
-                                .state
-                                .runtime_for_pane_in_workspace(
-                                    &self.app.terminal_runtimes,
-                                    workspace_index,
-                                    identity.pane_id,
-                                )
-                                .is_some_and(|runtime| {
-                                    runtime.alternate_screen_active()
-                                        != pane.alternate_screen_active
-                                })
-                        })
-                });
-            if !changed || self.workspace_has_synchronized_pane(&surface_target) {
-                continue;
-            }
-            // The outer workspace area can stay equal while an alternate
-            // screen changes its panes' PTY sizes, so both are compared. A
-            // resize reaches viewers outside this pass on the next iteration.
-            // An application that resized nothing invalidates nobody: the
-            // source's baseline can stay behind (its slot is busy, or its
-            // surface was refused), and invalidating its co-viewers on every
-            // pass would hand the pass back and forth between them.
-            let sizes_before = self.visible_pane_grid_sizes(&surface_target);
-            let area_changed = self.apply_workspace_geometry(&surface_target);
-            if !area_changed && self.visible_pane_grid_sizes(&surface_target) == sizes_before {
-                continue;
-            }
-            let viewers = self
-                .clients
-                .keys()
-                .copied()
-                .filter(|id| {
-                    !ids.contains(id)
-                        && self.shell_target_for_client(*id).as_ref() == Some(&surface_target)
-                })
-                .collect::<Vec<_>>();
-            for id in viewers {
-                if let Some(client) = self.clients.get_mut(&id) {
-                    client.render_state.invalidate();
-                }
-            }
         }
 
         // Rebuild the shared session only when application state that feeds

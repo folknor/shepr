@@ -444,9 +444,112 @@ impl HeadlessServer {
         previous != Some(geometry)
     }
 
+    /// The runtimes of the panes a surface of the workspace `target` names
+    /// shows: the focused pane when zoomed, every layout pane otherwise.
+    pub(super) fn visible_pane_runtimes(
+        &self,
+        target: &shepr_protocol::WorkspaceId,
+    ) -> Vec<&shepr_mux::pane::PaneRuntime> {
+        let Some(workspace_index) = self.app.state.workspace_index(target) else {
+            return Vec::new();
+        };
+        let Some(workspace) = self.app.state.workspaces.get(workspace_index) else {
+            return Vec::new();
+        };
+        workspace
+            .visible_pane_ids()
+            .into_iter()
+            .filter_map(|pane_id| {
+                self.app.state.runtime_for_pane_in_workspace(
+                    &self.app.terminal_runtimes,
+                    workspace_index,
+                    pane_id,
+                )
+            })
+            .collect()
+    }
+
+    /// Whether a visible pane of the workspace `target` names is inside a
+    /// synchronized update, which a resize would tear.
+    pub(super) fn workspace_has_synchronized_pane(
+        &self,
+        target: &shepr_protocol::WorkspaceId,
+    ) -> bool {
+        self.visible_pane_runtimes(target)
+            .into_iter()
+            .any(shepr_mux::pane::PaneRuntime::synchronized_output_active)
+    }
+
+    /// The visible panes' PTY grid sizes, to tell whether a geometry
+    /// application resized any of them.
+    pub(super) fn visible_pane_grid_sizes(
+        &self,
+        target: &shepr_protocol::WorkspaceId,
+    ) -> Vec<shepr_core::geometry::GridSize> {
+        self.visible_pane_runtimes(target)
+            .into_iter()
+            .map(shepr_mux::pane::PaneRuntime::grid_size)
+            .collect()
+    }
+
+    /// Settle layout before deciding what any client is owed: lay out a
+    /// workspace that has no recorded area yet, and re-apply the geometry of
+    /// one where output flipped a visible pane's active screen (pane chrome
+    /// differs between the screens, so the PTY size can change).
+    ///
+    /// The flip is reported by the pane's parse path as a lock-free flag, and
+    /// any output that sets it also raises the render signal, so the flags are
+    /// only read on a plan with that signal pending (`pty_dirty`). This runs
+    /// at the top of every plan, so it must not poll terminal cores for their
+    /// screen mode: that took two core locks per visible pane of every
+    /// workspace on every output wake. Nor can delivered client baselines
+    /// serve as the record: a slow or refused surface may retain an old mode
+    /// indefinitely. A workspace skipped for a synchronized update keeps its
+    /// flags, and the update's end raises the signal that retries it.
+    pub(super) fn settle_workspace_geometry_before_plan(&mut self, pty_dirty: bool) {
+        for workspace_id in self.workspace_order() {
+            let missing_area = self
+                .app
+                .state
+                .workspace_index(&workspace_id)
+                .is_some_and(|index| self.app.state.workspace_spawn_geometry(index).is_none());
+            let flipped = pty_dirty
+                && self
+                    .visible_pane_runtimes(&workspace_id)
+                    .into_iter()
+                    .any(shepr_mux::pane::PaneRuntime::screen_flip_pending);
+            if !missing_area && !flipped {
+                continue;
+            }
+            if self.workspace_geometry_source(&workspace_id).is_none()
+                || self.workspace_has_synchronized_pane(&workspace_id)
+            {
+                continue;
+            }
+            // Taken before applying, so a flip that lands meanwhile is kept
+            // for the next plan.
+            for runtime in self.visible_pane_runtimes(&workspace_id) {
+                runtime.take_screen_flip();
+            }
+            let sizes_before = self.visible_pane_grid_sizes(&workspace_id);
+            let area_changed = self.apply_workspace_geometry(&workspace_id);
+            if !area_changed && self.visible_pane_grid_sizes(&workspace_id) == sizes_before {
+                continue;
+            }
+            // Only viewers of panes whose geometry changed need to recompute.
+            // This runs before the plan, so every affected client is included
+            // regardless of another viewer's delivery slot or scroll baseline.
+            for client in self.clients.values_mut() {
+                if client.shell_state().location.focused_workspace_id() == Some(&workspace_id) {
+                    client.request_recompute();
+                }
+            }
+        }
+    }
+
     /// Applies the PTY size rule to every workspace. Pane runtimes ignore an
-    /// unchanged pane size; the result reports whether any recorded workspace
-    /// geometry changed.
+    /// unchanged pane size; the result reports whether any pane size or
+    /// recorded workspace geometry changed.
     pub(super) fn apply_all_workspace_geometry(&mut self) -> bool {
         let workspace_ids: Vec<_> = self
             .app
@@ -457,7 +560,18 @@ impl HeadlessServer {
             .collect();
         let mut changed = false;
         for workspace_id in &workspace_ids {
-            changed |= self.apply_workspace_geometry(workspace_id);
+            let sizes_before = self.visible_pane_grid_sizes(workspace_id);
+            let area_changed = self.apply_workspace_geometry(workspace_id);
+            let resized =
+                area_changed || self.visible_pane_grid_sizes(workspace_id) != sizes_before;
+            if resized {
+                for client in self.clients.values_mut() {
+                    if client.shell_state().location.focused_workspace_id() == Some(workspace_id) {
+                        client.request_recompute();
+                    }
+                }
+            }
+            changed |= resized;
         }
         changed
     }
@@ -467,11 +581,6 @@ impl HeadlessServer {
         geometry_changed: bool,
         start_pending_agent_resumes: bool,
     ) -> bool {
-        if geometry_changed {
-            for client in self.clients.values_mut() {
-                client.request_recompute();
-            }
-        }
         if !start_pending_agent_resumes {
             return geometry_changed;
         }
@@ -486,8 +595,8 @@ impl HeadlessServer {
         geometry_changed || resumes_started
     }
 
-    /// Applies the PTY size rule to every workspace and has every client
-    /// recompute when the recorded geometry changed. Pending resumes are
+    /// Applies the PTY size rule to every workspace and has its viewers
+    /// recompute when pane or recorded geometry changed. Pending resumes are
     /// settled even when this application repeats the current geometry.
     fn apply_shell_geometry(&mut self, start_pending_agent_resumes: bool) -> bool {
         let geometry_changed = self.apply_all_workspace_geometry();
@@ -508,36 +617,16 @@ impl HeadlessServer {
         &mut self,
         start_pending_agent_resumes: bool,
     ) -> bool {
-        let mut viewed_workspaces = HashMap::<shepr_protocol::WorkspaceId, Vec<ClientId>>::new();
-        for (&client_id, _) in self.clients.presenting() {
-            let Some(workspace_id) = self.shell_target_for_client(client_id) else {
-                continue;
-            };
-            viewed_workspaces
-                .entry(workspace_id)
-                .or_default()
-                .push(client_id);
-        }
-        for viewers in viewed_workspaces.values_mut() {
-            viewers.sort_unstable();
-        }
-        for (workspace_id, viewers) in viewed_workspaces {
-            let controller_is_viewing = self
-                .clients
-                .geometry_controller(&workspace_id)
-                .as_ref()
-                .is_some_and(|controller| viewers.contains(controller));
-            if !controller_is_viewing {
-                let fallback = viewers
-                    .iter()
-                    .copied()
-                    .find(|client_id| {
-                        self.clients.get(client_id).is_some_and(|client| {
-                            client.shell_state().outer_terminal_focus == Some(true)
-                        })
-                    })
-                    .unwrap_or(viewers[0]);
-                self.clients.set_geometry_controller(workspace_id, fallback);
+        // Persist exactly the source selected by the PTY size rule. Remember
+        // only viewers: a sole presenter sizes hidden workspaces without
+        // taking their next viewer's claim away.
+        for workspace_id in self.workspace_order() {
+            if let Some(GeometrySource::Client(client_id)) =
+                self.workspace_geometry_source(&workspace_id)
+                && self.shell_target_for_client(client_id).as_ref() == Some(&workspace_id)
+            {
+                self.clients
+                    .set_geometry_controller(workspace_id, client_id);
             }
         }
         self.apply_shell_geometry(start_pending_agent_resumes)

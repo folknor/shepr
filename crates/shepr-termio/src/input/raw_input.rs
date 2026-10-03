@@ -1,5 +1,10 @@
 use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 
+use super::tables::{
+    MOUSE_BUTTON_FIELD_MASK, MOUSE_BUTTON_RELEASE, MOUSE_DRAG_BIT,
+    MOUSE_EXTENDED_BUTTON_FIELD_MASK, MOUSE_EXTENDED_BUTTON_SHIFT, mouse_button_from_code,
+    mouse_modifiers_from_bits, mouse_scroll_from_code,
+};
 use crate::host_term::theme::{
     DefaultColorKind, HostAppearance, RgbColor, parse_default_color_response,
     parse_palette_color_response,
@@ -141,7 +146,7 @@ fn raw_input_event_kind(event: &RawInputEvent) -> &'static str {
 /// Client-side accounting for replies to queries sent to the outer terminal.
 /// A default value is inactive until a query or tracking preference is set.
 #[derive(Default)]
-pub struct HostReplies {
+struct HostReplies {
     color: u16,
     cell_size: bool,
     appearance: bool,
@@ -224,31 +229,12 @@ impl HostReplies {
     }
 }
 
-/// Gives the byte framer access to its reply-accounting state.
-pub trait HostReplyPolicy: Default {
-    fn host_replies(&self) -> &HostReplies;
-    fn host_replies_mut(&mut self) -> &mut HostReplies;
-}
-
-impl HostReplyPolicy for HostReplies {
-    fn host_replies(&self) -> &HostReplies {
-        self
-    }
-
-    fn host_replies_mut(&mut self) -> &mut HostReplies {
-        self
-    }
-}
-
-/// Kept as an entry point for callers that construct an inactive framer.
-pub type NoHostReplies = HostReplies;
-
 #[derive(Default)]
-pub struct RawInputFramer<P: HostReplyPolicy = NoHostReplies> {
-    byte_framer: RawInputByteFramer<P>,
+pub struct RawInputFramer {
+    byte_framer: RawInputByteFramer,
 }
 
-impl<P: HostReplyPolicy> RawInputFramer<P> {
+impl RawInputFramer {
     pub fn push_framed(&mut self, data: &[u8]) -> Vec<FramedRawInputEvent> {
         Self::framed_events_from_chunks(self.byte_framer.push(data))
     }
@@ -416,15 +402,15 @@ enum Held {
 }
 
 #[derive(Default)]
-struct RawInputByteFramer<P: HostReplyPolicy = NoHostReplies> {
+struct RawInputByteFramer {
     buffer: Vec<u8>,
     held: Held,
-    host_replies: P,
+    host_replies: HostReplies,
     split_coalesced_escape: bool,
     host_escape_disambiguation_active: bool,
 }
 
-impl<P: HostReplyPolicy> RawInputByteFramer<P> {
+impl RawInputByteFramer {
     fn for_host_input() -> Self {
         Self {
             split_coalesced_escape: true,
@@ -529,27 +515,23 @@ impl<P: HostReplyPolicy> RawInputByteFramer<P> {
     /// Hold a lone trailing ESC for one idle flush so an OSC 10/11 reply split
     /// at its ESC introducer stitches back together instead of leaking.
     fn host_color_query_sent(&mut self) {
-        self.host_replies.host_replies_mut().color_query_sent();
+        self.host_replies.color_query_sent();
     }
 
     /// Same hold window as `host_color_query_sent`, for the XTWINOPS cell size
     /// reply.
     fn host_cell_size_query_sent(&mut self) {
-        self.host_replies.host_replies_mut().cell_size_query_sent();
+        self.host_replies.cell_size_query_sent();
     }
 
     fn enable_host_color_scheme_change_tracking(&mut self) {
-        self.host_replies
-            .host_replies_mut()
-            .enable_color_scheme_tracking();
+        self.host_replies.enable_color_scheme_tracking();
     }
 
     /// Arm a possible appearance-reply window after focus gain. If no reply
     /// arrives, a lone Escape is held for one idle flush and released on the next.
     fn enable_host_appearance_query_on_focus(&mut self) {
-        self.host_replies
-            .host_replies_mut()
-            .enable_appearance_query_on_focus();
+        self.host_replies.enable_appearance_query_on_focus();
     }
 
     fn has_pending_input(&self) -> bool {
@@ -676,10 +658,7 @@ impl<P: HostReplyPolicy> RawInputByteFramer<P> {
             self.buffer.drain(..1);
         }
 
-        if self
-            .host_replies
-            .host_replies()
-            .awaiting_cell_size_or_appearance()
+        if self.host_replies.awaiting_cell_size_or_appearance()
             && self.buffer.as_slice() == b"\x1b["
         {
             if !matches!(self.held, Held::HostReplyPrefix) && !mouse_wait_served {
@@ -687,26 +666,24 @@ impl<P: HostReplyPolicy> RawInputByteFramer<P> {
                 tracing::trace!("holding incomplete host CSI reply one flush");
                 return chunks;
             }
-            self.host_replies
-                .host_replies_mut()
-                .clear_cell_size_and_appearance();
+            self.host_replies.clear_cell_size_and_appearance();
             self.held = Held::Sequence;
         }
 
-        if self.host_replies.host_replies().awaiting_cell_size()
+        if self.host_replies.awaiting_cell_size()
             && starts_with_incomplete_host_cell_size_report(&self.buffer)
         {
             tracing::debug!(
                 len = self.buffer.len(),
                 "discarding incomplete host cell size report after input timeout"
             );
-            self.host_replies.host_replies_mut().clear_cell_size();
+            self.host_replies.clear_cell_size();
             self.begin_control_tail(ControlStringFamily::HostReplyCsi);
             return chunks;
         }
 
         if starts_with_incomplete_host_color_scheme_report(&self.buffer) {
-            if self.host_replies.host_replies().awaiting_appearance()
+            if self.host_replies.awaiting_appearance()
                 && !matches!(self.held, Held::HostReplyPrefix)
             {
                 self.held = Held::HostReplyPrefix;
@@ -720,7 +697,7 @@ impl<P: HostReplyPolicy> RawInputByteFramer<P> {
                 len = self.buffer.len(),
                 "discarding incomplete host color scheme report after input timeout"
             );
-            self.host_replies.host_replies_mut().clear_appearance();
+            self.host_replies.clear_appearance();
             self.begin_control_tail(ControlStringFamily::HostReplyCsi);
             return chunks;
         }
@@ -737,7 +714,7 @@ impl<P: HostReplyPolicy> RawInputByteFramer<P> {
         }
 
         if self.buffer.as_slice() == [ESC] {
-            if self.host_replies.host_replies().awaiting_reply()
+            if self.host_replies.awaiting_reply()
                 && !matches!(self.held, Held::HostReplyPrefix)
                 && !mouse_wait_served
             {
@@ -746,7 +723,7 @@ impl<P: HostReplyPolicy> RawInputByteFramer<P> {
                 return chunks;
             }
             // No continuation arrived; give up the window so Escape is not delayed again.
-            self.host_replies.host_replies_mut().clear_all();
+            self.host_replies.clear_all();
             tracing::warn!(
                 len = self.buffer.len(),
                 "flushing lone escape after input timeout; if this follows an alt chord or focus switch it may reach the pane as plain esc"
@@ -969,7 +946,7 @@ impl<P: HostReplyPolicy> RawInputByteFramer<P> {
                 }
                 break;
             };
-            self.host_replies.host_replies_mut().observe(&event);
+            self.host_replies.observe(&event);
             self.held = Held::None;
             chunks.push(self.buffer[..consumed].to_vec());
             self.buffer.drain(..consumed);
@@ -1669,39 +1646,25 @@ fn parse_sgr_mouse(sequence: &str) -> Option<MouseEvent> {
 }
 
 fn parse_mouse_cb(cb: u8) -> Option<(MouseEventKind, KeyModifiers)> {
-    let button_number = (cb & 0b0000_0011) | ((cb & 0b1100_0000) >> 4);
-    let dragging = cb & 0b0010_0000 == 0b0010_0000;
+    let button_number = (cb & MOUSE_BUTTON_FIELD_MASK)
+        | ((cb & MOUSE_EXTENDED_BUTTON_FIELD_MASK) >> MOUSE_EXTENDED_BUTTON_SHIFT);
+    let dragging = cb & MOUSE_DRAG_BIT != 0;
 
-    let kind = match (button_number, dragging) {
-        (0, false) => MouseEventKind::Down(MouseButton::Left),
-        (1, false) => MouseEventKind::Down(MouseButton::Middle),
-        (2, false) => MouseEventKind::Down(MouseButton::Right),
-        (0, true) => MouseEventKind::Drag(MouseButton::Left),
-        (1, true) => MouseEventKind::Drag(MouseButton::Middle),
-        (2, true) => MouseEventKind::Drag(MouseButton::Right),
-        (3, false) => MouseEventKind::Up(MouseButton::Left),
+    let kind = match (
+        mouse_button_from_code(button_number),
+        button_number,
+        dragging,
+    ) {
+        (Some(button), _, false) => MouseEventKind::Down(button),
+        (Some(button), _, true) => MouseEventKind::Drag(button),
+        (None, MOUSE_BUTTON_RELEASE, false) => MouseEventKind::Up(MouseButton::Left),
+        (None, number, false) => mouse_scroll_from_code(number)?,
         // Crossterm cannot represent extended-button drags. Preserve their
         // position as motion so a stuck host button cannot suppress hover.
-        (3 | 4 | 5 | 8 | 9, true) => MouseEventKind::Moved,
-        (4, false) => MouseEventKind::ScrollUp,
-        (5, false) => MouseEventKind::ScrollDown,
-        (6, false) => MouseEventKind::ScrollLeft,
-        (7, false) => MouseEventKind::ScrollRight,
+        (None, 3 | 4 | 5 | 8 | 9, true) => MouseEventKind::Moved,
         _ => return None,
     };
-
-    let mut modifiers = KeyModifiers::empty();
-    if cb & 0b0000_0100 != 0 {
-        modifiers |= KeyModifiers::SHIFT;
-    }
-    if cb & 0b0000_1000 != 0 {
-        modifiers |= KeyModifiers::ALT;
-    }
-    if cb & 0b0001_0000 != 0 {
-        modifiers |= KeyModifiers::CONTROL;
-    }
-
-    Some((kind, modifiers))
+    Some((kind, mouse_modifiers_from_bits(cb)))
 }
 
 /// Parse raw terminal input bytes into a list of `RawInputEvent`s.
@@ -1710,14 +1673,14 @@ fn parse_mouse_cb(cb: u8) -> Option<(MouseEventKind, KeyModifiers)> {
 /// suitable for synchronous use.
 #[cfg(test)]
 pub fn parse_raw_input_bytes_sync(data: &[u8]) -> Vec<RawInputEvent> {
-    let mut framer = RawInputFramer::<NoHostReplies>::default();
+    let mut framer = RawInputFramer::default();
     let mut events = framer.push(data);
     events.extend(framer.flush_timeout());
     events
 }
 
 #[cfg(test)]
-impl<P: HostReplyPolicy> RawInputFramer<P> {
+impl RawInputFramer {
     pub fn push(&mut self, data: &[u8]) -> Vec<RawInputEvent> {
         self.push_framed(data)
             .into_iter()
@@ -1736,8 +1699,6 @@ impl<P: HostReplyPolicy> RawInputFramer<P> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    type RawInputFramer = super::RawInputFramer<super::HostReplies>;
-    type RawInputByteFramer = super::RawInputByteFramer<super::HostReplies>;
     use crossterm::event::{KeyCode, KeyEventKind};
 
     fn assert_raw_key(event: RawInputEvent, code: KeyCode, modifiers: KeyModifiers) {

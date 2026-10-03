@@ -370,6 +370,7 @@ mod tests {
     use super::*;
     use crate::limits::PENDING_AGENT_RESUME_THEME_WAIT;
     use crate::test_support::*;
+    use shepr_test_support::fixture::resolved_shell as test_shell;
 
     fn test_app() -> App {
         App::new(
@@ -570,7 +571,7 @@ mod tests {
     async fn a_dispatched_resume_keeps_its_plan_until_the_launch_settles() {
         let _env = IsolatedEnv::new();
         let mut app = test_app();
-        app.state.settings.default_shell = shepr_test_support::fixture::idle_shell().into();
+        app.state.settings.default_shell = test_shell(shepr_test_support::fixture::idle_shell());
         let workspace = shepr_mux::workspace::Workspace::test_new("restored");
         let pane_id = workspace.root_pane();
         let terminal_id = workspace
@@ -641,7 +642,7 @@ mod tests {
             app.state.set_bookmark_index(Some(0));
             app.state.ensure_test_terminals();
             if missing_shell {
-                app.state.settings.default_shell = "__shepr_missing_resume_shell__".into();
+                app.state.settings.default_shell = test_shell("/__shepr_missing_resume_shell__");
             }
             let terminal = app
                 .state
@@ -709,10 +710,7 @@ mod tests {
             "resume-shell",
             &[Step::Sleep(std::time::Duration::from_secs(30))],
         );
-        app.state.settings.default_shell = shell
-            .to_str()
-            .expect("fixture shell path is UTF-8")
-            .to_owned();
+        app.state.settings.default_shell = test_shell(&shell);
 
         let workspace = shepr_mux::workspace::Workspace::test_new("restored");
         let pane_id = workspace.root_pane();

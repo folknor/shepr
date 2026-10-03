@@ -21,24 +21,6 @@ file's.
 
 ## Platform, process and files
 
-## CON-001 - Does this IO error mean the peer is gone?
-
-| Site | Kinds |
-|---|---|
-| `shepr-platform/src/ipc.rs` `is_connection_closed_error` | BrokenPipe, ConnectionAborted, ConnectionReset, NotConnected, UnexpectedEof, WriteZero |
-| `shepr-platform/src/remote_bridge_io.rs` `is_closed_socket` | BrokenPipe, ConnectionReset, NotConnected |
-| `shepr-client/src/shell_runtime.rs` `endpoint_disconnect_notice` | UnexpectedEof, BrokenPipe, ConnectionAborted, ConnectionReset, NotConnected |
-| `shepr-api/src/server_stop.rs` `stop_request_error_allows_wait` | BrokenPipe, ConnectionReset, UnexpectedEof, NotConnected, TimedOut, WouldBlock |
-| `shepr-api/src/status.rs` `status_probe_has_no_answer` | ConnectionRefused, NotFound, BrokenPipe, ConnectionReset, UnexpectedEof, NotConnected, TimedOut, WouldBlock |
-| `shepr-remote/src/lib.rs` `is_ssh_link_error_kind` | TimedOut, ConnectionRefused, ConnectionReset, AddrInUse, Host/NetworkUnreachable, NetworkDown |
-
-They already disagree (ConnectionAborted and WriteZero in one, not another).
-`status.rs` has a pairwise test
-(`launch_and_stop_share_status_transport_failure_classification`) holding two
-in step. Owner: shepr-platform, `classify_stream_error(&io::Error) ->
-StreamFailure::{PeerGone, NoListener, TimedOut, Other}`, each consumer matching
-the arms it cares about. (foundation)
-
 ## CON-003 - Parsing `/proc/<pid>/stat`, and "is this process dead"
 
 `process.rs` `session_and_tty_from_stat` (skip past the last `)`, then
@@ -116,15 +98,6 @@ shepr-server; the method lives in platform. Owner: one `PaneEnding` in mux next
 to the exit arbiter, carrying the reason and whether the core is intact, with a
 single `needs_checkpoint()`; platform keeps only `ExitKind::{Exited(code),
 Signalled(sig)}`. (foundation)
-
-## CON-016 - Whitespace in shell values
-
-`env.rs`'s doctrine is that interpreted values refuse surrounding whitespace.
-`SHELL` is `Raw`, then `shepr-core/src/shell.rs` `trim_shell_value` trims it
-(with a non-UTF-8 path that is moot because `shell_path_string` refuses non-UTF-8
-afterwards); `terminal.default_shell` is trimmed in `validated.rs`;
-`PtyCommand::interactive_shell` trims again. Owner: config validation, once,
-under one rule. (foundation)
 
 ## CON-018 - What does a child's environment contain, and under which policy?
 
@@ -220,16 +193,6 @@ flag bits in vt (inline), protocol `KittyKeyboardFlags` and crossterm
 All agree today. Owner: `UnderlineStyle::sgr_param()`, a small shared SGR writer,
 `ColorQuery::reply(color, ReplyForm)` in vt, and a `seq` module of typed builders
 and matchers used by both the pane side and the host side. (terminal)
-
-## CON-028 - The mouse button byte is encoded and parsed by mirrored code
-
-Functional keys, key modifier bits and control-byte aliases now come from one
-table (`crates/shepr-termio/src/input/tables.rs`) read in both directions. The
-mouse button and modifier byte is still written twice: `encode_mouse_cb` in
-`input/encode.rs` and `parse_mouse_cb` in `input/raw_input.rs`, held in step only
-by round-trip tests. The parser legitimately accepts forms the encoder never
-emits (release information and extended motion), so a shared table covers only
-the common part. (terminal)
 
 ## CON-029 - What character does a key produce?
 
@@ -564,32 +527,21 @@ EndpointEffects`) and an `Invalidation` value folded once per call, carrying
 `Invalidate::PaneViewers(pane)` for viewer-local changes. Reported by server-app
 and server-serving.
 
-## CON-071 - Which client's geometry sizes a workspace?
+## CON-071 - Geometry claims are decided by scattered handlers
 
-`client_views::workspace_geometry_source`: controller if viewing, else lowest-id
-outer-focused viewer, else lowest-id viewer.
-`client_views::reapply_controlled_shell_workspace_geometry`: the same rule over a
-sorted list, writing the answer back with `set_geometry_controller`. Both copies
-are live (the source function keeps its own fallback because navigation can make
-it stale first). Fragments of the same policy:
-`surface_interest::set_client_shell_surface_active` computes
-`focused_viewer_already_owns_workspace`; `ClientRegistry::claim_geometry` and
-`claim_unowned_geometry` check `is_active_shell_client` but
-`set_geometry_controller` does not; `handle_client_shell_command` has a
-four-branch claim policy keyed on `claims_shell_geometry` and `changes_topology`
-including a `let _ = self.clients.claim_geometry(..)` whose result is ignored;
-claims are triggered by focus gain, pane interaction, connect (unowned only),
-activation (unless a focused viewer exists) and navigating commands. When the
-rule is applied is decided by client events, command completion, departures,
-pane death, API topology change (comparing `workspace_order()` before and after),
-and inside the render pass: `render_full` re-applies a workspace's geometry
-through a forty-line closure when its source's baseline shows an
-alternate-screen flip, and `render_pass_with_boundary` applies headless geometry
-for workspaces without an area, which mutates PTYs from within rendering, keyed
-on the sent baseline. Owner: a `GeometryArbiter` owning `geometry_controllers` and
-the rule, with `claim(client, ClaimReason)` and `settle(&views)`, run as a
-settlement step before the render plan, with alternate-screen transitions
-reported by mux as a PTY event. (server-serving)
+The PTY size rule is now one function in
+`crates/shepr-server/src/server/headless/client_views.rs`, geometry is settled
+before the render plan (rendering no longer resizes PTYs), and alternate-screen
+mode is a per-workspace record rather than read from the delivered baseline.
+Still open: who claims geometry is decided in several places (focus gain, pane
+interaction, connect, activation, navigating commands, and a four-branch policy
+in `handle_client_shell_command` keyed on `claims_shell_geometry` and
+`changes_topology`) with controller storage in the client registry; one owner
+with `claim(client, ClaimReason)` would hold them. Who views a workspace is also
+answered twice: settlement (`settle_workspace_geometry_before_plan`,
+`apply_all_workspace_geometry`) uses `location.focused_workspace_id()` while
+render uses `shell_target_for_client`, which also checks the workspace still
+exists. (server-serving, wave-2 review)
 
 ## CON-074 - What cursor does a client see?
 
@@ -695,13 +647,6 @@ the old spelling. Which commands need application paths is decided in
 `ServerInvocation` enum, each with `argv()` and `parse()`, next to `daemon_exit`
 and `server_stop` (or clap derive); printed commands render the same value.
 Reported by edges and contracts.
-
-## CON-095 - The local restart offer echoes socket ids raw
-
-Remote output is now a `RemoteText` sanitized once at the SSH boundary, and the
-client no longer filters it again. The local restart offer in `src/preflight.rs`
-still prints the build and boot ids the local socket reported without the same
-treatment. (edges)
 
 ## Client
 

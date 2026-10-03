@@ -274,7 +274,7 @@ fn claude_title_spinner_stands_down_while_a_permission_dialog_is_live() {
         osc_progress: "",
     };
     let working = explain_loaded_manifest(Agent::Claude, spinner, &claude);
-    assert_eq!(working.state, AgentState::Working);
+    assert_eq!(working.verdict.state(), AgentState::Working);
     assert_eq!(
         working.matched_rule.map(|rule| rule.id).as_deref(),
         Some("osc_title_working")
@@ -286,7 +286,7 @@ fn claude_title_spinner_stands_down_while_a_permission_dialog_is_live() {
         osc_progress: "",
     };
     let blocked = explain_loaded_manifest(Agent::Claude, dialog, &claude);
-    assert_eq!(blocked.state, AgentState::Blocked, "{blocked:?}");
+    assert_eq!(blocked.verdict.state(), AgentState::Blocked, "{blocked:?}");
 }
 
 #[test]
@@ -298,7 +298,7 @@ fn opencode_permission_header_needs_live_dialog_controls() {
             screen_input("△ Permission required\nearlier text only\n"),
             &loaded,
         );
-        assert_ne!(stale.state, AgentState::Blocked);
+        assert_ne!(stale.verdict.state(), AgentState::Blocked);
         let live = explain_loaded_manifest(
             agent,
             screen_input(
@@ -306,7 +306,7 @@ fn opencode_permission_header_needs_live_dialog_controls() {
             ),
             &loaded,
         );
-        assert_eq!(live.state, AgentState::Blocked);
+        assert_eq!(live.verdict.state(), AgentState::Blocked);
     }
 }
 
@@ -315,15 +315,15 @@ fn codex_no_match_is_unknown_without_changing_other_agents() {
     let manifests = TestManifests::new(&local_manifest("working", "active-marker"));
     let explain = manifests.explain(Agent::Codex, "unmatched-marker");
 
-    assert_eq!(explain.state, AgentState::Unknown);
-    assert!(!explain.visible_idle);
+    assert_eq!(explain.verdict.state(), AgentState::Unknown);
+    assert!(!explain.verdict.visible_idle());
     assert_eq!(
         explain.fallback_reason.as_deref(),
         Some(UNKNOWN_MANIFEST_FALLBACK)
     );
     let pi = bundled_loaded(Agent::Pi);
     let other = fallback_explain(Agent::Pi, Some((&pi, Vec::new())));
-    assert_eq!(other.state, AgentState::Idle);
+    assert_eq!(other.verdict.state(), AgentState::Idle);
     assert_eq!(
         other.fallback_reason.as_deref(),
         Some(DEFAULT_KNOWN_AGENT_IDLE_FALLBACK)
@@ -336,10 +336,10 @@ fn agents_without_a_screen_manifest_are_unknown_not_idle() {
         assert!(!agent.screen_manifest());
         assert!(screen_unknown_is_stable(agent));
         let detection = detect_with_manifest(screen_input(" \n"), None);
-        assert_eq!(detection.state, AgentState::Unknown);
-        assert!(!detection.visible_idle);
+        assert_eq!(detection.state(), AgentState::Unknown);
+        assert!(!detection.visible_idle());
         let explain = fallback_explain(agent, None);
-        assert_eq!(explain.state, AgentState::Unknown);
+        assert_eq!(explain.verdict.state(), AgentState::Unknown);
         assert_eq!(
             explain.fallback_reason.as_deref(),
             Some(NO_SCREEN_MANIFEST_FALLBACK)
@@ -357,10 +357,10 @@ fn explain_for_label_evaluates_the_bundled_manifest_and_names_an_unknown_label()
     let by_label = explain_for_label("claude", screen_input(screen));
     let direct = explain(Agent::Claude, screen);
     assert_eq!(by_label, direct);
-    assert_eq!(by_label.state, AgentState::Blocked);
+    assert_eq!(by_label.verdict.state(), AgentState::Blocked);
 
     let unknown = explain_for_label("no-such-agent", screen_input(screen));
-    assert_eq!(unknown.state, AgentState::Unknown);
+    assert_eq!(unknown.verdict.state(), AgentState::Unknown);
     assert_eq!(unknown.fallback_reason.as_deref(), Some("unknown_agent"));
 }
 
@@ -396,21 +396,21 @@ line_regex = ["^exact line$", "^before$"]
         ));
 
         let high = manifests.explain(Agent::Codex, "match win");
-        assert_eq!(high.state, AgentState::Working);
+        assert_eq!(high.verdict.state(), AgentState::Working);
         assert_eq!(
             high.matched_rule.as_ref().map(|rule| rule.id.as_str()),
             Some("high_nested_gates")
         );
 
         let not_gate = manifests.explain(Agent::Codex, "match win blocked");
-        assert_eq!(not_gate.state, AgentState::Idle);
+        assert_eq!(not_gate.verdict.state(), AgentState::Idle);
         assert_eq!(
             not_gate.matched_rule.as_ref().map(|rule| rule.id.as_str()),
             Some("low_contains")
         );
 
         let line = manifests.explain(Agent::Codex, "before\nexact line\nafter");
-        assert_eq!(line.state, AgentState::Blocked);
+        assert_eq!(line.verdict.state(), AgentState::Blocked);
         assert_eq!(
             line.matched_rule.as_ref().map(|rule| rule.id.as_str()),
             Some("line_regex")
@@ -496,7 +496,7 @@ regex = ['^progress-marker$']
                 osc_progress: progress,
             };
             let result = manifests.explain_input(Agent::Codex, input);
-            assert_eq!(result.state, state);
+            assert_eq!(result.verdict.state(), state);
             assert_eq!(
                 result
                     .matched_rule
@@ -505,10 +505,10 @@ regex = ['^progress-marker$']
                 Some(rule)
             );
             let detection = manifests.detect_input(input);
-            assert_eq!(detection.state, state);
-            assert_eq!(detection.visible_idle, state == AgentState::Idle);
-            assert_eq!(detection.visible_working, state == AgentState::Working);
-            assert_eq!(detection.visible_blocker, state == AgentState::Blocked);
+            assert_eq!(detection.state(), state);
+            assert_eq!(detection.visible_idle(), state == AgentState::Idle);
+            assert_eq!(detection.visible_working(), state == AgentState::Working);
+            assert_eq!(detection.visible_blocker(), state == AgentState::Blocked);
         }
         let swapped = manifests.explain_input(
             Agent::Codex,
@@ -544,16 +544,16 @@ contains = ["overlay-marker"]
         ));
         let screen = "activity-marker overlay-marker";
         let result = manifests.explain(Agent::Codex, screen);
-        assert_eq!(result.state, AgentState::Unknown);
-        assert!(result.skip_state_update);
+        assert_eq!(result.verdict.state(), AgentState::Unknown);
+        assert!(result.verdict.skip_state_update());
         assert_eq!(
             result.skipped_update_reason.as_deref(),
             Some("matched_rule:overlay")
         );
-        assert!(!result.visible_idle);
-        assert!(!result.visible_working);
-        assert!(!result.visible_blocker);
-        assert!(manifests.detect(screen).skip_state_update);
+        assert!(!result.verdict.visible_idle());
+        assert!(!result.verdict.visible_working());
+        assert!(!result.verdict.visible_blocker());
+        assert!(manifests.detect(screen).skip_state_update());
     }
 }
 

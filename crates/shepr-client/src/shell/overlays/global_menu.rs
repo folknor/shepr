@@ -55,7 +55,7 @@ impl ClientShellState {
         self.overlay = None;
         match action {
             ClientGlobalMenuAction::Binding(binding) => {
-                self.record_binding(&shepr_termio::input::KeybindMatch::Action(binding), outcome);
+                self.record_binding(&binding, outcome);
             }
         }
         outcome.repaint = true;

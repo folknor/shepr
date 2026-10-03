@@ -47,8 +47,6 @@ pub(super) fn run_status_command(
     }
 }
 
-type ServerRuntimeStatus = ServerPresence;
-
 fn print_full_status(paths: &shepr_config::AppPaths, json: bool) -> super::CliResult<i32> {
     let server = read_server_runtime_status(paths)?;
 
@@ -135,7 +133,7 @@ fn print_client_status_body(status: &ClientStatusJson, indent: &str) {
 
 fn print_server_status_body(
     paths: &shepr_config::AppPaths,
-    server: &ServerRuntimeStatus,
+    server: &ServerPresence,
     indent: &str,
     compatible: Option<bool>,
 ) {
@@ -164,7 +162,7 @@ fn print_server_status_body(
 
 /// The identity a server answered with: present for starting, running and
 /// stopping servers, absent for a gone or unresponsive one.
-fn answered_status(server: &ServerRuntimeStatus) -> Option<&RuntimeStatus> {
+fn answered_status(server: &ServerPresence) -> Option<&RuntimeStatus> {
     match server {
         ServerPresence::Starting(status)
         | ServerPresence::Running(status)
@@ -182,9 +180,7 @@ fn print_runtime_identity(status: &RuntimeStatus, indent: &str) {
     println!("{indent}boot_id: {}", status.boot_id);
 }
 
-fn read_server_runtime_status(
-    paths: &shepr_config::AppPaths,
-) -> super::CliResult<ServerRuntimeStatus> {
+fn read_server_runtime_status(paths: &shepr_config::AppPaths) -> super::CliResult<ServerPresence> {
     Ok(shepr_api::read_server_presence_at(
         paths.server_address().socket(),
         crate::limits::STATUS_ANSWER_TIMEOUT,
@@ -195,7 +191,7 @@ fn option_label(value: Option<&str>) -> &str {
     value.unwrap_or("unknown")
 }
 
-fn restart_needed_label(server: &ServerRuntimeStatus, restart_needed: bool) -> &'static str {
+fn restart_needed_label(server: &ServerPresence, restart_needed: bool) -> &'static str {
     match server {
         ServerPresence::Unresponsive => "unknown",
         _ if restart_needed => "yes",
@@ -218,10 +214,7 @@ fn client_status_json() -> ClientStatusJson {
     }
 }
 
-fn server_status_json(
-    paths: &shepr_config::AppPaths,
-    server: &ServerRuntimeStatus,
-) -> ServerStatusJson {
+fn server_status_json(paths: &shepr_config::AppPaths, server: &ServerPresence) -> ServerStatusJson {
     let presence = match server {
         ServerPresence::Gone => ServerPresenceJson::Gone,
         ServerPresence::Starting(_) => ServerPresenceJson::Starting,
@@ -230,19 +223,12 @@ fn server_status_json(
         ServerPresence::Unresponsive => ServerPresenceJson::Unresponsive,
     };
     let status = answered_status(server);
-    let (compatible, restart_needed) = build_status_flags(server);
-    // `compatible` and `restart_needed` are judged against this CLI's build,
-    // for the operator reading the output. A remote preflight runs a
-    // different machine's CLI, so it ignores them and compares presence and
-    // build_id against its own build instead.
     ServerStatusJson {
         presence,
         version: status.and_then(|status| status.version.clone()),
         build_id: status.map(|status| status.build_id.clone()),
         boot_id: status.map(|status| status.boot_id.clone()),
-        compatible,
         socket: paths.server_address().socket().display().to_string(),
-        restart_needed,
     }
 }
 
@@ -256,7 +242,7 @@ fn build_compatible_label(compatible: Option<bool>) -> &'static str {
 
 /// A starting or running server of another build needs a restart; a stopping
 /// one is already going away, and the successor is launched from this install.
-fn build_status_flags(server: &ServerRuntimeStatus) -> (Option<bool>, bool) {
+fn build_status_flags(server: &ServerPresence) -> (Option<bool>, bool) {
     let compatible =
         answered_status(server).map(|status| shepr_protocol::is_this_build(&status.build_id));
     let restart_needed = matches!(
@@ -298,7 +284,7 @@ mod tests {
         }
     }
 
-    fn running_server(version: Option<&str>, build_id: &str) -> ServerRuntimeStatus {
+    fn running_server(version: Option<&str>, build_id: &str) -> ServerPresence {
         ServerPresence::Running(runtime_status(version, build_id))
     }
 
@@ -335,21 +321,23 @@ mod tests {
     }
 
     #[test]
-    fn a_starting_server_of_another_build_needs_a_restart_and_a_stopping_one_does_not() {
+    fn human_status_detects_a_restart_for_starting_but_not_stopping_servers() {
         let other = runtime_status(Some("0.0.0-old"), "ffffffffffffffff");
         let starting = ServerPresence::Starting(other.clone());
         let json = server_status_json(&test_paths(), &starting);
         assert_eq!(json.presence, ServerPresenceJson::Starting);
         assert_eq!(json.boot_id.as_deref(), Some("4242-1700000000"));
-        assert_eq!(json.compatible, Some(false));
-        assert!(json.restart_needed);
-        assert_eq!(restart_needed_label(&starting, json.restart_needed), "yes");
+        let (compatible, restart_needed) = build_status_flags(&starting);
+        assert_eq!(compatible, Some(false));
+        assert!(restart_needed);
+        assert_eq!(restart_needed_label(&starting, restart_needed), "yes");
 
         let stopping = ServerPresence::Stopping(other);
         let json = server_status_json(&test_paths(), &stopping);
         assert_eq!(json.presence, ServerPresenceJson::Stopping);
-        assert!(!json.restart_needed);
-        assert_eq!(restart_needed_label(&stopping, json.restart_needed), "no");
+        let (_, restart_needed) = build_status_flags(&stopping);
+        assert!(!restart_needed);
+        assert_eq!(restart_needed_label(&stopping, restart_needed), "no");
     }
 
     #[test]
@@ -360,12 +348,9 @@ mod tests {
         assert_eq!(json.version, None);
         assert_eq!(json.build_id, None);
         assert_eq!(json.boot_id, None);
-        assert_eq!(json.compatible, None);
-        assert!(!json.restart_needed);
-        assert_eq!(
-            restart_needed_label(&server, json.restart_needed),
-            "unknown"
-        );
+        let (_, restart_needed) = build_status_flags(&server);
+        assert!(!restart_needed);
+        assert_eq!(restart_needed_label(&server, restart_needed), "unknown");
     }
 
     #[test]

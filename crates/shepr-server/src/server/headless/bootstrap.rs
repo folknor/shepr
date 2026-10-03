@@ -206,21 +206,28 @@ fn log_panics() {
 /// thread starts. Every outcome goes to the log; nothing here can fail the
 /// launch. A server that stops while the thread runs leaves at most a
 /// half-finished install, which the next launch completes: every file is
-/// replaced by rename, never rewritten in place. The installer is given this
-/// build's compiled profile, never the inherited pane marker, and skips
-/// everything unless it is release: agent configs are shared by every build on
-/// the host, and only release hooks are installed into them.
+/// replaced by rename, never rewritten in place. Agent configs are shared by
+/// every build on the host and only release hooks are installed into them, so
+/// this server's compiled profile decides, before agent paths are resolved or
+/// any file IO starts; the inherited pane marker does not.
 fn spawn_integration_install() {
+    if !integration_install_enabled(shepr_config::BuildProfile::current()) {
+        info!("agent integration installation skipped; only release servers own agent configs");
+        return;
+    }
     let paths = shepr_agent::integration::AgentIntegrationPaths::resolve();
-    let build_profile = shepr_config::BuildProfile::current().marker();
     if let Err(error) = std::thread::Builder::new()
         .name("integration-install".into())
         .spawn(move || {
-            shepr_agent::integration::install_present_integrations(&paths, build_profile);
+            shepr_agent::integration::install_present_integrations(&paths);
         })
     {
         warn!(%error, "could not start the agent integration install");
     }
+}
+
+fn integration_install_enabled(profile: shepr_config::BuildProfile) -> bool {
+    profile == shepr_config::BuildProfile::Release
 }
 
 fn seed_startup_workspace_if_empty(app: &mut app::App, startup_cwd: Option<PathBuf>) {
@@ -279,6 +286,16 @@ fn lease_error(error: io::Error) -> RunServerError {
 #[cfg(test)]
 mod startup_tests {
     use super::*;
+
+    #[test]
+    fn only_release_servers_install_shared_agent_integrations() {
+        assert!(integration_install_enabled(
+            shepr_config::BuildProfile::Release
+        ));
+        assert!(!integration_install_enabled(
+            shepr_config::BuildProfile::Dev
+        ));
+    }
 
     #[tokio::test]
     async fn bootstrap_opens_the_gate_after_restore() {

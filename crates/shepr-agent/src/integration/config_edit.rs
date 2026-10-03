@@ -9,6 +9,7 @@ use crate::agent::IntegrationTarget as Target;
 use crate::limits::TOML_BASIC_STRING_DELIMITER_BYTES;
 
 use super::command::{hook_command, is_hook_command_for_path};
+use super::types::{InstallErrorKind, InstallIssue};
 use super::{KIMI_CONFIG_BLOCK_BEGIN, KIMI_CONFIG_BLOCK_END};
 
 pub(crate) fn ensure_hooks_object<'a>(
@@ -18,18 +19,24 @@ pub(crate) fn ensure_hooks_object<'a>(
     hooks_description: &str,
 ) -> io::Result<&'a mut Map<String, Value>> {
     let root = settings.as_object_mut().ok_or_else(|| {
-        io::Error::other(format!(
-            "{root_description} at {} must be a JSON object",
-            settings_path.display()
-        ))
+        InstallIssue::io_error(
+            InstallErrorKind::ConfigShape,
+            format!(
+                "{root_description} at {} must be a JSON object",
+                settings_path.display()
+            ),
+        )
     })?;
 
     let hooks = root.entry("hooks").or_insert_with(|| json!({}));
     hooks.as_object_mut().ok_or_else(|| {
-        io::Error::other(format!(
-            "{hooks_description} at {} must be a JSON object",
-            settings_path.display()
-        ))
+        InstallIssue::io_error(
+            InstallErrorKind::ConfigShape,
+            format!(
+                "{hooks_description} at {} must be a JSON object",
+                settings_path.display()
+            ),
+        )
     })
 }
 
@@ -44,7 +51,12 @@ pub(crate) fn ensure_command_hook(
         .entry(event.to_string())
         .or_insert_with(|| Value::Array(Vec::new()))
         .as_array_mut()
-        .ok_or_else(|| io::Error::other(format!("hook entries for {event} must be an array")))?;
+        .ok_or_else(|| {
+            InstallIssue::io_error(
+                InstallErrorKind::ConfigShape,
+                format!("hook entries for {event} must be an array"),
+            )
+        })?;
 
     // Claude preserves an already canonical entry so its settings text stays
     // untouched; in that path this helper must not append a duplicate.
@@ -103,7 +115,12 @@ pub(crate) fn ensure_flat_command_hook(
         .entry(event.to_string())
         .or_insert_with(|| Value::Array(Vec::new()))
         .as_array_mut()
-        .ok_or_else(|| io::Error::other(format!("hook entries for {event} must be an array")))?;
+        .ok_or_else(|| {
+            InstallIssue::io_error(
+                InstallErrorKind::ConfigShape,
+                format!("hook entries for {event} must be an array"),
+            )
+        })?;
 
     entries.push(json!({
         "type": "command",
@@ -125,7 +142,12 @@ pub(crate) fn ensure_direct_command_hook(
         .entry(event.to_string())
         .or_insert_with(|| Value::Array(Vec::new()))
         .as_array_mut()
-        .ok_or_else(|| io::Error::other(format!("hook entries for {event} must be an array")))?;
+        .ok_or_else(|| {
+            InstallIssue::io_error(
+                InstallErrorKind::ConfigShape,
+                format!("hook entries for {event} must be an array"),
+            )
+        })?;
 
     let command_field = direct_command_field();
     if let Some(entry) = entries.iter_mut().find(|entry| {
@@ -186,7 +208,12 @@ pub(crate) fn ensure_simple_command_hook(
         .entry(event.to_string())
         .or_insert_with(|| Value::Array(Vec::new()))
         .as_array_mut()
-        .ok_or_else(|| io::Error::other(format!("hook entries for {event} must be an array")))?;
+        .ok_or_else(|| {
+            InstallIssue::io_error(
+                InstallErrorKind::ConfigShape,
+                format!("hook entries for {event} must be an array"),
+            )
+        })?;
 
     entries.push(json!({ "command": command }));
     Ok(())
@@ -209,7 +236,10 @@ pub(crate) fn remove_hook_path_commands_preserving(
     let mut empty_events = Vec::new();
     for (event, entries_value) in events.iter_mut() {
         let entries = entries_value.as_array_mut().ok_or_else(|| {
-            io::Error::other(format!("hook entries for {event} must be an array"))
+            InstallIssue::io_error(
+                InstallErrorKind::ConfigShape,
+                format!("hook entries for {event} must be an array"),
+            )
         })?;
         let mut removed_in_event = false;
         entries.retain_mut(|entry| {
@@ -267,9 +297,12 @@ fn value_uses_hook_path(value: &Value, hook_path: &Path) -> bool {
 /// Enable `features.hooks` in a Codex `config.toml`, preserving source layout
 /// when `features` is a table or root-level dotted table.
 pub(crate) fn build_codex_config_with_hooks(content: &str) -> io::Result<String> {
-    let mut document = content
-        .parse::<DocumentMut>()
-        .map_err(|error| io::Error::other(format!("could not parse Codex config.toml: {error}")))?;
+    let mut document = content.parse::<DocumentMut>().map_err(|error| {
+        InstallIssue::io_error(
+            InstallErrorKind::ConfigUnparseable,
+            format!("could not parse Codex config.toml: {error}"),
+        )
+    })?;
 
     let Some(features) = document.as_table_mut().get_mut("features") else {
         let mut features = Table::new();
@@ -284,7 +317,8 @@ pub(crate) fn build_codex_config_with_hooks(content: &str) -> io::Result<String>
         features.remove("codex_hooks");
         features.insert("hooks", Item::Value(TomlValue::from(true)));
     } else {
-        return Err(io::Error::other(
+        return Err(InstallIssue::io_error(
+            InstallErrorKind::ConfigShape,
             "codex config.toml declares `features` as an inline table or non-table value; move it \
              to a [features] table (or `features.<key> = ...` lines) and retry",
         ));
@@ -301,7 +335,8 @@ pub(super) fn build_kimi_config_with_timeout(
     let unmarked_content = remove_kimi_config_block(content)?;
     // Only the marked block is safe to rewrite without reformatting user TOML.
     if kimi_config_uses_hook_path(&unmarked_content, hook_path)? {
-        return Err(io::Error::other(
+        return Err(InstallIssue::io_error(
+            InstallErrorKind::ManagedBlockConflict,
             "kimi config.toml registers the Shepr hook outside its managed block; remove that hook and retry",
         ));
     }
@@ -312,9 +347,12 @@ pub(super) fn build_kimi_config_with_timeout(
     }
 
     result.push_str(&kimi_integration_block(hook_path, timeout));
-    result
-        .parse::<DocumentMut>()
-        .map_err(|error| io::Error::other(format!("could not build Kimi config.toml: {error}")))?;
+    result.parse::<DocumentMut>().map_err(|error| {
+        InstallIssue::io_error(
+            InstallErrorKind::ConfigUnparseable,
+            format!("could not build Kimi config.toml: {error}"),
+        )
+    })?;
     Ok(result)
 }
 
@@ -357,8 +395,12 @@ pub(super) fn kimi_config_block_with_timeout_is_current(
 }
 
 fn kimi_config_uses_hook_path(content: &str, hook_path: &Path) -> io::Result<bool> {
-    let config = toml::from_str::<toml::Value>(content)
-        .map_err(|error| io::Error::other(format!("could not parse Kimi config.toml: {error}")))?;
+    let config = toml::from_str::<toml::Value>(content).map_err(|error| {
+        InstallIssue::io_error(
+            InstallErrorKind::ConfigUnparseable,
+            format!("could not parse Kimi config.toml: {error}"),
+        )
+    })?;
     Ok(config
         .get("hooks")
         .and_then(toml::Value::as_array)
@@ -457,10 +499,13 @@ pub(crate) fn remove_kimi_config_block(content: &str) -> io::Result<String> {
 }
 
 fn unterminated_kimi_block_error() -> io::Error {
-    io::Error::other(format!(
-        "kimi config.toml has a `{KIMI_CONFIG_BLOCK_BEGIN}` line without a matching \
-         `{KIMI_CONFIG_BLOCK_END}` line; remove the damaged shepr block by hand and retry"
-    ))
+    InstallIssue::io_error(
+        InstallErrorKind::ManagedBlockConflict,
+        format!(
+            "kimi config.toml has a `{KIMI_CONFIG_BLOCK_BEGIN}` line without a matching \
+             `{KIMI_CONFIG_BLOCK_END}` line; remove the damaged shepr block by hand and retry"
+        ),
+    )
 }
 
 pub(crate) fn toml_basic_string(value: &str) -> String {

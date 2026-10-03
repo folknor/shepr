@@ -351,6 +351,12 @@ fn is_local_ssh_configuration_error(message: &str) -> bool {
     .any(|signature| message.contains(signature))
 }
 
+/// Whether an IO failure says the link to the machine could not be made, so
+/// nothing was learned about the remote side and the machine reads as offline.
+/// This deliberately does not use `shepr_platform::ipc::classify_stream_error`:
+/// that classifier answers how a local stream ended, and a peer that went away
+/// mid-session (a broken pipe, an unexpected EOF) is a remote fault to retry,
+/// not evidence that the machine is unreachable.
 fn is_ssh_link_error_kind(kind: std::io::ErrorKind) -> bool {
     matches!(
         kind,

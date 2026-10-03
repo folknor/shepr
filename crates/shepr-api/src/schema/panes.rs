@@ -1,4 +1,6 @@
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+use shepr_agent::agent::resume::{AgentSessionStartSource, UnrecognizedAgentSessionStartSource};
 
 use super::common::PaneAgentState;
 
@@ -40,7 +42,43 @@ pub struct PaneReportAgentSessionParams {
     /// Mutually exclusive with agent_session_id; both supplied is a bad request.
     pub agent_session_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub session_start_source: Option<String>,
+    #[serde(with = "session_start_source_wire")]
+    pub session_start_source:
+        Option<Result<AgentSessionStartSource, UnrecognizedAgentSessionStartSource>>,
+}
+
+mod session_start_source_wire {
+    use super::*;
+
+    pub(super) fn serialize<S>(
+        source: &Option<Result<AgentSessionStartSource, UnrecognizedAgentSessionStartSource>>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let value = source.as_ref().map(|source| match source {
+            Ok(source) => source.as_str(),
+            Err(source) => source.as_str(),
+        });
+        match value {
+            Some(value) => serializer.serialize_some(value),
+            None => serializer.serialize_none(),
+        }
+    }
+
+    pub(super) fn deserialize<'de, D>(
+        deserializer: D,
+    ) -> Result<
+        Option<Result<AgentSessionStartSource, UnrecognizedAgentSessionStartSource>>,
+        D::Error,
+    >
+    where
+        D: Deserializer<'de>,
+    {
+        Option::<String>::deserialize(deserializer)
+            .map(|value| value.map(|value| AgentSessionStartSource::parse(&value)))
+    }
 }
 
 #[cfg(test)]
@@ -59,5 +97,39 @@ mod tests {
         .expect("extra JSON fields are accepted");
         let value = serde_json::to_value(params).expect("serialize report");
         assert!(value.get("message").is_none());
+    }
+
+    #[test]
+    fn session_report_retains_unknown_start_source_as_a_typed_error() {
+        let params: PaneReportAgentSessionParams = serde_json::from_value(serde_json::json!({
+            "pane_id": "w1:p1",
+            "source": "shepr:pi",
+            "agent": "pi",
+            "session_start_source": "future-source"
+        }))
+        .expect("unknown source is retained for server diagnostics");
+
+        let Some(Err(source)) = params.session_start_source.as_ref() else {
+            panic!("unknown source is retained as a parse error");
+        };
+        assert_eq!(source.as_str(), "future-source");
+        let value = serde_json::to_value(params).expect("serialize session report");
+        assert_eq!(value["session_start_source"], "future-source");
+    }
+
+    #[test]
+    fn session_report_source_parsing_does_not_trim_values() {
+        let params: PaneReportAgentSessionParams = serde_json::from_value(serde_json::json!({
+            "pane_id": "w1:p1",
+            "source": "shepr:pi",
+            "agent": "pi",
+            "session_start_source": " resume "
+        }))
+        .expect("unknown source is retained for server diagnostics");
+
+        let Some(Err(source)) = params.session_start_source else {
+            panic!("whitespace is not part of a recognized source spelling");
+        };
+        assert_eq!(source.as_str(), " resume ");
     }
 }

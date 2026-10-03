@@ -11,6 +11,7 @@ use super::config_file::{
 };
 use super::env::AgentIntegrationPaths;
 use super::file_ops::{is_file, read_if_file};
+use super::types::{InstallErrorKind, InstallIssue};
 
 pub(crate) struct PluginConfigEdit {
     path: PathBuf,
@@ -219,10 +220,13 @@ fn plugin_is_configured(config_path: &Path, key: &str, plugin_spec: &str) -> io:
 
 fn parse_root(content: &str, path: &Path) -> io::Result<CstRootNode> {
     CstRootNode::parse(content, &jsonc_parse_options()).map_err(|err| {
-        io::Error::other(format!(
-            "failed to parse OpenCode TUI config at {}: {err}",
-            path.display()
-        ))
+        InstallIssue::io_error(
+            InstallErrorKind::ConfigUnparseable,
+            format!(
+                "failed to parse OpenCode TUI config at {}: {err}",
+                path.display()
+            ),
+        )
     })
 }
 
@@ -255,17 +259,23 @@ fn plugin_entry_matches(entry: &Value, plugin_spec: &str) -> bool {
 }
 
 fn invalid_root(path: &Path) -> io::Error {
-    io::Error::other(format!(
-        "OpenCode TUI config at {} must be a JSON object",
-        path.display()
-    ))
+    InstallIssue::io_error(
+        InstallErrorKind::ConfigShape,
+        format!(
+            "OpenCode TUI config at {} must be a JSON object",
+            path.display()
+        ),
+    )
 }
 
 fn invalid_plugin_list(path: &Path) -> io::Error {
-    io::Error::other(format!(
-        "OpenCode TUI config plugin list at {} must be an array",
-        path.display()
-    ))
+    InstallIssue::io_error(
+        InstallErrorKind::ConfigShape,
+        format!(
+            "OpenCode TUI config plugin list at {} must be an array",
+            path.display()
+        ),
+    )
 }
 
 #[cfg(test)]

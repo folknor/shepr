@@ -62,7 +62,7 @@ pub enum AppEvent {
         origin: shepr_agent::agent::ReportOrigin,
         seq: Option<u64>,
         session_ref: Option<shepr_agent::agent::resume::AgentSessionRef>,
-        session_start_source: Option<shepr_agent::agent::resume::AgentSessionStartSource>,
+        session_start_source: shepr_agent::agent::resume::ReportedSessionStart,
     },
     /// A pane child emitted a valid OSC 52 clipboard write. The main loop
     /// re-emits it to the clients viewing `pane_id`.

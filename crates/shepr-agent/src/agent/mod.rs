@@ -361,10 +361,12 @@ impl HookSessionPolicy {
         state_requires_session_ref: true,
         ..Self::DEFAULT
     };
-    pub fn allows_replacement(self, start: Option<resume::AgentSessionStartSource>) -> bool {
-        start.map_or(self.replace_without_start, |start| {
-            self.replacement_starts.contains(&start)
-        })
+    pub fn allows_replacement(self, start: resume::ReportedSessionStart) -> bool {
+        match start {
+            resume::ReportedSessionStart::Omitted => self.replace_without_start,
+            resume::ReportedSessionStart::Known(start) => self.replacement_starts.contains(&start),
+            resume::ReportedSessionStart::Unrecognized => false,
+        }
     }
 }
 

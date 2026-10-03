@@ -305,16 +305,10 @@ pub(in crate::shell) fn render_expanded(
             continue;
         }
         if let Some(snapshot) = endpoint.snapshot.as_deref() {
-            rows.extend(
-                snapshot
-                    .workspaces
-                    .iter()
-                    .enumerate()
-                    .map(|(entry, _)| Row::Workspace {
-                        endpoint: endpoint_index,
-                        entry,
-                    }),
-            );
+            rows.extend((0..snapshot.workspaces.len()).map(|entry| Row::Workspace {
+                endpoint: endpoint_index,
+                entry,
+            }));
         }
     }
     let body = Rect::new(

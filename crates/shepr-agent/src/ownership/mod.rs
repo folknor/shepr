@@ -7,7 +7,7 @@ use std::time::{Instant, SystemTime};
 // remains only for session-only/custom hook paths and fallback detection.
 // Confirmed process-exit updates clear matching authority before recomputing state.
 
-use crate::agent::resume::AgentSessionStartSource;
+use crate::agent::resume::{AgentSessionStartSource, ReportedSessionStart};
 use crate::agent::{AgentSource, ReportOrigin, ReportedAgent};
 use crate::detect::{Agent, AgentState};
 

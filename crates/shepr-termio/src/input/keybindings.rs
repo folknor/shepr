@@ -23,20 +23,16 @@ macro_rules! define_keybinding_actions {
             $($indexed_variant(usize),)*
         }
 
-        #[derive(Debug, Clone)]
-        pub enum KeybindMatch {
-            Action(KeybindAction),
-        }
     };
 }
 
 shepr_config::keybinding_table!(define_keybinding_actions);
 
-pub fn resolve_direct_binding(keybinds: &Keybinds, key: &TerminalKey) -> Option<KeybindMatch> {
+pub fn resolve_direct_binding(keybinds: &Keybinds, key: &TerminalKey) -> Option<KeybindAction> {
     resolve_exact_binding(keybinds, key, KeybindDispatch::Direct)
 }
 
-pub fn resolve_prefix_binding(keybinds: &Keybinds, key: &TerminalKey) -> Option<KeybindMatch> {
+pub fn resolve_prefix_binding(keybinds: &Keybinds, key: &TerminalKey) -> Option<KeybindAction> {
     resolve_exact_binding(keybinds, key, KeybindDispatch::Prefix).or_else(|| {
         generated_character_key(key).and_then(|generated_key| {
             resolve_exact_binding(keybinds, &generated_key, KeybindDispatch::Prefix)
@@ -112,10 +108,9 @@ fn resolve_exact_binding(
     keybinds: &Keybinds,
     key: &TerminalKey,
     dispatch: KeybindDispatch,
-) -> Option<KeybindMatch> {
+) -> Option<KeybindAction> {
     resolve_non_indexed_action(keybinds, key, dispatch)
-        .map(KeybindMatch::Action)
-        .or_else(|| resolve_indexed_action(keybinds, key, dispatch).map(KeybindMatch::Action))
+        .or_else(|| resolve_indexed_action(keybinds, key, dispatch))
 }
 
 fn generated_character_key(key: &TerminalKey) -> Option<TerminalKey> {
@@ -159,21 +154,21 @@ mod tests {
                 &keybinds,
                 &TerminalKey::new(KeyCode::Char('k'), KeyModifiers::SUPER)
             ),
-            Some(KeybindMatch::Action(KeybindAction::ClearPane))
+            Some(KeybindAction::ClearPane)
         ));
         assert!(matches!(
             resolve_prefix_binding(
                 &keybinds,
                 &TerminalKey::new(KeyCode::Char('k'), KeyModifiers::CONTROL)
             ),
-            Some(KeybindMatch::Action(KeybindAction::ClearPane))
+            Some(KeybindAction::ClearPane)
         ));
         assert!(matches!(
             resolve_prefix_binding(
                 &keybinds,
                 &TerminalKey::new(KeyCode::Char('k'), KeyModifiers::SHIFT)
             ),
-            Some(KeybindMatch::Action(KeybindAction::SwapPaneUp))
+            Some(KeybindAction::SwapPaneUp)
         ));
     }
 
@@ -186,19 +181,19 @@ mod tests {
         let direct = TerminalKey::new(KeyCode::Char('n'), KeyModifiers::CONTROL);
         assert!(matches!(
             resolve_direct_binding(&keybinds, &direct),
-            Some(KeybindMatch::Action(KeybindAction::NextWorkspace))
+            Some(KeybindAction::NextWorkspace)
         ));
 
         let help = TerminalKey::new(KeyCode::Char('?'), KeyModifiers::empty());
         assert!(matches!(
             resolve_prefix_binding(&keybinds, &help),
-            Some(KeybindMatch::Action(KeybindAction::Help))
+            Some(KeybindAction::Help)
         ));
 
         let one = TerminalKey::new(KeyCode::Char('1'), KeyModifiers::empty());
         assert!(matches!(
             resolve_prefix_binding(&keybinds, &one),
-            Some(KeybindMatch::Action(KeybindAction::SwitchWorkspace(0)))
+            Some(KeybindAction::SwitchWorkspace(0))
         ));
     }
 
@@ -210,7 +205,7 @@ mod tests {
 
         assert!(matches!(
             resolve_prefix_binding(&keybinds, &key),
-            Some(KeybindMatch::Action(KeybindAction::Help))
+            Some(KeybindAction::Help)
         ));
     }
 }

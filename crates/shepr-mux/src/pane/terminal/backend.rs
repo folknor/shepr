@@ -46,6 +46,7 @@ impl PaneTerminal {
             }),
             pane_id,
             render_queued: std::sync::Arc::new(AtomicBool::new(false)),
+            screen_flipped: AtomicBool::new(false),
             mutation_failure_reported: AtomicBool::new(false),
             oversized_clipboard_reported: AtomicBool::new(false),
             dirty_patch_fallback_reported: AtomicBool::new(false),
@@ -218,11 +219,13 @@ impl PaneTerminal {
         // The flush changes the screen on its own, so it marks detection
         // content changed exactly as the timer tick does, whatever the read
         // carries.
+        let screen_before = core.terminal.active_screen();
         let flushed = core.terminal.tick(now);
         let synchronized_output_before = core
             .terminal
             .mode_get(shepr_vt::DecMode::SynchronizedOutput);
         core.terminal.write_at(bytes, now);
+        self.note_screen_flip(screen_before, core.terminal.active_screen());
         let effects = collect_core_effects(&mut core);
 
         let synchronized_output = core
@@ -312,8 +315,10 @@ impl PaneTerminal {
             // this timer has no loop to stop.
             return Err(shepr_vt::TerminalCorePoisoned);
         };
+        let screen_before = core.terminal.active_screen();
         let flushed = core.terminal.tick(now);
         if flushed {
+            self.note_screen_flip(screen_before, core.terminal.active_screen());
             core.record_mutation(CoreMutation::SyncFlush);
         }
         let effects = collect_core_effects(&mut core);
@@ -1199,13 +1204,6 @@ impl PaneTerminal {
 
     pub(crate) fn process_pty_bytes(&self, pane_id: PaneId, bytes: &[u8]) -> ProcessBytesEffects {
         self.process_pty_bytes_at(pane_id, bytes, Instant::now())
-    }
-
-    pub(crate) fn scroll_position(&self) -> Option<ScrollPosition> {
-        let core = shepr_vt::lock_terminal_core(&self.core).ok()?;
-        Some(ScrollPosition {
-            metrics: terminal_scroll_metrics(&core.terminal),
-        })
     }
 }
 

@@ -23,7 +23,13 @@ impl AgentOwnership {
         seq: Option<u64>,
         sample: impl Into<HookClockSample>,
     ) -> Option<AgentOwnershipMutation> {
-        self.set_agent_session_ref_for_typed_start_source_at(origin, session_ref, seq, None, sample)
+        self.set_agent_session_ref_for_typed_start_source_at(
+            origin,
+            session_ref,
+            seq,
+            crate::agent::resume::ReportedSessionStart::Omitted,
+            sample,
+        )
     }
 
     pub fn set_agent_session_ref_for_typed_start_source_at(
@@ -31,7 +37,7 @@ impl AgentOwnership {
         origin: ReportOrigin,
         session_ref: Option<crate::agent::resume::AgentSessionRef>,
         seq: Option<u64>,
-        session_start_source: Option<crate::agent::resume::AgentSessionStartSource>,
+        session_start_source: crate::agent::resume::ReportedSessionStart,
         sample: impl Into<HookClockSample>,
     ) -> Option<AgentOwnershipMutation> {
         self.transition_hook_event(HookEvent::Start {

@@ -1080,9 +1080,7 @@ fn pane_pixel_mouse_preserves_pane_relative_pixel_coordinates() {
     let x = u32::from(pane.inner_rect.x) * 10 + 21;
     let y = u32::from(pane.inner_rect.y) * 20 + 21;
     let report = format!("\x1b[<0;{x};{y}M");
-    let mut framer = shepr_termio::input::raw_input::RawInputFramer::<
-        shepr_termio::input::raw_input::NoHostReplies,
-    >::default();
+    let mut framer = shepr_termio::input::raw_input::RawInputFramer::default();
     let mut framed = framer.push_framed(report.as_bytes());
     framed.extend(framer.flush_timeout_framed());
     assert_eq!(framed.len(), 1);

@@ -2192,11 +2192,7 @@ fn focus_agent_index_uses_the_rendered_aggregate_rows() {
     std::sync::Arc::make_mut(endpoint.snapshot.as_mut().expect("remote snapshot")).agents =
         vec![agent(AgentStatus::Working, 2)];
     state.rebuild_agent_panel_model();
-    let focus_agent = |index| {
-        shepr_termio::input::KeybindMatch::Action(shepr_termio::input::KeybindAction::FocusAgent(
-            index,
-        ))
-    };
+    let focus_agent = |index| shepr_termio::input::KeybindAction::FocusAgent(index);
 
     assert!(state.indexed_navigation_target_exists(&focus_agent(0)));
     assert!(!state.indexed_navigation_target_exists(&focus_agent(1)));

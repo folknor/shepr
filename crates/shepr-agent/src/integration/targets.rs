@@ -25,7 +25,7 @@ use super::registration::{HooksRoot, JsonShape, Registration};
 use super::registry::{
     action_label, agent_present, managed_assets, registration, target_directory, target_path,
 };
-use super::types::{ArtifactRole, InstallOutcome};
+use super::types::{ArtifactRole, InstallErrorKind, InstallIssue, InstallOutcome};
 
 struct ConfigEdit {
     path: PathBuf,
@@ -76,10 +76,13 @@ pub(super) fn install(paths: &AgentIntegrationPaths, target: Target) -> io::Resu
         return Err(missing_agent_directory(target, &dir));
     }
     if target == Target::Omp && dir == target_directory(paths, Target::Pi)? {
-        return Err(io::Error::other(format!(
-            "Pi and OMP resolve to the same extension directory at {}; configure separate agent directories before installing OMP",
-            dir.display()
-        )));
+        return Err(InstallIssue::io_error(
+            InstallErrorKind::ConfigShape,
+            format!(
+                "Pi and OMP resolve to the same extension directory at {}; configure separate agent directories before installing OMP",
+                dir.display()
+            ),
+        ));
     }
     let hook_path = target_path(paths, target)?;
     let mut outcome = InstallOutcome::default();
@@ -165,10 +168,13 @@ pub(super) fn install(paths: &AgentIntegrationPaths, target: Target) -> io::Resu
                 |content, path| {
                     let mut document = parse_json(content, path)?;
                     let hooks = document.as_object_mut().ok_or_else(|| {
-                        io::Error::other(format!(
-                            "antigravity cli hooks file at {} must be a JSON object",
-                            path.display()
-                        ))
+                        InstallIssue::io_error(
+                            InstallErrorKind::ConfigShape,
+                            format!(
+                                "antigravity cli hooks file at {} must be a JSON object",
+                                path.display()
+                            ),
+                        )
                     })?;
                     hooks.insert(
                         ANTIGRAVITY_CLI_HOOK_BLOCK_NAME.to_string(),
@@ -240,8 +246,12 @@ pub(super) fn install(paths: &AgentIntegrationPaths, target: Target) -> io::Resu
 }
 
 fn parse_json(content: &str, path: &Path) -> io::Result<Value> {
-    serde_json::from_str(content)
-        .map_err(|error| io::Error::other(format!("failed to parse {}: {error}", path.display())))
+    serde_json::from_str(content).map_err(|error| {
+        InstallIssue::io_error(
+            InstallErrorKind::ConfigUnparseable,
+            format!("failed to parse {}: {error}", path.display()),
+        )
+    })
 }
 
 fn prepare_json(
@@ -258,10 +268,13 @@ fn prepare_json(
             document
                 .as_object_mut()
                 .ok_or_else(|| {
-                    io::Error::other(format!(
-                        "cursor hooks file at {} must be a JSON object",
-                        path.display()
-                    ))
+                    InstallIssue::io_error(
+                        InstallErrorKind::ConfigShape,
+                        format!(
+                            "cursor hooks file at {} must be a JSON object",
+                            path.display()
+                        ),
+                    )
                 })?
                 .insert("version".to_string(), json!(1));
         }
@@ -270,10 +283,13 @@ fn prepare_json(
                 ensure_hooks_object(&mut document, path, "agent config", "agent config hooks")?
             }
             HooksRoot::Document => document.as_object_mut().ok_or_else(|| {
-                io::Error::other(format!(
-                    "mastracode hooks file at {} must be a JSON object",
-                    path.display()
-                ))
+                InstallIssue::io_error(
+                    InstallErrorKind::ConfigShape,
+                    format!(
+                        "mastracode hooks file at {} must be a JSON object",
+                        path.display()
+                    ),
+                )
             })?,
         };
         remove_hook_path_commands(hooks, hook_path)?;
@@ -283,7 +299,10 @@ fn prepare_json(
                 .or_insert_with(|| json!([]))
                 .as_array_mut()
                 .ok_or_else(|| {
-                    io::Error::other(format!("hook entries for {event} must be an array"))
+                    InstallIssue::io_error(
+                        InstallErrorKind::ConfigShape,
+                        format!("hook entries for {event} must be an array"),
+                    )
                 })?;
             if let Value::Array(expected) = expected {
                 entries.extend(expected);
@@ -305,18 +324,24 @@ fn missing_agent_directory(target: Target, dir: &Path) -> io::Error {
         Target::Pi => ("pi extension", "pi"),
         Target::Omp => ("omp extension", "omp"),
         _ => {
-            return io::Error::other(format!(
-                "{} config directory not found at {}. install {} first",
-                target.label(),
-                dir.display(),
-                action_label(target)
-            ));
+            return InstallIssue::io_error(
+                InstallErrorKind::AgentDirMissing,
+                format!(
+                    "{} config directory not found at {}. install {} first",
+                    target.label(),
+                    dir.display(),
+                    action_label(target)
+                ),
+            );
         }
     };
-    io::Error::other(format!(
-        "{name} directory not found at {}. install {install_name} first",
-        dir.display()
-    ))
+    InstallIssue::io_error(
+        InstallErrorKind::AgentDirMissing,
+        format!(
+            "{name} directory not found at {}. install {install_name} first",
+            dir.display()
+        ),
+    )
 }
 
 /// Builds the Shepr-owned `hooks.json` block for Antigravity CLI.

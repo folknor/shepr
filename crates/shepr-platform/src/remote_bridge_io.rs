@@ -5,6 +5,8 @@ use std::{
     time::Duration,
 };
 
+use crate::ipc::{StreamFailure, classify_stream_error};
+
 /// How a stdio relay ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[must_use = "an idle-expired bridge must end its process"]
@@ -36,39 +38,34 @@ enum RelayEvent {
 pub fn forward_remote_bridge_stdio(
     stream: crate::ipc::LocalStream,
 ) -> std::io::Result<RemoteBridgeOutcome> {
-    forward_remote_bridge_stdio_with_timeout(stream, Some(remote_bridge::IDLE_TIMEOUT))
+    forward_remote_bridge_stdio_with_timeout(stream, remote_bridge::IDLE_TIMEOUT)
 }
 
 pub(super) fn forward_remote_bridge_stdio_with_timeout(
     stream: crate::ipc::LocalStream,
-    idle_timeout: Option<Duration>,
+    idle_timeout: Duration,
 ) -> std::io::Result<RemoteBridgeOutcome> {
     use remote_bridge::{Activity, TrackedIo};
     use std::os::fd::AsFd as _;
 
     let (events, relay) = std::sync::mpsc::channel();
-    let activity = match idle_timeout {
-        Some(timeout) => {
-            let expired = events.clone();
-            Some(Activity::start(timeout, move |idle_for| {
-                // The receiver is gone only once the relay already returned
-                // on a finished download, so there is nothing left to end.
-                expired.send(RelayEvent::Expired(idle_for)).ok();
-            })?)
-        }
-        None => None,
-    };
+    let expired = events.clone();
+    let activity = Activity::start(idle_timeout, move |idle_for| {
+        // The receiver is gone only once the relay already returned on a
+        // finished download, so there is nothing left to end.
+        expired.send(RelayEvent::Expired(idle_for)).ok();
+    })?;
     // The bridge's stdout is the SSH channel to the client, relayed as bytes.
     // A duplicate of fd 1 rather than the std handle: a download blocked on a
     // full stdout pipe must not hold std's stdout lock after an expiry returns.
     // stdout-handoff-ok: fd 1 is taken over whole, not written as text.
     let stdout = std::fs::File::from(std::io::stdout().as_fd().try_clone_to_owned()?);
-    let mut stdout = TrackedIo::new(stdout, activity.clone());
-    let mut socket_to_stdout = TrackedIo::new(stream.try_clone()?, activity.clone());
+    let mut stdout = TrackedIo::new(stdout, Some(activity.clone()));
+    let mut socket_to_stdout = TrackedIo::new(stream.try_clone()?, Some(activity.clone()));
     let control = stream.try_clone()?;
     let mut stdin_to_socket = stream;
     let _upload = std::thread::spawn(move || {
-        let mut stdin = TrackedIo::new(std::io::stdin(), activity.clone());
+        let mut stdin = TrackedIo::new(std::io::stdin(), Some(activity.clone()));
         // The download side reports how the relay ended. A socket the server
         // closed (or the idle watchdog shut down) is an ordinary end for the
         // upload; anything else means remote input stopped reaching the
@@ -76,13 +73,13 @@ pub(super) fn forward_remote_bridge_stdio_with_timeout(
         // is logged, never input.
         if let Err(err) = copy_flush(
             &mut stdin,
-            &mut TrackedIo::new(&mut stdin_to_socket, activity),
-        ) && !is_closed_socket(&err)
+            &mut TrackedIo::new(&mut stdin_to_socket, Some(activity)),
+        ) && !matches!(classify_stream_error(&err), StreamFailure::PeerGone)
         {
             tracing::warn!(error_kind = ?err.kind(), error = %err, "SSH bridge upload failed");
         }
         if let Err(err) = stdin_to_socket.shutdown(std::net::Shutdown::Write)
-            && !is_closed_socket(&err)
+            && !matches!(classify_stream_error(&err), StreamFailure::PeerGone)
         {
             tracing::warn!(error = %err, "SSH bridge failed to half-close the server socket");
         }
@@ -101,7 +98,7 @@ pub(super) fn forward_remote_bridge_stdio_with_timeout(
             // The caller ends the process next, which closes the socket
             // regardless; a failure only delays the server noticing.
             if let Err(err) = control.shutdown(std::net::Shutdown::Both)
-                && !is_closed_socket(&err)
+                && !matches!(classify_stream_error(&err), StreamFailure::PeerGone)
             {
                 tracing::warn!(error = %err, "SSH bridge failed to shut down the idle server socket");
             }
@@ -111,16 +108,6 @@ pub(super) fn forward_remote_bridge_stdio_with_timeout(
             "the bridge relay thread ended without reporting",
         )),
     }
-}
-
-/// Whether `err` only says the server side of the socket is already gone.
-fn is_closed_socket(err: &std::io::Error) -> bool {
-    matches!(
-        err.kind(),
-        std::io::ErrorKind::BrokenPipe
-            | std::io::ErrorKind::ConnectionReset
-            | std::io::ErrorKind::NotConnected
-    )
 }
 
 fn copy_flush<R: Read, W: Write>(reader: &mut R, writer: &mut W) -> std::io::Result<()> {

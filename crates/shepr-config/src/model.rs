@@ -164,6 +164,7 @@ impl<'de> Deserialize<'de> for NewTerminalCwdConfig {
 pub struct TerminalConfig {
     /// Executable used for new interactive panes. Empty means `$SHELL`, or
     /// /bin/sh when `SHELL` is unset; an unusable `SHELL` fails the launch.
+    /// Nonempty values and `SHELL` must have no surrounding whitespace.
     pub default_shell: String,
     /// Start new interactive pane shells as login shells. Default: false.
     pub login_shell: bool,

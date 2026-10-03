@@ -680,31 +680,46 @@ impl App {
         }
     }
 
+    fn submit_final_session_save(&mut self) -> Option<shepr_mux::persist::PendingSave> {
+        if !self.session_saver.policy.allows_saves() {
+            self.session_saver.autosave.clear();
+            return None;
+        }
+
+        let Some(job) = self.capture_final_session_save_job() else {
+            self.session_saver.autosave.clear();
+            return None;
+        };
+        Some(
+            self.session_saver
+                .persister
+                .submit(job, self.clock.wall_now),
+        )
+    }
+
+    fn finish_final_session_save(
+        &mut self,
+        result: Result<(), shepr_mux::persist::SaveError>,
+    ) -> bool {
+        let saved = result.is_ok();
+        self.finish_session_save(SaveKind::Autosave, result);
+        if saved {
+            self.session_saver.autosave.clear();
+        }
+        saved
+    }
+
     pub(crate) async fn save_session_before_teardown_async(&mut self) {
         if let Some(save) = self.session_saver.in_flight.take() {
             let result = wait_off_the_runtime(save.pending).await;
             self.finish_session_save(save.kind, result);
         }
 
-        if !self.session_saver.policy.allows_saves() {
-            self.session_saver.autosave.clear();
-            return;
-        }
-
-        let Some(job) = self.capture_final_session_save_job() else {
-            self.session_saver.autosave.clear();
+        let Some(pending) = self.submit_final_session_save() else {
             return;
         };
-        let pending = self
-            .session_saver
-            .persister
-            .submit(job, self.clock.wall_now);
         let result = wait_off_the_runtime(pending).await;
-        let saved = result.is_ok();
-        self.finish_session_save(SaveKind::Autosave, result);
-        if saved {
-            self.session_saver.autosave.clear();
-        }
+        self.finish_final_session_save(result);
     }
 
     /// Ends persistence for this server: the save still in flight finishes
@@ -818,13 +833,21 @@ impl App {
         self.policy = super::AppPolicy::Production;
     }
 
+    /// Blocks until the save in flight, if any, has finished, records its
+    /// outcome and returns whether it succeeded; `None` when nothing was in
+    /// flight.
+    fn wait_for_session_save_with_outcome(&mut self) -> Option<bool> {
+        let save = self.session_saver.in_flight.take()?;
+        let result = save.pending.wait();
+        let saved = result.is_ok();
+        self.finish_session_save(save.kind, result);
+        Some(saved)
+    }
+
     /// Blocks until the save in flight, if any, has finished, and records
     /// its outcome.
     pub(super) fn wait_for_session_save(&mut self) {
-        if let Some(save) = self.session_saver.in_flight.take() {
-            let result = save.pending.wait();
-            self.finish_session_save(save.kind, result);
-        }
+        self.wait_for_session_save_with_outcome();
     }
 
     pub(crate) fn save_session_now(&mut self) -> bool {
@@ -835,22 +858,15 @@ impl App {
             return !self.session_saver.policy.is_stopped();
         }
 
-        let job = self.capture_session_save_job();
-        let result = self
-            .session_saver
-            .persister
-            .submit(job, self.clock.wall_now)
-            .wait();
-        let saved = result.is_ok();
-        self.finish_session_save(SaveKind::Autosave, result);
-        if saved {
-            self.session_saver.autosave.clear();
-        }
-        saved
+        self.session_saver
+            .set_autosave_deadline(Some(self.clock.now));
+        self.start_background_session_save();
+        self.wait_for_session_save_with_outcome() == Some(true)
     }
 
-    /// Delivers `ev` the way the headless loop does: a pane exit that needs a
-    /// checkpoint waits for the background save before the app removes it.
+    /// Applies an App pane exit after locally settling its checkpoint. The server
+    /// event loop owns ordering in its held exit queue, which these App tests do
+    /// not exercise.
     pub(crate) fn handle_internal_event_after_checkpoint(&mut self, ev: AppEvent) {
         let prepared = if let AppEvent::PaneDied {
             pane_id,
@@ -885,24 +901,10 @@ impl App {
     /// directory claim until their processes have finished tearing down.
     pub(crate) fn save_session_before_teardown(&mut self) {
         self.wait_for_session_save();
-        if !self.session_saver.policy.allows_saves() {
-            self.session_saver.autosave.clear();
-            return;
-        }
-        let Some(job) = self.capture_final_session_save_job() else {
-            self.session_saver.autosave.clear();
+        let Some(pending) = self.submit_final_session_save() else {
             return;
         };
-        let result = self
-            .session_saver
-            .persister
-            .submit(job, self.clock.wall_now)
-            .wait();
-        let saved = result.is_ok();
-        self.finish_session_save(SaveKind::Autosave, result);
-        if saved {
-            self.session_saver.autosave.clear();
-        }
+        self.finish_final_session_save(pending.wait());
     }
 }
 

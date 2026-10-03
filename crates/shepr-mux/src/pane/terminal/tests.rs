@@ -16,8 +16,9 @@ fn frame_cell(frame: &FrameData, x: u16, y: u16) -> &CellData {
 fn plain_page_keys_host_scroll_for_shell_like_decckm_with_bracketed_paste() {
     let mut terminal = shepr_vt::Terminal::new(80, 24, 0);
     terminal.write(b"\x1b[?1h\x1b[?2004h");
+    let terminal = PaneTerminal::new(terminal);
 
-    assert!(terminal.input_modes().plain_page_keys_use_host_scrollback());
+    assert_eq!(terminal.plain_page_keys_use_host_scrollback(), Some(true));
 }
 
 fn text_cell(text: &str) -> OwnedTextCell {
@@ -595,6 +596,34 @@ fn process_pty_bytes_reports_latest_working_directory_report() {
 }
 
 #[test]
+fn process_pty_bytes_flags_only_an_actual_screen_flip() {
+    let pane = PaneTerminal::new(shepr_vt::Terminal::new(80, 24, 100));
+    let pane_id = shepr_test_fixtures::fixed_pane_id(1);
+
+    pane.process_pty_bytes(pane_id, b"plain output\r\n");
+    assert!(
+        !pane.screen_flip_pending(),
+        "output on one screen is no flip"
+    );
+
+    pane.process_pty_bytes(pane_id, b"\x1b[?1049h");
+    assert!(pane.take_screen_flip(), "entering the alternate screen");
+    assert!(!pane.screen_flip_pending(), "taking the flag clears it");
+
+    pane.process_pty_bytes(pane_id, b"\x1b[?1049h");
+    assert!(!pane.screen_flip_pending(), "re-entering is no flip");
+
+    pane.process_pty_bytes(pane_id, b"\x1b[?1049l\x1b[?1049h");
+    assert!(
+        !pane.screen_flip_pending(),
+        "a round trip within one read leaves the screen, and the geometry, as it was"
+    );
+
+    pane.process_pty_bytes(pane_id, b"\x1b[?1049l");
+    assert!(pane.take_screen_flip(), "leaving the alternate screen");
+}
+
+#[test]
 fn process_pty_bytes_reports_only_completed_title_changes() {
     let terminal = shepr_vt::Terminal::new(80, 24, 100);
     let pane = PaneTerminal::new(terminal);
@@ -1031,7 +1060,9 @@ fn terminal_keyboard_protocol_tracks_live_terminal_flags() {
 
     assert_eq!(
         pane.negotiated_keyboard_protocol(),
-        Some(shepr_termio::input::KeyboardProtocol::from_kitty_flags(3))
+        Some(shepr_termio::input::KeyboardProtocol::from_flags(
+            shepr_protocol::KittyKeyboardFlags::from_bits_retain(3)
+        ))
     );
 }
 
@@ -1134,7 +1165,9 @@ fn terminal_ctrl_tab_matches_the_pane_keyboard_protocol() {
     assert_eq!(
         kitty.encode_terminal_key(
             key,
-            shepr_termio::input::KeyboardProtocol::from_kitty_flags(3)
+            shepr_termio::input::KeyboardProtocol::from_flags(
+                shepr_protocol::KittyKeyboardFlags::from_bits_retain(3)
+            )
         ),
         b"\x1b[9;5:1u"
     );
@@ -1397,7 +1430,9 @@ fn grouped_key_repeats_expand_at_the_destination() {
     let mut terminal = shepr_vt::Terminal::new(80, 24, 0);
     terminal.write(b"\x1b[>15u");
     let pane = PaneTerminal::new(terminal);
-    let kitty_protocol = shepr_termio::input::KeyboardProtocol::from_kitty_flags(15);
+    let kitty_protocol = shepr_termio::input::KeyboardProtocol::from_flags(
+        shepr_protocol::KittyKeyboardFlags::from_bits_retain(15),
+    );
     let pressed =
         pane.encode_terminal_key_once(shifted.clone().with_repeat_count(1), kitty_protocol);
     assert!(
@@ -1500,7 +1535,9 @@ fn terminal_kitty_pane_encodes_shift_enter_as_csi_u() {
 
     assert_eq!(
         pane.negotiated_keyboard_protocol(),
-        Some(shepr_termio::input::KeyboardProtocol::from_kitty_flags(5))
+        Some(shepr_termio::input::KeyboardProtocol::from_flags(
+            shepr_protocol::KittyKeyboardFlags::from_bits_retain(5)
+        ))
     );
     assert_eq!(encoded, b"\x1b[13;2u");
 }
@@ -1747,7 +1784,7 @@ fn terminal_mouse_sgr_pixels_without_pixel_geometry_sends_cells() {
 }
 
 #[test]
-fn terminal_normalize_buffer_symbol_prefers_grapheme_width_when_metadata_disagrees() {
+fn normalized_buffer_symbol_prefers_grapheme_width_when_metadata_disagrees() {
     const WIDE_GRAPHEME: &str = "\u{1F642}";
     const FLAG_GRAPHEME: &str = "\u{1F1E7}\u{1F1F7}";
     const FAMILY_GRAPHEME: &str = "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}";
@@ -1755,47 +1792,47 @@ fn terminal_normalize_buffer_symbol_prefers_grapheme_width_when_metadata_disagre
     const EMOJI_GRAPHEME: &str = "\u{1F4B3}";
 
     assert_eq!(
-        terminal_normalize_buffer_symbol(WIDE_GRAPHEME, shepr_vt::CellWide::Wide),
+        normalized_buffer_symbol(WIDE_GRAPHEME, shepr_vt::CellWide::Wide),
         WIDE_GRAPHEME
     );
     assert_eq!(
-        terminal_normalize_buffer_symbol("a", shepr_vt::CellWide::Wide),
+        normalized_buffer_symbol("a", shepr_vt::CellWide::Wide),
         "  "
     );
     assert_eq!(
-        terminal_normalize_buffer_symbol(FLAG_GRAPHEME, shepr_vt::CellWide::Wide),
+        normalized_buffer_symbol(FLAG_GRAPHEME, shepr_vt::CellWide::Wide),
         FLAG_GRAPHEME
     );
     assert_eq!(
-        terminal_normalize_buffer_symbol(FAMILY_GRAPHEME, shepr_vt::CellWide::Wide),
+        normalized_buffer_symbol(FAMILY_GRAPHEME, shepr_vt::CellWide::Wide),
         FAMILY_GRAPHEME
     );
     assert_eq!(
-        terminal_normalize_buffer_symbol("⌨\u{FE0F}", shepr_vt::CellWide::Narrow),
+        normalized_buffer_symbol("⌨\u{FE0F}", shepr_vt::CellWide::Narrow),
         "⌨\u{FE0F}"
     );
     assert_eq!(
-        terminal_normalize_buffer_symbol(VS16_GRAPHEME, shepr_vt::CellWide::Narrow),
+        normalized_buffer_symbol(VS16_GRAPHEME, shepr_vt::CellWide::Narrow),
         VS16_GRAPHEME
     );
     assert_eq!(
-        terminal_normalize_buffer_symbol(EMOJI_GRAPHEME, shepr_vt::CellWide::Narrow),
+        normalized_buffer_symbol(EMOJI_GRAPHEME, shepr_vt::CellWide::Narrow),
         EMOJI_GRAPHEME
     );
     assert_eq!(
-        terminal_normalize_buffer_symbol(" ", shepr_vt::CellWide::SpacerTail),
+        normalized_buffer_symbol(" ", shepr_vt::CellWide::SpacerTail),
         ""
     );
     assert_eq!(
-        terminal_normalize_buffer_symbol("xx", shepr_vt::CellWide::SpacerHead),
+        normalized_buffer_symbol("xx", shepr_vt::CellWide::SpacerHead),
         " "
     );
     assert_eq!(
-        terminal_normalize_buffer_symbol("ｶ\u{ff9e}", shepr_vt::CellWide::Wide),
+        normalized_buffer_symbol("ｶ\u{ff9e}", shepr_vt::CellWide::Wide),
         "ｶ\u{ff9e}"
     );
     assert_eq!(
-        terminal_normalize_buffer_symbol("ﾊ\u{ff9f}", shepr_vt::CellWide::Wide),
+        normalized_buffer_symbol("ﾊ\u{ff9f}", shepr_vt::CellWide::Wide),
         "ﾊ\u{ff9f}"
     );
 }
@@ -3631,17 +3668,13 @@ fn absolute_rows_survive_eviction() {
     write_numbered_lines(&mut terminal, 1_100);
     let pane = PaneTerminal::new(terminal);
     let pane_id = shepr_test_fixtures::fixed_pane_id(1);
-    let position = pane.scroll_position().expect("test precondition");
-    assert!(
-        position.metrics.history_origin > AbsRow(0),
-        "history must be full"
-    );
+    let position = pane.scroll_metrics().expect("test precondition");
+    assert!(position.history_origin > AbsRow(0), "history must be full");
     assert_eq!(
         position.viewport_top_row(),
         position
-            .metrics
             .history_origin
-            .saturating_add(u64::try_from(position.metrics.max_offset_from_bottom).expect("fits"),)
+            .saturating_add(u64::try_from(position.max_offset_from_bottom).expect("fits"),)
     );
 
     // Line i was written on absolute row i.
@@ -3673,11 +3706,10 @@ fn absolute_rows_survive_eviction() {
         pane.process_pty_bytes(pane_id, format!("{i:06}\r\n").as_bytes());
     }
     assert_eq!(
-        pane.scroll_position()
+        pane.scroll_metrics()
             .expect("test precondition")
-            .metrics
             .history_origin,
-        position.metrics.history_origin.saturating_add(50)
+        position.history_origin.saturating_add(50)
     );
     assert_eq!(
         pane.extract_selection(&selection).as_deref(),
@@ -3688,9 +3720,8 @@ fn absolute_rows_survive_eviction() {
         Some(TerminalTextPoint { row: line, col: 5 })
     );
     let origin = pane
-        .scroll_position()
+        .scroll_metrics()
         .expect("test precondition")
-        .metrics
         .history_origin;
 
     // An evicted row is refused rather than read.
@@ -3715,9 +3746,8 @@ fn paragraph_motion_finds_blank_rows_by_absolute_row() {
     terminal.write(b"\r\npara\r\ngraph");
     let pane = PaneTerminal::new(terminal);
     assert!(
-        pane.scroll_position()
+        pane.scroll_metrics()
             .expect("test precondition")
-            .metrics
             .history_origin
             > AbsRow(0),
         "history must be full"

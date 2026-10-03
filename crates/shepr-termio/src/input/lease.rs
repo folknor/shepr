@@ -83,18 +83,17 @@ where
     /// starts a new lease, dropping whatever the last press of that key left
     /// behind. Keys are semantic, so a second press cannot be told apart from
     /// a new one and is never turned into a repeat here.
-    pub fn normalize_press(
+    pub fn prepare_press(
         &mut self,
         lease_key: &InputLeaseKey<Source>,
-        key: TerminalKey,
+        key: &TerminalKey,
         host_reports_all_keys: bool,
-    ) -> TerminalKey {
+    ) {
         if key.kind == crossterm::event::KeyEventKind::Press
-            && press_takes_lease(&key, host_reports_all_keys)
+            && press_takes_lease(key, host_reports_all_keys)
         {
             self.leases.remove(lease_key);
         }
-        key
     }
 
     pub fn complete_press(
@@ -307,17 +306,11 @@ mod tests {
         let mut leases = Leases::default();
 
         leases.insert_forwarded(lease_key, 10, key.clone());
-        assert_eq!(
-            leases.normalize_press(&lease_key, key.clone(), false).kind,
-            crossterm::event::KeyEventKind::Press
-        );
+        leases.prepare_press(&lease_key, &key, false);
         assert!(!leases.contains(&lease_key));
 
         leases.insert_consumed(lease_key, ConsumedInputLease::SuppressRepeats);
-        assert_eq!(
-            leases.normalize_press(&lease_key, key, false).kind,
-            crossterm::event::KeyEventKind::Press
-        );
+        leases.prepare_press(&lease_key, &key, false);
         assert!(!leases.contains(&lease_key));
     }
 
@@ -329,7 +322,7 @@ mod tests {
         let mut leases = Leases::default();
         leases.insert_forwarded(lease_key, 10, key.clone());
 
-        assert_eq!(leases.normalize_press(&lease_key, key.clone(), false), key);
+        leases.prepare_press(&lease_key, &key, false);
         assert!(leases.contains(&lease_key));
     }
 
@@ -392,7 +385,7 @@ mod tests {
 
         // Report-all mode sends the release: the press leases its target,
         // and the repeat and release follow it there.
-        let key = leases.normalize_press(&lease_key, key, true);
+        leases.prepare_press(&lease_key, &key, true);
         assert!(matches!(
             leases.complete_press(
                 lease_key,
@@ -412,7 +405,7 @@ mod tests {
             RepeatPlan::Forwarded(10)
         ));
         // A fresh text press in report-all mode replaces the old lease.
-        leases.normalize_press(&lease_key, key.clone(), true);
+        leases.prepare_press(&lease_key, &key, true);
         assert!(!leases.contains(&lease_key));
 
         // Without report-all no release follows, so no lease is taken.
@@ -438,7 +431,7 @@ mod tests {
         let mut leases = Leases::default();
         leases.insert_consumed(lease_key, ConsumedInputLease::SuppressRepeats);
 
-        let key = leases.normalize_press(&lease_key, key, false);
+        leases.prepare_press(&lease_key, &key, false);
         assert!(matches!(
             leases.complete_press(lease_key, &key, Some(&context), Some(&context), None, false),
             RepeatPlan::Reprocess {

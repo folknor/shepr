@@ -168,11 +168,6 @@ impl KeyboardProtocol {
         }
     }
 
-    /// Retains the integer constructor for callers that still receive raw flags.
-    pub fn from_kitty_flags(flags: u16) -> Self {
-        Self::from_flags(KittyKeyboardFlags::from_bits_retain(flags))
-    }
-
     pub const fn is_kitty(self) -> bool {
         matches!(self.0, KeyboardProtocolMode::Kitty(_))
     }
@@ -234,18 +229,17 @@ mod tests {
 
     #[test]
     fn protocol_from_zero_flags_is_legacy() {
-        assert_eq!(
-            KeyboardProtocol::from_kitty_flags(0),
-            KeyboardProtocol::legacy()
-        );
+        let protocol = KeyboardProtocol::from_flags(KittyKeyboardFlags::NONE);
+        assert_eq!(protocol, KeyboardProtocol::legacy());
+        assert!(!protocol.is_kitty());
     }
 
     #[test]
     fn protocol_from_nonzero_flags_is_kitty() {
-        assert_eq!(
-            KeyboardProtocol::from_kitty_flags(7),
-            KeyboardProtocol::from_flags(KittyKeyboardFlags::from_bits_retain(7))
-        );
+        let flags = KittyKeyboardFlags::from_bits_retain(7);
+        let protocol = KeyboardProtocol::from_flags(flags);
+        assert!(protocol.is_kitty());
+        assert_eq!(protocol.kitty_flags(), flags);
     }
 
     #[test]

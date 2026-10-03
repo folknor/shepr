@@ -141,7 +141,7 @@ impl RestartResult {
     /// `restartable` rejects is a replacement that does not need this offer.
     pub fn offer<S>(
         max_offers: usize,
-        mut decide: Option<&mut dyn FnMut(&S) -> RestartDecision>,
+        decide: Option<&mut dyn FnMut(&S) -> RestartDecision>,
         mut observe: impl FnMut() -> Option<S>,
         mut restartable: impl FnMut(&S) -> bool,
         mut stop: impl FnMut(&S) -> Result<RemoteStop, String>,
@@ -149,14 +149,11 @@ impl RestartResult {
         let Some(mut server) = observe().filter(|server| restartable(server)) else {
             return Self::NotNeeded;
         };
-        if decide.is_none() {
+        let Some(decide) = decide else {
             return Self::NoTerminal;
-        }
+        };
 
         for offer in 1..=max_offers {
-            let Some(decide) = decide.as_deref_mut() else {
-                return Self::NoTerminal;
-            };
             if decide(&server) == RestartDecision::Keep {
                 return Self::Declined;
             }
@@ -484,7 +481,6 @@ mod tests {
     fn server(boot_id: &str) -> DifferentBuildServer {
         DifferentBuildServer {
             executable: RemoteExecutable::parse("/usr/bin/shepr").expect("test precondition"),
-            version: "0.0.0-old".into(),
             build_id: "ffffffffffffffff".into(),
             boot_id: boot_id.into(),
         }

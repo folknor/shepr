@@ -20,7 +20,7 @@ use shepr_core::env::{ChildEnv, EnvVar};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PtyCommand {
-    program: OsString,
+    program: shepr_core::shell::ResolvedShell,
     login: bool,
     envs: BTreeMap<OsString, OsString>,
     cwd: Option<OsString>,
@@ -47,22 +47,22 @@ pub(crate) struct LaunchSpec {
 
 impl PtyCommand {
     /// Run the shell selected and resolved while the server loaded its config.
-    pub fn interactive_shell(default_shell: &str, login: bool) -> Self {
-        let default_shell = default_shell.trim();
-        let mut command = Self {
-            program: default_shell.into(),
+    pub fn interactive_shell(
+        default_shell: &shepr_core::shell::ResolvedShell,
+        login: bool,
+    ) -> Self {
+        Self {
+            program: default_shell.clone(),
             login,
             envs: base_env(),
             cwd: None,
             cwd_required: false,
-        };
-        command.env(ChildEnv::Shell, default_shell);
-        command
+        }
     }
 
     /// The executable path used for `execve`, independent of the child's `SHELL` value.
     pub fn program(&self) -> &OsStr {
-        self.program.as_os_str()
+        self.program.path().as_os_str()
     }
 
     pub fn env<K, V>(&mut self, key: K, value: V)
@@ -131,31 +131,23 @@ impl PtyCommand {
     /// each cwd candidate exactly this command's environment with `PWD` set to
     /// that directory, `OLDPWD` dropped and `SHELL` the program itself.
     pub(crate) fn launch_spec(&self, passwd_home: Option<&OsStr>) -> io::Result<LaunchSpec> {
-        let program_path = Path::new(&self.program);
-        if !program_path.is_absolute() {
-            // Config validation resolves the pane shell to an absolute path,
-            // so the child needs no PATH walk (and no stat on the loop).
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!(
-                    "pane shell {} is not an absolute path",
-                    program_path.display()
-                ),
-            ));
-        }
-        let program = c_string(&self.program, "pane shell path")?;
+        let program_path = self.program.path();
+        let program = c_string(program_path.as_os_str(), "pane shell path")?;
         let argv0 = if self.login {
-            let basename = program_path.file_name().unwrap_or(self.program.as_os_str());
+            let basename = program_path.file_name().unwrap_or(program_path.as_os_str());
             let mut argv0 = OsString::from("-");
             argv0.push(basename);
             argv0
         } else {
-            self.program.clone()
+            program_path.as_os_str().to_owned()
         };
         let argv = vec![c_string(&argv0, "pane shell argv0")?];
         let mut base = self.envs.clone();
         base.remove(OsStr::new("OLDPWD"));
-        base.insert(OsString::from(ChildEnv::Shell.name()), self.program.clone());
+        base.insert(
+            OsString::from(ChildEnv::Shell.name()),
+            program_path.as_os_str().to_owned(),
+        );
         let candidates = self
             .cwd_candidates(passwd_home)?
             .into_iter()
@@ -200,8 +192,8 @@ impl PtyCommand {
 /// heard of. What must not reach a pane is the smaller, closed set shepr does
 /// know (its own handoffs, the outer terminal's identity, an outer agent
 /// session's markers), and the pane launch layer removes exactly those, one
-/// decision per registered variable. Shell selection and validation happen at
-/// spawn, after that policy and the launch environment have been applied.
+/// decision per registered variable. Shell selection and validation happen once
+/// when server config is loaded.
 #[expect(
     clippy::disallowed_methods,
     reason = "a pane child inherits the server's environment verbatim; it is copied, not interpreted, and pane launch policy then edits the copy"
@@ -257,6 +249,7 @@ pub(crate) fn c_string(value: &OsStr, what: &str) -> io::Result<CString> {
 mod tests {
     use super::*;
     use shepr_test_support::fixture;
+    use shepr_test_support::fixture::resolved_shell as test_shell;
     use std::os::unix::ffi::OsStrExt;
 
     fn env_of(candidate: &LaunchCandidate) -> BTreeMap<OsString, OsString> {
@@ -281,7 +274,8 @@ mod tests {
     fn padded_or_relative_home_is_not_a_cwd_fallback() {
         let _env = shepr_test_support::IsolatedEnv::new();
         for home in ["/home/pane ", "relative", ""] {
-            let mut command = PtyCommand::interactive_shell(fixture::path_str(), false);
+            let mut command =
+                PtyCommand::interactive_shell(&test_shell(fixture::path_str()), false);
             command.env(EnvVar::Home, home);
             assert_eq!(
                 command.cwd_candidates(None).expect("candidates"),
@@ -292,7 +286,7 @@ mod tests {
 
     #[test]
     fn env_edits_are_visible_before_spawn() {
-        let mut cmd = PtyCommand::interactive_shell(fixture::path_str(), false);
+        let mut cmd = PtyCommand::interactive_shell(&test_shell(fixture::path_str()), false);
         cmd.env("SHEPR_PTY_TEST_KEY", "value");
         assert_eq!(cmd.get_env("SHEPR_PTY_TEST_KEY"), Some(OsStr::new("value")));
         cmd.env_remove("SHEPR_PTY_TEST_KEY");
@@ -303,7 +297,7 @@ mod tests {
 
     #[test]
     fn the_launch_carries_exactly_the_command_env() {
-        let mut cmd = PtyCommand::interactive_shell(fixture::path_str(), false);
+        let mut cmd = PtyCommand::interactive_shell(&test_shell(fixture::path_str()), false);
         cmd.env("SHEPR_PTY_TEST_SET", "1");
         cmd.env("SHEPR_PTY_TEST_REMOVED", "1");
         cmd.env_remove("SHEPR_PTY_TEST_REMOVED");
@@ -321,7 +315,7 @@ mod tests {
     #[test]
     fn each_candidate_sets_pwd_to_its_directory_and_drops_server_oldpwd() {
         let scratch = shepr_test_support::ScratchDir::new("pty-command-cwd-env");
-        let mut cmd = PtyCommand::interactive_shell(fixture::path_str(), false);
+        let mut cmd = PtyCommand::interactive_shell(&test_shell(fixture::path_str()), false);
         cmd.cwd(scratch.path());
         cmd.env("HOME", "/");
         cmd.env("PWD", "/server/working-directory");
@@ -338,7 +332,7 @@ mod tests {
 
     #[test]
     fn fallback_candidates_are_home_then_passwd_home_then_root_without_repeats() {
-        let mut cmd = PtyCommand::interactive_shell(fixture::path_str(), false);
+        let mut cmd = PtyCommand::interactive_shell(&test_shell(fixture::path_str()), false);
         cmd.cwd("/requested");
         cmd.env("HOME", "/home/user");
         let spec = cmd
@@ -357,7 +351,7 @@ mod tests {
 
     #[test]
     fn a_required_cwd_has_no_fallback() {
-        let mut cmd = PtyCommand::interactive_shell(fixture::path_str(), false);
+        let mut cmd = PtyCommand::interactive_shell(&test_shell(fixture::path_str()), false);
         cmd.cwd("/requested");
         cmd.require_cwd();
         let spec = cmd
@@ -369,7 +363,7 @@ mod tests {
 
     #[test]
     fn the_child_sees_the_selected_shell_not_an_inherited_shell_env() {
-        let mut cmd = PtyCommand::interactive_shell(fixture::path_str(), false);
+        let mut cmd = PtyCommand::interactive_shell(&test_shell(fixture::path_str()), false);
         cmd.env("SHELL", "/__shepr_missing_shell__");
         let spec = cmd.launch_spec(None).expect("build launch");
         for candidate in &spec.candidates {
@@ -383,17 +377,9 @@ mod tests {
     #[test]
     fn a_login_shell_gets_a_dash_argv0_and_no_arguments() {
         // host-program-ok: the path is only turned into an argv, never run.
-        let cmd = PtyCommand::interactive_shell("/bin/zsh", true);
+        let cmd = PtyCommand::interactive_shell(&test_shell("/bin/zsh"), true);
         let spec = cmd.launch_spec(None).expect("build launch");
         assert_eq!(spec.argv.len(), 1);
         assert_eq!(spec.argv[0].as_bytes(), b"-zsh");
-    }
-
-    #[test]
-    fn a_relative_shell_is_refused_before_the_fork() {
-        // host-program-ok: the bare name is refused before anything runs.
-        let cmd = PtyCommand::interactive_shell("zsh", false);
-        let err = cmd.launch_spec(None).expect_err("relative shell");
-        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
     }
 }

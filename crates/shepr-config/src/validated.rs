@@ -1,5 +1,8 @@
 use std::ffi::OsStr;
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
+
+use shepr_core::shell::ResolvedShell;
 
 use super::{
     AppPaths, ClientConfig, SidebarBounds,
@@ -155,7 +158,7 @@ pub enum NewTerminalCwd {
 #[derive(Debug, Clone)]
 pub struct ValidatedTerminalConfig {
     /// Absolute, recognized shell selected and resolved at process launch.
-    pub default_shell: String,
+    pub default_shell: ResolvedShell,
     pub login_shell: bool,
     pub new_cwd: NewTerminalCwd,
 }
@@ -245,7 +248,7 @@ impl ValidatedTerminalConfig {
 /// shows, while every pane silently opened a different shell than the
 /// operator's own; the fix is one line in either place, so the error names
 /// both.
-fn resolve_default_shell(configured: &str, paths: &AppPaths) -> Result<String, String> {
+fn resolve_default_shell(configured: &str, paths: &AppPaths) -> Result<ResolvedShell, String> {
     let path = shepr_core::env::read_os(shepr_core::env::EnvVar::Path)
         .map_err(|error| error.to_string())?;
     let cwd = paths
@@ -254,30 +257,28 @@ fn resolve_default_shell(configured: &str, paths: &AppPaths) -> Result<String, S
         .or_else(|| std::env::current_dir().ok())
         .unwrap_or_else(|| PathBuf::from("/"));
 
-    let configured = configured.trim();
     if !configured.is_empty() {
         return resolve_recognized_shell(
             OsStr::new(configured),
             "terminal.default_shell",
             path.as_deref(),
             &cwd,
-        )
-        .and_then(|shell| shell_path_string(shell, "terminal.default_shell"));
+        );
     }
 
     let inherited = shepr_core::env::read_os(shepr_core::env::EnvVar::Shell)
         .map_err(|error| error.to_string())?
-        .and_then(|shell| shepr_core::shell::trim_shell_value(&shell));
+        .filter(|shell| !shell.is_empty());
     if let Some(inherited) = inherited {
-        return resolve_recognized_shell(&inherited, "SHELL", path.as_deref(), &cwd)
-            .and_then(|shell| shell_path_string(shell, "SHELL"))
-            .map_err(|error| {
+        return resolve_recognized_shell(&inherited, "SHELL", path.as_deref(), &cwd).map_err(
+            |error| {
                 format!(
                     "{error}; terminal.default_shell is empty, so panes run SHELL={}. \
                      Set terminal.default_shell to a shell shepr recognizes, or fix SHELL",
                     inherited.to_string_lossy()
                 )
-            });
+            },
+        );
     }
 
     resolve_recognized_shell(
@@ -286,7 +287,6 @@ fn resolve_default_shell(configured: &str, paths: &AppPaths) -> Result<String, S
         path.as_deref(),
         &cwd,
     )
-    .and_then(|shell| shell_path_string(shell, "the default shell"))
 }
 
 /// `source` names where `candidate` came from, so the error points at the
@@ -296,7 +296,8 @@ fn resolve_recognized_shell(
     source: &str,
     path: Option<&OsStr>,
     cwd: &Path,
-) -> Result<PathBuf, String> {
+) -> Result<ResolvedShell, String> {
+    check_shell_whitespace(candidate, source)?;
     // Match the PTY's access(2) check so noexec mounts and access policy are
     // part of validation before the server starts.
     let resolved =
@@ -323,26 +324,39 @@ fn resolve_recognized_shell(
         )
         .map_err(|error| format!("{source} {error}"))?;
 
-    if !resolved
-        .file_name()
-        .and_then(OsStr::to_str)
-        .is_some_and(shepr_agent::detect::is_pane_shell_process_name)
-    {
-        return Err(format!(
-            "{source} resolves to a shell name shepr does not recognize: {}",
-            resolved.display()
-        ));
-    }
-    Ok(resolved)
+    ResolvedShell::validate(resolved, |resolved| {
+        if !resolved
+            .file_name()
+            .and_then(OsStr::to_str)
+            .is_some_and(shepr_agent::detect::is_pane_shell_process_name)
+        {
+            return Err(format!(
+                "{source} resolves to a shell name shepr does not recognize: {}",
+                resolved.display()
+            ));
+        }
+        Ok(())
+    })
 }
 
-fn shell_path_string(path: PathBuf, source: &str) -> Result<String, String> {
-    path.into_os_string().into_string().map_err(|path| {
-        format!(
-            "{source} resolves to a non-UTF-8 path: {}",
-            path.to_string_lossy()
-        )
-    })
+/// Shell settings follow the same interpreted-value policy for config and
+/// environment input. Non-UTF-8 paths retain their bytes; ASCII edge whitespace
+/// is still rejected.
+fn check_shell_whitespace(value: &OsStr, source: &str) -> Result<(), String> {
+    let padded = value.to_str().map_or_else(
+        || {
+            value
+                .as_bytes()
+                .first()
+                .is_some_and(u8::is_ascii_whitespace)
+                || value.as_bytes().last().is_some_and(u8::is_ascii_whitespace)
+        },
+        |value| value.trim() != value,
+    );
+    if padded {
+        return Err(format!("{source} must not have surrounding whitespace"));
+    }
+    Ok(())
 }
 
 fn checked_new_cwd_directory(path: &Path) -> Result<PathBuf, String> {
@@ -777,7 +791,8 @@ impl ServerConfigResolution {
     pub(crate) fn parse_document(config: &super::ServerConfig, paths: &AppPaths) -> Self {
         let terminal = ValidatedTerminalConfig::parse_new_cwd(&config.terminal.new_cwd, paths)
             .map(|new_cwd| ValidatedTerminalConfig {
-                default_shell: "/bin/sh".into(),
+                default_shell: ResolvedShell::validate("/bin/sh".into(), |_| Ok(()))
+                    .expect("absolute test shell"),
                 login_shell: config.terminal.login_shell,
                 new_cwd,
             })
@@ -976,7 +991,48 @@ mod tests {
         let validated = ValidatedServerConfig::new(config.clone(), paths)
             .expect("a configured shell takes precedence over inherited SHELL");
 
-        assert_eq!(validated.terminal().default_shell, configured_shell);
+        assert_eq!(
+            validated.terminal().default_shell.path(),
+            Path::new(&configured_shell)
+        );
+    }
+
+    #[test]
+    fn shell_inputs_reject_surrounding_whitespace_without_trimming() {
+        let env = shepr_test_support::IsolatedEnv::new();
+        let scratch = shepr_test_support::ScratchDir::new("shell-whitespace");
+        let paths = AppPaths::rooted_at(scratch.path(), Some(scratch.path()), Some(scratch.path()));
+        for value in [" /bin/sh", "/bin/sh\t", " ", "\u{2003}/bin/sh"] {
+            assert!(
+                resolve_default_shell(value, &paths)
+                    .expect_err("padded configured shell")
+                    .contains("terminal.default_shell must not have surrounding whitespace")
+            );
+            env.set("SHELL", value);
+            assert!(
+                resolve_default_shell("", &paths)
+                    .expect_err("padded inherited shell")
+                    .contains("SHELL must not have surrounding whitespace")
+            );
+        }
+    }
+
+    #[test]
+    fn a_non_utf8_shell_directory_keeps_its_path_bytes() {
+        use std::os::unix::ffi::OsStringExt;
+        let env = shepr_test_support::IsolatedEnv::new();
+        let scratch = shepr_test_support::ScratchDir::new("shell-path-bytes");
+        let directory = scratch.join(std::ffi::OsString::from_vec(b"shell-\xff".to_vec()));
+        std::fs::create_dir(&directory).expect("create non-UTF-8 directory");
+        let shell = shepr_test_support::fixture::stand_in(&directory, "zsh", &[]);
+        env.set("SHELL", &shell);
+        let paths = AppPaths::rooted_at(scratch.path(), Some(scratch.path()), Some(scratch.path()));
+        assert_eq!(
+            resolve_default_shell("", &paths)
+                .expect("valid shell")
+                .path(),
+            shell
+        );
     }
 
     /// With `terminal.default_shell` empty, `SHELL` is the setting: a usable
@@ -993,10 +1049,7 @@ mod tests {
         let zsh = shepr_test_support::fixture::stand_in(scratch.path(), "zsh", &[]);
         env.set("SHELL", &zsh);
         let validated = validate().expect("a usable inherited shell is taken");
-        assert_eq!(
-            Some(validated.terminal().default_shell.as_str()),
-            zsh.to_str()
-        );
+        assert_eq!(validated.terminal().default_shell.path(), zsh.as_path());
 
         let not_a_shell = shepr_test_support::fixture::stand_in(scratch.path(), "not-a-shell", &[]);
         for (shell, expected) in [
@@ -1017,6 +1070,9 @@ mod tests {
 
         env.remove("SHELL");
         let validated = validate().expect("an unset SHELL means /bin/sh");
-        assert_eq!(validated.terminal().default_shell, "/bin/sh");
+        assert_eq!(
+            validated.terminal().default_shell.path(),
+            Path::new("/bin/sh")
+        );
     }
 }

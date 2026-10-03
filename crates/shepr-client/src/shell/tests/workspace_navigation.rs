@@ -305,9 +305,7 @@ fn foreign_preview_blocks_keyboard_actions_but_keeps_active_action_context() {
     state.config.prompt_new_workspace_name = false;
     let mut create = ClientShellInput::default();
     state.record_binding(
-        &shepr_termio::input::KeybindMatch::Action(
-            shepr_termio::input::KeybindAction::NewWorkspace,
-        ),
+        &shepr_termio::input::KeybindAction::NewWorkspace,
         &mut create,
     );
     assert!(

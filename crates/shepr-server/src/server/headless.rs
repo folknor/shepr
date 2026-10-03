@@ -107,7 +107,6 @@ struct ClientViewKey {
 pub struct HeadlessServer {
     app: app::App,
     view_epoch: ViewEpoch,
-    headless_settled: ViewEpoch,
     /// The server socket: startup opens its TUI gate
     /// (`open_client_protocol`), and dropping it tears down the listener and
     /// removes the socket file (`release_socket_after_save`).
@@ -207,7 +206,6 @@ impl HeadlessServer {
         Self {
             app,
             view_epoch: ViewEpoch::INITIAL,
-            headless_settled: ViewEpoch::ZERO,
             api_server: Some(api_server),
             clients: ClientRegistry::default(),
             client_view_keys: HashMap::new(),
@@ -1302,9 +1300,9 @@ impl HeadlessServer {
                 // A resize reports view geometry, not user activity. Window
                 // layout and font changes must not switch the host theme or
                 // pane-less clipboard destination.
-                if self.resize_shell_workspaces_sized_for(client_id, true) {
-                    self.mark_view_changed();
-                }
+                // Geometry settlement invalidates the affected workspace's
+                // viewers; a resize must not advance unrelated clients' epoch.
+                self.resize_shell_workspaces_sized_for(client_id, true);
             }
             ServerEvent::ShellHostTheme { client_id, update } => {
                 let is_foreground = self.clients.foreground_client_id() == Some(client_id);

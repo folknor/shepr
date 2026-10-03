@@ -295,10 +295,7 @@ fn highlighted_search_match_copies_after_in_flight_repeat() {
     state.receive_pane_surface(pane_surface);
     state.compose(106, 20).expect("composed frame");
     let mut enter = ClientShellInput::default();
-    state.record_binding(
-        &shepr_termio::input::KeybindMatch::Action(shepr_termio::input::KeybindAction::CopyMode),
-        &mut enter,
-    );
+    state.record_binding(&shepr_termio::input::KeybindAction::CopyMode, &mut enter);
     let matches = vec![
         shepr_protocol::command::PaneTextRange {
             start: shepr_protocol::command::PaneTextPoint {
@@ -570,10 +567,7 @@ fn help_overlay_uses_live_keymap_and_owns_filter_state() {
     state.set_snapshot(Box::new(snapshot()));
     state.receive_pane_surface(surface());
     let mut open = ClientShellInput::default();
-    state.record_binding(
-        &shepr_termio::input::KeybindMatch::Action(shepr_termio::input::KeybindAction::Help),
-        &mut open,
-    );
+    state.record_binding(&shepr_termio::input::KeybindAction::Help, &mut open);
     let initial = state.compose(106, 30).expect("help overlay");
     let text = initial
         .cells
@@ -622,10 +616,7 @@ fn overlay_that_does_not_fit_still_presents_the_frame() {
     state.set_snapshot(Box::new(snapshot()));
     state.receive_pane_surface(surface());
     let mut open = ClientShellInput::default();
-    state.record_binding(
-        &shepr_termio::input::KeybindMatch::Action(shepr_termio::input::KeybindAction::Help),
-        &mut open,
-    );
+    state.record_binding(&shepr_termio::input::KeybindAction::Help, &mut open);
     // Help needs at least 10 rows; this terminal has 8.
     let frame = state
         .compose(106, 8)
@@ -715,10 +706,7 @@ fn hit_maps_stay_live_until_the_matching_surface_is_composed() {
     state.set_snapshot(Box::new(snapshot()));
     state.receive_pane_surface(surface());
     let mut open = ClientShellInput::default();
-    state.record_binding(
-        &shepr_termio::input::KeybindMatch::Action(shepr_termio::input::KeybindAction::Help),
-        &mut open,
-    );
+    state.record_binding(&shepr_termio::input::KeybindAction::Help, &mut open);
     state.compose(106, 30).expect("help overlay");
     let popup = state.hits.help_popup;
     assert!(!popup.is_empty());
@@ -760,10 +748,7 @@ fn rename_pane_empty_value_is_sent_as_a_clear_request() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot));
     let mut open = ClientShellInput::default();
-    state.record_binding(
-        &shepr_termio::input::KeybindMatch::Action(shepr_termio::input::KeybindAction::RenamePane),
-        &mut open,
-    );
+    state.record_binding(&shepr_termio::input::KeybindAction::RenamePane, &mut open);
     assert!(state.handle_input_bytes(&[0x15]).actions.is_empty());
     let save = state.handle_input_bytes(b"\r");
     let [ClientShellAction::Endpoint { request, .. }] = &save.actions[..] else {
@@ -805,10 +790,7 @@ fn styled_client_composition_preserves_pane_hyperlinks() {
 
 fn open_help(state: &mut ClientShellState) {
     let mut open = ClientShellInput::default();
-    state.record_binding(
-        &shepr_termio::input::KeybindMatch::Action(shepr_termio::input::KeybindAction::Help),
-        &mut open,
-    );
+    state.record_binding(&shepr_termio::input::KeybindAction::Help, &mut open);
 }
 
 fn last_row_text(frame: &FrameData) -> String {

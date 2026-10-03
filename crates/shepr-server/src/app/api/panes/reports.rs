@@ -1,4 +1,5 @@
 use super::*;
+use shepr_agent::agent::resume::ReportedSessionStart;
 
 impl App {
     pub(crate) fn handle_pane_report_agent(
@@ -38,14 +39,29 @@ impl App {
             params.agent_session_id,
             params.agent_session_path,
         )?;
+        // An unknown source keeps the report: its session identity is what
+        // resume on restore needs, and agents can send new start values
+        // before shepr knows them. It is not an omitted source either; the
+        // policy never lets it replace a session (`ReportedSessionStart`).
+        let session_start_source = match params.session_start_source {
+            Some(Ok(source)) => ReportedSessionStart::Known(source),
+            Some(Err(source)) => {
+                tracing::warn!(
+                    pane_id = %params.pane_id,
+                    source = source.as_str(),
+                    "agent integration reported an unknown session start source; \
+                     recording the session without letting it replace one"
+                );
+                ReportedSessionStart::Unrecognized
+            }
+            None => ReportedSessionStart::Omitted,
+        };
         self.handle_internal_event(shepr_mux::events::AppEvent::AgentSessionReported {
             pane_id,
             session_ref,
             origin,
             seq: params.seq,
-            session_start_source: shepr_agent::agent::resume::normalize_session_start_source(
-                params.session_start_source.as_deref(),
-            ),
+            session_start_source,
         });
 
         success(ResponseResult::Ok {})

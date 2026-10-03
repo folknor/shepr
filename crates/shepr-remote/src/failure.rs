@@ -1,5 +1,7 @@
 use std::io;
 
+use shepr_platform::ipc::{StreamFailure, classify_stream_error};
+
 use crate::{RemoteText, SshFailure, SshFailureDiagnostic, SshFailureOrigin, SshTarget};
 
 /// What a failure established about the remote executable.
@@ -243,14 +245,13 @@ impl EndpointFailure {
         match self.cause {
             Cause::Backpressure => "local output queue filled; reconnecting",
             Cause::Shutdown(_) => "server shut down; reconnecting",
-            Cause::Io(io::ErrorKind::TimedOut) => "connection timed out; reconnecting",
-            Cause::Io(
-                io::ErrorKind::UnexpectedEof
-                | io::ErrorKind::BrokenPipe
-                | io::ErrorKind::ConnectionAborted
-                | io::ErrorKind::ConnectionReset
-                | io::ErrorKind::NotConnected,
-            ) => "connection was lost; reconnecting",
+            Cause::Io(kind) => match classify_stream_error(&io::Error::from(kind)) {
+                StreamFailure::TimedOut => "connection timed out; reconnecting",
+                StreamFailure::PeerGone => "connection was lost; reconnecting",
+                StreamFailure::NoListener | StreamFailure::Other => {
+                    "connection failed; reconnecting"
+                }
+            },
             _ => "connection failed; reconnecting",
         }
     }

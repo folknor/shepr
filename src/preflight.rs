@@ -165,10 +165,20 @@ fn local_offer(status: &RuntimeStatus) -> String {
          Restarting it stops that server, which ends every pane process it hosts.\n\
          The saved layout is restored with fresh shells, and agents are resumed where they can be.\n\
          Restart it now? [y/N] ",
-        status.build_id,
-        status.boot_id,
+        display_local_identity(&status.build_id),
+        display_local_identity(&status.boot_id),
         shepr_protocol::BUILD_ID
     )
+}
+
+/// Local server identities are interpolated into a terminal prompt. Keep them
+/// to printable single tokens, matching the remote identity display rule.
+fn display_local_identity(value: &str) -> &str {
+    if !value.is_empty() && value.chars().all(|ch| ch.is_ascii_graphic()) {
+        value
+    } else {
+        "unknown"
+    }
 }
 
 fn remote_offer(machine: &MachineConfig, server: &DifferentBuildServer) -> String {
@@ -393,7 +403,6 @@ mod tests {
     fn different_build_server() -> DifferentBuildServer {
         DifferentBuildServer {
             executable: RemoteExecutable::parse("/usr/bin/shepr").expect("test precondition"),
-            version: "0.0.0-old".into(),
             build_id: "ffffffffffffffff".into(),
             boot_id: "17-23".into(),
         }
@@ -577,6 +586,16 @@ mod tests {
             assert!(offer.contains("[y/N]"), "the default is to keep: {offer}");
         }
         assert!(remote.contains("build (build.example)"), "{remote}");
+    }
+
+    #[test]
+    fn local_restart_offer_does_not_print_untrusted_identity_controls() {
+        let offer = local_offer(&status("build\u{1b}[2J", "boot\nforged"));
+        assert!(
+            offer.contains("server build unknown, boot unknown"),
+            "{offer}"
+        );
+        assert!(!offer.contains('\u{1b}'), "{offer:?}");
     }
 
     #[test]

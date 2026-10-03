@@ -32,7 +32,7 @@ use regex::Regex;
 use serde::Deserialize;
 use shepr_core::limits::UTF8_MAX_BYTES_PER_CODEPOINT;
 
-use super::{Agent, AgentDetection, AgentState, agent_label, parse_agent_label};
+use super::{Agent, AgentDetection, AgentState, Detection, agent_label, parse_agent_label};
 use crate::limits::{
     MAX_GATE_DEPTH, MAX_MANIFEST_PREVIEW_CHARS, MAX_MATCHER_CHARS, MAX_MATCHERS_PER_GATE,
     MAX_REGION_LINE_COUNT, MAX_REGIONS_PER_MANIFEST, MAX_RULES_PER_MANIFEST, MAX_TOTAL_GATES,
@@ -57,13 +57,9 @@ pub struct DetectionInput<'a> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DetectionExplain {
     pub agent: Option<String>,
-    pub state: AgentState,
+    pub verdict: AgentDetection,
     pub matched_rule: Option<MatchedRule>,
     pub screen_detection_skipped: bool,
-    pub visible_idle: bool,
-    pub visible_blocker: bool,
-    pub visible_working: bool,
-    pub skip_state_update: bool,
     pub skipped_update_reason: Option<String>,
     pub fallback_reason: Option<String>,
     pub evaluated_rules: Vec<EvaluatedRule>,
@@ -202,13 +198,9 @@ struct ManifestGate {
 #[derive(Debug)]
 struct CompiledRule {
     id: String,
-    state: ManifestState,
+    verdict: AgentDetection,
     priority: i32,
     region_name: String,
-    visible_idle: bool,
-    visible_blocker: bool,
-    visible_working: bool,
-    skip_state_update: bool,
     gate: CompiledGate,
     /// Index of the rule's own region, used for `explain` evidence.
     region_index: usize,
@@ -584,13 +576,9 @@ pub fn explain_for_label(agent_label: &str, input: DetectionInput<'_>) -> Detect
     let Some(agent) = parse_agent_label(agent_label) else {
         return DetectionExplain {
             agent: Some(agent_label.to_string()),
-            state: AgentState::Unknown,
+            verdict: AgentDetection::State(Detection::Unknown),
             matched_rule: None,
             screen_detection_skipped: false,
-            visible_idle: false,
-            visible_blocker: false,
-            visible_working: false,
-            skip_state_update: false,
             skipped_update_reason: None,
             fallback_reason: Some("unknown_agent".to_string()),
             evaluated_rules: Vec::new(),
@@ -600,18 +588,11 @@ pub fn explain_for_label(agent_label: &str, input: DetectionInput<'_>) -> Detect
 }
 
 fn rule_state(rule: &CompiledRule) -> AgentState {
-    rule.state.into()
+    rule.verdict.state()
 }
 
 fn rule_detection(rule: &CompiledRule) -> AgentDetection {
-    let state = rule_state(rule);
-    AgentDetection {
-        state,
-        skip_state_update: rule.skip_state_update,
-        visible_idle: rule.visible_idle && state == AgentState::Idle,
-        visible_blocker: rule.visible_blocker && state == AgentState::Blocked,
-        visible_working: rule.visible_working && state == AgentState::Working,
-    }
+    rule.verdict
 }
 
 /// State reported when no rule matched, or when no compiled manifest exists.
@@ -620,13 +601,7 @@ fn fallback_state(manifest: Option<&CompiledManifest>) -> AgentState {
 }
 
 fn fallback_detection(manifest: Option<&CompiledManifest>) -> AgentDetection {
-    AgentDetection {
-        state: fallback_state(manifest),
-        skip_state_update: false,
-        visible_idle: false,
-        visible_blocker: false,
-        visible_working: false,
-    }
+    AgentDetection::State(Detection::new(fallback_state(manifest), false))
 }
 
 fn explain_loaded_manifest(
@@ -663,23 +638,20 @@ fn explain_loaded_manifest(
 
     let detection = rule_detection(rule);
     let skipped_update_reason = rule
-        .skip_state_update
+        .verdict
+        .skip_state_update()
         .then(|| format!("matched_rule:{}", rule.id));
 
     DetectionExplain {
         agent: Some(agent_label(agent).to_string()),
-        state: detection.state,
+        verdict: detection,
         matched_rule: Some(MatchedRule {
             id: rule.id.clone(),
             priority: rule.priority,
             region: rule.region_name.clone(),
-            state: detection.state,
+            state: detection.state(),
         }),
         screen_detection_skipped: false,
-        visible_idle: detection.visible_idle,
-        visible_blocker: detection.visible_blocker,
-        visible_working: detection.visible_working,
-        skip_state_update: detection.skip_state_update,
         skipped_update_reason,
         fallback_reason: None,
         evaluated_rules,
@@ -696,13 +668,9 @@ fn fallback_explain(
 
     DetectionExplain {
         agent: Some(agent_label(agent).to_string()),
-        state: fallback_state(manifest),
+        verdict: fallback_detection(manifest),
         matched_rule: None,
         screen_detection_skipped: false,
-        visible_idle: false,
-        visible_blocker: false,
-        visible_working: false,
-        skip_state_update: false,
         skipped_update_reason: None,
         fallback_reason: match manifest_fallback {
             None => Some(NO_SCREEN_MANIFEST_FALLBACK.to_string()),
@@ -786,13 +754,13 @@ pub fn explain_to_json_value(explain: &DetectionExplain) -> serde_json::Value {
 
     serde_json::json!({
         "agent": explain.agent,
-        "state": agent_state_label(explain.state),
+        "state": agent_state_label(explain.verdict.state()),
         "matched_rule": matched_rule,
-        "visible_idle": explain.visible_idle,
-        "visible_blocker": explain.visible_blocker,
-        "visible_working": explain.visible_working,
+        "visible_idle": explain.verdict.visible_idle(),
+        "visible_blocker": explain.verdict.visible_blocker(),
+        "visible_working": explain.verdict.visible_working(),
         "screen_detection_skipped": explain.screen_detection_skipped,
-        "skip_state_update": explain.skip_state_update,
+        "skip_state_update": explain.verdict.skip_state_update(),
         "skipped_update_reason": explain.skipped_update_reason,
         "fallback_reason": explain.fallback_reason,
         "evaluated_rules": evaluated_rules,
@@ -813,13 +781,9 @@ pub fn hook_authority_explain_to_json_value(
     // input, while the sidebar separately collapses Unknown to Idle.
     let explain = DetectionExplain {
         agent: Some(agent_label.to_string()),
-        state,
+        verdict: AgentDetection::State(Detection::new(state, false)),
         matched_rule: None,
         screen_detection_skipped: true,
-        visible_idle: false,
-        visible_blocker: false,
-        visible_working: false,
-        skip_state_update: false,
         skipped_update_reason: None,
         fallback_reason: None,
         evaluated_rules: Vec::new(),
@@ -939,13 +903,16 @@ fn compile_rule(
 
     Ok(CompiledRule {
         id: rule.id,
-        state: rule.state,
+        verdict: if rule.skip_state_update {
+            AgentDetection::Skip
+        } else {
+            AgentDetection::State(Detection::new(
+                rule.state.into(),
+                rule.visible_idle || rule.visible_blocker || rule.visible_working,
+            ))
+        },
         priority: rule.priority,
         region_name: rule.region,
-        visible_idle: rule.visible_idle,
-        visible_blocker: rule.visible_blocker,
-        visible_working: rule.visible_working,
-        skip_state_update: rule.skip_state_update,
         region_index: gate.region,
         gate,
         regions_used,

@@ -78,8 +78,8 @@ else:
 if action == "session":
     if not agent_session_id:
         raise SystemExit(0)
-    # Pass MastraCode's own start source through when it sends one (shepr
-    # ignores values it does not know); a bare SessionStart is a fresh start.
+    # Preserve MastraCode's source for server validation. A bare SessionStart
+    # still identifies the start of a fresh root session, so use its known source.
     session_start_source = hook_input.get("source")
     if not isinstance(session_start_source, str) or not session_start_source:
         session_start_source = "startup"

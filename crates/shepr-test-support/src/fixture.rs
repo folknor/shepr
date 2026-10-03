@@ -885,6 +885,20 @@ pub fn stand_in(dir: &Path, name: &str, steps: &[Step]) -> PathBuf {
     program
 }
 
+/// `path` as a pane shell, for tests that build a PTY command or launch a pane
+/// without going through config validation, which is what mints one in
+/// production. No shell-name or executable check runs.
+///
+/// # Panics
+///
+/// When `path` is not absolute.
+#[must_use]
+pub fn resolved_shell(path: impl AsRef<Path>) -> shepr_core::shell::ResolvedShell {
+    let path = path.as_ref();
+    shepr_core::shell::ResolvedShell::validate(path.to_path_buf(), |_| Ok(()))
+        .unwrap_or_else(|error| panic!("test shell {}: {error}", path.display()))
+}
+
 /// A stand-in pane shell named `sh` that reads its terminal until it closes
 /// and prints nothing, for tests that need a pane to have a live shell
 /// without depending on the host's. One per test process.

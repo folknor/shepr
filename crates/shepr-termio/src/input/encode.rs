@@ -1,7 +1,10 @@
-use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEventKind};
+use crossterm::event::{KeyCode, KeyModifiers, MouseEventKind};
 use std::fmt::Write as _;
 
-use super::tables::{control_byte, functional_key, modifier_bits};
+use super::tables::{
+    MOUSE_BUTTON_RELEASE, MOUSE_DRAG_OFFSET, control_byte, functional_key, modifier_bits,
+    mouse_button_code, mouse_modifier_bits, mouse_scroll_code,
+};
 use super::{KeyboardProtocol, MouseProtocolEncoding, MouseProtocolMode, TerminalKey};
 use crate::limits::{KITTY_KEY_SEQUENCE_INITIAL_CAPACITY, UTF8_MOUSE_REPORT_INITIAL_CAPACITY};
 use shepr_config::BindingKey;
@@ -94,16 +97,12 @@ fn encode_mouse_cb(
         encoding,
         MouseProtocolEncoding::Sgr | MouseProtocolEncoding::SgrPixels
     );
-    let mut cb = if release && !sgr { 3 } else { base_button };
-    if modifiers.contains(KeyModifiers::SHIFT) {
-        cb += 4;
-    }
-    if modifiers.contains(KeyModifiers::ALT) {
-        cb += 8;
-    }
-    if modifiers.contains(KeyModifiers::CONTROL) {
-        cb += 16;
-    }
+    let mut cb = if release && !sgr {
+        u16::from(MOUSE_BUTTON_RELEASE)
+    } else {
+        base_button
+    };
+    cb += mouse_modifier_bits(modifiers);
 
     match encoding {
         MouseProtocolEncoding::Sgr | MouseProtocolEncoding::SgrPixels => Some(
@@ -400,22 +399,15 @@ pub fn encode_mouse_event(
     mode: MouseProtocolMode,
     encoding: MouseProtocolEncoding,
 ) -> Option<Vec<u8>> {
-    let button_code = |button: MouseButton| -> u16 {
-        match button {
-            MouseButton::Left => 0,
-            MouseButton::Middle => 1,
-            MouseButton::Right => 2,
-        }
-    };
     let (base_button, release) = match kind {
-        MouseEventKind::Down(button) => (button_code(button), false),
-        MouseEventKind::Up(button) => (button_code(button), true),
-        MouseEventKind::Drag(button) => (button_code(button) + 32, false),
-        MouseEventKind::Moved => (3 + 32, false),
-        MouseEventKind::ScrollUp => (64, false),
-        MouseEventKind::ScrollDown => (65, false),
-        MouseEventKind::ScrollLeft => (66, false),
-        MouseEventKind::ScrollRight => (67, false),
+        MouseEventKind::Down(button) => (mouse_button_code(button)?, false),
+        MouseEventKind::Up(button) => (mouse_button_code(button)?, true),
+        MouseEventKind::Drag(button) => (mouse_button_code(button)? + MOUSE_DRAG_OFFSET, false),
+        MouseEventKind::Moved => (u16::from(MOUSE_BUTTON_RELEASE) + MOUSE_DRAG_OFFSET, false),
+        MouseEventKind::ScrollUp
+        | MouseEventKind::ScrollDown
+        | MouseEventKind::ScrollLeft
+        | MouseEventKind::ScrollRight => (mouse_scroll_code(kind)?, false),
     };
     let reported = match mode {
         // X10 reports button presses only.
@@ -701,10 +693,10 @@ fn encode_mouse_scroll(
     encoding: MouseProtocolEncoding,
 ) -> Option<Vec<u8>> {
     let button = match kind {
-        MouseEventKind::ScrollUp => 64u16,
-        MouseEventKind::ScrollDown => 65u16,
-        MouseEventKind::ScrollLeft => 66u16,
-        MouseEventKind::ScrollRight => 67u16,
+        MouseEventKind::ScrollUp
+        | MouseEventKind::ScrollDown
+        | MouseEventKind::ScrollLeft
+        | MouseEventKind::ScrollRight => mouse_scroll_code(kind)?,
         _ => return None,
     };
     encode_mouse_cb(
@@ -727,15 +719,9 @@ fn encode_mouse_button(
     encoding: MouseProtocolEncoding,
 ) -> Option<Vec<u8>> {
     let (button, release) = match kind {
-        MouseEventKind::Down(MouseButton::Left) => (0u16, false),
-        MouseEventKind::Down(MouseButton::Middle) => (1u16, false),
-        MouseEventKind::Down(MouseButton::Right) => (2u16, false),
-        MouseEventKind::Up(MouseButton::Left) => (0u16, true),
-        MouseEventKind::Up(MouseButton::Middle) => (1u16, true),
-        MouseEventKind::Up(MouseButton::Right) => (2u16, true),
-        MouseEventKind::Drag(MouseButton::Left) => (32u16, false),
-        MouseEventKind::Drag(MouseButton::Middle) => (33u16, false),
-        MouseEventKind::Drag(MouseButton::Right) => (34u16, false),
+        MouseEventKind::Down(button) => (mouse_button_code(button)?, false),
+        MouseEventKind::Up(button) => (mouse_button_code(button)?, true),
+        MouseEventKind::Drag(button) => (mouse_button_code(button)? + MOUSE_DRAG_OFFSET, false),
         _ => return None,
     };
     encode_mouse_cb(
@@ -755,6 +741,10 @@ mod tests {
     use super::*;
     use crate::input::parse_terminal_key_sequence;
 
+    fn kitty_protocol(flags: u16) -> KeyboardProtocol {
+        KeyboardProtocol::from_flags(KittyKeyboardFlags::from_bits_retain(flags))
+    }
+
     fn assert_terminal_key_eq(
         actual: &TerminalKey,
         code: KeyCode,
@@ -772,10 +762,7 @@ mod tests {
     fn generated_text_is_sent_as_text() {
         let key = TerminalKey::new(KeyCode::Char('/'), KeyModifiers::SHIFT)
             .with_generated_text(Some("/".to_owned()));
-        for protocol in [
-            KeyboardProtocol::legacy(),
-            KeyboardProtocol::from_kitty_flags(1),
-        ] {
+        for protocol in [KeyboardProtocol::legacy(), kitty_protocol(1)] {
             assert_eq!(
                 encode_terminal_key(key.clone(), protocol),
                 b"/",
@@ -806,7 +793,7 @@ mod tests {
             (&upper, 31, b"\x1b[97:65;2:1;65u".as_slice()),
         ] {
             assert_eq!(
-                encode_terminal_key(key.clone(), KeyboardProtocol::from_kitty_flags(flags)),
+                encode_terminal_key(key.clone(), kitty_protocol(flags)),
                 expected,
                 "flags={flags} key={key:?}"
             );
@@ -815,7 +802,7 @@ mod tests {
         // Without REPORT_ALL_KEYS committed text stays plain text.
         for flags in [1, 3, 7, 17, 23] {
             assert_eq!(
-                encode_terminal_key(upper.clone(), KeyboardProtocol::from_kitty_flags(flags)),
+                encode_terminal_key(upper.clone(), kitty_protocol(flags)),
                 b"A",
                 "flags={flags}"
             );
@@ -829,7 +816,7 @@ mod tests {
             .with_kind(crossterm::event::KeyEventKind::Repeat);
         assert_eq!(key.generated_text.as_deref(), Some("j"));
         assert_eq!(
-            encode_terminal_key(key, KeyboardProtocol::from_kitty_flags(27)),
+            encode_terminal_key(key, kitty_protocol(27)),
             b"\x1b[106;1:2;106u"
         );
     }
@@ -839,7 +826,7 @@ mod tests {
         let key = TerminalKey::new(KeyCode::Char('e'), KeyModifiers::empty())
             .with_generated_text(Some("e\u{301}".to_owned()));
         assert_eq!(
-            encode_terminal_key(key, KeyboardProtocol::from_kitty_flags(24)),
+            encode_terminal_key(key, kitty_protocol(24)),
             b"\x1b[101;1;101:769u"
         );
 
@@ -848,7 +835,7 @@ mod tests {
         let control_only = TerminalKey::new(KeyCode::Char('x'), KeyModifiers::empty())
             .with_generated_text(Some("\u{7}".to_owned()));
         assert_eq!(
-            encode_terminal_key(control_only, KeyboardProtocol::from_kitty_flags(24)),
+            encode_terminal_key(control_only, kitty_protocol(24)),
             b"\x1b[120;1u"
         );
     }
@@ -857,10 +844,7 @@ mod tests {
     fn report_all_keys_keeps_text_of_a_committed_key_with_no_csi_u_form() {
         let key = TerminalKey::new(KeyCode::Null, KeyModifiers::empty())
             .with_generated_text(Some("x".to_owned()));
-        assert_eq!(
-            encode_terminal_key(key, KeyboardProtocol::from_kitty_flags(24)),
-            b"x"
-        );
+        assert_eq!(encode_terminal_key(key, kitty_protocol(24)), b"x");
     }
 
     #[test]
@@ -1076,10 +1060,7 @@ mod tests {
     #[test]
     fn kitty_shift_enter() {
         let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT);
-        assert_eq!(
-            encode_key(key, KeyboardProtocol::from_kitty_flags(1)),
-            b"\x1b[13;2u"
-        );
+        assert_eq!(encode_key(key, kitty_protocol(1)), b"\x1b[13;2u");
     }
 
     #[test]
@@ -1088,37 +1069,31 @@ mod tests {
             KeyCode::Char('a'),
             KeyModifiers::CONTROL | KeyModifiers::SHIFT,
         );
-        assert_eq!(
-            encode_key(key, KeyboardProtocol::from_kitty_flags(1)),
-            b"\x1b[97;6u"
-        );
+        assert_eq!(encode_key(key, kitty_protocol(1)), b"\x1b[97;6u");
     }
 
     #[test]
     fn kitty_shift_uppercase_letter_sends_text() {
         let key = KeyEvent::new(KeyCode::Char('L'), KeyModifiers::SHIFT);
-        assert_eq!(encode_key(key, KeyboardProtocol::from_kitty_flags(1)), b"L");
+        assert_eq!(encode_key(key, kitty_protocol(1)), b"L");
     }
 
     #[test]
     fn kitty_shift_uppercase_letter_ignores_alternate_key_reporting_for_text() {
         let key = KeyEvent::new(KeyCode::Char('L'), KeyModifiers::SHIFT);
-        assert_eq!(encode_key(key, KeyboardProtocol::from_kitty_flags(7)), b"L");
+        assert_eq!(encode_key(key, kitty_protocol(7)), b"L");
     }
 
     #[test]
     fn kitty_shift_lowercase_letter_sends_uppercase_text() {
         let key = KeyEvent::new(KeyCode::Char('l'), KeyModifiers::SHIFT);
-        assert_eq!(encode_key(key, KeyboardProtocol::from_kitty_flags(1)), b"L");
+        assert_eq!(encode_key(key, kitty_protocol(1)), b"L");
     }
 
     #[test]
     fn kitty_alt_shift_uppercase_letter_uses_base_codepoint() {
         let key = KeyEvent::new(KeyCode::Char('L'), KeyModifiers::ALT | KeyModifiers::SHIFT);
-        assert_eq!(
-            encode_key(key, KeyboardProtocol::from_kitty_flags(1)),
-            b"\x1b[108;4u"
-        );
+        assert_eq!(encode_key(key, kitty_protocol(1)), b"\x1b[108;4u");
     }
 
     #[test]
@@ -1127,10 +1102,7 @@ mod tests {
             KeyCode::Char('L'),
             KeyModifiers::CONTROL | KeyModifiers::SHIFT,
         );
-        assert_eq!(
-            encode_key(key, KeyboardProtocol::from_kitty_flags(1)),
-            b"\x1b[108;6u"
-        );
+        assert_eq!(encode_key(key, kitty_protocol(1)), b"\x1b[108;6u");
     }
 
     #[test]
@@ -1142,28 +1114,19 @@ mod tests {
     #[test]
     fn kitty_alt_enter() {
         let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::ALT);
-        assert_eq!(
-            encode_key(key, KeyboardProtocol::from_kitty_flags(1)),
-            b"\x1b[13;3u"
-        );
+        assert_eq!(encode_key(key, kitty_protocol(1)), b"\x1b[13;3u");
     }
 
     #[test]
     fn kitty_alt_backspace_uses_csi_u() {
         let key = KeyEvent::new(KeyCode::Backspace, KeyModifiers::ALT);
-        assert_eq!(
-            encode_key(key, KeyboardProtocol::from_kitty_flags(1)),
-            b"\x1b[127;3u"
-        );
+        assert_eq!(encode_key(key, kitty_protocol(1)), b"\x1b[127;3u");
     }
 
     #[test]
     fn kitty_plain_ctrl_c_uses_csi_u() {
         let key = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
-        assert_eq!(
-            encode_key(key, KeyboardProtocol::from_kitty_flags(1)),
-            b"\x1b[99;5u"
-        );
+        assert_eq!(encode_key(key, kitty_protocol(1)), b"\x1b[99;5u");
     }
 
     #[test]
@@ -1171,16 +1134,13 @@ mod tests {
         let ctrl_a = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL);
         for flags in [2, 4] {
             assert_eq!(
-                encode_key(ctrl_a, KeyboardProtocol::from_kitty_flags(flags)),
+                encode_key(ctrl_a, kitty_protocol(flags)),
                 b"\x01",
                 "flags={flags}"
             );
         }
 
-        assert_eq!(
-            encode_key(ctrl_a, KeyboardProtocol::from_kitty_flags(1)),
-            b"\x1b[97;5u"
-        );
+        assert_eq!(encode_key(ctrl_a, kitty_protocol(1)), b"\x1b[97;5u");
 
         let ctrl_a_repeat = KeyEvent::new_with_kind(
             KeyCode::Char('a'),
@@ -1188,7 +1148,7 @@ mod tests {
             crossterm::event::KeyEventKind::Repeat,
         );
         assert_eq!(
-            encode_key(ctrl_a_repeat, KeyboardProtocol::from_kitty_flags(2)),
+            encode_key(ctrl_a_repeat, kitty_protocol(2)),
             b"\x1b[97;5:2u"
         );
     }
@@ -1196,16 +1156,13 @@ mod tests {
     #[test]
     fn kitty_plain_ctrl_c_includes_press_event_when_requested() {
         let key = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
-        assert_eq!(
-            encode_key(key, KeyboardProtocol::from_kitty_flags(3)),
-            b"\x1b[99;5:1u"
-        );
+        assert_eq!(encode_key(key, kitty_protocol(3)), b"\x1b[99;5:1u");
     }
 
     #[test]
     fn kitty_unmodified_uses_legacy() {
         let key = KeyEvent::new(KeyCode::Char('a'), KeyModifiers::empty());
-        assert_eq!(encode_key(key, KeyboardProtocol::from_kitty_flags(1)), b"a");
+        assert_eq!(encode_key(key, kitty_protocol(1)), b"a");
     }
 
     #[test]
@@ -1223,7 +1180,7 @@ mod tests {
                 crossterm::event::KeyEventKind::Press,
             );
             assert_eq!(
-                encode_key(press, KeyboardProtocol::from_kitty_flags(3)),
+                encode_key(press, kitty_protocol(3)),
                 expected,
                 "{code:?} press should stay legacy-compatible without REPORT_ALL_KEYS"
             );
@@ -1234,7 +1191,7 @@ mod tests {
                 crossterm::event::KeyEventKind::Repeat,
             );
             assert_eq!(
-                encode_key(repeat, KeyboardProtocol::from_kitty_flags(3)),
+                encode_key(repeat, kitty_protocol(3)),
                 expected,
                 "{code:?} repeat should stay legacy-compatible without REPORT_ALL_KEYS"
             );
@@ -1245,7 +1202,7 @@ mod tests {
                 crossterm::event::KeyEventKind::Release,
             );
             assert_eq!(
-                encode_key(release, KeyboardProtocol::from_kitty_flags(3)),
+                encode_key(release, kitty_protocol(3)),
                 b"",
                 "{code:?} release should not fall back to legacy bytes"
             );
@@ -1259,10 +1216,7 @@ mod tests {
             KeyModifiers::empty(),
             crossterm::event::KeyEventKind::Press,
         );
-        assert_eq!(
-            encode_key(enter_press, KeyboardProtocol::from_kitty_flags(9)),
-            b"\x1b[13;1u"
-        );
+        assert_eq!(encode_key(enter_press, kitty_protocol(9)), b"\x1b[13;1u");
 
         let backspace_press = KeyEvent::new_with_kind(
             KeyCode::Backspace,
@@ -1270,7 +1224,7 @@ mod tests {
             crossterm::event::KeyEventKind::Press,
         );
         assert_eq!(
-            encode_key(backspace_press, KeyboardProtocol::from_kitty_flags(11)),
+            encode_key(backspace_press, kitty_protocol(11)),
             b"\x1b[127;1:1u"
         );
 
@@ -1280,7 +1234,7 @@ mod tests {
             crossterm::event::KeyEventKind::Release,
         );
         assert_eq!(
-            encode_key(backspace_release, KeyboardProtocol::from_kitty_flags(11)),
+            encode_key(backspace_release, kitty_protocol(11)),
             b"\x1b[127;1:3u"
         );
     }
@@ -1302,10 +1256,7 @@ mod tests {
             ),
         ] {
             let key = KeyEvent::new_with_kind(KeyCode::Char('j'), KeyModifiers::empty(), kind);
-            assert_eq!(
-                encode_key(key, KeyboardProtocol::from_kitty_flags(15)),
-                expected
-            );
+            assert_eq!(encode_key(key, kitty_protocol(15)), expected);
         }
     }
 
@@ -1328,10 +1279,7 @@ mod tests {
         ];
 
         for (key, expected) in cases {
-            assert_eq!(
-                encode_terminal_key(key, KeyboardProtocol::from_kitty_flags(25)),
-                expected
-            );
+            assert_eq!(encode_terminal_key(key, kitty_protocol(25)), expected);
         }
     }
 
@@ -1352,10 +1300,7 @@ mod tests {
             ),
         ] {
             let key = TerminalKey::new(KeyCode::Char('A'), KeyModifiers::SHIFT).with_kind(kind);
-            assert_eq!(
-                encode_terminal_key(key, KeyboardProtocol::from_kitty_flags(31)),
-                expected
-            );
+            assert_eq!(encode_terminal_key(key, kitty_protocol(31)), expected);
         }
     }
 
@@ -1366,15 +1311,12 @@ mod tests {
             KeyModifiers::empty(),
             crossterm::event::KeyEventKind::Release,
         );
-        assert_eq!(
-            encode_key(release, KeyboardProtocol::from_kitty_flags(3)),
-            b"\x1b[106;1:3u"
-        );
+        assert_eq!(encode_key(release, kitty_protocol(3)), b"\x1b[106;1:3u");
 
         let mut malformed_release = TerminalKey::from(release);
         malformed_release.generated_text = Some("j".to_owned());
         assert_eq!(
-            encode_terminal_key(malformed_release, KeyboardProtocol::from_kitty_flags(3)),
+            encode_terminal_key(malformed_release, kitty_protocol(3)),
             b"\x1b[106;1:3u"
         );
     }
@@ -1382,19 +1324,13 @@ mod tests {
     #[test]
     fn kitty_shift_tab() {
         let key = KeyEvent::new(KeyCode::Tab, KeyModifiers::SHIFT);
-        assert_eq!(
-            encode_key(key, KeyboardProtocol::from_kitty_flags(1)),
-            b"\x1b[9;2u"
-        );
+        assert_eq!(encode_key(key, kitty_protocol(1)), b"\x1b[9;2u");
     }
 
     #[test]
     fn kitty_ctrl_shift_enter() {
         let key = KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL | KeyModifiers::SHIFT);
-        assert_eq!(
-            encode_key(key, KeyboardProtocol::from_kitty_flags(1)),
-            b"\x1b[13;6u"
-        );
+        assert_eq!(encode_key(key, kitty_protocol(1)), b"\x1b[13;6u");
     }
 
     #[test]
@@ -1404,10 +1340,7 @@ mod tests {
             KeyModifiers::SHIFT,
             crossterm::event::KeyEventKind::Repeat,
         );
-        assert_eq!(
-            encode_key(key, KeyboardProtocol::from_kitty_flags(3)),
-            b"\x1b[13;2:2u"
-        );
+        assert_eq!(encode_key(key, kitty_protocol(3)), b"\x1b[13;2:2u");
     }
 
     #[test]
@@ -1417,17 +1350,14 @@ mod tests {
             KeyModifiers::SHIFT,
             crossterm::event::KeyEventKind::Release,
         );
-        assert_eq!(
-            encode_key(key, KeyboardProtocol::from_kitty_flags(7)),
-            b"\x1b[108:76;2:3u"
-        );
+        assert_eq!(encode_key(key, kitty_protocol(7)), b"\x1b[108:76;2:3u");
     }
 
     #[test]
     fn kitty_shifted_punctuation_literals_send_text() {
         for ch in "!@#$%^&*()_+{}|:\"<>?~".chars() {
             let key = TerminalKey::new(KeyCode::Char(ch), KeyModifiers::SHIFT);
-            let encoded = encode_terminal_key(key, KeyboardProtocol::from_kitty_flags(7));
+            let encoded = encode_terminal_key(key, kitty_protocol(7));
             assert_eq!(encoded, ch.to_string().into_bytes(), "ch={ch}");
         }
     }
@@ -1436,19 +1366,13 @@ mod tests {
     fn kitty_shifted_punctuation_release_does_not_emit_text() {
         let key = TerminalKey::new(KeyCode::Char('?'), KeyModifiers::SHIFT)
             .with_kind(crossterm::event::KeyEventKind::Release);
-        assert_eq!(
-            encode_terminal_key(key, KeyboardProtocol::from_kitty_flags(7)),
-            b"\x1b[63;2:3u"
-        );
+        assert_eq!(encode_terminal_key(key, kitty_protocol(7)), b"\x1b[63;2:3u");
     }
 
     #[test]
     fn kitty_shifted_punctuation_does_not_infer_layout() {
         let key = TerminalKey::new(KeyCode::Char('1'), KeyModifiers::SHIFT);
-        assert_eq!(
-            encode_terminal_key(key, KeyboardProtocol::from_kitty_flags(7)),
-            b"\x1b[49;2:1u"
-        );
+        assert_eq!(encode_terminal_key(key, kitty_protocol(7)), b"\x1b[49;2:1u");
     }
 
     #[test]
@@ -1468,7 +1392,7 @@ mod tests {
             ),
         ] {
             let key = TerminalKey::new(KeyCode::Char('!'), modifiers);
-            let encoded = encode_terminal_key(key, KeyboardProtocol::from_kitty_flags(7));
+            let encoded = encode_terminal_key(key, kitty_protocol(7));
             assert_eq!(encoded, expected, "modifiers={modifiers:?}");
         }
     }
@@ -1485,10 +1409,7 @@ mod tests {
             // Legacy and Kitty disambiguate-only (no REPORT_EVENT_TYPES) must not
             // emit a byte on release, otherwise Enter/Backspace double.
             assert_eq!(encode_key(release, KeyboardProtocol::legacy()), b"");
-            assert_eq!(
-                encode_key(release, KeyboardProtocol::from_kitty_flags(1)),
-                b""
-            );
+            assert_eq!(encode_key(release, kitty_protocol(1)), b"");
         }
 
         let modified_release = KeyEvent::new_with_kind(
@@ -1497,7 +1418,7 @@ mod tests {
             crossterm::event::KeyEventKind::Release,
         );
         assert_eq!(
-            encode_key(modified_release, KeyboardProtocol::from_kitty_flags(3)),
+            encode_key(modified_release, kitty_protocol(3)),
             b"\x1b[13;5:3u"
         );
     }
@@ -1506,10 +1427,7 @@ mod tests {
     fn kitty_shifted_symbol_sends_text() {
         let key = TerminalKey::new(KeyCode::Char('1'), KeyModifiers::SHIFT)
             .with_shifted_codepoint('!' as u32);
-        assert_eq!(
-            encode_terminal_key(key, KeyboardProtocol::from_kitty_flags(7)),
-            b"!"
-        );
+        assert_eq!(encode_terminal_key(key, kitty_protocol(7)), b"!");
     }
 
     #[test]
@@ -1541,7 +1459,7 @@ mod tests {
     fn kitty_shifted_symbol_prefers_text_over_roundtrip_key_identity() {
         let key = TerminalKey::new(KeyCode::Char('1'), KeyModifiers::SHIFT)
             .with_shifted_codepoint('!' as u32);
-        let encoded = encode_terminal_key(key, KeyboardProtocol::from_kitty_flags(7));
+        let encoded = encode_terminal_key(key, kitty_protocol(7));
         assert_eq!(encoded, b"!");
     }
 
@@ -1594,7 +1512,7 @@ mod tests {
         for (base, shifted) in cases {
             let key = TerminalKey::new(KeyCode::Char(base), KeyModifiers::SHIFT)
                 .with_shifted_codepoint(shifted as u32);
-            let encoded = encode_terminal_key(key, KeyboardProtocol::from_kitty_flags(7));
+            let encoded = encode_terminal_key(key, kitty_protocol(7));
             assert_eq!(encoded, shifted.to_string().into_bytes(), "base={base}");
         }
     }
@@ -1609,7 +1527,7 @@ mod tests {
     #[test]
     fn chinese_char_with_kitty_protocol_encodes_as_utf8() {
         let key = TerminalKey::new(KeyCode::Char('文'), KeyModifiers::empty());
-        let encoded = encode_terminal_key(key, KeyboardProtocol::from_kitty_flags(7));
+        let encoded = encode_terminal_key(key, kitty_protocol(7));
         assert_eq!(encoded, "文".as_bytes());
     }
 
@@ -1634,7 +1552,7 @@ mod tests {
         ];
         for (code, expected) in cases {
             let key = TerminalKey::new(code, KeyModifiers::empty());
-            let encoded = encode_terminal_key(key, KeyboardProtocol::from_kitty_flags(11));
+            let encoded = encode_terminal_key(key, kitty_protocol(11));
             assert_eq!(encoded, expected.as_bytes(), "{code:?}");
             let parsed = parse_terminal_key_sequence(expected).expect("test precondition");
             assert_terminal_key_eq(
@@ -1648,7 +1566,7 @@ mod tests {
 
         let release = TerminalKey::new(KeyCode::Left, KeyModifiers::ALT | KeyModifiers::SHIFT)
             .with_kind(KeyEventKind::Release);
-        let encoded = encode_terminal_key(release, KeyboardProtocol::from_kitty_flags(3));
+        let encoded = encode_terminal_key(release, kitty_protocol(3));
         assert_eq!(encoded, b"\x1b[1;4:3D");
         for keypad_code in 57417..=57426 {
             assert!(!String::from_utf8_lossy(&encoded).contains(&keypad_code.to_string()));
@@ -1858,7 +1776,7 @@ mod tests {
     #[test]
     fn chinese_char_with_modifiers_falls_back_to_kitty_encoding() {
         let key = TerminalKey::new(KeyCode::Char('测'), KeyModifiers::ALT);
-        let encoded = encode_terminal_key(key, KeyboardProtocol::from_kitty_flags(7));
+        let encoded = encode_terminal_key(key, kitty_protocol(7));
         assert!(!encoded.is_empty());
         assert_ne!(encoded, "测".as_bytes());
     }

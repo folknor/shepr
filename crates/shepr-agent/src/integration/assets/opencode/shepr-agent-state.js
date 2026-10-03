@@ -171,6 +171,9 @@ export const SheprAgentStatePlugin = async () => {
       // first point that identifies this run's root session for the pane.
       if (sessionID && !reportedLocalSessionID) {
         reportedLocalSessionID = sessionID;
+        // This recognized start anchors the first local identity. Only the
+        // TUI integration reports `select`, which can replace an existing
+        // OpenCode root.
         await reportSession(sessionID, "startup");
       }
       await reportState("working", sessionID);

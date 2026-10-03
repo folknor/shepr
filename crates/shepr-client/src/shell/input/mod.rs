@@ -1,6 +1,5 @@
 use shepr_termio::input::KeybindAction;
 use shepr_termio::input::KeybindDispatch;
-use shepr_termio::input::KeybindMatch;
 
 use crate::shell::overlays::notices::ClientEndpointNoticeKind;
 use crate::shell::state::ClientShellOverlay;
@@ -399,9 +398,8 @@ impl ClientShellState {
         }
         let lease_key = shepr_termio::input::InputLeaseKey::new(LOCAL_INPUT_SOURCE, &key);
         let host_reports_all_keys = self.host_reports_all_keys;
-        let key = self
-            .input_leases
-            .normalize_press(&lease_key, key, host_reports_all_keys);
+        self.input_leases
+            .prepare_press(&lease_key, &key, host_reports_all_keys);
         match key.kind {
             KeyEventKind::Press => {
                 let initial_context = self.input_context();
@@ -770,43 +768,28 @@ impl ClientShellState {
                     if valid {
                         self.mode = ClientShellMode::Terminal;
                         self.navigate_workspace_id = None;
-                        self.record_binding(
-                            &KeybindMatch::Action(KeybindAction::SwitchWorkspace(index)),
-                            outcome,
-                        );
+                        self.record_binding(&KeybindAction::SwitchWorkspace(index), outcome);
                         outcome.repaint = true;
                     }
                 }
-                NavigateAction::CyclePaneNext => self.record_navigate_binding(
-                    &KeybindMatch::Action(KeybindAction::CyclePaneNext),
-                    false,
-                    outcome,
-                ),
-                NavigateAction::CyclePanePrevious => self.record_navigate_binding(
-                    &KeybindMatch::Action(KeybindAction::CyclePanePrevious),
-                    false,
-                    outcome,
-                ),
-                NavigateAction::PaneLeft => self.record_navigate_binding(
-                    &KeybindMatch::Action(KeybindAction::FocusPaneLeft),
-                    true,
-                    outcome,
-                ),
-                NavigateAction::PaneDown => self.record_navigate_binding(
-                    &KeybindMatch::Action(KeybindAction::FocusPaneDown),
-                    true,
-                    outcome,
-                ),
-                NavigateAction::PaneUp => self.record_navigate_binding(
-                    &KeybindMatch::Action(KeybindAction::FocusPaneUp),
-                    true,
-                    outcome,
-                ),
-                NavigateAction::PaneRight => self.record_navigate_binding(
-                    &KeybindMatch::Action(KeybindAction::FocusPaneRight),
-                    true,
-                    outcome,
-                ),
+                NavigateAction::CyclePaneNext => {
+                    self.record_navigate_binding(&KeybindAction::CyclePaneNext, false, outcome);
+                }
+                NavigateAction::CyclePanePrevious => {
+                    self.record_navigate_binding(&KeybindAction::CyclePanePrevious, false, outcome);
+                }
+                NavigateAction::PaneLeft => {
+                    self.record_navigate_binding(&KeybindAction::FocusPaneLeft, true, outcome);
+                }
+                NavigateAction::PaneDown => {
+                    self.record_navigate_binding(&KeybindAction::FocusPaneDown, true, outcome);
+                }
+                NavigateAction::PaneUp => {
+                    self.record_navigate_binding(&KeybindAction::FocusPaneUp, true, outcome);
+                }
+                NavigateAction::PaneRight => {
+                    self.record_navigate_binding(&KeybindAction::FocusPaneRight, true, outcome);
+                }
                 NavigateAction::Back
                 | NavigateAction::WorkspaceUp
                 | NavigateAction::WorkspaceDown
@@ -829,14 +812,12 @@ impl ClientShellState {
                     | KeybindAction::FocusPaneRight
             )
         })
-        .map(KeybindMatch::Action)
         .or_else(|| {
             shepr_termio::input::resolve_indexed_action(
                 &self.config.keybinds.keybinds,
                 key,
                 KeybindDispatch::Prefix,
             )
-            .map(KeybindMatch::Action)
         });
         if let Some(binding) = binding {
             self.record_navigate_binding(&binding, false, outcome);
@@ -845,16 +826,16 @@ impl ClientShellState {
 
     fn record_navigate_binding(
         &mut self,
-        binding: &shepr_termio::input::KeybindMatch,
+        binding: &shepr_termio::input::KeybindAction,
         preserve_navigate: bool,
         outcome: &mut ClientShellInput,
     ) {
         if !self.indexed_navigation_target_exists(binding) {
             return;
         }
-        if let KeybindMatch::Action(KeybindAction::CyclePaneNext) = binding {
+        if let KeybindAction::CyclePaneNext = binding {
             self.cycle_pane(false, outcome);
-        } else if let KeybindMatch::Action(KeybindAction::CyclePanePrevious) = binding {
+        } else if let KeybindAction::CyclePanePrevious = binding {
             self.cycle_pane(true, outcome);
         } else {
             if !preserve_navigate {
@@ -878,14 +859,14 @@ impl ClientShellState {
 
     pub(in crate::shell) fn indexed_navigation_target_exists(
         &self,
-        binding: &shepr_termio::input::KeybindMatch,
+        binding: &shepr_termio::input::KeybindAction,
     ) -> bool {
         match binding {
-            KeybindMatch::Action(KeybindAction::SwitchWorkspace(index)) => self
+            KeybindAction::SwitchWorkspace(index) => self
                 .snapshot
                 .as_deref()
                 .is_some_and(|snapshot| snapshot.workspaces.get(*index).is_some()),
-            KeybindMatch::Action(KeybindAction::FocusAgent(index)) => {
+            KeybindAction::FocusAgent(index) => {
                 self.agent_panel_model.targets().get(*index).is_some()
             }
             _ => true,
@@ -935,7 +916,7 @@ impl ClientShellState {
             _ => None,
         };
         if let Some(action) = action {
-            self.record_binding(&shepr_termio::input::KeybindMatch::Action(action), outcome);
+            self.record_binding(&action, outcome);
         }
     }
 

@@ -133,7 +133,8 @@ pub(crate) fn test_headless_server() -> HeadlessServer {
     let config = shepr_config::ServerConfig::default();
     let mut app = crate::app::App::new(&config, crate::app::AppPolicy::Test);
 
-    app.state.settings.default_shell = crate::app::exiting_test_command().into();
+    app.state.settings.default_shell =
+        shepr_test_support::fixture::resolved_shell(crate::app::exiting_test_command());
     let (server_event_tx, server_event_rx) = mpsc::channel(64);
     let (api_tx, api_request_rx) = mpsc::channel(crate::limits::API_REQUEST_CHANNEL_CAPACITY);
     // Production's listener holds the sender for the server's whole life; a
@@ -145,7 +146,6 @@ pub(crate) fn test_headless_server() -> HeadlessServer {
     HeadlessServer {
         app,
         view_epoch: ViewEpoch::INITIAL,
-        headless_settled: ViewEpoch::ZERO,
         api_server: None,
         clients: ClientRegistry::default(),
         client_view_keys: HashMap::new(),
@@ -2924,7 +2924,11 @@ async fn first_shell_surface_resizes_a_pane_that_entered_alternate_screen() {
     let initial_size = server.app.test_runtime(pane_id).current_size();
 
     write_shared_test_pane(&mut server, pane_id, b"\x1b[?1049hALT");
-    server.render_now();
+    // Output that flips the screen also raises the render signal, and the flip
+    // flag is only read on a plan made with that signal pending.
+    server.mark_view_changed();
+    let plan = server.render_plan(true);
+    server.render_pass(&plan, &HashSet::new());
 
     let surface = recv_pane_surface(&mut render, "first alternate-screen surface");
     assert!(surface.panes[0].alternate_screen_active);
@@ -5541,7 +5545,8 @@ async fn headless_scheduled_tasks_start_pending_agent_resume_without_foreground_
     let mut server = test_headless_server();
     // Keep a shell reading its PTY so the resume command cannot race the
     // default test shell, which exits at once, before the input is queued.
-    server.app.state.settings.default_shell = shepr_test_support::fixture::idle_shell().into();
+    server.app.state.settings.default_shell =
+        shepr_test_support::fixture::resolved_shell(shepr_test_support::fixture::idle_shell());
     let workspace = shepr_mux::workspace::Workspace::test_new("restored");
     let pane_id = workspace.root_pane();
     let terminal_id = workspace
@@ -5590,7 +5595,8 @@ async fn headless_scheduled_tasks_keep_pending_agent_resume_deadline_across_tick
     let mut server = test_headless_server();
     // Keep a shell reading its PTY so the resume command cannot race the
     // default test shell, which exits at once, before the input is queued.
-    server.app.state.settings.default_shell = shepr_test_support::fixture::idle_shell().into();
+    server.app.state.settings.default_shell =
+        shepr_test_support::fixture::resolved_shell(shepr_test_support::fixture::idle_shell());
     let workspace = shepr_mux::workspace::Workspace::test_new("restored");
     let pane_id = workspace.root_pane();
     let terminal_id = workspace

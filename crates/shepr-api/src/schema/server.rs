@@ -82,9 +82,5 @@ pub struct ServerStatusJson {
     /// The answering server process's boot identity, which a conditional stop
     /// (`shepr server stop --expect-boot`) names.
     pub boot_id: Option<String>,
-    pub compatible: Option<bool>,
     pub socket: String,
-    /// True for a starting or running server of another build. A stopping one
-    /// is already going away.
-    pub restart_needed: bool,
 }

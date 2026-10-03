@@ -227,13 +227,13 @@ pub fn init_pane_launches() -> std::io::Result<()> {
 
 #[derive(Clone, Copy)]
 pub struct PaneShellConfig<'a> {
-    pub default_shell: &'a str,
+    pub default_shell: &'a shepr_core::shell::ResolvedShell,
     pub login_shell: bool,
     require_cwd: bool,
 }
 
 impl<'a> PaneShellConfig<'a> {
-    pub fn new(default_shell: &'a str, login_shell: bool) -> Self {
+    pub fn new(default_shell: &'a shepr_core::shell::ResolvedShell, login_shell: bool) -> Self {
         Self {
             default_shell,
             login_shell,
@@ -250,8 +250,7 @@ impl<'a> PaneShellConfig<'a> {
     }
 }
 
-/// Config has selected the shell at launch; the PTY verifies the resolved path
-/// again when it builds the child command and uses it for exec and `SHELL`.
+/// Carry the validated shell unchanged into the child command.
 pub(super) fn pane_shell_command_builder(shell_config: PaneShellConfig<'_>) -> PtyCommand {
     let mut command =
         PtyCommand::interactive_shell(shell_config.default_shell, shell_config.login_shell);
@@ -264,6 +263,7 @@ pub(super) fn pane_shell_command_builder(shell_config: PaneShellConfig<'_>) -> P
 #[cfg(test)]
 mod tests {
     use super::*;
+    use shepr_test_support::fixture::resolved_shell as test_shell;
 
     /// Every registered name with its pane policy, across both vocabularies.
     fn every_policy() -> Vec<(&'static str, PaneEnvPolicy)> {
@@ -281,7 +281,7 @@ mod tests {
     #[test]
     fn every_registered_environment_variable_has_a_pane_policy() {
         let _env = shepr_test_support::IsolatedEnv::new();
-        let mut command = PtyCommand::interactive_shell("shell", false);
+        let mut command = PtyCommand::interactive_shell(&test_shell("/shell"), false);
         for (name, _) in every_policy() {
             command.env(name, "inherited");
         }
@@ -347,7 +347,7 @@ mod tests {
         let _env = shepr_test_support::IsolatedEnv::new();
         let workspace_id = "w1".parse().expect("test workspace id");
         let inherited = PublicPaneId::new(&workspace_id, 17);
-        let mut command = PtyCommand::interactive_shell("shell", false);
+        let mut command = PtyCommand::interactive_shell(&test_shell("/shell"), false);
         command.env(EnvVar::SheprPaneId, inherited.to_string());
 
         apply_pane_launch_env(&mut command, &PaneLaunchEnv::new("/run/shepr.sock".into()));
@@ -367,7 +367,7 @@ mod tests {
     #[test]
     fn an_inherited_socket_variable_gives_way_to_the_resolved_socket() {
         let _env = shepr_test_support::IsolatedEnv::new();
-        let mut command = PtyCommand::interactive_shell("shell", false);
+        let mut command = PtyCommand::interactive_shell(&test_shell("/shell"), false);
         command.env(EnvVar::SheprSocketPath, "/inherited/server.sock");
         let socket = std::path::PathBuf::from("/custom/shepr.sock");
         apply_pane_launch_env(&mut command, &PaneLaunchEnv::new(socket.clone()));

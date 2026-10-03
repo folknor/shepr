@@ -67,7 +67,7 @@ pub(crate) fn api_request_completed(
 
 /// A client that disconnected before its response was written never reaches
 /// this: the server write paths treat
-/// `shepr_platform::ipc::is_connection_closed_error` as a finished request.
+/// `shepr_platform::ipc::StreamFailure::PeerGone` as a finished request.
 /// What remains is a real delivery failure, so it is logged as an error.
 pub(crate) fn api_request_failed(request_id: &str, method_name: &str, err: &str) {
     tracing::error!(

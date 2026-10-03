@@ -525,10 +525,7 @@ fn keyboard_copy_mode_owns_cursor_selection_copy_and_scroll_restore() {
     state.compose(106, 20).expect("composed frame");
 
     let mut enter = ClientShellInput::default();
-    state.record_binding(
-        &shepr_termio::input::KeybindMatch::Action(shepr_termio::input::KeybindAction::CopyMode),
-        &mut enter,
-    );
+    state.record_binding(&shepr_termio::input::KeybindAction::CopyMode, &mut enter);
     assert_eq!(state.mode, ClientShellMode::Copy);
     assert_eq!(
         state.copy_mode.as_ref().map(|mode| mode.cursor.row),
@@ -820,10 +817,7 @@ fn keyboard_copy_mode_content_motion_is_endpoint_backed() {
     state.receive_pane_surface(pane_surface);
     state.compose(106, 20).expect("composed frame");
     let mut enter = ClientShellInput::default();
-    state.record_binding(
-        &shepr_termio::input::KeybindMatch::Action(shepr_termio::input::KeybindAction::CopyMode),
-        &mut enter,
-    );
+    state.record_binding(&shepr_termio::input::KeybindAction::CopyMode, &mut enter);
     let origin = state.copy_mode.as_ref().expect("copy mode").cursor;
 
     let motion = state.handle_raw_events(vec![RawInputEvent::Key(
@@ -877,10 +871,7 @@ fn keys_after_an_exit_key_reach_the_pane_once_an_in_flight_copy_motion_replays()
     state.receive_pane_surface(pane_surface);
     state.compose(106, 20).expect("composed frame");
     let mut enter = ClientShellInput::default();
-    state.record_binding(
-        &shepr_termio::input::KeybindMatch::Action(shepr_termio::input::KeybindAction::CopyMode),
-        &mut enter,
-    );
+    state.record_binding(&shepr_termio::input::KeybindAction::CopyMode, &mut enter);
     let origin = state.copy_mode.as_ref().expect("copy mode").cursor;
     let key = |code| {
         RawInputEvent::Key(shepr_termio::input::TerminalKey::new(
@@ -947,10 +938,7 @@ fn copy_search_owns_prompt_repeat_highlights_selection_and_restore() {
     state.receive_pane_surface(pane_surface);
     state.compose(106, 20).expect("composed frame");
     let mut enter = ClientShellInput::default();
-    state.record_binding(
-        &shepr_termio::input::KeybindMatch::Action(shepr_termio::input::KeybindAction::CopyMode),
-        &mut enter,
-    );
+    state.record_binding(&shepr_termio::input::KeybindAction::CopyMode, &mut enter);
     let origin = state.copy_mode.as_ref().expect("copy mode").cursor;
 
     state.handle_raw_events(vec![RawInputEvent::Key(
@@ -1894,9 +1882,7 @@ fn navigator_owns_search_mouse_selection_and_stable_target_focus() {
     state.receive_pane_surface(surface());
     let mut open = ClientShellInput::default();
     state.record_binding(
-        &shepr_termio::input::KeybindMatch::Action(
-            shepr_termio::input::KeybindAction::OpenNavigator,
-        ),
+        &shepr_termio::input::KeybindAction::OpenNavigator,
         &mut open,
     );
     let navigator = state.compose(106, 30).expect("navigator overlay");
@@ -2012,10 +1998,7 @@ fn copy_mode_survives_mouse_motion_and_parks_across_focus_changes() {
     state.receive_pane_surface(pane_surface);
     state.compose(106, 20).expect("composed frame");
     let mut enter = ClientShellInput::default();
-    state.record_binding(
-        &shepr_termio::input::KeybindMatch::Action(shepr_termio::input::KeybindAction::CopyMode),
-        &mut enter,
-    );
+    state.record_binding(&shepr_termio::input::KeybindAction::CopyMode, &mut enter);
 
     state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
         kind: MouseEventKind::Moved,
@@ -2232,10 +2215,7 @@ fn rapid_copy_motions_are_chained_from_the_previous_result() {
     state.receive_pane_surface(pane_surface);
     state.compose(106, 20).expect("composed frame");
     let mut enter = ClientShellInput::default();
-    state.record_binding(
-        &shepr_termio::input::KeybindMatch::Action(shepr_termio::input::KeybindAction::CopyMode),
-        &mut enter,
-    );
+    state.record_binding(&shepr_termio::input::KeybindAction::CopyMode, &mut enter);
     let origin = state.copy_mode.as_ref().expect("copy mode").cursor;
 
     let first = state.handle_input_bytes(b"w");
@@ -2285,10 +2265,7 @@ fn copy_prefix_and_detach_act_after_an_in_flight_copy_operation_replays() {
     state.receive_pane_surface(pane_surface);
     state.compose(106, 20).expect("composed frame");
     let mut enter = ClientShellInput::default();
-    state.record_binding(
-        &shepr_termio::input::KeybindMatch::Action(shepr_termio::input::KeybindAction::CopyMode),
-        &mut enter,
-    );
+    state.record_binding(&shepr_termio::input::KeybindAction::CopyMode, &mut enter);
     let origin = state.copy_mode.as_ref().expect("copy mode").cursor;
     let motion = state.handle_input_bytes(b"w");
     state.handle_input_bytes(b"l");
@@ -2759,10 +2736,7 @@ fn copy_waits_for_endpoint_motion_before_copying_selection() {
     state.receive_pane_surface(pane_surface);
     state.compose(106, 20).expect("composed frame");
     let mut enter = ClientShellInput::default();
-    state.record_binding(
-        &shepr_termio::input::KeybindMatch::Action(shepr_termio::input::KeybindAction::CopyMode),
-        &mut enter,
-    );
+    state.record_binding(&shepr_termio::input::KeybindAction::CopyMode, &mut enter);
     state.handle_input_bytes(b"v");
     let origin = state.copy_mode.as_ref().expect("copy mode").cursor;
     let motion = state.handle_input_bytes(b"w");
@@ -2815,10 +2789,7 @@ fn copy_search_matches_survive_output_but_not_a_resize() {
     state.receive_pane_surface(pane_surface.clone());
     state.compose(106, 20).expect("composed frame");
     let mut enter = ClientShellInput::default();
-    state.record_binding(
-        &shepr_termio::input::KeybindMatch::Action(shepr_termio::input::KeybindAction::CopyMode),
-        &mut enter,
-    );
+    state.record_binding(&shepr_termio::input::KeybindAction::CopyMode, &mut enter);
     let copy_mode = state.copy_mode.as_mut().expect("copy mode");
     let search = copy_mode
         .search
@@ -2952,12 +2923,7 @@ fn copy_mode_repeat_during_projection_gap_stays_active() {
         state.receive_pane_surface(pane_surface);
         state.compose(106, 20).expect("composed frame");
         let mut enter = ClientShellInput::default();
-        state.record_binding(
-            &shepr_termio::input::KeybindMatch::Action(
-                shepr_termio::input::KeybindAction::CopyMode,
-            ),
-            &mut enter,
-        );
+        state.record_binding(&shepr_termio::input::KeybindAction::CopyMode, &mut enter);
         if selection_before_gap == Some(true) {
             state.handle_input_bytes(b"V");
         }

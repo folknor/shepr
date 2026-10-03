@@ -58,8 +58,8 @@ if action == "session":
     if session_id is None:
         raise SystemExit(0)
     method = "pane.report_agent_session"
-    # Pass the start source Kimi reports through when there is one (shepr
-    # ignores values it does not know); a bare SessionStart is a fresh start.
+    # Preserve the source Kimi reports for server validation. A bare
+    # SessionStart still identifies the start of a fresh root session.
     start_source = payload.get("source")
     if not isinstance(start_source, str) or not start_source:
         start_source = "startup"

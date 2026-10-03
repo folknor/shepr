@@ -17,18 +17,14 @@ use shepr_protocol::command::EndpointCommand;
 impl ClientShellState {
     pub(in crate::shell) fn record_binding(
         &mut self,
-        binding: &shepr_termio::input::KeybindMatch,
+        binding: &shepr_termio::input::KeybindAction,
         outcome: &mut ClientShellInput,
     ) {
         match binding {
-            shepr_termio::input::KeybindMatch::Action(
-                shepr_termio::input::KeybindAction::Detach,
-            ) => {
+            shepr_termio::input::KeybindAction::Detach => {
                 outcome.detach = true;
             }
-            shepr_termio::input::KeybindMatch::Action(
-                shepr_termio::input::KeybindAction::ToggleSidebar,
-            ) => {
+            shepr_termio::input::KeybindAction::ToggleSidebar => {
                 self.chrome.toggle_collapsed();
                 self.reveal_navigation_workspace = true;
                 // The retained surface stays on screen, clipped to the new pane area, until the
@@ -37,7 +33,7 @@ impl ClientShellState {
                 outcome.resize = true;
                 self.persist_chrome_preferences(outcome);
             }
-            shepr_termio::input::KeybindMatch::Action(action) => {
+            action => {
                 let action = *action;
                 if self.workspace_preview_action_blocked()
                     && matches!(
@@ -161,15 +157,21 @@ impl ClientShellState {
             shepr_vt::selection::SelectionShape::Lines => {
                 let (start, end) = selection.ordered_rows();
                 let width = self
-                    .copy_hit()
+                    .hits
+                    .panes
+                    .iter()
+                    .find(|hit| hit.pane_id == pane_id)
                     .map(|hit| hit.inner_rect.width)
                     .or_else(|| {
                         self.copy_mode
                             .as_ref()
+                            .filter(|copy_mode| copy_mode.pane_id == pane_id)
                             .map(|copy_mode| copy_mode.geometry.0)
                     })
-                    .unwrap_or(1)
-                    .max(1);
+                    .filter(|width| *width > 0);
+                let Some(width) = width else {
+                    return;
+                };
                 ((start.row, 0), (end.row, width.saturating_sub(1)))
             }
         };

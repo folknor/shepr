@@ -71,26 +71,29 @@ pub fn resolve_executable(
     }
 }
 
-/// Trim shell whitespace without discarding valid non-UTF-8 path bytes.
-/// Non-UTF-8 values only recognize ASCII whitespace at the edges.
-pub fn trim_shell_value(shell: &OsStr) -> Option<std::ffi::OsString> {
-    use std::os::unix::ffi::{OsStrExt as _, OsStringExt as _};
+/// An absolute pane shell path accepted by configuration validation.
+///
+/// The validation callback owns executable access and shell-name policy. Keeping
+/// the path carrier here lets the PTY consume it without depending on config.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedShell(PathBuf);
 
-    if let Some(shell) = shell.to_str() {
-        let shell = shell.trim();
-        return (!shell.is_empty()).then(|| shell.into());
+impl ResolvedShell {
+    /// Mint a shell only after the caller's shell validation succeeds.
+    pub fn validate(
+        path: PathBuf,
+        validate: impl FnOnce(&Path) -> Result<(), String>,
+    ) -> Result<Self, String> {
+        if !path.is_absolute() {
+            return Err("pane shell must be an absolute path".to_owned());
+        }
+        validate(&path)?;
+        Ok(Self(path))
     }
 
-    let bytes = shell.as_bytes();
-    let start = bytes
-        .iter()
-        .position(|byte| !byte.is_ascii_whitespace())
-        .unwrap_or(bytes.len());
-    let end = bytes
-        .iter()
-        .rposition(|byte| !byte.is_ascii_whitespace())
-        .map_or(start, |index| index + 1);
-    (start < end).then(|| std::ffi::OsString::from_vec(bytes[start..end].to_vec()))
+    pub fn path(&self) -> &Path {
+        &self.0
+    }
 }
 
 fn candidate_problem(path: &Path, status: ExecutableStatus) -> String {
@@ -181,5 +184,17 @@ mod tests {
         .expect("a bare program name is searched on PATH");
 
         assert_eq!(resolved, expected);
+    }
+
+    #[test]
+    fn a_relative_shell_is_never_minted() {
+        let mut validated = false;
+        let err = ResolvedShell::validate("zsh".into(), |_| {
+            validated = true;
+            Ok(())
+        })
+        .expect_err("relative shell");
+        assert!(err.contains("absolute"));
+        assert!(!validated, "the caller's check never sees a relative path");
     }
 }

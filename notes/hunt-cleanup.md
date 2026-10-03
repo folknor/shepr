@@ -27,26 +27,12 @@ raw reports are in the commit that precedes this file's.
 production code; drop it from the projection or find the reader it was meant
 for. (client-shell)
 
-## CLN-010 - Dead pieces in the edges
-
-- `DifferentBuildServer.version` is populated and stored but read only in
-  tests (one initializer is in `src/preflight.rs`).
-- `ServerStatusJson.compatible` and `.restart_needed`
-  (`crates/shepr-api/src/schema/server.rs`) are still written by
-  `src/cli/status.rs` while the remote preflight parse
-  (`crates/shepr-remote/src/remote/server_lifecycle.rs`) recomputes
-  compatibility from `build_id`; drop the fields with that consumer.
-- `forward_remote_bridge_stdio_with_timeout` in
-  `crates/shepr-platform/src/remote_bridge_io.rs` takes `Option<Duration>`;
-  production always passes `Some`, and only a test passes anything else.
-
-Reported by edges; contracts also notes the doubled compatibility derivation.
-
 ## CLN-011 - Dead pieces in the contracts crates
 
-`RuntimeStatus::version: Option<String>` is always `Some` (ping decoding in
-`crates/shepr-api/src/client.rs` supplies it). Its consumers in
-`crates/shepr-remote/src/remote/local_server.rs` and the fixtures in
+`RuntimeStatus::version: Option<String>` (`crates/shepr-api/src/status.rs`) is
+always `Some` (ping decoding in `crates/shepr-api/src/client.rs` supplies it).
+Its consumers in `crates/shepr-remote/src/remote/local_server.rs`, the status
+display and JSON projection in `src/cli/status.rs`, and the fixtures in
 `src/preflight.rs` still format absence as `"unknown"`; make the field plain
 and drop those branches together. (contracts)
 
@@ -59,33 +45,13 @@ Removing it means changing the tag writers and the sweep parse together
 
 ## CLN-023 - Small leftovers from the first fixes
 
-- `crates/shepr-remote/src/remote/local_server.rs`:
-  `wait_for_overridden_server` repeats the poll loop of
-  `wait_for_server_socket_to_settle_until` (same deadline arithmetic and
-  sleep); it could call that function and then probe once.
-- `src/cli/status.rs`: `type ServerRuntimeStatus = ServerPresence;` only
-  renames; the functions could take `ServerPresence`.
-- `crates/shepr-client/src/shell/sidebar/endpoint_sidebar.rs`:
-  `.workspaces.iter().enumerate().map(|(entry, _)| ..)` is `0..len` spelled
-  the long way.
-
 - `crates/shepr-server/src/app/`: `AppPolicy::Test` is kept as a const equal
   to `Suspended`, with a comment calling Suspended a different state, while
   every test teardown now spells `Suspended`. One spelling should win.
-
-- `crates/shepr-remote/src/remote/preflight.rs`: `RestartResult::offer` checks
-  for a missing decision callback before its loop and again inside it, so the
-  inner `NoTerminal` branch cannot be reached.
-- `crates/shepr-client/src/shell/state.rs`: `MouseSelection` is built field by
-  field in `ClientShellState::new`; a derived `Default` would do.
-
 - `crates/shepr-client/src/shell/`: most items are `pub(in crate::shell)` where
   only their parent module uses them, and `OverlayRender` and
   `render_client_overlay` in `overlays/mod.rs` are `pub(crate)`; an item-level
   visibility pass would make the new module tree mean something.
-- `Notices::queue_boot` calls `dismiss()` to show the first queued card; an
-  `advance` name would say what it does.
-
 - `crates/shepr-server/src/app/`: `AppPolicy` and the saver's `SavePolicy` are
   now separate state, and about twenty tests still end with
   `app.policy = Suspended`, which no longer touches the saver.
@@ -94,47 +60,34 @@ Removing it means changing the tag writers and the sweep parse together
 
 (wave-1 review and gate, wave-3 review, wave-5 fixer and review, wave-7 and wave-8 reviews)
 
-## CLN-024 - Leftovers in the terminal input crates
+## CLN-025 - Small leftovers from the light-loop waves
 
-- `KeybindMatch` (generated in `crates/shepr-termio/src/input/keybindings.rs`)
-  has the single variant `Action(KeybindAction)`, matched at some 46 client
-  sites.
-- `InputLeaseTable::normalize_press` returns its input unchanged; it only drops
-  an old lease.
-- `HostReplyPolicy` in `crates/shepr-termio/src/input/raw_input.rs` is a trait
-  with one implementation and `NoHostReplies` is an alias of `HostReplies`, so
-  the policy generic on `RawInputFramer` and `RawInputByteFramer` can go.
-- `KeyboardProtocol::from_kitty_flags(u16)` is public but used only by tests
-  (about 60 sites) now that `from_flags` exists.
+- `crates/shepr-platform/src/ipc.rs`: `classify_stream_error` takes
+  `&io::Error`, so `EndpointFailure::disconnect_notice`
+  (`crates/shepr-remote/src/failure.rs`) builds a throwaway
+  `io::Error::from(kind)` to call it; classifying on `ErrorKind` removes that.
+- `crates/shepr-remote/src/remote/local_server.rs`:
+  `wait_for_overridden_server` probes inside the shared settle helper and then
+  again itself on every turn; it could take the settled probe from the helper.
+- `crates/shepr-agent/src/integration/types.rs`: `InstallError` has nine
+  variants each wrapping the same `io::Error`, plus a `kind()` mapping back to
+  `InstallErrorKind`; `struct InstallError { kind, source }` carries the same
+  facts. `InstallIssue::io_error` stamps every category, `AgentDirMissing` and
+  `Io` included, as `io::ErrorKind::InvalidData`.
 
-(wave-6 review)
+(wave-2 review)
 
 ## Test-only twins and test seams in production
 
 ## CLN-016 - Production rules with a test-only twin that the tests exercise instead
 
-- `PaneTerminal::plain_page_keys_use_host_scrollback` (production) and
-  `InputState::plain_page_keys_use_host_scrollback` (`#[cfg(test)]`); the test
-  `plain_page_keys_host_scroll_for_shell_like_decckm_with_bracketed_paste`
-  calls the twin.
-- `terminal_buffer_symbol_into` (render path) and
-  `terminal_normalize_buffer_symbol` (`#[cfg(test)]`); the grapheme-width tests
-  in `terminal/tests.rs` call the twin. Suggested: a pure
-  `normalized_symbol(&str, CellWide) -> &str` both call.
-- `PaneTerminal::input_state()` and the `InputState`/`ScrollPosition` types
-  exist only for tests, and `input_state` derives mouse mode and encoding with a
-  third precedence ladder.
-- `RenderSignal::request_pty` (test-only) restates `request_pty_coalesced`
-  minus the flag; the coalescing tests test a copy.
-- `save_session_before_teardown` (cfg(test)) duplicates the production
-  `save_session_before_teardown_async` synchronously, and `save_session_now` is
-  another test-only save path.
-- `handle_internal_event_after_checkpoint` (cfg(test)) reimplements the
-  server's hold-and-replay of checkpointed exits with a fixed `for _ in 0..4`
-  loop; session tests run against it rather than the loop's.
-
-There is no agreement test for any of these: the copies can drift with every
-test green. Reported by mux-panes, mux-state and server-app.
+`handle_internal_event_after_checkpoint` (cfg(test), in
+`crates/shepr-server/src/app/session.rs`) reimplements the server's
+hold-and-replay of checkpointed exits with a fixed `for _ in 0..4` loop; five
+tests in `app/session.rs` and seven in `app/mod.rs` run against it rather than
+the `HeadlessServer` loop's own queue (whose ordering has four tests in
+`server/headless/tests/pane_exit.rs`). Moving those assertions onto the loop
+would let the copy go. Reported by mux-panes, mux-state and server-app.
 
 ## CLN-017 - Production types shaped by test fixtures
 

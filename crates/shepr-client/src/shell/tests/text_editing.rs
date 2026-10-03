@@ -7,7 +7,6 @@ use shepr_config::ClientConfig;
 use shepr_protocol::command::EndpointCommand;
 use shepr_protocol::{ClientMessage, ClientPaneInputEvent};
 use shepr_termio::input::KeybindAction;
-use shepr_termio::input::KeybindMatch;
 use shepr_termio::input::TerminalKey;
 use shepr_termio::input::raw_input::RawInputEvent;
 
@@ -51,10 +50,7 @@ fn shell(field: usize) -> ClientShellState {
             }));
         }
         5 => {
-            state.record_binding(
-                &KeybindMatch::Action(KeybindAction::CopyMode),
-                &mut ClientShellInput::default(),
-            );
+            state.record_binding(&KeybindAction::CopyMode, &mut ClientShellInput::default());
             state.handle_input_bytes(b"/");
         }
         _ => unreachable!(),

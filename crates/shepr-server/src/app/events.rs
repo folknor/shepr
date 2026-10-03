@@ -35,7 +35,7 @@ pub(crate) enum StateEvent {
         origin: shepr_agent::agent::ReportOrigin,
         seq: Option<u64>,
         session_ref: Option<shepr_agent::agent::resume::AgentSessionRef>,
-        session_start_source: Option<shepr_agent::agent::resume::AgentSessionStartSource>,
+        session_start_source: shepr_agent::agent::resume::ReportedSessionStart,
     },
     TerminalCwdReported {
         pane_id: PaneId,

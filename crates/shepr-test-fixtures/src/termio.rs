@@ -1,11 +1,11 @@
 //! Host input as a test writes it: whole byte strings rather than reads.
 
-use shepr_termio::input::raw_input::{NoHostReplies, RawInputEvent, RawInputFramer};
+use shepr_termio::input::raw_input::{RawInputEvent, RawInputFramer};
 
 /// Frame `data` as one complete read, then let the escape timeout expire, so
 /// a lone or unfinished escape sequence resolves as it would after a pause.
 pub fn parse_raw_input_bytes_sync(data: &[u8]) -> Vec<RawInputEvent> {
-    let mut framer = RawInputFramer::<NoHostReplies>::default();
+    let mut framer = RawInputFramer::default();
     let mut events = framer.push_framed(data);
     events.extend(framer.flush_timeout_framed());
     events.into_iter().map(|input| input.event).collect()

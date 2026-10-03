@@ -417,7 +417,10 @@ async fn capture_follows_live_cwd_arbitration_and_keeps_it_after_exit() {
         0,
         Default::default(),
         None,
-        shepr_mux::pane::PaneShellConfig::new(shell.to_str().expect("test precondition"), false),
+        shepr_mux::pane::PaneShellConfig::new(
+            &shepr_test_support::fixture::resolved_shell(&shell),
+            false,
+        ),
         &shepr_mux::pane::PaneLaunchEnv::new("/run/user/1000/shepr-test.sock".into()),
         &events,
         &std::sync::Arc::new(tokio::sync::Notify::new()),

@@ -677,14 +677,11 @@ fn server_stop_request(id: &str, expected_boot_id: Option<&str>) -> crate::schem
 }
 
 fn stop_request_error_allows_wait(err: &std::io::Error) -> bool {
+    // This error came from the request after connecting; a refused or missing
+    // listener cannot mean that an already-sent stop may be in flight.
     matches!(
-        err.kind(),
-        std::io::ErrorKind::BrokenPipe
-            | std::io::ErrorKind::ConnectionReset
-            | std::io::ErrorKind::UnexpectedEof
-            | std::io::ErrorKind::NotConnected
-            | std::io::ErrorKind::TimedOut
-            | std::io::ErrorKind::WouldBlock
+        shepr_platform::ipc::classify_stream_error(err),
+        shepr_platform::ipc::StreamFailure::PeerGone | shepr_platform::ipc::StreamFailure::TimedOut
     )
 }
 

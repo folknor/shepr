@@ -19,7 +19,7 @@ fn bridge_subprocess_entry_point() {
         return;
     };
     let stream = UnixStream::connect(PathBuf::from(path)).expect("test precondition");
-    let outcome = super::forward_remote_bridge_stdio_with_timeout(stream, Some(TIMEOUT))
+    let outcome = super::forward_remote_bridge_stdio_with_timeout(stream, TIMEOUT)
         .expect("test precondition");
     if let super::RemoteBridgeOutcome::IdleExpired { .. } = outcome {
         exit_as_expired_bridge();

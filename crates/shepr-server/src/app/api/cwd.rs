@@ -53,7 +53,8 @@ mod tests {
             &shepr_config::ServerConfig::default(),
             crate::app::AppPolicy::Test,
         );
-        app.state.settings.default_shell = exiting_test_command().into();
+        app.state.settings.default_shell =
+            shepr_test_support::fixture::resolved_shell(exiting_test_command());
         app.state.settings.login_shell = false;
         app.state.workspaces = vec![Workspace::test_new("relative-cwd")];
         app.state.ensure_test_terminals();

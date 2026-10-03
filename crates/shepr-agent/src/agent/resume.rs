@@ -22,6 +22,60 @@ pub enum AgentSessionStartSource {
     Select,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnrecognizedAgentSessionStartSource(String);
+
+impl UnrecognizedAgentSessionStartSource {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for UnrecognizedAgentSessionStartSource {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "unrecognized agent session start source {:?}",
+            self.0
+        )
+    }
+}
+
+impl std::error::Error for UnrecognizedAgentSessionStartSource {}
+
+/// What a session report says about how its session started, as the
+/// replacement policy reads it.
+///
+/// An unrecognized source is its own case, neither omitted nor dropped. Most
+/// assets forward the agent's own start value verbatim, and an agent can start
+/// sending a new value at any time, ahead of a shepr build that knows it.
+/// Treating it as omitted would hand it the no-source replacement rule
+/// (`replace_without_start`), so an unknown start could replace a live
+/// session. Dropping the whole report would lose the session identity, and
+/// with it resume on restore, for every session of that agent until shepr
+/// ships an update. An unrecognized start therefore records an identity when
+/// nothing conflicts, and never counts as a replacement or as a confirmed
+/// start.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReportedSessionStart {
+    /// The report carried no start source.
+    Omitted,
+    Known(AgentSessionStartSource),
+    /// The report carried a start source this build does not know.
+    Unrecognized,
+}
+
+impl ReportedSessionStart {
+    /// Classifies a wire value; `None` is a report without a source.
+    pub fn from_wire(value: Option<&str>) -> Self {
+        match value.map(AgentSessionStartSource::parse) {
+            None => Self::Omitted,
+            Some(Ok(source)) => Self::Known(source),
+            Some(Err(_)) => Self::Unrecognized,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 #[serde(transparent)]
 pub struct SessionId(String);
@@ -286,17 +340,13 @@ impl AgentSessionStartSource {
         }
     }
 
-    fn parse(value: &str) -> Option<Self> {
-        let value = value.trim();
+    pub fn parse(value: &str) -> Result<Self, UnrecognizedAgentSessionStartSource> {
         Self::ALL
             .iter()
             .copied()
             .find(|source| source.as_str() == value)
+            .ok_or_else(|| UnrecognizedAgentSessionStartSource(value.to_owned()))
     }
-}
-
-pub fn normalize_session_start_source(value: Option<&str>) -> Option<AgentSessionStartSource> {
-    value.and_then(AgentSessionStartSource::parse)
 }
 
 // An ID is passed as one argument after a resume flag. Reject leading dashes
@@ -663,55 +713,86 @@ mod tests {
     }
 
     #[test]
-    fn normalize_session_start_source_allows_known_values() {
+    fn session_start_source_parser_accepts_only_exact_known_values() {
         assert_eq!(
-            normalize_session_start_source(Some("startup")),
-            Some(AgentSessionStartSource::Startup)
+            AgentSessionStartSource::parse("startup"),
+            Ok(AgentSessionStartSource::Startup)
         );
         assert_eq!(
-            normalize_session_start_source(Some("resume")),
-            Some(AgentSessionStartSource::Resume)
+            AgentSessionStartSource::parse("resume"),
+            Ok(AgentSessionStartSource::Resume)
         );
         assert_eq!(
-            normalize_session_start_source(Some("clear")),
-            Some(AgentSessionStartSource::Clear)
+            AgentSessionStartSource::parse("clear"),
+            Ok(AgentSessionStartSource::Clear)
         );
         assert_eq!(
-            normalize_session_start_source(Some("compact")),
-            Some(AgentSessionStartSource::Compact)
+            AgentSessionStartSource::parse("compact"),
+            Ok(AgentSessionStartSource::Compact)
         );
         assert_eq!(
-            normalize_session_start_source(Some("new")),
-            Some(AgentSessionStartSource::New)
+            AgentSessionStartSource::parse("new"),
+            Ok(AgentSessionStartSource::New)
         );
         assert_eq!(
-            normalize_session_start_source(Some("load")),
-            Some(AgentSessionStartSource::Load)
+            AgentSessionStartSource::parse("load"),
+            Ok(AgentSessionStartSource::Load)
         );
         assert_eq!(
-            normalize_session_start_source(Some("fork")),
-            Some(AgentSessionStartSource::Fork)
+            AgentSessionStartSource::parse("fork"),
+            Ok(AgentSessionStartSource::Fork)
         );
         assert_eq!(
-            normalize_session_start_source(Some("select")),
-            Some(AgentSessionStartSource::Select)
+            AgentSessionStartSource::parse("select"),
+            Ok(AgentSessionStartSource::Select)
         );
         assert_eq!(
-            normalize_session_start_source(Some(" resume ")),
-            Some(AgentSessionStartSource::Resume)
+            AgentSessionStartSource::parse(" resume ")
+                .expect_err("source spelling is exact")
+                .as_str(),
+            " resume "
         );
-        assert_eq!(normalize_session_start_source(Some("other")), None);
-        assert_eq!(normalize_session_start_source(None), None);
+        assert_eq!(
+            AgentSessionStartSource::parse("other")
+                .expect_err("unknown source is retained")
+                .as_str(),
+            "other"
+        );
     }
 
     #[test]
     fn every_session_start_source_round_trips_through_its_string() {
         for source in AgentSessionStartSource::ALL {
-            assert_eq!(
-                normalize_session_start_source(Some(source.as_str())),
-                Some(source)
+            assert_eq!(AgentSessionStartSource::parse(source.as_str()), Ok(source));
+        }
+    }
+
+    #[test]
+    fn an_unrecognized_start_never_replaces_whatever_the_policy() {
+        assert_eq!(
+            ReportedSessionStart::from_wire(Some("future-source")),
+            ReportedSessionStart::Unrecognized
+        );
+        assert_eq!(
+            ReportedSessionStart::from_wire(None),
+            ReportedSessionStart::Omitted
+        );
+        for descriptor in crate::agent::AGENTS {
+            assert!(
+                !descriptor
+                    .hook_session_policy
+                    .allows_replacement(ReportedSessionStart::Unrecognized),
+                "{}",
+                descriptor.label
             );
         }
+        assert!(
+            Agent::Antigravity
+                .descriptor()
+                .hook_session_policy
+                .allows_replacement(ReportedSessionStart::Omitted),
+            "premise: some policy replaces on an omitted source"
+        );
     }
 
     #[test]

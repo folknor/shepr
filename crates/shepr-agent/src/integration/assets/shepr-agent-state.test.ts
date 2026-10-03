@@ -628,6 +628,31 @@ test("Oh My Pi reports session-bound state", async () => {
   expectContractTrace("omp", requests);
 });
 
+test("Oh My Pi forwards the session-start reason when the agent supplies it", async () => {
+  const requests = await startRecordingServer("omp-session-start-reason");
+  const { handlers, pi } = createExtensionHarness();
+  const { default: install } = await importFresh("./omp/shepr-agent-state.ts");
+  install(pi);
+
+  handlers.get("session_start")?.(
+    { reason: "fork" },
+    {
+      hasUI: true,
+      isIdle: () => false,
+      sessionManager: {
+        getSessionFile: () => undefined,
+        getSessionId: () => "omp-fork-session",
+      },
+    },
+  );
+  await waitFor(() => requests.length >= 1);
+
+  const first = requests[0];
+  expect(isRecord(first) && isRecord(first.params) ? first.params.session_start_source : null).toBe(
+    "fork",
+  );
+});
+
 test("Oh My Pi deduplicates blocked state when prompt labels change", async () => {
   const requests = await startRecordingServer("omp-blocked-dedup");
   const { handlers, pi } = createExtensionHarness();

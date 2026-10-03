@@ -1,4 +1,137 @@
+use std::io;
 use std::path::{Path, PathBuf};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum InstallErrorKind {
+    ConfigChanged,
+    ConfigUnparseable,
+    ConfigShape,
+    ManagedBlockConflict,
+    HardLinked,
+    NotRegularFile,
+    TooManySymlinks,
+    AgentDirMissing,
+    Io,
+}
+
+#[derive(Debug)]
+pub(crate) struct InstallIssue {
+    kind: InstallErrorKind,
+    message: String,
+}
+
+impl InstallIssue {
+    pub(crate) fn io_error(kind: InstallErrorKind, message: impl Into<String>) -> io::Error {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            Self {
+                kind,
+                message: message.into(),
+            },
+        )
+    }
+}
+
+impl std::fmt::Display for InstallIssue {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for InstallIssue {}
+
+#[derive(Debug)]
+pub(crate) enum InstallError {
+    ConfigChanged { source: io::Error },
+    ConfigUnparseable { source: io::Error },
+    ConfigShape { source: io::Error },
+    ManagedBlockConflict { source: io::Error },
+    HardLinked { source: io::Error },
+    NotRegularFile { source: io::Error },
+    TooManySymlinks { source: io::Error },
+    AgentDirMissing { source: io::Error },
+    Io { source: io::Error },
+}
+
+impl InstallError {
+    pub(crate) fn kind(&self) -> InstallErrorKind {
+        match self {
+            Self::ConfigChanged { .. } => InstallErrorKind::ConfigChanged,
+            Self::ConfigUnparseable { .. } => InstallErrorKind::ConfigUnparseable,
+            Self::ConfigShape { .. } => InstallErrorKind::ConfigShape,
+            Self::ManagedBlockConflict { .. } => InstallErrorKind::ManagedBlockConflict,
+            Self::HardLinked { .. } => InstallErrorKind::HardLinked,
+            Self::NotRegularFile { .. } => InstallErrorKind::NotRegularFile,
+            Self::TooManySymlinks { .. } => InstallErrorKind::TooManySymlinks,
+            Self::AgentDirMissing { .. } => InstallErrorKind::AgentDirMissing,
+            Self::Io { .. } => InstallErrorKind::Io,
+        }
+    }
+
+    fn source(&self) -> &io::Error {
+        match self {
+            Self::ConfigChanged { source }
+            | Self::ConfigUnparseable { source }
+            | Self::ConfigShape { source }
+            | Self::ManagedBlockConflict { source }
+            | Self::HardLinked { source }
+            | Self::NotRegularFile { source }
+            | Self::TooManySymlinks { source }
+            | Self::AgentDirMissing { source }
+            | Self::Io { source } => source,
+        }
+    }
+}
+
+impl From<io::Error> for InstallError {
+    fn from(source: io::Error) -> Self {
+        if super::config_file::is_config_changed(&source) {
+            return Self::ConfigChanged { source };
+        }
+
+        let kind = source
+            .get_ref()
+            .and_then(|cause| cause.downcast_ref::<InstallIssue>())
+            .map(|issue| issue.kind)
+            .or_else(|| {
+                source
+                    .get_ref()
+                    .and_then(|cause| cause.downcast_ref::<super::file_ops::NotRegularFile>())
+                    .map(|_| InstallErrorKind::NotRegularFile)
+            });
+
+        match kind {
+            Some(InstallErrorKind::ConfigUnparseable) => Self::ConfigUnparseable { source },
+            Some(InstallErrorKind::ConfigShape) => Self::ConfigShape { source },
+            Some(InstallErrorKind::ManagedBlockConflict) => Self::ManagedBlockConflict { source },
+            Some(InstallErrorKind::HardLinked) => Self::HardLinked { source },
+            Some(InstallErrorKind::NotRegularFile) => Self::NotRegularFile { source },
+            Some(InstallErrorKind::TooManySymlinks) => Self::TooManySymlinks { source },
+            Some(InstallErrorKind::AgentDirMissing) => Self::AgentDirMissing { source },
+            Some(InstallErrorKind::ConfigChanged) => Self::ConfigChanged { source },
+            Some(InstallErrorKind::Io) | None => Self::Io { source },
+        }
+    }
+}
+
+impl std::fmt::Display for InstallError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.source().fmt(formatter)
+    }
+}
+
+impl std::error::Error for InstallError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.source())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum IntegrationOutdatedReason {
+    Asset,
+    Registration,
+    AssetAndRegistration,
+}
 
 /// Messages produced by installing an agent integration.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -81,7 +214,9 @@ pub(crate) struct IntegrationStatus {
     pub target: crate::agent::IntegrationTarget,
     pub path: PathBuf,
     pub state: IntegrationStatusKind,
-    /// Logged as install diagnostics; exact asset bytes determine state.
+    /// Which managed part needs repair when `state` is `Outdated`.
+    pub outdated_reason: Option<IntegrationOutdatedReason>,
+    /// Version marker from the installed asset, for diagnostics only.
     pub installed_version: Option<u32>,
 }
 
@@ -90,4 +225,32 @@ pub(crate) enum IntegrationStatusKind {
     NotInstalled,
     Current,
     Outdated,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn install_failures_keep_their_category_at_the_log_boundary() {
+        for kind in [
+            InstallErrorKind::ConfigChanged,
+            InstallErrorKind::ConfigUnparseable,
+            InstallErrorKind::ConfigShape,
+            InstallErrorKind::ManagedBlockConflict,
+            InstallErrorKind::HardLinked,
+            InstallErrorKind::NotRegularFile,
+            InstallErrorKind::TooManySymlinks,
+            InstallErrorKind::AgentDirMissing,
+            InstallErrorKind::Io,
+        ] {
+            let error = InstallError::from(InstallIssue::io_error(kind, "settings failure"));
+            assert_eq!(error.kind(), kind);
+        }
+        let error = InstallError::from(InstallIssue::io_error(
+            InstallErrorKind::ConfigShape,
+            "settings must be an object",
+        ));
+        assert_eq!(error.to_string(), "settings must be an object");
+    }
 }

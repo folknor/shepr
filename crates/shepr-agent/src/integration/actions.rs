@@ -5,11 +5,11 @@ use crate::agent::IntegrationTarget;
 use super::config_file::is_config_changed;
 use super::env::AgentIntegrationPaths;
 use super::registry::{action_label, agent_present, install_operation, integration_status};
-use super::types::{InstallOutcome, InstallOutput, IntegrationStatusKind};
+use super::types::{InstallError, InstallOutcome, InstallOutput, IntegrationStatusKind};
 
 /// Installs or updates shepr's hooks for every supported agent present on
-/// this host when a release server launches. Dev servers skip installation
-/// because agent configs are shared with release servers on the same host.
+/// this host. The server caller decides whether this release-only operation
+/// should run because agent configs are shared across build profiles.
 ///
 /// An agent is present when its own config directory already exists; an
 /// absent agent is skipped and its directory is never created. A target
@@ -19,16 +19,7 @@ use super::types::{InstallOutcome, InstallOutput, IntegrationStatusKind};
 /// and the others still run, and nothing here fails the caller.
 ///
 /// This does file IO, so a server calls it off its startup path.
-pub fn install_present_integrations(paths: &AgentIntegrationPaths, build_profile: &str) {
-    // Use the caller's compiled profile, never the inherited pane environment:
-    // a dev server can be launched from a release pane and vice versa.
-    if build_profile != "release" {
-        tracing::info!(
-            build_profile,
-            "agent integration installation skipped; only release servers own agent configs"
-        );
-        return;
-    }
+pub fn install_present_integrations(paths: &AgentIntegrationPaths) {
     for target in IntegrationTarget::all() {
         let label = target.label();
         match install_if_present(paths, target) {
@@ -41,8 +32,9 @@ pub fn install_present_integrations(paths: &AgentIntegrationPaths, build_profile
             Err(error) => {
                 tracing::warn!(
                     integration = label,
+                    error_kind = ?error.kind(),
                     %error,
-                    "could not install the agent integration"
+                    "could not check or install the agent integration"
                 );
             }
         }
@@ -54,15 +46,44 @@ pub fn install_present_integrations(paths: &AgentIntegrationPaths, build_profile
 fn install_if_present(
     paths: &AgentIntegrationPaths,
     target: IntegrationTarget,
-) -> io::Result<Option<InstallOutput>> {
-    if !agent_present(paths, target)? {
+) -> Result<Option<InstallOutput>, InstallError> {
+    let present = match agent_present(paths, target).map_err(InstallError::from) {
+        Ok(present) => present,
+        Err(error) => {
+            crate::logging::integration_action(
+                "status",
+                target.label(),
+                crate::logging::IntegrationActionOutcome::Failed,
+                Some(error.kind()),
+            );
+            return Err(error);
+        }
+    };
+    if !present {
         tracing::debug!(
             integration = target.label(),
             "agent not present; integration skipped"
         );
         return Ok(None);
     }
-    let status = integration_status(paths, target)?;
+    let status = match integration_status(paths, target) {
+        Ok(status) => status,
+        Err(error) => {
+            crate::logging::integration_action(
+                "status",
+                target.label(),
+                crate::logging::IntegrationActionOutcome::Failed,
+                Some(error.kind()),
+            );
+            return Err(error);
+        }
+    };
+    crate::logging::integration_action(
+        "status",
+        target.label(),
+        crate::logging::IntegrationActionOutcome::Succeeded,
+        None,
+    );
     if status.state == IntegrationStatusKind::Current {
         tracing::debug!(
             integration = target.label(),
@@ -75,6 +96,7 @@ fn install_if_present(
         integration = status.target.label(),
         path = %status.path.display(),
         state = ?status.state,
+        outdated_reason = ?status.outdated_reason,
         installed_version = ?status.installed_version,
         "installing the agent integration"
     );
@@ -84,10 +106,16 @@ fn install_if_present(
 pub(crate) fn install_target(
     paths: &AgentIntegrationPaths,
     target: IntegrationTarget,
-) -> io::Result<InstallOutput> {
-    let result = install_target_inner(paths, target);
-    let outcome = if result.is_ok() { "ok" } else { "error" };
-    crate::logging::integration_action("install", target.label(), outcome);
+) -> Result<InstallOutput, InstallError> {
+    let result = install_target_inner(paths, target).map_err(InstallError::from);
+    let (outcome, error_kind) = match &result {
+        Ok(_) => (crate::logging::IntegrationActionOutcome::Succeeded, None),
+        Err(error) => (
+            crate::logging::IntegrationActionOutcome::Failed,
+            Some(error.kind()),
+        ),
+    };
+    crate::logging::integration_action("install", target.label(), outcome, error_kind);
     result
 }
 
