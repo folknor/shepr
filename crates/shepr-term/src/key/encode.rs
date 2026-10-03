@@ -1,16 +1,55 @@
-use crossterm::event::{KeyCode, KeyModifiers, MouseEventKind};
+use crossterm::event::{KeyCode, KeyModifiers};
 use std::fmt::Write as _;
 
-use super::tables::{
-    MOUSE_BUTTON_RELEASE, MOUSE_DRAG_OFFSET, control_byte, functional_key, modifier_bits,
-    mouse_button_code, mouse_modifier_bits, mouse_scroll_code,
-};
-use super::{KeyboardProtocol, MouseProtocolEncoding, MouseProtocolMode, TerminalKey};
-use crate::limits::{KITTY_KEY_SEQUENCE_INITIAL_CAPACITY, UTF8_MOUSE_REPORT_INITIAL_CAPACITY};
-use shepr_config::BindingKey;
+use super::TerminalKey;
+use super::tables::{control_byte, functional_key, modifier_bits};
+use crate::limits::KITTY_KEY_SEQUENCE_INITIAL_CAPACITY;
+use crate::{KittyKeyboardFlags, ModifyOtherKeysLevel};
 use shepr_core::limits::UTF8_MAX_BYTES_PER_CODEPOINT;
-use shepr_protocol::KittyKeyboardFlags;
-use shepr_vt::ModifyOtherKeysLevel;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KeyboardProtocol(KeyboardProtocolMode);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum KeyboardProtocolMode {
+    Legacy,
+    Kitty(KittyKeyboardFlags),
+}
+
+impl KeyboardProtocol {
+    pub const fn legacy() -> Self {
+        Self(KeyboardProtocolMode::Legacy)
+    }
+
+    pub const fn from_flags(flags: KittyKeyboardFlags) -> Self {
+        if flags.is_empty() {
+            Self::legacy()
+        } else {
+            Self(KeyboardProtocolMode::Kitty(flags))
+        }
+    }
+
+    pub const fn is_kitty(self) -> bool {
+        matches!(self.0, KeyboardProtocolMode::Kitty(_))
+    }
+
+    pub const fn kitty_flags(self) -> KittyKeyboardFlags {
+        match self.0 {
+            KeyboardProtocolMode::Legacy => KittyKeyboardFlags::NONE,
+            KeyboardProtocolMode::Kitty(flags) => flags,
+        }
+    }
+
+    pub fn reports_event_types(self) -> bool {
+        self.kitty_flags()
+            .contains(KittyKeyboardFlags::REPORT_EVENT_TYPES)
+    }
+
+    pub fn reports_all_keys(self) -> bool {
+        self.kitty_flags()
+            .contains(KittyKeyboardFlags::REPORT_ALL_KEYS)
+    }
+}
 
 pub fn encode_terminal_key(mut key: TerminalKey, protocol: KeyboardProtocol) -> Vec<u8> {
     normalize_backtab_key(&mut key, protocol.is_kitty());
@@ -78,67 +117,6 @@ pub fn encode_terminal_key(mut key: TerminalKey, protocol: KeyboardProtocol) -> 
         return Vec::new();
     }
     encode_legacy(key)
-}
-
-/// `column` and `row` are the final 1-based coordinates to report.
-fn encode_mouse_cb(
-    base_button: u16,
-    release: bool,
-    column: u32,
-    row: u32,
-    modifiers: KeyModifiers,
-    encoding: MouseProtocolEncoding,
-) -> Option<Vec<u8>> {
-    // Mouse reports are not a bijection: legacy release loses the button,
-    // and host decoding also accepts extended-button motion we cannot emit.
-    // SGR reports which button was released; the legacy encodings report
-    // every release as button 3.
-    let sgr = matches!(
-        encoding,
-        MouseProtocolEncoding::Sgr | MouseProtocolEncoding::SgrPixels
-    );
-    let mut cb = if release && !sgr {
-        u16::from(MOUSE_BUTTON_RELEASE)
-    } else {
-        base_button
-    };
-    cb += mouse_modifier_bits(modifiers);
-
-    match encoding {
-        MouseProtocolEncoding::Sgr | MouseProtocolEncoding::SgrPixels => Some(
-            format!(
-                "\x1b[<{cb};{column};{row}{}",
-                if release { 'm' } else { 'M' }
-            )
-            .into_bytes(),
-        ),
-        MouseProtocolEncoding::Default => {
-            let cb = u8::try_from(cb + 32).ok()?;
-            let column = u8::try_from(column + 32).ok()?;
-            let row = u8::try_from(row + 32).ok()?;
-            Some(vec![0x1b, b'[', b'M', cb, column, row])
-        }
-        MouseProtocolEncoding::Utf8 => {
-            // UTF-8 mouse mode encodes coordinates as one or two UTF-8 bytes;
-            // xterm's extended-coordinate range ends at position 2015.
-            if column > 2015 || row > 2015 {
-                return None;
-            }
-            let mut bytes = Vec::with_capacity(UTF8_MOUSE_REPORT_INITIAL_CAPACITY);
-            bytes.extend_from_slice(b"\x1b[M");
-            push_mouse_codepoint(&mut bytes, cb as u32 + 32)?;
-            push_mouse_codepoint(&mut bytes, column + 32)?;
-            push_mouse_codepoint(&mut bytes, row + 32)?;
-            Some(bytes)
-        }
-    }
-}
-
-fn push_mouse_codepoint(bytes: &mut Vec<u8>, value: u32) -> Option<()> {
-    let ch = char::from_u32(value)?;
-    let mut buf = [0u8; UTF8_MAX_BYTES_PER_CODEPOINT];
-    bytes.extend_from_slice(ch.encode_utf8(&mut buf).as_bytes());
-    Some(())
 }
 
 /// CSI u encoding: \e[{codepoint};{modifiers}u
@@ -330,7 +308,8 @@ pub fn encode_terminal_key_with_modes(mut key: TerminalKey, modes: KeyEncodeMode
 
 fn normalize_backtab_key(key: &mut TerminalKey, kitty_enabled: bool) {
     if matches!(key.code, KeyCode::Tab | KeyCode::BackTab) {
-        let (canonical_code, canonical_modifiers) = key.canonical_key();
+        let canonical = key.canonical_key();
+        let (canonical_code, canonical_modifiers) = (canonical.code(), canonical.modifiers());
         if canonical_code == KeyCode::BackTab && kitty_enabled {
             // Enhanced keyboard protocols encode Backtab as Tab with Shift.
             key.code = KeyCode::Tab;
@@ -385,46 +364,6 @@ fn apply_application_cursor(
     } else {
         bytes
     }
-}
-
-/// Encode a mouse event as an xterm mouse report. `x` and `y` are 1-based
-/// cell coordinates (or pixel coordinates for SGR-pixels). Returns `None`
-/// when the protocol mode does not report this kind of event or the position
-/// cannot be represented in the encoding.
-pub fn encode_mouse_event(
-    kind: MouseEventKind,
-    x: u32,
-    y: u32,
-    modifiers: KeyModifiers,
-    mode: MouseProtocolMode,
-    encoding: MouseProtocolEncoding,
-) -> Option<Vec<u8>> {
-    let (base_button, release) = match kind {
-        MouseEventKind::Down(button) => (mouse_button_code(button)?, false),
-        MouseEventKind::Up(button) => (mouse_button_code(button)?, true),
-        MouseEventKind::Drag(button) => (mouse_button_code(button)? + MOUSE_DRAG_OFFSET, false),
-        MouseEventKind::Moved => (u16::from(MOUSE_BUTTON_RELEASE) + MOUSE_DRAG_OFFSET, false),
-        MouseEventKind::ScrollUp
-        | MouseEventKind::ScrollDown
-        | MouseEventKind::ScrollLeft
-        | MouseEventKind::ScrollRight => (mouse_scroll_code(kind)?, false),
-    };
-    let reported = match mode {
-        // X10 reports button presses only.
-        MouseProtocolMode::Press => (!release && base_button < 32) || base_button >= 64,
-        MouseProtocolMode::PressRelease => !(32..64).contains(&base_button),
-        MouseProtocolMode::ButtonMotion => kind != MouseEventKind::Moved,
-        MouseProtocolMode::AnyMotion => true,
-    };
-    if !reported {
-        return None;
-    }
-    let modifiers = if mode == MouseProtocolMode::Press {
-        KeyModifiers::empty()
-    } else {
-        modifiers
-    };
-    encode_mouse_cb(base_button, release, x, y, modifiers, encoding)
 }
 
 fn text_codepoint_for_key(key: &TerminalKey) -> Option<u32> {
@@ -545,7 +484,7 @@ fn shifted_text_char(key: &TerminalKey, ch: char) -> Option<char> {
     // already shifted punctuation, but does not guess a punctuation layout.
     if key.shifted_codepoint.is_some()
         || ch.is_ascii_alphabetic()
-        || shepr_config::is_shifted_ascii_symbol(ch)
+        || super::is_shifted_ascii_symbol(ch)
     {
         key.produced_char()
     } else {
@@ -641,79 +580,14 @@ fn encode_cursor_key(code: KeyCode, application_cursor: bool) -> Vec<u8> {
     )
 }
 
-/// Test-only: production mouse reports go through `encode_mouse_event`.
-#[cfg(test)]
-fn encode_mouse_scroll(
-    kind: MouseEventKind,
-    column: u16,
-    row: u16,
-    modifiers: KeyModifiers,
-    encoding: MouseProtocolEncoding,
-) -> Option<Vec<u8>> {
-    let button = match kind {
-        MouseEventKind::ScrollUp
-        | MouseEventKind::ScrollDown
-        | MouseEventKind::ScrollLeft
-        | MouseEventKind::ScrollRight => mouse_scroll_code(kind)?,
-        _ => return None,
-    };
-    encode_mouse_cb(
-        button,
-        false,
-        u32::from(column) + 1,
-        u32::from(row) + 1,
-        modifiers,
-        encoding,
-    )
-}
-
-/// Test-only: production mouse reports go through `encode_mouse_event`.
-#[cfg(test)]
-fn encode_mouse_button(
-    kind: MouseEventKind,
-    column: u16,
-    row: u16,
-    modifiers: KeyModifiers,
-    encoding: MouseProtocolEncoding,
-) -> Option<Vec<u8>> {
-    let (button, release) = match kind {
-        MouseEventKind::Down(button) => (mouse_button_code(button)?, false),
-        MouseEventKind::Up(button) => (mouse_button_code(button)?, true),
-        MouseEventKind::Drag(button) => (mouse_button_code(button)? + MOUSE_DRAG_OFFSET, false),
-        _ => return None,
-    };
-    encode_mouse_cb(
-        button,
-        release,
-        u32::from(column) + 1,
-        u32::from(row) + 1,
-        modifiers,
-        encoding,
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     use super::*;
-    use crate::input::parse_terminal_key_sequence;
 
     fn kitty_protocol(flags: u16) -> KeyboardProtocol {
         KeyboardProtocol::from_flags(KittyKeyboardFlags::from_bits_retain(flags))
-    }
-
-    fn assert_terminal_key_eq(
-        actual: &TerminalKey,
-        code: KeyCode,
-        modifiers: KeyModifiers,
-        kind: crossterm::event::KeyEventKind,
-        shifted_codepoint: Option<char>,
-    ) {
-        assert_eq!(actual.code, code);
-        assert_eq!(actual.modifiers, modifiers);
-        assert_eq!(actual.kind, kind);
-        assert_eq!(actual.shifted_codepoint, shifted_codepoint);
     }
 
     #[test]
@@ -725,44 +599,6 @@ mod tests {
                 encode_terminal_key(key.clone(), protocol),
                 b"/",
                 "{protocol:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn report_all_keys_encodes_committed_text_as_csi_u() {
-        let committed = |text: &str| {
-            parse_terminal_key_sequence(text)
-                .expect("test precondition")
-                .with_text_commit()
-        };
-        let lower = committed("a");
-        let upper = committed("A");
-        assert_eq!(lower.generated_text.as_deref(), Some("a"));
-        assert_eq!(upper.generated_text.as_deref(), Some("A"));
-
-        for (key, flags, expected) in [
-            (&lower, 8, b"\x1b[97;1u".as_slice()),
-            (&lower, 9, b"\x1b[97;1u".as_slice()),
-            (&lower, 24, b"\x1b[97;1;97u".as_slice()),
-            (&lower, 11, b"\x1b[97;1:1u".as_slice()),
-            (&upper, 24, b"\x1b[97;2;65u".as_slice()),
-            (&upper, 28, b"\x1b[97:65;2;65u".as_slice()),
-            (&upper, 31, b"\x1b[97:65;2:1;65u".as_slice()),
-        ] {
-            assert_eq!(
-                encode_terminal_key(key.clone(), kitty_protocol(flags)),
-                expected,
-                "flags={flags} key={key:?}"
-            );
-        }
-
-        // Without REPORT_ALL_KEYS committed text stays plain text.
-        for flags in [1, 3, 7, 17, 23] {
-            assert_eq!(
-                encode_terminal_key(upper.clone(), kitty_protocol(flags)),
-                b"A",
-                "flags={flags}"
             );
         }
     }
@@ -832,45 +668,6 @@ mod tests {
     }
 
     #[test]
-    fn legacy_shift_ascii_punctuation_matches_copy_mode_mapping() {
-        for (base, shifted) in [
-            ('1', '!'),
-            ('2', '@'),
-            ('3', '#'),
-            ('4', '$'),
-            ('5', '%'),
-            ('6', '^'),
-            ('7', '&'),
-            ('8', '*'),
-            ('9', '('),
-            ('0', ')'),
-            ('-', '_'),
-            ('=', '+'),
-            ('[', '{'),
-            (']', '}'),
-            ('\\', '|'),
-            (';', ':'),
-            ('\'', '"'),
-            (',', '<'),
-            ('.', '>'),
-            ('/', '?'),
-            ('`', '~'),
-        ] {
-            let key = TerminalKey::new(KeyCode::Char(base), KeyModifiers::SHIFT);
-            assert_eq!(
-                crate::copy_mode::copy_mode_key_char(&key),
-                Some(shifted),
-                "copy mode base={base}"
-            );
-            assert_eq!(
-                encode_terminal_key(key, KeyboardProtocol::legacy()),
-                shifted.to_string().as_bytes(),
-                "base={base}"
-            );
-        }
-    }
-
-    #[test]
     fn legacy_ctrl_non_ascii_char_uses_utf8() {
         let key = KeyEvent::new(KeyCode::Char('ß'), KeyModifiers::CONTROL);
         assert_eq!(encode_key(key, KeyboardProtocol::legacy()), "ß".as_bytes());
@@ -925,15 +722,6 @@ mod tests {
     }
 
     #[test]
-    fn legacy_alt_shift_punctuation_uses_shifted_text() {
-        let key = parse_terminal_key_sequence("\x1b[44:60;4u").expect("test precondition");
-        assert_eq!(
-            encode_terminal_key(key, KeyboardProtocol::legacy()),
-            b"\x1b<"
-        );
-    }
-
-    #[test]
     fn legacy_alt_backspace_sends_escape_delete() {
         let key = KeyEvent::new(KeyCode::Backspace, KeyModifiers::ALT);
         assert_eq!(encode_key(key, KeyboardProtocol::legacy()), b"\x1b\x7f");
@@ -949,70 +737,6 @@ mod tests {
     fn normal_cursor_keys_use_csi_sequences() {
         assert_eq!(encode_cursor_key(KeyCode::Up, false), b"\x1b[A");
         assert_eq!(encode_cursor_key(KeyCode::Down, false), b"\x1b[B");
-    }
-
-    #[test]
-    fn sgr_mouse_scroll_encodes_wheel_button_and_coordinates() {
-        let encoded = encode_mouse_scroll(
-            crossterm::event::MouseEventKind::ScrollDown,
-            4,
-            6,
-            KeyModifiers::SHIFT,
-            MouseProtocolEncoding::Sgr,
-        )
-        .expect("mouse scroll should encode");
-
-        assert_eq!(encoded, b"\x1b[<69;5;7M");
-    }
-
-    #[test]
-    fn sgr_mouse_release_keeps_button_code() {
-        let encoded = encode_mouse_button(
-            crossterm::event::MouseEventKind::Up(crossterm::event::MouseButton::Left),
-            11,
-            9,
-            KeyModifiers::empty(),
-            MouseProtocolEncoding::Sgr,
-        )
-        .expect("mouse release should encode");
-
-        assert_eq!(encoded, b"\x1b[<0;12;10m");
-    }
-
-    #[test]
-    fn utf8_mouse_encoding_caps_coordinates_at_xterms_limit() {
-        let encoded = encode_mouse_cb(
-            0,
-            false,
-            2015,
-            2015,
-            KeyModifiers::empty(),
-            MouseProtocolEncoding::Utf8,
-        );
-        assert_eq!(encoded, Some(b"\x1b[M \xdf\xbf\xdf\xbf".to_vec()));
-
-        assert_eq!(
-            encode_mouse_cb(
-                0,
-                false,
-                2016,
-                1,
-                KeyModifiers::empty(),
-                MouseProtocolEncoding::Utf8,
-            ),
-            None
-        );
-        assert_eq!(
-            encode_mouse_cb(
-                0,
-                false,
-                1,
-                2016,
-                KeyModifiers::empty(),
-                MouseProtocolEncoding::Utf8,
-            ),
-            None
-        );
     }
 
     #[test]
@@ -1389,78 +1113,11 @@ mod tests {
     }
 
     #[test]
-    fn legacy_modified_special_roundtrip_matrix() {
-        let cases = [
-            KeyEvent::new(KeyCode::Up, KeyModifiers::ALT),
-            KeyEvent::new(KeyCode::Down, KeyModifiers::ALT),
-            KeyEvent::new(KeyCode::Right, KeyModifiers::SHIFT),
-            KeyEvent::new(KeyCode::Left, KeyModifiers::CONTROL),
-            KeyEvent::new(KeyCode::Home, KeyModifiers::CONTROL),
-            KeyEvent::new(KeyCode::End, KeyModifiers::CONTROL | KeyModifiers::SHIFT),
-            KeyEvent::new(KeyCode::PageUp, KeyModifiers::ALT),
-            KeyEvent::new(KeyCode::PageDown, KeyModifiers::CONTROL),
-            KeyEvent::new(KeyCode::Insert, KeyModifiers::SHIFT),
-            KeyEvent::new(KeyCode::Delete, KeyModifiers::ALT),
-        ];
-
-        for key in cases {
-            let encoded = encode_key(key, KeyboardProtocol::legacy());
-            let parsed = parse_terminal_key_sequence(
-                std::str::from_utf8(&encoded).expect("test precondition"),
-            )
-            .expect("test precondition");
-            assert_terminal_key_eq(&parsed, key.code, key.modifiers, key.kind, None);
-        }
-    }
-
-    #[test]
     fn kitty_shifted_symbol_prefers_text_over_roundtrip_key_identity() {
         let key =
             TerminalKey::new(KeyCode::Char('1'), KeyModifiers::SHIFT).with_shifted_codepoint('!');
         let encoded = encode_terminal_key(key, kitty_protocol(7));
         assert_eq!(encoded, b"!");
-    }
-
-    #[test]
-    fn legacy_basic_special_roundtrip_matrix() {
-        let cases = [
-            KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()),
-            KeyEvent::new(KeyCode::Tab, KeyModifiers::empty()),
-            KeyEvent::new(KeyCode::Backspace, KeyModifiers::empty()),
-            KeyEvent::new(KeyCode::Esc, KeyModifiers::empty()),
-            KeyEvent::new(KeyCode::Up, KeyModifiers::empty()),
-            KeyEvent::new(KeyCode::Down, KeyModifiers::empty()),
-            KeyEvent::new(KeyCode::Left, KeyModifiers::empty()),
-            KeyEvent::new(KeyCode::Right, KeyModifiers::empty()),
-            KeyEvent::new(KeyCode::Home, KeyModifiers::empty()),
-            KeyEvent::new(KeyCode::End, KeyModifiers::empty()),
-            KeyEvent::new(KeyCode::PageUp, KeyModifiers::empty()),
-            KeyEvent::new(KeyCode::PageDown, KeyModifiers::empty()),
-            KeyEvent::new(KeyCode::Insert, KeyModifiers::empty()),
-            KeyEvent::new(KeyCode::Delete, KeyModifiers::empty()),
-        ];
-
-        for key in cases {
-            let encoded = encode_key(key, KeyboardProtocol::legacy());
-            let parsed = parse_terminal_key_sequence(
-                std::str::from_utf8(&encoded).expect("test precondition"),
-            )
-            .expect("test precondition");
-            assert_terminal_key_eq(&parsed, key.code, key.modifiers, key.kind, None);
-        }
-    }
-
-    #[test]
-    fn legacy_super_character_preserves_csi_u_chord() {
-        let sequence = "\x1b[99;9u";
-        let key = parse_terminal_key_sequence(sequence).expect("Super+C CSI-u key");
-
-        assert_eq!(key.code, KeyCode::Char('c'));
-        assert_eq!(key.modifiers, KeyModifiers::SUPER);
-        assert_eq!(
-            encode_terminal_key(key, KeyboardProtocol::legacy()),
-            sequence.as_bytes()
-        );
     }
 
     #[test]
@@ -1487,48 +1144,6 @@ mod tests {
         let key = TerminalKey::new(KeyCode::Char('文'), KeyModifiers::empty());
         let encoded = encode_terminal_key(key, kitty_protocol(7));
         assert_eq!(encoded, "文".as_bytes());
-    }
-
-    #[test]
-    fn kitty_functional_keys_use_legacy_compatible_forms_not_keypad_codes() {
-        use crossterm::event::KeyEventKind;
-
-        let cases = [
-            (KeyCode::Up, "\x1b[1;1:1A"),
-            (KeyCode::Down, "\x1b[1;1:1B"),
-            (KeyCode::Right, "\x1b[1;1:1C"),
-            (KeyCode::Left, "\x1b[1;1:1D"),
-            (KeyCode::Home, "\x1b[1;1:1H"),
-            (KeyCode::End, "\x1b[1;1:1F"),
-            (KeyCode::Insert, "\x1b[2;1:1~"),
-            (KeyCode::Delete, "\x1b[3;1:1~"),
-            (KeyCode::PageUp, "\x1b[5;1:1~"),
-            (KeyCode::PageDown, "\x1b[6;1:1~"),
-            (KeyCode::F(1), "\x1b[1;1:1P"),
-            (KeyCode::F(3), "\x1b[13;1:1~"),
-            (KeyCode::F(12), "\x1b[24;1:1~"),
-        ];
-        for (code, expected) in cases {
-            let key = TerminalKey::new(code, KeyModifiers::empty());
-            let encoded = encode_terminal_key(key, kitty_protocol(11));
-            assert_eq!(encoded, expected.as_bytes(), "{code:?}");
-            let parsed = parse_terminal_key_sequence(expected).expect("test precondition");
-            assert_terminal_key_eq(
-                &parsed,
-                code,
-                KeyModifiers::empty(),
-                KeyEventKind::Press,
-                None,
-            );
-        }
-
-        let release = TerminalKey::new(KeyCode::Left, KeyModifiers::ALT | KeyModifiers::SHIFT)
-            .with_kind(KeyEventKind::Release);
-        let encoded = encode_terminal_key(release, kitty_protocol(3));
-        assert_eq!(encoded, b"\x1b[1;4:3D");
-        for keypad_code in 57417..=57426 {
-            assert!(!String::from_utf8_lossy(&encoded).contains(&keypad_code.to_string()));
-        }
     }
 
     #[test]
@@ -1660,82 +1275,25 @@ mod tests {
     }
 
     #[test]
-    fn mouse_events_are_filtered_by_protocol_mode() {
-        use crossterm::event::MouseButton;
-
-        let press = MouseEventKind::Down(MouseButton::Left);
-        let release = MouseEventKind::Up(MouseButton::Left);
-        let drag = MouseEventKind::Drag(MouseButton::Left);
-        let sgr = MouseProtocolEncoding::Sgr;
-        let none = KeyModifiers::empty();
-
-        assert_eq!(
-            encode_mouse_event(
-                press,
-                1,
-                1,
-                KeyModifiers::SHIFT,
-                MouseProtocolMode::Press,
-                sgr
-            ),
-            Some(b"\x1b[<0;1;1M".to_vec())
-        );
-        assert_eq!(
-            encode_mouse_event(release, 1, 1, none, MouseProtocolMode::Press, sgr),
-            None
-        );
-        assert_eq!(
-            encode_mouse_event(release, 2, 3, none, MouseProtocolMode::PressRelease, sgr),
-            Some(b"\x1b[<0;2;3m".to_vec())
-        );
-        assert_eq!(
-            encode_mouse_event(drag, 2, 3, none, MouseProtocolMode::PressRelease, sgr),
-            None
-        );
-        assert_eq!(
-            encode_mouse_event(drag, 2, 3, none, MouseProtocolMode::ButtonMotion, sgr),
-            Some(b"\x1b[<32;2;3M".to_vec())
-        );
-        assert_eq!(
-            encode_mouse_event(
-                MouseEventKind::Moved,
-                2,
-                3,
-                none,
-                MouseProtocolMode::ButtonMotion,
-                sgr
-            ),
-            None
-        );
-        assert_eq!(
-            encode_mouse_event(
-                MouseEventKind::ScrollUp,
-                48,
-                139,
-                none,
-                MouseProtocolMode::AnyMotion,
-                MouseProtocolEncoding::SgrPixels
-            ),
-            Some(b"\x1b[<64;48;139M".to_vec())
-        );
-        assert_eq!(
-            encode_mouse_event(
-                release,
-                1,
-                1,
-                none,
-                MouseProtocolMode::PressRelease,
-                MouseProtocolEncoding::Default
-            ),
-            Some(vec![0x1b, b'[', b'M', 3 + 32, 33, 33])
-        );
-    }
-
-    #[test]
     fn chinese_char_with_modifiers_falls_back_to_kitty_encoding() {
         let key = TerminalKey::new(KeyCode::Char('测'), KeyModifiers::ALT);
         let encoded = encode_terminal_key(key, kitty_protocol(7));
         assert!(!encoded.is_empty());
         assert_ne!(encoded, "测".as_bytes());
+    }
+
+    #[test]
+    fn protocol_from_zero_flags_is_legacy() {
+        let protocol = KeyboardProtocol::from_flags(KittyKeyboardFlags::NONE);
+        assert_eq!(protocol, KeyboardProtocol::legacy());
+        assert!(!protocol.is_kitty());
+    }
+
+    #[test]
+    fn protocol_from_nonzero_flags_is_kitty() {
+        let flags = KittyKeyboardFlags::from_bits_retain(7);
+        let protocol = KeyboardProtocol::from_flags(flags);
+        assert!(protocol.is_kitty());
+        assert_eq!(protocol.kitty_flags(), flags);
     }
 }

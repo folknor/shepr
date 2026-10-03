@@ -12,6 +12,7 @@ serde_ignored = { workspace = true }
 shepr-agent = { path = "../shepr-agent" }
 shepr-core = { path = "../shepr-core" }
 shepr-platform = { path = "../shepr-platform" }
+shepr-term = { path = "../shepr-term" }
 toml = { workspace = true }
 
 [dev-dependencies]

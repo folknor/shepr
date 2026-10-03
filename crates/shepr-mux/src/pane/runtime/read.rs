@@ -37,10 +37,10 @@ impl PaneRead<'_> {
                 let width = self.terminal.dimensions().map_or(1, |grid| grid.cols.get());
                 let col = match motion {
                     TerminalLineMotion::End => {
-                        shepr_termio::copy_mode::last_character_col(&text).unwrap_or(0)
+                        shepr_term::width::last_character_col(&text).unwrap_or(0)
                     }
                     TerminalLineMotion::FirstNonBlank => {
-                        shepr_termio::copy_mode::first_non_blank_col(&text).unwrap_or(0)
+                        shepr_term::width::first_non_blank_col(&text).unwrap_or(0)
                     }
                 };
                 Ok(shepr_vt::Point::new(

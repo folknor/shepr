@@ -1,8 +1,4 @@
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Position {
-    Cell { column: u16, row: u16 },
-    Pixels { x: u32, y: u32 },
-}
+use shepr_term::mouse::Position;
 
 /// Whole-window pixel extent for mouse mapping. The terminal can include
 /// padding, so this cannot be reconstructed from the reported cell pitch.

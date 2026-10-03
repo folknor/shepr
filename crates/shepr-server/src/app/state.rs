@@ -3,8 +3,8 @@ use shepr_config::NewTerminalCwd;
 use shepr_protocol::WorkspaceId;
 
 use shepr_mux::workspace::Workspace;
-use shepr_termio::host_term::cell_size::HostCellSize;
-use shepr_termio::host_term::theme::{HostAppearance, TerminalTheme};
+use shepr_term::host::HostCellSize;
+use shepr_term::host::{HostAppearance, TerminalTheme};
 
 pub use shepr_config::theme::Palette;
 

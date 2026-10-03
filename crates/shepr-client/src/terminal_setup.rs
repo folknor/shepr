@@ -21,7 +21,7 @@ use crossterm::execute;
 /// Returns the output writer and a guard that restores the terminal when dropped.
 pub(super) fn setup_terminal(
     mouse_capture: bool,
-    modify_other_keys_mode: Option<shepr_vt::ModifyOtherKeysLevel>,
+    modify_other_keys_mode: Option<shepr_term::ModifyOtherKeysLevel>,
 ) -> io::Result<(TerminalGuard, HostTerminalWriter)> {
     let output_writer = HostTerminalWriter::from_stdout()?;
     let host_modes = HostModes::new(mouse_capture, mouse_capture);
@@ -41,7 +41,7 @@ pub(super) fn setup_terminal(
     // the armed guard restores any setup changes that reached the host.
     crossterm::terminal::enable_raw_mode()?;
     let mut output = output_writer.clone();
-    write_dec_mode(&mut output, shepr_vt::DecMode::AlternateScreen, true)?;
+    write_dec_mode(&mut output, shepr_term::DecMode::AlternateScreen, true)?;
     // Seed the blitter's numeric cursor-shape cache with the host's default.
     output.write_all(shepr_termio::host_term::modes::HOST_CURSOR_SHAPE_DEFAULT_SEQUENCE)?;
     output.flush()?;
@@ -187,7 +187,7 @@ pub(super) fn write_host_color_scheme_report_mode(
 pub(super) fn write_terminal_restore_postlude(writer: &mut impl io::Write) -> io::Result<()> {
     // Restore a visible cursor and reset DECSCUSR back to the terminal default,
     // in one write.
-    let show_cursor = shepr_vt::seq::DecModeSequence::new(shepr_vt::DecMode::ShowCursor, true);
+    let show_cursor = shepr_term::seq::DecModeSequence::new(shepr_term::DecMode::ShowCursor, true);
     let shape = shepr_termio::host_term::modes::HOST_CURSOR_SHAPE_DEFAULT_SEQUENCE;
     let mut postlude = Vec::with_capacity(show_cursor.as_bytes().len() + shape.len());
     postlude.extend_from_slice(show_cursor.as_bytes());
@@ -199,10 +199,10 @@ pub(super) fn write_terminal_restore_postlude(writer: &mut impl io::Write) -> io
 /// Sets or resets one DEC private mode with a single write, then flushes.
 fn write_dec_mode(
     writer: &mut impl io::Write,
-    mode: shepr_vt::DecMode,
+    mode: shepr_term::DecMode,
     enabled: bool,
 ) -> io::Result<()> {
-    writer.write_all(shepr_vt::seq::DecModeSequence::new(mode, enabled).as_bytes())?;
+    writer.write_all(shepr_term::seq::DecModeSequence::new(mode, enabled).as_bytes())?;
     writer.flush()
 }
 
@@ -399,7 +399,7 @@ struct HostModesState {
 
 enum HostKeyboardUpdate {
     EnhancementFlags(shepr_protocol::KittyKeyboardFlags),
-    ModifyOtherKeys(shepr_vt::ModifyOtherKeysLevel),
+    ModifyOtherKeys(shepr_term::ModifyOtherKeysLevel),
 }
 
 impl HostKeyboardUpdate {
@@ -411,7 +411,7 @@ impl HostKeyboardUpdate {
             Self::EnhancementFlags(flags) => (!flags.is_empty(), false),
             Self::ModifyOtherKeys(level) => (
                 keyboard.has_kitty_keyboard_entry(),
-                *level != shepr_vt::ModifyOtherKeysLevel::Off,
+                *level != shepr_term::ModifyOtherKeysLevel::Off,
             ),
         }
     }
@@ -427,7 +427,7 @@ impl HostKeyboardUpdate {
                     writer,
                     keyboard,
                     flags,
-                    shepr_vt::ModifyOtherKeysLevel::Off,
+                    shepr_term::ModifyOtherKeysLevel::Off,
                 )
             }
             Self::ModifyOtherKeys(level) => {
@@ -515,17 +515,17 @@ impl HostModes {
 
     pub(super) fn enable_bracketed_paste(&self, writer: &mut impl io::Write) -> io::Result<()> {
         self.record_restore_flag(HostRestoreFlag::BracketedPaste);
-        write_dec_mode(writer, shepr_vt::DecMode::BracketedPaste, true)
+        write_dec_mode(writer, shepr_term::DecMode::BracketedPaste, true)
     }
 
     pub(super) fn enable_focus_change(&self, writer: &mut impl io::Write) -> io::Result<()> {
         self.record_restore_flag(HostRestoreFlag::FocusChange);
-        write_dec_mode(writer, shepr_vt::DecMode::FocusEvents, true)
+        write_dec_mode(writer, shepr_term::DecMode::FocusEvents, true)
     }
 
     pub(super) fn disable_line_wrap(&self, writer: &mut impl io::Write) -> io::Result<()> {
         self.record_restore_flag(HostRestoreFlag::LineWrap);
-        write_dec_mode(writer, shepr_vt::DecMode::LineWrap, false)
+        write_dec_mode(writer, shepr_term::DecMode::LineWrap, false)
     }
 
     pub(super) fn enable_color_scheme_reports(
@@ -576,7 +576,7 @@ impl HostModes {
     pub(super) fn set_modify_other_keys(
         &self,
         writer: &mut impl io::Write,
-        level: shepr_vt::ModifyOtherKeysLevel,
+        level: shepr_term::ModifyOtherKeysLevel,
     ) -> io::Result<()> {
         self.set_keyboard_protocol(writer, HostKeyboardUpdate::ModifyOtherKeys(level))
     }
@@ -740,15 +740,15 @@ fn restore_color_scheme_reports<W: io::Write>(_: &HostModes, writer: &mut W) -> 
 }
 
 fn restore_focus_change<W: io::Write>(_: &HostModes, writer: &mut W) -> io::Result<()> {
-    write_dec_mode(writer, shepr_vt::DecMode::FocusEvents, false)
+    write_dec_mode(writer, shepr_term::DecMode::FocusEvents, false)
 }
 
 fn restore_bracketed_paste<W: io::Write>(_: &HostModes, writer: &mut W) -> io::Result<()> {
-    write_dec_mode(writer, shepr_vt::DecMode::BracketedPaste, false)
+    write_dec_mode(writer, shepr_term::DecMode::BracketedPaste, false)
 }
 
 fn restore_line_wrap<W: io::Write>(_: &HostModes, writer: &mut W) -> io::Result<()> {
-    write_dec_mode(writer, shepr_vt::DecMode::LineWrap, true)
+    write_dec_mode(writer, shepr_term::DecMode::LineWrap, true)
 }
 
 fn restore_mouse_capture<W: io::Write>(_: &HostModes, writer: &mut W) -> io::Result<()> {
@@ -827,7 +827,7 @@ fn restore_terminal_state(
         tracing::warn!(error = %error, "failed to restore host terminal raw mode");
     }
 
-    let screen_result = write_dec_mode(writer, shepr_vt::DecMode::AlternateScreen, false);
+    let screen_result = write_dec_mode(writer, shepr_term::DecMode::AlternateScreen, false);
     if let Err(error) = &screen_result {
         tracing::warn!(error = %error, "failed to restore host terminal screen");
     }
@@ -1076,7 +1076,7 @@ mod tests {
             )
             .expect("write to a Vec");
         modes
-            .set_modify_other_keys(&mut output, shepr_vt::ModifyOtherKeysLevel::All)
+            .set_modify_other_keys(&mut output, shepr_term::ModifyOtherKeysLevel::All)
             .expect("write to a Vec");
         modes
             .write_window_title(&mut output, Some("agent"))
@@ -1131,9 +1131,9 @@ mod tests {
     #[test]
     fn host_modes_setup_and_restore_bytes() {
         for (level, set) in [
-            (shepr_vt::ModifyOtherKeysLevel::All, b"\x1b[>4;2m"),
+            (shepr_term::ModifyOtherKeysLevel::All, b"\x1b[>4;2m"),
             (
-                shepr_vt::ModifyOtherKeysLevel::ExceptWellDefined,
+                shepr_term::ModifyOtherKeysLevel::ExceptWellDefined,
                 b"\x1b[>4;1m",
             ),
         ] {

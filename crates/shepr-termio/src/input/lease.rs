@@ -3,7 +3,7 @@ use std::hash::Hash;
 
 use crossterm::event::KeyCode;
 
-use super::TerminalKey;
+use shepr_term::key::TerminalKey;
 
 /// A held key, identified by its source and key code. A Linux host terminal
 /// reports no physical key identity, so two physical keys with the same code

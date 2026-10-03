@@ -1,9 +1,9 @@
-/// The key combo of a navigate row's fixed arrow alias, by the alias column's
+/// The key chord of a navigate row's fixed arrow alias, by the alias column's
 /// identifier in `keybinding_table!` (`None` for a row without one).
 #[macro_export]
 macro_rules! navigate_alias {
     ($alias:ident) => {
-        $crate::Keybinds::navigate_alias_combo_from_table(stringify!($alias))
+        $crate::Keybinds::navigate_alias_chord_from_table(stringify!($alias))
     };
 }
 

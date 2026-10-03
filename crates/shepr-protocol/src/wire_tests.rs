@@ -219,7 +219,7 @@ mod tests {
             EndpointCommand::PaneCopyMotion(PaneCopyMotionParams {
                 pane_id: pane,
                 cursor: PaneTextPoint {
-                    row: shepr_vt::AbsRow(1),
+                    row: shepr_term::AbsRow(1),
                     col: 2,
                 },
                 motion: PaneCopyMotion::Line(PaneLineMotion::End),
@@ -227,7 +227,7 @@ mod tests {
             EndpointCommand::PaneCopyMotion(PaneCopyMotionParams {
                 pane_id: pane,
                 cursor: PaneTextPoint {
-                    row: shepr_vt::AbsRow(1),
+                    row: shepr_term::AbsRow(1),
                     col: 2,
                 },
                 motion: PaneCopyMotion::Word(PaneWordMotion::NextBigEnd),
@@ -242,7 +242,7 @@ mod tests {
         }
 
         let point = |row: u64, col: u16| PaneTextPoint {
-            row: shepr_vt::AbsRow(row),
+            row: shepr_term::AbsRow(row),
             col,
         };
         for result in [
@@ -338,7 +338,7 @@ mod tests {
                     bg: WireColor::from_ratatui(Color::Indexed(220)),
                     style: WireStyle {
                         flags: WireStyleFlags::BOLD,
-                        underline: shepr_vt::UnderlineStyle::Curly,
+                        underline: shepr_term::UnderlineStyle::Curly,
                     },
                     skip: false,
                     hyperlink: Some(0),
@@ -941,10 +941,10 @@ mod tests {
         for (modifier, flags) in cases {
             let style = WireStyle::from_ratatui_modifier(modifier);
             assert_eq!(style.flags, flags, "{modifier:?}");
-            assert_eq!(style.underline, shepr_vt::UnderlineStyle::None);
+            assert_eq!(style.underline, shepr_term::UnderlineStyle::None);
         }
         let underlined = WireStyle::from_ratatui_modifier(Modifier::UNDERLINED | Modifier::BOLD);
-        assert_eq!(underlined.underline, shepr_vt::UnderlineStyle::Single);
+        assert_eq!(underlined.underline, shepr_term::UnderlineStyle::Single);
         assert_eq!(underlined.flags, WireStyleFlags::BOLD);
     }
 

@@ -1,5 +1,5 @@
 use crate::{ClientHostAppearance, ClientHostColor, ClientHostDefaultColorKind};
-use shepr_vt::{ColorScheme as HostAppearance, DefaultColor as DefaultColorKind, RgbColor};
+use shepr_term::{ColorScheme as HostAppearance, DefaultColor as DefaultColorKind, RgbColor};
 
 impl From<RgbColor> for ClientHostColor {
     fn from(color: RgbColor) -> Self {

@@ -19,8 +19,8 @@ shepr-core = { path = "../shepr-core" }
 shepr-platform = { path = "../shepr-platform" }
 shepr-protocol = { path = "../shepr-protocol" }
 shepr-remote = { path = "../shepr-remote" }
+shepr-term = { path = "../shepr-term" }
 shepr-termio = { path = "../shepr-termio" }
-shepr-vt = { path = "../shepr-vt" }
 
 [dev-dependencies]
 shepr-test-fixtures = { path = "../shepr-test-fixtures" }

@@ -45,7 +45,7 @@ pub struct SessionRestorePlan {
     restore_damage: bool,
     dropped_workspaces: usize,
     launches: Vec<RestoredLaunch>,
-    theme: shepr_termio::host_term::theme::TerminalTheme,
+    theme: shepr_term::host::TerminalTheme,
     now: std::time::Instant,
 }
 

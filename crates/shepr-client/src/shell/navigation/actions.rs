@@ -156,8 +156,8 @@ impl ClientShellState {
         };
         let pane_id = selection.pane_id;
         let (anchor, cursor) = match selection.shape() {
-            shepr_vt::selection::SelectionShape::Range => selection.ordered_cells(),
-            shepr_vt::selection::SelectionShape::Lines => {
+            shepr_term::selection::SelectionShape::Range => selection.ordered_cells(),
+            shepr_term::selection::SelectionShape::Lines => {
                 let (start, end) = selection.ordered_rows();
                 let width = self
                     .hits

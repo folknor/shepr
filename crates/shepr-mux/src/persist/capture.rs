@@ -18,7 +18,7 @@ pub fn capture_job(
     terminal_runtimes: &PaneRuntimeRegistry,
     fallback_cwd: &Path,
     active: Option<usize>,
-    host_theme: shepr_termio::host_term::theme::TerminalTheme,
+    host_theme: shepr_term::host::TerminalTheme,
     persist_pane_history: bool,
 ) -> (PersistJob, HashMap<SavedPaneRef, TerminalId>) {
     if workspaces.is_empty() {

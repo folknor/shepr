@@ -7,10 +7,10 @@
 use super::*;
 
 impl PaneRuntime {
-    pub fn keyboard_protocol(&self) -> shepr_termio::input::KeyboardProtocol {
+    pub fn keyboard_protocol(&self) -> shepr_term::key::KeyboardProtocol {
         // Legacy only when the terminal core is unreadable (a poisoned lock).
         self.terminal
-            .keyboard_protocol(shepr_termio::input::KeyboardProtocol::legacy())
+            .keyboard_protocol(shepr_term::key::KeyboardProtocol::legacy())
     }
 
     pub fn modify_other_keys_level(&self) -> shepr_vt::ModifyOtherKeysLevel {
@@ -19,18 +19,18 @@ impl PaneRuntime {
 
     /// Samples the current terminal modes for server pane input, with legacy
     /// encoding if the terminal snapshot cannot be read.
-    pub fn encode_terminal_key(&self, key: shepr_termio::input::TerminalKey) -> Vec<u8> {
+    pub fn encode_terminal_key(&self, key: shepr_term::key::TerminalKey) -> Vec<u8> {
         if let Some(modes) = self.read().input_modes() {
             self.encode_terminal_key_with_modes(key, modes)
         } else {
             self.terminal
-                .encode_terminal_key(key, shepr_termio::input::KeyboardProtocol::legacy())
+                .encode_terminal_key(key, shepr_term::key::KeyboardProtocol::legacy())
         }
     }
 
     pub fn encode_terminal_key_with_modes(
         &self,
-        key: shepr_termio::input::TerminalKey,
+        key: shepr_term::key::TerminalKey,
         modes: shepr_vt::InputModes,
     ) -> Vec<u8> {
         self.terminal.encode_terminal_key_with_modes(key, modes)
@@ -86,7 +86,7 @@ impl PaneRuntime {
         &self,
         modes: shepr_vt::InputModes,
         kind: crossterm::event::MouseEventKind,
-        position: shepr_termio::input::mouse::Position,
+        position: shepr_term::mouse::Position,
         modifiers: crossterm::event::KeyModifiers,
     ) -> Option<Vec<u8>> {
         self.terminal
@@ -97,7 +97,7 @@ impl PaneRuntime {
         &self,
         modes: shepr_vt::InputModes,
         kind: crossterm::event::MouseEventKind,
-        position: shepr_termio::input::mouse::Position,
+        position: shepr_term::mouse::Position,
         modifiers: crossterm::event::KeyModifiers,
     ) -> Option<Vec<u8>> {
         self.terminal
@@ -108,7 +108,7 @@ impl PaneRuntime {
         &self,
         modes: shepr_vt::InputModes,
         kind: crossterm::event::MouseEventKind,
-        position: shepr_termio::input::mouse::Position,
+        position: shepr_term::mouse::Position,
         modifiers: crossterm::event::KeyModifiers,
     ) -> Option<Vec<u8>> {
         if PaneTerminal::wheel_routing_for_modes(modes) != WheelRouting::MouseReport {
@@ -141,7 +141,7 @@ impl PaneRuntime {
             _ => return None,
         };
         Some(self.encode_terminal_key_with_modes(
-            shepr_termio::input::TerminalKey::new(key, crossterm::event::KeyModifiers::empty()),
+            shepr_term::key::TerminalKey::new(key, crossterm::event::KeyModifiers::empty()),
             modes,
         ))
     }

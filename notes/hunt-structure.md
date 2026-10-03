@@ -54,65 +54,6 @@ exit classification there); platform stays flat; `config_file.rs`'s
 ownership, permission and xattr primitives stay in platform. Last of the crate
 waves.
 
-## STR-004 - Split value types out of the emulator crate
-
-`shepr-protocol`, `shepr-api`, `shepr-termio` and `shepr-client` depend on
-`shepr-vt` only for value types (`AbsRow`/`ScreenRow`/`ViewportRow`/`Point`,
-`Selection`, `RgbColor`, `ColorScheme`, `DefaultColor`, `UnderlineStyle`,
-`ModifyOtherKeysLevel`, `FocusEvent`, the width functions), which puts
-`alacritty_terminal` and `vte` in the client binary's build graph, the kind of
-edge AGENTS.md keeps mux and server out of the client for. Move them into a small
-crate (or core modules) that vt re-exports; `KittyKeyboardFlags` moves down from
-protocol so vt can return it. Then collapse the parallel wire types into the
-shared ones. (terminal)
-
-Decided, together with STR-005: one leaf crate `shepr-term` below vt, termio,
-protocol and config. It holds the row and point types, `Selection`,
-`ScrollMetrics`, colours (`RgbColor`, `ColorScheme`, `DefaultColor`,
-`ColorQueryTarget`, the indexed palette), `UnderlineStyle`, `DecMode`,
-`FocusEvent`, `KittyKeyboardFlags`, `ModifyOtherKeysLevel`, mouse protocol
-vocabulary (`Position`, `MouseEncoding`), width including
-`UnicodeDisplayUnits` and termio's `text_width`, the `seq` builders, key
-vocabulary and pure child-facing key and mouse encoding, plus `TerminalTheme`
-and `HostCellSize`. Keys: `TerminalKey` for the observed event and encoding, a
-typed chord for configured code and modifiers (replacing the `KeyCombo` tuple),
-`CanonicalKey` only for canonical comparison and conflict detection;
-canonicalization is lossy, so matching keeps today's exact-then-canonical
-behaviour. Config parses bindings into those types; `is_shifted_ascii_symbol`
-moves down so the encoder needs no config. Adapters stay in vt as free
-functions (`RgbColor::from_vte`, `DefaultColor::named`,
-`UnderlineStyle::from_flags`, the `DecMode` to `TermMode` mapping). termio
-becomes host-side I/O only: scrollbar drawing goes to server presentation,
-selection drawing to client presentation, `host_modify_other_keys_mode` stays.
-The named theme library stays in config; observed host colours are terminal
-facts. Done when no client-side crate links alacritty or vte.
-
-## STR-005 - Split shepr-termio by side
-
-termio holds a child-facing half (`input/encode.rs`, mouse protocol enums,
-`KeyEncodeModes`, `mouse::Position`, `TerminalKey`), a host-facing half
-(`raw_input.rs`, `parse.rs`, `keybindings.rs`, `keybind_help.rs`, `lease.rs`,
-`host_term/*`, `blit.rs`, `selection_render.rs`, `copy_mode.rs`,
-`input/mouse.rs`), and shared values (`ScrollMetrics`, `TerminalTheme`,
-`HostCellSize`, `text_width`, scrollbar geometry the server draws and the client
-hit-tests). The server links keybinding help, the host input framer and the
-blitter; the client links pane key encoding. Proposal: pane input encoding moves
-next to the emulator and consumes one `InputModes` snapshot vt produces under one
-lock (kitty flags, modifyOtherKeys, DECCKM, bracketed paste, focus reporting,
-mouse protocol, alternate scroll, alternate screen, cell pixels), removing mux's
-mode ladders and per-accessor locking; the host-terminal half moves into the
-client or a client-only crate. Smaller: `host_term/title.rs` also writes the
-clipboard (its own module); `scroll.rs` mixes a value type, shared scrollbar
-geometry and server-chrome drawing. `AppState` depends on termio's
-`host_term` types (`TerminalTheme`, `HostAppearance`, `HostCellSize`), host and
-wire facts that pull a terminal-input crate into pure state. config's per-keypress
-keybinding matching (`BindingKey`, `CanonicalKey`, `terminal_key_matches_combo`,
-`ActionKeybinds::matches_*`) belongs with key input too. Reported by terminal,
-server-app and contracts.
-
-Stale in part: `shepr_vt::InputModes` exists and the runtime key path already
-takes it under one core lock. The remaining separation is decided under STR-004.
-
 ## STR-010 - shepr-config does four unrelated jobs
 
 1. TOML model, loading, unknown-key detection, validation.
@@ -147,8 +88,8 @@ and server-app.
 Decided: runtime layout and address policy (`AppPaths`, `BuildProfile` and the
 marker policy, `ServerAddress` and the socket override, the lease file name,
 `operator_entrypoint`) move to their own crate below api, so api, remote and
-the CLI stop depending on settings. Key matching moves with STR-004's key
-vocabulary. The named theme library stays in config. Operator guidance prose
+the CLI stop depending on settings. Key matching already lives in
+`shepr-term`'s key module. The named theme library stays in config. Operator guidance prose
 goes with the lifecycle crate (STR-012). Validated types own validated values
 only (no second raw representation exposed as the runtime interface), the
 generic `LoadedConfig` gives way to one validate per role (the
@@ -451,18 +392,6 @@ and is cleared separately in `request_repaint`). Reported by server-app and
 server-serving.
 
 ## Server serving
-
-## STR-036 - Pane input takes a detour through `RawInputEvent`
-
-`pane_input::apply_client_pane_input_event` handles `Mouse` and `TextCommit`
-first, then converts the rest through `input_wire::WirePaneInput`
-(`ClientPaneInputEvent -> RawInputEvent`, the eight-variant host-terminal input
-superset) only to get `Key` and `Paste` back. That detour is why
-`Other("non-pane input reached targeted pane input")` exists and why `input_wire`
-maps `TextCommit` to `Unsupported` and has an unused `Mouse` arm. A direct
-`ClientPaneInputEvent::Key -> TerminalKey` mapping removes the trait, the file and
-the unreachable error. `apply_scroll` round-trips modifiers through `u8`, and
-`lines.max(1)` is applied by both caller and callee. (server-serving)
 
 ## Client core
 

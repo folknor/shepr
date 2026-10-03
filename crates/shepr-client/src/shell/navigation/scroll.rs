@@ -3,15 +3,18 @@ use ratatui::layout::Rect;
 use ratatui::style::Style;
 
 use shepr_config::theme::Palette;
+use shepr_term::scroll::{
+    ListScroll, ScrollTrack, ScrollbarMetrics, ScrollbarPart, scrollbar_rows,
+};
 
 pub(in crate::shell) fn list_scroll_metrics(
     row_heights: &[u16],
     gaps_after: &[u16],
     body_height: u16,
     requested_start: usize,
-) -> shepr_termio::scroll::ListScroll {
+) -> ListScroll {
     if row_heights.is_empty() || body_height == 0 {
-        return shepr_termio::scroll::ListScroll::new(0, 0, 0);
+        return ListScroll::new(0, 0, 0);
     }
 
     let mut used = 0u16;
@@ -44,7 +47,7 @@ pub(in crate::shell) fn list_scroll_metrics(
         used = used.saturating_add(gap);
     }
 
-    shepr_termio::scroll::ListScroll::new(start, max_start, viewport_rows)
+    ListScroll::new(start, max_start, viewport_rows)
 }
 
 pub(in crate::shell) fn list_scroll_start_to_reveal(
@@ -69,10 +72,10 @@ pub(in crate::shell) fn list_scroll_start_to_reveal(
 pub(in crate::shell) fn render_list_scrollbar(
     buffer: &mut Buffer,
     track: Rect,
-    metrics: shepr_termio::scroll::ListScroll,
+    metrics: ListScroll,
     palette: &Palette,
 ) {
-    shepr_termio::scroll::render_scrollbar_buffer(
+    render_scrollbar_buffer(
         buffer,
         metrics,
         track,
@@ -81,6 +84,33 @@ pub(in crate::shell) fn render_list_scrollbar(
         "▕",
         Style::default().fg(palette.overlay0),
     );
+}
+
+/// The rows a scrollbar drawn in `rect` occupies.
+pub(in crate::shell) fn scroll_track(rect: Rect) -> ScrollTrack {
+    ScrollTrack::new(rect.y, rect.height)
+}
+
+pub(in crate::shell) fn render_scrollbar_buffer(
+    buffer: &mut Buffer,
+    metrics: impl ScrollbarMetrics,
+    track: Rect,
+    track_symbol: &str,
+    track_style: Style,
+    thumb_symbol: &str,
+    thumb_style: Style,
+) {
+    for (y, part) in scrollbar_rows(metrics, scroll_track(track)) {
+        let (symbol, style) = match part {
+            ScrollbarPart::Track => (track_symbol, track_style),
+            ScrollbarPart::Thumb => (thumb_symbol, thumb_style),
+        };
+        if let Some(cell) = buffer.cell_mut((track.x, y)) {
+            cell.set_symbol(symbol);
+            cell.set_style(track_style);
+            cell.set_style(style);
+        }
+    }
 }
 
 #[cfg(test)]

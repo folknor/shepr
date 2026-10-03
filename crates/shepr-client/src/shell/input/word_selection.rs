@@ -15,11 +15,11 @@ use super::word_bounds::word_bounds_at_column;
 pub(in crate::shell) struct ClientWordSelection {
     pub(in crate::shell) pane_id: shepr_protocol::PublicPaneId,
     pub(in crate::shell) focus_confirmed: bool,
-    anchor: shepr_vt::Point<shepr_vt::AbsRow>,
+    anchor: shepr_term::Point<shepr_term::AbsRow>,
     anchor_bounds: Option<(u16, u16)>,
-    cursor: shepr_vt::Point<shepr_vt::AbsRow>,
+    cursor: shepr_term::Point<shepr_term::AbsRow>,
     end_col: u16,
-    cached_row: Option<(shepr_vt::AbsRow, String)>,
+    cached_row: Option<(shepr_term::AbsRow, String)>,
     pending: Option<shepr_protocol::RequestId>,
     pub(in crate::shell) dragged: bool,
     pub(in crate::shell) released: bool,
@@ -29,12 +29,12 @@ impl ClientShellState {
     pub(in crate::shell) fn request_word_selection(
         &mut self,
         hit: &PaneHit,
-        metrics: shepr_termio::ScrollMetrics,
+        metrics: shepr_term::ScrollMetrics,
         viewport_row: u16,
         col: u16,
         outcome: &mut ClientShellInput,
     ) {
-        let row = metrics.absolute_row_at_viewport(shepr_vt::ViewportRow(viewport_row));
+        let row = metrics.absolute_row_at_viewport(shepr_term::ViewportRow(viewport_row));
         self.mouse_selection.word_gesture = Some(ClientWordSelection {
             pane_id: hit.pane_id,
             focus_confirmed: self
@@ -42,9 +42,9 @@ impl ClientShellState {
                 .as_deref()
                 .and_then(|snapshot| snapshot.focused_pane_id.as_ref())
                 == Some(&hit.pane_id),
-            anchor: shepr_vt::Point::new(row, col),
+            anchor: shepr_term::Point::new(row, col),
             anchor_bounds: None,
-            cursor: shepr_vt::Point::new(row, col),
+            cursor: shepr_term::Point::new(row, col),
             end_col: hit.inner_rect.width.saturating_sub(1),
             cached_row: None,
             pending: None,
@@ -60,7 +60,7 @@ impl ClientShellState {
 
     fn request_word_selection_row(
         &mut self,
-        row: shepr_vt::AbsRow,
+        row: shepr_term::AbsRow,
         outcome: &mut ClientShellInput,
     ) {
         let Some(gesture) = self.mouse_selection.word_gesture.as_mut() else {
@@ -93,7 +93,7 @@ impl ClientShellState {
 
     pub(in crate::shell) fn drag_word_selection(
         &mut self,
-        cursor: shepr_vt::Point<shepr_vt::AbsRow>,
+        cursor: shepr_term::Point<shepr_term::AbsRow>,
         outcome: &mut ClientShellInput,
         now: std::time::Instant,
     ) {
@@ -138,11 +138,11 @@ impl ClientShellState {
         };
         let (start_col, end_col) = word_bounds_at_column(text, gesture.cursor.col)
             .unwrap_or((gesture.cursor.col, gesture.cursor.col));
-        let start = shepr_vt::Point::new(gesture.anchor.row, anchor_start)
-            .min(shepr_vt::Point::new(gesture.cursor.row, start_col));
-        let end = shepr_vt::Point::new(gesture.anchor.row, anchor_end)
-            .max(shepr_vt::Point::new(gesture.cursor.row, end_col));
-        self.mouse_selection.selection = Some(shepr_vt::selection::Selection::range(
+        let start = shepr_term::Point::new(gesture.anchor.row, anchor_start)
+            .min(shepr_term::Point::new(gesture.cursor.row, start_col));
+        let end = shepr_term::Point::new(gesture.anchor.row, anchor_end)
+            .max(shepr_term::Point::new(gesture.cursor.row, end_col));
+        self.mouse_selection.selection = Some(shepr_term::selection::Selection::range(
             gesture.pane_id,
             start,
             end,
@@ -192,7 +192,7 @@ impl ClientShellState {
         &mut self,
         request: &shepr_protocol::RequestId,
         pane_id: &shepr_protocol::PublicPaneId,
-        absolute_row: shepr_vt::AbsRow,
+        absolute_row: shepr_term::AbsRow,
         result: Result<shepr_protocol::command::PaneSelectionReply, ClientShellEndpointError>,
         now: std::time::Instant,
         outcome: &mut ClientShellInput,

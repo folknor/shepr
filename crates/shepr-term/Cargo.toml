@@ -1,0 +1,14 @@
+[package]
+name = "shepr-term"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+crossterm = { workspace = true }
+serde = { workspace = true }
+shepr-core = { path = "../shepr-core" }
+unicode-width = { workspace = true }
+
+[lints]
+workspace = true

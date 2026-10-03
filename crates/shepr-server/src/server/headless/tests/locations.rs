@@ -303,7 +303,7 @@ fn presenting_client(
         client_id,
         ClientConnection::new(
             size,
-            shepr_termio::host_term::cell_size::HostCellSize::default(),
+            shepr_term::host::HostCellSize::default(),
             client_id,
             writer,
         ),
@@ -358,7 +358,7 @@ fn non_presenting_client(activity: u64) -> ClientConnection {
     ClientConnection::with_shell(
         crate::server::clients::ClientShellState::with_surface_active(false),
         shepr_core::geometry::GridSize::clamped(120, 40),
-        shepr_termio::host_term::cell_size::HostCellSize::default(),
+        shepr_term::host::HostCellSize::default(),
         crate::server::clients::ActivityStamp::from(activity),
         crate::server::outbox::ClientOutbox::test_pair().0,
     )

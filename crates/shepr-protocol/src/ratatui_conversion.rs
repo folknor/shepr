@@ -84,9 +84,9 @@ impl WireStyle {
                 flags.union(flag)
             });
         let underline = if modifier.contains(Modifier::UNDERLINED) {
-            shepr_vt::UnderlineStyle::Single
+            shepr_term::UnderlineStyle::Single
         } else {
-            shepr_vt::UnderlineStyle::None
+            shepr_term::UnderlineStyle::None
         };
         Self { flags, underline }
     }

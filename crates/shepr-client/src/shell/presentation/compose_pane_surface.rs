@@ -98,7 +98,7 @@ mod tests {
     use shepr_protocol::FrameData;
 
     use shepr_protocol::CellData;
-    use shepr_vt::UnderlineStyle;
+    use shepr_term::UnderlineStyle;
 
     /// One row of cells, one per char; `~` is an empty-symbol wide tail as pane surfaces
     /// write them.

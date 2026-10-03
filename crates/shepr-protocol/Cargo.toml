@@ -10,7 +10,7 @@ ratatui = { workspace = true }
 serde = { workspace = true }
 shepr-agent = { path = "../shepr-agent" }
 shepr-core = { path = "../shepr-core" }
-shepr-vt = { path = "../shepr-vt" }
+shepr-term = { path = "../shepr-term" }
 
 [dev-dependencies]
 shepr-test-support = { path = "../shepr-test-support" }

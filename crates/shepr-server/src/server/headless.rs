@@ -94,7 +94,7 @@ struct ClientViewKey {
     presenting: bool,
     location_generation: ClientShellLocationGeneration,
     terminal_size: shepr_core::geometry::GridSize,
-    cell_size: shepr_termio::host_term::cell_size::HostCellSize,
+    cell_size: shepr_term::host::HostCellSize,
     pixel_mouse: bool,
 }
 
@@ -1155,8 +1155,7 @@ impl HeadlessServer {
                 );
                 let first_app_client = self.app_client_count() == 0;
                 let last_activity = self.clients.allocate_activity_stamp();
-                let observed =
-                    shepr_termio::host_term::cell_size::HostCellSize::from_cell(geometry.cell());
+                let observed = shepr_term::host::HostCellSize::from_cell(geometry.cell());
                 let mut connection = ClientConnection::with_shell(
                     ClientShellState::with_surface_active(surface_active),
                     geometry.grid(),
@@ -1262,9 +1261,7 @@ impl HeadlessServer {
                     let previous_geometry =
                         (client.terminal_size, client.cell_size, client.pixel_mouse);
                     client.terminal_size = geometry.grid();
-                    let observed = shepr_termio::host_term::cell_size::HostCellSize::from_cell(
-                        geometry.cell(),
-                    );
+                    let observed = shepr_term::host::HostCellSize::from_cell(geometry.cell());
                     if observed.is_known() {
                         client.cell_size = observed;
                     }

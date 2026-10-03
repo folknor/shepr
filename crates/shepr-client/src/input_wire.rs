@@ -5,11 +5,11 @@
 //! `TerminalKey` belongs to `shepr-termio`, which the protocol must not depend on.
 
 pub(crate) trait WirePaneInput: Sized {
-    fn from_terminal_key(key: shepr_termio::input::TerminalKey) -> Option<Self>;
+    fn from_terminal_key(key: shepr_term::key::TerminalKey) -> Option<Self>;
 }
 
 impl WirePaneInput for shepr_protocol::ClientPaneInputEvent {
-    fn from_terminal_key(key: shepr_termio::input::TerminalKey) -> Option<Self> {
+    fn from_terminal_key(key: shepr_term::key::TerminalKey) -> Option<Self> {
         Some(Self::Key {
             code: shepr_protocol::ClientKeyCode::from_host(key.code)?,
             modifiers: shepr_protocol::WireModifiers::from_host(key.modifiers),

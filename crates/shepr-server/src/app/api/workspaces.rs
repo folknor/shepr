@@ -119,7 +119,7 @@ mod tests {
     use shepr_config::ServerConfig;
     use shepr_mux::workspace::Workspace;
     use shepr_protocol::WorkspaceId;
-    use shepr_termio::host_term::cell_size::HostCellSize;
+    use shepr_term::host::HostCellSize;
 
     fn app() -> App {
         let mut app = App::new(&ServerConfig::default(), crate::app::AppPolicy::Suspended);

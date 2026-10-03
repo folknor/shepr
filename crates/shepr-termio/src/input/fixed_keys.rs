@@ -6,7 +6,7 @@
 
 use crossterm::event::{KeyCode, KeyModifiers};
 
-use super::TerminalKey;
+use shepr_term::key::{KeyChord, TerminalKey};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ModifierMatch {
@@ -32,8 +32,10 @@ impl FixedKey {
     pub fn matches(self, key: &TerminalKey) -> bool {
         match self {
             Self::Code(code, modifiers) => {
-                let (actual_code, actual_modifiers) =
-                    shepr_config::normalize_key_combo((key.code, key.modifiers));
+                let KeyChord {
+                    code: actual_code,
+                    modifiers: actual_modifiers,
+                } = key.chord().normalized();
                 actual_code == code && modifier_matches(actual_modifiers, modifiers)
             }
             Self::RawCode(code, modifiers) => {
@@ -43,8 +45,10 @@ impl FixedKey {
                 crate::copy_mode::copy_mode_key_char(key) == Some(character)
             }
             Self::ControlCharacter(character, modifiers) => {
-                let (actual_code, actual_modifiers) =
-                    shepr_config::normalize_key_combo((key.code, key.modifiers));
+                let KeyChord {
+                    code: actual_code,
+                    modifiers: actual_modifiers,
+                } = key.chord().normalized();
                 actual_code == KeyCode::Char(character)
                     && modifier_matches(actual_modifiers, modifiers)
             }

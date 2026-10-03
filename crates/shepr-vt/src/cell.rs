@@ -6,44 +6,20 @@ pub enum CellColor {
     Rgb(RgbColor),
 }
 
-/// The terminal underline shape carried by a cell.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
-pub enum UnderlineStyle {
-    #[default]
-    None,
-    Single,
-    Double,
-    Curly,
-    Dotted,
-    Dashed,
-}
-
-impl UnderlineStyle {
-    pub const fn sgr_param(self) -> Option<&'static str> {
-        match self {
-            Self::None => None,
-            Self::Single => Some("4"),
-            Self::Double => Some("4:2"),
-            Self::Curly => Some("4:3"),
-            Self::Dotted => Some("4:4"),
-            Self::Dashed => Some("4:5"),
-        }
-    }
-
-    pub(super) fn from_flags(flags: Flags) -> Self {
-        if flags.contains(Flags::UNDERLINE) {
-            Self::Single
-        } else if flags.contains(Flags::DOUBLE_UNDERLINE) {
-            Self::Double
-        } else if flags.contains(Flags::UNDERCURL) {
-            Self::Curly
-        } else if flags.contains(Flags::DOTTED_UNDERLINE) {
-            Self::Dotted
-        } else if flags.contains(Flags::DASHED_UNDERLINE) {
-            Self::Dashed
-        } else {
-            Self::None
-        }
+/// The underline shape alacritty's cell flags select.
+pub(super) fn underline_from_flags(flags: Flags) -> UnderlineStyle {
+    if flags.contains(Flags::UNDERLINE) {
+        UnderlineStyle::Single
+    } else if flags.contains(Flags::DOUBLE_UNDERLINE) {
+        UnderlineStyle::Double
+    } else if flags.contains(Flags::UNDERCURL) {
+        UnderlineStyle::Curly
+    } else if flags.contains(Flags::DOTTED_UNDERLINE) {
+        UnderlineStyle::Dotted
+    } else if flags.contains(Flags::DASHED_UNDERLINE) {
+        UnderlineStyle::Dashed
+    } else {
+        UnderlineStyle::None
     }
 }
 
@@ -124,59 +100,6 @@ pub struct RowWrap {
     pub wrap_continuation: bool,
 }
 
-pub(super) use crate::width::is_halfwidth_voiced_mark;
-use crate::width::unicode_codepoint_width;
-
-/// A codepoint and any following zero-width codepoints stored in its cell.
-///
-/// This follows per-codepoint grid widths, not Unicode grapheme clusters.
-/// Halfwidth voiced marks use the terminal-specific one-cell override in
-/// [`unicode_codepoint_width`].
-pub struct UnicodeDisplayUnits<'a> {
-    text: &'a str,
-    characters: std::str::CharIndices<'a>,
-    next_character: Option<(usize, char, u8)>,
-}
-
-impl<'a> Iterator for UnicodeDisplayUnits<'a> {
-    type Item = (&'a str, u8);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let (start, character, width) = match self.next_character.take() {
-            Some(next) => next,
-            None => {
-                let (index, character) = self.characters.next()?;
-                (index, character, unicode_codepoint_width(character))
-            }
-        };
-        let first_len = character.len_utf8();
-        let mut end = start + first_len;
-        if !character.is_control() {
-            for (index, following) in self.characters.by_ref() {
-                let following_width = unicode_codepoint_width(following);
-                if following.is_control() || following_width != 0 {
-                    self.next_character = Some((index, following, following_width));
-                    break;
-                }
-                end = index + following.len_utf8();
-            }
-        }
-        let unit = &self.text[start..end];
-        Some((unit, width))
-    }
-}
-
-/// Iterate text by grid cells without allocating or using grapheme widths.
-/// Each item starts with one codepoint and includes following zero-width
-/// codepoints stored with it; a leading zero-width run has width zero.
-pub fn unicode_display_units(text: &str) -> UnicodeDisplayUnits<'_> {
-    UnicodeDisplayUnits {
-        text,
-        characters: text.char_indices(),
-        next_character: None,
-    }
-}
-
 pub(super) fn cell_wide(cell: &Cell) -> CellWide {
     if cell.flags.contains(Flags::WIDE_CHAR) {
         CellWide::Wide
@@ -235,11 +158,11 @@ fn cell_color(color: Color) -> Option<CellColor> {
     match color {
         Color::Named(named) => {
             let index = named as usize;
-            (index < super::color::NAMED_COLOR_COUNT)
+            (index < shepr_term::NAMED_COLOR_COUNT)
                 .then(|| CellColor::Palette(u8::try_from(index).unwrap_or(u8::MAX)))
         }
         Color::Indexed(index) => Some(CellColor::Palette(index)),
-        Color::Spec(rgb) => Some(CellColor::Rgb(RgbColor::from_vte(rgb))),
+        Color::Spec(rgb) => Some(CellColor::Rgb(super::color::rgb_from_vte(rgb))),
     }
 }
 
@@ -262,7 +185,7 @@ pub(super) fn cell_style(cell: &Cell) -> CellStyle {
         inverse: flags.contains(Flags::INVERSE),
         invisible: flags.contains(Flags::HIDDEN),
         strikethrough: flags.contains(Flags::STRIKEOUT),
-        underline: UnderlineStyle::from_flags(flags),
+        underline: underline_from_flags(flags),
     }
 }
 

@@ -2,7 +2,7 @@ use crate::limits::{
     COPY_MODE_WORD_SEPARATORS, DEFAULT_DETECTION_ROWS, MERGE_MAX_BYTES, MERGE_MAX_ROWS,
     SCAN_CHUNK_ROWS, SYNCHRONIZED_OUTPUT_FLUSH_MARGIN,
 };
-pub use shepr_termio::ScrollMetrics;
+pub use shepr_term::ScrollMetrics;
 use std::collections::VecDeque;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -358,7 +358,7 @@ pub(crate) struct PaneTerminalCore {
     /// (`history.rs`).
     history_epoch: u64,
     pub render_state: shepr_vt::RenderState,
-    pub host_terminal_theme: shepr_termio::host_term::theme::TerminalTheme,
+    pub host_terminal_theme: shepr_term::host::TerminalTheme,
     /// Process group of the foreground program that last overrode a default
     /// colour (OSC 10/11); its overrides are dropped once the shell is back
     /// in the foreground. `None` while no override is in effect.
@@ -509,8 +509,8 @@ impl PaneTerminal {
 
     pub(crate) fn keyboard_protocol(
         &self,
-        fallback: shepr_termio::input::KeyboardProtocol,
-    ) -> shepr_termio::input::KeyboardProtocol {
+        fallback: shepr_term::key::KeyboardProtocol,
+    ) -> shepr_term::key::KeyboardProtocol {
         self.negotiated_keyboard_protocol().unwrap_or(fallback)
     }
 

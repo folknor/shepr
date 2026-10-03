@@ -1,28 +1,26 @@
-use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
-use shepr_protocol::KittyKeyboardFlags;
-
-use super::tables::{
-    MOUSE_BUTTON_FIELD_MASK, MOUSE_BUTTON_RELEASE, MOUSE_DRAG_BIT,
-    MOUSE_EXTENDED_BUTTON_FIELD_MASK, MOUSE_EXTENDED_BUTTON_SHIFT, mouse_button_from_code,
-    mouse_modifiers_from_bits, mouse_scroll_from_code,
-};
-use crate::host_term::theme::{
-    DefaultColorKind, HostAppearance, RgbColor, parse_default_color_response,
-    parse_palette_color_response,
-};
-use crate::input::{TerminalKey, parse_terminal_key_sequence};
+use crate::host_term::theme::{parse_default_color_response, parse_palette_color_response};
+use crate::input::parse_terminal_key_sequence;
 use crate::limits::{
     DISAMBIGUATED_MOUSE_TAIL_FLUSH_TIMEOUT_MS, MAX_DISCARDED_CONTROL_TAIL_BYTES,
     MAX_HOST_COLOR_QUERY_REPLIES, MAX_INCOMPLETE_CSI_BYTES, MAX_ORPHANED_SGR_MOUSE_TAIL_BYTES,
     MAX_PENDING_PASTE_BYTES, PASTE_STALL_TIMEOUT, RAW_INPUT_IDLE_FLUSH_TIMEOUT_MS,
 };
+use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use shepr_term::KittyKeyboardFlags;
+use shepr_term::host::{DefaultColorKind, HostAppearance, RgbColor};
+use shepr_term::key::TerminalKey;
+use shepr_term::key::tables::{
+    MOUSE_BUTTON_FIELD_MASK, MOUSE_BUTTON_RELEASE, MOUSE_DRAG_BIT,
+    MOUSE_EXTENDED_BUTTON_FIELD_MASK, MOUSE_EXTENDED_BUTTON_SHIFT, mouse_button_from_code,
+    mouse_modifiers_from_bits, mouse_scroll_from_code,
+};
 
 // limits-exempt: ESC is the terminal-control introducer byte used by this parser.
 const ESC: u8 = 0x1b;
-pub const GHOSTTY_COLOR_SCHEME_DARK_REPORT: &[u8] = shepr_vt::ColorScheme::Dark.report();
-pub const GHOSTTY_COLOR_SCHEME_LIGHT_REPORT: &[u8] = shepr_vt::ColorScheme::Light.report();
-pub const BRACKETED_PASTE_START: &[u8] = shepr_vt::seq::BRACKETED_PASTE_START;
-pub const BRACKETED_PASTE_END: &[u8] = shepr_vt::seq::BRACKETED_PASTE_END;
+pub const GHOSTTY_COLOR_SCHEME_DARK_REPORT: &[u8] = shepr_term::ColorScheme::Dark.report();
+pub const GHOSTTY_COLOR_SCHEME_LIGHT_REPORT: &[u8] = shepr_term::ColorScheme::Light.report();
+pub const BRACKETED_PASTE_START: &[u8] = shepr_term::seq::BRACKETED_PASTE_START;
+pub const BRACKETED_PASTE_END: &[u8] = shepr_term::seq::BRACKETED_PASTE_END;
 
 /// Length of the longest proper prefix of `needle` that `haystack` ends with,
 /// so a terminator split across reads is not lost when the rest is dropped.
@@ -1056,10 +1054,10 @@ fn extract_one_event(buffer: &[u8]) -> Option<(RawInputEvent, usize)> {
             ));
         }
 
-        if let Some(focus) = shepr_vt::seq::focus_report(seq.as_bytes()) {
+        if let Some(focus) = shepr_term::seq::focus_report(seq.as_bytes()) {
             let event = match focus {
-                shepr_vt::FocusEvent::Gained => RawInputEvent::OuterFocusGained,
-                shepr_vt::FocusEvent::Lost => RawInputEvent::OuterFocusLost,
+                shepr_term::FocusEvent::Gained => RawInputEvent::OuterFocusGained,
+                shepr_term::FocusEvent::Lost => RawInputEvent::OuterFocusLost,
             };
             return Some((event, seq_len));
         }

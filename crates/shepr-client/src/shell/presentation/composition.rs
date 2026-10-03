@@ -223,7 +223,7 @@ impl ClientShellState {
                 .mouse_selection
                 .selection
                 .as_ref()
-                .is_some_and(shepr_vt::selection::Selection::is_visible);
+                .is_some_and(shepr_term::selection::Selection::is_visible);
             let has_search = self
                 .copy_mode
                 .as_ref()
@@ -254,13 +254,13 @@ impl ClientShellState {
                                     .is_some_and(|selection| selection.pane_id == hit.pane_id)
                         });
                     if !selection_is_stale_copy_projection {
-                        shepr_termio::selection_render::render_selection_highlight(
+                        super::selection_render::render_selection_highlight(
                             self.mouse_selection.selection.as_ref(),
                             &hit.pane_id,
                             hit.inner_rect,
                             hit.scroll,
                             &self.config.palette,
-                            shepr_termio::host_term::theme::TerminalTheme {
+                            shepr_term::host::TerminalTheme {
                                 background: self.host_background,
                                 ..Default::default()
                             },
@@ -659,11 +659,11 @@ mod tests {
     fn text_range(row: u64, start_col: u16, end_col: u16) -> PaneTextRange {
         PaneTextRange {
             start: PaneTextPoint {
-                row: shepr_vt::AbsRow(row),
+                row: shepr_term::AbsRow(row),
                 col: start_col,
             },
             end: PaneTextPoint {
-                row: shepr_vt::AbsRow(row),
+                row: shepr_term::AbsRow(row),
                 col: end_col,
             },
         }
@@ -678,11 +678,11 @@ mod tests {
             rect: Rect::new(0, 0, 6, 4),
             inner_rect: Rect::new(0, 0, 6, 4),
             scrollbar_rect: None,
-            scroll: Some(shepr_termio::ScrollMetrics::new(
+            scroll: Some(shepr_term::ScrollMetrics::new(
                 0,
                 0,
                 4,
-                shepr_vt::AbsRow(0),
+                shepr_term::AbsRow(0),
             )),
             pane_id: crate::tests::test_pane_id("w1:p1"),
             mouse_reporting: false,
@@ -691,12 +691,12 @@ mod tests {
             pixel_height: 0,
         };
         let copy_mode = ClientCopyModeState {
-            scroll: shepr_vt::ScrollMetrics::new(0, 0, 4, shepr_vt::AbsRow(0)),
+            scroll: shepr_term::ScrollMetrics::new(0, 0, 4, shepr_term::AbsRow(0)),
             pane_id: crate::tests::test_pane_id("w1:p1"),
             geometry: (6, 4),
             alternate_screen_active: false,
             cursor: PaneTextPoint {
-                row: shepr_vt::AbsRow(3),
+                row: shepr_term::AbsRow(3),
                 col: 0,
             },
             entry_offset_from_bottom: 0,

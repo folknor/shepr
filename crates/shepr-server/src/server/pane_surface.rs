@@ -81,7 +81,7 @@ pub(super) fn render_pane_surface(
     app: &app::App,
     target: Option<&shepr_protocol::WorkspaceId>,
     area: Rect,
-    cell_size: shepr_termio::host_term::cell_size::HostCellSize,
+    cell_size: shepr_term::host::HostCellSize,
 ) -> Result<RenderedPaneSurface, SurfaceRenderDeferred> {
     let layout =
         crate::ui::compute_surface_for(&app.state, &app.terminal_runtimes, target.copied(), area);

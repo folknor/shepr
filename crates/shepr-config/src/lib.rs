@@ -38,8 +38,8 @@ pub use self::{
         load_server_validated,
     },
     keybinds::{
-        ActionKeybinds, BindingConfig, BindingKey, IndexedKeybind, Keybinds, LiveKeybindConfig,
-        format_key_combo, normalize_key_combo, terminal_key_matches_combo,
+        ActionKeybinds, BindingConfig, IndexedKeybind, Keybinds, LiveKeybindConfig,
+        format_key_chord, parse_key_chord,
     },
     model::{
         AgentPanelSortConfig, HostCursorModeConfig, NewTerminalCwdConfig, PaneBordersConfig,
@@ -59,7 +59,6 @@ pub use self::{
     window_title::{WindowTitlePart, WindowTitleTemplate, WindowTitleToken},
 };
 
-pub use self::keybinds::{is_shifted_ascii_symbol, parse_key_combo};
 pub use self::window_title::sanitize_window_title_text;
 
 pub const DEFAULT_CLIENT_CONFIG: &str = include_str!("default-client.toml");

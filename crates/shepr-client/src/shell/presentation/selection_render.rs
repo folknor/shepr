@@ -3,7 +3,8 @@ use ratatui::{
     style::{Color, Style},
 };
 use shepr_config::theme::Palette;
-use shepr_vt::{ColorScheme, RgbColor};
+use shepr_term::host::TerminalTheme;
+use shepr_term::{ColorScheme, RgbColor};
 
 fn panel_background(p: &Palette) -> Color {
     if p.panel_bg == Color::Reset {
@@ -18,13 +19,13 @@ fn panel_background(p: &Palette) -> Color {
 /// it (the client composes pane surfaces produced for another layout), so the sink must
 /// ignore positions it does not have. The style is meant to be applied like
 /// `Cell::set_style`.
-pub fn render_selection_highlight<P: PartialEq>(
-    selection: Option<&shepr_vt::selection::Selection<P>>,
+pub(super) fn render_selection_highlight<P: PartialEq>(
+    selection: Option<&shepr_term::selection::Selection<P>>,
     pane_id: &P,
     inner: Rect,
-    scroll_metrics: Option<crate::scroll::ScrollMetrics>,
+    scroll_metrics: Option<shepr_term::ScrollMetrics>,
     p: &Palette,
-    host_theme: crate::host_term::theme::TerminalTheme,
+    host_theme: TerminalTheme,
     patch_cell: &mut impl FnMut(u16, u16, Style),
 ) {
     let Some(selection) =
@@ -41,11 +42,11 @@ pub fn render_selection_highlight<P: PartialEq>(
     let style = automatic_selection_style(p, host_theme);
     for screen_y in inner.top()..inner.bottom() {
         let y = screen_y - inner.y;
-        let row = shepr_vt::ViewportRow(y);
+        let row = shepr_term::ViewportRow(y);
         let absolute_row = scroll_metrics.absolute_row_at_viewport(row);
         for screen_x in inner.left()..inner.right() {
             let x = screen_x - inner.x;
-            if selection.contains(shepr_vt::Point::new(absolute_row, x)) {
+            if selection.contains(shepr_term::Point::new(absolute_row, x)) {
                 patch_cell(screen_x, screen_y, style);
             }
         }
@@ -54,20 +55,14 @@ pub fn render_selection_highlight<P: PartialEq>(
 
 type Rgb = (u8, u8, u8);
 
-pub fn automatic_selection_style(
-    p: &Palette,
-    host_theme: crate::host_term::theme::TerminalTheme,
-) -> Style {
+fn automatic_selection_style(p: &Palette, host_theme: TerminalTheme) -> Style {
     let bg = automatic_selection_bg(p, host_theme);
     Style::reset()
         .fg(selection_fg_for_bg(bg, p, &host_theme))
         .bg(bg)
 }
 
-pub fn automatic_selection_bg(
-    p: &Palette,
-    host_theme: crate::host_term::theme::TerminalTheme,
-) -> Color {
+fn automatic_selection_bg(p: &Palette, host_theme: TerminalTheme) -> Color {
     let fallback = panel_background(p);
     let Some(background) = host_theme
         .background
@@ -91,11 +86,7 @@ pub fn automatic_selection_bg(
     Color::Rgb(selected.0, selected.1, selected.2)
 }
 
-fn selection_fg_for_bg(
-    bg: Color,
-    p: &Palette,
-    host_theme: &crate::host_term::theme::TerminalTheme,
-) -> Color {
+fn selection_fg_for_bg(bg: Color, p: &Palette, host_theme: &TerminalTheme) -> Color {
     if let Color::Rgb(r, g, b) = bg {
         return contrast_foreground(rgb_color((r, g, b)), true, host_theme);
     }
@@ -109,7 +100,7 @@ fn selection_fg_for_bg(
 fn contrast_foreground(
     background: RgbColor,
     rgb_output: bool,
-    host_theme: &crate::host_term::theme::TerminalTheme,
+    host_theme: &TerminalTheme,
 ) -> Color {
     const RGB_BLACK: RgbColor = RgbColor { r: 0, g: 0, b: 0 };
     const RGB_WHITE: RgbColor = RgbColor {
@@ -159,14 +150,7 @@ fn mix_rgb(base: Rgb, target: Rgb, amount: f32) -> Rgb {
     )
 }
 
-pub fn relative_luminance(color: Rgb) -> f32 {
-    rgb_color(color).relative_luminance()
-}
-
-fn color_to_rgb(
-    color: Color,
-    host_theme: &crate::host_term::theme::TerminalTheme,
-) -> Option<RgbColor> {
+fn color_to_rgb(color: Color, host_theme: &TerminalTheme) -> Option<RgbColor> {
     let index = match color {
         Color::Reset => return None,
         Color::Black => 0,
@@ -200,19 +184,23 @@ mod tests {
     use ratatui::buffer::Buffer;
     use ratatui::style::{Color, Modifier, Style};
     use shepr_config::theme::Palette;
-    use shepr_vt::selection::Selection;
+    use shepr_term::selection::Selection;
 
     use super::{
-        automatic_selection_bg, automatic_selection_style, relative_luminance,
-        render_selection_highlight,
+        RgbColor, TerminalTheme, automatic_selection_bg, automatic_selection_style,
+        render_selection_highlight, rgb_color,
     };
 
-    fn zero_origin_metrics(viewport_rows: usize) -> Option<crate::ScrollMetrics> {
-        Some(crate::ScrollMetrics::new(
+    fn relative_luminance(color: (u8, u8, u8)) -> f32 {
+        rgb_color(color).relative_luminance()
+    }
+
+    fn zero_origin_metrics(viewport_rows: usize) -> Option<shepr_term::ScrollMetrics> {
+        Some(shepr_term::ScrollMetrics::new(
             0,
             0,
             viewport_rows,
-            shepr_vt::AbsRow(0),
+            shepr_term::AbsRow(0),
         ))
     }
 
@@ -227,9 +215,9 @@ mod tests {
     #[test]
     fn selection_highlight_uses_one_uniform_style() {
         let palette = Palette::catppuccin();
-        let host_theme = crate::host_term::theme::TerminalTheme {
+        let host_theme = TerminalTheme {
             foreground: None,
-            background: Some(crate::host_term::theme::RgbColor {
+            background: Some(RgbColor {
                 r: 12,
                 g: 14,
                 b: 16,
@@ -240,8 +228,8 @@ mod tests {
         let pane_id = 1_u8;
         let selection = Some(Selection::range(
             pane_id,
-            shepr_vt::Point::new(shepr_vt::AbsRow(0), 0),
-            shepr_vt::Point::new(shepr_vt::AbsRow(0), 2),
+            shepr_term::Point::new(shepr_term::AbsRow(0), 0),
+            shepr_term::Point::new(shepr_term::AbsRow(0), 2),
         ));
         let mut buffer = Buffer::empty(ratatui::layout::Rect::new(0, 0, 4, 1));
         buffer[(0, 0)].set_style(
@@ -283,13 +271,13 @@ mod tests {
     #[test]
     fn selection_highlight_clips_pane_rect_larger_than_buffer() {
         let palette = Palette::catppuccin();
-        let host_theme = crate::host_term::theme::TerminalTheme::default();
+        let host_theme = TerminalTheme::default();
         let expected = automatic_selection_style(&palette, host_theme);
         let pane_id = 1_u8;
         let selection = Some(Selection::range(
             pane_id,
-            shepr_vt::Point::new(shepr_vt::AbsRow(0), 0),
-            shepr_vt::Point::new(shepr_vt::AbsRow(2), 3),
+            shepr_term::Point::new(shepr_term::AbsRow(0), 0),
+            shepr_term::Point::new(shepr_term::AbsRow(2), 3),
         ));
         let mut buffer = Buffer::empty(ratatui::layout::Rect::new(0, 0, 4, 2));
 
@@ -341,13 +329,13 @@ mod tests {
     fn automatic_selection_background_uses_host_background() {
         let bg = automatic_selection_bg(
             &Palette::terminal(),
-            crate::host_term::theme::TerminalTheme {
-                foreground: Some(crate::host_term::theme::RgbColor {
+            TerminalTheme {
+                foreground: Some(RgbColor {
                     r: 230,
                     g: 230,
                     b: 230,
                 }),
-                background: Some(crate::host_term::theme::RgbColor {
+                background: Some(RgbColor {
                     r: 12,
                     g: 14,
                     b: 16,
@@ -383,8 +371,8 @@ mod tests {
             assert_eq!(
                 automatic_selection_style(
                     &Palette::terminal(),
-                    crate::host_term::theme::TerminalTheme {
-                        background: Some(crate::host_term::theme::RgbColor { r, g, b }),
+                    TerminalTheme {
+                        background: Some(RgbColor { r, g, b }),
                         ..Default::default()
                     },
                 ),

@@ -3,7 +3,7 @@
 //! buffer (`overwrite`). `FrameData` is the composition target throughout; pane cells never
 //! pass through ratatui, so underline shapes, hyperlinks and wide-glyph tails stay in their
 //! wire form. Pane cells carry their terminal grid width; chrome cells keep the
-//! grapheme rule in `shepr_termio::blit::text_width`.
+//! grapheme rule in `shepr_term::width::text_width`.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -67,12 +67,12 @@ impl StylePatch {
             }
         }
         if self.add.contains(Modifier::UNDERLINED)
-            && cell.style.underline == shepr_vt::UnderlineStyle::None
+            && cell.style.underline == shepr_term::UnderlineStyle::None
         {
-            cell.style.underline = shepr_vt::UnderlineStyle::Single;
+            cell.style.underline = shepr_term::UnderlineStyle::Single;
         }
         if self.sub.contains(Modifier::UNDERLINED) {
-            cell.style.underline = shepr_vt::UnderlineStyle::None;
+            cell.style.underline = shepr_term::UnderlineStyle::None;
         }
     }
 }
@@ -153,7 +153,7 @@ pub(in crate::shell) fn split_glyph_cells<'a>(
             continue;
         }
         let width = match grid_width(x) {
-            GridCellWidth::Grapheme => shepr_termio::blit::text_width(text).max(1),
+            GridCellWidth::Grapheme => shepr_term::width::text_width(text).max(1),
             GridCellWidth::One => 1,
             GridCellWidth::Two => 2,
         };
@@ -236,9 +236,9 @@ pub(in crate::shell) fn overwrite(frame: &mut FrameData, rects: &[Rect], scratch
             };
             let mut cell = CellData::from_ratatui_cell(source);
             cell.style.underline = if source.modifier.contains(Modifier::UNDERLINED) {
-                shepr_vt::UnderlineStyle::Single
+                shepr_term::UnderlineStyle::Single
             } else {
-                shepr_vt::UnderlineStyle::None
+                shepr_term::UnderlineStyle::None
             };
             if scratch_remnants.contains(&x) {
                 blank(&mut cell);
@@ -260,7 +260,7 @@ mod tests {
     use shepr_protocol::FrameData;
 
     use ratatui::style::Color;
-    use shepr_vt::UnderlineStyle;
+    use shepr_term::UnderlineStyle;
 
     const SHAPES: [UnderlineStyle; 5] = [
         UnderlineStyle::Single,
@@ -609,7 +609,7 @@ mod tests {
     #[test]
     fn overwrite_uses_the_output_width_rule_for_halfwidth_katakana() {
         let voiced = "\u{ff76}\u{ff9e}";
-        assert_eq!(shepr_termio::blit::text_width(voiced), 2);
+        assert_eq!(shepr_term::width::text_width(voiced), 2);
         let mut frame = frame("a");
         frame.cells[0].symbol = voiced.to_owned();
         frame.cells.push(cell(""));
@@ -632,7 +632,7 @@ mod tests {
         let mut scratch = blank_scratch(3, 1);
         scratch.set_string(0, 0, "#", Style::default());
 
-        assert_eq!(shepr_termio::blit::text_width("\u{2764}\u{fe0f}"), 2);
+        assert_eq!(shepr_term::width::text_width("\u{2764}\u{fe0f}"), 2);
         overwrite(&mut frame, &[Rect::new(0, 0, 1, 1)], &scratch);
 
         assert_eq!(text(&frame), "# z");

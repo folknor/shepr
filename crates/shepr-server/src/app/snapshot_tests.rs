@@ -110,12 +110,12 @@ fn round_trip_empty_session() {
 
 #[test]
 fn saved_host_theme_round_trips() {
-    let color = shepr_termio::host_term::theme::RgbColor {
+    let color = shepr_term::host::RgbColor {
         r: 12,
         g: 34,
         b: 56,
     };
-    let mut theme = shepr_termio::host_term::theme::TerminalTheme {
+    let mut theme = shepr_term::host::TerminalTheme {
         background: Some(color),
         ..Default::default()
     };
@@ -129,7 +129,7 @@ fn saved_host_theme_round_trips() {
 #[test]
 fn capture_keeps_the_theme_for_a_headless_resume() {
     let mut state = AppState::test_new();
-    let color = shepr_termio::host_term::theme::RgbColor { r: 2, g: 4, b: 8 };
+    let color = shepr_term::host::RgbColor { r: 2, g: 4, b: 8 };
     state.host_terminal_theme.background = Some(color);
     let snapshot = capture_from_state(&state);
     assert_eq!(snapshot.host_theme.to_theme().background, Some(color));

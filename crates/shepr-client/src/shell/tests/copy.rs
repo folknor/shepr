@@ -16,8 +16,8 @@ use shepr_config::theme::Palette;
 use shepr_protocol::command::{EndpointCommand, EndpointReply};
 use shepr_protocol::{AgentStatus, ClientMessage, ClientPaneInputEvent, FrameData};
 use shepr_protocol::{ClientShellAgent, ClientShellPane, ClientShellSnapshot, SurfaceRect};
-use shepr_termio::host_term::theme::DefaultColorKind;
-use shepr_termio::host_term::theme::HostAppearance;
+use shepr_term::host::DefaultColorKind;
+use shepr_term::host::HostAppearance;
 use shepr_termio::input::raw_input::RawInputEvent;
 
 use crate::shell::state::{
@@ -54,12 +54,12 @@ fn pasted_help_and_copy_queries_normalize_single_line_text() {
     state.overlay = None;
     state.mode = ClientShellMode::Copy;
     state.copy_mode = Some(ClientCopyModeState {
-        scroll: shepr_vt::ScrollMetrics::new(0, 0, 24, shepr_vt::AbsRow(0)),
+        scroll: shepr_term::ScrollMetrics::new(0, 0, 24, shepr_term::AbsRow(0)),
         pane_id: test_pane_id("w1:p1"),
         geometry: (80, 24),
         alternate_screen_active: false,
         cursor: shepr_protocol::command::PaneTextPoint {
-            row: shepr_vt::AbsRow(0),
+            row: shepr_term::AbsRow(0),
             col: 0,
         },
         entry_offset_from_bottom: 0,
@@ -109,7 +109,7 @@ fn copy_cursor_is_never_left_under_the_mode_bar() {
         0,
         50,
         usize::from(area.height),
-        shepr_vt::AbsRow(0),
+        shepr_term::AbsRow(0),
     ));
     state.receive_pane_surface_from(pane_surface, state.active_snapshot_generation.unwrap_or(1));
     state.compose(106, 20).expect("terminal frame");
@@ -144,18 +144,18 @@ fn copy_cursor_is_never_left_under_the_mode_bar() {
     let height = u64::from(area.height);
     if let Some(copy_mode) = state.copy_mode.as_mut() {
         copy_mode.scroll = copy_mode.scroll.with_offset(10);
-        copy_mode.cursor.row = shepr_vt::AbsRow(40 + height - 2);
+        copy_mode.cursor.row = shepr_term::AbsRow(40 + height - 2);
     }
     state.handle_input_bytes(b"j");
     let copy_mode = state.copy_mode.as_ref().expect("still in copy mode");
-    assert_eq!(copy_mode.cursor.row, shepr_vt::AbsRow(40 + height - 1));
+    assert_eq!(copy_mode.cursor.row, shepr_term::AbsRow(40 + height - 1));
     assert_eq!(copy_mode.scroll.offset_from_bottom, 9);
 }
 
 #[test]
 fn client_selection_uses_host_background_and_repaints_when_it_changes() {
     use ratatui::style::Color;
-    use shepr_termio::host_term::theme::RgbColor;
+    use shepr_term::host::RgbColor;
 
     for explicit_appearance in [false, true] {
         let mut config = ClientShellConfig::from_config(&ClientConfig::default());
@@ -273,7 +273,7 @@ fn client_mouse_selection_highlights_and_copies_through_endpoint_extraction() {
             .mouse_selection
             .selection
             .as_ref()
-            .is_some_and(shepr_vt::selection::Selection::is_visible)
+            .is_some_and(shepr_term::selection::Selection::is_visible)
     );
     let selected = state.compose(106, 20).expect("selected frame");
     let selected_cell =
@@ -300,11 +300,11 @@ fn client_mouse_selection_highlights_and_copies_through_endpoint_extraction() {
         EndpointCommand::PaneSelectionRead(params)
             if params.pane_id == crate::tests::test_pane_id("w1:p1")
                 && params.anchor == shepr_protocol::command::PaneTextPoint {
-                    row: shepr_vt::AbsRow(0),
+                    row: shepr_term::AbsRow(0),
                     col: 0,
                 }
                 && params.cursor == shepr_protocol::command::PaneTextPoint {
-                    row: shepr_vt::AbsRow(0),
+                    row: shepr_term::AbsRow(0),
                     col: 2,
                 }
     ));
@@ -365,7 +365,7 @@ fn retained_mouse_selection_survives_output_and_copies_without_terminal_input() 
             .mouse_selection
             .selection
             .as_ref()
-            .is_some_and(shepr_vt::selection::Selection::is_finalized)
+            .is_some_and(shepr_term::selection::Selection::is_finalized)
     );
 
     // A patch that redraws selected text must retain the same live terminal range.
@@ -400,7 +400,7 @@ fn retained_mouse_selection_survives_output_and_copies_without_terminal_input() 
             .mouse_selection
             .selection
             .as_ref()
-            .is_some_and(shepr_vt::selection::Selection::is_finalized)
+            .is_some_and(shepr_term::selection::Selection::is_finalized)
     );
 
     let highlighted = state.compose(106, 20).expect("highlighted frame");
@@ -412,7 +412,7 @@ fn retained_mouse_selection_survives_output_and_copies_without_terminal_input() 
     state.mouse_selection.selection = selection;
 
     let copy = state.handle_raw_events(vec![RawInputEvent::Key(
-        shepr_termio::input::TerminalKey::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+        shepr_term::key::TerminalKey::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
     )]);
     assert!(state.mouse_selection.selection.is_none());
     assert!(matches!(
@@ -458,7 +458,7 @@ fn selection_edge_drag_requests_scroll_and_timer_continues_it() {
         0,
         20,
         2,
-        shepr_vt::AbsRow(0),
+        shepr_term::AbsRow(0),
     ));
     state.receive_pane_surface_from(pane_surface, state.active_snapshot_generation.unwrap_or(1));
     state.compose(106, 20).expect("composed frame");
@@ -521,7 +521,7 @@ fn keyboard_copy_mode_owns_cursor_selection_copy_and_scroll_restore() {
         0,
         20,
         2,
-        shepr_vt::AbsRow(0),
+        shepr_term::AbsRow(0),
     ));
     state.receive_pane_surface_from(pane_surface, state.active_snapshot_generation.unwrap_or(1));
     state.compose(106, 20).expect("composed frame");
@@ -531,25 +531,27 @@ fn keyboard_copy_mode_owns_cursor_selection_copy_and_scroll_restore() {
     assert_eq!(state.mode, ClientShellMode::Copy);
     assert_eq!(
         state.copy_mode.as_ref().map(|mode| mode.cursor.row),
-        Some(shepr_vt::AbsRow(21))
+        Some(shepr_term::AbsRow(21))
     );
     assert!(enter.actions.is_empty());
 
-    state.handle_raw_events(vec![RawInputEvent::Key(
-        shepr_termio::input::TerminalKey::new(KeyCode::Char('b'), KeyModifiers::CONTROL),
-    )]);
+    state.handle_raw_events(vec![RawInputEvent::Key(shepr_term::key::TerminalKey::new(
+        KeyCode::Char('b'),
+        KeyModifiers::CONTROL,
+    ))]);
     assert_eq!(state.mode, ClientShellMode::Prefix);
-    state.handle_raw_events(vec![RawInputEvent::Key(
-        shepr_termio::input::TerminalKey::new(KeyCode::Esc, KeyModifiers::empty()),
-    )]);
+    state.handle_raw_events(vec![RawInputEvent::Key(shepr_term::key::TerminalKey::new(
+        KeyCode::Esc,
+        KeyModifiers::empty(),
+    ))]);
     assert_eq!(state.mode, ClientShellMode::Copy);
 
     let page = state.handle_raw_events(vec![RawInputEvent::Key(
-        shepr_termio::input::TerminalKey::new(KeyCode::PageUp, KeyModifiers::empty()),
+        shepr_term::key::TerminalKey::new(KeyCode::PageUp, KeyModifiers::empty()),
     )]);
     assert_eq!(
         state.copy_mode.as_ref().map(|mode| mode.cursor.row),
-        Some(shepr_vt::AbsRow(20))
+        Some(shepr_term::AbsRow(20))
     );
     assert!(matches!(
         &page.actions[..],
@@ -565,13 +567,14 @@ fn keyboard_copy_mode_owns_cursor_selection_copy_and_scroll_restore() {
         _ => unreachable!(),
     };
 
-    let top = state.handle_raw_events(vec![RawInputEvent::Key(
-        shepr_termio::input::TerminalKey::new(KeyCode::Char('g'), KeyModifiers::empty()),
-    )]);
+    let top = state.handle_raw_events(vec![RawInputEvent::Key(shepr_term::key::TerminalKey::new(
+        KeyCode::Char('g'),
+        KeyModifiers::empty(),
+    ))]);
     assert!(top.actions.is_empty());
     assert_eq!(
         state.copy_mode.as_ref().map(|mode| mode.cursor.row),
-        Some(shepr_vt::AbsRow(0))
+        Some(shepr_term::AbsRow(0))
     );
     let (_, top_actions) = state
         .handle_endpoint_result(
@@ -595,22 +598,24 @@ fn keyboard_copy_mode_owns_cursor_selection_copy_and_scroll_restore() {
         Ok(pane_scroll_result(20, 20, 2)),
     );
 
-    state.handle_raw_events(vec![RawInputEvent::Key(
-        shepr_termio::input::TerminalKey::new(KeyCode::Char('v'), KeyModifiers::empty()),
-    )]);
-    state.handle_raw_events(vec![RawInputEvent::Key(
-        shepr_termio::input::TerminalKey::new(KeyCode::Char('l'), KeyModifiers::empty()),
-    )]);
+    state.handle_raw_events(vec![RawInputEvent::Key(shepr_term::key::TerminalKey::new(
+        KeyCode::Char('v'),
+        KeyModifiers::empty(),
+    ))]);
+    state.handle_raw_events(vec![RawInputEvent::Key(shepr_term::key::TerminalKey::new(
+        KeyCode::Char('l'),
+        KeyModifiers::empty(),
+    ))]);
     assert!(
         state
             .mouse_selection
             .selection
             .as_ref()
-            .is_some_and(shepr_vt::selection::Selection::is_visible)
+            .is_some_and(shepr_term::selection::Selection::is_visible)
     );
 
     let copy = state.handle_raw_events(vec![RawInputEvent::Key(
-        shepr_termio::input::TerminalKey::new(KeyCode::Char('y'), KeyModifiers::empty()),
+        shepr_term::key::TerminalKey::new(KeyCode::Char('y'), KeyModifiers::empty()),
     )]);
     assert_eq!(state.mode, ClientShellMode::Terminal);
     assert!(state.copy_mode.is_none());
@@ -644,7 +649,7 @@ fn keyboard_selections_survive_output_and_copy_live_ranges() {
             0,
             0,
             2,
-            shepr_vt::AbsRow(0),
+            shepr_term::AbsRow(0),
         ));
         state.receive_pane_surface_from(
             pane_surface.clone(),
@@ -719,7 +724,7 @@ fn empty_keyboard_anchor_keeps_search_fallback_revision_guard() {
         0,
         0,
         2,
-        shepr_vt::AbsRow(0),
+        shepr_term::AbsRow(0),
     ));
     state.receive_pane_surface_from(pane_surface, state.active_snapshot_generation.unwrap_or(1));
     state.compose(106, 20).expect("composed frame");
@@ -730,11 +735,11 @@ fn empty_keyboard_anchor_keeps_search_fallback_revision_guard() {
     };
     let found = shepr_protocol::command::PaneTextRange {
         start: shepr_protocol::command::PaneTextPoint {
-            row: shepr_vt::AbsRow(0),
+            row: shepr_term::AbsRow(0),
             col: 0,
         },
         end: shepr_protocol::command::PaneTextPoint {
-            row: shepr_vt::AbsRow(0),
+            row: shepr_term::AbsRow(0),
             col: 3,
         },
     };
@@ -773,7 +778,7 @@ fn keyboard_selection_does_not_return_after_resize_or_screen_switch() {
             0,
             0,
             2,
-            shepr_vt::AbsRow(0),
+            shepr_term::AbsRow(0),
         ));
         state.receive_pane_surface_from(
             pane_surface.clone(),
@@ -822,7 +827,7 @@ fn keyboard_copy_mode_content_motion_is_endpoint_backed() {
         0,
         0,
         2,
-        shepr_vt::AbsRow(0),
+        shepr_term::AbsRow(0),
     ));
     state.receive_pane_surface_from(pane_surface, state.active_snapshot_generation.unwrap_or(1));
     state.compose(106, 20).expect("composed frame");
@@ -831,7 +836,7 @@ fn keyboard_copy_mode_content_motion_is_endpoint_backed() {
     let origin = state.copy_mode.as_ref().expect("copy mode").cursor;
 
     let motion = state.handle_raw_events(vec![RawInputEvent::Key(
-        shepr_termio::input::TerminalKey::new(KeyCode::Char('w'), KeyModifiers::empty()),
+        shepr_term::key::TerminalKey::new(KeyCode::Char('w'), KeyModifiers::empty()),
     )]);
     let [ClientShellAction::Endpoint { request, .. }] = &motion.actions[..] else {
         panic!("word motion should use endpoint semantics");
@@ -876,7 +881,7 @@ fn keys_after_an_exit_key_reach_the_pane_once_an_in_flight_copy_motion_replays()
         0,
         0,
         2,
-        shepr_vt::AbsRow(0),
+        shepr_term::AbsRow(0),
     ));
     state.receive_pane_surface_from(pane_surface, state.active_snapshot_generation.unwrap_or(1));
     state.compose(106, 20).expect("composed frame");
@@ -884,7 +889,7 @@ fn keys_after_an_exit_key_reach_the_pane_once_an_in_flight_copy_motion_replays()
     state.record_binding(&shepr_termio::input::KeybindAction::CopyMode, &mut enter);
     let origin = state.copy_mode.as_ref().expect("copy mode").cursor;
     let key = |code| {
-        RawInputEvent::Key(shepr_termio::input::TerminalKey::new(
+        RawInputEvent::Key(shepr_term::key::TerminalKey::new(
             code,
             KeyModifiers::empty(),
         ))
@@ -943,7 +948,7 @@ fn copy_search_owns_prompt_repeat_highlights_selection_and_restore() {
         0,
         20,
         2,
-        shepr_vt::AbsRow(0),
+        shepr_term::AbsRow(0),
     ));
     state.receive_pane_surface_from(pane_surface, state.active_snapshot_generation.unwrap_or(1));
     state.compose(106, 20).expect("composed frame");
@@ -951,9 +956,10 @@ fn copy_search_owns_prompt_repeat_highlights_selection_and_restore() {
     state.record_binding(&shepr_termio::input::KeybindAction::CopyMode, &mut enter);
     let origin = state.copy_mode.as_ref().expect("copy mode").cursor;
 
-    state.handle_raw_events(vec![RawInputEvent::Key(
-        shepr_termio::input::TerminalKey::new(KeyCode::Char('?'), KeyModifiers::SHIFT),
-    )]);
+    state.handle_raw_events(vec![RawInputEvent::Key(shepr_term::key::TerminalKey::new(
+        KeyCode::Char('?'),
+        KeyModifiers::SHIFT,
+    ))]);
     assert!(state.copy_mode.as_ref().is_some_and(|mode| {
         mode.search
             .as_ref()
@@ -962,27 +968,31 @@ fn copy_search_owns_prompt_repeat_highlights_selection_and_restore() {
                 prompt.direction == shepr_protocol::command::PaneCopySearchDirection::Backward
             })
     }));
-    state.handle_raw_events(vec![RawInputEvent::Key(
-        shepr_termio::input::TerminalKey::new(KeyCode::Esc, KeyModifiers::empty()),
-    )]);
+    state.handle_raw_events(vec![RawInputEvent::Key(shepr_term::key::TerminalKey::new(
+        KeyCode::Esc,
+        KeyModifiers::empty(),
+    ))]);
     assert!(state.copy_mode.as_ref().is_none_or(|mode| {
         mode.search
             .as_ref()
             .is_none_or(|search| search.prompt.is_none())
     }));
 
-    state.handle_raw_events(vec![RawInputEvent::Key(
-        shepr_termio::input::TerminalKey::new(KeyCode::Char('/'), KeyModifiers::empty()),
-    )]);
+    state.handle_raw_events(vec![RawInputEvent::Key(shepr_term::key::TerminalKey::new(
+        KeyCode::Char('/'),
+        KeyModifiers::empty(),
+    ))]);
     state.handle_raw_events(vec![RawInputEvent::Paste("junk".into())]);
-    state.handle_raw_events(vec![RawInputEvent::Key(
-        shepr_termio::input::TerminalKey::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
-    )]);
+    state.handle_raw_events(vec![RawInputEvent::Key(shepr_term::key::TerminalKey::new(
+        KeyCode::Char('u'),
+        KeyModifiers::CONTROL,
+    ))]);
     state.handle_raw_events(vec![RawInputEvent::Paste("nee".into())]);
     state.handle_raw_events(vec![RawInputEvent::Paste("dleX".into())]);
-    state.handle_raw_events(vec![RawInputEvent::Key(
-        shepr_termio::input::TerminalKey::new(KeyCode::Backspace, KeyModifiers::empty()),
-    )]);
+    state.handle_raw_events(vec![RawInputEvent::Key(shepr_term::key::TerminalKey::new(
+        KeyCode::Backspace,
+        KeyModifiers::empty(),
+    ))]);
     assert_eq!(
         state
             .copy_mode
@@ -994,7 +1004,7 @@ fn copy_search_owns_prompt_repeat_highlights_selection_and_restore() {
     );
 
     let search = state.handle_raw_events(vec![RawInputEvent::Key(
-        shepr_termio::input::TerminalKey::new(KeyCode::Enter, KeyModifiers::empty()),
+        shepr_term::key::TerminalKey::new(KeyCode::Enter, KeyModifiers::empty()),
     )]);
     let [ClientShellAction::Endpoint { request, .. }] = &search.actions[..] else {
         panic!("search should use endpoint terminal semantics");
@@ -1012,21 +1022,21 @@ fn copy_search_owns_prompt_repeat_highlights_selection_and_restore() {
     let matches = vec![
         shepr_protocol::command::PaneTextRange {
             start: shepr_protocol::command::PaneTextPoint {
-                row: shepr_vt::AbsRow(5),
+                row: shepr_term::AbsRow(5),
                 col: 2,
             },
             end: shepr_protocol::command::PaneTextPoint {
-                row: shepr_vt::AbsRow(5),
+                row: shepr_term::AbsRow(5),
                 col: 7,
             },
         },
         shepr_protocol::command::PaneTextRange {
             start: shepr_protocol::command::PaneTextPoint {
-                row: shepr_vt::AbsRow(15),
+                row: shepr_term::AbsRow(15),
                 col: 1,
             },
             end: shepr_protocol::command::PaneTextPoint {
-                row: shepr_vt::AbsRow(15),
+                row: shepr_term::AbsRow(15),
                 col: 6,
             },
         },
@@ -1041,7 +1051,7 @@ fn copy_search_owns_prompt_repeat_highlights_selection_and_restore() {
     assert!(repaint);
     assert_eq!(
         state.copy_mode.as_ref().map(|mode| mode.cursor.row),
-        Some(shepr_vt::AbsRow(5))
+        Some(shepr_term::AbsRow(5))
     );
     assert!(actions.iter().any(|action| matches!(
         action,
@@ -1091,11 +1101,12 @@ fn copy_search_owns_prompt_repeat_highlights_selection_and_restore() {
         state.config.palette.accent
     );
 
-    state.handle_raw_events(vec![RawInputEvent::Key(
-        shepr_termio::input::TerminalKey::new(KeyCode::Char('v'), KeyModifiers::empty()),
-    )]);
+    state.handle_raw_events(vec![RawInputEvent::Key(shepr_term::key::TerminalKey::new(
+        KeyCode::Char('v'),
+        KeyModifiers::empty(),
+    ))]);
     let repeat = state.handle_raw_events(vec![RawInputEvent::Key(
-        shepr_termio::input::TerminalKey::new(KeyCode::Char('n'), KeyModifiers::empty()),
+        shepr_term::key::TerminalKey::new(KeyCode::Char('n'), KeyModifiers::empty()),
     )]);
     let [ClientShellAction::Endpoint { request, .. }] = &repeat.actions[..] else {
         panic!("repeat should use endpoint search");
@@ -1130,18 +1141,18 @@ fn copy_search_owns_prompt_repeat_highlights_selection_and_restore() {
     }
     assert_eq!(
         state.copy_mode.as_ref().map(|mode| mode.cursor.row),
-        Some(shepr_vt::AbsRow(15))
+        Some(shepr_term::AbsRow(15))
     );
     assert!(
         state
             .mouse_selection
             .selection
             .as_ref()
-            .is_some_and(shepr_vt::selection::Selection::is_visible)
+            .is_some_and(shepr_term::selection::Selection::is_visible)
     );
 
     let reverse = state.handle_raw_events(vec![RawInputEvent::Key(
-        shepr_termio::input::TerminalKey::new(KeyCode::Char('N'), KeyModifiers::SHIFT),
+        shepr_term::key::TerminalKey::new(KeyCode::Char('N'), KeyModifiers::SHIFT),
     )]);
     let [ClientShellAction::Endpoint { request, .. }] = &reverse.actions[..] else {
         panic!("reverse search should use endpoint search");
@@ -1174,9 +1185,10 @@ fn copy_search_owns_prompt_repeat_highlights_selection_and_restore() {
         );
     }
 
-    state.handle_raw_events(vec![RawInputEvent::Key(
-        shepr_termio::input::TerminalKey::new(KeyCode::Esc, KeyModifiers::empty()),
-    )]);
+    state.handle_raw_events(vec![RawInputEvent::Key(shepr_term::key::TerminalKey::new(
+        KeyCode::Esc,
+        KeyModifiers::empty(),
+    ))]);
     assert_eq!(state.mode, ClientShellMode::Copy);
     assert!(state.copy_mode.as_ref().is_some_and(|mode| {
         mode.search
@@ -1185,7 +1197,7 @@ fn copy_search_owns_prompt_repeat_highlights_selection_and_restore() {
             && mode.selection.is_none()
     }));
     let exit = state.handle_raw_events(vec![RawInputEvent::Key(
-        shepr_termio::input::TerminalKey::new(KeyCode::Esc, KeyModifiers::empty()),
+        shepr_term::key::TerminalKey::new(KeyCode::Esc, KeyModifiers::empty()),
     )]);
     assert_eq!(state.mode, ClientShellMode::Terminal);
     assert!(exit.actions.iter().any(|action| matches!(
@@ -1562,7 +1574,7 @@ fn navigator_horizontal_arrows_jump_sections_but_edit_the_search_cursor() {
     state.open_navigator_overlay();
     let press = |state: &mut ClientShellState, code| {
         let outcome = state.handle_raw_events(vec![RawInputEvent::Key(
-            shepr_termio::input::TerminalKey::new(code, KeyModifiers::empty()),
+            shepr_term::key::TerminalKey::new(code, KeyModifiers::empty()),
         )]);
         assert!(outcome.actions.is_empty());
     };
@@ -1698,7 +1710,11 @@ fn navigator_scrollbar_click_and_drag_scroll_without_opening_a_destination() {
             .start(),
         0
     );
-    let thumb = shepr_termio::scroll::scrollbar_thumb(metrics, track).expect("thumb");
+    let thumb = shepr_term::scroll::scrollbar_thumb(
+        metrics,
+        crate::shell::navigation::scroll::scroll_track(track),
+    )
+    .expect("thumb");
     let grab = thumb.len - 1;
     mouse(
         &mut state,
@@ -1742,9 +1758,10 @@ fn navigator_scrollbar_click_and_drag_scroll_without_opening_a_destination() {
         track.bottom() + 5,
     );
     assert!(state.chrome_drag.is_none());
-    state.handle_raw_events(vec![RawInputEvent::Key(
-        shepr_termio::input::TerminalKey::new(KeyCode::Up, KeyModifiers::empty()),
-    )]);
+    state.handle_raw_events(vec![RawInputEvent::Key(shepr_term::key::TerminalKey::new(
+        KeyCode::Up,
+        KeyModifiers::empty(),
+    ))]);
     state.compose(106, 24).expect("keyboard resumes after drag");
     assert_eq!(
         state
@@ -1991,7 +2008,7 @@ fn copy_mode_survives_mouse_motion_and_parks_across_focus_changes() {
         0,
         10,
         2,
-        shepr_vt::AbsRow(0),
+        shepr_term::AbsRow(0),
     ));
     state.receive_pane_surface_from(pane_surface, state.active_snapshot_generation.unwrap_or(1));
     state.compose(106, 20).expect("composed frame");
@@ -2033,21 +2050,26 @@ fn copy_mode_survives_mouse_motion_and_parks_across_focus_changes() {
             .is_some_and(|copy_mode| copy_mode.selection.is_some())
     );
 
-    let (prefix_key, prefix_modifiers) = state.config.keybinds.prefix;
-    state.handle_raw_events(vec![RawInputEvent::Key(
-        shepr_termio::input::TerminalKey::new(prefix_key, prefix_modifiers),
-    )]);
+    let shepr_term::key::KeyChord {
+        code: prefix_key,
+        modifiers: prefix_modifiers,
+    } = state.config.keybinds.prefix;
+    state.handle_raw_events(vec![RawInputEvent::Key(shepr_term::key::TerminalKey::new(
+        prefix_key,
+        prefix_modifiers,
+    ))]);
     state.set_snapshot(Box::new(unfocused.clone()));
     assert_eq!(state.mode, ClientShellMode::Prefix);
-    state.handle_raw_events(vec![RawInputEvent::Key(
-        shepr_termio::input::TerminalKey::new(KeyCode::Esc, KeyModifiers::empty()),
-    )]);
+    state.handle_raw_events(vec![RawInputEvent::Key(shepr_term::key::TerminalKey::new(
+        KeyCode::Esc,
+        KeyModifiers::empty(),
+    ))]);
     assert_eq!(state.mode, ClientShellMode::Terminal);
 
-    let mut other_selection = shepr_vt::selection::Selection::range(
+    let mut other_selection = shepr_term::selection::Selection::range(
         test_pane_id("w1:p2"),
-        shepr_vt::Point::new(shepr_vt::AbsRow(0), 0),
-        shepr_vt::Point::new(shepr_vt::AbsRow(0), 1),
+        shepr_term::Point::new(shepr_term::AbsRow(0), 0),
+        shepr_term::Point::new(shepr_term::AbsRow(0), 1),
     );
     assert!(other_selection.finish());
     state.mouse_selection.selection = Some(other_selection);
@@ -2074,7 +2096,7 @@ fn copy_mode_survives_mouse_motion_and_parks_across_focus_changes() {
     state.receive_pane_surface_from(other_surface, state.active_snapshot_generation.unwrap_or(1));
     assert!(state.mouse_selection.selection.is_some());
     let copy = state.handle_raw_events(vec![RawInputEvent::Key(
-        shepr_termio::input::TerminalKey::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+        shepr_term::key::TerminalKey::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
     )]);
     assert!(copy.requests.is_empty());
     assert!(
@@ -2103,9 +2125,10 @@ fn copy_mode_survives_mouse_motion_and_parks_across_focus_changes() {
     );
 
     state.mode = ClientShellMode::Navigate;
-    state.handle_raw_events(vec![RawInputEvent::Key(
-        shepr_termio::input::TerminalKey::new(KeyCode::Esc, KeyModifiers::empty()),
-    )]);
+    state.handle_raw_events(vec![RawInputEvent::Key(shepr_term::key::TerminalKey::new(
+        KeyCode::Esc,
+        KeyModifiers::empty(),
+    ))]);
     assert_eq!(state.mode, ClientShellMode::Copy);
     assert!(
         state
@@ -2115,9 +2138,10 @@ fn copy_mode_survives_mouse_motion_and_parks_across_focus_changes() {
             .is_some_and(|selection| selection.pane_id == crate::tests::test_pane_id("w1:p1"))
     );
     state.mode = ClientShellMode::Resize;
-    state.handle_raw_events(vec![RawInputEvent::Key(
-        shepr_termio::input::TerminalKey::new(KeyCode::Esc, KeyModifiers::empty()),
-    )]);
+    state.handle_raw_events(vec![RawInputEvent::Key(shepr_term::key::TerminalKey::new(
+        KeyCode::Esc,
+        KeyModifiers::empty(),
+    ))]);
     assert_eq!(state.mode, ClientShellMode::Copy);
     assert!(
         state
@@ -2137,7 +2161,7 @@ fn clicking_the_pane_scrollbar_preserves_copy_mode_for_its_focused_pane() {
         0,
         10,
         2,
-        shepr_vt::AbsRow(0),
+        shepr_term::AbsRow(0),
     ));
     pane_surface.panes[0].scrollbar_rect = Some(SurfaceRect {
         x: 3,
@@ -2171,15 +2195,15 @@ fn retained_selection_copy_suppresses_key_repeats() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
     state.set_snapshot(Box::new(snapshot()));
     state.receive_pane_surface_from(surface(), state.active_snapshot_generation.unwrap_or(1));
-    let mut selection = shepr_vt::selection::Selection::range(
+    let mut selection = shepr_term::selection::Selection::range(
         test_pane_id("w1:p1"),
-        shepr_vt::Point::new(shepr_vt::AbsRow(0), 0),
-        shepr_vt::Point::new(shepr_vt::AbsRow(0), 1),
+        shepr_term::Point::new(shepr_term::AbsRow(0), 0),
+        shepr_term::Point::new(shepr_term::AbsRow(0), 1),
     );
     assert!(selection.finish());
     state.mouse_selection.selection = Some(selection);
 
-    let key = shepr_termio::input::TerminalKey::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+    let key = shepr_term::key::TerminalKey::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
     let press = state.handle_raw_events(vec![RawInputEvent::Key(key.clone())]);
     assert!(press.actions.iter().any(|action| matches!(
         action,
@@ -2208,7 +2232,7 @@ fn rapid_copy_motions_are_chained_from_the_previous_result() {
         0,
         0,
         2,
-        shepr_vt::AbsRow(0),
+        shepr_term::AbsRow(0),
     ));
     state.receive_pane_surface_from(pane_surface, state.active_snapshot_generation.unwrap_or(1));
     state.compose(106, 20).expect("composed frame");
@@ -2258,7 +2282,7 @@ fn copy_prefix_and_detach_act_after_an_in_flight_copy_operation_replays() {
         0,
         10,
         2,
-        shepr_vt::AbsRow(0),
+        shepr_term::AbsRow(0),
     ));
     state.receive_pane_surface_from(pane_surface, state.active_snapshot_generation.unwrap_or(1));
     state.compose(106, 20).expect("composed frame");
@@ -2267,10 +2291,14 @@ fn copy_prefix_and_detach_act_after_an_in_flight_copy_operation_replays() {
     let origin = state.copy_mode.as_ref().expect("copy mode").cursor;
     let motion = state.handle_input_bytes(b"w");
     state.handle_input_bytes(b"l");
-    let (prefix_key, prefix_modifiers) = state.config.keybinds.prefix;
-    state.handle_raw_events(vec![RawInputEvent::Key(
-        shepr_termio::input::TerminalKey::new(prefix_key, prefix_modifiers),
-    )]);
+    let shepr_term::key::KeyChord {
+        code: prefix_key,
+        modifiers: prefix_modifiers,
+    } = state.config.keybinds.prefix;
+    state.handle_raw_events(vec![RawInputEvent::Key(shepr_term::key::TerminalKey::new(
+        prefix_key,
+        prefix_modifiers,
+    ))]);
     // The prefix waits behind the motion and the key typed before it.
     assert_eq!(state.mode, ClientShellMode::Copy);
 
@@ -2298,8 +2326,8 @@ fn copy_prefix_and_detach_act_after_an_in_flight_copy_operation_replays() {
 #[test]
 fn copy_mode_exit_keys_act_after_earlier_queued_input() {
     for key in [
-        shepr_termio::input::TerminalKey::new(KeyCode::Char('q'), KeyModifiers::empty()),
-        shepr_termio::input::TerminalKey::new(KeyCode::Esc, KeyModifiers::empty()),
+        shepr_term::key::TerminalKey::new(KeyCode::Char('q'), KeyModifiers::empty()),
+        shepr_term::key::TerminalKey::new(KeyCode::Esc, KeyModifiers::empty()),
     ] {
         let mut state =
             ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
@@ -2309,7 +2337,7 @@ fn copy_mode_exit_keys_act_after_earlier_queued_input() {
             0,
             10,
             2,
-            shepr_vt::AbsRow(0),
+            shepr_term::AbsRow(0),
         ));
         state
             .receive_pane_surface_from(pane_surface, state.active_snapshot_generation.unwrap_or(1));
@@ -2358,7 +2386,7 @@ fn an_interrupt_key_leaves_copy_mode_behind_a_full_queue_and_the_late_reply_is_i
             0,
             10,
             2,
-            shepr_vt::AbsRow(0),
+            shepr_term::AbsRow(0),
         ));
         state
             .receive_pane_surface_from(pane_surface, state.active_snapshot_generation.unwrap_or(1));
@@ -2380,10 +2408,13 @@ fn an_interrupt_key_leaves_copy_mode_behind_a_full_queue_and_the_late_reply_is_i
         );
 
         let key = if exit_with_escape {
-            shepr_termio::input::TerminalKey::new(KeyCode::Esc, KeyModifiers::empty())
+            shepr_term::key::TerminalKey::new(KeyCode::Esc, KeyModifiers::empty())
         } else {
-            let (prefix_key, prefix_modifiers) = state.config.keybinds.prefix;
-            shepr_termio::input::TerminalKey::new(prefix_key, prefix_modifiers)
+            let shepr_term::key::KeyChord {
+                code: prefix_key,
+                modifiers: prefix_modifiers,
+            } = state.config.keybinds.prefix;
+            shepr_term::key::TerminalKey::new(prefix_key, prefix_modifiers)
         };
         state.handle_raw_events(vec![RawInputEvent::Key(key)]);
 
@@ -2428,7 +2459,7 @@ fn failed_copy_operation_replays_keys_while_the_copy_pane_still_owns_input() {
         0,
         10,
         2,
-        shepr_vt::AbsRow(0),
+        shepr_term::AbsRow(0),
     ));
     state.receive_pane_surface_from(pane_surface, state.active_snapshot_generation.unwrap_or(1));
     state.compose(106, 20).expect("composed frame");
@@ -2467,7 +2498,7 @@ fn deferred_copy_input_is_bounded() {
         0,
         10,
         2,
-        shepr_vt::AbsRow(0),
+        shepr_term::AbsRow(0),
     ));
     state.receive_pane_surface_from(pane_surface, state.active_snapshot_generation.unwrap_or(1));
     state.compose(106, 20).expect("composed frame");
@@ -2499,7 +2530,7 @@ fn cancelled_copy_requests_discard_dependent_input_without_starting_work() {
                     0,
                     10,
                     2,
-                    shepr_vt::AbsRow(0),
+                    shepr_term::AbsRow(0),
                 ));
                 state.receive_pane_surface_from(
                     pane_surface,
@@ -2565,7 +2596,7 @@ fn mismatched_boot_copy_result_rolls_back_the_old_pipeline() {
         0,
         10,
         2,
-        shepr_vt::AbsRow(0),
+        shepr_term::AbsRow(0),
     ));
     state.receive_pane_surface_from(pane_surface, state.active_snapshot_generation.unwrap_or(1));
     state.compose(106, 20).expect("composed frame");
@@ -2606,7 +2637,7 @@ fn cancelling_an_old_copy_request_does_not_reset_a_new_session() {
         0,
         10,
         2,
-        shepr_vt::AbsRow(0),
+        shepr_term::AbsRow(0),
     ));
     state.receive_pane_surface_from(pane_surface, state.active_snapshot_generation.unwrap_or(1));
     state.compose(106, 20).expect("composed frame");
@@ -2649,7 +2680,7 @@ fn copy_operation_does_not_capture_input_after_focus_moves() {
         0,
         10,
         2,
-        shepr_vt::AbsRow(0),
+        shepr_term::AbsRow(0),
     ));
     state.receive_pane_surface_from(pane_surface, state.active_snapshot_generation.unwrap_or(1));
     state.compose(106, 20).expect("composed frame");
@@ -2701,7 +2732,7 @@ fn reentering_copy_mode_on_the_same_pane_is_a_no_op() {
         0,
         10,
         2,
-        shepr_vt::AbsRow(0),
+        shepr_term::AbsRow(0),
     ));
     state.receive_pane_surface_from(pane_surface, state.active_snapshot_generation.unwrap_or(1));
     state.compose(106, 20).expect("composed frame");
@@ -2732,7 +2763,7 @@ fn copy_waits_for_endpoint_motion_before_copying_selection() {
         0,
         0,
         2,
-        shepr_vt::AbsRow(0),
+        shepr_term::AbsRow(0),
     ));
     state.receive_pane_surface_from(pane_surface, state.active_snapshot_generation.unwrap_or(1));
     state.compose(106, 20).expect("composed frame");
@@ -2785,7 +2816,7 @@ fn copy_search_matches_survive_output_but_not_a_resize() {
         0,
         0,
         2,
-        shepr_vt::AbsRow(0),
+        shepr_term::AbsRow(0),
     ));
     state.receive_pane_surface_from(
         pane_surface.clone(),
@@ -2801,11 +2832,11 @@ fn copy_search_matches_survive_output_but_not_a_resize() {
     search.query = "needle".into();
     let found_on = |row| shepr_protocol::command::PaneTextRange {
         start: shepr_protocol::command::PaneTextPoint {
-            row: shepr_vt::AbsRow(row),
+            row: shepr_term::AbsRow(row),
             col: 0,
         },
         end: shepr_protocol::command::PaneTextPoint {
-            row: shepr_vt::AbsRow(row),
+            row: shepr_term::AbsRow(row),
             col: 1,
         },
     };
@@ -2816,11 +2847,11 @@ fn copy_search_matches_survive_output_but_not_a_resize() {
         global_index: 1,
     });
     copy_mode.cursor = shepr_protocol::command::PaneTextPoint {
-        row: shepr_vt::AbsRow(2),
+        row: shepr_term::AbsRow(2),
         col: 1,
     };
     copy_mode.selection = Some(ClientCopySelection::Character {
-        anchor: shepr_vt::Point::new(shepr_vt::AbsRow(1), 2),
+        anchor: shepr_term::Point::new(shepr_term::AbsRow(1), 2),
     });
 
     pane_surface.surface_revision = pane_surface
@@ -2833,11 +2864,11 @@ fn copy_search_matches_survive_output_but_not_a_resize() {
             .scroll
             .as_mut()
             .expect("scroll metrics");
-        *metrics = shepr_vt::ScrollMetrics::new(
+        *metrics = shepr_term::ScrollMetrics::new(
             metrics.offset_from_bottom,
             metrics.max_offset_from_bottom,
             metrics.viewport_rows,
-            shepr_vt::AbsRow(5),
+            shepr_term::AbsRow(5),
         );
     }
     state.receive_pane_surface_from(
@@ -2855,12 +2886,12 @@ fn copy_search_matches_survive_output_but_not_a_resize() {
             global_index: 0,
         })
     );
-    assert_eq!(copy_mode.scroll.history_origin, shepr_vt::AbsRow(5));
-    assert_eq!(copy_mode.cursor.row, shepr_vt::AbsRow(5));
+    assert_eq!(copy_mode.scroll.history_origin, shepr_term::AbsRow(5));
+    assert_eq!(copy_mode.cursor.row, shepr_term::AbsRow(5));
     assert!(matches!(
         copy_mode.selection,
         Some(ClientCopySelection::Character { anchor })
-            if anchor == shepr_vt::Point::new(shepr_vt::AbsRow(5), 2)
+            if anchor == shepr_term::Point::new(shepr_term::AbsRow(5), 2)
     ));
     assert_eq!(
         state
@@ -2869,7 +2900,7 @@ fn copy_search_matches_survive_output_but_not_a_resize() {
             .as_ref()
             .expect("clamped copy selection")
             .ordered_cells(),
-        ((shepr_vt::AbsRow(5), 1), (shepr_vt::AbsRow(5), 2))
+        ((shepr_term::AbsRow(5), 1), (shepr_term::AbsRow(5), 2))
     );
 
     pane_surface.surface_revision = pane_surface
@@ -2893,7 +2924,7 @@ fn word_selection_result_survives_focus_snapshot_lag() {
     state.compose(106, 20).expect("composed frame");
     let hit = state.hits.panes[0].clone();
     let mut request = ClientShellInput::default();
-    let metrics = shepr_termio::ScrollMetrics::new(0, 0, 2, shepr_vt::AbsRow(0));
+    let metrics = shepr_term::ScrollMetrics::new(0, 0, 2, shepr_term::AbsRow(0));
     state.request_word_selection(&hit, metrics, 0, 1, &mut request);
     let request_id = match &request.actions[0] {
         ClientShellAction::Endpoint { request, .. } => request.id.clone(),
@@ -2918,7 +2949,7 @@ fn word_selection_result_survives_focus_snapshot_lag() {
             .mouse_selection
             .selection
             .as_ref()
-            .is_some_and(shepr_vt::selection::Selection::is_visible)
+            .is_some_and(shepr_term::selection::Selection::is_visible)
     );
 }
 
@@ -2933,7 +2964,7 @@ fn copy_mode_repeat_during_projection_gap_stays_active() {
             0,
             20,
             2,
-            shepr_vt::AbsRow(0),
+            shepr_term::AbsRow(0),
         ));
         state
             .receive_pane_surface_from(pane_surface, state.active_snapshot_generation.unwrap_or(1));
@@ -2943,9 +2974,10 @@ fn copy_mode_repeat_during_projection_gap_stays_active() {
         if selection_before_gap == Some(true) {
             state.handle_input_bytes(b"V");
         }
-        state.handle_raw_events(vec![RawInputEvent::Key(
-            shepr_termio::input::TerminalKey::new(KeyCode::Char('k'), KeyModifiers::empty()),
-        )]);
+        state.handle_raw_events(vec![RawInputEvent::Key(shepr_term::key::TerminalKey::new(
+            KeyCode::Char('k'),
+            KeyModifiers::empty(),
+        ))]);
 
         let mut next = snapshot();
         next.revision = next.revision.checked_next().expect("test precondition");
@@ -2963,7 +2995,7 @@ fn copy_mode_repeat_during_projection_gap_stays_active() {
                     .as_ref()
                     .expect("linewise selection")
                     .ordered_cells(),
-                ((shepr_vt::AbsRow(20), 0), (shepr_vt::AbsRow(20), 0))
+                ((shepr_term::AbsRow(20), 0), (shepr_term::AbsRow(20), 0))
             );
             assert_eq!(
                 state
@@ -2972,7 +3004,7 @@ fn copy_mode_repeat_during_projection_gap_stays_active() {
                     .as_ref()
                     .expect("linewise selection")
                     .shape(),
-                shepr_vt::selection::SelectionShape::Lines
+                shepr_term::selection::SelectionShape::Lines
             );
         }
 
@@ -2982,7 +3014,7 @@ fn copy_mode_repeat_during_projection_gap_stays_active() {
             crossterm::event::KeyEventKind::Repeat
         };
         let moved = state.handle_raw_events(vec![RawInputEvent::Key(
-            shepr_termio::input::TerminalKey::new(KeyCode::Char('k'), KeyModifiers::empty())
+            shepr_term::key::TerminalKey::new(KeyCode::Char('k'), KeyModifiers::empty())
                 .with_kind(kind),
         )]);
         assert!(moved.actions.iter().any(|action| matches!(
@@ -3000,9 +3032,9 @@ fn copy_mode_repeat_during_projection_gap_stays_active() {
                     .expect("linewise selection")
                     .ordered_cells(),
                 (
-                    (shepr_vt::AbsRow(19), 0),
+                    (shepr_term::AbsRow(19), 0),
                     (
-                        shepr_vt::AbsRow(if selection_before_gap == Some(true) {
+                        shepr_term::AbsRow(if selection_before_gap == Some(true) {
                             21
                         } else {
                             20
@@ -3020,7 +3052,7 @@ fn copy_mode_repeat_during_projection_gap_stays_active() {
                 .copy_mode
                 .as_ref()
                 .map(|copy_mode| copy_mode.cursor.row),
-            Some(shepr_vt::AbsRow(19))
+            Some(shepr_term::AbsRow(19))
         );
     }
 }

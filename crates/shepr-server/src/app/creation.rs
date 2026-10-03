@@ -4,7 +4,7 @@ use super::state::SpawnGeometry;
 use super::{App, api_helpers::presented_agent_status};
 use shepr_config::NewTerminalCwd;
 use shepr_mux::workspace::Workspace;
-use shepr_termio::host_term::cell_size::HostCellSize;
+use shepr_term::host::HostCellSize;
 
 pub(crate) fn resolve_new_terminal_cwd(
     policy: &NewTerminalCwd,

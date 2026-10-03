@@ -168,7 +168,7 @@ pub struct PaneScrollParams {
 /// A terminal cell addressed by a stable absolute row: output and history
 /// eviction never make it name another line. Selections, copy-mode cursors
 /// and search matches all use it.
-pub type PaneTextPoint = shepr_vt::Point<shepr_vt::AbsRow>;
+pub type PaneTextPoint = shepr_term::Point<shepr_term::AbsRow>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaneTextRange {
@@ -257,7 +257,7 @@ pub struct PaneRenameParams {
     pub label: Option<String>,
 }
 
-pub use shepr_vt::ScrollMetrics as PaneScrollInfo;
+pub use shepr_term::ScrollMetrics as PaneScrollInfo;
 
 /// What a client shell reads back about one pane after a command: which pane
 /// it was and its scroll position. Focus is part of the requester-specific

@@ -309,7 +309,7 @@ impl ClientShellState {
 
     pub(in crate::shell) fn route_overlay_key(
         &mut self,
-        key: &shepr_termio::input::TerminalKey,
+        key: &shepr_term::key::TerminalKey,
         outcome: &mut ClientShellInput,
     ) {
         use crossterm::event::KeyModifiers;

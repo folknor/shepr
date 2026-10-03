@@ -49,7 +49,7 @@ pub(super) fn resize_pane_infos(
     resizer: &mut PaneResizer<'_>,
     ws_idx: usize,
     pane_infos: &[PaneInfo],
-    cell_size: shepr_termio::host_term::cell_size::HostCellSize,
+    cell_size: shepr_term::host::HostCellSize,
 ) {
     let Some(workspace) = app.workspaces.get(ws_idx) else {
         return;

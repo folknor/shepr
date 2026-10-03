@@ -464,7 +464,7 @@ fn server_event_drain_is_bounded_and_keeps_remaining_events_in_order() {
         42,
         ClientConnection::new(
             (80, 24),
-            shepr_termio::host_term::cell_size::HostCellSize::default(),
+            shepr_term::host::HostCellSize::default(),
             42,
             writer,
         ),
@@ -917,7 +917,7 @@ fn window_title_test_server() -> (HeadlessServer, std::sync::mpsc::Receiver<Vec<
         1,
         ClientConnection::new(
             (80, 24),
-            shepr_termio::host_term::cell_size::HostCellSize::default(),
+            shepr_term::host::HostCellSize::default(),
             1,
             client_tx,
         ),
@@ -974,7 +974,7 @@ fn window_title_waits_for_a_client_to_exist() {
         1,
         ClientConnection::new(
             (80, 24),
-            shepr_termio::host_term::cell_size::HostCellSize::default(),
+            shepr_term::host::HostCellSize::default(),
             1,
             client_tx,
         ),
@@ -1006,7 +1006,7 @@ fn an_attaching_client_gets_the_title_even_when_it_has_not_changed() {
         2,
         ClientConnection::new(
             (80, 24),
-            shepr_termio::host_term::cell_size::HostCellSize::default(),
+            shepr_term::host::HostCellSize::default(),
             2,
             client_tx,
         ),
@@ -1152,7 +1152,7 @@ fn a_newly_promoted_client_gets_the_window_title_again() {
         2,
         ClientConnection::new(
             (80, 24),
-            shepr_termio::host_term::cell_size::HostCellSize::default(),
+            shepr_term::host::HostCellSize::default(),
             2,
             client_tx,
         ),
@@ -4199,7 +4199,7 @@ async fn client_shell_input_targets_runtime_without_server_shell_classification(
         ClientConnection::with_shell(
             ClientShellState::with_surface_active(true),
             shepr_core::geometry::GridSize::clamped(80, 24),
-            shepr_termio::host_term::cell_size::HostCellSize::default(),
+            shepr_term::host::HostCellSize::default(),
             crate::server::clients::ActivityStamp::from(1),
             crate::server::outbox::ClientOutbox::detached(),
         ),
@@ -4309,7 +4309,7 @@ async fn client_shell_hidden_pane_rejects_presses_but_accepts_releases() {
         11,
         ClientConnection::new(
             (80, 24),
-            shepr_termio::host_term::cell_size::HostCellSize::default(),
+            shepr_term::host::HostCellSize::default(),
             1,
             crate::server::outbox::ClientOutbox::detached(),
         ),
@@ -4377,7 +4377,7 @@ async fn client_shell_text_input_renders_only_when_resetting_scrollback() {
         ClientConnection::with_shell(
             ClientShellState::with_surface_active(true),
             shepr_core::geometry::GridSize::clamped(80, 24),
-            shepr_termio::host_term::cell_size::HostCellSize::default(),
+            shepr_term::host::HostCellSize::default(),
             crate::server::clients::ActivityStamp::from(1),
             crate::server::outbox::ClientOutbox::detached(),
         ),
@@ -4435,7 +4435,7 @@ async fn client_shell_mouse_motion_delivers_without_render_when_foreground() {
         ClientConnection::with_shell(
             ClientShellState::with_surface_active(true),
             shepr_core::geometry::GridSize::clamped(80, 24),
-            shepr_termio::host_term::cell_size::HostCellSize::default(),
+            shepr_term::host::HostCellSize::default(),
             crate::server::clients::ActivityStamp::from(1),
             crate::server::outbox::ClientOutbox::detached(),
         ),
@@ -4476,7 +4476,7 @@ async fn client_shell_mouse_motion_promotes_and_requests_render() {
         ClientConnection::with_shell(
             ClientShellState::with_surface_active(true),
             shepr_core::geometry::GridSize::clamped(80, 24),
-            shepr_termio::host_term::cell_size::HostCellSize::default(),
+            shepr_term::host::HostCellSize::default(),
             crate::server::clients::ActivityStamp::from(1),
             crate::server::outbox::ClientOutbox::detached(),
         ),
@@ -4518,7 +4518,7 @@ async fn client_shell_input_dropped_on_a_full_pty_queue_is_reported_to_the_clien
         11,
         ClientConnection::new(
             (80, 24),
-            shepr_termio::host_term::cell_size::HostCellSize::default(),
+            shepr_term::host::HostCellSize::default(),
             1,
             writer,
         ),
@@ -4601,7 +4601,7 @@ fn retained_test_server_with_control(
         1,
         ClientConnection::new(
             (80, 24),
-            shepr_termio::host_term::cell_size::HostCellSize::default(),
+            shepr_term::host::HostCellSize::default(),
             1,
             client_tx,
         ),
@@ -4621,7 +4621,7 @@ fn client_shell_host_theme_follows_foreground_client() {
         1,
         ClientConnection::new(
             (80, 24),
-            shepr_termio::host_term::cell_size::HostCellSize::default(),
+            shepr_term::host::HostCellSize::default(),
             1,
             crate::server::outbox::ClientOutbox::detached(),
         ),
@@ -4630,7 +4630,7 @@ fn client_shell_host_theme_follows_foreground_client() {
         2,
         ClientConnection::new(
             (80, 24),
-            shepr_termio::host_term::cell_size::HostCellSize::default(),
+            shepr_term::host::HostCellSize::default(),
             2,
             crate::server::outbox::ClientOutbox::detached(),
         ),
@@ -4682,7 +4682,7 @@ fn client_shell_host_theme_follows_foreground_client() {
     );
     assert_eq!(
         server.app.state.host_terminal_appearance,
-        Some(shepr_termio::host_term::theme::HostAppearance::Dark)
+        Some(shepr_term::host::HostAppearance::Dark)
     );
     assert!(server.app.state.host_terminal_appearance_explicit);
 
@@ -4715,7 +4715,7 @@ fn client_shell_host_theme_follows_foreground_client() {
     );
     assert_eq!(
         server.app.state.host_terminal_appearance,
-        Some(shepr_termio::host_term::theme::HostAppearance::Light)
+        Some(shepr_term::host::HostAppearance::Light)
     );
     assert!(!server.app.state.host_terminal_appearance_explicit);
 }
@@ -4729,7 +4729,7 @@ fn resizing_a_background_shell_does_not_change_foreground_or_host_theme() {
         1,
         ClientConnection::new(
             (80, 24),
-            shepr_termio::host_term::cell_size::HostCellSize::default(),
+            shepr_term::host::HostCellSize::default(),
             1,
             first_writer,
         ),
@@ -4738,7 +4738,7 @@ fn resizing_a_background_shell_does_not_change_foreground_or_host_theme() {
         2,
         ClientConnection::new(
             (80, 24),
-            shepr_termio::host_term::cell_size::HostCellSize::default(),
+            shepr_term::host::HostCellSize::default(),
             2,
             second_writer,
         ),
@@ -5740,7 +5740,7 @@ fn client_shell_streams_focused_pane_report_all_demand() {
             1,
             ClientConnection::new(
                 (80, 24),
-                shepr_termio::host_term::cell_size::HostCellSize::default(),
+                shepr_term::host::HostCellSize::default(),
                 1,
                 client_tx,
             ),
@@ -5776,7 +5776,7 @@ async fn client_shell_release_cleanup_does_not_promote_and_survives_disconnect()
             client_id,
             ClientConnection::new(
                 (80, 24),
-                shepr_termio::host_term::cell_size::HostCellSize::default(),
+                shepr_term::host::HostCellSize::default(),
                 client_id,
                 crate::server::outbox::ClientOutbox::detached(),
             ),
@@ -5860,7 +5860,7 @@ fn client_shell_mouse_capture_combines_local_preference_with_endpoint_demand() {
         1,
         ClientConnection::new(
             (80, 24),
-            shepr_termio::host_term::cell_size::HostCellSize::default(),
+            shepr_term::host::HostCellSize::default(),
             1,
             writer,
         ),
@@ -5910,7 +5910,7 @@ fn client_shell_focus_promotes_and_reaches_reporting_pane() {
             1,
             ClientConnection::new(
                 (80, 24),
-                shepr_termio::host_term::cell_size::HostCellSize::default(),
+                shepr_term::host::HostCellSize::default(),
                 1,
                 crate::server::outbox::ClientOutbox::detached(),
             ),
@@ -5919,7 +5919,7 @@ fn client_shell_focus_promotes_and_reaches_reporting_pane() {
             2,
             ClientConnection::new(
                 (100, 30),
-                shepr_termio::host_term::cell_size::HostCellSize::default(),
+                shepr_term::host::HostCellSize::default(),
                 2,
                 crate::server::outbox::ClientOutbox::detached(),
             ),
@@ -6083,7 +6083,7 @@ fn clipboard_write_from_an_unviewed_pane_targets_foreground_client_only() {
         1,
         ClientConnection::new(
             (120, 40),
-            shepr_termio::host_term::cell_size::HostCellSize::default(),
+            shepr_term::host::HostCellSize::default(),
             1,
             background_tx,
         ),
@@ -6092,7 +6092,7 @@ fn clipboard_write_from_an_unviewed_pane_targets_foreground_client_only() {
         2,
         ClientConnection::new(
             (80, 24),
-            shepr_termio::host_term::cell_size::HostCellSize::default(),
+            shepr_term::host::HostCellSize::default(),
             2,
             foreground_tx,
         ),
@@ -6143,7 +6143,7 @@ fn clipboard_write_failed_foreground_send_is_removed_at_the_reap() {
         1,
         ClientConnection::new(
             (80, 24),
-            shepr_termio::host_term::cell_size::HostCellSize::default(),
+            shepr_term::host::HostCellSize::default(),
             1,
             foreground_tx,
         ),
@@ -6274,7 +6274,7 @@ async fn a_failed_health_pong_leaves_no_ghost_client() {
         client_id,
         ClientConnection::new(
             (80, 24),
-            shepr_termio::host_term::cell_size::HostCellSize::default(),
+            shepr_term::host::HostCellSize::default(),
             1,
             outbox,
         ),
@@ -6304,7 +6304,7 @@ fn closing_the_foreground_client_hands_foreground_over_at_the_reap() {
             id,
             ClientConnection::new(
                 (80, 24),
-                shepr_termio::host_term::cell_size::HostCellSize::default(),
+                shepr_term::host::HostCellSize::default(),
                 id,
                 outbox,
             ),
@@ -6374,7 +6374,7 @@ fn a_stopping_server_reaps_closed_clients_without_reapplying_geometry() {
         1,
         ClientConnection::new(
             (80, 24),
-            shepr_termio::host_term::cell_size::HostCellSize::default(),
+            shepr_term::host::HostCellSize::default(),
             1,
             outbox,
         ),
@@ -6436,7 +6436,7 @@ fn a_completion_for_a_departed_client_is_dropped() {
             id,
             ClientConnection::new(
                 (80, 24),
-                shepr_termio::host_term::cell_size::HostCellSize::default(),
+                shepr_term::host::HostCellSize::default(),
                 id,
                 outbox,
             ),
@@ -6484,7 +6484,7 @@ fn a_reaped_client_marks_the_view_changed() {
         1,
         ClientConnection::new(
             (80, 24),
-            shepr_termio::host_term::cell_size::HostCellSize::default(),
+            shepr_term::host::HostCellSize::default(),
             1,
             outbox,
         ),

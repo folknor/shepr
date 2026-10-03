@@ -104,7 +104,7 @@ pub(in crate::shell) enum Work {
     },
     WordSelection {
         pane_id: shepr_protocol::PublicPaneId,
-        row: shepr_vt::AbsRow,
+        row: shepr_term::AbsRow,
     },
     CopyMotion {
         pane_id: shepr_protocol::PublicPaneId,

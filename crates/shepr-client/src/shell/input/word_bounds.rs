@@ -69,7 +69,7 @@ fn text_cells(row: &str) -> Vec<TextCell> {
     let mut cells = Vec::new();
     for grapheme in row.graphemes(true) {
         let width =
-            u16::try_from(shepr_vt::width::unicode_grapheme_width(grapheme)).unwrap_or(u16::MAX);
+            u16::try_from(shepr_term::width::unicode_grapheme_width(grapheme)).unwrap_or(u16::MAX);
         let start_col = if width == 0 {
             next_col.saturating_sub(1)
         } else {
@@ -287,7 +287,8 @@ mod tests {
         prefix
             .graphemes(true)
             .map(|grapheme| {
-                u16::try_from(shepr_vt::width::unicode_grapheme_width(grapheme)).unwrap_or(u16::MAX)
+                u16::try_from(shepr_term::width::unicode_grapheme_width(grapheme))
+                    .unwrap_or(u16::MAX)
             })
             .fold(0u16, u16::saturating_add)
     }

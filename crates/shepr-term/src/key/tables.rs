@@ -1,8 +1,11 @@
+//! Key and mouse report rows shared by the child-facing encoders here and the
+//! host input parser in `shepr-termio`, so both read the same spellings.
+
 use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEventKind};
 
 // Only keys emitted by shepr belong here. Host-only kitty keys stay in the
 // parser; accepting them does not promise that pane encoding supports them.
-pub(super) struct FunctionalKey {
+pub struct FunctionalKey {
     pub code: KeyCode,
     pub number: u8,
     pub final_byte: char,
@@ -15,13 +18,13 @@ pub(super) struct FunctionalKey {
 // Encoding runs per keypress and does not scan the table.
 macro_rules! functional_keys {
     ($( $key:pat => ($code:expr, $number:expr, $final:expr, $legacy:expr, $aliases:expr, $kitty:expr), )*) => {
-        pub(super) static FUNCTIONAL_KEYS: &[FunctionalKey] = &[
+        pub static FUNCTIONAL_KEYS: &[FunctionalKey] = &[
             $(FunctionalKey {
                 code: $code, number: $number, final_byte: $final,
                 legacy: $legacy, aliases: $aliases, kitty_codepoint: $kitty,
             },)*
         ];
-        pub(super) fn functional_key(code: KeyCode) -> Option<FunctionalKey> {
+        pub fn functional_key(code: KeyCode) -> Option<FunctionalKey> {
             match code {
                 $($key => Some(FunctionalKey {
                     code: $code, number: $number, final_byte: $final,
@@ -58,7 +61,7 @@ functional_keys! {
     KeyCode::F(12) => (KeyCode::F(12), 24, '~', "\x1b[24~", &[], 57375),
 }
 
-pub(super) fn modified_key(number: &str, final_byte: char) -> Option<KeyCode> {
+pub fn modified_key(number: &str, final_byte: char) -> Option<KeyCode> {
     FUNCTIONAL_KEYS.iter().find_map(|key| {
         let matches = if final_byte == '~' {
             key.legacy
@@ -84,7 +87,7 @@ const MODIFIER_BITS: [(KeyModifiers, u8); 6] = [
     (KeyModifiers::META, 32),
 ];
 
-pub(super) fn modifier_bits(mods: KeyModifiers, kitty: bool) -> u32 {
+pub fn modifier_bits(mods: KeyModifiers, kitty: bool) -> u32 {
     MODIFIER_BITS[..if kitty { 6 } else { 3 }]
         .iter()
         .fold(0, |bits, &(flag, bit)| {
@@ -97,7 +100,7 @@ pub(super) fn modifier_bits(mods: KeyModifiers, kitty: bool) -> u32 {
 }
 
 // Lock-state bits are intentionally dropped for agent and shell panes.
-pub(super) fn modifiers_from_bits(bits: u8) -> KeyModifiers {
+pub fn modifiers_from_bits(bits: u8) -> KeyModifiers {
     MODIFIER_BITS
         .iter()
         .fold(KeyModifiers::empty(), |mods, &(flag, bit)| {
@@ -129,28 +132,28 @@ const MOUSE_SCROLLS: [(MouseEventKind, u8); 4] = [
 
 // The xterm mouse report control byte: button field, modifier bits, drag
 // (motion) bit and the scroll and extended-button high bits.
-pub(super) const MOUSE_BUTTON_RELEASE: u8 = 3; // limits-exempt: xterm mouse report encoding
-pub(super) const MOUSE_DRAG_OFFSET: u16 = 32; // limits-exempt: xterm mouse report encoding
-pub(super) const MOUSE_DRAG_BIT: u8 = 0b0010_0000; // limits-exempt: xterm mouse report encoding
-pub(super) const MOUSE_SCROLL_BASE: u8 = 0b0100_0000; // limits-exempt: xterm mouse report encoding
-pub(super) const MOUSE_BUTTON_FIELD_MASK: u8 = 0b0000_0011; // limits-exempt: xterm mouse report encoding
-pub(super) const MOUSE_EXTENDED_BUTTON_FIELD_MASK: u8 = 0b1100_0000; // limits-exempt: xterm mouse report encoding
-pub(super) const MOUSE_EXTENDED_BUTTON_SHIFT: u32 = 4; // limits-exempt: xterm mouse report encoding
-pub(super) const MOUSE_MODIFIER_SHIFT: u32 = 2; // limits-exempt: xterm mouse report encoding
+pub const MOUSE_BUTTON_RELEASE: u8 = 3; // limits-exempt: xterm mouse report encoding
+pub const MOUSE_DRAG_OFFSET: u16 = 32; // limits-exempt: xterm mouse report encoding
+pub const MOUSE_DRAG_BIT: u8 = 0b0010_0000; // limits-exempt: xterm mouse report encoding
+pub const MOUSE_SCROLL_BASE: u8 = 0b0100_0000; // limits-exempt: xterm mouse report encoding
+pub const MOUSE_BUTTON_FIELD_MASK: u8 = 0b0000_0011; // limits-exempt: xterm mouse report encoding
+pub const MOUSE_EXTENDED_BUTTON_FIELD_MASK: u8 = 0b1100_0000; // limits-exempt: xterm mouse report encoding
+pub const MOUSE_EXTENDED_BUTTON_SHIFT: u32 = 4; // limits-exempt: xterm mouse report encoding
+pub const MOUSE_MODIFIER_SHIFT: u32 = 2; // limits-exempt: xterm mouse report encoding
 
-pub(super) fn mouse_button_code(button: MouseButton) -> Option<u16> {
+pub fn mouse_button_code(button: MouseButton) -> Option<u16> {
     MOUSE_BUTTONS
         .iter()
         .find_map(|(known_button, code)| (*known_button == button).then_some(u16::from(*code)))
 }
 
-pub(super) fn mouse_button_from_code(code: u8) -> Option<MouseButton> {
+pub fn mouse_button_from_code(code: u8) -> Option<MouseButton> {
     MOUSE_BUTTONS
         .iter()
         .find_map(|(button, known_code)| (*known_code == code).then_some(*button))
 }
 
-pub(super) fn mouse_scroll_code(kind: MouseEventKind) -> Option<u16> {
+pub fn mouse_scroll_code(kind: MouseEventKind) -> Option<u16> {
     MOUSE_SCROLLS.iter().find_map(|(known_kind, code)| {
         (*known_kind == kind).then_some(u16::from(
             MOUSE_SCROLL_BASE | (*code & MOUSE_BUTTON_FIELD_MASK),
@@ -158,19 +161,19 @@ pub(super) fn mouse_scroll_code(kind: MouseEventKind) -> Option<u16> {
     })
 }
 
-pub(super) fn mouse_scroll_from_code(code: u8) -> Option<MouseEventKind> {
+pub fn mouse_scroll_from_code(code: u8) -> Option<MouseEventKind> {
     MOUSE_SCROLLS
         .iter()
         .find_map(|(kind, known_code)| (*known_code == code).then_some(*kind))
 }
 
-pub(super) fn mouse_modifier_bits(modifiers: KeyModifiers) -> u16 {
+pub fn mouse_modifier_bits(modifiers: KeyModifiers) -> u16 {
     // Only the three xterm modifier bits are taken, so the shifted value is
     // at most 28 and the conversion cannot fail.
     u16::try_from(modifier_bits(modifiers, false) << MOUSE_MODIFIER_SHIFT).unwrap_or_default()
 }
 
-pub(super) fn mouse_modifiers_from_bits(control_byte: u8) -> KeyModifiers {
+pub fn mouse_modifiers_from_bits(control_byte: u8) -> KeyModifiers {
     modifiers_from_bits((control_byte >> MOUSE_MODIFIER_SHIFT) & 0b0000_0111)
 }
 
@@ -187,7 +190,7 @@ const CONTROL_CHARS: [(u8, &str); 7] = [
     (127, "?8"),
 ];
 
-pub(super) fn control_byte(ch: char) -> Option<u8> {
+pub fn control_byte(ch: char) -> Option<u8> {
     let upper = ch.to_ascii_uppercase();
     if upper.is_ascii_uppercase() {
         return Some(upper as u8 - b'A' + 1);
@@ -197,7 +200,7 @@ pub(super) fn control_byte(ch: char) -> Option<u8> {
         .find_map(|&(byte, aliases)| aliases.contains(ch).then_some(byte))
 }
 
-pub(super) fn control_char(byte: u32) -> Option<char> {
+pub fn control_char(byte: u32) -> Option<char> {
     if (1..=26).contains(&byte) {
         return char::from_u32(byte + 96);
     }
@@ -211,52 +214,8 @@ pub(super) fn control_char(byte: u32) -> Option<char> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::input::{
-        KeyboardProtocol, TerminalKey, encode_terminal_key, parse_terminal_key_sequence,
-    };
-
-    #[test]
-    fn all_shared_functional_forms_roundtrip() {
-        assert_eq!(FUNCTIONAL_KEYS.len(), 22);
-        for key in FUNCTIONAL_KEYS {
-            for sequence in std::iter::once(&key.legacy).chain(key.aliases.iter()) {
-                assert_eq!(
-                    parse_terminal_key_sequence(sequence)
-                        .expect("supported form")
-                        .code,
-                    key.code
-                );
-            }
-            for modifiers in [
-                KeyModifiers::empty(),
-                KeyModifiers::ALT,
-                KeyModifiers::SHIFT | KeyModifiers::CONTROL,
-            ] {
-                for protocol in [
-                    KeyboardProtocol::legacy(),
-                    KeyboardProtocol::from_flags(
-                        shepr_protocol::KittyKeyboardFlags::REPORT_ALL_KEYS,
-                    ),
-                ] {
-                    let encoded =
-                        encode_terminal_key(TerminalKey::new(key.code, modifiers), protocol);
-                    let parsed = parse_terminal_key_sequence(
-                        std::str::from_utf8(&encoded).expect("ASCII form"),
-                    )
-                    .expect("encoded form parses");
-                    assert_eq!(parsed.code, key.code);
-                    assert_eq!(parsed.modifiers, modifiers);
-                }
-            }
-            let sequence = format!("\x1b[{};1u", key.kitty_codepoint);
-            assert_eq!(
-                parse_terminal_key_sequence(&sequence)
-                    .expect("kitty alias")
-                    .code,
-                key.code
-            );
-        }
-    }
+    use crate::KittyKeyboardFlags;
+    use crate::key::{KeyboardProtocol, TerminalKey, encode_terminal_key};
 
     #[test]
     fn modifier_bits_roundtrip_and_xterm_filters_extended_bits() {
@@ -291,9 +250,7 @@ mod tests {
             assert!(
                 encode_terminal_key(
                     TerminalKey::new(code, KeyModifiers::empty()),
-                    KeyboardProtocol::from_flags(
-                        shepr_protocol::KittyKeyboardFlags::REPORT_ALL_KEYS
-                    )
+                    KeyboardProtocol::from_flags(KittyKeyboardFlags::REPORT_ALL_KEYS)
                 )
                 .is_empty()
             );

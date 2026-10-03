@@ -1,24 +1,15 @@
-mod encode;
 pub mod fixed_keys;
 mod keybind_help;
 mod keybindings;
 mod lease;
-mod model;
 pub mod mouse;
 mod parse;
 pub mod raw_input;
-mod tables;
 
-pub use encode::encode_mouse_event;
-pub use encode::{KeyEncodeModes, encode_terminal_key, encode_terminal_key_with_modes};
 pub use keybind_help::{filter_keybind_help_groups, keybind_help_groups, keybind_help_text_char};
 pub use keybindings::{
     KeybindAction, KeybindDispatch, resolve_direct_binding, resolve_indexed_action,
     resolve_non_indexed_action, resolve_prefix_binding,
 };
 pub use lease::{InputLeaseKey, InputLeaseTable, RepeatPlan};
-pub use model::{
-    KeyboardProtocol, MouseProtocolEncoding, TerminalKey, host_modify_other_keys_mode,
-};
 pub use parse::parse_terminal_key_sequence;
-pub use shepr_vt::MouseProtocolMode;

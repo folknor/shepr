@@ -984,14 +984,14 @@ mod tests {
         app.state.ensure_test_terminals();
         let recorded = SpawnGeometry {
             area: ratatui::layout::Rect::new(0, 0, 100, 20),
-            cell_size: shepr_termio::host_term::cell_size::HostCellSize {
+            cell_size: shepr_term::host::HostCellSize {
                 width_px: 8,
                 height_px: 16,
             },
         };
         let requester = SpawnGeometry {
             area: ratatui::layout::Rect::new(0, 0, 60, 10),
-            cell_size: shepr_termio::host_term::cell_size::HostCellSize {
+            cell_size: shepr_term::host::HostCellSize {
                 width_px: 9,
                 height_px: 18,
             },

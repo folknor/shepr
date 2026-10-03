@@ -1306,10 +1306,10 @@ dependencies = [
  "shepr-platform",
  "shepr-protocol",
  "shepr-remote",
+ "shepr-term",
  "shepr-termio",
  "shepr-test-fixtures",
  "shepr-test-support",
- "shepr-vt",
  "tokio",
  "toml",
  "tracing",
@@ -1327,6 +1327,7 @@ dependencies = [
  "shepr-agent",
  "shepr-core",
  "shepr-platform",
+ "shepr-term",
  "shepr-test-support",
  "toml",
 ]
@@ -1401,6 +1402,7 @@ dependencies = [
  "shepr-platform",
  "shepr-protocol",
  "shepr-pty",
+ "shepr-term",
  "shepr-termio",
  "shepr-test-fixtures",
  "shepr-test-support",
@@ -1430,8 +1432,8 @@ dependencies = [
  "serde",
  "shepr-agent",
  "shepr-core",
+ "shepr-term",
  "shepr-test-support",
- "shepr-vt",
 ]
 
 [[package]]
@@ -1486,7 +1488,7 @@ dependencies = [
  "shepr-platform",
  "shepr-protocol",
  "shepr-pty",
- "shepr-termio",
+ "shepr-term",
  "shepr-test-fixtures",
  "shepr-test-support",
  "shepr-vt",
@@ -1498,17 +1500,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "shepr-term"
+version = "0.1.0"
+dependencies = [
+ "crossterm",
+ "serde",
+ "shepr-core",
+ "unicode-width",
+]
+
+[[package]]
 name = "shepr-termio"
 version = "0.1.0"
 dependencies = [
  "base64 0.23.1",
  "crossterm",
  "ratatui",
- "serde",
  "shepr-config",
  "shepr-core",
  "shepr-platform",
  "shepr-protocol",
+ "shepr-term",
  "shepr-vt",
  "toml",
  "tracing",
@@ -1542,9 +1554,8 @@ version = "0.1.0"
 dependencies = [
  "alacritty_terminal",
  "memchr",
- "serde",
  "shepr-core",
- "unicode-width",
+ "shepr-term",
  "vte",
 ]
 

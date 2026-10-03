@@ -121,7 +121,8 @@ fn every_endpoint_gets_the_same_pane_surface() {
 }
 
 fn prefix_key(state: &ClientShellState) -> (crossterm::event::KeyCode, KeyModifiers) {
-    state.config.keybinds.prefix
+    let prefix = state.config.keybinds.prefix;
+    (prefix.code, prefix.modifiers)
 }
 
 #[test]
@@ -823,7 +824,7 @@ fn switching_machines_from_copy_mode_restores_terminal_input() {
         0,
         20,
         2,
-        shepr_vt::AbsRow(0),
+        shepr_term::AbsRow(0),
     ));
     state.receive_pane_surface_from(local_surface, state.active_snapshot_generation.unwrap_or(1));
     state.compose(100, 28).expect("test precondition");
@@ -842,7 +843,7 @@ fn switching_machines_from_copy_mode_restores_terminal_input() {
     assert!(state.copy_mode.is_none());
     assert_eq!(state.mode, ClientShellMode::Terminal);
     let input = state.handle_raw_events(vec![RawInputEvent::Key(
-        shepr_termio::input::TerminalKey::new(KeyCode::Char('x'), KeyModifiers::NONE),
+        shepr_term::key::TerminalKey::new(KeyCode::Char('x'), KeyModifiers::NONE),
     )]);
     assert!(matches!(
         input.requests.as_slice(),
@@ -2285,7 +2286,7 @@ fn navigator_workspace_arrows_cross_machine_headings_without_activating_them() {
         (KeyCode::Left, ClientEndpointId::Local),
     ] {
         let outcome = state.handle_raw_events(vec![RawInputEvent::Key(
-            shepr_termio::input::TerminalKey::new(key, KeyModifiers::empty()),
+            shepr_term::key::TerminalKey::new(key, KeyModifiers::empty()),
         )]);
         assert!(outcome.actions.is_empty());
         let Some(ClientShellOverlay::Navigator(navigator)) = &state.overlay else {
@@ -2601,17 +2602,17 @@ mod surface_baseline {
         let hit = s.hits.panes[0].clone();
         let metrics = hit.scroll.expect("scroll");
         s.request_word_selection(&hit, metrics, 0, 0, &mut input);
-        s.copy_mode.as_mut().expect("copy").cursor.row = shepr_vt::AbsRow(0);
+        s.copy_mode.as_mut().expect("copy").cursor.row = shepr_term::AbsRow(0);
         let mut future = surface();
         future.projection_revision = 2.into();
         future.panes[0].inner_rect.width = 10;
         {
             let metrics = future.panes[0].scroll.as_mut().expect("scroll");
-            *metrics = shepr_vt::ScrollMetrics::new(
+            *metrics = shepr_term::ScrollMetrics::new(
                 metrics.offset_from_bottom,
                 metrics.max_offset_from_bottom,
                 metrics.viewport_rows,
-                shepr_vt::AbsRow(100),
+                shepr_term::AbsRow(100),
             );
         }
         s.receive_pane_surface_from(future, s.active_snapshot_generation.unwrap_or(1));
@@ -2622,7 +2623,7 @@ mod surface_baseline {
         assert!(s.mouse_selection.word_gesture.is_none());
         assert_ne!(
             s.copy_mode.as_ref().expect("copy").cursor.row,
-            shepr_vt::AbsRow(0)
+            shepr_term::AbsRow(0)
         );
     }
 }

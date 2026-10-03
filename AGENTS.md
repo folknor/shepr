@@ -152,7 +152,14 @@ orientation, and nothing checks them:
 
 - `shepr-core`: shared geometry, layout and plain types.
 - `shepr-platform`: Linux process, filesystem, IPC and terminal plumbing.
-- `shepr-vt`: terminal emulation and read formatting.
+- `shepr-term`: terminal vocabulary and pure encoding shared by the emulator,
+  the server and the client: row and point coordinates, selections, scroll
+  metrics and scrollbar geometry and paint rows, colours, DEC and keyboard
+  modes, display widths and text column geometry, the VT spellings shepr writes, the host's observed theme and cell
+  size, key identity and chord matching, and child-facing key and mouse
+  encoding. It keeps `alacritty_terminal` and `vte` out of the client binary.
+- `shepr-vt`: terminal emulation and read formatting; it re-exports the
+  `shepr-term` vocabulary it speaks.
 - `shepr-pty`: PTY process launch and IO, using `shepr-platform` for fd plumbing, socket admission and process identities.
 - `shepr-test-support`: shared environment isolation, scratch directories and hook asset capture for tests.
 - `shepr-agent`: agent identity: the descriptor table, report origins,
@@ -170,10 +177,10 @@ orientation, and nothing checks them:
   tells JSON requests from TUI connections and hands the latter to the server's
   client protocol. Its detect explain schema is built on `shepr-detect`'s
   explanation types.
-- `shepr-termio`: terminal input encoding and parsing, the fixed key binding
-  tables the client's modes and overlays route by, copy-mode keys and text
-  helpers, scrolling, selection rendering, frame blitting and host terminal
-  helpers.
+- `shepr-termio`: host terminal I/O: host input framing and parsing, the
+  fixed and configured key tables the client's modes and overlays route by,
+  copy-mode keys, frame blitting and host terminal modes,
+  title, clipboard and theme queries.
 - `shepr-remote`: configured machines and SSH connections.
 - `shepr-mux`: terminals, panes, workspaces, Git state, events and persistence.
 - `shepr-server`: application state, UI and serving.

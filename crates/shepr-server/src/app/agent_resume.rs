@@ -331,13 +331,13 @@ mod tests {
     }
 
     fn report_test_host_theme(app: &mut App) {
-        app.set_host_terminal_theme(shepr_termio::host_term::theme::TerminalTheme {
-            foreground: Some(shepr_termio::host_term::theme::RgbColor {
+        app.set_host_terminal_theme(shepr_term::host::TerminalTheme {
+            foreground: Some(shepr_term::host::RgbColor {
                 r: 220,
                 g: 220,
                 b: 220,
             }),
-            background: Some(shepr_termio::host_term::theme::RgbColor {
+            background: Some(shepr_term::host::RgbColor {
                 r: 20,
                 g: 20,
                 b: 20,
@@ -440,7 +440,7 @@ mod tests {
         app.state
             .test_record_all_workspace_geometry(crate::app::SpawnGeometry {
                 area: Rect::new(0, 0, 100, 30),
-                cell_size: shepr_termio::host_term::cell_size::HostCellSize {
+                cell_size: shepr_term::host::HostCellSize {
                     width_px: 8,
                     height_px: 16,
                 },

@@ -74,7 +74,7 @@ pub(in crate::shell) fn surface() -> PaneSurfaceFrame {
                 0,
                 0,
                 2,
-                shepr_vt::AbsRow(0),
+                shepr_term::AbsRow(0),
             )),
             focused: true,
             mouse_reporting: false,
@@ -161,7 +161,7 @@ pub(in crate::shell) fn pane_scroll_result(
                 offset_from_bottom,
                 max_offset_from_bottom,
                 viewport_rows,
-                shepr_vt::AbsRow(0),
+                shepr_term::AbsRow(0),
             )),
         }),
     }

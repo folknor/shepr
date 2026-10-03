@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 
-use crate::input::TerminalKey;
 use shepr_config::{ActionKeybinds, IndexedKeybind, Keybinds};
+use shepr_term::key::TerminalKey;
 
 pub(crate) type KeybindHelpEntry = (String, Cow<'static, str>);
 pub(crate) type KeybindHelpGroup = (&'static str, Vec<KeybindHelpEntry>);
@@ -38,12 +38,12 @@ fn indexed_label(bindings: &[IndexedKeybind]) -> String {
 
 pub fn keybind_help_groups(
     keybinds: &Keybinds,
-    prefix: (crossterm::event::KeyCode, crossterm::event::KeyModifiers),
+    prefix: shepr_term::key::KeyChord,
 ) -> Vec<KeybindHelpGroup> {
     let mut groups = vec![
         (
             "global",
-            vec![entry(shepr_config::format_key_combo(prefix), "prefix mode")],
+            vec![entry(shepr_config::format_key_chord(prefix), "prefix mode")],
         ),
         ("navigation", Vec::new()),
         ("workspaces", Vec::new()),

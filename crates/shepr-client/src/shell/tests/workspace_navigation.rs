@@ -54,7 +54,7 @@ fn pane_scrollbar_click_clears_a_workspace_preview_when_leaving_navigation() {
         0,
         10,
         2,
-        shepr_vt::AbsRow(0),
+        shepr_term::AbsRow(0),
     ));
     pane_surface.panes[0].scrollbar_rect = Some(SurfaceRect {
         x: 3,
@@ -389,7 +389,7 @@ fn foreign_workspace_preview_blocks_paste_into_hidden_copy_search() {
         0,
         20,
         2,
-        shepr_vt::AbsRow(0),
+        shepr_term::AbsRow(0),
     ));
     state.receive_pane_surface_from(pane_surface, state.active_snapshot_generation.unwrap_or(1));
     state.compose(100, 28).expect("test precondition");
@@ -409,7 +409,7 @@ fn foreign_workspace_preview_blocks_paste_into_hidden_copy_search() {
     preview_key(&mut state, b"\x1b[B");
     assert!(state.workspace_preview_action_blocked());
     assert!(!state.modal_paste_target_active());
-    let key = shepr_termio::input::TerminalKey::new(KeyCode::Char('v'), KeyModifiers::CONTROL);
+    let key = shepr_term::key::TerminalKey::new(KeyCode::Char('v'), KeyModifiers::CONTROL);
     assert!(!state.handle_modal_paste_shortcut_with(
         &key,
         &mut ClientShellInput::default(),
@@ -990,12 +990,11 @@ fn direct_agent_focus_repaints_when_releasing_a_workspace_highlight() {
         }
 
         // Direct bindings do not inherit the repaint from leaving prefix mode.
-        let outcome = state.handle_raw_events(vec![RawInputEvent::Key(
-            shepr_termio::input::TerminalKey::new(
+        let outcome =
+            state.handle_raw_events(vec![RawInputEvent::Key(shepr_term::key::TerminalKey::new(
                 KeyCode::Char('1'),
                 KeyModifiers::CONTROL | KeyModifiers::ALT,
-            ),
-        )]);
+            ))]);
         assert!(
             matches!(outcome.actions.as_slice(), [ClientShellAction::Endpoint { request, .. }]
             if matches!(&request.command, EndpointCommand::PaneFocus(params)

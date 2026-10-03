@@ -30,12 +30,12 @@ impl ClientCopyModeState {
     }
 
     /// The row at the top of the pane's viewport.
-    pub(in crate::shell) fn viewport_top(&self) -> shepr_vt::AbsRow {
+    pub(in crate::shell) fn viewport_top(&self) -> shepr_term::AbsRow {
         self.scroll.viewport_top_row()
     }
 
     /// The newest row the pane retains.
-    fn last_row(&self) -> shepr_vt::AbsRow {
+    fn last_row(&self) -> shepr_term::AbsRow {
         let rows = self
             .scroll
             .max_offset_from_bottom
@@ -47,12 +47,12 @@ impl ClientCopyModeState {
     }
 
     /// `row` clamped to the rows the pane retains.
-    pub(in crate::shell) fn retained_row(&self, row: shepr_vt::AbsRow) -> shepr_vt::AbsRow {
+    pub(in crate::shell) fn retained_row(&self, row: shepr_term::AbsRow) -> shepr_term::AbsRow {
         row.clamp(self.scroll.history_origin, self.last_row())
     }
 
     /// The scroll offset that puts `top` at the top of the viewport.
-    fn offset_for_top(&self, top: shepr_vt::AbsRow) -> usize {
+    fn offset_for_top(&self, top: shepr_term::AbsRow) -> usize {
         let from_origin = top.0.saturating_sub(self.scroll.history_origin.0);
         self.scroll
             .max_offset_from_bottom
@@ -68,7 +68,7 @@ pub(in crate::shell) struct CopyPipeline {
     /// makes a late answer stale.
     awaiting: Option<shepr_protocol::RequestId>,
     ops: VecDeque<ClientCopyOperation>,
-    keys: VecDeque<shepr_termio::input::TerminalKey>,
+    keys: VecDeque<shepr_term::key::TerminalKey>,
 }
 impl CopyPipeline {
     pub(in crate::shell) fn in_flight(&self) -> bool {
@@ -105,19 +105,19 @@ impl CopyPipeline {
             .iter()
             .any(|op| matches!(op, ClientCopyOperation::Search { .. }))
     }
-    pub(in crate::shell) fn push_key(&mut self, key: shepr_termio::input::TerminalKey) {
+    pub(in crate::shell) fn push_key(&mut self, key: shepr_term::key::TerminalKey) {
         self.keys.push_back(key);
     }
-    pub(in crate::shell) fn pop_key(&mut self) -> Option<shepr_termio::input::TerminalKey> {
+    pub(in crate::shell) fn pop_key(&mut self) -> Option<shepr_term::key::TerminalKey> {
         self.keys.pop_front()
     }
     pub(in crate::shell) fn keys_len(&self) -> usize {
         self.keys.len()
     }
-    pub(in crate::shell) fn take_keys(&mut self) -> VecDeque<shepr_termio::input::TerminalKey> {
+    pub(in crate::shell) fn take_keys(&mut self) -> VecDeque<shepr_term::key::TerminalKey> {
         std::mem::take(&mut self.keys)
     }
-    pub(in crate::shell) fn put_keys(&mut self, keys: VecDeque<shepr_termio::input::TerminalKey>) {
+    pub(in crate::shell) fn put_keys(&mut self, keys: VecDeque<shepr_term::key::TerminalKey>) {
         self.keys = keys;
     }
     pub(in crate::shell) fn clear_keys(&mut self) {
@@ -257,7 +257,7 @@ impl ClientShellState {
     /// is full, as the way out of a request that stopped answering.
     pub(in crate::shell) fn copy_mode_interrupt_key(
         &self,
-        key: &shepr_termio::input::TerminalKey,
+        key: &shepr_term::key::TerminalKey,
     ) -> bool {
         if key.kind != crossterm::event::KeyEventKind::Press {
             return false;
@@ -275,7 +275,7 @@ impl ClientShellState {
         {
             return false;
         }
-        shepr_config::terminal_key_matches_combo(key, self.config.keybinds.prefix)
+        self.config.keybinds.prefix.matches(key)
             || shepr_termio::copy_mode::copy_mode_command(key)
                 == Some(shepr_termio::copy_mode::CopyModeCommand::Exit)
     }
@@ -341,12 +341,12 @@ impl ClientShellState {
                 // Lazily: outside the pane the subtractions would underflow.
                 .then(|| shepr_protocol::command::PaneTextPoint {
                     row: metrics
-                        .absolute_row_at_viewport(shepr_vt::ViewportRow(cursor.y - inner.y)),
+                        .absolute_row_at_viewport(shepr_term::ViewportRow(cursor.y - inner.y)),
                     col: cursor.x - inner.x,
                 })
             })
             .unwrap_or(shepr_protocol::command::PaneTextPoint {
-                row: metrics.absolute_row_at_viewport(shepr_vt::ViewportRow(
+                row: metrics.absolute_row_at_viewport(shepr_term::ViewportRow(
                     hit.inner_rect.height.saturating_sub(1),
                 )),
                 col: 0,
@@ -374,7 +374,7 @@ impl ClientShellState {
 
     pub(in crate::shell) fn route_copy_mode_key(
         &mut self,
-        key: &shepr_termio::input::TerminalKey,
+        key: &shepr_term::key::TerminalKey,
         outcome: &mut ClientShellInput,
     ) {
         if self.route_copy_search_prompt_key(key, outcome) {
@@ -554,7 +554,7 @@ impl ClientShellState {
 
     fn route_copy_search_prompt_key(
         &mut self,
-        key: &shepr_termio::input::TerminalKey,
+        key: &shepr_term::key::TerminalKey,
         outcome: &mut ClientShellInput,
     ) -> bool {
         let Some(prompt) = self
@@ -978,18 +978,18 @@ impl ClientShellState {
         let row = copy_mode.cursor.row;
         if linewise {
             copy_mode.selection = Some(ClientCopySelection::Linewise { anchor_row: row });
-            self.mouse_selection.selection = Some(shepr_vt::selection::Selection::line_range(
+            self.mouse_selection.selection = Some(shepr_term::selection::Selection::line_range(
                 copy_mode.pane_id,
                 row,
                 row,
             ));
         } else {
             copy_mode.selection = Some(ClientCopySelection::Character {
-                anchor: shepr_vt::Point::new(row, copy_mode.cursor.col),
+                anchor: shepr_term::Point::new(row, copy_mode.cursor.col),
             });
-            self.mouse_selection.selection = Some(shepr_vt::selection::Selection::anchor(
+            self.mouse_selection.selection = Some(shepr_term::selection::Selection::anchor(
                 copy_mode.pane_id,
-                shepr_vt::Point::new(row, copy_mode.cursor.col),
+                shepr_term::Point::new(row, copy_mode.cursor.col),
             ));
         }
     }
@@ -1004,13 +1004,13 @@ impl ClientShellState {
             return;
         };
         self.mouse_selection.selection = Some(match selection {
-            ClientCopySelection::Character { anchor } => shepr_vt::selection::Selection::range(
+            ClientCopySelection::Character { anchor } => shepr_term::selection::Selection::range(
                 copy_mode.pane_id,
                 anchor,
-                shepr_vt::Point::new(copy_mode.cursor.row, copy_mode.cursor.col),
+                shepr_term::Point::new(copy_mode.cursor.row, copy_mode.cursor.col),
             ),
             ClientCopySelection::Linewise { anchor_row } => {
-                shepr_vt::selection::Selection::line_range(
+                shepr_term::selection::Selection::line_range(
                     copy_mode.pane_id,
                     anchor_row,
                     copy_mode.cursor.row,
@@ -1144,7 +1144,7 @@ impl ClientShellState {
             .mouse_selection
             .selection
             .as_ref()
-            .is_some_and(shepr_vt::selection::Selection::is_visible);
+            .is_some_and(shepr_term::selection::Selection::is_visible);
         if copy
             && !live_selection
             && let Some((pane_id, text_match)) = self.copy_mode.as_ref().and_then(|copy_mode| {
@@ -1159,10 +1159,10 @@ impl ClientShellState {
                     .map(|text_match| (copy_mode.pane_id, text_match))
             })
         {
-            self.mouse_selection.selection = Some(shepr_vt::selection::Selection::range(
+            self.mouse_selection.selection = Some(shepr_term::selection::Selection::range(
                 pane_id,
-                shepr_vt::Point::new(text_match.start.row, text_match.start.col),
-                shepr_vt::Point::new(text_match.end.row, text_match.end.col),
+                shepr_term::Point::new(text_match.start.row, text_match.start.col),
+                shepr_term::Point::new(text_match.end.row, text_match.end.col),
             ));
         }
         if self.copy_mode.is_none() {
@@ -1174,7 +1174,7 @@ impl ClientShellState {
                 .mouse_selection
                 .selection
                 .as_ref()
-                .is_some_and(shepr_vt::selection::Selection::is_visible)
+                .is_some_and(shepr_term::selection::Selection::is_visible)
         {
             self.request_selection_copy(outcome);
         }
@@ -1217,7 +1217,7 @@ mod pipeline_tests {
                 shepr_protocol::command::PaneWordMotion::NextStart,
             ),
         ));
-        p.push_key(shepr_termio::input::TerminalKey::new(
+        p.push_key(shepr_term::key::TerminalKey::new(
             KeyCode::Char('j'),
             crossterm::event::KeyModifiers::empty(),
         ));
@@ -1230,7 +1230,7 @@ mod pipeline_tests {
     fn a_finished_request_keeps_its_queued_keys_for_the_replay() {
         let mut p = CopyPipeline::default();
         p.begin("request".into());
-        let key = shepr_termio::input::TerminalKey::new(
+        let key = shepr_term::key::TerminalKey::new(
             KeyCode::Char('j'),
             crossterm::event::KeyModifiers::empty(),
         );

@@ -34,7 +34,6 @@
 
 mod cell;
 mod color;
-mod coords;
 mod format;
 mod handler;
 mod history;
@@ -44,75 +43,29 @@ mod read;
 mod render;
 mod rows;
 mod scan;
-pub mod selection;
-pub mod width;
-pub use cell::{ColorSource, RenderColors};
-pub mod seq;
-pub use cell::{CellBasicData, CellColor, CellStyle, CellView, CellWide, UnderlineStyle};
+pub use cell::{CellBasicData, CellColor, CellStyle, CellView, CellWide};
 use cell::{CellText, cell_text, cell_text_into, cell_wide};
-pub use cell::{RowWrap, unicode_display_units};
+pub use cell::{ColorSource, RenderColors, RowWrap};
 pub use format::AnsiCarry;
-pub use modes::DecMode;
-pub use width::{
+// The terminal vocabulary the emulator speaks lives in `shepr-term`, so the
+// client can share it without linking the emulator; it is re-exported here so
+// emulator users name one crate.
+pub use shepr_term::width::{
     is_halfwidth_katakana_voiced_grapheme, is_halfwidth_katakana_voiced_mark,
-    unicode_codepoint_width, unicode_text_width,
+    unicode_codepoint_width, unicode_display_units, unicode_text_width,
 };
+pub use shepr_term::{
+    AbsRow, ColorQueryTarget, ColorScheme, DecMode, DefaultColor, FocusEvent, KittyKeyboardFlags,
+    ModifyOtherKeysLevel, MouseEncoding, MouseProtocol, MouseProtocolMode, Point, RgbColor,
+    ScreenRow, ScrollMetrics, ScrollMetricsFields, UnderlineStyle, ViewportPosition, ViewportRow,
+    default_palette, default_palette_color, encode_focus,
+};
+pub use shepr_term::{selection, seq, width};
 // limits-exempt: this fixed terminfo name advertises the pane terminal type.
 pub const PANE_TERM: &str = "xterm-256color";
 pub const PANE_COLORTERM: &str = "truecolor";
 
-/// Kitty keyboard mode flags reported by the terminal core and shared with
-/// the wire and host-terminal adapters.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(transparent)]
-pub struct KittyKeyboardFlags(u16);
-
-impl KittyKeyboardFlags {
-    pub const NONE: Self = Self(0);
-    pub const DISAMBIGUATE: Self = Self(1);
-    pub const REPORT_EVENT_TYPES: Self = Self(2);
-    pub const REPORT_ALTERNATE_KEYS: Self = Self(4);
-    pub const REPORT_ALL_KEYS: Self = Self(8);
-    pub const REPORT_ASSOCIATED_TEXT: Self = Self(16);
-
-    pub const fn from_bits_retain(bits: u16) -> Self {
-        Self(bits)
-    }
-
-    pub const fn bits(self) -> u16 {
-        self.0
-    }
-
-    pub const fn contains(self, flags: Self) -> bool {
-        self.0 & flags.0 == flags.0
-    }
-
-    pub const fn is_empty(self) -> bool {
-        self.0 == 0
-    }
-
-    pub fn insert(&mut self, flags: Self) {
-        self.0 |= flags.0;
-    }
-}
-
-impl std::ops::BitOr for KittyKeyboardFlags {
-    type Output = Self;
-
-    fn bitor(self, rhs: Self) -> Self {
-        Self(self.0 | rhs.0)
-    }
-}
-
-impl std::ops::BitOrAssign for KittyKeyboardFlags {
-    fn bitor_assign(&mut self, rhs: Self) {
-        self.0 |= rhs.0;
-    }
-}
-
-pub use color::{
-    ColorQuery, ColorQueryTarget, DefaultColor, RgbColor, default_palette, default_palette_color,
-};
+pub use color::ColorQuery;
 pub use render::{CursorVisualStyle, Dirty, RenderState};
 pub use scan::{ProgressReport, WorkingDirectoryReport};
 
@@ -130,9 +83,6 @@ use alacritty_terminal::index::{Column, Line};
 use alacritty_terminal::term::cell::{Cell, Flags};
 use alacritty_terminal::term::{ClipboardType, Config, Osc52, Term, TermDamage, TermMode};
 use vte::ansi::{Color, CursorShape, NamedColor, Processor, Rgb, Timeout};
-
-pub use coords::Point;
-pub use coords::{AbsRow, ScreenRow, ViewportPosition, ViewportRow};
 
 use self::format::Format;
 use self::handler::{CoreHandler, KeyboardStackDepth};
@@ -161,27 +111,6 @@ impl fmt::Display for ReadError {
 
 impl std::error::Error for ReadError {}
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FocusEvent {
-    Gained,
-    Lost,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ColorScheme {
-    Light,
-    Dark,
-}
-
-impl ColorScheme {
-    pub const fn report(self) -> &'static [u8] {
-        match self {
-            Self::Dark => seq::COLOR_SCHEME_DARK,
-            Self::Light => seq::COLOR_SCHEME_LIGHT,
-        }
-    }
-}
-
 // Unicode private-use codepoint used by the kitty graphics unicode-placeholder
 // convention. Shepr does not render kitty graphics, but programs may still
 // emit this codepoint as literal text; keep filtering it out of copied,
@@ -205,30 +134,6 @@ const DEFAULT_BACKGROUND: RgbColor = RgbColor { r: 0, g: 0, b: 0 };
 pub enum ActiveScreen {
     Primary,
     Alternate,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MouseProtocolMode {
-    Press,
-    PressRelease,
-    ButtonMotion,
-    AnyMotion,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MouseEncoding {
-    Default,
-    Utf8,
-    Sgr,
-}
-
-/// The mouse protocol selected by the child. `encoding` is used for cell
-/// coordinates; pixel reports use SGR when `pixels_requested` is true.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct MouseProtocol {
-    pub mode: MouseProtocolMode,
-    pub encoding: MouseEncoding,
-    pub pixels_requested: bool,
 }
 
 /// Input-related terminal modes captured together from one terminal state.
@@ -310,96 +215,11 @@ pub enum ScrollTowards {
     Newer(usize),
 }
 
-/// A bottom-based history viewport. Construction clamps the offset to retained history.
-/// The read-only fields are exposed through Deref; there is no mutable field access.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(try_from = "ScrollMetricsFields", into = "ScrollMetricsFields")]
-pub struct ScrollMetrics(ScrollMetricsFields);
-
-/// Read-only observations and the serde payload for a history viewport.
-/// Converting this payload into ScrollMetrics validates the offset bound.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct ScrollMetricsFields {
-    pub offset_from_bottom: usize,
-    pub max_offset_from_bottom: usize,
-    pub viewport_rows: usize,
-    pub history_origin: AbsRow,
-}
-
-impl std::ops::Deref for ScrollMetrics {
-    type Target = ScrollMetricsFields;
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl From<ScrollMetrics> for ScrollMetricsFields {
-    fn from(metrics: ScrollMetrics) -> Self {
-        metrics.0
-    }
-}
-
-impl TryFrom<ScrollMetricsFields> for ScrollMetrics {
-    type Error = &'static str;
-    fn try_from(fields: ScrollMetricsFields) -> Result<Self, Self::Error> {
-        if fields.offset_from_bottom > fields.max_offset_from_bottom {
-            return Err("scroll offset exceeds retained history");
-        }
-        Ok(Self(fields))
-    }
-}
-
-impl ScrollMetrics {
-    pub fn new(
-        offset_from_bottom: usize,
-        max_offset_from_bottom: usize,
-        viewport_rows: usize,
-        history_origin: AbsRow,
-    ) -> Self {
-        Self(ScrollMetricsFields {
-            offset_from_bottom: offset_from_bottom.min(max_offset_from_bottom),
-            max_offset_from_bottom,
-            viewport_rows,
-            history_origin,
-        })
-    }
-
-    pub fn with_offset(self, offset_from_bottom: usize) -> Self {
-        Self::new(
-            offset_from_bottom,
-            self.max_offset_from_bottom,
-            self.viewport_rows,
-            self.history_origin,
-        )
-    }
-
-    /// Retained-buffer row at the top, counted from the oldest retained row.
-    pub fn viewport_start(self) -> usize {
-        self.max_offset_from_bottom - self.offset_from_bottom
-    }
-
-    pub fn viewport_top_row(self) -> AbsRow {
-        self.history_origin
-            .saturating_add(u64::try_from(self.viewport_start()).unwrap_or(u64::MAX))
-    }
-
-    pub fn absolute_row_at_viewport(self, row: ViewportRow) -> AbsRow {
-        AbsRow::from_viewport_top(self.viewport_top_row(), row)
-    }
-}
-
 /// A reply the terminal wants written back to the child, in byte order.
 #[derive(Debug)]
 pub enum PtyResponse {
     Bytes(Vec<u8>),
     ColorQuery(ColorQuery),
-}
-
-pub fn encode_focus(event: FocusEvent) -> &'static [u8] {
-    match event {
-        FocusEvent::Gained => seq::FOCUS_GAINED,
-        FocusEvent::Lost => seq::FOCUS_LOST,
-    }
 }
 
 fn scrollback_lines(max_scrollback_bytes: usize, columns: usize) -> usize {
@@ -487,25 +307,6 @@ struct ExtraModes {
     /// inside a buffered frame is replay order. Only DECRQM ?2026 reads it;
     /// [`Terminal::mode_get`] asks the parser.
     synchronized_update: bool,
-}
-
-/// The three xterm modifyOtherKeys levels.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub enum ModifyOtherKeysLevel {
-    #[default]
-    Off,
-    ExceptWellDefined,
-    All,
-}
-
-impl ModifyOtherKeysLevel {
-    pub const fn set_sequence(self) -> &'static [u8] {
-        match self {
-            Self::Off => b"\x1b[>4;0m",
-            Self::ExceptWellDefined => b"\x1b[>4;1m",
-            Self::All => b"\x1b[>4;2m",
-        }
-    }
 }
 
 /// A parsed title event; absence of an event is represented by `None` at the
@@ -1354,7 +1155,7 @@ impl Terminal {
 
     /// The cursor colour set with OSC 12, if any.
     fn effective_cursor_color(&self) -> Option<RgbColor> {
-        self.term.colors()[NamedColor::Cursor].map(RgbColor::from_vte)
+        self.term.colors()[NamedColor::Cursor].map(color::rgb_from_vte)
     }
 }
 

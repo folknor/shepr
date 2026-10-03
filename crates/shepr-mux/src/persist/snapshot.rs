@@ -145,23 +145,22 @@ where
 #[serde(deny_unknown_fields)]
 pub struct SavedHostTheme {
     #[serde(deserialize_with = "required_nullable")]
-    pub foreground: Option<shepr_termio::host_term::theme::RgbColor>,
+    pub foreground: Option<shepr_term::host::RgbColor>,
     #[serde(deserialize_with = "required_nullable")]
-    pub background: Option<shepr_termio::host_term::theme::RgbColor>,
+    pub background: Option<shepr_term::host::RgbColor>,
     #[serde(deserialize_with = "deserialize_palette")]
-    pub palette: Vec<Option<shepr_termio::host_term::theme::RgbColor>>,
+    pub palette: Vec<Option<shepr_term::host::RgbColor>>,
 }
 
 // serde has no array impl past 32 entries, so the palette is a `Vec` whose
 // length is checked here.
 fn deserialize_palette<'de, D>(
     deserializer: D,
-) -> Result<Vec<Option<shepr_termio::host_term::theme::RgbColor>>, D::Error>
+) -> Result<Vec<Option<shepr_term::host::RgbColor>>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
-    let palette =
-        Vec::<Option<shepr_termio::host_term::theme::RgbColor>>::deserialize(deserializer)?;
+    let palette = Vec::<Option<shepr_term::host::RgbColor>>::deserialize(deserializer)?;
     if palette.len() != PALETTE_COLOR_COUNT {
         return Err(serde::de::Error::custom(format!(
             "palette has {} colors, expected {PALETTE_COLOR_COUNT}",
@@ -181,8 +180,8 @@ impl Default for SavedHostTheme {
     }
 }
 
-impl From<shepr_termio::host_term::theme::TerminalTheme> for SavedHostTheme {
-    fn from(theme: shepr_termio::host_term::theme::TerminalTheme) -> Self {
+impl From<shepr_term::host::TerminalTheme> for SavedHostTheme {
+    fn from(theme: shepr_term::host::TerminalTheme) -> Self {
         Self {
             foreground: theme.foreground,
             background: theme.background,
@@ -192,8 +191,8 @@ impl From<shepr_termio::host_term::theme::TerminalTheme> for SavedHostTheme {
 }
 
 impl SavedHostTheme {
-    pub fn to_theme(&self) -> shepr_termio::host_term::theme::TerminalTheme {
-        let mut theme = shepr_termio::host_term::theme::TerminalTheme {
+    pub fn to_theme(&self) -> shepr_term::host::TerminalTheme {
+        let mut theme = shepr_term::host::TerminalTheme {
             foreground: self.foreground,
             background: self.background,
             ..Default::default()
@@ -373,7 +372,7 @@ pub fn capture(
     terminal_runtimes: &PaneRuntimeRegistry,
     fallback_cwd: &std::path::Path,
     active: Option<usize>,
-    host_theme: shepr_termio::host_term::theme::TerminalTheme,
+    host_theme: shepr_term::host::TerminalTheme,
 ) -> SessionSnapshot {
     let (mut snapshot, cwds, _) = capture_deferred(
         workspaces,
@@ -399,7 +398,7 @@ pub fn capture_deferred(
     terminal_runtimes: &PaneRuntimeRegistry,
     fallback_cwd: &std::path::Path,
     active: Option<usize>,
-    host_theme: shepr_termio::host_term::theme::TerminalTheme,
+    host_theme: shepr_term::host::TerminalTheme,
 ) -> (
     SessionSnapshot,
     PendingCwds,

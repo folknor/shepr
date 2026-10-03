@@ -17,63 +17,7 @@
 
 use super::ExtraModes;
 use alacritty_terminal::term::TermMode;
-
-/// A DEC private mode supported by the terminal adapter.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-// The discriminant indexes the corresponding entry in `MODES`.
-#[repr(usize)]
-pub enum DecMode {
-    ApplicationCursorKeys,
-    ColumnMode,
-    Origin,
-    LineWrap,
-    X10Mouse,
-    CursorBlink,
-    ShowCursor,
-    MousePressRelease,
-    MouseButtonMotion,
-    MouseAnyMotion,
-    FocusEvents,
-    MouseUtf8,
-    MouseSgr,
-    MouseAlternateScroll,
-    MouseSgrPixels,
-    UrgencyHints,
-    AlternateScreen,
-    BracketedPaste,
-    SynchronizedOutput,
-    ColorSchemeReport,
-    InBandResize,
-}
-
-impl DecMode {
-    /// The DEC private mode number used in escape sequences.
-    pub const fn number(self) -> u16 {
-        match self {
-            Self::ApplicationCursorKeys => 1,
-            Self::ColumnMode => 3,
-            Self::Origin => 6,
-            Self::LineWrap => 7,
-            Self::X10Mouse => 9,
-            Self::CursorBlink => 12,
-            Self::ShowCursor => 25,
-            Self::MousePressRelease => 1000,
-            Self::MouseButtonMotion => 1002,
-            Self::MouseAnyMotion => 1003,
-            Self::FocusEvents => 1004,
-            Self::MouseUtf8 => 1005,
-            Self::MouseSgr => 1006,
-            Self::MouseAlternateScroll => 1007,
-            Self::MouseSgrPixels => 1016,
-            Self::UrgencyHints => 1042,
-            Self::AlternateScreen => 1049,
-            Self::BracketedPaste => 2004,
-            Self::SynchronizedOutput => 2026,
-            Self::ColorSchemeReport => 2031,
-            Self::InBandResize => 2048,
-        }
-    }
-}
+use shepr_term::DecMode;
 
 /// A mode alacritty does not model, stored in [`ExtraModes`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

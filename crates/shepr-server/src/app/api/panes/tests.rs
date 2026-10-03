@@ -5,7 +5,7 @@ use shepr_config::ServerConfig;
 use shepr_mux::workspace::Workspace;
 use shepr_protocol::command::{EndpointCommand, EndpointError, PaneTextPoint};
 use shepr_protocol::{PublicPaneId, WorkspaceId};
-use shepr_termio::host_term::cell_size::HostCellSize;
+use shepr_term::host::HostCellSize;
 
 fn app_with_test_workspace() -> (App, PublicPaneId) {
     let mut app = App::new(&ServerConfig::default(), crate::app::AppPolicy::Suspended);

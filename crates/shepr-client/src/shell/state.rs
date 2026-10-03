@@ -128,14 +128,14 @@ pub(in crate::shell) struct ShellHitMap {
     pub(in crate::shell) workspaces: Vec<WorkspaceHit>,
     pub(in crate::shell) workspace_body: Rect,
     pub(in crate::shell) workspace_scrollbar: Rect,
-    pub(in crate::shell) workspace_scroll_metrics: Option<shepr_termio::scroll::ListScroll>,
+    pub(in crate::shell) workspace_scroll_metrics: Option<shepr_term::scroll::ListScroll>,
     pub(in crate::shell) workspace_max_scroll: usize,
     pub(in crate::shell) panes: Vec<PaneHit>,
     pub(in crate::shell) pane_splits: Vec<PaneSplitHit>,
     pub(in crate::shell) agent_hits: Vec<AgentHit>,
     pub(in crate::shell) agent_body: Rect,
     pub(in crate::shell) agent_scrollbar: Rect,
-    pub(in crate::shell) agent_scroll_metrics: Option<shepr_termio::scroll::ListScroll>,
+    pub(in crate::shell) agent_scroll_metrics: Option<shepr_term::scroll::ListScroll>,
     pub(in crate::shell) agent_max_scroll: usize,
     pub(in crate::shell) agent_sort_toggle: Rect,
     pub(in crate::shell) sidebar_divider: Rect,
@@ -153,10 +153,10 @@ pub(in crate::shell) struct ShellHitMap {
     pub(in crate::shell) navigator_search: Rect,
     pub(in crate::shell) navigator_rows: Vec<(Rect, Location)>,
     pub(in crate::shell) navigator_scrollbar: Rect,
-    pub(in crate::shell) navigator_scroll_metrics: Option<shepr_termio::scroll::ListScroll>,
+    pub(in crate::shell) navigator_scroll_metrics: Option<shepr_term::scroll::ListScroll>,
     pub(in crate::shell) help_popup: Rect,
     pub(in crate::shell) help_scrollbar: Rect,
-    pub(in crate::shell) help_scroll_metrics: Option<shepr_termio::scroll::ListScroll>,
+    pub(in crate::shell) help_scroll_metrics: Option<shepr_term::scroll::ListScroll>,
     pub(in crate::shell) help_max_scroll: usize,
 }
 
@@ -165,7 +165,7 @@ pub(in crate::shell) struct PaneHit {
     pub(in crate::shell) rect: Rect,
     pub(in crate::shell) inner_rect: Rect,
     pub(in crate::shell) scrollbar_rect: Option<Rect>,
-    pub(in crate::shell) scroll: Option<shepr_termio::ScrollMetrics>,
+    pub(in crate::shell) scroll: Option<shepr_term::ScrollMetrics>,
     pub(in crate::shell) pane_id: shepr_protocol::PublicPaneId,
     pub(in crate::shell) mouse_reporting: bool,
     pub(in crate::shell) sgr_pixel_mouse: bool,
@@ -376,7 +376,7 @@ pub(in crate::shell) enum ClientShellMode {
 #[derive(Default)]
 pub(in crate::shell) struct MouseSelection {
     pub(in crate::shell) selection:
-        Option<shepr_vt::selection::Selection<shepr_protocol::PublicPaneId>>,
+        Option<shepr_term::selection::Selection<shepr_protocol::PublicPaneId>>,
     pub(in crate::shell) focus_pending: Option<shepr_protocol::PublicPaneId>,
     pub(in crate::shell) last_pane_click: Option<ClientPaneClick>,
     pub(in crate::shell) autoscroll: Option<ClientSelectionAutoscroll>,
@@ -635,10 +635,10 @@ pub(in crate::shell) struct ClientSelectionAutoscroll {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(in crate::shell) enum ClientCopySelection {
     Character {
-        anchor: shepr_vt::Point<shepr_vt::AbsRow>,
+        anchor: shepr_term::Point<shepr_term::AbsRow>,
     },
     Linewise {
-        anchor_row: shepr_vt::AbsRow,
+        anchor_row: shepr_term::AbsRow,
     },
 }
 
@@ -686,7 +686,7 @@ impl ClientCopySearch {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(in crate::shell) struct ClientCopyModeState {
     pub(in crate::shell) pane_id: shepr_protocol::PublicPaneId,
-    pub(in crate::shell) scroll: shepr_vt::ScrollMetrics,
+    pub(in crate::shell) scroll: shepr_term::ScrollMetrics,
     pub(in crate::shell) geometry: (u16, u16),
     pub(in crate::shell) alternate_screen_active: bool,
     pub(in crate::shell) cursor: shepr_protocol::command::PaneTextPoint,
@@ -775,7 +775,7 @@ pub struct ClientShellState {
     pub(in crate::shell) host_reports_all_keys: bool,
     pub(in crate::shell) notices: crate::shell::overlays::notices::Notices,
     pub(in crate::shell) outer_focused: Option<bool>,
-    pub(in crate::shell) host_background: Option<shepr_termio::host_term::theme::RgbColor>,
+    pub(in crate::shell) host_background: Option<shepr_term::host::RgbColor>,
     pub(in crate::shell) endpoint_error: crate::shell::overlays::transient_error::TransientError,
 }
 

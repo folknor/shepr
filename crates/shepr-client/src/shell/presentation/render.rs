@@ -90,7 +90,7 @@ pub(in crate::shell) fn render_mode_bar(
             palette.accent
         })
         .add_modifier(Modifier::BOLD);
-    let prefix = shepr_config::format_key_combo(keybinds.prefix);
+    let prefix = shepr_config::format_key_chord(keybinds.prefix);
     let prefix_rhs = |bindings: &shepr_config::ActionKeybinds| {
         bindings
             .prefix_rhs_label()
@@ -470,7 +470,7 @@ fn rendered_grapheme_width(grapheme: &str) -> usize {
     if grapheme.contains(char::is_control) {
         0
     } else {
-        shepr_termio::blit::text_width(grapheme)
+        shepr_term::width::text_width(grapheme)
     }
 }
 

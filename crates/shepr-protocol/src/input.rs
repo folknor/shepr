@@ -1,7 +1,7 @@
 use super::*;
 use serde::{Deserialize, Serialize};
 use shepr_core::{geometry::BoundedGridSize, limits::PALETTE_COLOR_COUNT};
-pub use shepr_vt::KittyKeyboardFlags;
+pub use shepr_term::KittyKeyboardFlags;
 
 // ---------------------------------------------------------------------------
 // Client → Server messages

@@ -97,8 +97,8 @@ fn render_notification_card(
     // anywhere on the card dismisses it.
     let content_width = body
         .lines()
-        .map(shepr_termio::blit::text_width)
-        .chain([shepr_termio::blit::text_width(title)])
+        .map(shepr_term::width::text_width)
+        .chain([shepr_term::width::text_width(title)])
         .max()
         .unwrap_or(0)
         .saturating_add(6);
@@ -168,7 +168,7 @@ pub(in crate::shell) fn render_lifecycle_banner(
     }
     let (symbol, state, color) = endpoint_status_presentation(status, palette);
     let text = format!("{symbol} {label} · {state}");
-    let width = u16::try_from(shepr_termio::blit::text_width(&text) + 2)
+    let width = u16::try_from(shepr_term::width::text_width(&text) + 2)
         .unwrap_or(u16::MAX)
         .min(area.width);
     let rect = Rect::new(area.right().saturating_sub(width), area.y, width, 1);

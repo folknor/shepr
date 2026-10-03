@@ -1,4 +1,5 @@
-use ratatui::{buffer::Buffer, layout::Rect};
+use ratatui::{buffer::Buffer, layout::Rect, style::Style};
+use shepr_term::scroll::{ScrollTrack, ScrollbarMetrics, ScrollbarPart, scrollbar_rows};
 
 use super::chrome::overlay_buffer;
 use crate::app::AppState;
@@ -13,7 +14,27 @@ pub(crate) fn should_show_scrollbar(metrics: shepr_mux::pane::ScrollMetrics) -> 
     PaneInfo::scrollbar_visible(metrics.max_offset_from_bottom)
 }
 
-use shepr_termio::scroll::render_scrollbar_buffer;
+fn render_scrollbar_buffer(
+    buffer: &mut Buffer,
+    metrics: impl ScrollbarMetrics,
+    track: Rect,
+    track_symbol: &str,
+    track_style: Style,
+    thumb_symbol: &str,
+    thumb_style: Style,
+) {
+    for (y, part) in scrollbar_rows(metrics, ScrollTrack::new(track.y, track.height)) {
+        let (symbol, style) = match part {
+            ScrollbarPart::Track => (track_symbol, track_style),
+            ScrollbarPart::Thumb => (thumb_symbol, thumb_style),
+        };
+        if let Some(cell) = buffer.cell_mut((track.x, y)) {
+            cell.set_symbol(symbol);
+            cell.set_style(track_style);
+            cell.set_style(style);
+        }
+    }
+}
 
 pub(crate) fn render_pane_scrollbar_buffer(
     buffer: &mut Buffer,

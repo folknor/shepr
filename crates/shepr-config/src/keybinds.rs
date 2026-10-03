@@ -7,139 +7,11 @@ use crate::limits::{
     MIN_FUNCTION_KEY_NUMBER,
 };
 use crate::{ConfigDiagnostic, ConfigKeyPath};
-
-pub(crate) type KeyCombo = (KeyCode, KeyModifiers);
-
-/// The identity used for configured bindings, conflict checks and fallback
-/// matching parsed terminal keys. Printable shifted punctuation is identified
-/// by the character it produces; letters retain Shift as part of the chord.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-struct CanonicalKey {
-    code: KeyCode,
-    modifiers: KeyModifiers,
-}
-
-impl CanonicalKey {
-    fn from_combo((code, modifiers): KeyCombo) -> Self {
-        Self::from_event(code, modifiers, None)
-    }
-
-    fn from_event(code: KeyCode, modifiers: KeyModifiers, shifted_codepoint: Option<char>) -> Self {
-        let (mut code, mut modifiers) = normalize_key_combo((code, modifiers));
-        if let KeyCode::Char(ch) = code {
-            // Unicode case folds are not always one-to-one, so only ASCII
-            // letters have a layout-independent base-key plus Shift form.
-            if modifiers.contains(KeyModifiers::SHIFT)
-                && ch.is_ascii_alphabetic()
-                && let Some(lowercase) = single_case_char(ch.to_lowercase())
-            {
-                code = KeyCode::Char(lowercase);
-            } else if modifiers.contains(KeyModifiers::SHIFT) && !ch.is_alphabetic() {
-                let shifted =
-                    produced_character(code, modifiers, shifted_codepoint).filter(|shifted| {
-                        shifted_codepoint.is_some() || *shifted != ch || is_shifted_ascii_symbol(ch)
-                    });
-                if let Some(shifted) = shifted {
-                    code = KeyCode::Char(shifted);
-                    modifiers.remove(KeyModifiers::SHIFT);
-                } else if is_shifted_ascii_symbol(ch) {
-                    modifiers.remove(KeyModifiers::SHIFT);
-                }
-            } else if !modifiers.contains(KeyModifiers::SHIFT)
-                && ch.is_ascii_uppercase()
-                && let Some(lowercase) = single_case_char(ch.to_lowercase())
-            {
-                code = KeyCode::Char(lowercase);
-                modifiers |= KeyModifiers::SHIFT;
-            }
-        }
-        Self { code, modifiers }
-    }
-
-    fn combo(self) -> KeyCombo {
-        (self.code, self.modifiers)
-    }
-}
-
-fn single_case_char(mut chars: impl Iterator<Item = char>) -> Option<char> {
-    let first = chars.next()?;
-    chars.next().is_none().then_some(first)
-}
-
-const SHIFTED_ASCII_KEYS: [(char, char); 21] = [
-    ('0', ')'),
-    ('1', '!'),
-    ('2', '@'),
-    ('3', '#'),
-    ('4', '$'),
-    ('5', '%'),
-    ('6', '^'),
-    ('7', '&'),
-    ('8', '*'),
-    ('9', '('),
-    ('-', '_'),
-    ('=', '+'),
-    ('[', '{'),
-    (']', '}'),
-    ('\\', '|'),
-    (';', ':'),
-    ('\'', '"'),
-    (',', '<'),
-    ('.', '>'),
-    ('/', '?'),
-    ('`', '~'),
-];
-
-/// Map Shift on a US-layout key to the character it produces for key identity.
-fn shifted_ascii_char(ch: char) -> Option<char> {
-    if ch.is_ascii_lowercase() {
-        return Some(ch.to_ascii_uppercase());
-    }
-    SHIFTED_ASCII_KEYS
-        .iter()
-        .find_map(|(base, shifted)| (*base == ch).then_some(*shifted))
-}
-
-/// Whether `ch` is a character Shift produces on a US-layout key.
-pub fn is_shifted_ascii_symbol(ch: char) -> bool {
-    SHIFTED_ASCII_KEYS.iter().any(|(_, shifted)| *shifted == ch)
-}
-
-fn produced_character(
-    code: KeyCode,
-    modifiers: KeyModifiers,
-    shifted: Option<char>,
-) -> Option<char> {
-    let KeyCode::Char(ch) = code else {
-        return None;
-    };
-    if modifiers.contains(KeyModifiers::SHIFT) {
-        Some(shifted.or_else(|| shifted_ascii_char(ch)).unwrap_or(ch))
-    } else {
-        Some(ch)
-    }
-}
-
-/// The key identity used to resolve configured bindings.
-pub trait BindingKey {
-    fn code(&self) -> KeyCode;
-    fn modifiers(&self) -> KeyModifiers;
-    fn shifted_codepoint(&self) -> Option<char>;
-
-    /// Character produced by Shift, using a reported alternate before the US
-    /// layout fallback. Modifier acceptance and text commits belong to callers.
-    fn produced_char(&self) -> Option<char> {
-        produced_character(self.code(), self.modifiers(), self.shifted_codepoint())
-    }
-
-    fn canonical_key(&self) -> (KeyCode, KeyModifiers) {
-        CanonicalKey::from_event(self.code(), self.modifiers(), self.shifted_codepoint()).combo()
-    }
-}
+use shepr_term::key::{CanonicalKey, KeyChord, TerminalKey, single_case_char};
 
 #[derive(Debug, Clone)]
 pub struct LiveKeybindConfig {
-    pub prefix: KeyCombo,
+    pub prefix: KeyChord,
     pub keybinds: Keybinds,
 }
 
@@ -175,14 +47,14 @@ impl BindingConfig {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BindingTrigger {
-    Direct(KeyCombo),
-    Prefix(KeyCombo),
+    Direct(KeyChord),
+    Prefix(KeyChord),
 }
 
 impl BindingTrigger {
-    pub fn combo(self) -> KeyCombo {
+    pub fn chord(self) -> KeyChord {
         match self {
-            Self::Direct(combo) | Self::Prefix(combo) => combo,
+            Self::Direct(chord) | Self::Prefix(chord) => chord,
         }
     }
 
@@ -202,8 +74,8 @@ pub struct ResolvedBinding {
 }
 
 impl ResolvedBinding {
-    fn matches_terminal_key(&self, key: &impl BindingKey) -> bool {
-        terminal_key_matches_combo(key, self.trigger.combo())
+    fn matches_terminal_key(&self, key: &TerminalKey) -> bool {
+        self.trigger.chord().matches(key)
     }
 }
 
@@ -213,13 +85,13 @@ pub struct ActionKeybinds {
 }
 
 impl ActionKeybinds {
-    pub fn matches_prefix_key(&self, key: &impl BindingKey) -> bool {
+    pub fn matches_prefix_key(&self, key: &TerminalKey) -> bool {
         self.bindings
             .iter()
             .any(|binding| binding.trigger.is_prefix() && binding.matches_terminal_key(key))
     }
 
-    pub fn matches_direct_key(&self, key: &impl BindingKey) -> bool {
+    pub fn matches_direct_key(&self, key: &TerminalKey) -> bool {
         self.bindings
             .iter()
             .any(|binding| binding.trigger.is_direct() && binding.matches_terminal_key(key))
@@ -301,13 +173,13 @@ impl IndexedRange {
     fn expand(self, prefix: bool) -> Vec<ResolvedBinding> {
         (FIRST_INDEXED_BINDING_KEY..=LAST_INDEXED_BINDING_KEY)
             .map(|key| {
-                let combo = (KeyCode::Char(key), self.modifiers);
-                let key_label = format_key_combo(combo);
+                let chord = KeyChord::new(KeyCode::Char(key), self.modifiers);
+                let key_label = format_key_chord(chord);
                 ResolvedBinding {
                     trigger: if prefix {
-                        BindingTrigger::Prefix(combo)
+                        BindingTrigger::Prefix(chord)
                     } else {
-                        BindingTrigger::Direct(combo)
+                        BindingTrigger::Direct(chord)
                     },
                     label: if prefix {
                         format!("prefix+{key_label}")
@@ -334,13 +206,11 @@ impl IndexedRange {
     }
 
     /// Match an indexed key, preferring bindings with exactly reported modifiers.
-    fn matched_index(bindings: &[IndexedKeybind], key: &impl BindingKey) -> Option<usize> {
-        let actual_modifiers = normalize_key_combo((key.code(), key.modifiers())).1;
+    fn matched_index(bindings: &[IndexedKeybind], key: &TerminalKey) -> Option<usize> {
         for exact_modifiers in [true, false] {
             for binding in bindings {
-                let expected_modifiers = normalize_key_combo(binding.trigger.combo()).1;
                 if binding.trigger.is_direct()
-                    && (actual_modifiers == expected_modifiers) == exact_modifiers
+                    && binding.trigger.chord().modifiers_match_exactly(key) == exact_modifiers
                     && let Some(index) = binding.matched_index(key)
                 {
                     return Some(index);
@@ -377,14 +247,13 @@ impl IndexedKeybind {
     }
 
     /// Match an indexed key, preferring bindings with exactly reported modifiers.
-    pub fn matched_range_index(bindings: &[Self], key: &impl BindingKey) -> Option<usize> {
+    pub fn matched_range_index(bindings: &[Self], key: &TerminalKey) -> Option<usize> {
         IndexedRange::matched_index(bindings, key)
     }
 
-    pub fn matched_index(&self, key: &impl BindingKey) -> Option<usize> {
-        let combo = self.trigger.combo();
-        let (expected_code, _) = normalize_key_combo(combo);
-        let KeyCode::Char(key_number) = expected_code else {
+    pub fn matched_index(&self, key: &TerminalKey) -> Option<usize> {
+        let chord = self.trigger.chord();
+        let KeyCode::Char(key_number) = chord.normalized().code else {
             return None;
         };
         if !IndexedRange::contains_key(KeyCode::Char(key_number)) {
@@ -392,7 +261,7 @@ impl IndexedKeybind {
         }
         let index =
             usize::try_from(u32::from(key_number) - u32::from(FIRST_INDEXED_BINDING_KEY)).ok()?;
-        if terminal_key_matches_combo(key, combo) {
+        if chord.matches(key) {
             Some(index)
         } else {
             None
@@ -415,14 +284,14 @@ macro_rules! define_navigate_aliases {
                 }
             }
 
-            fn combo(self) -> (KeyCode, KeyModifiers) {
+            fn chord(self) -> KeyChord {
                 match self {
-                    $(Self::$variant => (KeyCode::$key_code, KeyModifiers::empty()),)+
+                    $(Self::$variant => KeyChord::new(KeyCode::$key_code, KeyModifiers::empty()),)+
                 }
             }
 
             fn label(self) -> String {
-                format_key_combo(self.combo())
+                format_key_chord(self.chord())
             }
         }
     };
@@ -460,10 +329,10 @@ macro_rules! define_resolved_keybinds {
 crate::keybinding_table!(define_resolved_keybinds);
 
 impl Keybinds {
-    /// Resolve the key combo for one alias identifier from the central table.
+    /// Resolve the key chord for one alias identifier from the central table.
     #[doc(hidden)]
-    pub fn navigate_alias_combo_from_table(alias: &str) -> Option<(KeyCode, KeyModifiers)> {
-        NavigateAlias::from_table_name(alias).map(NavigateAlias::combo)
+    pub fn navigate_alias_chord_from_table(alias: &str) -> Option<KeyChord> {
+        NavigateAlias::from_table_name(alias).map(NavigateAlias::chord)
     }
 
     /// Resolve the help label for one alias identifier from the central table.
@@ -500,26 +369,26 @@ struct RegisteredBinding {
 }
 
 struct BindingRegistry {
-    prefix_combo: Option<KeyCombo>,
+    prefix_chord: Option<KeyChord>,
     prefix_source: BindingSource,
     direct: std::collections::HashMap<CanonicalKey, RegisteredBinding>,
     prefix: std::collections::HashMap<CanonicalKey, RegisteredBinding>,
 }
 
 impl BindingRegistry {
-    fn new(prefix_combo: Option<KeyCombo>, prefix_source: BindingSource) -> Self {
+    fn new(prefix_chord: Option<KeyChord>, prefix_source: BindingSource) -> Self {
         Self {
-            prefix_combo: prefix_combo.map(normalize_key_combo),
+            prefix_chord: prefix_chord.map(KeyChord::normalized),
             prefix_source,
             direct: std::collections::HashMap::new(),
             prefix: std::collections::HashMap::new(),
         }
     }
 
-    fn reserve_direct(&mut self, combo: KeyCombo, field: &str, source: BindingSource) {
+    fn reserve_direct(&mut self, chord: KeyChord, field: &str, source: BindingSource) {
         let is_prefix = field == "keys.prefix";
         self.direct
-            .entry(CanonicalKey::from_combo(combo))
+            .entry(chord.canonical())
             .or_insert_with(|| RegisteredBinding {
                 field: if is_prefix {
                     "configured prefix".to_owned()
@@ -531,15 +400,15 @@ impl BindingRegistry {
             });
     }
 
-    fn reserved_prefix(&self, combo: KeyCombo) -> Option<KeyCombo> {
-        self.prefix_combo
-            .filter(|prefix| CanonicalKey::from_combo(combo) == CanonicalKey::from_combo(*prefix))
+    fn reserved_prefix(&self, chord: KeyChord) -> Option<KeyChord> {
+        self.prefix_chord
+            .filter(|prefix| chord.canonical() == prefix.canonical())
     }
 
     fn conflict(&self, binding: &ResolvedBinding) -> Option<&RegisteredBinding> {
         match binding.trigger {
-            BindingTrigger::Direct(combo) => self.direct.get(&CanonicalKey::from_combo(combo)),
-            BindingTrigger::Prefix(combo) => self.prefix.get(&CanonicalKey::from_combo(combo)),
+            BindingTrigger::Direct(chord) => self.direct.get(&chord.canonical()),
+            BindingTrigger::Prefix(chord) => self.prefix.get(&chord.canonical()),
         }
     }
 
@@ -550,13 +419,11 @@ impl BindingRegistry {
             source,
         };
         match binding.trigger {
-            BindingTrigger::Direct(combo) => {
-                self.direct
-                    .insert(CanonicalKey::from_combo(combo), registered());
+            BindingTrigger::Direct(chord) => {
+                self.direct.insert(chord.canonical(), registered());
             }
-            BindingTrigger::Prefix(combo) => {
-                self.prefix
-                    .insert(CanonicalKey::from_combo(combo), registered());
+            BindingTrigger::Prefix(chord) => {
+                self.prefix.insert(chord.canonical(), registered());
             }
         }
     }
@@ -570,7 +437,7 @@ impl ClientConfig {
         is_configured: impl Fn(&str) -> bool,
     ) -> KeybindValidation {
         let mut diagnostics = Vec::new();
-        let prefix = parse_key_combo(&self.keys.prefix);
+        let prefix = parse_key_chord(&self.keys.prefix);
         if prefix.is_none() {
             diagnostics.push(invalid_keybinding_diagnostic(
                 "keys.prefix",
@@ -689,18 +556,18 @@ fn reserve_navigate_runtime_keys(registry: &mut BindingRegistry) {
             navigate_indexed { $(($navigate_indexed_config_field:ident, $navigate_indexed_field:ident, $navigate_indexed_variant:ident, $navigate_indexed_default:literal, $navigate_indexed_group:literal, $navigate_indexed_label:literal, $navigate_indexed_doc:literal, $navigate_indexed_alias:ident),)* }
         ) => {
             $(
-                if let Some(combo) = crate::navigate_alias!($navigate_alias) {
+                if let Some(chord) = crate::navigate_alias!($navigate_alias) {
                     registry.reserve_direct(
-                        combo,
+                        chord,
                         "navigate pane arrow aliases",
                         BindingSource::Default,
                     );
                 }
             )*
             $(
-                if let Some(combo) = crate::navigate_alias!($navigate_indexed_alias) {
+                if let Some(chord) = crate::navigate_alias!($navigate_indexed_alias) {
                     registry.reserve_direct(
-                        combo,
+                        chord,
                         "navigate pane arrow aliases",
                         BindingSource::Default,
                     );
@@ -900,7 +767,7 @@ fn push_indexed_binding(
     source: BindingSource,
     bindings: &mut Vec<IndexedKeybind>,
 ) {
-    if !IndexedRange::contains_key(binding.trigger.combo().0) {
+    if !IndexedRange::contains_key(binding.trigger.chord().code) {
         let diag = ConfigDiagnostic::validation(
             ConfigKeyPath::from_dotted(field),
             format!(
@@ -930,7 +797,7 @@ fn push_navigate_indexed_binding(
     source: BindingSource,
     bindings: &mut Vec<IndexedKeybind>,
 ) {
-    if !IndexedRange::contains_key(binding.trigger.combo().0) {
+    if !IndexedRange::contains_key(binding.trigger.chord().code) {
         diagnostics.push(ConfigDiagnostic::validation(
             ConfigKeyPath::from_dotted(field),
             format!(
@@ -987,9 +854,9 @@ fn reject_binding(
     source: BindingSource,
 ) -> bool {
     if binding.trigger.is_prefix()
-        && let Some(prefix_combo) = registry.reserved_prefix(binding.trigger.combo())
+        && let Some(prefix_chord) = registry.reserved_prefix(binding.trigger.chord())
     {
-        let prefix = format_key_combo(prefix_combo);
+        let prefix = format_key_chord(prefix_chord);
         let key = ConfigKeyPath::from_dotted(field);
         let prefix_key = ConfigKeyPath::from_dotted("keys.prefix");
         let diag = if source == BindingSource::Default
@@ -1023,7 +890,13 @@ fn reject_binding(
         return true;
     }
 
-    if binding.trigger.is_direct() && is_unmodified_printable(binding.trigger.combo()) {
+    if binding.trigger.is_direct()
+        && binding
+            .trigger
+            .chord()
+            .canonical()
+            .is_unmodified_printable()
+    {
         let suggestion = format!("prefix+{}", binding.label);
         let diag = ConfigDiagnostic::validation(
             ConfigKeyPath::from_dotted(field),
@@ -1087,24 +960,24 @@ fn parse_binding_string(raw: &str) -> Option<ParsedBinding> {
         return Some(ParsedBinding::Range(range.expand(trigger_prefix)));
     }
 
-    let combo = parse_key_combo(body)?;
+    let chord = parse_key_chord(body)?;
     let label = if trigger_prefix {
-        format!("prefix+{}", format_key_combo(combo))
+        format!("prefix+{}", format_key_chord(chord))
     } else {
-        format_key_combo(combo)
+        format_key_chord(chord)
     };
     Some(ParsedBinding::Single(ResolvedBinding {
         trigger: if trigger_prefix {
-            BindingTrigger::Prefix(combo)
+            BindingTrigger::Prefix(chord)
         } else {
-            BindingTrigger::Direct(combo)
+            BindingTrigger::Direct(chord)
         },
         label,
     }))
 }
 
-pub fn format_key_combo(binding: KeyCombo) -> String {
-    let (code, modifiers) = binding;
+pub fn format_key_chord(chord: KeyChord) -> String {
+    let KeyChord { code, modifiers } = chord;
     let mut parts = Vec::new();
     if modifiers.contains(KeyModifiers::CONTROL) {
         parts.push("ctrl".to_string());
@@ -1185,7 +1058,7 @@ pub(crate) fn parse_modifier_token(token: &str) -> Option<KeyModifiers> {
         .find_map(|(alias, modifiers)| alias.eq_ignore_ascii_case(token).then_some(*modifiers))
 }
 
-pub fn parse_key_combo(s: &str) -> Option<KeyCombo> {
+pub fn parse_key_chord(s: &str) -> Option<KeyChord> {
     let parts: Vec<&str> = s.split('+').collect();
     let mut modifiers = KeyModifiers::empty();
     let mut key_str: Option<&str> = None;
@@ -1221,7 +1094,7 @@ pub fn parse_key_combo(s: &str) -> Option<KeyCombo> {
         "right" => KeyCode::Right,
         "up" => KeyCode::Up,
         "down" => KeyCode::Down,
-        // The names `format_key_combo` prints for these codes, plus the usual
+        // The names `format_key_chord` prints for these codes, plus the usual
         // spellings, so every navigation key can be bound.
         "home" => KeyCode::Home,
         "end" => KeyCode::End,
@@ -1263,7 +1136,7 @@ pub fn parse_key_combo(s: &str) -> Option<KeyCombo> {
         _ => return None,
     };
 
-    Some(normalize_key_combo((code, modifiers)))
+    Some(KeyChord::new(code, modifiers).normalized())
 }
 
 fn single_key_char(s: &str) -> Option<char> {
@@ -1276,41 +1149,13 @@ fn single_key_char(s: &str) -> Option<char> {
     }
 }
 
-pub fn normalize_key_combo((mut code, mut modifiers): KeyCombo) -> KeyCombo {
-    if matches!(code, KeyCode::Tab) && modifiers.contains(KeyModifiers::SHIFT) {
-        code = KeyCode::BackTab;
-        modifiers.remove(KeyModifiers::SHIFT);
-    } else if matches!(code, KeyCode::BackTab) {
-        modifiers.remove(KeyModifiers::SHIFT);
-    }
-    (code, modifiers)
-}
-
-pub fn terminal_key_matches_combo(key: &impl BindingKey, combo: KeyCombo) -> bool {
-    let combo = normalize_key_combo(combo);
-    let reported = normalize_key_combo((key.code(), key.modifiers()));
-    reported == combo || key.canonical_key() == CanonicalKey::from_combo(combo).combo()
-}
-
-fn is_unmodified_printable(combo: KeyCombo) -> bool {
-    let key = CanonicalKey::from_combo(combo);
-    matches!(key.code, KeyCode::Char(ch) if !ch.is_control())
-        && key.modifiers.difference(KeyModifiers::SHIFT).is_empty()
-}
-
 #[cfg(test)]
 use crossterm::event::KeyEvent;
 
 #[cfg(test)]
-pub(crate) fn key_event_matches_combo(key: &KeyEvent, combo: KeyCombo) -> bool {
-    CanonicalKey::from_event(key.code, key.modifiers, None).combo()
-        == CanonicalKey::from_combo(combo).combo()
-}
-
-#[cfg(test)]
 impl ResolvedBinding {
     fn matches_key_event(&self, key: &KeyEvent) -> bool {
-        key_event_matches_combo(key, self.trigger.combo())
+        KeyChord::new(key.code, key.modifiers).canonical() == self.trigger.chord().canonical()
     }
 }
 
@@ -1357,30 +1202,6 @@ mod tests {
     use super::*;
     use crate::ClientConfig;
 
-    struct TerminalKey(KeyCode, KeyModifiers, Option<char>);
-
-    impl TerminalKey {
-        fn new(code: KeyCode, modifiers: KeyModifiers) -> Self {
-            Self(code, modifiers, None)
-        }
-        fn with_shifted_codepoint(mut self, codepoint: char) -> Self {
-            self.2 = Some(codepoint);
-            self
-        }
-    }
-
-    impl BindingKey for TerminalKey {
-        fn code(&self) -> KeyCode {
-            self.0
-        }
-        fn modifiers(&self) -> KeyModifiers {
-            self.1
-        }
-        fn shifted_codepoint(&self) -> Option<char> {
-            self.2
-        }
-    }
-
     fn binding_triggers(bindings: &ActionKeybinds) -> Vec<BindingTrigger> {
         bindings
             .bindings
@@ -1412,20 +1233,20 @@ mod tests {
     #[test]
     fn parse_simple_char_combo() {
         assert_eq!(
-            parse_key_combo("v"),
-            Some((KeyCode::Char('v'), KeyModifiers::empty()))
+            parse_key_chord("v"),
+            Some(KeyChord::new(KeyCode::Char('v'), KeyModifiers::empty()))
         );
     }
 
     #[test]
     fn parse_unicode_char_combo() {
         assert_eq!(
-            parse_key_combo("ö"),
-            Some((KeyCode::Char('ö'), KeyModifiers::empty()))
+            parse_key_chord("ö"),
+            Some(KeyChord::new(KeyCode::Char('ö'), KeyModifiers::empty()))
         );
         assert_eq!(
-            parse_key_combo("alt+é"),
-            Some((KeyCode::Char('é'), KeyModifiers::ALT))
+            parse_key_chord("alt+é"),
+            Some(KeyChord::new(KeyCode::Char('é'), KeyModifiers::ALT))
         );
     }
 
@@ -1444,7 +1265,7 @@ prefix = "ö"
                 .live
                 .expect("valid unicode prefix")
                 .prefix,
-            (KeyCode::Char('ö'), KeyModifiers::empty())
+            KeyChord::new(KeyCode::Char('ö'), KeyModifiers::empty())
         );
         assert!(config.collect_diagnostics().is_empty());
     }
@@ -1452,39 +1273,39 @@ prefix = "ö"
     #[test]
     fn parse_shift_tab_as_backtab() {
         assert_eq!(
-            parse_key_combo("shift+tab"),
-            Some((KeyCode::BackTab, KeyModifiers::empty()))
+            parse_key_chord("shift+tab"),
+            Some(KeyChord::new(KeyCode::BackTab, KeyModifiers::empty()))
         );
     }
 
     #[test]
     fn parse_named_punctuation() {
         assert_eq!(
-            parse_key_combo("minus"),
-            Some((KeyCode::Char('-'), KeyModifiers::empty()))
+            parse_key_chord("minus"),
+            Some(KeyChord::new(KeyCode::Char('-'), KeyModifiers::empty()))
         );
         assert_eq!(
-            parse_key_combo("comma"),
-            Some((KeyCode::Char(','), KeyModifiers::empty()))
+            parse_key_chord("comma"),
+            Some(KeyChord::new(KeyCode::Char(','), KeyModifiers::empty()))
         );
         assert_eq!(
-            parse_key_combo("ampersand"),
-            Some((KeyCode::Char('&'), KeyModifiers::empty()))
+            parse_key_chord("ampersand"),
+            Some(KeyChord::new(KeyCode::Char('&'), KeyModifiers::empty()))
         );
         assert_eq!(
-            parse_key_combo("plus"),
-            Some((KeyCode::Char('+'), KeyModifiers::empty()))
+            parse_key_chord("plus"),
+            Some(KeyChord::new(KeyCode::Char('+'), KeyModifiers::empty()))
         );
         assert_eq!(
-            format_key_combo((KeyCode::Char('+'), KeyModifiers::empty())),
+            format_key_chord(KeyChord::new(KeyCode::Char('+'), KeyModifiers::empty())),
             "plus"
         );
         assert_eq!(
-            parse_key_combo("ctrl+plus"),
-            Some((KeyCode::Char('+'), KeyModifiers::CONTROL))
+            parse_key_chord("ctrl+plus"),
+            Some(KeyChord::new(KeyCode::Char('+'), KeyModifiers::CONTROL))
         );
         assert_eq!(
-            format_key_combo((KeyCode::Char('+'), KeyModifiers::CONTROL)),
+            format_key_chord(KeyChord::new(KeyCode::Char('+'), KeyModifiers::CONTROL)),
             "ctrl+plus"
         );
     }
@@ -1503,29 +1324,36 @@ prefix = "ö"
             ("del", KeyCode::Delete),
             ("insert", KeyCode::Insert),
         ] {
-            let combo = parse_key_combo(name);
-            assert_eq!(combo, Some((code, KeyModifiers::empty())), "{name}");
-            let label = format_key_combo((code, KeyModifiers::empty()));
-            assert_eq!(parse_key_combo(&label), combo, "{label}");
+            let combo = parse_key_chord(name);
+            assert_eq!(
+                combo,
+                Some(KeyChord::new(code, KeyModifiers::empty())),
+                "{name}"
+            );
+            let label = format_key_chord(KeyChord::new(code, KeyModifiers::empty()));
+            assert_eq!(parse_key_chord(&label), combo, "{label}");
         }
         assert_eq!(
-            parse_key_combo("ctrl+end"),
-            Some((KeyCode::End, KeyModifiers::CONTROL))
+            parse_key_chord("ctrl+end"),
+            Some(KeyChord::new(KeyCode::End, KeyModifiers::CONTROL))
         );
     }
 
     #[test]
     fn meta_is_an_alias_for_alt_in_parsing_and_labels() {
         assert_eq!(
-            parse_key_combo("meta+x"),
-            Some((KeyCode::Char('x'), KeyModifiers::ALT))
+            parse_key_chord("meta+x"),
+            Some(KeyChord::new(KeyCode::Char('x'), KeyModifiers::ALT))
         );
         assert_eq!(
-            format_key_combo((KeyCode::Char('x'), KeyModifiers::META)),
+            format_key_chord(KeyChord::new(KeyCode::Char('x'), KeyModifiers::META)),
             "alt+x"
         );
         assert_eq!(
-            format_key_combo((KeyCode::Char('x'), KeyModifiers::ALT | KeyModifiers::META)),
+            format_key_chord(KeyChord::new(
+                KeyCode::Char('x'),
+                KeyModifiers::ALT | KeyModifiers::META
+            )),
             "alt+x"
         );
     }
@@ -1542,7 +1370,7 @@ next_workspace = "prefix+n"
         let kb = parse_keybinds(&config, &[]).expect("valid keybindings");
         assert_eq!(
             binding_triggers(&kb.next_workspace),
-            vec![BindingTrigger::Prefix((
+            vec![BindingTrigger::Prefix(KeyChord::new(
                 KeyCode::Char('n'),
                 KeyModifiers::empty()
             ))]
@@ -1554,7 +1382,7 @@ next_workspace = "prefix+n"
         let kb = parse_keybinds(&ClientConfig::default(), &[]).expect("default keybindings");
         assert_eq!(
             binding_triggers(&kb.goto),
-            vec![BindingTrigger::Prefix((
+            vec![BindingTrigger::Prefix(KeyChord::new(
                 KeyCode::Char('g'),
                 KeyModifiers::empty()
             ))]
@@ -1566,7 +1394,7 @@ next_workspace = "prefix+n"
         let kb = parse_keybinds(&ClientConfig::default(), &[]).expect("default keybindings");
         assert_eq!(
             binding_triggers(&kb.copy_mode),
-            vec![BindingTrigger::Prefix((
+            vec![BindingTrigger::Prefix(KeyChord::new(
                 KeyCode::Char('['),
                 KeyModifiers::empty()
             ))]
@@ -1592,8 +1420,8 @@ next_workspace = ["prefix+n", "ctrl+alt+]"]
         assert_eq!(
             binding_triggers(&kb.next_workspace),
             vec![
-                BindingTrigger::Prefix((KeyCode::Char('n'), KeyModifiers::empty())),
-                BindingTrigger::Direct((
+                BindingTrigger::Prefix(KeyChord::new(KeyCode::Char('n'), KeyModifiers::empty())),
+                BindingTrigger::Direct(KeyChord::new(
                     KeyCode::Char(']'),
                     KeyModifiers::CONTROL | KeyModifiers::ALT
                 )),
@@ -1707,15 +1535,6 @@ close_workspace = "X"
             !shifted_non_ascii
                 .matches_prefix_key(&TerminalKey::new(KeyCode::Char('Ö'), KeyModifiers::empty(),))
         );
-
-        assert_eq!(
-            CanonicalKey::from_combo((KeyCode::Char('/'), KeyModifiers::SHIFT)),
-            CanonicalKey::from_combo((KeyCode::Char('?'), KeyModifiers::empty()))
-        );
-        assert_eq!(
-            CanonicalKey::from_combo((KeyCode::Char('?'), KeyModifiers::SHIFT)),
-            CanonicalKey::from_combo((KeyCode::Char('?'), KeyModifiers::empty()))
-        );
     }
 
     #[test]
@@ -1768,20 +1587,19 @@ zoom = "prefix+!"
             !ActionKeybinds::prefix("tab")
                 .matches_prefix_key(&TerminalKey::new(KeyCode::Tab, KeyModifiers::SHIFT))
         );
-        assert_eq!(
-            normalize_key_combo((KeyCode::Tab, KeyModifiers::CONTROL | KeyModifiers::SHIFT)),
-            (KeyCode::BackTab, KeyModifiers::CONTROL)
-        );
     }
 
     #[test]
     fn format_modified_backtab_keeps_shift_label() {
         assert_eq!(
-            format_key_combo((KeyCode::BackTab, KeyModifiers::CONTROL)),
+            format_key_chord(KeyChord::new(KeyCode::BackTab, KeyModifiers::CONTROL)),
             "ctrl+shift+tab"
         );
         assert_eq!(
-            format_key_combo((KeyCode::BackTab, KeyModifiers::CONTROL | KeyModifiers::ALT)),
+            format_key_chord(KeyChord::new(
+                KeyCode::BackTab,
+                KeyModifiers::CONTROL | KeyModifiers::ALT
+            )),
             "ctrl+alt+shift+tab"
         );
     }
@@ -1972,7 +1790,7 @@ switch_workspace = "prefix+shift+1..9"
         assert_eq!(kb.switch_workspace.len(), 9);
         assert_eq!(
             kb.switch_workspace[0].trigger,
-            BindingTrigger::Prefix((KeyCode::Char('1'), KeyModifiers::SHIFT))
+            BindingTrigger::Prefix(KeyChord::new(KeyCode::Char('1'), KeyModifiers::SHIFT))
         );
         assert_eq!(kb.switch_workspace[0].label, "prefix+shift+1");
     }
@@ -2037,14 +1855,14 @@ switch_workspace = "prefix+?"
         let kb = parse_keybinds(&ClientConfig::default(), &[]).expect("default keybindings");
         assert_eq!(
             binding_triggers(&kb.next_workspace),
-            vec![BindingTrigger::Prefix((
+            vec![BindingTrigger::Prefix(KeyChord::new(
                 KeyCode::Char('n'),
                 KeyModifiers::empty()
             ))]
         );
         assert_eq!(
             binding_triggers(&kb.previous_workspace),
-            vec![BindingTrigger::Prefix((
+            vec![BindingTrigger::Prefix(KeyChord::new(
                 KeyCode::Char('p'),
                 KeyModifiers::empty()
             ))]
@@ -2063,28 +1881,28 @@ switch_workspace = "prefix+?"
         );
         assert_eq!(
             binding_triggers(&kb.swap_pane_left),
-            vec![BindingTrigger::Prefix((
+            vec![BindingTrigger::Prefix(KeyChord::new(
                 KeyCode::Char('h'),
                 KeyModifiers::SHIFT
             ))]
         );
         assert_eq!(
             binding_triggers(&kb.swap_pane_down),
-            vec![BindingTrigger::Prefix((
+            vec![BindingTrigger::Prefix(KeyChord::new(
                 KeyCode::Char('j'),
                 KeyModifiers::SHIFT
             ))]
         );
         assert_eq!(
             binding_triggers(&kb.swap_pane_up),
-            vec![BindingTrigger::Prefix((
+            vec![BindingTrigger::Prefix(KeyChord::new(
                 KeyCode::Char('k'),
                 KeyModifiers::SHIFT
             ))]
         );
         assert_eq!(
             binding_triggers(&kb.swap_pane_right),
-            vec![BindingTrigger::Prefix((
+            vec![BindingTrigger::Prefix(KeyChord::new(
                 KeyCode::Char('l'),
                 KeyModifiers::SHIFT
             ))]
@@ -2146,7 +1964,7 @@ new_workspace = "prefix+z"
             let kb = keybinds.expect("all bindings valid");
             assert_eq!(
                 binding_triggers(&kb.new_workspace),
-                vec![BindingTrigger::Prefix((
+                vec![BindingTrigger::Prefix(KeyChord::new(
                     KeyCode::Char('z'),
                     KeyModifiers::empty()
                 ))]

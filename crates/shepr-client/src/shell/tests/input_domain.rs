@@ -22,9 +22,9 @@ use crate::tests::{test_pane_id, test_workspace_id};
 
 #[test]
 fn navigate_arrow_aliases_use_the_configured_alias_matcher() {
-    let left = shepr_termio::input::TerminalKey::new(KeyCode::Left, KeyModifiers::empty());
-    let right = shepr_termio::input::TerminalKey::new(KeyCode::Right, KeyModifiers::empty());
-    let modified_left = shepr_termio::input::TerminalKey::new(KeyCode::Left, KeyModifiers::SHIFT);
+    let left = shepr_term::key::TerminalKey::new(KeyCode::Left, KeyModifiers::empty());
+    let right = shepr_term::key::TerminalKey::new(KeyCode::Right, KeyModifiers::empty());
+    let modified_left = shepr_term::key::TerminalKey::new(KeyCode::Left, KeyModifiers::SHIFT);
     let left_alias =
         shepr_config::navigate_alias!(Left).expect("the navigate table defines its left alias");
     let right_alias =
@@ -82,8 +82,8 @@ fn host_theme_updates_are_forwarded_to_the_server() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
 
     let inferred = state.handle_raw_events(vec![RawInputEvent::HostDefaultColor {
-        kind: shepr_termio::host_term::theme::DefaultColorKind::Background,
-        color: shepr_termio::host_term::theme::RgbColor {
+        kind: shepr_term::host::DefaultColorKind::Background,
+        color: shepr_term::host::RgbColor {
             r: 255,
             g: 255,
             b: 255,
@@ -101,7 +101,7 @@ fn host_theme_updates_are_forwarded_to_the_server() {
     ));
     assert_eq!(
         state.host_background,
-        Some(shepr_termio::host_term::theme::RgbColor {
+        Some(shepr_term::host::RgbColor {
             r: 255,
             g: 255,
             b: 255,
@@ -109,7 +109,7 @@ fn host_theme_updates_are_forwarded_to_the_server() {
     );
 
     let explicit = state.handle_raw_events(vec![RawInputEvent::HostColorSchemeChanged(
-        shepr_termio::host_term::theme::HostAppearance::Dark,
+        shepr_term::host::HostAppearance::Dark,
     )]);
     assert!(matches!(
         explicit.requests.as_slice(),
@@ -121,8 +121,8 @@ fn host_theme_updates_are_forwarded_to_the_server() {
     ));
 
     let repeated = state.handle_raw_events(vec![RawInputEvent::HostDefaultColor {
-        kind: shepr_termio::host_term::theme::DefaultColorKind::Background,
-        color: shepr_termio::host_term::theme::RgbColor {
+        kind: shepr_term::host::DefaultColorKind::Background,
+        color: shepr_term::host::RgbColor {
             r: 255,
             g: 255,
             b: 255,
@@ -136,8 +136,8 @@ fn host_theme_updates_are_forwarded_to_the_server() {
 fn host_appearance_switch_requeries_the_host_theme() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     for appearance in [
-        shepr_termio::host_term::theme::HostAppearance::Dark,
-        shepr_termio::host_term::theme::HostAppearance::Light,
+        shepr_term::host::HostAppearance::Dark,
+        shepr_term::host::HostAppearance::Light,
     ] {
         let outcome =
             state.handle_raw_events(vec![RawInputEvent::HostColorSchemeChanged(appearance)]);
@@ -163,8 +163,8 @@ fn passive_host_events_do_not_dismiss_endpoint_errors() {
         }),
         RawInputEvent::OuterFocusGained,
         RawInputEvent::HostDefaultColor {
-            kind: shepr_termio::host_term::theme::DefaultColorKind::Background,
-            color: shepr_termio::host_term::theme::RgbColor {
+            kind: shepr_term::host::DefaultColorKind::Background,
+            color: shepr_term::host::RgbColor {
                 r: 12,
                 g: 34,
                 b: 56,
@@ -177,14 +177,15 @@ fn passive_host_events_do_not_dismiss_endpoint_errors() {
     }
 
     state.handle_raw_events(vec![RawInputEvent::Key(
-        shepr_termio::input::TerminalKey::new(KeyCode::Char('x'), KeyModifiers::empty())
+        shepr_term::key::TerminalKey::new(KeyCode::Char('x'), KeyModifiers::empty())
             .with_kind(crossterm::event::KeyEventKind::Release),
     )]);
     assert_eq!(state.endpoint_error.message(), Some("action failed"));
 
-    let key = state.handle_raw_events(vec![RawInputEvent::Key(
-        shepr_termio::input::TerminalKey::new(KeyCode::Char('x'), KeyModifiers::empty()),
-    )]);
+    let key = state.handle_raw_events(vec![RawInputEvent::Key(shepr_term::key::TerminalKey::new(
+        KeyCode::Char('x'),
+        KeyModifiers::empty(),
+    ))]);
     assert!(state.endpoint_error.message().is_none());
     assert!(key.repaint);
 }
@@ -234,7 +235,7 @@ fn full_host_palette_response_is_sent_as_one_theme_update() {
 
 #[test]
 fn modal_paste_shortcut_is_ctrl_v() {
-    let key = |code, modifiers| shepr_termio::input::TerminalKey::new(code, modifiers);
+    let key = |code, modifiers| shepr_term::key::TerminalKey::new(code, modifiers);
     assert!(!crate::shell::input::is_modal_paste_shortcut(&key(
         KeyCode::Char('v'),
         KeyModifiers::CONTROL | KeyModifiers::ALT
@@ -264,7 +265,7 @@ fn modal_paste_inserts_clipboard_text_through_overlay_text_path() {
         },
     }));
     let mut outcome = ClientShellInput::default();
-    let key = shepr_termio::input::TerminalKey::new(KeyCode::Char('v'), KeyModifiers::CONTROL);
+    let key = shepr_term::key::TerminalKey::new(KeyCode::Char('v'), KeyModifiers::CONTROL);
 
     assert!(
         state.handle_modal_paste_shortcut_with(&key, &mut outcome, || {
@@ -288,7 +289,7 @@ fn highlighted_search_match_copies_after_in_flight_repeat() {
         0,
         20,
         2,
-        shepr_vt::AbsRow(0),
+        shepr_term::AbsRow(0),
     ));
     state.receive_pane_surface_from(pane_surface, state.active_snapshot_generation.unwrap_or(1));
     state.compose(106, 20).expect("composed frame");
@@ -297,32 +298,33 @@ fn highlighted_search_match_copies_after_in_flight_repeat() {
     let matches = vec![
         shepr_protocol::command::PaneTextRange {
             start: shepr_protocol::command::PaneTextPoint {
-                row: shepr_vt::AbsRow(5),
+                row: shepr_term::AbsRow(5),
                 col: 2,
             },
             end: shepr_protocol::command::PaneTextPoint {
-                row: shepr_vt::AbsRow(5),
+                row: shepr_term::AbsRow(5),
                 col: 7,
             },
         },
         shepr_protocol::command::PaneTextRange {
             start: shepr_protocol::command::PaneTextPoint {
-                row: shepr_vt::AbsRow(15),
+                row: shepr_term::AbsRow(15),
                 col: 1,
             },
             end: shepr_protocol::command::PaneTextPoint {
-                row: shepr_vt::AbsRow(15),
+                row: shepr_term::AbsRow(15),
                 col: 6,
             },
         },
     ];
 
-    state.handle_raw_events(vec![RawInputEvent::Key(
-        shepr_termio::input::TerminalKey::new(KeyCode::Char('/'), KeyModifiers::empty()),
-    )]);
+    state.handle_raw_events(vec![RawInputEvent::Key(shepr_term::key::TerminalKey::new(
+        KeyCode::Char('/'),
+        KeyModifiers::empty(),
+    ))]);
     state.handle_raw_events(vec![RawInputEvent::Paste("needle".into())]);
     let initial = state.handle_raw_events(vec![RawInputEvent::Key(
-        shepr_termio::input::TerminalKey::new(KeyCode::Enter, KeyModifiers::empty()),
+        shepr_term::key::TerminalKey::new(KeyCode::Enter, KeyModifiers::empty()),
     )]);
     let [ClientShellAction::Endpoint { request, .. }] = &initial.actions[..] else {
         panic!("initial search request");
@@ -333,7 +335,7 @@ fn highlighted_search_match_copies_after_in_flight_repeat() {
         Ok(copy_search_result(matches.clone(), Some(0))),
     );
     let repeat = state.handle_raw_events(vec![RawInputEvent::Key(
-        shepr_termio::input::TerminalKey::new(KeyCode::Char('n'), KeyModifiers::empty()),
+        shepr_term::key::TerminalKey::new(KeyCode::Char('n'), KeyModifiers::empty()),
     )]);
     let [ClientShellAction::Endpoint { request, .. }] = &repeat.actions[..] else {
         panic!("repeat search request");
@@ -341,7 +343,7 @@ fn highlighted_search_match_copies_after_in_flight_repeat() {
     let repeat_id = request.id.clone();
 
     let early_copy = state.handle_raw_events(vec![RawInputEvent::Key(
-        shepr_termio::input::TerminalKey::new(KeyCode::Char('y'), KeyModifiers::empty()),
+        shepr_term::key::TerminalKey::new(KeyCode::Char('y'), KeyModifiers::empty()),
     )]);
     assert!(early_copy.actions.is_empty());
     assert_eq!(state.mode, ClientShellMode::Copy);
@@ -775,10 +777,10 @@ fn styled_client_composition_preserves_pane_hyperlinks() {
         &[((0, 0), "L".into(), "https://example.test".into())],
     );
     state.receive_pane_surface_from(pane_surface, state.active_snapshot_generation.unwrap_or(1));
-    let mut selection = shepr_vt::selection::Selection::range(
+    let mut selection = shepr_term::selection::Selection::range(
         test_pane_id("w1:p1"),
-        shepr_vt::Point::new(shepr_vt::AbsRow(0), 0),
-        shepr_vt::Point::new(shepr_vt::AbsRow(0), 1),
+        shepr_term::Point::new(shepr_term::AbsRow(0), 0),
+        shepr_term::Point::new(shepr_term::AbsRow(0), 1),
     );
     assert!(selection.finish());
     state.mouse_selection.selection = Some(selection);
@@ -824,7 +826,7 @@ fn overlay_backdrop_dims_the_frame_and_panels_are_opaque() {
     let mut pane_surface = surface();
     for cell in &mut pane_surface.frame.cells {
         cell.style.flags = WireStyleFlags::BOLD;
-        cell.style.underline = shepr_vt::UnderlineStyle::Curly;
+        cell.style.underline = shepr_term::UnderlineStyle::Curly;
     }
     state.receive_pane_surface_from(pane_surface, state.active_snapshot_generation.unwrap_or(1));
     let plain = state.compose(106, 30).expect("frame without overlay");
@@ -845,7 +847,7 @@ fn overlay_backdrop_dims_the_frame_and_panels_are_opaque() {
     let dimmed = frame_cell(&frame, pane_origin);
     assert!(dimmed.style.flags.contains(WireStyleFlags::DIM));
     assert!(dimmed.style.flags.contains(WireStyleFlags::BOLD));
-    assert_eq!(dimmed.style.underline, shepr_vt::UnderlineStyle::Curly);
+    assert_eq!(dimmed.style.underline, shepr_term::UnderlineStyle::Curly);
     assert_eq!(dimmed.symbol, frame_cell(&plain, pane_origin).symbol);
     // Inside it every cell is the popup's own: no DIM and no pane underline.
     for y in popup.y..popup.bottom() {
@@ -855,7 +857,7 @@ fn overlay_backdrop_dims_the_frame_and_panels_are_opaque() {
                 !cell.style.flags.contains(WireStyleFlags::DIM),
                 "({x}, {y})"
             );
-            assert_eq!(cell.style.underline, shepr_vt::UnderlineStyle::None);
+            assert_eq!(cell.style.underline, shepr_term::UnderlineStyle::None);
             assert_eq!(cell.hyperlink, None);
         }
     }

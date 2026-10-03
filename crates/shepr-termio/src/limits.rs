@@ -1,4 +1,4 @@
-//! Input framing limits and terminal-facing buffer sizes.
+//! Host input framing limits.
 
 use std::time::Duration;
 
@@ -69,15 +69,3 @@ pub(crate) const MAX_DISCARDED_CONTROL_TAIL_BYTES: usize = 128;
 /// accommodates supported key encodings and mouse coordinates while bounding
 /// an unterminated CSI prefix.
 pub(crate) const MAX_INCOMPLETE_CSI_BYTES: usize = 128;
-
-/// Initial allocation for a UTF-8 mouse report.
-///
-/// The initial capacity fits a complete supported report, including its escape
-/// prefix and encoded coordinates, without growing the common buffer.
-pub(crate) const UTF8_MOUSE_REPORT_INITIAL_CAPACITY: usize = 16;
-
-/// Initial allocation for the common kitty key encoding before optional text.
-///
-/// The initial capacity avoids growth for ordinary key sequences while
-/// allowing the associated-text path to expand when needed.
-pub(crate) const KITTY_KEY_SEQUENCE_INITIAL_CAPACITY: usize = 32;

@@ -14,7 +14,7 @@ use alacritty_terminal::index::{Column, Line, Point};
 use alacritty_terminal::term::cell::{Cell, Flags};
 use vte::ansi::{Color, NamedColor};
 
-use super::{CellText, UnderlineStyle, cell_text};
+use super::{CellText, cell_text};
 
 const OSC8_CLOSE_SEQUENCE: &str = "\x1b]8;;\x1b\\";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -338,7 +338,7 @@ fn push_sgr(out: &mut String, style: &StyleKey) {
     if flags.contains(Flags::ITALIC) {
         out.push_str(";3");
     }
-    let underline = UnderlineStyle::from_flags(flags);
+    let underline = crate::cell::underline_from_flags(flags);
     if let Some(sgr) = underline.sgr_param() {
         out.push(';');
         out.push_str(sgr);
@@ -366,13 +366,13 @@ fn push_color(out: &mut String, color: Color, slot: ColorSlot) {
     let color = match color {
         Color::Named(named) => {
             let index = named as usize;
-            if index >= super::color::NAMED_COLOR_COUNT {
+            if index >= shepr_term::NAMED_COLOR_COUNT {
                 return;
             }
             SgrColor::Named(u8::try_from(index).unwrap_or(0))
         }
         Color::Indexed(index) => SgrColor::Indexed(index),
-        Color::Spec(rgb) => SgrColor::Rgb(super::RgbColor::from_vte(rgb)),
+        Color::Spec(rgb) => SgrColor::Rgb(crate::color::rgb_from_vte(rgb)),
     };
     push_fmt(out, format_args!(";{}", ColorParam(slot, color)));
 }

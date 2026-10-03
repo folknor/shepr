@@ -29,7 +29,7 @@ type PaneSurfaceRenderKey = (Option<shepr_protocol::WorkspaceId>, u16, u16, u32,
 fn pane_surface_render_key(
     target: Option<&shepr_protocol::WorkspaceId>,
     area: Rect,
-    cell_size: shepr_termio::host_term::cell_size::HostCellSize,
+    cell_size: shepr_term::host::HostCellSize,
 ) -> PaneSurfaceRenderKey {
     let cell_size = cell_size.or_default();
     (
@@ -78,7 +78,7 @@ pub(super) trait SurfaceBoundary {
         app: &app::App,
         workspace: Option<&shepr_protocol::WorkspaceId>,
         area: Rect,
-        cell_size: shepr_termio::host_term::cell_size::HostCellSize,
+        cell_size: shepr_term::host::HostCellSize,
     ) -> Result<
         crate::server::pane_surface::RenderedPaneSurface,
         crate::server::pane_surface::SurfaceRenderDeferred,

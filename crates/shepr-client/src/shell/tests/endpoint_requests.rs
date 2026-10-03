@@ -415,10 +415,10 @@ fn failed_selection_copy_does_not_send_terminal_input() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
     state.receive_pane_surface_from(surface(), state.active_snapshot_generation.unwrap_or(1));
-    state.mouse_selection.selection = Some(shepr_vt::selection::Selection::range(
+    state.mouse_selection.selection = Some(shepr_term::selection::Selection::range(
         test_pane_id("w1:p1"),
-        shepr_vt::Point::new(shepr_vt::AbsRow(0), 0),
-        shepr_vt::Point::new(shepr_vt::AbsRow(0), 2),
+        shepr_term::Point::new(shepr_term::AbsRow(0), 0),
+        shepr_term::Point::new(shepr_term::AbsRow(0), 2),
     ));
     for result in [
         Some(Ok(EndpointReply::PaneSelection {
@@ -534,7 +534,7 @@ fn scroll_reply(offset: u64) -> EndpointReply {
                 usize::try_from(offset).expect("test offset fits usize"),
                 20,
                 2,
-                shepr_vt::AbsRow(0),
+                shepr_term::AbsRow(0),
             )),
         }),
     }
@@ -593,11 +593,10 @@ fn a_dropped_request_runs_its_rollback_and_sends_nothing() {
             _ => copy_search(&mut s),
         };
         if matches!(kind, 5 | 6) {
-            s.copy_pipeline
-                .push_key(shepr_termio::input::TerminalKey::new(
-                    KeyCode::Char('j'),
-                    KeyModifiers::empty(),
-                ));
+            s.copy_pipeline.push_key(shepr_term::key::TerminalKey::new(
+                KeyCode::Char('j'),
+                KeyModifiers::empty(),
+            ));
             s.copy_pipeline.push_op(ClientCopyOperation::Motion(
                 shepr_protocol::command::PaneCopyMotion::Word(
                     shepr_protocol::command::PaneWordMotion::NextStart,
@@ -694,11 +693,11 @@ fn answering_a_request_twice_applies_it_once() {
             EndpointCommand::PaneSelectionRead(shepr_protocol::command::PaneSelectionReadParams {
                 pane_id: test_pane_id("w1:p1"),
                 anchor: shepr_protocol::command::PaneTextPoint {
-                    row: shepr_vt::AbsRow(0),
+                    row: shepr_term::AbsRow(0),
                     col: 0,
                 },
                 cursor: shepr_protocol::command::PaneTextPoint {
-                    row: shepr_vt::AbsRow(0),
+                    row: shepr_term::AbsRow(0),
                     col: 1,
                 },
             }),
@@ -732,7 +731,7 @@ fn a_scroll_answer_does_not_bring_back_a_target_a_surface_already_showed() {
     {
         let metrics = shown.panes[0].scroll.as_mut().expect("scroll");
         *metrics =
-            shepr_vt::ScrollMetrics::new(3, 20, metrics.viewport_rows, metrics.history_origin);
+            shepr_term::ScrollMetrics::new(3, 20, metrics.viewport_rows, metrics.history_origin);
     }
     s.receive_pane_surface_from(shown, s.active_snapshot_generation.unwrap_or(1));
     assert!(s.scroll_lanes.target(&test_pane_id("w1:p1")).is_none());
@@ -752,7 +751,7 @@ fn a_copy_answer_after_the_pipeline_was_reset_is_ignored() {
         Ok(EndpointReply::PaneCopyMotion {
             pane_id: test_pane_id("w1:p1"),
             cursor: shepr_protocol::command::PaneTextPoint {
-                row: shepr_vt::AbsRow(0),
+                row: shepr_term::AbsRow(0),
                 col: 3,
             },
         }),

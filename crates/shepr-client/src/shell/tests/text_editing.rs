@@ -6,8 +6,8 @@ use crate::shell::state::{
 use shepr_config::ClientConfig;
 use shepr_protocol::command::EndpointCommand;
 use shepr_protocol::{ClientMessage, ClientPaneInputEvent};
+use shepr_term::key::TerminalKey;
 use shepr_termio::input::KeybindAction;
-use shepr_termio::input::TerminalKey;
 use shepr_termio::input::raw_input::RawInputEvent;
 
 use crate::shell::state::{
@@ -30,7 +30,7 @@ fn shell(field: usize) -> ClientShellState {
         0,
         0,
         2,
-        shepr_vt::AbsRow(0),
+        shepr_term::AbsRow(0),
     ));
     state.receive_pane_surface_from(frame, state.active_snapshot_generation.unwrap_or(1));
     state.compose(106, 30).expect("initial shell");

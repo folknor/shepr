@@ -1,5 +1,5 @@
 use crossterm::event::{KeyCode, KeyModifiers};
-use shepr_termio::input::TerminalKey;
+use shepr_term::key::TerminalKey;
 use shepr_termio::input::fixed_keys::{FixedKey, KeyBinding, ModifierMatch, command_for};
 
 // The navigator and Help footers are written out instead of derived from these

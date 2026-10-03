@@ -72,8 +72,3 @@ pub(crate) const MAX_TITLE_BYTES: usize = 4 * KIBIBYTE_BYTES;
 /// matching that depth lets shepr reject the next push before it reaches that
 /// branch.
 pub(crate) const KEYBOARD_MODE_STACK_MAX_DEPTH: usize = 4096;
-
-/// Maximum width in terminal cells for one Unicode codepoint. The cap matches
-/// the widest category in Unicode display width, keeping cell accounting within
-/// that model.
-pub(crate) const MAX_UNICODE_CODEPOINT_WIDTH: u8 = 2;

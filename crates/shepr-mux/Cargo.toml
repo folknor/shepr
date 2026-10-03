@@ -19,7 +19,7 @@ shepr-detect = { path = "../shepr-detect" }
 shepr-platform = { path = "../shepr-platform" }
 shepr-protocol = { path = "../shepr-protocol" }
 shepr-pty = { path = "../shepr-pty" }
-shepr-termio = { path = "../shepr-termio" }
+shepr-term = { path = "../shepr-term" }
 shepr-vt = { path = "../shepr-vt" }
 # `net` provides `AsyncFd`, which the pane runtime waits on a child pidfd with.
 tokio = { workspace = true, features = ["net"] }
@@ -28,6 +28,8 @@ tracing = { workspace = true }
 [dev-dependencies]
 # The symlink-loop test checks the exact Linux errno value.
 libc = { workspace = true }
+# Tests parse host key sequences into the keys panes encode.
+shepr-termio = { path = "../shepr-termio" }
 shepr-test-fixtures = { path = "../shepr-test-fixtures" }
 shepr-test-support = { path = "../shepr-test-support" }
 

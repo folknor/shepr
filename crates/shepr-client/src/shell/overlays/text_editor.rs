@@ -173,7 +173,7 @@ impl TextEditor {
         self.repair_cursor();
     }
 
-    pub(crate) fn handle_key(&mut self, key: &shepr_termio::input::TerminalKey) -> EditOutcome {
+    pub(crate) fn handle_key(&mut self, key: &shepr_term::key::TerminalKey) -> EditOutcome {
         if key.kind == KeyEventKind::Release {
             return EditOutcome::Unhandled;
         }
@@ -182,7 +182,7 @@ impl TextEditor {
         }
         let previous_len = self.text.len();
         let mut content_changed = false;
-        let (code, modifiers) = shepr_config::normalize_key_combo((key.code, key.modifiers));
+        let shepr_term::key::KeyChord { code, modifiers } = key.chord().normalized();
         // Explicit text from the host is authoritative, including AltGr/composition.
         if let Some(text) = key
             .generated_text
@@ -261,7 +261,7 @@ impl TextEditor {
         let mut start = self.cursor;
         let mut cells = 0;
         for (index, grapheme) in self.text[..self.cursor].grapheme_indices(true).rev() {
-            let next = cells + shepr_termio::blit::text_width(grapheme);
+            let next = cells + shepr_term::width::text_width(grapheme);
             if next >= usize::from(width) {
                 break;
             }
@@ -271,7 +271,7 @@ impl TextEditor {
         let mut end = self.cursor;
         let mut used = cells;
         for (index, grapheme) in self.text[self.cursor..].grapheme_indices(true) {
-            used += shepr_termio::blit::text_width(grapheme);
+            used += shepr_term::width::text_width(grapheme);
             if used > usize::from(width) {
                 break;
             }
@@ -319,7 +319,7 @@ mod tests {
     use unicode_segmentation::UnicodeSegmentation;
 
     use crate::shell::overlays::text_editor::TextEditor;
-    use shepr_termio::input::TerminalKey;
+    use shepr_term::key::TerminalKey;
 
     fn key(editor: &mut TextEditor, code: KeyCode, modifiers: KeyModifiers) -> bool {
         let result = editor.handle_key(&TerminalKey::new(code, modifiers));
@@ -528,7 +528,7 @@ mod tests {
                 for width in [0, 1, 2, 3, 8, 80] {
                     let before = editor.clone();
                     let (visible, col) = editor.viewport(width);
-                    assert!(shepr_termio::blit::text_width(visible) <= usize::from(width));
+                    assert!(shepr_term::width::text_width(visible) <= usize::from(width));
                     assert!(width == 0 || col < width);
                     let mut buffer = Buffer::empty(Rect::new(0, 0, 80, 1));
                     let result = render(

@@ -34,7 +34,7 @@ pub fn blank_pane_cell(cell: &mut CellData) {
     cell.symbol.push(' ');
     cell.grid_width = GridCellWidth::One;
     cell.hyperlink = None;
-    cell.style.underline = shepr_vt::UnderlineStyle::None;
+    cell.style.underline = shepr_term::UnderlineStyle::None;
     // `WireStyleFlags` offers `toggle`, not a remove.
     if cell.style.flags.contains(WireStyleFlags::CROSSED_OUT) {
         cell.style.flags.toggle(WireStyleFlags::CROSSED_OUT);
@@ -143,7 +143,7 @@ mod tests {
         cells[0].bg = WireColor::Blue;
         cells[0].fg = WireColor::Red;
         cells[0].hyperlink = Some(2);
-        cells[0].style.underline = shepr_vt::UnderlineStyle::Curly;
+        cells[0].style.underline = shepr_term::UnderlineStyle::Curly;
         cells[0].style.flags = WireStyleFlags::REVERSED.union(WireStyleFlags::CROSSED_OUT);
         normalize_pane_row(&mut cells);
         let cell = &cells[0];
@@ -151,7 +151,7 @@ mod tests {
         assert_eq!(cell.grid_width, GridCellWidth::One);
         assert_eq!((cell.fg, cell.bg), (WireColor::Red, WireColor::Blue));
         assert_eq!(cell.hyperlink, None);
-        assert_eq!(cell.style.underline, shepr_vt::UnderlineStyle::None);
+        assert_eq!(cell.style.underline, shepr_term::UnderlineStyle::None);
         assert_eq!(cell.style.flags, WireStyleFlags::REVERSED);
     }
 

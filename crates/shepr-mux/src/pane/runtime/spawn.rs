@@ -47,8 +47,8 @@ pub(super) fn prepare_terminal(
     pane_id: PaneId,
     geometry: shepr_core::geometry::PaneGeometry,
     scrollback_limit_bytes: usize,
-    host_terminal_theme: shepr_termio::host_term::theme::TerminalTheme,
-    host_terminal_appearance: Option<shepr_termio::host_term::theme::HostAppearance>,
+    host_terminal_theme: shepr_term::host::TerminalTheme,
+    host_terminal_appearance: Option<shepr_term::host::HostAppearance>,
     initial_history_ansi: Option<&str>,
 ) -> Arc<PaneTerminal> {
     let cols = geometry.cols();
@@ -241,10 +241,10 @@ pub struct PaneSpawnHandles {
 #[derive(Clone, Copy)]
 pub enum LaunchPresentation {
     Live {
-        theme: shepr_termio::host_term::theme::TerminalTheme,
-        appearance: Option<shepr_termio::host_term::theme::HostAppearance>,
+        theme: shepr_term::host::TerminalTheme,
+        appearance: Option<shepr_term::host::HostAppearance>,
     },
-    Saved(shepr_termio::host_term::theme::TerminalTheme),
+    Saved(shepr_term::host::TerminalTheme),
 }
 
 #[derive(Clone, Copy)]

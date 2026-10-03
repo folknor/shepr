@@ -3,7 +3,7 @@
 pub(super) struct ClientSettings {
     host_cursor: shepr_config::HostCursorModeConfig,
     mouse_capture_active: bool,
-    modify_other_keys_mode: Option<shepr_vt::ModifyOtherKeysLevel>,
+    modify_other_keys_mode: Option<shepr_term::ModifyOtherKeysLevel>,
     prefers_osc52_clipboard: bool,
 }
 
@@ -11,7 +11,7 @@ impl ClientSettings {
     pub(super) fn resolve(
         config: &shepr_config::ValidatedClientConfig,
     ) -> Result<Self, shepr_core::env::EnvError> {
-        let modify_other_keys_mode = shepr_termio::input::host_modify_other_keys_mode()?;
+        let modify_other_keys_mode = shepr_termio::host_term::modes::host_modify_other_keys_mode()?;
         Ok(Self::resolve_with_host_preferences(
             config,
             modify_other_keys_mode,
@@ -21,7 +21,7 @@ impl ClientSettings {
 
     fn resolve_with_host_preferences(
         config: &shepr_config::ValidatedClientConfig,
-        modify_other_keys_mode: Option<shepr_vt::ModifyOtherKeysLevel>,
+        modify_other_keys_mode: Option<shepr_term::ModifyOtherKeysLevel>,
         prefers_osc52_clipboard: bool,
     ) -> Self {
         let ui = config.ui();
@@ -41,7 +41,7 @@ impl ClientSettings {
         self.mouse_capture_active
     }
 
-    pub(super) fn modify_other_keys_mode(&self) -> Option<shepr_vt::ModifyOtherKeysLevel> {
+    pub(super) fn modify_other_keys_mode(&self) -> Option<shepr_term::ModifyOtherKeysLevel> {
         self.modify_other_keys_mode
     }
 
@@ -67,12 +67,12 @@ mod tests {
         let config = shepr_config::ValidatedClientConfig::test_default();
         let settings = ClientSettings::resolve_with_host_preferences(
             &config,
-            Some(shepr_vt::ModifyOtherKeysLevel::All),
+            Some(shepr_term::ModifyOtherKeysLevel::All),
             true,
         );
         assert_eq!(
             settings.modify_other_keys_mode(),
-            Some(shepr_vt::ModifyOtherKeysLevel::All)
+            Some(shepr_term::ModifyOtherKeysLevel::All)
         );
         assert!(settings.prefers_osc52_clipboard());
 

@@ -289,17 +289,17 @@ mod tests {
             state.active_snapshot_generation.unwrap_or(1),
         );
         state.copy_mode = Some(ClientCopyModeState {
-            scroll: shepr_vt::ScrollMetrics::new(
+            scroll: shepr_term::ScrollMetrics::new(
                 0,
                 0,
                 usize::from(area.height),
-                shepr_vt::AbsRow(0),
+                shepr_term::AbsRow(0),
             ),
             pane_id: copy_pane_id,
             geometry: (area.width, area.height),
             alternate_screen_active: false,
             cursor: shepr_protocol::command::PaneTextPoint {
-                row: shepr_vt::AbsRow(0),
+                row: shepr_term::AbsRow(0),
                 col: 0,
             },
             entry_offset_from_bottom: 0,

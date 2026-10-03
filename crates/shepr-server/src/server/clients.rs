@@ -73,9 +73,9 @@ pub(crate) struct ClientShellState {
     /// Whether this shell wants host mouse capture without pane demand.
     pub(crate) mouse_capture: bool,
     /// Last host terminal default colors reported by this shell.
-    pub(crate) host_terminal_theme: shepr_termio::host_term::theme::TerminalTheme,
+    pub(crate) host_terminal_theme: shepr_term::host::TerminalTheme,
     /// Last host light/dark appearance reported by this shell.
-    pub(crate) host_terminal_appearance: Option<shepr_termio::host_term::theme::HostAppearance>,
+    pub(crate) host_terminal_appearance: Option<shepr_term::host::HostAppearance>,
     /// Whether appearance came from an explicit host color-scheme report.
     pub(crate) host_terminal_appearance_explicit: bool,
     /// Last reported focus state for this shell's outer terminal.
@@ -125,13 +125,11 @@ impl ClientShellState {
 
         match update {
             shepr_protocol::ClientHostThemeUpdate::DefaultColor { kind, color } => {
-                let kind: shepr_termio::host_term::theme::DefaultColorKind = (*kind).into();
+                let kind: shepr_term::host::DefaultColorKind = (*kind).into();
                 let color = (*color).into();
                 next_theme = next_theme.with_color(kind, color);
-                if matches!(
-                    kind,
-                    shepr_termio::host_term::theme::DefaultColorKind::Background
-                ) && !self.host_terminal_appearance_explicit
+                if matches!(kind, shepr_term::host::DefaultColorKind::Background)
+                    && !self.host_terminal_appearance_explicit
                 {
                     changed |= self.set_host_appearance(Some(color.appearance()), false);
                 }
@@ -156,7 +154,7 @@ impl ClientShellState {
 
     fn set_host_appearance(
         &mut self,
-        appearance: Option<shepr_termio::host_term::theme::HostAppearance>,
+        appearance: Option<shepr_term::host::HostAppearance>,
         explicit: bool,
     ) -> bool {
         if self.host_terminal_appearance_explicit && !explicit {
@@ -177,7 +175,7 @@ impl ClientShellState {
 pub(crate) struct RenderTarget {
     pub(crate) client_id: ClientId,
     pub(crate) terminal_size: shepr_core::geometry::GridSize,
-    pub(crate) cell_size: shepr_termio::host_term::cell_size::HostCellSize,
+    pub(crate) cell_size: shepr_term::host::HostCellSize,
 }
 
 impl RenderTarget {
@@ -610,7 +608,7 @@ pub(crate) struct ClientConnection {
     /// The client's terminal size after clamping.
     pub(crate) terminal_size: shepr_core::geometry::GridSize,
     /// Pixel size of one client terminal cell.
-    pub(crate) cell_size: shepr_termio::host_term::cell_size::HostCellSize,
+    pub(crate) cell_size: shepr_term::host::HostCellSize,
     /// Monotonic activity stamp used to choose the fallback foreground client.
     pub(crate) last_activity: ActivityStamp,
     /// Render baseline for the negotiated client encoding.
@@ -632,7 +630,7 @@ impl ClientConnection {
     pub(crate) fn with_shell(
         shell: ClientShellState,
         terminal_size: shepr_core::geometry::GridSize,
-        cell_size: shepr_termio::host_term::cell_size::HostCellSize,
+        cell_size: shepr_term::host::HostCellSize,
         last_activity: ActivityStamp,
         outbox: ClientOutbox,
     ) -> Self {
@@ -877,7 +875,7 @@ impl ClientShellLocation {
 impl ClientConnection {
     pub(crate) fn new(
         terminal_size: (u16, u16),
-        cell_size: shepr_termio::host_term::cell_size::HostCellSize,
+        cell_size: shepr_term::host::HostCellSize,
         last_activity: impl Into<ActivityStamp>,
         outbox: ClientOutbox,
     ) -> Self {
@@ -898,7 +896,7 @@ mod tests {
     fn shell_client() -> ClientConnection {
         ClientConnection::new(
             (80, 24),
-            shepr_termio::host_term::cell_size::HostCellSize::default(),
+            shepr_term::host::HostCellSize::default(),
             1,
             crate::server::outbox::ClientOutbox::detached(),
         )
@@ -918,7 +916,7 @@ mod tests {
         let first = ClientConnection::with_shell(
             ClientShellState::with_surface_active(true),
             shepr_core::geometry::GridSize::clamped(80, 24),
-            shepr_termio::host_term::cell_size::HostCellSize::default(),
+            shepr_term::host::HostCellSize::default(),
             registry.allocate_activity_stamp(),
             first_outbox,
         );
@@ -926,7 +924,7 @@ mod tests {
         let second = ClientConnection::with_shell(
             ClientShellState::default(),
             shepr_core::geometry::GridSize::clamped(80, 24),
-            shepr_termio::host_term::cell_size::HostCellSize::default(),
+            shepr_term::host::HostCellSize::default(),
             registry.allocate_activity_stamp(),
             crate::server::outbox::ClientOutbox::detached(),
         );
@@ -986,7 +984,7 @@ mod tests {
             client_id,
             ClientConnection::new(
                 (80, 24),
-                shepr_termio::host_term::cell_size::HostCellSize::default(),
+                shepr_term::host::HostCellSize::default(),
                 1,
                 writer,
             ),

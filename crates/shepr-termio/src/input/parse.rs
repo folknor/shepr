@@ -1,8 +1,6 @@
 use crossterm::event::{KeyCode, KeyModifiers, MediaKeyCode, ModifierKeyCode};
-use shepr_config::BindingKey;
-
-use super::TerminalKey;
-use super::tables::{FUNCTIONAL_KEYS, control_char, modified_key, modifiers_from_bits};
+use shepr_term::key::TerminalKey;
+use shepr_term::key::tables::{FUNCTIONAL_KEYS, control_char, modified_key, modifiers_from_bits};
 
 pub fn parse_terminal_key_sequence(data: &str) -> Option<TerminalKey> {
     let mut key = parse_kitty_key_sequence(data)
@@ -13,9 +11,9 @@ pub fn parse_terminal_key_sequence(data: &str) -> Option<TerminalKey> {
     // binding dispatch and legacy pane encoding. Kitty panes restore Tab+Shift
     // when their keyboard protocol is selected.
     if matches!(key.code, KeyCode::Tab | KeyCode::BackTab) {
-        let (code, modifiers) = key.canonical_key();
-        key.code = code;
-        key.modifiers = modifiers;
+        let canonical = key.canonical_key();
+        key.code = canonical.code();
+        key.modifiers = canonical.modifiers();
     }
     Some(key)
 }
@@ -339,7 +337,17 @@ mod tests {
     use crossterm::event::{KeyCode, KeyModifiers, ModifierKeyCode};
 
     use super::*;
-    use crate::input::{KeyboardProtocol, encode_terminal_key};
+    use crossterm::event::KeyEvent;
+    use shepr_term::KittyKeyboardFlags;
+    use shepr_term::key::{KeyChord, KeyboardProtocol, encode_terminal_key};
+
+    fn kitty_protocol(flags: u16) -> KeyboardProtocol {
+        KeyboardProtocol::from_flags(KittyKeyboardFlags::from_bits_retain(flags))
+    }
+
+    fn encode_key(key: KeyEvent, protocol: KeyboardProtocol) -> Vec<u8> {
+        encode_terminal_key(key.into(), protocol)
+    }
 
     fn assert_terminal_key_eq(
         actual: &TerminalKey,
@@ -618,7 +626,7 @@ mod tests {
         assert_eq!(key.shifted_codepoint, Some('!'));
         assert_eq!(
             key.canonical_key(),
-            (KeyCode::Char('!'), KeyModifiers::empty())
+            KeyChord::new(KeyCode::Char('!'), KeyModifiers::empty()).canonical()
         );
     }
 
@@ -630,7 +638,7 @@ mod tests {
             assert!(key.modifiers.is_empty(), "{sequence:?}");
             assert_eq!(
                 key.canonical_key(),
-                (KeyCode::BackTab, KeyModifiers::empty()),
+                KeyChord::new(KeyCode::BackTab, KeyModifiers::empty()).canonical(),
                 "{sequence:?}"
             );
         }
@@ -1119,5 +1127,202 @@ mod tests {
     #[test]
     fn linux_terminal_variants_fixture_parses() {
         assert_fixture_corpus_parses(&read_fixture("linux_terminal_variants.tsv"));
+    }
+
+    #[test]
+    fn report_all_keys_encodes_committed_text_as_csi_u() {
+        let committed = |text: &str| {
+            parse_terminal_key_sequence(text)
+                .expect("test precondition")
+                .with_text_commit()
+        };
+        let lower = committed("a");
+        let upper = committed("A");
+        assert_eq!(lower.generated_text.as_deref(), Some("a"));
+        assert_eq!(upper.generated_text.as_deref(), Some("A"));
+
+        for (key, flags, expected) in [
+            (&lower, 8, b"\x1b[97;1u".as_slice()),
+            (&lower, 9, b"\x1b[97;1u".as_slice()),
+            (&lower, 24, b"\x1b[97;1;97u".as_slice()),
+            (&lower, 11, b"\x1b[97;1:1u".as_slice()),
+            (&upper, 24, b"\x1b[97;2;65u".as_slice()),
+            (&upper, 28, b"\x1b[97:65;2;65u".as_slice()),
+            (&upper, 31, b"\x1b[97:65;2:1;65u".as_slice()),
+        ] {
+            assert_eq!(
+                encode_terminal_key(key.clone(), kitty_protocol(flags)),
+                expected,
+                "flags={flags} key={key:?}"
+            );
+        }
+
+        // Without REPORT_ALL_KEYS committed text stays plain text.
+        for flags in [1, 3, 7, 17, 23] {
+            assert_eq!(
+                encode_terminal_key(upper.clone(), kitty_protocol(flags)),
+                b"A",
+                "flags={flags}"
+            );
+        }
+    }
+
+    #[test]
+    fn legacy_alt_shift_punctuation_uses_shifted_text() {
+        let key = parse_terminal_key_sequence("\x1b[44:60;4u").expect("test precondition");
+        assert_eq!(
+            encode_terminal_key(key, KeyboardProtocol::legacy()),
+            b"\x1b<"
+        );
+    }
+
+    #[test]
+    fn legacy_modified_special_roundtrip_matrix() {
+        let cases = [
+            KeyEvent::new(KeyCode::Up, KeyModifiers::ALT),
+            KeyEvent::new(KeyCode::Down, KeyModifiers::ALT),
+            KeyEvent::new(KeyCode::Right, KeyModifiers::SHIFT),
+            KeyEvent::new(KeyCode::Left, KeyModifiers::CONTROL),
+            KeyEvent::new(KeyCode::Home, KeyModifiers::CONTROL),
+            KeyEvent::new(KeyCode::End, KeyModifiers::CONTROL | KeyModifiers::SHIFT),
+            KeyEvent::new(KeyCode::PageUp, KeyModifiers::ALT),
+            KeyEvent::new(KeyCode::PageDown, KeyModifiers::CONTROL),
+            KeyEvent::new(KeyCode::Insert, KeyModifiers::SHIFT),
+            KeyEvent::new(KeyCode::Delete, KeyModifiers::ALT),
+        ];
+
+        for key in cases {
+            let encoded = encode_key(key, KeyboardProtocol::legacy());
+            let parsed = parse_terminal_key_sequence(
+                std::str::from_utf8(&encoded).expect("test precondition"),
+            )
+            .expect("test precondition");
+            assert_terminal_key_eq(&parsed, key.code, key.modifiers, key.kind, None);
+        }
+    }
+
+    #[test]
+    fn legacy_basic_special_roundtrip_matrix() {
+        let cases = [
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()),
+            KeyEvent::new(KeyCode::Tab, KeyModifiers::empty()),
+            KeyEvent::new(KeyCode::Backspace, KeyModifiers::empty()),
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::empty()),
+            KeyEvent::new(KeyCode::Up, KeyModifiers::empty()),
+            KeyEvent::new(KeyCode::Down, KeyModifiers::empty()),
+            KeyEvent::new(KeyCode::Left, KeyModifiers::empty()),
+            KeyEvent::new(KeyCode::Right, KeyModifiers::empty()),
+            KeyEvent::new(KeyCode::Home, KeyModifiers::empty()),
+            KeyEvent::new(KeyCode::End, KeyModifiers::empty()),
+            KeyEvent::new(KeyCode::PageUp, KeyModifiers::empty()),
+            KeyEvent::new(KeyCode::PageDown, KeyModifiers::empty()),
+            KeyEvent::new(KeyCode::Insert, KeyModifiers::empty()),
+            KeyEvent::new(KeyCode::Delete, KeyModifiers::empty()),
+        ];
+
+        for key in cases {
+            let encoded = encode_key(key, KeyboardProtocol::legacy());
+            let parsed = parse_terminal_key_sequence(
+                std::str::from_utf8(&encoded).expect("test precondition"),
+            )
+            .expect("test precondition");
+            assert_terminal_key_eq(&parsed, key.code, key.modifiers, key.kind, None);
+        }
+    }
+
+    #[test]
+    fn legacy_super_character_preserves_csi_u_chord() {
+        let sequence = "\x1b[99;9u";
+        let key = parse_terminal_key_sequence(sequence).expect("Super+C CSI-u key");
+
+        assert_eq!(key.code, KeyCode::Char('c'));
+        assert_eq!(key.modifiers, KeyModifiers::SUPER);
+        assert_eq!(
+            encode_terminal_key(key, KeyboardProtocol::legacy()),
+            sequence.as_bytes()
+        );
+    }
+
+    #[test]
+    fn kitty_functional_keys_use_legacy_compatible_forms_not_keypad_codes() {
+        use crossterm::event::KeyEventKind;
+
+        let cases = [
+            (KeyCode::Up, "\x1b[1;1:1A"),
+            (KeyCode::Down, "\x1b[1;1:1B"),
+            (KeyCode::Right, "\x1b[1;1:1C"),
+            (KeyCode::Left, "\x1b[1;1:1D"),
+            (KeyCode::Home, "\x1b[1;1:1H"),
+            (KeyCode::End, "\x1b[1;1:1F"),
+            (KeyCode::Insert, "\x1b[2;1:1~"),
+            (KeyCode::Delete, "\x1b[3;1:1~"),
+            (KeyCode::PageUp, "\x1b[5;1:1~"),
+            (KeyCode::PageDown, "\x1b[6;1:1~"),
+            (KeyCode::F(1), "\x1b[1;1:1P"),
+            (KeyCode::F(3), "\x1b[13;1:1~"),
+            (KeyCode::F(12), "\x1b[24;1:1~"),
+        ];
+        for (code, expected) in cases {
+            let key = TerminalKey::new(code, KeyModifiers::empty());
+            let encoded = encode_terminal_key(key, kitty_protocol(11));
+            assert_eq!(encoded, expected.as_bytes(), "{code:?}");
+            let parsed = parse_terminal_key_sequence(expected).expect("test precondition");
+            assert_terminal_key_eq(
+                &parsed,
+                code,
+                KeyModifiers::empty(),
+                KeyEventKind::Press,
+                None,
+            );
+        }
+
+        let release = TerminalKey::new(KeyCode::Left, KeyModifiers::ALT | KeyModifiers::SHIFT)
+            .with_kind(KeyEventKind::Release);
+        let encoded = encode_terminal_key(release, kitty_protocol(3));
+        assert_eq!(encoded, b"\x1b[1;4:3D");
+        for keypad_code in 57417..=57426 {
+            assert!(!String::from_utf8_lossy(&encoded).contains(&keypad_code.to_string()));
+        }
+    }
+
+    #[test]
+    fn all_shared_functional_forms_roundtrip() {
+        assert_eq!(FUNCTIONAL_KEYS.len(), 22);
+        for key in FUNCTIONAL_KEYS {
+            for sequence in std::iter::once(&key.legacy).chain(key.aliases.iter()) {
+                assert_eq!(
+                    parse_terminal_key_sequence(sequence)
+                        .expect("supported form")
+                        .code,
+                    key.code
+                );
+            }
+            for modifiers in [
+                KeyModifiers::empty(),
+                KeyModifiers::ALT,
+                KeyModifiers::SHIFT | KeyModifiers::CONTROL,
+            ] {
+                for protocol in [
+                    KeyboardProtocol::legacy(),
+                    KeyboardProtocol::from_flags(KittyKeyboardFlags::REPORT_ALL_KEYS),
+                ] {
+                    let encoded =
+                        encode_terminal_key(TerminalKey::new(key.code, modifiers), protocol);
+                    let parsed = parse_terminal_key_sequence(
+                        std::str::from_utf8(&encoded).expect("ASCII form"),
+                    )
+                    .expect("encoded form parses");
+                    assert_eq!(parsed.code, key.code);
+                    assert_eq!(parsed.modifiers, modifiers);
+                }
+            }
+            let sequence = format!("\x1b[{};1u", key.kitty_codepoint);
+            assert_eq!(
+                parse_terminal_key_sequence(&sequence)
+                    .expect("kitty alias")
+                    .code,
+                key.code
+            );
+        }
     }
 }

@@ -713,7 +713,7 @@ async fn cjk_cursor_reveal_keeps_retained_rendering_and_matches_full_surfaces() 
                 &pair.server.app,
                 Some(target),
                 Rect::new(0, 0, surface.frame.width, surface.frame.height),
-                shepr_termio::host_term::cell_size::HostCellSize::default(),
+                shepr_term::host::HostCellSize::default(),
             )
             .expect("complete surface");
             assert_eq!(full.frame.cursor, surface.frame.cursor);
@@ -730,7 +730,7 @@ impl render::SurfaceBoundary for ChangedSurfaceBoundary {
         _app: &crate::app::App,
         _workspace: Option<&shepr_protocol::WorkspaceId>,
         _area: ratatui::layout::Rect,
-        _cell_size: shepr_termio::host_term::cell_size::HostCellSize,
+        _cell_size: shepr_term::host::HostCellSize,
     ) -> Result<
         crate::server::pane_surface::RenderedPaneSurface,
         crate::server::pane_surface::SurfaceRenderDeferred,

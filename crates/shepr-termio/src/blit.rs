@@ -34,6 +34,8 @@
 use std::cmp;
 use std::io::{self, Write};
 
+use shepr_term::width::text_width;
+
 use shepr_protocol::{
     CellData, CursorState, FrameData, GridCellWidth, PaneSurfacePatchRow, WireColor, WireStyle,
     WireStyleFlags,
@@ -278,12 +280,12 @@ pub fn frame_with_drawn_cursor(mut frame: FrameData) -> FrameData {
 // ---------------------------------------------------------------------------
 
 /// Returns a foreground SGR fragment for a typed wire color.
-fn sgr_color(color: WireColor) -> shepr_vt::seq::SgrColor {
-    use shepr_vt::seq::SgrColor;
+fn sgr_color(color: WireColor) -> shepr_term::seq::SgrColor {
+    use shepr_term::seq::SgrColor;
     match color {
         WireColor::Reset => SgrColor::Default,
         WireColor::Indexed(index) => SgrColor::Indexed(index),
-        WireColor::Rgb(r, g, b) => SgrColor::Rgb(shepr_vt::RgbColor { r, g, b }),
+        WireColor::Rgb(r, g, b) => SgrColor::Rgb(shepr_term::RgbColor { r, g, b }),
         named => SgrColor::Named(match named {
             WireColor::Black => 0,
             WireColor::Red => 1,
@@ -333,7 +335,7 @@ fn style_parts(style: WireStyle, mut emit: impl FnMut(&'static str)) {
 }
 
 fn write_sgr(out: &mut String, fg: WireColor, bg: WireColor, style: WireStyle) {
-    use shepr_vt::seq::{ColorParam, ColorSlot};
+    use shepr_term::seq::{ColorParam, ColorSlot};
     use std::fmt::Write as _;
     out.clear();
     out.push_str("\x1b[0");
@@ -415,8 +417,8 @@ fn blit_patch_to(
     write!(
         writer,
         "{}{}\x1b]8;;\x1b\\",
-        shepr_vt::seq::DecSet(shepr_vt::DecMode::SynchronizedOutput, true),
-        shepr_vt::seq::DecSet(shepr_vt::DecMode::ShowCursor, false)
+        shepr_term::seq::DecSet(shepr_term::DecMode::SynchronizedOutput, true),
+        shepr_term::seq::DecSet(shepr_term::DecMode::ShowCursor, false)
     )?;
     let mut state = CellWriterState::default();
     let source = CellPaintSource {
@@ -451,7 +453,7 @@ fn blit_patch_to(
     write!(
         writer,
         "{}",
-        shepr_vt::seq::DecSet(shepr_vt::DecMode::SynchronizedOutput, false)
+        shepr_term::seq::DecSet(shepr_term::DecMode::SynchronizedOutput, false)
     )?;
     write_ime_anchor_cursor_state(&mut writer, host_cursor)?;
     writer.flush()
@@ -488,7 +490,7 @@ fn blit_frame_to_with_cursor_memory_and_clear_policy(
     write!(
         writer,
         "{}",
-        shepr_vt::seq::DecSet(shepr_vt::DecMode::SynchronizedOutput, true)
+        shepr_term::seq::DecSet(shepr_term::DecMode::SynchronizedOutput, true)
     )?;
 
     // Hide cursor before any cell writes to avoid stray cursor artifacts
@@ -496,7 +498,7 @@ fn blit_frame_to_with_cursor_memory_and_clear_policy(
     write!(
         writer,
         "{}",
-        shepr_vt::seq::DecSet(shepr_vt::DecMode::ShowCursor, false)
+        shepr_term::seq::DecSet(shepr_term::DecMode::ShowCursor, false)
     )?;
 
     // Start each frame from a known OSC 8 state. If a previous write was
@@ -526,7 +528,7 @@ fn blit_frame_to_with_cursor_memory_and_clear_policy(
     write!(
         writer,
         "{}",
-        shepr_vt::seq::DecSet(shepr_vt::DecMode::SynchronizedOutput, false)
+        shepr_term::seq::DecSet(shepr_term::DecMode::SynchronizedOutput, false)
     )?;
 
     // Some native IMEs track candidate-window placement from normal terminal
@@ -536,16 +538,10 @@ fn blit_frame_to_with_cursor_memory_and_clear_policy(
     writer.flush()
 }
 
-/// Terminal column width of text under Ratatui's grapheme width rule, including the
-/// halfwidth voiced marks terminals display in their own cells.
-pub fn text_width(text: &str) -> usize {
-    shepr_vt::width::unicode_grapheme_width(text)
-}
-
 /// Grapheme width of a cell's symbol. Client composition uses [`text_width`]
 /// directly for chrome and the explicit grid width for pane cells.
 pub fn cell_width(cell: &CellData) -> usize {
-    symbol_width(&cell.symbol)
+    text_width(&cell.symbol)
 }
 
 fn cell_grid_width(cell: &CellData) -> usize {
@@ -554,11 +550,6 @@ fn cell_grid_width(cell: &CellData) -> usize {
         GridCellWidth::One => 1,
         GridCellWidth::Two => 2,
     }
-}
-
-/// Terminal column width of `symbol`; see [`text_width`] and [`cell_width`].
-pub fn symbol_width(symbol: &str) -> usize {
-    text_width(symbol)
 }
 
 #[derive(Clone, Copy)]
@@ -637,13 +628,13 @@ fn write_host_cursor_state(
         write!(
             writer,
             "{}",
-            shepr_vt::seq::DecSet(shepr_vt::DecMode::ShowCursor, true)
+            shepr_term::seq::DecSet(shepr_term::DecMode::ShowCursor, true)
         )
     } else {
         write!(
             writer,
             "{}",
-            shepr_vt::seq::DecSet(shepr_vt::DecMode::ShowCursor, false)
+            shepr_term::seq::DecSet(shepr_term::DecMode::ShowCursor, false)
         )
     }
 }
@@ -657,13 +648,13 @@ fn write_ime_anchor_cursor_state(
         write!(
             writer,
             "{}",
-            shepr_vt::seq::DecSet(shepr_vt::DecMode::ShowCursor, true)
+            shepr_term::seq::DecSet(shepr_term::DecMode::ShowCursor, true)
         )
     } else {
         write!(
             writer,
             "{}",
-            shepr_vt::seq::DecSet(shepr_vt::DecMode::ShowCursor, false)
+            shepr_term::seq::DecSet(shepr_term::DecMode::ShowCursor, false)
         )
     }
 }
@@ -939,12 +930,12 @@ mod tests {
     use shepr_protocol::{CellData, CursorState};
 
     fn color_to_sgr_fg(color: WireColor) -> String {
-        shepr_vt::seq::ColorParam(shepr_vt::seq::ColorSlot::Foreground, sgr_color(color))
+        shepr_term::seq::ColorParam(shepr_term::seq::ColorSlot::Foreground, sgr_color(color))
             .to_string()
     }
 
     fn color_to_sgr_bg(color: WireColor) -> String {
-        shepr_vt::seq::ColorParam(shepr_vt::seq::ColorSlot::Background, sgr_color(color))
+        shepr_term::seq::ColorParam(shepr_term::seq::ColorSlot::Background, sgr_color(color))
             .to_string()
     }
 
@@ -1001,7 +992,7 @@ mod tests {
         )
         .expect("tests blit into a Vec, which cannot fail to write");
     }
-    use shepr_vt::UnderlineStyle;
+    use shepr_term::UnderlineStyle;
 
     const WIDE_GRAPHEME: &str = "\u{1F4A1}";
     const HALFWIDTH_VOICED_KANA: &str = "ｶ\u{ff9e}";
@@ -1047,14 +1038,6 @@ mod tests {
             cursor: None,
             hyperlinks: Vec::new(),
         }
-    }
-
-    #[test]
-    fn text_width_matches_unicode_graphemes_and_terminal_voiced_marks() {
-        assert_eq!(text_width("\u{2764}\u{fe0f}agent"), 7);
-        assert_eq!(text_width("\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}"), 2);
-        assert_eq!(text_width("ｶﾞx"), 3);
-        assert_eq!(text_width("aﾞ"), 2);
     }
 
     #[test]

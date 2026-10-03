@@ -1,5 +1,4 @@
-use shepr_protocol::KittyKeyboardFlags;
-use shepr_vt::ModifyOtherKeysLevel;
+use shepr_term::{KittyKeyboardFlags, ModifyOtherKeysLevel};
 use std::io::{self, Write};
 
 /// Host mouse modes cleared on exit, in this order: SGR, SGR pixels, urxvt,
@@ -8,16 +7,17 @@ use std::io::{self, Write};
 /// the pane core does not model it.
 const HOST_MOUSE_REPORTING_DISABLE_MODES: &[u16] = &[1006, 1016, 1015, 1005, 1003, 1002, 1000, 9];
 
-pub const HOST_KEYBOARD_QUERY_SEQUENCE: &[u8] = shepr_vt::seq::HOST_KEYBOARD_QUERY_SEQUENCE;
-pub const HOST_CELL_SIZE_QUERY_SEQUENCE: &[u8] = shepr_vt::seq::HOST_CELL_SIZE_QUERY_SEQUENCE;
+pub const HOST_KEYBOARD_QUERY_SEQUENCE: &[u8] = shepr_term::seq::HOST_KEYBOARD_QUERY_SEQUENCE;
+pub const HOST_CELL_SIZE_QUERY_SEQUENCE: &[u8] = shepr_term::seq::HOST_CELL_SIZE_QUERY_SEQUENCE;
 pub const HOST_MODIFY_OTHER_KEYS_RESET_SEQUENCE: &[u8] = ModifyOtherKeysLevel::Off.set_sequence();
-pub const HOST_KITTY_KEYBOARD_POP_SEQUENCE: &[u8] = shepr_vt::seq::HOST_KITTY_KEYBOARD_POP_SEQUENCE;
+pub const HOST_KITTY_KEYBOARD_POP_SEQUENCE: &[u8] =
+    shepr_term::seq::HOST_KITTY_KEYBOARD_POP_SEQUENCE;
 pub const HOST_CURSOR_SHAPE_DEFAULT_SEQUENCE: &[u8] =
-    shepr_vt::seq::HOST_CURSOR_SHAPE_DEFAULT_SEQUENCE;
-pub const HOST_MOUSE_SGR_PIXELS_ENABLE_SEQUENCE: shepr_vt::seq::DecModeSequence =
-    shepr_vt::seq::HOST_MOUSE_SGR_PIXELS_ENABLE_SEQUENCE;
-pub const HOST_WINDOW_TITLE_PUSH_SEQUENCE: &[u8] = shepr_vt::seq::HOST_WINDOW_TITLE_PUSH_SEQUENCE;
-pub const HOST_WINDOW_TITLE_POP_SEQUENCE: &[u8] = shepr_vt::seq::HOST_WINDOW_TITLE_POP_SEQUENCE;
+    shepr_term::seq::HOST_CURSOR_SHAPE_DEFAULT_SEQUENCE;
+pub const HOST_MOUSE_SGR_PIXELS_ENABLE_SEQUENCE: shepr_term::seq::DecModeSequence =
+    shepr_term::seq::HOST_MOUSE_SGR_PIXELS_ENABLE_SEQUENCE;
+pub const HOST_WINDOW_TITLE_PUSH_SEQUENCE: &[u8] = shepr_term::seq::HOST_WINDOW_TITLE_PUSH_SEQUENCE;
+pub const HOST_WINDOW_TITLE_POP_SEQUENCE: &[u8] = shepr_term::seq::HOST_WINDOW_TITLE_POP_SEQUENCE;
 
 pub fn clear_host_mouse_reporting<W: Write>(writer: &mut W) -> io::Result<()> {
     for mode in HOST_MOUSE_REPORTING_DISABLE_MODES {
@@ -74,6 +74,44 @@ pub fn set_host_modify_other_keys<W: Write>(
     set_host_keyboard_protocol(writer, active, flags, level)
 }
 
+/// The modifyOtherKeys mode the host terminal wants, from `TMUX`,
+/// `TERM_PROGRAM` and `WEZTERM_PANE` read under the environment policy.
+///
+/// # Errors
+///
+/// Raw and presence values have no content-based refusals. Padded and
+/// non-UTF-8 `TERM_PROGRAM` values do not match the name shepr recognizes and
+/// cannot fail setup.
+pub fn host_modify_other_keys_mode()
+-> Result<Option<ModifyOtherKeysLevel>, shepr_core::env::EnvError> {
+    use shepr_core::env::{EnvVar, read_os, read_present};
+    use std::os::unix::ffi::OsStrExt;
+
+    let term_program = read_os(EnvVar::TermProgram)?;
+    Ok(host_modify_other_keys_mode_for_env(
+        read_present(EnvVar::Tmux)?,
+        term_program.as_deref().map(OsStrExt::as_bytes),
+        read_present(EnvVar::WeztermPane)?,
+    ))
+}
+
+fn host_modify_other_keys_mode_for_env(
+    in_tmux: bool,
+    term_program: Option<&[u8]>,
+    wezterm_pane: bool,
+) -> Option<ModifyOtherKeysLevel> {
+    if in_tmux {
+        return Some(ModifyOtherKeysLevel::All);
+    }
+
+    if wezterm_pane || term_program.is_some_and(|program| program.eq_ignore_ascii_case(b"wezterm"))
+    {
+        return Some(ModifyOtherKeysLevel::ExceptWellDefined);
+    }
+
+    None
+}
+
 pub fn ime_compatible_keyboard_enhancement_flags() -> KittyKeyboardFlags {
     KittyKeyboardFlags::DISAMBIGUATE
         | KittyKeyboardFlags::REPORT_EVENT_TYPES
@@ -123,7 +161,7 @@ pub fn set_host_keyboard_protocol<W: Write>(
             writer.write_all(HOST_KITTY_KEYBOARD_POP_SEQUENCE)?;
         }
         if !next_flags.is_empty() {
-            write!(writer, "{}", shepr_vt::seq::KittyPush(next_flags.bits()))?;
+            write!(writer, "{}", shepr_term::seq::KittyPush(next_flags.bits()))?;
         }
     }
     if active.modify_other_keys_level != next_modify_other_keys_level {
@@ -251,6 +289,50 @@ mod tests {
         restore_host_keyboard_protocol(&mut output, true, true).expect("test precondition");
         assert_eq!(output.buffer(), b"", "nothing is left in the buffer");
         assert_eq!(output.get_ref().as_slice(), b"\x1b[>4;0m\x1b[<1u");
+    }
+
+    #[test]
+    fn modify_other_keys_mode_is_enabled_for_tmux() {
+        assert_eq!(
+            host_modify_other_keys_mode_for_env(true, Some(&b"WezTerm"[..]), true),
+            Some(ModifyOtherKeysLevel::All)
+        );
+    }
+
+    #[test]
+    fn modify_other_keys_mode_is_enabled_for_wezterm_hosts() {
+        assert_eq!(
+            host_modify_other_keys_mode_for_env(false, Some(&b"WezTerm"[..]), false),
+            Some(ModifyOtherKeysLevel::ExceptWellDefined)
+        );
+        assert_eq!(
+            host_modify_other_keys_mode_for_env(false, None, true),
+            Some(ModifyOtherKeysLevel::ExceptWellDefined)
+        );
+    }
+
+    #[test]
+    fn modify_other_keys_mode_is_not_enabled_for_unknown_hosts() {
+        assert_eq!(
+            host_modify_other_keys_mode_for_env(false, Some(&b"ghostty"[..]), false),
+            None
+        );
+        assert_eq!(
+            host_modify_other_keys_mode_for_env(false, None, false),
+            None
+        );
+    }
+
+    #[test]
+    fn unknown_or_malformed_terminal_names_do_not_enable_modify_other_keys() {
+        assert_eq!(
+            host_modify_other_keys_mode_for_env(false, Some(&b" WezTerm"[..]), false),
+            None
+        );
+        assert_eq!(
+            host_modify_other_keys_mode_for_env(false, Some(&b"WezTerm\xff"[..]), false),
+            None
+        );
     }
 
     #[test]

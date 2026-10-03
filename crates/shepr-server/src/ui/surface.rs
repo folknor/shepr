@@ -61,7 +61,7 @@ pub(crate) fn resize_surface(
     resizer: &mut PaneResizer<'_>,
     workspace_index: usize,
     area: Rect,
-    cell_size: shepr_termio::host_term::cell_size::HostCellSize,
+    cell_size: shepr_term::host::HostCellSize,
 ) {
     let pane_infos = compute_pane_infos_for_workspace(app, resizer.runtimes, workspace_index, area);
     resize_pane_infos(app, resizer, workspace_index, &pane_infos, cell_size);

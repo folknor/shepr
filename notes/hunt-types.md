@@ -109,7 +109,7 @@ mux-panes)
 
 Core and protocol geometry fields are private with typed accessors, client
 resize and cell reports carry geometry types, and the server events carry
-`HostGeometry`. Still open: termio `HostCellSize` (`host_term/cell_size.rs`)
+`HostGeometry`. Still open: `HostCellSize` (`crates/shepr-term/src/host.rs`)
 and the server connection storage (`clients.rs`) keep zero-valued axes;
 `ClientMouseGeometry`, the pane-surface pixel fields (protocol `input.rs` and
 surfaces) and the vt mouse adapters keep primitive extents; a raw `CellPx` is
@@ -311,19 +311,16 @@ Reported by contracts and client-shell.
 
 ## TYP-070 - Keybindings: a tuple alias, labels as data, help groups as strings
 
-`KeyCombo = (KeyCode, KeyModifiers)` is a type alias exposed through
-`LiveKeybindConfig::prefix`, `BindingTrigger`, `format_key_combo`,
-`normalize_key_combo` and `terminal_key_matches_combo`, while the identity type
-`CanonicalKey` is private; callers outside config normalize tuples themselves.
-`ResolvedBinding::label` and `IndexedKeybind::label` are derived from the trigger
+Stale in part: configured chords are a typed `shepr_term::key::KeyChord`
+(with `normalized` and `matches`) and `CanonicalKey` is public there. Still
+open: `ResolvedBinding::label` and `IndexedKeybind::label` are derived from the trigger
 and re-parsed (`prefix_rhs_label` strips `"prefix+"`, termio `indexed_label`
 reconstructs ranges by `strip_suffix` on digits). Help groups `"global"`,
 `"workspaces"`, `"panes"`, `"navigation"` are literals in `keybinding_table!` and
 again in `keybind_help_groups`, looked up by `position(|(name, _)| *name ==
 group)`; insert-after and alias merging find rows by comparing label strings;
 entries are `(String, Cow<str>)` tuples. A typo drops an entry into a group that
-is never shown. Proposal: a public `CanonicalKey` with `matches`, labels from
-`Display` on the trigger, a range binding kept as one `IndexedRange` value, and a
+is never shown. Proposal: labels from `Display` on the trigger, a range binding kept as one `IndexedRange` value, and a
 `HelpGroup` enum column with `HelpRow { keys, label }`. Reported by contracts and
 terminal.
 

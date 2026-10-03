@@ -38,7 +38,7 @@ pub struct SessionOpenOptions<'a> {
 pub struct OpenedSession {
     pub policy: SessionOpenPolicy,
     pub restored: Option<OpenedRestore>,
-    pub restored_host_theme: Option<shepr_termio::host_term::theme::TerminalTheme>,
+    pub restored_host_theme: Option<shepr_term::host::TerminalTheme>,
     pub persister: SessionPersister,
     pub restore_notice: Option<shepr_protocol::SessionRestoreNotice>,
     pub restore_summary: Option<SessionRestoreSummary>,

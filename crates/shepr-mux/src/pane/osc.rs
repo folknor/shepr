@@ -471,9 +471,7 @@ mod tests {
         }
     }
 
-    fn pane_default_theme(
-        pane: &super::super::PaneTerminal,
-    ) -> shepr_termio::host_term::theme::TerminalTheme {
+    fn pane_default_theme(pane: &super::super::PaneTerminal) -> shepr_term::host::TerminalTheme {
         let mut core = pane.core.lock().expect("test precondition");
         let super::super::terminal::PaneTerminalCore {
             terminal,
@@ -482,13 +480,13 @@ mod tests {
         } = &mut *core;
         render_state.update(terminal);
         let colors = render_state.colors();
-        shepr_termio::host_term::theme::TerminalTheme {
-            foreground: Some(shepr_termio::host_term::theme::RgbColor {
+        shepr_term::host::TerminalTheme {
+            foreground: Some(shepr_term::host::RgbColor {
                 r: colors.foreground.r,
                 g: colors.foreground.g,
                 b: colors.foreground.b,
             }),
-            background: Some(shepr_termio::host_term::theme::RgbColor {
+            background: Some(shepr_term::host::RgbColor {
                 r: colors.background.r,
                 g: colors.background.g,
                 b: colors.background.b,
@@ -979,13 +977,13 @@ mod tests {
         let pane = super::super::PaneTerminal::new(terminal);
         let pane_id = shepr_test_fixtures::fixed_pane_id(1);
         let shell_pid = shepr_platform::Pid::new(7).expect("test shell pid");
-        let host_theme = shepr_termio::host_term::theme::TerminalTheme {
-            foreground: Some(shepr_termio::host_term::theme::RgbColor {
+        let host_theme = shepr_term::host::TerminalTheme {
+            foreground: Some(shepr_term::host::RgbColor {
                 r: 0xaa,
                 g: 0xbb,
                 b: 0xcc,
             }),
-            background: Some(shepr_termio::host_term::theme::RgbColor {
+            background: Some(shepr_term::host::RgbColor {
                 r: 0x11,
                 g: 0x22,
                 b: 0x33,
@@ -1003,7 +1001,7 @@ mod tests {
         }
         assert_eq!(
             pane_default_theme(&pane).background,
-            Some(shepr_termio::host_term::theme::RgbColor {
+            Some(shepr_term::host::RgbColor {
                 r: 0xdd,
                 g: 0xee,
                 b: 0xff,

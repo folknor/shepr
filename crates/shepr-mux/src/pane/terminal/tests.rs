@@ -864,8 +864,8 @@ fn host_theme_change_does_not_split_a_partial_child_sequence() {
     let pane_id = shepr_test_fixtures::fixed_pane_id(1);
 
     pane.process_pty_bytes(pane_id, b"\x1b[3");
-    pane.apply_host_terminal_theme(shepr_termio::host_term::theme::TerminalTheme {
-        foreground: Some(shepr_termio::host_term::theme::RgbColor {
+    pane.apply_host_terminal_theme(shepr_term::host::TerminalTheme {
+        foreground: Some(shepr_term::host::RgbColor {
             r: 0xaa,
             g: 0xbb,
             b: 0xcc,
@@ -1042,13 +1042,13 @@ fn host_terminal_theme_restore_probe_skips_on_alternate_screen() {
         let mut core = pane.core.lock().expect("test precondition");
         core.transient_default_color_owner_pgid =
             Some(shepr_platform::Pgid::new(42).expect("test group"));
-        core.host_terminal_theme = shepr_termio::host_term::theme::TerminalTheme {
-            foreground: Some(shepr_termio::host_term::theme::RgbColor {
+        core.host_terminal_theme = shepr_term::host::TerminalTheme {
+            foreground: Some(shepr_term::host::RgbColor {
                 r: 0xaa,
                 g: 0xbb,
                 b: 0xcc,
             }),
-            background: Some(shepr_termio::host_term::theme::RgbColor {
+            background: Some(shepr_term::host::RgbColor {
                 r: 0x11,
                 g: 0x22,
                 b: 0x33,
@@ -1069,13 +1069,13 @@ fn host_terminal_theme_restore_probe_runs_when_restore_is_pending() {
         let mut core = pane.core.lock().expect("test precondition");
         core.transient_default_color_owner_pgid =
             Some(shepr_platform::Pgid::new(42).expect("test group"));
-        core.host_terminal_theme = shepr_termio::host_term::theme::TerminalTheme {
-            foreground: Some(shepr_termio::host_term::theme::RgbColor {
+        core.host_terminal_theme = shepr_term::host::TerminalTheme {
+            foreground: Some(shepr_term::host::RgbColor {
                 r: 0xaa,
                 g: 0xbb,
                 b: 0xcc,
             }),
-            background: Some(shepr_termio::host_term::theme::RgbColor {
+            background: Some(shepr_term::host::RgbColor {
                 r: 0x11,
                 g: 0x22,
                 b: 0x33,
@@ -1096,7 +1096,7 @@ fn terminal_keyboard_protocol_tracks_live_terminal_flags() {
 
     assert_eq!(
         pane.negotiated_keyboard_protocol(),
-        Some(shepr_termio::input::KeyboardProtocol::from_flags(
+        Some(shepr_term::key::KeyboardProtocol::from_flags(
             shepr_protocol::KittyKeyboardFlags::from_bits_retain(3)
         ))
     );
@@ -1108,11 +1108,11 @@ fn terminal_plain_text_chars_still_encode_as_text() {
     let pane = PaneTerminal::new(terminal);
 
     let encoded = pane.encode_terminal_key(
-        shepr_termio::input::TerminalKey::new(
+        shepr_term::key::TerminalKey::new(
             crossterm::event::KeyCode::Char('a'),
             crossterm::event::KeyModifiers::empty(),
         ),
-        shepr_termio::input::KeyboardProtocol::legacy(),
+        shepr_term::key::KeyboardProtocol::legacy(),
     );
 
     assert_eq!(encoded, b"a");
@@ -1124,10 +1124,8 @@ fn terminal_backtab_preserves_shift_across_keyboard_protocols() {
         shepr_termio::input::parse_terminal_key_sequence("\x1b[9;2u").expect("test precondition");
     let legacy_pane = PaneTerminal::new(shepr_vt::Terminal::new(80, 24, 0));
     assert_eq!(
-        legacy_pane.encode_terminal_key(
-            host_shift_tab,
-            shepr_termio::input::KeyboardProtocol::legacy(),
-        ),
+        legacy_pane
+            .encode_terminal_key(host_shift_tab, shepr_term::key::KeyboardProtocol::legacy(),),
         b"\x1b[Z"
     );
 
@@ -1157,10 +1155,7 @@ fn terminal_backtab_preserves_shift_across_keyboard_protocols() {
             crossterm::event::KeyModifiers::SHIFT,
         ] {
             let encoded = pane.encode_terminal_key(
-                shepr_termio::input::TerminalKey::new(
-                    crossterm::event::KeyCode::BackTab,
-                    modifiers,
-                ),
+                shepr_term::key::TerminalKey::new(crossterm::event::KeyCode::BackTab, modifiers),
                 protocol,
             );
             assert_eq!(encoded, expected, "backtab with modifiers {modifiers:?}");
@@ -1170,11 +1165,11 @@ fn terminal_backtab_preserves_shift_across_keyboard_protocols() {
     let terminal = shepr_vt::Terminal::new(80, 24, 0);
     let pane = PaneTerminal::new(terminal);
     let encoded = pane.encode_terminal_key(
-        shepr_termio::input::TerminalKey::new(
+        shepr_term::key::TerminalKey::new(
             crossterm::event::KeyCode::Tab,
             crossterm::event::KeyModifiers::empty(),
         ),
-        shepr_termio::input::KeyboardProtocol::legacy(),
+        shepr_term::key::KeyboardProtocol::legacy(),
     );
     assert_eq!(encoded, b"\t");
 }
@@ -1183,13 +1178,13 @@ fn terminal_backtab_preserves_shift_across_keyboard_protocols() {
 fn terminal_ctrl_tab_matches_the_pane_keyboard_protocol() {
     let terminal = shepr_vt::Terminal::new(80, 24, 0);
     let legacy = PaneTerminal::new(terminal);
-    let key = shepr_termio::input::TerminalKey::new(
+    let key = shepr_term::key::TerminalKey::new(
         crossterm::event::KeyCode::Tab,
         crossterm::event::KeyModifiers::CONTROL,
     );
 
     assert_eq!(
-        legacy.encode_terminal_key(key.clone(), shepr_termio::input::KeyboardProtocol::legacy()),
+        legacy.encode_terminal_key(key.clone(), shepr_term::key::KeyboardProtocol::legacy()),
         b"\t"
     );
 
@@ -1201,7 +1196,7 @@ fn terminal_ctrl_tab_matches_the_pane_keyboard_protocol() {
     assert_eq!(
         kitty.encode_terminal_key(
             key,
-            shepr_termio::input::KeyboardProtocol::from_flags(
+            shepr_term::key::KeyboardProtocol::from_flags(
                 shepr_protocol::KittyKeyboardFlags::from_bits_retain(3)
             )
         ),
@@ -1215,7 +1210,7 @@ fn terminal_legacy_modified_enter_is_shell_compatible() {
 
     let terminal = shepr_vt::Terminal::new(80, 24, 0);
     let pane = PaneTerminal::new(terminal);
-    let protocol = shepr_termio::input::KeyboardProtocol::legacy();
+    let protocol = shepr_term::key::KeyboardProtocol::legacy();
 
     for modifiers in [
         KeyModifiers::empty(),
@@ -1227,7 +1222,7 @@ fn terminal_legacy_modified_enter_is_shell_compatible() {
         KeyModifiers::ALT | KeyModifiers::SHIFT,
         KeyModifiers::ALT | KeyModifiers::CONTROL | KeyModifiers::SUPER,
     ] {
-        let key = shepr_termio::input::TerminalKey::new(KeyCode::Enter, modifiers);
+        let key = shepr_term::key::TerminalKey::new(KeyCode::Enter, modifiers);
         // Legacy encoding has no Super bit, so any Super chord is spelled as
         // CSI u (modifier parameter 1 + shift 1 + alt 2 + ctrl 4 + super 8).
         let expected = if modifiers.contains(KeyModifiers::SUPER) {
@@ -1309,9 +1304,9 @@ fn terminal_modified_enter_tracks_live_protocol_negotiation() {
         .into_iter()
         .zip(expected)
         {
-            let key = shepr_termio::input::TerminalKey::new(KeyCode::Enter, modifiers);
+            let key = shepr_term::key::TerminalKey::new(KeyCode::Enter, modifiers);
             assert_eq!(
-                pane.encode_terminal_key(key, shepr_termio::input::KeyboardProtocol::legacy()),
+                pane.encode_terminal_key(key, shepr_term::key::KeyboardProtocol::legacy()),
                 expected.as_bytes(),
                 "{modifiers:?} after {sequence:?}"
             );
@@ -1324,13 +1319,13 @@ fn terminal_modified_enter_respects_existing_terminal_mode() {
     let mut terminal = shepr_vt::Terminal::new(80, 24, 0);
     terminal.write(b"\x1b[>4;2m");
     let pane = PaneTerminal::new(terminal);
-    let key = shepr_termio::input::TerminalKey::new(
+    let key = shepr_term::key::TerminalKey::new(
         crossterm::event::KeyCode::Enter,
         crossterm::event::KeyModifiers::SHIFT,
     );
 
     assert_eq!(
-        pane.encode_terminal_key(key, shepr_termio::input::KeyboardProtocol::legacy()),
+        pane.encode_terminal_key(key, shepr_term::key::KeyboardProtocol::legacy()),
         b"\x1b[27;2;13~"
     );
 }
@@ -1345,13 +1340,13 @@ fn terminal_enter_backspace_release_in_legacy_pane_emits_nothing() {
         crossterm::event::KeyCode::Backspace,
     ] {
         let press = pane.encode_terminal_key(
-            shepr_termio::input::TerminalKey::new(code, crossterm::event::KeyModifiers::empty()),
-            shepr_termio::input::KeyboardProtocol::legacy(),
+            shepr_term::key::TerminalKey::new(code, crossterm::event::KeyModifiers::empty()),
+            shepr_term::key::KeyboardProtocol::legacy(),
         );
         let release = pane.encode_terminal_key(
-            shepr_termio::input::TerminalKey::new(code, crossterm::event::KeyModifiers::empty())
+            shepr_term::key::TerminalKey::new(code, crossterm::event::KeyModifiers::empty())
                 .with_kind(crossterm::event::KeyEventKind::Release),
-            shepr_termio::input::KeyboardProtocol::legacy(),
+            shepr_term::key::KeyboardProtocol::legacy(),
         );
         assert!(!press.is_empty(), "{code:?} press should emit bytes");
         assert!(
@@ -1373,7 +1368,7 @@ fn terminal_report_event_pane_keeps_basic_compatibility_keys_legacy() {
         (crossterm::event::KeyCode::Backspace, b"\x7f".as_slice()),
     ] {
         let press = pane.encode_terminal_key(
-            shepr_termio::input::TerminalKey::new(code, crossterm::event::KeyModifiers::empty()),
+            shepr_term::key::TerminalKey::new(code, crossterm::event::KeyModifiers::empty()),
             pane.negotiated_keyboard_protocol()
                 .expect("test precondition"),
         );
@@ -1383,7 +1378,7 @@ fn terminal_report_event_pane_keeps_basic_compatibility_keys_legacy() {
         );
 
         let release = pane.encode_terminal_key(
-            shepr_termio::input::TerminalKey::new(code, crossterm::event::KeyModifiers::empty())
+            shepr_term::key::TerminalKey::new(code, crossterm::event::KeyModifiers::empty())
                 .with_kind(crossterm::event::KeyEventKind::Release),
             pane.negotiated_keyboard_protocol()
                 .expect("test precondition"),
@@ -1402,11 +1397,11 @@ fn terminal_char_keys_still_use_shepr_encoding() {
     let pane = PaneTerminal::new(terminal);
 
     let encoded = pane.encode_terminal_key(
-        shepr_termio::input::TerminalKey::new(
+        shepr_term::key::TerminalKey::new(
             crossterm::event::KeyCode::Char('a'),
             crossterm::event::KeyModifiers::CONTROL | crossterm::event::KeyModifiers::SHIFT,
         ),
-        shepr_termio::input::KeyboardProtocol::legacy(),
+        shepr_term::key::KeyboardProtocol::legacy(),
     );
 
     assert_eq!(encoded, vec![1]);
@@ -1419,11 +1414,11 @@ fn terminal_key_encoding_honors_application_cursor_mode() {
     let pane = PaneTerminal::new(terminal);
 
     let encoded = pane.encode_terminal_key(
-        shepr_termio::input::TerminalKey::new(
+        shepr_term::key::TerminalKey::new(
             crossterm::event::KeyCode::Up,
             crossterm::event::KeyModifiers::empty(),
         ),
-        shepr_termio::input::KeyboardProtocol::legacy(),
+        shepr_term::key::KeyboardProtocol::legacy(),
     );
 
     assert_eq!(encoded, b"\x1bOA");
@@ -1433,18 +1428,18 @@ fn terminal_key_encoding_honors_application_cursor_mode() {
 fn grouped_key_repeats_expand_at_the_destination() {
     let terminal = shepr_vt::Terminal::new(80, 24, 0);
     let pane = PaneTerminal::new(terminal);
-    let key = shepr_termio::input::TerminalKey::new(
+    let key = shepr_term::key::TerminalKey::new(
         crossterm::event::KeyCode::Char('x'),
         crossterm::event::KeyModifiers::empty(),
     )
     .with_repeat_count(3);
 
     assert_eq!(
-        pane.encode_terminal_key(key, shepr_termio::input::KeyboardProtocol::legacy()),
+        pane.encode_terminal_key(key, shepr_term::key::KeyboardProtocol::legacy()),
         b"xxx"
     );
 
-    let shifted = shepr_termio::input::TerminalKey::new(
+    let shifted = shepr_term::key::TerminalKey::new(
         crossterm::event::KeyCode::Char('/'),
         crossterm::event::KeyModifiers::SHIFT,
     )
@@ -1452,10 +1447,7 @@ fn grouped_key_repeats_expand_at_the_destination() {
     .with_repeat_count(3);
     let legacy_expected = b"///".as_slice();
     assert_eq!(
-        pane.encode_terminal_key(
-            shifted.clone(),
-            shepr_termio::input::KeyboardProtocol::legacy(),
-        ),
+        pane.encode_terminal_key(shifted.clone(), shepr_term::key::KeyboardProtocol::legacy(),),
         legacy_expected
     );
     // Flags 15 (disambiguate + event types + alternate keys + report all
@@ -1466,7 +1458,7 @@ fn grouped_key_repeats_expand_at_the_destination() {
     let mut terminal = shepr_vt::Terminal::new(80, 24, 0);
     terminal.write(b"\x1b[>15u");
     let pane = PaneTerminal::new(terminal);
-    let kitty_protocol = shepr_termio::input::KeyboardProtocol::from_flags(
+    let kitty_protocol = shepr_term::key::KeyboardProtocol::from_flags(
         shepr_protocol::KittyKeyboardFlags::from_bits_retain(15),
     );
     let pressed =
@@ -1494,7 +1486,7 @@ fn grouped_release_is_encoded_once() {
     let protocol = pane
         .negotiated_keyboard_protocol()
         .expect("test precondition");
-    let release = shepr_termio::input::TerminalKey::new(
+    let release = shepr_term::key::TerminalKey::new(
         crossterm::event::KeyCode::Up,
         crossterm::event::KeyModifiers::empty(),
     )
@@ -1517,22 +1509,22 @@ fn terminal_key_encoder_updates_after_terminal_mode_changes() {
     let pane_id = shepr_test_fixtures::fixed_pane_id(1);
 
     let before = pane.encode_terminal_key(
-        shepr_termio::input::TerminalKey::new(
+        shepr_term::key::TerminalKey::new(
             crossterm::event::KeyCode::Up,
             crossterm::event::KeyModifiers::empty(),
         ),
-        shepr_termio::input::KeyboardProtocol::legacy(),
+        shepr_term::key::KeyboardProtocol::legacy(),
     );
     assert_eq!(before, b"\x1b[A");
 
     pane.process_pty_bytes(pane_id, b"\x1b[?1h");
 
     let after = pane.encode_terminal_key(
-        shepr_termio::input::TerminalKey::new(
+        shepr_term::key::TerminalKey::new(
             crossterm::event::KeyCode::Up,
             crossterm::event::KeyModifiers::empty(),
         ),
-        shepr_termio::input::KeyboardProtocol::legacy(),
+        shepr_term::key::KeyboardProtocol::legacy(),
     );
     assert_eq!(after, b"\x1bOA");
 }
@@ -1542,16 +1534,14 @@ fn terminal_key_encoder_updates_after_kitty_flag_changes() {
     let terminal = shepr_vt::Terminal::new(80, 24, 0);
     let pane = PaneTerminal::new(terminal);
     let pane_id = shepr_test_fixtures::fixed_pane_id(1);
-    let key = shepr_termio::input::TerminalKey::new(
+    let key = shepr_term::key::TerminalKey::new(
         crossterm::event::KeyCode::Enter,
         crossterm::event::KeyModifiers::CONTROL | crossterm::event::KeyModifiers::SHIFT,
     );
 
-    let before =
-        pane.encode_terminal_key(key.clone(), shepr_termio::input::KeyboardProtocol::legacy());
+    let before = pane.encode_terminal_key(key.clone(), shepr_term::key::KeyboardProtocol::legacy());
     pane.process_pty_bytes(pane_id, b"\x1b[>1u");
-    let after =
-        pane.encode_terminal_key(key.clone(), shepr_termio::input::KeyboardProtocol::legacy());
+    let after = pane.encode_terminal_key(key.clone(), shepr_term::key::KeyboardProtocol::legacy());
 
     assert_ne!(before, after);
     assert_eq!(after, b"\x1b[13;6u");
@@ -1567,11 +1557,11 @@ fn terminal_kitty_pane_encodes_shift_enter_as_csi_u() {
     let key =
         shepr_termio::input::parse_terminal_key_sequence("\x1b[13;2u").expect("test precondition");
     let encoded =
-        pane.encode_terminal_key(key.clone(), shepr_termio::input::KeyboardProtocol::legacy());
+        pane.encode_terminal_key(key.clone(), shepr_term::key::KeyboardProtocol::legacy());
 
     assert_eq!(
         pane.negotiated_keyboard_protocol(),
-        Some(shepr_termio::input::KeyboardProtocol::from_flags(
+        Some(shepr_term::key::KeyboardProtocol::from_flags(
             shepr_protocol::KittyKeyboardFlags::from_bits_retain(5)
         ))
     );
@@ -1591,7 +1581,7 @@ fn terminal_modify_other_keys_mode_one_preserves_shift_enter() {
         shepr_vt::ModifyOtherKeysLevel::ExceptWellDefined
     );
     let encoded =
-        pane.encode_terminal_key(key.clone(), shepr_termio::input::KeyboardProtocol::legacy());
+        pane.encode_terminal_key(key.clone(), shepr_term::key::KeyboardProtocol::legacy());
 
     assert_eq!(encoded, b"\x1b[27;2;13~");
 }
@@ -1606,7 +1596,7 @@ fn terminal_kitty_pane_encodes_parsed_legacy_alt_backspace_as_csi_u() {
     let key =
         shepr_termio::input::parse_terminal_key_sequence("\x1b\x7f").expect("test precondition");
     let encoded =
-        pane.encode_terminal_key(key.clone(), shepr_termio::input::KeyboardProtocol::legacy());
+        pane.encode_terminal_key(key.clone(), shepr_term::key::KeyboardProtocol::legacy());
 
     assert_eq!(encoded, b"\x1b[127;3u");
 }
@@ -1635,27 +1625,24 @@ fn terminal_kitty_pane_preserves_legacy_ctrl_alt_letter() {
 fn terminal_pane_characterizes_ctrl_backspace_encoding() {
     let legacy = PaneTerminal::new(shepr_vt::Terminal::new(80, 24, 0));
 
-    let ctrl_backspace = shepr_termio::input::TerminalKey::new(
+    let ctrl_backspace = shepr_term::key::TerminalKey::new(
         crossterm::event::KeyCode::Backspace,
         crossterm::event::KeyModifiers::CONTROL,
     );
     assert_eq!(
         legacy.encode_terminal_key(
             ctrl_backspace.clone(),
-            shepr_termio::input::KeyboardProtocol::legacy()
+            shepr_term::key::KeyboardProtocol::legacy()
         ),
         b"\x08"
     );
 
-    let plain_backspace = shepr_termio::input::TerminalKey::new(
+    let plain_backspace = shepr_term::key::TerminalKey::new(
         crossterm::event::KeyCode::Backspace,
         crossterm::event::KeyModifiers::empty(),
     );
     assert_eq!(
-        legacy.encode_terminal_key(
-            plain_backspace,
-            shepr_termio::input::KeyboardProtocol::legacy()
-        ),
+        legacy.encode_terminal_key(plain_backspace, shepr_term::key::KeyboardProtocol::legacy()),
         b"\x7f"
     );
 
@@ -1664,10 +1651,7 @@ fn terminal_pane_characterizes_ctrl_backspace_encoding() {
     kitty.process_pty_bytes(pane_id, b"\x1b[>1u");
 
     assert_eq!(
-        kitty.encode_terminal_key(
-            ctrl_backspace,
-            shepr_termio::input::KeyboardProtocol::legacy()
-        ),
+        kitty.encode_terminal_key(ctrl_backspace, shepr_term::key::KeyboardProtocol::legacy()),
         b"\x1b[127;5u"
     );
 }
@@ -1680,18 +1664,18 @@ fn terminal_key_encoders_are_isolated_per_pane() {
     first.process_pty_bytes(shepr_test_fixtures::fixed_pane_id(1), b"\x1b[?1h");
 
     let first_encoded = first.encode_terminal_key(
-        shepr_termio::input::TerminalKey::new(
+        shepr_term::key::TerminalKey::new(
             crossterm::event::KeyCode::Up,
             crossterm::event::KeyModifiers::empty(),
         ),
-        shepr_termio::input::KeyboardProtocol::legacy(),
+        shepr_term::key::KeyboardProtocol::legacy(),
     );
     let second_encoded = second.encode_terminal_key(
-        shepr_termio::input::TerminalKey::new(
+        shepr_term::key::TerminalKey::new(
             crossterm::event::KeyCode::Up,
             crossterm::event::KeyModifiers::empty(),
         ),
-        shepr_termio::input::KeyboardProtocol::legacy(),
+        shepr_term::key::KeyboardProtocol::legacy(),
     );
 
     assert_eq!(first_encoded, b"\x1bOA");
@@ -1706,7 +1690,7 @@ fn terminal_mouse_button_encoding_uses_live_terminal_state() {
 
     let encoded = pane.encode_mouse_button(
         crossterm::event::MouseEventKind::Up(crossterm::event::MouseButton::Left),
-        shepr_termio::input::mouse::Position::Cell { column: 11, row: 9 },
+        shepr_term::mouse::Position::Cell { column: 11, row: 9 },
         crossterm::event::KeyModifiers::empty(),
     );
 
@@ -1721,7 +1705,7 @@ fn terminal_mouse_drag_encoding_uses_motion_reporting_state() {
 
     let encoded = pane.encode_mouse_button(
         crossterm::event::MouseEventKind::Drag(crossterm::event::MouseButton::Left),
-        shepr_termio::input::mouse::Position::Cell { column: 4, row: 6 },
+        shepr_term::mouse::Position::Cell { column: 4, row: 6 },
         crossterm::event::KeyModifiers::SHIFT,
     );
 
@@ -1736,7 +1720,7 @@ fn terminal_mouse_drag_without_motion_reporting_is_not_forwarded() {
 
     let encoded = pane.encode_mouse_button(
         crossterm::event::MouseEventKind::Drag(crossterm::event::MouseButton::Left),
-        shepr_termio::input::mouse::Position::Cell { column: 4, row: 6 },
+        shepr_term::mouse::Position::Cell { column: 4, row: 6 },
         crossterm::event::KeyModifiers::empty(),
     );
 
@@ -1751,7 +1735,7 @@ fn terminal_mouse_moved_encoding_uses_any_motion_state() {
 
     let encoded = pane.encode_mouse_motion(
         crossterm::event::MouseEventKind::Moved,
-        shepr_termio::input::mouse::Position::Cell { column: 4, row: 6 },
+        shepr_term::mouse::Position::Cell { column: 4, row: 6 },
         crossterm::event::KeyModifiers::empty(),
     );
 
@@ -1770,12 +1754,12 @@ fn terminal_mouse_encoding_uses_the_captured_input_modes() {
     let captured = pane.encode_mouse_motion_with_modes(
         modes,
         crossterm::event::MouseEventKind::Moved,
-        shepr_termio::input::mouse::Position::Cell { column: 4, row: 6 },
+        shepr_term::mouse::Position::Cell { column: 4, row: 6 },
         crossterm::event::KeyModifiers::empty(),
     );
     let current = pane.encode_mouse_motion(
         crossterm::event::MouseEventKind::Moved,
-        shepr_termio::input::mouse::Position::Cell { column: 4, row: 6 },
+        shepr_term::mouse::Position::Cell { column: 4, row: 6 },
         crossterm::event::KeyModifiers::empty(),
     );
 
@@ -1792,12 +1776,12 @@ fn terminal_mouse_sgr_pixels_preserves_exact_and_maps_cell_input_to_pixels() {
 
     let exact = pane.encode_mouse_motion(
         crossterm::event::MouseEventKind::Moved,
-        shepr_termio::input::mouse::Position::Pixels { x: 48, y: 139 },
+        shepr_term::mouse::Position::Pixels { x: 48, y: 139 },
         crossterm::event::KeyModifiers::empty(),
     );
     let from_cell = pane.encode_mouse_motion(
         crossterm::event::MouseEventKind::Moved,
-        shepr_termio::input::mouse::Position::Cell { column: 4, row: 6 },
+        shepr_term::mouse::Position::Cell { column: 4, row: 6 },
         crossterm::event::KeyModifiers::empty(),
     );
 
@@ -1815,7 +1799,7 @@ fn terminal_mouse_sgr_pixels_without_pixel_geometry_sends_cells() {
 
     let encoded = pane.encode_mouse_motion(
         crossterm::event::MouseEventKind::Moved,
-        shepr_termio::input::mouse::Position::Cell { column: 4, row: 6 },
+        shepr_term::mouse::Position::Cell { column: 4, row: 6 },
         crossterm::event::KeyModifiers::empty(),
     );
 
@@ -2594,10 +2578,8 @@ fn color_scheme_queries_and_live_updates_follow_terminal_mode() {
     let pane_id = shepr_test_fixtures::fixed_pane_id(1);
 
     assert!(
-        pane.apply_host_terminal_appearance(Some(
-            shepr_termio::host_term::theme::HostAppearance::Dark
-        ))
-        .is_none()
+        pane.apply_host_terminal_appearance(Some(shepr_term::host::HostAppearance::Dark))
+            .is_none()
     );
     let query = pane.process_pty_bytes(pane_id, b"\x1b[?996n");
     assert_eq!(
@@ -2607,15 +2589,11 @@ fn color_scheme_queries_and_live_updates_follow_terminal_mode() {
 
     pane.process_pty_bytes(pane_id, b"\x1b[?2031h");
     assert!(
-        pane.apply_host_terminal_appearance(Some(
-            shepr_termio::host_term::theme::HostAppearance::Dark
-        ))
-        .is_none()
+        pane.apply_host_terminal_appearance(Some(shepr_term::host::HostAppearance::Dark))
+            .is_none()
     );
     assert_eq!(
-        pane.apply_host_terminal_appearance(Some(
-            shepr_termio::host_term::theme::HostAppearance::Light
-        )),
+        pane.apply_host_terminal_appearance(Some(shepr_term::host::HostAppearance::Light)),
         Some(Bytes::from_static(b"\x1b[?997;2n"))
     );
 
@@ -2623,18 +2601,14 @@ fn color_scheme_queries_and_live_updates_follow_terminal_mode() {
     let unknown_query = pane.process_pty_bytes(pane_id, b"\x1b[?996n");
     assert!(unknown_query.terminal_responses.is_empty());
     assert!(
-        pane.apply_host_terminal_appearance(Some(
-            shepr_termio::host_term::theme::HostAppearance::Dark
-        ))
-        .is_none()
+        pane.apply_host_terminal_appearance(Some(shepr_term::host::HostAppearance::Dark))
+            .is_none()
     );
 
     pane.process_pty_bytes(pane_id, b"\x1bc");
     assert!(
-        pane.apply_host_terminal_appearance(Some(
-            shepr_termio::host_term::theme::HostAppearance::Light
-        ))
-        .is_none()
+        pane.apply_host_terminal_appearance(Some(shepr_term::host::HostAppearance::Light))
+            .is_none()
     );
 }
 
@@ -2648,7 +2622,7 @@ fn unchanged_host_appearance_does_not_advance_render_revision() {
         initial_revision
     );
 
-    let appearance = Some(shepr_termio::host_term::theme::HostAppearance::Dark);
+    let appearance = Some(shepr_term::host::HostAppearance::Dark);
 
     pane.apply_host_terminal_appearance(appearance);
     let changed_revision = pane.core.lock().expect("terminal core").content_revision;
@@ -2695,8 +2669,8 @@ fn process_pty_bytes_returns_fragmented_c1_xtgettcap_once_in_order() {
             let terminal = shepr_vt::Terminal::new(20, 5, 0);
             let pane = PaneTerminal::new(terminal);
             let pane_id = shepr_test_fixtures::fixed_pane_id(1);
-            pane.apply_host_terminal_theme(shepr_termio::host_term::theme::TerminalTheme {
-                background: Some(shepr_termio::host_term::theme::RgbColor {
+            pane.apply_host_terminal_theme(shepr_term::host::TerminalTheme {
+                background: Some(shepr_term::host::RgbColor {
                     r: 0,
                     g: 0x2b,
                     b: 0x36,
@@ -2798,9 +2772,9 @@ fn process_pty_bytes_orders_xtgettcap_reply_before_following_default_color_reply
     let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = PaneTerminal::new(terminal);
     let pane_id = shepr_test_fixtures::fixed_pane_id(1);
-    pane.apply_host_terminal_theme(shepr_termio::host_term::theme::TerminalTheme {
+    pane.apply_host_terminal_theme(shepr_term::host::TerminalTheme {
         foreground: None,
-        background: Some(shepr_termio::host_term::theme::RgbColor {
+        background: Some(shepr_term::host::RgbColor {
             r: 0x00,
             g: 0x2b,
             b: 0x36,
@@ -2828,9 +2802,9 @@ fn host_theme_update_preserves_child_default_color_override() {
     let result = pane.process_pty_bytes(pane_id, b"\x1b]11;#112233\x07");
     assert!(result.terminal_responses.is_empty());
 
-    pane.apply_host_terminal_theme(shepr_termio::host_term::theme::TerminalTheme {
+    pane.apply_host_terminal_theme(shepr_term::host::TerminalTheme {
         foreground: None,
-        background: Some(shepr_termio::host_term::theme::RgbColor {
+        background: Some(shepr_term::host::RgbColor {
             r: 0xaa,
             g: 0xbb,
             b: 0xcc,
@@ -2852,9 +2826,9 @@ fn child_default_color_reset_restores_cached_host_color() {
     let pane_id = shepr_test_fixtures::fixed_pane_id(1);
 
     pane.process_pty_bytes(pane_id, b"\x1b]11;#112233\x07");
-    pane.apply_host_terminal_theme(shepr_termio::host_term::theme::TerminalTheme {
+    pane.apply_host_terminal_theme(shepr_term::host::TerminalTheme {
         foreground: None,
-        background: Some(shepr_termio::host_term::theme::RgbColor {
+        background: Some(shepr_term::host::RgbColor {
             r: 0xaa,
             g: 0xbb,
             b: 0xcc,
@@ -2890,8 +2864,8 @@ fn process_pty_bytes_orders_default_color_reset_reply_before_xtgettcap() {
     let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = PaneTerminal::new(terminal);
     let pane_id = shepr_test_fixtures::fixed_pane_id(1);
-    pane.apply_host_terminal_theme(shepr_termio::host_term::theme::TerminalTheme {
-        background: Some(shepr_termio::host_term::theme::RgbColor {
+    pane.apply_host_terminal_theme(shepr_term::host::TerminalTheme {
+        background: Some(shepr_term::host::RgbColor {
             r: 0x00,
             g: 0x2b,
             b: 0x36,
@@ -3060,9 +3034,9 @@ fn process_pty_bytes_orders_default_color_reply_before_following_device_attribut
     let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = PaneTerminal::new(terminal);
     let pane_id = shepr_test_fixtures::fixed_pane_id(1);
-    pane.apply_host_terminal_theme(shepr_termio::host_term::theme::TerminalTheme {
+    pane.apply_host_terminal_theme(shepr_term::host::TerminalTheme {
         foreground: None,
-        background: Some(shepr_termio::host_term::theme::RgbColor {
+        background: Some(shepr_term::host::RgbColor {
             r: 0x00,
             g: 0x2b,
             b: 0x36,
@@ -3086,9 +3060,9 @@ fn process_pty_bytes_returns_host_palette_color_without_queuing_input() {
     let pane = PaneTerminal::new(terminal);
     let pane_id = shepr_test_fixtures::fixed_pane_id(1);
     pane.apply_host_terminal_theme(
-        shepr_termio::host_term::theme::TerminalTheme::default().with_palette_color(
+        shepr_term::host::TerminalTheme::default().with_palette_color(
             0,
-            shepr_termio::host_term::theme::RgbColor {
+            shepr_term::host::RgbColor {
                 r: 0x11,
                 g: 0x22,
                 b: 0x33,
@@ -3111,12 +3085,12 @@ fn opentui_256_palette_query_burst_uses_host_snapshot() {
     let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = PaneTerminal::new(terminal);
     let pane_id = shepr_test_fixtures::fixed_pane_id(1);
-    let mut theme = shepr_termio::host_term::theme::TerminalTheme::default();
+    let mut theme = shepr_term::host::TerminalTheme::default();
     let mut queries = String::new();
     for index in 0..=u8::MAX {
         theme = theme.with_palette_color(
             index,
-            shepr_termio::host_term::theme::RgbColor {
+            shepr_term::host::RgbColor {
                 r: index,
                 g: 0x22,
                 b: 0x33,
@@ -3145,9 +3119,9 @@ fn child_palette_override_survives_host_refresh_until_reset() {
     let pane = PaneTerminal::new(terminal);
     let pane_id = shepr_test_fixtures::fixed_pane_id(1);
     pane.apply_host_terminal_theme(
-        shepr_termio::host_term::theme::TerminalTheme::default().with_palette_color(
+        shepr_term::host::TerminalTheme::default().with_palette_color(
             7,
-            shepr_termio::host_term::theme::RgbColor {
+            shepr_term::host::RgbColor {
                 r: 0x11,
                 g: 0x22,
                 b: 0x33,
@@ -3157,9 +3131,9 @@ fn child_palette_override_survives_host_refresh_until_reset() {
     pane.process_pty_bytes(pane_id, b"\x1b]4;7;rgb:aa/bb/cc\x1b\\");
 
     pane.apply_host_terminal_theme(
-        shepr_termio::host_term::theme::TerminalTheme::default().with_palette_color(
+        shepr_term::host::TerminalTheme::default().with_palette_color(
             7,
-            shepr_termio::host_term::theme::RgbColor {
+            shepr_term::host::RgbColor {
                 r: 0x44,
                 g: 0x55,
                 b: 0x66,
@@ -3223,9 +3197,9 @@ fn process_pty_bytes_orders_palette_reply_before_following_terminal_replies() {
     let pane = PaneTerminal::new(terminal);
     let pane_id = shepr_test_fixtures::fixed_pane_id(1);
     let color = current_palette_color(&pane, 0);
-    pane.apply_host_terminal_theme(shepr_termio::host_term::theme::TerminalTheme {
+    pane.apply_host_terminal_theme(shepr_term::host::TerminalTheme {
         foreground: None,
-        background: Some(shepr_termio::host_term::theme::RgbColor {
+        background: Some(shepr_term::host::RgbColor {
             r: 0x00,
             g: 0x2b,
             b: 0x36,
@@ -3252,9 +3226,9 @@ fn process_pty_bytes_returns_default_color_query_responses_without_queuing_input
     let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = PaneTerminal::new(terminal);
     let pane_id = shepr_test_fixtures::fixed_pane_id(1);
-    pane.apply_host_terminal_theme(shepr_termio::host_term::theme::TerminalTheme {
+    pane.apply_host_terminal_theme(shepr_term::host::TerminalTheme {
         foreground: None,
-        background: Some(shepr_termio::host_term::theme::RgbColor {
+        background: Some(shepr_term::host::RgbColor {
             r: 0x00,
             g: 0x2b,
             b: 0x36,
@@ -3275,13 +3249,13 @@ fn process_pty_bytes_preserves_untracked_multi_color_query_responses() {
     let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = PaneTerminal::new(terminal);
     let pane_id = shepr_test_fixtures::fixed_pane_id(1);
-    pane.apply_host_terminal_theme(shepr_termio::host_term::theme::TerminalTheme {
-        foreground: Some(shepr_termio::host_term::theme::RgbColor {
+    pane.apply_host_terminal_theme(shepr_term::host::TerminalTheme {
+        foreground: Some(shepr_term::host::RgbColor {
             r: 0x65,
             g: 0x7b,
             b: 0x83,
         }),
-        background: Some(shepr_termio::host_term::theme::RgbColor {
+        background: Some(shepr_term::host::RgbColor {
             r: 0xfd,
             g: 0xf6,
             b: 0xe3,
@@ -3372,8 +3346,8 @@ fn process_pty_bytes_returns_cursor_color_query_response_from_foreground_fallbac
     let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = PaneTerminal::new(terminal);
     let pane_id = shepr_test_fixtures::fixed_pane_id(1);
-    pane.apply_host_terminal_theme(shepr_termio::host_term::theme::TerminalTheme {
-        foreground: Some(shepr_termio::host_term::theme::RgbColor {
+    pane.apply_host_terminal_theme(shepr_term::host::TerminalTheme {
+        foreground: Some(shepr_term::host::RgbColor {
             r: 0x65,
             g: 0x7b,
             b: 0x83,
@@ -3395,8 +3369,8 @@ fn process_pty_bytes_returns_cursor_color_query_response_from_child_foreground()
     let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = PaneTerminal::new(terminal);
     let pane_id = shepr_test_fixtures::fixed_pane_id(1);
-    pane.apply_host_terminal_theme(shepr_termio::host_term::theme::TerminalTheme {
-        foreground: Some(shepr_termio::host_term::theme::RgbColor {
+    pane.apply_host_terminal_theme(shepr_term::host::TerminalTheme {
+        foreground: Some(shepr_term::host::RgbColor {
             r: 0x65,
             g: 0x7b,
             b: 0x83,
@@ -3419,8 +3393,8 @@ fn process_pty_bytes_returns_explicit_cursor_color_query_response() {
     let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = PaneTerminal::new(terminal);
     let pane_id = shepr_test_fixtures::fixed_pane_id(1);
-    pane.apply_host_terminal_theme(shepr_termio::host_term::theme::TerminalTheme {
-        foreground: Some(shepr_termio::host_term::theme::RgbColor {
+    pane.apply_host_terminal_theme(shepr_term::host::TerminalTheme {
+        foreground: Some(shepr_term::host::RgbColor {
             r: 0x65,
             g: 0x7b,
             b: 0x83,
@@ -3443,13 +3417,13 @@ fn process_pty_bytes_returns_default_color_query_responses_in_order() {
     let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = PaneTerminal::new(terminal);
     let pane_id = shepr_test_fixtures::fixed_pane_id(1);
-    pane.apply_host_terminal_theme(shepr_termio::host_term::theme::TerminalTheme {
-        foreground: Some(shepr_termio::host_term::theme::RgbColor {
+    pane.apply_host_terminal_theme(shepr_term::host::TerminalTheme {
+        foreground: Some(shepr_term::host::RgbColor {
             r: 0x65,
             g: 0x7b,
             b: 0x83,
         }),
-        background: Some(shepr_termio::host_term::theme::RgbColor {
+        background: Some(shepr_term::host::RgbColor {
             r: 0xfd,
             g: 0xf6,
             b: 0xe3,
@@ -3474,9 +3448,9 @@ fn process_pty_bytes_returns_split_default_color_query_response() {
     let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = PaneTerminal::new(terminal);
     let pane_id = shepr_test_fixtures::fixed_pane_id(1);
-    pane.apply_host_terminal_theme(shepr_termio::host_term::theme::TerminalTheme {
+    pane.apply_host_terminal_theme(shepr_term::host::TerminalTheme {
         foreground: None,
-        background: Some(shepr_termio::host_term::theme::RgbColor {
+        background: Some(shepr_term::host::RgbColor {
             r: 0xfd,
             g: 0xf6,
             b: 0xe3,
@@ -3501,8 +3475,8 @@ fn process_pty_bytes_returns_split_cursor_color_query_response() {
     let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = PaneTerminal::new(terminal);
     let pane_id = shepr_test_fixtures::fixed_pane_id(1);
-    pane.apply_host_terminal_theme(shepr_termio::host_term::theme::TerminalTheme {
-        foreground: Some(shepr_termio::host_term::theme::RgbColor {
+    pane.apply_host_terminal_theme(shepr_term::host::TerminalTheme {
+        foreground: Some(shepr_term::host::RgbColor {
             r: 0xfd,
             g: 0xf6,
             b: 0xe3,
@@ -3528,9 +3502,9 @@ fn process_pty_bytes_tracks_default_color_set_and_reset_before_replying() {
     let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = PaneTerminal::new(terminal);
     let pane_id = shepr_test_fixtures::fixed_pane_id(1);
-    pane.apply_host_terminal_theme(shepr_termio::host_term::theme::TerminalTheme {
+    pane.apply_host_terminal_theme(shepr_term::host::TerminalTheme {
         foreground: None,
-        background: Some(shepr_termio::host_term::theme::RgbColor {
+        background: Some(shepr_term::host::RgbColor {
             r: 0xfd,
             g: 0xf6,
             b: 0xe3,
@@ -3555,13 +3529,13 @@ fn process_pty_bytes_tracks_default_color_set_and_reset_before_replying() {
 fn render_leaves_host_default_background_transparent() {
     let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = PaneTerminal::new(terminal);
-    let host_theme = shepr_termio::host_term::theme::TerminalTheme {
-        foreground: Some(shepr_termio::host_term::theme::RgbColor {
+    let host_theme = shepr_term::host::TerminalTheme {
+        foreground: Some(shepr_term::host::RgbColor {
             r: 0xaa,
             g: 0xbb,
             b: 0xcc,
         }),
-        background: Some(shepr_termio::host_term::theme::RgbColor {
+        background: Some(shepr_term::host::RgbColor {
             r: 0x11,
             g: 0x22,
             b: 0x33,
@@ -3587,13 +3561,13 @@ fn render_leaves_host_default_background_transparent() {
 fn render_keeps_explicit_default_foreground_when_it_differs_from_host() {
     let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = PaneTerminal::new(terminal);
-    let host_theme = shepr_termio::host_term::theme::TerminalTheme {
-        foreground: Some(shepr_termio::host_term::theme::RgbColor {
+    let host_theme = shepr_term::host::TerminalTheme {
+        foreground: Some(shepr_term::host::RgbColor {
             r: 0xaa,
             g: 0xbb,
             b: 0xcc,
         }),
-        background: Some(shepr_termio::host_term::theme::RgbColor {
+        background: Some(shepr_term::host::RgbColor {
             r: 0x11,
             g: 0x22,
             b: 0x33,
@@ -3618,13 +3592,13 @@ fn render_keeps_explicit_default_foreground_when_it_differs_from_host() {
 fn render_keeps_explicit_default_background_when_it_differs_from_host() {
     let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = PaneTerminal::new(terminal);
-    let host_theme = shepr_termio::host_term::theme::TerminalTheme {
-        foreground: Some(shepr_termio::host_term::theme::RgbColor {
+    let host_theme = shepr_term::host::TerminalTheme {
+        foreground: Some(shepr_term::host::RgbColor {
             r: 0xaa,
             g: 0xbb,
             b: 0xcc,
         }),
-        background: Some(shepr_termio::host_term::theme::RgbColor {
+        background: Some(shepr_term::host::RgbColor {
             r: 0x11,
             g: 0x22,
             b: 0x33,
@@ -3649,13 +3623,13 @@ fn render_keeps_explicit_default_background_when_it_differs_from_host() {
 fn render_inverse_text_swaps_fg_and_resolved_bg_when_bg_is_transparent() {
     let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = PaneTerminal::new(terminal);
-    let host_theme = shepr_termio::host_term::theme::TerminalTheme {
-        foreground: Some(shepr_termio::host_term::theme::RgbColor {
+    let host_theme = shepr_term::host::TerminalTheme {
+        foreground: Some(shepr_term::host::RgbColor {
             r: 0xaa,
             g: 0xbb,
             b: 0xcc,
         }),
-        background: Some(shepr_termio::host_term::theme::RgbColor {
+        background: Some(shepr_term::host::RgbColor {
             r: 0x11,
             g: 0x22,
             b: 0x33,

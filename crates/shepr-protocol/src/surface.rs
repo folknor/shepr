@@ -19,7 +19,7 @@ pub struct PaneSurfacePane {
     pub pixel_height: u32,
 }
 
-pub use shepr_vt::ScrollMetrics as PaneSurfaceScrollMetrics;
+pub use shepr_term::ScrollMetrics as PaneSurfaceScrollMetrics;
 
 /// One draggable BSP split handle relative to a pane surface.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -346,11 +346,11 @@ mod scroll_metrics_tests {
 
     #[test]
     fn scroll_metrics_wire_rejects_an_offset_outside_history() {
-        let fields = shepr_vt::ScrollMetricsFields {
+        let fields = shepr_term::ScrollMetricsFields {
             offset_from_bottom: 11,
             max_offset_from_bottom: 10,
             viewport_rows: 3,
-            history_origin: shepr_vt::AbsRow(40),
+            history_origin: shepr_term::AbsRow(40),
         };
         let mut bytes = Vec::new();
         codec::encode_into(&mut bytes, &fields).expect("encode metric fields");
@@ -359,13 +359,13 @@ mod scroll_metrics_tests {
 
     #[test]
     fn scroll_metrics_wire_preserves_the_history_base() {
-        let metrics = PaneSurfaceScrollMetrics::new(4, 10, 3, shepr_vt::AbsRow(40));
+        let metrics = PaneSurfaceScrollMetrics::new(4, 10, 3, shepr_term::AbsRow(40));
         let mut bytes = Vec::new();
         codec::encode_into(&mut bytes, &metrics).expect("encode metrics");
         // Exact decoding also checks that every field was consumed.
         let decoded: PaneSurfaceScrollMetrics =
             codec::from_slice_exact(&bytes).expect("decode metrics");
         assert_eq!(decoded, metrics);
-        assert_eq!(decoded.viewport_top_row(), shepr_vt::AbsRow(46));
+        assert_eq!(decoded.viewport_top_row(), shepr_term::AbsRow(46));
     }
 }

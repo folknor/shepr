@@ -169,13 +169,13 @@ impl PaneRuntime {
         self.generation
     }
 
-    pub fn apply_host_terminal_theme(&self, theme: shepr_termio::host_term::theme::TerminalTheme) {
+    pub fn apply_host_terminal_theme(&self, theme: shepr_term::host::TerminalTheme) {
         self.terminal.apply_host_terminal_theme(theme);
     }
 
     pub fn apply_host_terminal_appearance(
         &self,
-        appearance: Option<shepr_termio::host_term::theme::HostAppearance>,
+        appearance: Option<shepr_term::host::HostAppearance>,
     ) {
         write_terminal_response(self.io.as_ref(), || {
             self.terminal.apply_host_terminal_appearance(appearance)
@@ -647,12 +647,12 @@ mod tests {
         let before_theme = snapshot.content_revision;
         runtime
             .terminal
-            .apply_host_terminal_theme(shepr_termio::host_term::theme::TerminalTheme::default());
+            .apply_host_terminal_theme(shepr_term::host::TerminalTheme::default());
         assert!(runtime.read().content_seq() > before_theme);
         let before_appearance = runtime.read().content_seq();
-        let _ = runtime.terminal.apply_host_terminal_appearance(Some(
-            shepr_termio::host_term::theme::HostAppearance::Dark,
-        ));
+        let _ = runtime
+            .terminal
+            .apply_host_terminal_appearance(Some(shepr_term::host::HostAppearance::Dark));
         assert!(runtime.read().content_seq() > before_appearance);
     }
 
@@ -1733,14 +1733,10 @@ mod tests {
     #[tokio::test]
     async fn subscribed_idle_child_receives_color_scheme_transition() {
         let (runtime, mut rx) = PaneRuntime::test_with_channel(80, 24);
-        runtime.apply_host_terminal_appearance(Some(
-            shepr_termio::host_term::theme::HostAppearance::Dark,
-        ));
+        runtime.apply_host_terminal_appearance(Some(shepr_term::host::HostAppearance::Dark));
         runtime.test_process_pty_bytes(b"\x1b[?2031h");
 
-        runtime.apply_host_terminal_appearance(Some(
-            shepr_termio::host_term::theme::HostAppearance::Light,
-        ));
+        runtime.apply_host_terminal_appearance(Some(shepr_term::host::HostAppearance::Light));
 
         assert_eq!(rx.recv().await, Some(Bytes::from_static(b"\x1b[?997;2n")));
     }

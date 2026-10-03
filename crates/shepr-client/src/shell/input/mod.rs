@@ -111,7 +111,7 @@ fn is_user_input(event: &RawInputEvent) -> bool {
     }
 }
 
-fn is_retained_selection_copy_key(key: &shepr_termio::input::TerminalKey) -> bool {
+fn is_retained_selection_copy_key(key: &shepr_term::key::TerminalKey) -> bool {
     matches!(key.code, KeyCode::Char('c' | 'C'))
         && matches!(key.modifiers, KeyModifiers::CONTROL | KeyModifiers::SUPER)
 }
@@ -178,10 +178,10 @@ fn read_clipboard_text_bounded_with(
 }
 
 pub(in crate::shell) fn navigate_alias_matches(
-    combo: (KeyCode, KeyModifiers),
-    key: &shepr_termio::input::TerminalKey,
+    combo: shepr_term::key::KeyChord,
+    key: &shepr_term::key::TerminalKey,
 ) -> bool {
-    shepr_config::terminal_key_matches_combo(key, combo)
+    combo.matches(key)
 }
 
 macro_rules! define_navigate_actions {
@@ -203,14 +203,14 @@ shepr_config::keybinding_table!(define_navigate_actions);
 
 fn navigate_indexed_binding_index(
     bindings: &[shepr_config::IndexedKeybind],
-    key: &shepr_termio::input::TerminalKey,
+    key: &shepr_term::key::TerminalKey,
 ) -> Option<usize> {
     shepr_config::IndexedKeybind::matched_range_index(bindings, key)
 }
 
 fn resolve_navigate_binding(
     keybinds: &shepr_config::Keybinds,
-    key: &shepr_termio::input::TerminalKey,
+    key: &shepr_term::key::TerminalKey,
 ) -> Option<NavigateAction> {
     macro_rules! resolve_navigate {
         (
@@ -242,7 +242,7 @@ fn resolve_navigate_binding(
     shepr_config::keybinding_table!(resolve_navigate)
 }
 
-pub(in crate::shell) fn is_modal_paste_shortcut(key: &shepr_termio::input::TerminalKey) -> bool {
+pub(in crate::shell) fn is_modal_paste_shortcut(key: &shepr_term::key::TerminalKey) -> bool {
     key.generated_text.as_deref().is_none_or(str::is_empty)
         && matches!(key.code, KeyCode::Char('v' | 'V'))
         && key.modifiers.difference(KeyModifiers::SHIFT) == KeyModifiers::CONTROL
@@ -398,7 +398,7 @@ impl ClientShellState {
                     }));
             }
             RawInputEvent::HostDefaultColor {
-                kind: shepr_termio::host_term::theme::DefaultColorKind::Background,
+                kind: shepr_term::host::DefaultColorKind::Background,
                 color,
             } => {
                 if self.host_background != Some(color) {
@@ -438,7 +438,7 @@ impl ClientShellState {
 
     pub(in crate::shell) fn handle_key(
         &mut self,
-        key: shepr_termio::input::TerminalKey,
+        key: shepr_term::key::TerminalKey,
         outcome: &mut ClientShellInput,
         accounting: &mut PaneInputBatchAccounting,
     ) {
@@ -559,7 +559,7 @@ impl ClientShellState {
     fn execute_repeat_plan(
         &mut self,
         lease_key: shepr_termio::input::InputLeaseKey<u8>,
-        key: shepr_termio::input::TerminalKey,
+        key: shepr_term::key::TerminalKey,
         plan: shepr_termio::input::RepeatPlan<ClientInputContext, shepr_protocol::PublicPaneId>,
         outcome: &mut ClientShellInput,
         accounting: &mut PaneInputBatchAccounting,
@@ -630,7 +630,7 @@ impl ClientShellState {
 
     pub(in crate::shell) fn handle_modal_paste_shortcut_with(
         &mut self,
-        key: &shepr_termio::input::TerminalKey,
+        key: &shepr_term::key::TerminalKey,
         outcome: &mut ClientShellInput,
         read_clipboard_text: impl FnOnce() -> Option<String>,
     ) -> bool {
@@ -646,7 +646,7 @@ impl ClientShellState {
 
     fn route_key_press(
         &mut self,
-        key: &shepr_termio::input::TerminalKey,
+        key: &shepr_term::key::TerminalKey,
         outcome: &mut ClientShellInput,
     ) -> Option<shepr_protocol::PublicPaneId> {
         if self.handle_modal_paste_shortcut_with(key, outcome, read_clipboard_text_bounded) {
@@ -667,7 +667,7 @@ impl ClientShellState {
                 .mouse_selection
                 .selection
                 .as_ref()
-                .is_some_and(shepr_vt::selection::Selection::is_visible)
+                .is_some_and(shepr_term::selection::Selection::is_visible)
         {
             self.request_selection_copy(outcome);
             self.mouse_selection.clear_range();
@@ -688,7 +688,7 @@ impl ClientShellState {
                     self.record_binding(&binding, outcome);
                     return None;
                 }
-                if shepr_config::terminal_key_matches_combo(key, self.config.keybinds.prefix) {
+                if self.config.keybinds.prefix.matches(key) {
                     self.mode = ClientShellMode::Prefix;
                     outcome.repaint = true;
                     return None;
@@ -703,7 +703,7 @@ impl ClientShellState {
                 } else {
                     ClientShellMode::Terminal
                 };
-                if shepr_config::terminal_key_matches_combo(key, self.config.keybinds.prefix) {
+                if self.config.keybinds.prefix.matches(key) {
                     self.mode = return_mode;
                     outcome.repaint = true;
                     return self.focused_pane_id();
@@ -739,7 +739,7 @@ impl ClientShellState {
                     .as_ref()
                     .and_then(|copy_mode| copy_mode.search.as_ref())
                     .is_none_or(|search| search.prompt.is_none())
-                    && shepr_config::terminal_key_matches_combo(key, self.config.keybinds.prefix)
+                    && self.config.keybinds.prefix.matches(key)
                 {
                     self.mode = ClientShellMode::Prefix;
                     outcome.repaint = true;
@@ -780,11 +780,11 @@ impl ClientShellState {
 
     fn route_navigate_key(
         &mut self,
-        key: &shepr_termio::input::TerminalKey,
+        key: &shepr_term::key::TerminalKey,
         outcome: &mut ClientShellInput,
     ) {
         self.pending_workspace_highlight = None;
-        if shepr_config::terminal_key_matches_combo(key, self.config.keybinds.prefix) {
+        if self.config.keybinds.prefix.matches(key) {
             self.mode = self.copy_or_terminal_mode();
             self.navigate_workspace_id = None;
             outcome.repaint = true;
@@ -957,7 +957,7 @@ impl ClientShellState {
 
     fn route_resize_key(
         &mut self,
-        key: &shepr_termio::input::TerminalKey,
+        key: &shepr_term::key::TerminalKey,
         outcome: &mut ClientShellInput,
     ) {
         let resize_bindings = &self.config.keybinds.keybinds.resize_mode;
@@ -996,7 +996,7 @@ impl ClientShellState {
                 .mouse_selection
                 .selection
                 .as_ref()
-                .is_some_and(shepr_vt::selection::Selection::is_visible),
+                .is_some_and(shepr_term::selection::Selection::is_visible),
         }
     }
 
@@ -1009,7 +1009,7 @@ impl ClientShellState {
     fn push_pane_key(
         &self,
         target: shepr_protocol::PublicPaneId,
-        key: shepr_termio::input::TerminalKey,
+        key: shepr_term::key::TerminalKey,
         outcome: &mut ClientShellInput,
         accounting: &mut PaneInputBatchAccounting,
     ) {
@@ -1150,7 +1150,7 @@ mod tests {
     fn navigate_indexed_helper_uses_the_configured_range_matcher() {
         let state = shell();
         let bindings = &state.config.keybinds.keybinds.navigate.switch_workspace;
-        let key = shepr_termio::input::TerminalKey::new(KeyCode::Char('3'), KeyModifiers::empty());
+        let key = shepr_term::key::TerminalKey::new(KeyCode::Char('3'), KeyModifiers::empty());
 
         assert_eq!(navigate_indexed_binding_index(bindings, &key), Some(2));
     }
@@ -1166,12 +1166,12 @@ mod tests {
 
     fn copy_mode_state() -> ClientCopyModeState {
         ClientCopyModeState {
-            scroll: shepr_vt::ScrollMetrics::new(0, 0, 2, shepr_vt::AbsRow(0)),
+            scroll: shepr_term::ScrollMetrics::new(0, 0, 2, shepr_term::AbsRow(0)),
             pane_id: test_pane_id(),
             geometry: (10, 2),
             alternate_screen_active: false,
             cursor: shepr_protocol::command::PaneTextPoint {
-                row: shepr_vt::AbsRow(0),
+                row: shepr_term::AbsRow(0),
                 col: 0,
             },
             entry_offset_from_bottom: 0,
@@ -1289,12 +1289,12 @@ mod tests {
         let prefix = state.config.keybinds.prefix;
 
         state.handle_key(
-            shepr_termio::input::TerminalKey::new(KeyCode::Char('v'), KeyModifiers::empty()),
+            shepr_term::key::TerminalKey::new(KeyCode::Char('v'), KeyModifiers::empty()),
             &mut outcome,
             &mut accounting,
         );
         state.handle_key(
-            shepr_termio::input::TerminalKey::new(prefix.0, prefix.1),
+            shepr_term::key::TerminalKey::new(prefix.code, prefix.modifiers),
             &mut outcome,
             &mut accounting,
         );
@@ -1320,24 +1320,24 @@ mod tests {
         state.mode = ClientShellMode::Copy;
         let mut copy_mode = copy_mode_state();
         copy_mode.selection = Some(ClientCopySelection::Character {
-            anchor: shepr_vt::Point::new(shepr_vt::AbsRow(0), 0),
+            anchor: shepr_term::Point::new(shepr_term::AbsRow(0), 0),
         });
         state.copy_mode = Some(copy_mode);
-        state.mouse_selection.selection = Some(shepr_vt::selection::Selection::anchor(
+        state.mouse_selection.selection = Some(shepr_term::selection::Selection::anchor(
             test_pane_id(),
-            shepr_vt::Point::new(shepr_vt::AbsRow(0), 0),
+            shepr_term::Point::new(shepr_term::AbsRow(0), 0),
         ));
         state.copy_pipeline.begin("test-request".into());
         let mut outcome = ClientShellInput::default();
         let mut accounting = PaneInputBatchAccounting::default();
 
         state.handle_key(
-            shepr_termio::input::TerminalKey::new(KeyCode::Char('v'), KeyModifiers::empty()),
+            shepr_term::key::TerminalKey::new(KeyCode::Char('v'), KeyModifiers::empty()),
             &mut outcome,
             &mut accounting,
         );
         state.handle_key(
-            shepr_termio::input::TerminalKey::new(KeyCode::Esc, KeyModifiers::empty()),
+            shepr_term::key::TerminalKey::new(KeyCode::Esc, KeyModifiers::empty()),
             &mut outcome,
             &mut accounting,
         );

@@ -2,7 +2,7 @@ use crossterm::event::KeyCode;
 
 use shepr_config::Keybinds;
 
-use super::TerminalKey;
+use shepr_term::key::TerminalKey;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeybindDispatch {
@@ -68,8 +68,6 @@ pub fn resolve_indexed_action(
     key: &TerminalKey,
     dispatch: KeybindDispatch,
 ) -> Option<KeybindAction> {
-    let actual_modifiers = shepr_config::normalize_key_combo((key.code, key.modifiers)).1;
-
     // The second pass only reaches combos accepted by the config matcher's full
     // code-and-modifier check, including its legacy shifted-key forms.
     for exact_modifiers in [true, false] {
@@ -86,10 +84,9 @@ pub fn resolve_indexed_action(
                             KeybindDispatch::Direct => binding.trigger.is_direct(),
                             KeybindDispatch::Prefix => binding.trigger.is_prefix(),
                         };
-                        let expected_modifiers =
-                            shepr_config::normalize_key_combo(binding.trigger.combo()).1;
                         if dispatch_matches
-                            && (actual_modifiers == expected_modifiers) == exact_modifiers
+                            && binding.trigger.chord().modifiers_match_exactly(key)
+                                == exact_modifiers
                             && let Some(index) = binding.matched_index(key)
                         {
                             return Some(KeybindAction::$indexed_variant(index));

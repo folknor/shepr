@@ -31,26 +31,25 @@ impl PaneTerminal {
 
     pub(crate) fn encode_terminal_key(
         &self,
-        key: shepr_termio::input::TerminalKey,
-        protocol: shepr_termio::input::KeyboardProtocol,
+        key: shepr_term::key::TerminalKey,
+        protocol: shepr_term::key::KeyboardProtocol,
     ) -> Vec<u8> {
         self.encode_terminal_key_with_input_modes(key, protocol, None)
     }
 
     pub(crate) fn encode_terminal_key_with_modes(
         &self,
-        key: shepr_termio::input::TerminalKey,
+        key: shepr_term::key::TerminalKey,
         modes: shepr_vt::InputModes,
     ) -> Vec<u8> {
-        let protocol =
-            shepr_termio::input::KeyboardProtocol::from_flags(modes.kitty_keyboard_flags());
+        let protocol = shepr_term::key::KeyboardProtocol::from_flags(modes.kitty_keyboard_flags());
         self.encode_terminal_key_with_input_modes(key, protocol, Some(modes))
     }
 
     fn encode_terminal_key_with_input_modes(
         &self,
-        key: shepr_termio::input::TerminalKey,
-        protocol: shepr_termio::input::KeyboardProtocol,
+        key: shepr_term::key::TerminalKey,
+        protocol: shepr_term::key::KeyboardProtocol,
         input_modes: Option<shepr_vt::InputModes>,
     ) -> Vec<u8> {
         let repeat_count = key.repeat_count;
@@ -70,17 +69,17 @@ impl PaneTerminal {
 
     pub(super) fn encode_terminal_key_once_with_modes(
         &self,
-        key: shepr_termio::input::TerminalKey,
-        protocol: shepr_termio::input::KeyboardProtocol,
+        key: shepr_term::key::TerminalKey,
+        protocol: shepr_term::key::KeyboardProtocol,
         input_modes: Option<shepr_vt::InputModes>,
     ) -> Vec<u8> {
         // Character keys follow the caller's protocol; every other key follows
         // the modes the child negotiated with this pane.
         if matches!(key.code, crossterm::event::KeyCode::Char(_)) {
-            return shepr_termio::input::encode_terminal_key(key, protocol);
+            return shepr_term::key::encode_terminal_key(key, protocol);
         }
         let modes = input_modes
-            .map(|modes| shepr_termio::input::KeyEncodeModes {
+            .map(|modes| shepr_term::key::KeyEncodeModes {
                 kitty_flags: modes.kitty_keyboard_flags(),
                 modify_other_keys: modes.modify_other_keys_level(),
                 application_cursor: modes.application_cursor_keys_enabled(),
@@ -89,7 +88,7 @@ impl PaneTerminal {
                 self.core
                     .lock()
                     .ok()
-                    .map(|core| shepr_termio::input::KeyEncodeModes {
+                    .map(|core| shepr_term::key::KeyEncodeModes {
                         kitty_flags: core.terminal.kitty_keyboard_flags(),
                         modify_other_keys: core.terminal.modify_other_keys_level(),
                         application_cursor: core
@@ -98,16 +97,16 @@ impl PaneTerminal {
                     })
             });
         let Some(modes) = modes else {
-            return shepr_termio::input::encode_terminal_key(key, protocol);
+            return shepr_term::key::encode_terminal_key(key, protocol);
         };
-        shepr_termio::input::encode_terminal_key_with_modes(key, modes)
+        shepr_term::key::encode_terminal_key_with_modes(key, modes)
     }
 
     pub(crate) fn encode_mouse_button_with_modes(
         &self,
         modes: shepr_vt::InputModes,
         kind: crossterm::event::MouseEventKind,
-        position: shepr_termio::input::mouse::Position,
+        position: shepr_term::mouse::Position,
         modifiers: crossterm::event::KeyModifiers,
     ) -> Option<Vec<u8>> {
         use crossterm::event::MouseEventKind;
@@ -124,7 +123,7 @@ impl PaneTerminal {
         &self,
         modes: shepr_vt::InputModes,
         kind: crossterm::event::MouseEventKind,
-        position: shepr_termio::input::mouse::Position,
+        position: shepr_term::mouse::Position,
         modifiers: crossterm::event::KeyModifiers,
     ) -> Option<Vec<u8>> {
         if kind != crossterm::event::MouseEventKind::Moved {
@@ -137,7 +136,7 @@ impl PaneTerminal {
         &self,
         modes: shepr_vt::InputModes,
         kind: crossterm::event::MouseEventKind,
-        position: shepr_termio::input::mouse::Position,
+        position: shepr_term::mouse::Position,
         modifiers: crossterm::event::KeyModifiers,
     ) -> Option<Vec<u8>> {
         use crossterm::event::MouseEventKind;
@@ -157,16 +156,16 @@ impl PaneTerminal {
         &self,
         modes: shepr_vt::InputModes,
         kind: crossterm::event::MouseEventKind,
-        position: shepr_termio::input::mouse::Position,
+        position: shepr_term::mouse::Position,
         modifiers: crossterm::event::KeyModifiers,
     ) -> Option<Vec<u8>> {
         let core = self.core.lock().ok()?;
         let terminal = &core.terminal;
         let protocol = modes.mouse_protocol()?;
         let cell_encoding = match protocol.encoding {
-            shepr_vt::MouseEncoding::Default => shepr_termio::input::MouseProtocolEncoding::Default,
-            shepr_vt::MouseEncoding::Utf8 => shepr_termio::input::MouseProtocolEncoding::Utf8,
-            shepr_vt::MouseEncoding::Sgr => shepr_termio::input::MouseProtocolEncoding::Sgr,
+            shepr_vt::MouseEncoding::Default => shepr_term::mouse::MouseProtocolEncoding::Default,
+            shepr_vt::MouseEncoding::Utf8 => shepr_term::mouse::MouseProtocolEncoding::Utf8,
+            shepr_vt::MouseEncoding::Sgr => shepr_term::mouse::MouseProtocolEncoding::Sgr,
         };
         // Reports are 1-based. Pixel positions already arrive 1-based; cell
         // positions are shifted here. Under SGR-pixels (mode 1016) a cell
@@ -184,31 +183,29 @@ impl PaneTerminal {
                 .then(|| ((width_px / cols).max(1), (height_px / rows).max(1)))
         };
         let (encoding, x, y) = match position {
-            shepr_termio::input::mouse::Position::Cell { column, row }
-                if protocol.pixels_requested =>
-            {
+            shepr_term::mouse::Position::Cell { column, row } if protocol.pixels_requested => {
                 match cell_pitch() {
                     Some((cell_width, cell_height)) => (
-                        shepr_termio::input::MouseProtocolEncoding::SgrPixels,
+                        shepr_term::mouse::MouseProtocolEncoding::SgrPixels,
                         u32::from(column)
                             .saturating_mul(cell_width)
                             .saturating_add(1),
                         u32::from(row).saturating_mul(cell_height).saturating_add(1),
                     ),
                     None => (
-                        shepr_termio::input::MouseProtocolEncoding::Sgr,
+                        shepr_term::mouse::MouseProtocolEncoding::Sgr,
                         u32::from(column) + 1,
                         u32::from(row) + 1,
                     ),
                 }
             }
-            shepr_termio::input::mouse::Position::Cell { column, row } => {
+            shepr_term::mouse::Position::Cell { column, row } => {
                 (cell_encoding, u32::from(column) + 1, u32::from(row) + 1)
             }
-            shepr_termio::input::mouse::Position::Pixels { x, y } if protocol.pixels_requested => {
-                (shepr_termio::input::MouseProtocolEncoding::SgrPixels, x, y)
+            shepr_term::mouse::Position::Pixels { x, y } if protocol.pixels_requested => {
+                (shepr_term::mouse::MouseProtocolEncoding::SgrPixels, x, y)
             }
-            shepr_termio::input::mouse::Position::Pixels { x, y } => {
+            shepr_term::mouse::Position::Pixels { x, y } => {
                 let cols = u32::from(terminal.cols());
                 let rows = u32::from(terminal.rows());
                 let (cell_width, cell_height) = cell_pitch()?;
@@ -219,6 +216,6 @@ impl PaneTerminal {
                 )
             }
         };
-        shepr_termio::input::encode_mouse_event(kind, x, y, modifiers, protocol.mode, encoding)
+        shepr_term::mouse::encode_mouse_event(kind, x, y, modifiers, protocol.mode, encoding)
     }
 }

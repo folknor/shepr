@@ -33,7 +33,7 @@ impl PaneTerminal {
                 synchronized_output_epoch: 0,
                 history_epoch: 0,
                 render_state,
-                host_terminal_theme: shepr_termio::host_term::theme::TerminalTheme::default(),
+                host_terminal_theme: shepr_term::host::TerminalTheme::default(),
                 transient_default_color_owner_pgid: None,
                 default_color_generation: 0,
                 osc_debug_tracker: OscDebugTracker::default(),
@@ -51,10 +51,7 @@ impl PaneTerminal {
     /// Installs the host theme as the pane's default palette and default
     /// colours. They sit under whatever the child set itself (OSC 4/10/11),
     /// which stays in effect; nothing is written into the child's stream.
-    pub(crate) fn apply_host_terminal_theme(
-        &self,
-        theme: shepr_termio::host_term::theme::TerminalTheme,
-    ) {
+    pub(crate) fn apply_host_terminal_theme(&self, theme: shepr_term::host::TerminalTheme) {
         let Ok(mut core) = self.core.lock() else {
             self.report_terminal_mutation_failure(TerminalMutation::HostThemeUpdate);
             return;
@@ -80,7 +77,7 @@ impl PaneTerminal {
 
     pub(crate) fn apply_host_terminal_appearance(
         &self,
-        appearance: Option<shepr_termio::host_term::theme::HostAppearance>,
+        appearance: Option<shepr_term::host::HostAppearance>,
     ) -> Option<Bytes> {
         let mut core = match self.core.lock() {
             Ok(core) => core,
@@ -570,11 +567,9 @@ impl PaneTerminal {
         search.finish()
     }
 
-    pub(crate) fn negotiated_keyboard_protocol(
-        &self,
-    ) -> Option<shepr_termio::input::KeyboardProtocol> {
+    pub(crate) fn negotiated_keyboard_protocol(&self) -> Option<shepr_term::key::KeyboardProtocol> {
         let core = self.core.lock().ok()?;
-        Some(shepr_termio::input::KeyboardProtocol::from_flags(
+        Some(shepr_term::key::KeyboardProtocol::from_flags(
             core.terminal.kitty_keyboard_flags(),
         ))
     }
@@ -870,8 +865,8 @@ impl PaneTerminal {
     /// Encodes one key event without repeat expansion, reading the pane's own modes.
     pub(super) fn encode_terminal_key_once(
         &self,
-        key: shepr_termio::input::TerminalKey,
-        protocol: shepr_termio::input::KeyboardProtocol,
+        key: shepr_term::key::TerminalKey,
+        protocol: shepr_term::key::KeyboardProtocol,
     ) -> Vec<u8> {
         self.encode_terminal_key_once_with_modes(key, protocol, None)
     }
@@ -879,7 +874,7 @@ impl PaneTerminal {
     pub(crate) fn encode_mouse_button(
         &self,
         kind: crossterm::event::MouseEventKind,
-        position: shepr_termio::input::mouse::Position,
+        position: shepr_term::mouse::Position,
         modifiers: crossterm::event::KeyModifiers,
     ) -> Option<Vec<u8>> {
         self.encode_mouse_button_with_modes(self.input_modes()?, kind, position, modifiers)
@@ -888,7 +883,7 @@ impl PaneTerminal {
     pub(crate) fn encode_mouse_motion(
         &self,
         kind: crossterm::event::MouseEventKind,
-        position: shepr_termio::input::mouse::Position,
+        position: shepr_term::mouse::Position,
         modifiers: crossterm::event::KeyModifiers,
     ) -> Option<Vec<u8>> {
         self.encode_mouse_motion_with_modes(self.input_modes()?, kind, position, modifiers)

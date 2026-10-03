@@ -55,10 +55,10 @@ impl Throttle {
     }
 }
 
-fn selection_cell(column: u16, row: u16, pane: Rect) -> (shepr_vt::ViewportRow, u16) {
+fn selection_cell(column: u16, row: u16, pane: Rect) -> (shepr_term::ViewportRow, u16) {
     let column = column.clamp(pane.x, pane.x + pane.width.saturating_sub(1));
     let row = row.clamp(pane.y, pane.y + pane.height.saturating_sub(1));
-    (shepr_vt::ViewportRow(row - pane.y), column - pane.x)
+    (shepr_term::ViewportRow(row - pane.y), column - pane.x)
 }
 
 impl ClientShellState {
@@ -138,13 +138,17 @@ impl ClientShellState {
         let track = hit.scrollbar_rect?;
         let metrics = hit.scroll?;
         (metrics.max_offset_from_bottom > 0).then(|| match grab_row_offset {
-            Some(grab_row_offset) => shepr_termio::scroll::scrollbar_offset_from_drag_row(
+            Some(grab_row_offset) => shepr_term::scroll::scrollbar_offset_from_drag_row(
                 metrics,
-                track,
+                crate::shell::navigation::scroll::scroll_track(track),
                 row,
                 grab_row_offset,
             ),
-            None => shepr_termio::scroll::scrollbar_offset_from_row(metrics, track, row),
+            None => shepr_term::scroll::scrollbar_offset_from_row(
+                metrics,
+                crate::shell::navigation::scroll::scroll_track(track),
+                row,
+            ),
         })
     }
 
@@ -235,7 +239,7 @@ impl ClientShellState {
             )
     }
 
-    fn selection_scroll_metrics(&self, hit: &PaneHit) -> Option<shepr_termio::ScrollMetrics> {
+    fn selection_scroll_metrics(&self, hit: &PaneHit) -> Option<shepr_term::ScrollMetrics> {
         let metrics = hit.scroll?;
         Some(
             self.mouse_selection
@@ -243,7 +247,7 @@ impl ClientShellState {
                 .as_ref()
                 .filter(|autoscroll| autoscroll.pane_id == hit.pane_id)
                 .map_or(metrics, |autoscroll| {
-                    shepr_termio::ScrollMetrics::new(
+                    shepr_term::ScrollMetrics::new(
                         autoscroll.offset_from_bottom,
                         autoscroll.max_offset_from_bottom,
                         metrics.viewport_rows,
@@ -279,7 +283,7 @@ impl ClientShellState {
         hit: &PaneHit,
         column: u16,
         row: u16,
-        metrics: Option<shepr_termio::ScrollMetrics>,
+        metrics: Option<shepr_term::ScrollMetrics>,
         outcome: &mut ClientShellInput,
         now: Instant,
     ) {
@@ -291,9 +295,9 @@ impl ClientShellState {
         let (viewport_row, col) = selection_cell(column, row, hit.inner_rect);
         let absolute_row = metrics.absolute_row_at_viewport(viewport_row);
         if self.mouse_selection.word_gesture.is_some() {
-            self.drag_word_selection(shepr_vt::Point::new(absolute_row, col), outcome, now);
+            self.drag_word_selection(shepr_term::Point::new(absolute_row, col), outcome, now);
         } else if let Some(selection) = self.mouse_selection.selection.as_mut() {
-            selection.drag(shepr_vt::Point::new(absolute_row, col));
+            selection.drag(shepr_term::Point::new(absolute_row, col));
         }
     }
 
@@ -310,40 +314,40 @@ impl ClientShellState {
             .mouse_selection
             .selection
             .as_ref()
-            .is_some_and(shepr_vt::selection::Selection::is_dragging);
-        let moved_from_anchor =
-            self.mouse_selection
-                .selection
-                .as_ref()
-                .is_some_and(|selection| {
-                    let anchor = selection.anchor_position();
-                    let anchor_col = hit.inner_rect.x.saturating_add(anchor.col).clamp(
-                        hit.inner_rect.x,
-                        hit.inner_rect.x + hit.inner_rect.width.saturating_sub(1),
-                    );
-                    let row_moved = metrics.map_or_else(
-                        || {
-                            selection.is_just_click()
-                                && self
-                                    .mouse_selection
-                                    .last_pane_click
-                                    .as_ref()
-                                    .filter(|click| click.pane_id == selection.pane_id)
-                                    .is_some_and(|click| {
-                                        hit.inner_rect.y.saturating_add(click.viewport_row) != row
-                                    })
-                        },
-                        |metrics| match anchor.row.viewport_row(metrics.viewport_top_row()) {
-                            shepr_vt::ViewportPosition::Above
-                            | shepr_vt::ViewportPosition::Below => true,
-                            shepr_vt::ViewportPosition::At(anchor_row) => {
-                                anchor_row.0 >= hit.inner_rect.height
-                                    || hit.inner_rect.y.checked_add(anchor_row.0) != Some(row)
-                            }
-                        },
-                    );
-                    row_moved || anchor_col != column
-                });
+            .is_some_and(shepr_term::selection::Selection::is_dragging);
+        let moved_from_anchor = self
+            .mouse_selection
+            .selection
+            .as_ref()
+            .is_some_and(|selection| {
+                let anchor = selection.anchor_position();
+                let anchor_col = hit.inner_rect.x.saturating_add(anchor.col).clamp(
+                    hit.inner_rect.x,
+                    hit.inner_rect.x + hit.inner_rect.width.saturating_sub(1),
+                );
+                let row_moved = metrics.map_or_else(
+                    || {
+                        selection.is_just_click()
+                            && self
+                                .mouse_selection
+                                .last_pane_click
+                                .as_ref()
+                                .filter(|click| click.pane_id == selection.pane_id)
+                                .is_some_and(|click| {
+                                    hit.inner_rect.y.saturating_add(click.viewport_row) != row
+                                })
+                    },
+                    |metrics| match anchor.row.viewport_row(metrics.viewport_top_row()) {
+                        shepr_term::ViewportPosition::Above
+                        | shepr_term::ViewportPosition::Below => true,
+                        shepr_term::ViewportPosition::At(anchor_row) => {
+                            anchor_row.0 >= hit.inner_rect.height
+                                || hit.inner_rect.y.checked_add(anchor_row.0) != Some(row)
+                        }
+                    },
+                );
+                row_moved || anchor_col != column
+            });
         self.update_selection_cursor_with_metrics(hit, column, row, metrics, outcome, now);
         let is_dragging = self
             .mouse_selection
@@ -547,7 +551,7 @@ impl ClientShellState {
             return outcome;
         };
         autoscroll.offset_from_bottom = next_offset;
-        let metrics = shepr_termio::ScrollMetrics::new(
+        let metrics = shepr_term::ScrollMetrics::new(
             next_offset,
             autoscroll.max_offset_from_bottom,
             scroll.viewport_rows,
@@ -839,9 +843,11 @@ impl ClientShellState {
                 }
                 Some(ClientChromeDrag::WorkspaceScrollbar { grab_row_offset }) => {
                     if let Some(metrics) = self.hits.workspace_scroll_metrics {
-                        let offset = shepr_termio::scroll::scrollbar_start_from_drag_row(
+                        let offset = shepr_term::scroll::scrollbar_start_from_drag_row(
                             metrics,
-                            self.hits.workspace_scrollbar,
+                            crate::shell::navigation::scroll::scroll_track(
+                                self.hits.workspace_scrollbar,
+                            ),
                             mouse.row,
                             *grab_row_offset,
                         );
@@ -855,9 +861,11 @@ impl ClientShellState {
                 }
                 Some(ClientChromeDrag::AgentScrollbar { grab_row_offset }) => {
                     if let Some(metrics) = self.hits.agent_scroll_metrics {
-                        let offset = shepr_termio::scroll::scrollbar_start_from_drag_row(
+                        let offset = shepr_term::scroll::scrollbar_start_from_drag_row(
                             metrics,
-                            self.hits.agent_scrollbar,
+                            crate::shell::navigation::scroll::scroll_track(
+                                self.hits.agent_scrollbar,
+                            ),
                             mouse.row,
                             *grab_row_offset,
                         );
@@ -871,9 +879,11 @@ impl ClientShellState {
                 }
                 Some(ClientChromeDrag::NavigatorScrollbar { grab_row_offset }) => {
                     if let Some(metrics) = self.hits.navigator_scroll_metrics {
-                        let offset = shepr_termio::scroll::scrollbar_start_from_drag_row(
+                        let offset = shepr_term::scroll::scrollbar_start_from_drag_row(
                             metrics,
-                            self.hits.navigator_scrollbar,
+                            crate::shell::navigation::scroll::scroll_track(
+                                self.hits.navigator_scrollbar,
+                            ),
                             mouse.row,
                             *grab_row_offset,
                         );
@@ -886,9 +896,11 @@ impl ClientShellState {
                     if let (Some(metrics), Some(ClientShellOverlay::Help(help))) =
                         (self.hits.help_scroll_metrics, self.overlay.as_mut())
                     {
-                        let offset = shepr_termio::scroll::scrollbar_start_from_drag_row(
+                        let offset = shepr_term::scroll::scrollbar_start_from_drag_row(
                             metrics,
-                            self.hits.help_scrollbar,
+                            crate::shell::navigation::scroll::scroll_track(
+                                self.hits.help_scrollbar,
+                            ),
                             mouse.row,
                             *grab_row_offset,
                         );
@@ -1187,18 +1199,22 @@ impl ClientShellState {
                     if crate::shell::input::hit_test::contains(self.hits.help_scrollbar, point) {
                         if let Some(metrics) = self.hits.help_scroll_metrics {
                             if let Some(grab_row_offset) =
-                                shepr_termio::scroll::scrollbar_thumb_grab_offset(
+                                shepr_term::scroll::scrollbar_thumb_grab_offset(
                                     metrics,
-                                    self.hits.help_scrollbar,
+                                    crate::shell::navigation::scroll::scroll_track(
+                                        self.hits.help_scrollbar,
+                                    ),
                                     mouse.row,
                                 )
                             {
                                 self.chrome_drag =
                                     Some(ClientChromeDrag::HelpScrollbar { grab_row_offset });
                             } else {
-                                let offset = shepr_termio::scroll::scrollbar_start_from_row(
+                                let offset = shepr_term::scroll::scrollbar_start_from_row(
                                     metrics,
-                                    self.hits.help_scrollbar,
+                                    crate::shell::navigation::scroll::scroll_track(
+                                        self.hits.help_scrollbar,
+                                    ),
                                     mouse.row,
                                 );
                                 if let Some(ClientShellOverlay::Help(help)) = self.overlay.as_mut()
@@ -1262,18 +1278,22 @@ impl ClientShellState {
                     {
                         if let Some(metrics) = self.hits.navigator_scroll_metrics {
                             if let Some(grab_row_offset) =
-                                shepr_termio::scroll::scrollbar_thumb_grab_offset(
+                                shepr_term::scroll::scrollbar_thumb_grab_offset(
                                     metrics,
-                                    self.hits.navigator_scrollbar,
+                                    crate::shell::navigation::scroll::scroll_track(
+                                        self.hits.navigator_scrollbar,
+                                    ),
                                     mouse.row,
                                 )
                             {
                                 self.chrome_drag =
                                     Some(ClientChromeDrag::NavigatorScrollbar { grab_row_offset });
                             } else {
-                                let offset = shepr_termio::scroll::scrollbar_start_from_row(
+                                let offset = shepr_term::scroll::scrollbar_start_from_row(
                                     metrics,
-                                    self.hits.navigator_scrollbar,
+                                    crate::shell::navigation::scroll::scroll_track(
+                                        self.hits.navigator_scrollbar,
+                                    ),
                                     mouse.row,
                                 );
                                 self.scroll_navigator_to(offset, metrics.viewport_rows());
@@ -1367,7 +1387,7 @@ impl ClientShellState {
                 .mouse_selection
                 .selection
                 .as_mut()
-                .is_some_and(shepr_vt::selection::Selection::finish);
+                .is_some_and(shepr_term::selection::Selection::finish);
             if copied && self.config.copy_on_select {
                 self.request_selection_copy(outcome);
                 self.mouse_selection.clear();
@@ -1375,7 +1395,7 @@ impl ClientShellState {
                 .mouse_selection
                 .selection
                 .as_ref()
-                .is_some_and(shepr_vt::selection::Selection::is_just_click)
+                .is_some_and(shepr_term::selection::Selection::is_just_click)
             {
                 self.mouse_selection.clear_range();
             }
@@ -1548,18 +1568,22 @@ impl ClientShellState {
                 if crate::shell::input::hit_test::contains(self.hits.workspace_scrollbar, point) {
                     if let Some(metrics) = self.hits.workspace_scroll_metrics {
                         if let Some(grab_row_offset) =
-                            shepr_termio::scroll::scrollbar_thumb_grab_offset(
+                            shepr_term::scroll::scrollbar_thumb_grab_offset(
                                 metrics,
-                                self.hits.workspace_scrollbar,
+                                crate::shell::navigation::scroll::scroll_track(
+                                    self.hits.workspace_scrollbar,
+                                ),
                                 mouse.row,
                             )
                         {
                             self.chrome_drag =
                                 Some(ClientChromeDrag::WorkspaceScrollbar { grab_row_offset });
                         } else {
-                            let offset = shepr_termio::scroll::scrollbar_start_from_row(
+                            let offset = shepr_term::scroll::scrollbar_start_from_row(
                                 metrics,
-                                self.hits.workspace_scrollbar,
+                                crate::shell::navigation::scroll::scroll_track(
+                                    self.hits.workspace_scrollbar,
+                                ),
                                 mouse.row,
                             );
                             let next = offset;
@@ -1574,18 +1598,22 @@ impl ClientShellState {
                 if crate::shell::input::hit_test::contains(self.hits.agent_scrollbar, point) {
                     if let Some(metrics) = self.hits.agent_scroll_metrics {
                         if let Some(grab_row_offset) =
-                            shepr_termio::scroll::scrollbar_thumb_grab_offset(
+                            shepr_term::scroll::scrollbar_thumb_grab_offset(
                                 metrics,
-                                self.hits.agent_scrollbar,
+                                crate::shell::navigation::scroll::scroll_track(
+                                    self.hits.agent_scrollbar,
+                                ),
                                 mouse.row,
                             )
                         {
                             self.chrome_drag =
                                 Some(ClientChromeDrag::AgentScrollbar { grab_row_offset });
                         } else {
-                            let offset = shepr_termio::scroll::scrollbar_start_from_row(
+                            let offset = shepr_term::scroll::scrollbar_start_from_row(
                                 metrics,
-                                self.hits.agent_scrollbar,
+                                crate::shell::navigation::scroll::scroll_track(
+                                    self.hits.agent_scrollbar,
+                                ),
                                 mouse.row,
                             );
                             let next = offset;
@@ -1684,9 +1712,11 @@ impl ClientShellState {
                     let (Some(track), Some(metrics)) = (hit.scrollbar_rect, hit.scroll) else {
                         return;
                     };
-                    if let Some(grab_row_offset) =
-                        shepr_termio::scroll::scrollbar_thumb_grab_offset(metrics, track, mouse.row)
-                    {
+                    if let Some(grab_row_offset) = shepr_term::scroll::scrollbar_thumb_grab_offset(
+                        metrics,
+                        crate::shell::navigation::scroll::scroll_track(track),
+                        mouse.row,
+                    ) {
                         self.chrome_drag = Some(ClientChromeDrag::PaneScrollbar {
                             hit,
                             grab_row_offset,
@@ -1787,9 +1817,9 @@ impl ClientShellState {
                                     selection_cell(mouse.column, mouse.row, hit.inner_rect);
                                 let absolute_row = metrics.absolute_row_at_viewport(viewport_row);
                                 self.mouse_selection.selection =
-                                    Some(shepr_vt::selection::Selection::anchor(
+                                    Some(shepr_term::selection::Selection::anchor(
                                         hit.pane_id,
-                                        shepr_vt::Point::new(absolute_row, col),
+                                        shepr_term::Point::new(absolute_row, col),
                                     ));
                             }
                         } else {
@@ -1885,7 +1915,7 @@ impl ClientShellState {
                     pixels
                         .pane_position(hit.inner_rect, hit.pixel_width, hit.pixel_height)
                         .and_then(|position| match position {
-                            shepr_termio::input::mouse::Position::Pixels { x, y } => {
+                            shepr_term::mouse::Position::Pixels { x, y } => {
                                 Some(ClientMousePosition::Pixels {
                                     x,
                                     y,
@@ -1893,7 +1923,7 @@ impl ClientShellState {
                                     row: mouse.row.saturating_sub(hit.inner_rect.y),
                                 })
                             }
-                            shepr_termio::input::mouse::Position::Cell { .. } => None,
+                            shepr_term::mouse::Position::Cell { .. } => None,
                         })
                 })
                 .unwrap_or(cell)

@@ -9,7 +9,7 @@ impl App {
     /// child that repaints in response does so through its own output.
     pub(crate) fn set_host_terminal_appearance_state(
         &mut self,
-        appearance: Option<shepr_termio::host_term::theme::HostAppearance>,
+        appearance: Option<shepr_term::host::HostAppearance>,
         explicit: bool,
     ) -> bool {
         if self.state.host_terminal_appearance == appearance
@@ -33,7 +33,7 @@ impl App {
     /// need no invalidation of their own, whatever caused the change.
     pub(crate) fn set_host_terminal_theme(
         &mut self,
-        theme: shepr_termio::host_term::theme::TerminalTheme,
+        theme: shepr_term::host::TerminalTheme,
     ) -> bool {
         if theme.is_empty() {
             return false;

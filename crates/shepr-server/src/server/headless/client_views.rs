@@ -758,7 +758,7 @@ mod tests {
         ClientConnection::with_shell(
             ClientShellState::with_surface_active(active),
             shepr_core::geometry::GridSize::clamped(80, 24),
-            shepr_termio::host_term::cell_size::HostCellSize::default(),
+            shepr_term::host::HostCellSize::default(),
             crate::server::clients::ActivityStamp::from(1),
             outbox,
         )

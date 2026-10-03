@@ -264,7 +264,7 @@ impl<T: EventListener> Handler for CoreHandler<'_, T> {
     }
 
     fn input(&mut self, c: char) {
-        if super::cell::is_halfwidth_voiced_mark(c) {
+        if shepr_term::width::is_halfwidth_voiced_mark(c) {
             self.input_halfwidth_voiced_mark(c);
         } else {
             Handler::input(self.term, c);
@@ -618,24 +618,24 @@ impl<T: EventListener> Handler for CoreHandler<'_, T> {
     }
 
     fn dynamic_color_sequence(&mut self, _prefix: String, index: usize, terminator: &str) {
-        let Some(target) = ColorQueryTarget::from_index(index) else {
+        let Some(target) = crate::color::color_query_target(index) else {
             return;
         };
         let colors = self.term.colors();
         let core_color = match target {
             ColorQueryTarget::Palette(index) => {
                 let index = usize::from(index);
-                Some(colors[index].map_or(self.default_palette[index], RgbColor::from_vte))
+                Some(colors[index].map_or(self.default_palette[index], crate::color::rgb_from_vte))
             }
             ColorQueryTarget::Foreground => colors[NamedColor::Foreground]
-                .map(RgbColor::from_vte)
+                .map(crate::color::rgb_from_vte)
                 .or(self.host_foreground),
             ColorQueryTarget::Background => colors[NamedColor::Background]
-                .map(RgbColor::from_vte)
+                .map(crate::color::rgb_from_vte)
                 .or(self.host_background),
             ColorQueryTarget::Cursor => colors[NamedColor::Cursor]
                 .or(colors[NamedColor::Foreground])
-                .map(RgbColor::from_vte)
+                .map(crate::color::rgb_from_vte)
                 .or(self.host_foreground),
         };
         let child_override = match target {

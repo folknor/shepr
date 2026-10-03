@@ -1,13 +1,16 @@
+//! Host terminal I/O for the client: framing and parsing the host's input
+//! bytes, the fixed and configured key tables the client routes by, copy-mode
+//! keys, host terminal modes, title and clipboard writes, theme queries, and
+//! blitting frames to the host. Terminal vocabulary and child-facing encoding
+//! shared with the emulator live in `shepr-term`.
+
 pub mod blit;
 pub mod copy_mode;
 pub mod host_term;
 pub mod input;
 pub mod limits;
-pub mod scroll;
 
 pub use input::raw_input;
-pub use scroll::ScrollMetrics;
-pub mod selection_render;
 
 /// Config for this crate's unit tests. It cannot take the shared
 /// `shepr-test-fixtures` crate, which is built on this one, so it validates

@@ -12,7 +12,7 @@
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use shepr_protocol::{CellData, FrameData, GridCellWidth};
-use shepr_termio::blit::symbol_width;
+use shepr_term::width::text_width;
 
 /// Blanks `cell` in place: a space in its own style, no skip, no link. The
 /// space is one column wide whatever the cell held, so a blanked wide pane
@@ -34,7 +34,7 @@ fn blank(cell: &mut CellData) {
 /// a chrome cell by its glyph.
 fn is_wide(cell: &CellData) -> bool {
     match cell.grid_width {
-        GridCellWidth::Grapheme => symbol_width(&cell.symbol) > 1,
+        GridCellWidth::Grapheme => text_width(&cell.symbol) > 1,
         GridCellWidth::One => false,
         GridCellWidth::Two => true,
     }
@@ -98,7 +98,7 @@ pub(super) fn overlay_buffer(frame: &mut FrameData, scratch: &Buffer, covered: R
                 break;
             };
             let mut cell = CellData::from_ratatui_cell(source);
-            let glyph_width = symbol_width(&cell.symbol).max(1);
+            let glyph_width = text_width(&cell.symbol).max(1);
             let columns = u16::try_from(glyph_width).unwrap_or(u16::MAX);
             let mut run = Vec::with_capacity(glyph_width);
             if x.saturating_add(columns) > right {

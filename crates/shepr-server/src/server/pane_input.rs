@@ -1,9 +1,9 @@
-use crate::server::input_wire::WirePaneInput;
 use bytes::Bytes;
 use crossterm::event::{KeyCode, KeyEventKind, KeyModifiers, MouseEventKind};
 
 use shepr_mux::workspace::SurfaceChange;
 use shepr_protocol::ClientPaneInputEvent;
+use shepr_term::key::TerminalKey;
 
 /// Why one piece of pane input did not reach the PTY.
 ///
@@ -28,7 +28,7 @@ pub(super) enum PaneInputError {
     Backpressure(&'static str),
     /// The PTY actor no longer accepts input (the pane is shutting down).
     Closed(&'static str),
-    /// The input could not be encoded or is not pane input.
+    /// The input could not be encoded.
     Other(String),
 }
 
@@ -161,8 +161,8 @@ fn apply_scroll(
     input_modes: Option<shepr_vt::InputModes>,
     direction: ScrollDirection,
     lines: u16,
-    position: shepr_termio::input::mouse::Position,
-    modifiers: u8,
+    position: shepr_term::mouse::Position,
+    modifiers: KeyModifiers,
     changed: &mut bool,
 ) -> Result<(), PaneInputError> {
     let wheel_kind = match direction {
@@ -178,12 +178,9 @@ fn apply_scroll(
     }) {
         Some((modes, shepr_mux::pane::WheelRouting::MouseReport)) => {
             *changed |= runtime.scroll_reset().is_changed();
-            let Some(bytes) = runtime.encode_mouse_wheel_with_modes(
-                modes,
-                wheel_kind,
-                position,
-                KeyModifiers::from_bits_truncate(modifiers),
-            ) else {
+            let Some(bytes) =
+                runtime.encode_mouse_wheel_with_modes(modes, wheel_kind, position, modifiers)
+            else {
                 // Only the wheel direction: this ends up in the server log.
                 return Err(PaneInputError::Other(format!(
                     "failed to encode mouse wheel event: {wheel_kind:?}"
@@ -199,9 +196,10 @@ fn apply_scroll(
             send_input(runtime, Bytes::from(bytes), "alternate scroll input")?;
         }
         _ => {
+            let lines = usize::from(lines.max(1));
             *changed |= match direction {
-                ScrollDirection::Up => runtime.scroll_up(lines.max(1) as usize),
-                ScrollDirection::Down => runtime.scroll_down(lines.max(1) as usize),
+                ScrollDirection::Up => runtime.scroll_up(lines),
+                ScrollDirection::Down => runtime.scroll_down(lines),
             }
             .is_changed();
         }
@@ -236,137 +234,151 @@ fn apply_client_pane_input_event(
     event: &ClientPaneInputEvent,
     changed: &mut bool,
 ) -> Result<(), PaneInputError> {
-    if let ClientPaneInputEvent::Mouse {
-        kind,
-        position,
-        modifiers,
-        lines,
-        ..
-    } = event
-    {
-        let input_modes = runtime.read().input_modes();
-        let kind = kind.to_host();
-        let modifiers = modifiers.to_host();
-        let position = match position {
-            shepr_protocol::ClientMousePosition::Cell { column, row } => {
-                shepr_termio::input::mouse::Position::Cell {
-                    column: *column,
-                    row: *row,
-                }
+    match event {
+        ClientPaneInputEvent::Key {
+            code,
+            modifiers,
+            kind,
+            repeat_count,
+            shifted_codepoint,
+            generated_text,
+        } => {
+            let mut key = TerminalKey::new(code.to_host(), modifiers.to_host())
+                .with_kind(kind.to_host())
+                .with_repeat_count(*repeat_count)
+                .with_generated_text(generated_text.clone());
+            if let Some(shifted_codepoint) = shifted_codepoint {
+                key = key.with_shifted_codepoint(*shifted_codepoint);
             }
-            shepr_protocol::ClientMousePosition::Pixels { x, y, column, row } => {
-                if input_modes.is_some_and(shepr_vt::InputModes::sgr_pixel_mouse_enabled) {
-                    shepr_termio::input::mouse::Position::Pixels { x: *x, y: *y }
-                } else {
-                    shepr_termio::input::mouse::Position::Cell {
-                        column: *column,
-                        row: *row,
-                    }
-                }
-            }
-        };
-        let bytes = match kind {
-            MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
-                let direction = if kind == MouseEventKind::ScrollUp {
-                    ScrollDirection::Up
-                } else {
-                    ScrollDirection::Down
-                };
-                return apply_scroll(
-                    runtime,
-                    input_modes,
-                    direction,
-                    (*lines).max(1),
-                    position,
-                    modifiers.bits(),
-                    changed,
-                );
-            }
-            MouseEventKind::ScrollLeft | MouseEventKind::ScrollRight => input_modes
-                .and_then(|modes| {
-                    runtime.encode_mouse_wheel_with_modes(modes, kind, position, modifiers)
-                })
-                .unwrap_or_default(),
-            MouseEventKind::Down(_) | MouseEventKind::Up(_) | MouseEventKind::Drag(_) => {
-                input_modes
-                    .and_then(|modes| {
-                        runtime.encode_mouse_button_with_modes(modes, kind, position, modifiers)
-                    })
-                    .unwrap_or_default()
-            }
-            MouseEventKind::Moved => input_modes
-                .and_then(|modes| {
-                    runtime.encode_mouse_motion_with_modes(modes, kind, position, modifiers)
-                })
-                .unwrap_or_default(),
-        };
-        if bytes.is_empty() {
-            return Ok(());
+            apply_key(runtime, key, changed)
         }
-        if kind != MouseEventKind::Moved {
+        ClientPaneInputEvent::TextCommit(text) => {
             *changed |= runtime.scroll_reset().is_changed();
+            send_input(
+                runtime,
+                Bytes::copy_from_slice(text.as_bytes()),
+                "text input",
+            )
         }
-        return send_input(runtime, Bytes::from(bytes), "mouse input");
-    }
-
-    if let ClientPaneInputEvent::TextCommit(text) = event {
-        *changed |= runtime.scroll_reset().is_changed();
-        return send_input(
+        ClientPaneInputEvent::Mouse {
+            kind,
+            position,
+            modifiers,
+            lines,
+            ..
+        } => apply_mouse(
             runtime,
-            Bytes::copy_from_slice(text.as_bytes()),
-            "text input",
-        );
+            kind.to_host(),
+            *position,
+            modifiers.to_host(),
+            *lines,
+            changed,
+        ),
+        ClientPaneInputEvent::Paste(text) => {
+            *changed |= runtime.scroll_reset().is_changed();
+            send_paste(runtime, text.clone(), "paste")
+        }
     }
+}
 
-    match event.to_raw_input_event() {
-        shepr_termio::input::raw_input::RawInputEvent::Key(key) => {
-            let key_event = key.as_key_event();
-            let input_modes = runtime.read().input_modes();
-            if matches!(key_event.code, KeyCode::PageUp | KeyCode::PageDown)
-                && key_event.modifiers.is_empty()
-                && input_modes
-                    .is_some_and(shepr_vt::InputModes::plain_page_keys_use_host_scrollback)
-            {
-                match key_event.kind {
-                    KeyEventKind::Release => {}
-                    KeyEventKind::Press | KeyEventKind::Repeat => {
-                        let lines = usize::from(runtime.grid_size().rows.get());
-                        if key_event.code == KeyCode::PageUp {
-                            *changed |= runtime.scroll_up(lines).is_changed();
-                        } else {
-                            *changed |= runtime.scroll_down(lines).is_changed();
-                        }
-                    }
+fn apply_key(
+    runtime: &shepr_mux::pane::PaneRuntime,
+    key: TerminalKey,
+    changed: &mut bool,
+) -> Result<(), PaneInputError> {
+    let key_event = key.as_key_event();
+    let input_modes = runtime.read().input_modes();
+    if matches!(key_event.code, KeyCode::PageUp | KeyCode::PageDown)
+        && key_event.modifiers.is_empty()
+        && input_modes.is_some_and(shepr_vt::InputModes::plain_page_keys_use_host_scrollback)
+    {
+        match key_event.kind {
+            KeyEventKind::Release => {}
+            KeyEventKind::Press | KeyEventKind::Repeat => {
+                let lines = usize::from(runtime.grid_size().rows.get());
+                if key_event.code == KeyCode::PageUp {
+                    *changed |= runtime.scroll_up(lines).is_changed();
+                } else {
+                    *changed |= runtime.scroll_down(lines).is_changed();
                 }
-                return Ok(());
             }
-
-            *changed |= runtime.scroll_reset().is_changed();
-            let bytes = if let Some(modes) = input_modes {
-                runtime.encode_terminal_key_with_modes(key, modes)
-            } else {
-                runtime.encode_terminal_key(key)
-            };
-            if bytes.is_empty() {
-                return Ok(());
-            }
-            send_input(runtime, Bytes::from(bytes), "key input")
         }
-        shepr_termio::input::raw_input::RawInputEvent::Paste(text) => {
-            *changed |= runtime.scroll_reset().is_changed();
-            send_paste(runtime, text, "paste")
-        }
-        shepr_termio::input::raw_input::RawInputEvent::Mouse(_)
-        | shepr_termio::input::raw_input::RawInputEvent::OuterFocusGained
-        | shepr_termio::input::raw_input::RawInputEvent::OuterFocusLost
-        | shepr_termio::input::raw_input::RawInputEvent::HostDefaultColor { .. }
-        | shepr_termio::input::raw_input::RawInputEvent::HostPaletteColors { .. }
-        | shepr_termio::input::raw_input::RawInputEvent::HostColorSchemeChanged(_)
-        | shepr_termio::input::raw_input::RawInputEvent::HostCellSizeReport { .. }
-        | shepr_termio::input::raw_input::RawInputEvent::Unsupported => Err(PaneInputError::Other(
-            "non-pane input reached targeted pane input".to_owned(),
-        )),
+        return Ok(());
     }
+
+    *changed |= runtime.scroll_reset().is_changed();
+    let bytes = if let Some(modes) = input_modes {
+        runtime.encode_terminal_key_with_modes(key, modes)
+    } else {
+        runtime.encode_terminal_key(key)
+    };
+    if bytes.is_empty() {
+        return Ok(());
+    }
+    send_input(runtime, Bytes::from(bytes), "key input")
+}
+
+fn apply_mouse(
+    runtime: &shepr_mux::pane::PaneRuntime,
+    kind: MouseEventKind,
+    position: shepr_protocol::ClientMousePosition,
+    modifiers: KeyModifiers,
+    lines: u16,
+    changed: &mut bool,
+) -> Result<(), PaneInputError> {
+    let input_modes = runtime.read().input_modes();
+    let position = match position {
+        shepr_protocol::ClientMousePosition::Cell { column, row } => {
+            shepr_term::mouse::Position::Cell { column, row }
+        }
+        shepr_protocol::ClientMousePosition::Pixels { x, y, column, row } => {
+            if input_modes.is_some_and(shepr_vt::InputModes::sgr_pixel_mouse_enabled) {
+                shepr_term::mouse::Position::Pixels { x, y }
+            } else {
+                shepr_term::mouse::Position::Cell { column, row }
+            }
+        }
+    };
+    let bytes = match kind {
+        MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
+            let direction = if kind == MouseEventKind::ScrollUp {
+                ScrollDirection::Up
+            } else {
+                ScrollDirection::Down
+            };
+            return apply_scroll(
+                runtime,
+                input_modes,
+                direction,
+                lines,
+                position,
+                modifiers,
+                changed,
+            );
+        }
+        MouseEventKind::ScrollLeft | MouseEventKind::ScrollRight => input_modes
+            .and_then(|modes| {
+                runtime.encode_mouse_wheel_with_modes(modes, kind, position, modifiers)
+            })
+            .unwrap_or_default(),
+        MouseEventKind::Down(_) | MouseEventKind::Up(_) | MouseEventKind::Drag(_) => input_modes
+            .and_then(|modes| {
+                runtime.encode_mouse_button_with_modes(modes, kind, position, modifiers)
+            })
+            .unwrap_or_default(),
+        MouseEventKind::Moved => input_modes
+            .and_then(|modes| {
+                runtime.encode_mouse_motion_with_modes(modes, kind, position, modifiers)
+            })
+            .unwrap_or_default(),
+    };
+    if bytes.is_empty() {
+        return Ok(());
+    }
+    if kind != MouseEventKind::Moved {
+        *changed |= runtime.scroll_reset().is_changed();
+    }
+    send_input(runtime, Bytes::from(bytes), "mouse input")
 }
 
 #[cfg(test)]
