@@ -121,8 +121,11 @@ fn launch_with_args(raw_args: &[String]) -> CliResult<ProcessExit> {
             Ok(ProcessExit::Success)
         }
         cli::Launch::ClientBridge => {
-            let paths = resolve_bridge_paths()?;
-            init_client_logging(&paths)?;
+            // A bridge that fails before its launch leads the error with a
+            // classification record, as a launch failure does, so the client
+            // shows a host that must be repaired instead of retrying it quietly.
+            let paths = resolve_bridge_paths().map_err(|error| bridge_setup_failure(&error))?;
+            init_client_logging(&paths).map_err(|error| bridge_setup_failure(&error))?;
             finish_bridge(shepr_remote::run_remote_client_bridge(&paths)?)
         }
         cli::Launch::Cli(command) => cli::run(&command).map(ProcessExit::from_cli_code),
@@ -215,6 +218,17 @@ fn init_client_logging(paths: &shepr_paths::AppPaths) -> io::Result<()> {
 
 fn resolve_bridge_paths() -> CliResult<shepr_paths::AppPaths> {
     shepr_paths::AppPaths::resolve().map_err(CliError::from)
+}
+
+/// The remote bridge could not resolve its paths or start its logging. Both
+/// come from this host's environment and filesystem, which a retry does not
+/// change, so the host needs repair.
+fn bridge_setup_failure(error: &dyn std::fmt::Display) -> CliError {
+    CliError::Io(shepr_remote::classified_bridge_failure(
+        shepr_launch::RemoteFailureClass::Repair,
+        io::ErrorKind::Other,
+        error,
+    ))
 }
 
 #[cfg(test)]

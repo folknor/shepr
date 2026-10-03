@@ -2,14 +2,33 @@
 
 use std::io;
 
+use shepr_launch::RemoteFailureClass;
 use shepr_launch::local_server::{self, BuildCheck, SERVER_READY_TIMEOUT};
 use shepr_launch::status::RuntimeStatus;
 
 use crate::relay::{RemoteBridgeOutcome, answer_remote_bridge, forward_remote_bridge_stdio};
 
-/// Marker on the first stderr line for a daemon that exited during boot. The
-/// local bridge consumes the record into the endpoint failure vocabulary.
-pub(super) const DAEMON_BOOT_EXIT_MARKER: &str = "shepr-remote-daemon-boot-exit:";
+/// Marker that leads the classification record of a bridge that failed on the
+/// remote host before relaying anything: the marker, then a
+/// [`RemoteFailureClass`] token, alone on one stderr line, with the
+/// diagnostic on the lines after it. The local bridge consumes the record into
+/// the endpoint failure vocabulary.
+pub(super) const BRIDGE_FAILURE_MARKER: &str = "shepr-remote-bridge-failure:";
+
+/// A failure of the bridge on this host, led by its classification record so
+/// the client can tell a host that needs repair from a transient failure. The
+/// binary prints it on stderr as the command's error. The kind is kept for
+/// this host's own diagnostics; the client reads only the record.
+pub fn classified_bridge_failure(
+    class: RemoteFailureClass,
+    kind: io::ErrorKind,
+    diagnostic: &dyn std::fmt::Display,
+) -> io::Error {
+    io::Error::new(
+        kind,
+        format!("{BRIDGE_FAILURE_MARKER}{}\n{diagnostic}", class.token()),
+    )
+}
 
 /// Relays this process's stdio to the server socket until either side
 /// closes or the idle watchdog fires. The outcome goes back to the binary: on
@@ -50,24 +69,15 @@ pub fn run_remote_client_bridge(paths: &shepr_paths::AppPaths) -> io::Result<Rem
 /// running server of another build is returned, not refused: the bridge then
 /// answers the client with that build's preamble, so the client reports a
 /// typed mismatch, which it classifies as needing attention, whatever socket
-/// layout that server has. Any other failure here reaches the client only as
-/// this command's stderr and exit status, which it treats as an ordinary
-/// retryable failure. A daemon that exited during boot is the exception: its
-/// exit class leads the error as a [`DAEMON_BOOT_EXIT_MARKER`] record, which
-/// the client's SSH bridge turns into a typed endpoint failure (a refused
-/// configuration or failed start needs attention), keeping the daemon output
-/// as its diagnostic.
+/// layout that server has. Every launch failure leads its error with a
+/// [`BRIDGE_FAILURE_MARKER`] record of its
+/// [`LaunchError::remote_failure_class`](shepr_launch::local_server::LaunchError::remote_failure_class),
+/// which the client's SSH bridge turns into a typed endpoint failure (one the
+/// host must repair needs attention, a timeout is retried), keeping the
+/// launch's diagnostic as its message.
 fn ensure_remote_server_running(paths: &shepr_paths::AppPaths) -> io::Result<RuntimeStatus> {
-    match local_server::ensure_running(paths, SERVER_READY_TIMEOUT, BuildCheck::AtClientHandshake) {
-        Err(error) => {
-            let Some(class) = error.daemon_boot_exit() else {
-                return Err(error.into());
-            };
-            Err(io::Error::new(
-                error.kind(),
-                format!("{DAEMON_BOOT_EXIT_MARKER}{}\n{error}", class.code()),
-            ))
-        }
-        result => result.map_err(io::Error::from),
-    }
+    local_server::ensure_running(paths, SERVER_READY_TIMEOUT, BuildCheck::AtClientHandshake)
+        .map_err(|error| {
+            classified_bridge_failure(error.remote_failure_class(), error.kind(), &error)
+        })
 }

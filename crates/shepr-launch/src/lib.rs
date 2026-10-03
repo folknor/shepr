@@ -30,5 +30,7 @@ pub mod status;
 pub mod stop;
 mod text;
 
-pub use failure::{EndpointFailure, FailureCause, FailureDisposition, SshFailureClass};
+pub use failure::{
+    EndpointFailure, FailureCause, FailureDisposition, RemoteFailureClass, SshFailureClass,
+};
 pub use text::RemoteText;

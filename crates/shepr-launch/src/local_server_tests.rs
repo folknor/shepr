@@ -506,6 +506,11 @@ fn the_launch_lock_wait_is_bounded_and_its_file_persists() {
         started.elapsed() < Duration::from_secs(5),
         "the wait must be bounded"
     );
+    // A lock another launcher holds is waited out, not repaired.
+    assert_eq!(
+        LaunchError::LaunchLock(error).remote_failure_class(),
+        RemoteFailureClass::Retry
+    );
 
     drop(held);
     acquire_launch_lock_with(
@@ -1171,4 +1176,106 @@ fn a_vanished_server_reads_as_gone_not_unresponsive() {
         Probed::NoServer
     ));
     server.join().expect("server");
+}
+
+#[test]
+fn every_launch_failure_reaches_a_remote_client_with_its_operator_action() {
+    use RemoteFailureClass::{Repair, Retry};
+    use std::os::unix::process::ExitStatusExt as _;
+
+    let daemon_failed = |class: DaemonExit| LaunchError::DaemonFailed {
+        class,
+        status: ExitStatus::from_raw(class.code() << 8),
+        message: format!("shepr-server {}", class.describe_boot_end()),
+    };
+    let message = || "detail".to_owned();
+    let timeout = Duration::from_secs(1);
+    for (error, class) in [
+        (LaunchError::Unresponsive { message: message() }, Repair),
+        (
+            LaunchError::DifferentBuild {
+                status: other_build(),
+                message: message(),
+            },
+            Repair,
+        ),
+        (LaunchError::OverrideMissing { message: message() }, Repair),
+        (
+            LaunchError::TransitionTimeout {
+                timeout,
+                message: message(),
+            },
+            Retry,
+        ),
+        (daemon_failed(DaemonExit::ConfigRefused), Repair),
+        (daemon_failed(DaemonExit::Failed), Repair),
+        (daemon_failed(DaemonExit::Clean), Retry),
+        (daemon_failed(DaemonExit::AlreadyRunning), Retry),
+        (LaunchError::BootLogOverflow { message: message() }, Repair),
+        (
+            LaunchError::BootTimeout {
+                timeout,
+                occupant_only: false,
+                message: message(),
+            },
+            Retry,
+        ),
+        (
+            LaunchError::BootTimeout {
+                timeout,
+                occupant_only: true,
+                message: message(),
+            },
+            Retry,
+        ),
+        (
+            LaunchError::SiblingBuildMismatch {
+                status: other_build(),
+                message: message(),
+            },
+            Repair,
+        ),
+        (
+            LaunchError::Executable(io::Error::from(io::ErrorKind::NotFound)),
+            Repair,
+        ),
+        (
+            LaunchError::LaunchLock(io::Error::from(io::ErrorKind::PermissionDenied)),
+            Repair,
+        ),
+        (
+            LaunchError::LaunchLock(io::Error::from(io::ErrorKind::TimedOut)),
+            Retry,
+        ),
+        (
+            LaunchError::Io(io::Error::from(io::ErrorKind::PermissionDenied)),
+            Repair,
+        ),
+        (
+            LaunchError::Io(io::Error::from(io::ErrorKind::TimedOut)),
+            Retry,
+        ),
+        (
+            LaunchError::Io(io::Error::from(io::ErrorKind::ConnectionReset)),
+            Retry,
+        ),
+        (
+            LaunchError::Io(io::Error::from(io::ErrorKind::ConnectionRefused)),
+            Retry,
+        ),
+        (
+            LaunchError::Io(io::Error::from(io::ErrorKind::ConnectionAborted)),
+            Retry,
+        ),
+        (
+            LaunchError::Io(io::Error::from(io::ErrorKind::UnexpectedEof)),
+            Retry,
+        ),
+        (
+            LaunchError::Io(io::Error::from(io::ErrorKind::BrokenPipe)),
+            Retry,
+        ),
+    ] {
+        assert_eq!(error.remote_failure_class(), class, "{error:?}");
+    }
 }

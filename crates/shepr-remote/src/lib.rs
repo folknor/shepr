@@ -43,7 +43,7 @@ use ssh::*;
 
 pub use crate::machine::SshTarget;
 pub use args::RemoteCliCommand;
-pub use host::run_remote_client_bridge;
+pub use host::{classified_bridge_failure, run_remote_client_bridge};
 pub use launch::shell_quote;
 pub use limits::SSH_CONNECTION_ATTEMPT_BUDGET;
 pub use machine_ssh::*;

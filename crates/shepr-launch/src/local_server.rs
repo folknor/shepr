@@ -31,6 +31,7 @@ use shepr_platform::ipc::FlockLock;
 use tracing::info;
 
 use crate::daemon_exit::DaemonExit;
+use crate::failure::RemoteFailureClass;
 use crate::guidance;
 use crate::invocation::{
     CLIENT_SPAWNED_FLAG, SERVER_BINARY_NAME, VERSION_FLAG, parse_server_version_line,
@@ -101,12 +102,44 @@ impl LaunchError {
         }
     }
 
-    /// How the daemon this launch started ended during boot, when that is
-    /// what failed the launch.
-    pub fn daemon_boot_exit(&self) -> Option<DaemonExit> {
+    /// What this failure asks of the operator when it ends the SSH bridge on
+    /// a remote host, which reports it to the client as this class.
+    ///
+    /// Every variant is classified here, with no wildcard arm, so a new one
+    /// must be. A failure the operator text tells someone to fix on the host
+    /// (an install, a server that will not answer, a refused configuration, a
+    /// socket override naming no server) needs repair; a wait that ran out
+    /// while a server was starting or another launcher held the lock is
+    /// retried.
+    pub fn remote_failure_class(&self) -> RemoteFailureClass {
+        use RemoteFailureClass::{Repair, Retry};
         match self {
-            Self::DaemonFailed { class, .. } => Some(*class),
-            _ => None,
+            Self::Unresponsive { .. }
+            | Self::DifferentBuild { .. }
+            | Self::OverrideMissing { .. }
+            | Self::BootLogOverflow { .. }
+            | Self::SiblingBuildMismatch { .. }
+            | Self::Executable(_) => Repair,
+            Self::TransitionTimeout { .. } | Self::BootTimeout { .. } => Retry,
+            Self::DaemonFailed { class, .. } => match class {
+                DaemonExit::ConfigRefused | DaemonExit::Failed => Repair,
+                // `launch_with` waits out a daemon that gave way to another
+                // server rather than failing on it; were one to fail the
+                // launch, the occupant it met is what the next attempt finds.
+                DaemonExit::Clean | DaemonExit::AlreadyRunning => Retry,
+            },
+            // A timeout, or a peer that went away mid-answer (a server dying
+            // or restarting while the boot probe talks to it), is transient;
+            // any other IO failure is the host's to fix.
+            Self::LaunchLock(error) | Self::Io(error) => match error.kind() {
+                io::ErrorKind::TimedOut
+                | io::ErrorKind::ConnectionReset
+                | io::ErrorKind::ConnectionRefused
+                | io::ErrorKind::ConnectionAborted
+                | io::ErrorKind::UnexpectedEof
+                | io::ErrorKind::BrokenPipe => Retry,
+                _ => Repair,
+            },
         }
     }
 }

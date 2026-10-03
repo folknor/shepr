@@ -451,28 +451,30 @@ fn only_ssh_own_exit_code_counts_as_failing_before_a_remote_result() {
 }
 
 #[test]
-fn remote_daemon_boot_failures_need_attention_only_when_the_host_must_be_fixed() {
-    use shepr_launch::daemon_exit::DaemonExit;
-    for (class, disposition) in [
-        (DaemonExit::ConfigRefused, crate::FailureDisposition::Repair),
-        (DaemonExit::Failed, crate::FailureDisposition::Repair),
-        (DaemonExit::Clean, crate::FailureDisposition::Retry),
-        (DaemonExit::AlreadyRunning, crate::FailureDisposition::Retry),
-    ] {
-        let stderr = format!(
-            "error: {}{}\nshepr-server refused its configuration\n  invalid server.toml",
-            super::super::host::DAEMON_BOOT_EXIT_MARKER,
-            class.code(),
+fn remote_bridge_failures_need_attention_only_when_the_host_must_be_fixed() {
+    use shepr_launch::RemoteFailureClass;
+    use shepr_launch::local_server::LaunchError;
+    let marker = super::super::host::BRIDGE_FAILURE_MARKER;
+
+    for class in RemoteFailureClass::ALL {
+        let disposition = match class {
+            RemoteFailureClass::Repair => crate::FailureDisposition::Repair,
+            RemoteFailureClass::Retry => crate::FailureDisposition::Retry,
+        };
+        // The record as the remote binary prints it: its error line, after a
+        // notice the bridge may have printed before failing.
+        let record = super::super::host::classified_bridge_failure(
+            class,
+            io::ErrorKind::Other,
+            &"shepr-server refused its configuration\n  invalid server.toml",
         );
+        let stderr = format!("shepr: could not initialize file logging\nerror: {record}");
         let error = ssh_bridge_exit_error(exit_status(1), stderr.as_bytes());
         let failure = crate::EndpointFailure::from_error(&error);
         assert_eq!(failure.disposition(), disposition, "{class:?}");
         assert!(failure.to_string().contains("invalid server.toml"));
-        assert!(
-            !failure
-                .to_string()
-                .contains(super::super::host::DAEMON_BOOT_EXIT_MARKER)
-        );
+        assert!(!failure.to_string().contains(marker));
+        assert!(!failure.to_string().contains("file logging"));
         // A fault on the remote host is not reported as local setup.
         assert!(
             !crate::SshFailureDiagnostic::from_error(&error).is_local_setup_failure(),
@@ -480,11 +482,54 @@ fn remote_daemon_boot_failures_need_attention_only_when_the_host_must_be_fixed()
         );
     }
 
-    let ordinary = ssh_bridge_exit_error(exit_status(1), b"server config was refused");
-    assert_eq!(
-        crate::EndpointFailure::from_error(&ordinary).disposition(),
-        crate::FailureDisposition::Retry
-    );
+    // A launch failure keeps the class its LaunchError mapping gave it.
+    for (launch_error, disposition) in [
+        (
+            LaunchError::Executable(io::Error::new(
+                io::ErrorKind::NotFound,
+                "shepr-server was not found",
+            )),
+            crate::FailureDisposition::Repair,
+        ),
+        (
+            LaunchError::LaunchLock(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "another shepr is still starting the server",
+            )),
+            crate::FailureDisposition::Retry,
+        ),
+    ] {
+        let record = super::super::host::classified_bridge_failure(
+            launch_error.remote_failure_class(),
+            launch_error.kind(),
+            &launch_error,
+        );
+        let error = ssh_bridge_exit_error(exit_status(1), format!("error: {record}").as_bytes());
+        let failure = crate::EndpointFailure::from_error(&error);
+        assert_eq!(failure.disposition(), disposition, "{launch_error:?}");
+        assert!(failure.to_string().contains(&launch_error.to_string()));
+    }
+
+    // A remote that writes no record, or a class this build does not know,
+    // degrades to an unclassified retry.
+    for stderr in [
+        "server config was refused".to_owned(),
+        format!("error: {marker}unknown\ninvalid server.toml"),
+        "error: shepr-remote-daemon-boot-exit:11\ninvalid server.toml".to_owned(),
+    ] {
+        let error = ssh_bridge_exit_error(exit_status(1), stderr.as_bytes());
+        let failure = crate::EndpointFailure::from_error(&error);
+        assert_eq!(
+            failure.cause(),
+            crate::FailureCause::Unclassified,
+            "{stderr}"
+        );
+        assert_eq!(
+            failure.disposition(),
+            crate::FailureDisposition::Retry,
+            "{stderr}"
+        );
+    }
 }
 
 #[test]

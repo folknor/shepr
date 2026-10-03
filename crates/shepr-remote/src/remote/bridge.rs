@@ -533,7 +533,7 @@ pub(super) fn bridge_connection(
 pub(super) fn ssh_bridge_exit_error(status: std::process::ExitStatus, stderr: &[u8]) -> io::Error {
     let stderr = String::from_utf8_lossy(stderr);
     let stderr = stderr.trim();
-    if let Some(error) = remote_daemon_boot_failure(stderr) {
+    if let Some(error) = classified_remote_bridge_failure(stderr) {
         return error;
     }
     let (failure, exit_status) = match crate::SshExit::from_code(status.code()) {
@@ -570,23 +570,21 @@ pub(super) fn ssh_bridge_exit_error(status: std::process::ExitStatus, stderr: &[
     )
 }
 
-/// Converts the explicit daemon boot record on SSH stderr to a typed endpoint
+/// Converts the classification record a remote bridge leads its failure with
+/// (see [`super::host::classified_bridge_failure`]) to a typed endpoint
 /// failure. Ordinary remote stderr remains diagnostic text and is never used
-/// to infer an operator action.
-fn remote_daemon_boot_failure(stderr: &str) -> Option<io::Error> {
+/// to infer an operator action: a remote of a build that writes no record, or
+/// a class this build does not know, stays an unclassified retry.
+fn classified_remote_bridge_failure(stderr: &str) -> Option<io::Error> {
     for (index, line) in stderr.lines().enumerate() {
         let line = line.trim();
         let line = line.strip_prefix("error: ").unwrap_or(line);
-        let Some(code) = line.strip_prefix(super::host::DAEMON_BOOT_EXIT_MARKER) else {
+        let Some(token) = line.strip_prefix(super::host::BRIDGE_FAILURE_MARKER) else {
             continue;
         };
-        let Ok(code) = code.parse::<i32>() else {
+        let Some(class) = shepr_launch::RemoteFailureClass::from_token(token) else {
             continue;
         };
-        let class = shepr_launch::daemon_exit::DaemonExit::from_code(Some(code));
-        if class.code() != code {
-            continue;
-        }
         let detail = stderr
             .lines()
             .skip(index + 1)
@@ -595,24 +593,14 @@ fn remote_daemon_boot_failure(stderr: &str) -> Option<io::Error> {
             .trim()
             .to_owned();
         let message = if detail.is_empty() {
-            format!("remote shepr-server {}", class.describe_boot_end())
+            "the remote shepr bridge failed".to_owned()
         } else {
-            format!(
-                "remote shepr-server {}:\n{detail}",
-                class.describe_boot_end()
-            )
+            format!("the remote shepr bridge failed:\n{detail}")
         };
-        let failure = match class {
-            shepr_launch::daemon_exit::DaemonExit::ConfigRefused
-            | shepr_launch::daemon_exit::DaemonExit::Failed => {
-                crate::EndpointFailure::remote_repair(message)
-            }
-            shepr_launch::daemon_exit::DaemonExit::Clean
-            | shepr_launch::daemon_exit::DaemonExit::AlreadyRunning => {
-                crate::EndpointFailure::retry(message)
-            }
-        };
-        return Some(io::Error::new(io::ErrorKind::ConnectionAborted, failure));
+        return Some(io::Error::new(
+            io::ErrorKind::ConnectionAborted,
+            class.endpoint_failure(message),
+        ));
     }
     None
 }

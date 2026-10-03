@@ -94,6 +94,47 @@ pub enum FailureCause {
     Shutdown(shepr_protocol::ShutdownReason),
 }
 
+/// What a failure of the SSH bridge on a remote host asks of the operator, as
+/// that host classified it. The host reports it as text, on its stderr, so it
+/// has a token of its own; the client turns it back into an
+/// [`EndpointFailure`] with [`RemoteFailureClass::endpoint_failure`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RemoteFailureClass {
+    /// Something on the remote host must be fixed: its installation, its
+    /// environment, its configuration, or a server there that will not answer.
+    Repair,
+    /// A transient condition the next attempt is expected to clear, such as a
+    /// server still starting.
+    Retry,
+}
+
+impl RemoteFailureClass {
+    pub const ALL: [Self; 2] = [Self::Repair, Self::Retry];
+
+    /// The class as the remote host writes it.
+    pub fn token(self) -> &'static str {
+        match self {
+            Self::Repair => "repair",
+            Self::Retry => "retry",
+        }
+    }
+
+    /// The class a remote host wrote, or `None` for a token this build does
+    /// not know.
+    pub fn from_token(token: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|class| class.token() == token)
+    }
+
+    /// The endpoint failure this class means for the client, with the remote
+    /// host's diagnostic as its message.
+    pub fn endpoint_failure(self, message: impl Into<String>) -> EndpointFailure {
+        match self {
+            Self::Repair => EndpointFailure::remote_repair(message),
+            Self::Retry => EndpointFailure::retry(message),
+        }
+    }
+}
+
 /// A failure built where its cause is known, with terminal-safe display text.
 #[derive(Clone, Debug)]
 pub struct EndpointFailure {
@@ -399,6 +440,21 @@ mod tests {
             EndpointFailure::unclassified("remote command failed").disposition(),
             FailureDisposition::Retry
         );
+    }
+
+    #[test]
+    fn every_remote_failure_class_round_trips_and_keeps_its_operator_action() {
+        for (class, disposition) in [
+            (RemoteFailureClass::Repair, FailureDisposition::Repair),
+            (RemoteFailureClass::Retry, FailureDisposition::Retry),
+        ] {
+            assert_eq!(RemoteFailureClass::from_token(class.token()), Some(class));
+            let failure = class.endpoint_failure("remote detail");
+            assert_eq!(failure.disposition(), disposition, "{class:?}");
+            assert_eq!(failure.to_string(), "remote detail");
+        }
+        assert_eq!(RemoteFailureClass::from_token("unknown"), None);
+        assert_eq!(RemoteFailureClass::from_token(""), None);
     }
 
     #[test]
