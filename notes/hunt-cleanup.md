@@ -59,19 +59,6 @@ visibility pass would make the module tree mean something. (wave-7 review)
 
 ## Test-only twins and test seams in production
 
-## CLN-018 - shepr-server dev-depends on shepr-client for one test
-
-`shepr-server` dev-depends on `shepr-client` for `server/netside_tests.rs`,
-which is why several client modules and methods are `pub`; a dedicated
-integration-test workspace member would let the client surface shrink. This is
-a workspace layout change, deferred with the crate splits. (edges, client-core)
-
 ## Unused dependencies and edges
 
 ## Stale documentation
-
-## CLN-021 - The shepr-remote module tree is named for an older layout
-
-`shepr-remote`'s `remote/` directory name reflects an older module tree (its
-`lib.rs` mounts the files with `#[path]`; see the structure entry on the client
-shell and remote module trees). (edges)

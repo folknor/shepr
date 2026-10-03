@@ -230,6 +230,10 @@ impl ValidatedTerminalConfig {
 /// shows, while every pane silently opened a different shell than the
 /// operator's own; the fix is one line in either place, so the error names
 /// both.
+///
+/// Resolution stays in config validation rather than in server launch code so
+/// the validated config holds a `ResolvedShell`, not a raw string: a shell
+/// that cannot be used fails at config load, before the server starts.
 fn resolve_default_shell(configured: &str, paths: &AppPaths) -> Result<ResolvedShell, String> {
     let path = shepr_core::env::read_os(shepr_core::env::EnvVar::Path)
         .map_err(|error| error.to_string())?;
@@ -280,37 +284,17 @@ fn resolve_recognized_shell(
     cwd: &Path,
 ) -> Result<ResolvedShell, String> {
     check_shell_whitespace(candidate, source)?;
-    // Match the PTY's access(2) check so noexec mounts and access policy are
-    // part of validation before the server starts.
+    // The platform classifier makes the PTY's access(2) check, so noexec
+    // mounts and access policy are part of validation before the server starts.
     let resolved =
-        shepr_core::shell::resolve_executable(
-            candidate,
-            path,
-            cwd,
-            |path| match std::fs::metadata(path) {
-                Ok(metadata) if metadata.is_dir() => shepr_core::shell::ExecutableStatus::Directory,
-                Ok(_) if shepr_platform::has_execute_access(path) => {
-                    shepr_core::shell::ExecutableStatus::Executable
-                }
-                Ok(_) => shepr_core::shell::ExecutableStatus::NotExecutable,
-                Err(error)
-                    if matches!(
-                        error.kind(),
-                        std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
-                    ) =>
-                {
-                    shepr_core::shell::ExecutableStatus::Missing
-                }
-                Err(error) => shepr_core::shell::ExecutableStatus::Uninspectable(error.kind()),
-            },
-        )
-        .map_err(|error| format!("{source} {error}"))?;
+        crate::shell::resolve_executable(candidate, path, cwd, shepr_platform::classify_executable)
+            .map_err(|error| format!("{source} {error}"))?;
 
     ResolvedShell::validate(resolved, |resolved| {
         if !resolved
             .file_name()
             .and_then(OsStr::to_str)
-            .is_some_and(shepr_agent::detect::is_pane_shell_process_name)
+            .is_some_and(shepr_platform::is_pane_shell_process_name)
         {
             return Err(format!(
                 "{source} resolves to a shell name shepr does not recognize: {}",

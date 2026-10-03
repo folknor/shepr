@@ -7,6 +7,7 @@ mod keybinds;
 mod limits;
 mod machine;
 mod model;
+mod shell;
 mod sidebar;
 pub mod theme;
 mod theme_config;

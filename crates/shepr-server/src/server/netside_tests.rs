@@ -1,3 +1,9 @@
+//! Client endpoint machinery driven against this server's headless internals.
+//! These tests reach server-private fixtures, events and outboxes, so they stay
+//! in this crate behind its dev-dependency on the client. Moving them to a
+//! separate integration member would not shrink the client's public surface:
+//! it would also have to expose those server internals.
+
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 

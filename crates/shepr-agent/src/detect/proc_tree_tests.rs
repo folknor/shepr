@@ -376,16 +376,6 @@ fn remote_memory_reads_reject_dead_and_uninterruptible_states() {
 }
 
 #[test]
-fn pane_shell_process_names_reject_exec_replacement_programs() {
-    for shell in ["bash", "-zsh", "/bin/fish"] {
-        assert!(is_pane_shell_process_name(shell), "{shell}");
-    }
-    for program in ["vim", "nvim", "cargo", "test-runner", "opencode"] {
-        assert!(!is_pane_shell_process_name(program), "{program}");
-    }
-}
-
-#[test]
 fn process_argv_refuses_empty_and_oversized_input() {
     assert_eq!(parse_process_argv(&[]), None);
     assert_eq!(parse_process_argv(&[0, 0]), None);

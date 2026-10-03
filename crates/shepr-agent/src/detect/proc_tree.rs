@@ -23,13 +23,6 @@ pub struct ForegroundJob {
     pub processes: Vec<ForegroundProcess>,
 }
 
-/// Every shell shepr recognises, as a process name. One list serves pane-shell
-/// recognition, the generic-runtime ranking and `-c` unwrapping in detection:
-/// each of these shells takes its command string as `-c <command>`.
-const SHELL_NAMES: &[&str] = &[
-    "sh", "bash", "dash", "zsh", "fish", "ksh", "mksh", "csh", "tcsh", "elvish", "xonsh", "nu",
-];
-
 /// Per-root work budget for foreground process discovery. The foreground-group
 /// leader and the pane shell each get their own budget, so one side's expansion
 /// cannot exhaust the other's allowance. Every task entry, child byte, and parsed
@@ -364,19 +357,6 @@ fn parse_process_argv(bytes: &[u8]) -> Option<Vec<String>> {
 /// Uses the `/proc/<pid>/cwd` symlink.
 pub fn process_cwd(pid: Pid) -> Option<PathBuf> {
     std::fs::read_link(format!("/proc/{pid}/cwd")).ok()
-}
-
-/// Whether a process name (a path, or a login shell's `-`-prefixed argv0) names
-/// a shell from [`SHELL_NAMES`].
-pub fn is_pane_shell_process_name(name: &str) -> bool {
-    let normalized = name
-        .rsplit('/')
-        .next()
-        .unwrap_or(name)
-        .trim_start_matches('-');
-    SHELL_NAMES
-        .iter()
-        .any(|shell| shell.eq_ignore_ascii_case(normalized))
 }
 
 #[cfg(test)]

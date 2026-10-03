@@ -316,6 +316,10 @@ impl HostCellGeometry {
 }
 
 /// Physical host geometry, whose grid may be smaller than a pane's minimum.
+///
+/// It lives here rather than in the client because the server's transport
+/// carries and applies it too: it is the geometry a client reports, not only
+/// one the client measures.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HostGeometry {
     grid: GridSize,

@@ -1,6 +1,8 @@
 //! Fixtures for this crate's unit tests, built on the public API (and the
 //! seams) of the crates they stand in for. Fixtures several crates share live
 //! in `shepr-test-fixtures`; these are the ones only this crate's tests use.
+//! The mux fixture traits stay here rather than moving there: mux
+//! dev-depends on `shepr-test-fixtures`, so that crate cannot depend on mux.
 
 use std::path::PathBuf;
 use std::sync::Arc;

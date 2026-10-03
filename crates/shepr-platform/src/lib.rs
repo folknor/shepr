@@ -36,7 +36,9 @@ pub use clipboard::{read_clipboard_text, write_clipboard};
 pub use config_file::{config_file_link_count, create_config_temporary, write_config_temporary};
 pub use daemon::{SpawnedDaemon, create_private_directory_all, open_boot_log, read_boot_log_tail};
 pub use data_directory_lease::{DataDirectoryLease, DataDirectoryLeaseHeld, LeaseAcquireError};
-pub use executable::has_execute_access;
+pub use executable::{
+    ExecutableStatus, classify_executable, has_execute_access, is_pane_shell_process_name,
+};
 pub use file_stamp::FileStamp;
 pub use host::{
     begin_cli_output, child_command, detach_server_daemon_command, hostname, launch_executable,

@@ -45,19 +45,14 @@ file's.
 
 (foundation)
 
-## STR-003 - Move shell resolution out of core
-
-`shepr-core/src/shell.rs`'s only caller is `shepr-config/src/validated.rs`, which
-also supplies the classifier closure calling platform's `has_execute_access`.
-Move `resolve_executable` and `ExecutableStatus` to config and offer
-`shepr_platform::classify_executable(path)`. `is_pane_shell_process_name` and
-`SHELL_NAMES` live in shepr-agent's detection but are shell knowledge, and they
-are config's only reason to depend on detection; they belong with the platform
-shell helpers. contracts goes further: the config to platform and agent edges
-then serve only `resolve_default_shell` (reading `SHELL` and `PATH` and probing
-the filesystem), which is server launch policy and could move to shepr-server
-with config holding the raw string. Reported by foundation, agents and
-contracts.
+Decided: move the bridge relay, its watchdog and the SSH attempt timing into
+remote, keeping the heartbeat cadence and bridge expiry related through one
+shared connection-health constant with the assertion in remote. The
+suspend-aware `CLOCK_BOOTTIME` clock stays in platform. `ChildExitReason`
+stays in platform (shepr-agent ownership consumes it, and AGENTS.md assigns
+exit classification there); platform stays flat; `config_file.rs`'s
+ownership, permission and xattr primitives stay in platform. Last of the crate
+waves.
 
 ## STR-004 - Split value types out of the emulator crate
 
@@ -70,6 +65,27 @@ edge AGENTS.md keeps mux and server out of the client for. Move them into a smal
 crate (or core modules) that vt re-exports; `KittyKeyboardFlags` moves down from
 protocol so vt can return it. Then collapse the parallel wire types into the
 shared ones. (terminal)
+
+Decided, together with STR-005: one leaf crate `shepr-term` below vt, termio,
+protocol and config. It holds the row and point types, `Selection`,
+`ScrollMetrics`, colours (`RgbColor`, `ColorScheme`, `DefaultColor`,
+`ColorQueryTarget`, the indexed palette), `UnderlineStyle`, `DecMode`,
+`FocusEvent`, `KittyKeyboardFlags`, `ModifyOtherKeysLevel`, mouse protocol
+vocabulary (`Position`, `MouseEncoding`), width including
+`UnicodeDisplayUnits` and termio's `text_width`, the `seq` builders, key
+vocabulary and pure child-facing key and mouse encoding, plus `TerminalTheme`
+and `HostCellSize`. Keys: `TerminalKey` for the observed event and encoding, a
+typed chord for configured code and modifiers (replacing the `KeyCombo` tuple),
+`CanonicalKey` only for canonical comparison and conflict detection;
+canonicalization is lossy, so matching keeps today's exact-then-canonical
+behaviour. Config parses bindings into those types; `is_shifted_ascii_symbol`
+moves down so the encoder needs no config. Adapters stay in vt as free
+functions (`RgbColor::from_vte`, `DefaultColor::named`,
+`UnderlineStyle::from_flags`, the `DecMode` to `TermMode` mapping). termio
+becomes host-side I/O only: scrollbar drawing goes to server presentation,
+selection drawing to client presentation, `host_modify_other_keys_mode` stays.
+The named theme library stays in config; observed host colours are terminal
+facts. Done when no client-side crate links alacritty or vte.
 
 ## STR-005 - Split shepr-termio by side
 
@@ -94,6 +110,9 @@ keybinding matching (`BindingKey`, `CanonicalKey`, `terminal_key_matches_combo`,
 `ActionKeybinds::matches_*`) belongs with key input too. Reported by terminal,
 server-app and contracts.
 
+Stale in part: `shepr_vt::InputModes` exists and the runtime key path already
+takes it under one core lock. The remaining separation is decided under STR-004.
+
 ## STR-006 - shepr-agent is three crates
 
 Identity (`agent/mod.rs`, `agent/resume.rs` types: tiny and pure, needed by
@@ -112,6 +131,16 @@ platform by AGENTS.md's own rule; mux then stops reaching through
 `shepr_agent::detect::` for it. `AgentSessionRefKind` lives in core for consumers
 that left; it can move into `resume.rs` or become `AgentSessionRef::is_id()`.
 (agents)
+
+Decided: `shepr-agent` (identity, descriptor table, report origin and session
+vocabulary, `AgentState`, label normalization: `report.rs` must stop calling
+into detection), `shepr-detect` (manifests, rule engine, process recognition
+over platform `/proc` readers, and ownership arbitration as its own module,
+usable without the engine), `shepr-integration` (installer and assets). The
+root binary keeps detection for `detect explain --file`, and the api detect
+explain types come from `shepr-detect`; the payoff is the integration editor
+and assets leaving the client and config graphs, and config depending on
+identity only. Installer assets stay out of the identity descriptor.
 
 ## STR-010 - shepr-config does four unrelated jobs
 
@@ -144,6 +173,17 @@ only. Every caller of `build_mismatch_guidance` and `attach_command` passes
 test seam would stop five call sites restating the choice. Reported by contracts
 and server-app.
 
+Decided: runtime layout and address policy (`AppPaths`, `BuildProfile` and the
+marker policy, `ServerAddress` and the socket override, the lease file name,
+`operator_entrypoint`) move to their own crate below api, so api, remote and
+the CLI stop depending on settings. Key matching moves with STR-004's key
+vocabulary. The named theme library stays in config. Operator guidance prose
+goes with the lifecycle crate (STR-012). Validated types own validated values
+only (no second raw representation exposed as the runtime interface), the
+generic `LoadedConfig` gives way to one validate per role (the
+`ConfigResolution` trait and resolution structs are already gone), and
+`operator_entrypoint` becomes a default with a test seam.
+
 ## STR-011 - shepr-protocol mixes the wire with policy and state
 
 Wire types, codec, framing and preamble are its job. Allocators are not:
@@ -161,6 +201,15 @@ restore must call `reserve_workspace_ids` before any allocation (an ordering
 enforced by a comment); an allocator owned by the app state and passed to restore
 makes it structural. Reported by contracts and mux-state.
 
+Decided: the workspace allocator is owned by `AppState` and passed to restore;
+terminal ids are allocated with terminal creation and the boot id with server
+lifetime construction; protocol keeps canonical construction and parsing. A
+surface component above protocol owns delta planning, the decoder baseline,
+ratatui conversion, wide-glyph normalization and, from STR-046, frame
+composition. `FramingError` must stop embedding `SurfaceDecodeError`, or the
+extraction cycles. Shared validated grid types that move below protocol must not
+import protocol envelopes; the compositor takes styles as arguments.
+
 ## STR-012 - shepr-api holds CLI workflows
 
 Besides the schema, client and listener, it holds `server_stop.rs` (about 1100
@@ -171,6 +220,17 @@ by the CLI and remote. `listener.rs` reaches back into `server.rs` for
 `handle_connection`, `reject_busy_connection` and `send_busy_refusal`; the JSON
 connection service could be its own module beside `client_protocol.rs`, leaving
 the listener a pure classifier and dispatcher. (contracts)
+
+Decided, with STR-013 and STR-014: one lifecycle crate, `shepr-launch`, above
+api and below remote and the client. It holds `local_server`, conditional stop,
+presence probing, `DaemonExit`, operator guidance, the server invocation grammar
+and the neutral endpoint failure vocabulary. Two traps: `ApiClient::status()`
+returns `RuntimeStatus`, so the decoded ping result stays below launch (api
+returns a typed pong, launch builds its lifecycle status); and stop and presence
+use crate-private deadline APIs, so api exposes a real deadline-aware request
+boundary with typed errors. The listener keeps bounded admission, deadlines,
+dispatch and refusals; the JSON service becomes a sibling module of the TUI
+service.
 
 ## STR-013 - shepr-remote is three crates
 
@@ -194,6 +254,12 @@ discovery, preflight and the launcher. The CLI grammar constants (`PROGRAM_NAME`
 exported from `remote/args.rs` and the binary's clap spec imports them from the
 SSH crate. Reported by edges and server-app.
 
+Stale in part: shepr-server and the daemon no longer depend on shepr-remote.
+Decided under STR-012: local lifecycle moves to `shepr-launch`; the SSH bridge
+host stays in remote (it emits a bridge-specific exit marker and a client
+protocol preamble) and calls launch; shared executable, argument and exit
+vocabulary sits below both.
+
 ## STR-014 - The endpoint failure vocabulary lives in the SSH crate
 
 `EndpointFailure` and its single disposition table now exist
@@ -204,19 +270,13 @@ already use (protocol's endpoint module, or a launch crate). The client may not
 depend on `shepr-api` but reaches it transitively through remote. Reported by
 edges and client-core.
 
-## STR-015 - Odd edges into the server and client
-
-- `crossterm` is in `app/state.rs` only for a test helper.
-- `shepr-test-fixtures` sits below mux, so `shepr-server/src/test_support.rs`
-  defines fixture traits for mux types (`PaneRuntimeFixture`,
-  `WorkspaceFixture`, `TerminalStateFixture`); other crates above mux that need
-  them will duplicate them.
-- `shepr-client`'s `shell` depends on `shepr-agent` only for `status_priority`
-  and `parse_agent_label`; typing the wire's agent and status removes the edge.
-- `HostGeometry` (core) is built on `PaneGeometry`; it belongs to the client (or
-  termio), built on `GridSize::clamped` and `ProtocolCellSize`.
-
-Reported by server-app, client-shell and client-core.
+Decided: the neutral cause and disposition live in `shepr-launch`. SSH failures
+are a variant holding plain classified facts defined there (an
+`SshFailureClass`: authentication, authentication pending, host key, link,
+configuration, remote rejected, unrecognized); remote classifies OpenSSH output
+into it. Hints are derived in presentation from the typed cause with the
+configured target as rendering context, not carried as strings; the client
+path's `diagnostic()` adapter goes. Discovery evidence stays remote-owned.
 
 ## Terminal emulation
 
@@ -324,6 +384,17 @@ retention), with the cache on a long-lived worker so it never crosses the event
 channel; mux keeps only the identity value types and
 `Workspace::apply_git_status(result) -> bool`; the app keeps only scheduling.
 Reported by mux-state and server-app.
+
+Stale in part: checkout-root handling already uses `discover_checkout_root`,
+and retention and read-error dedup already sit in mux's private
+`GitStatusCache`. Decided: `shepr-git` below mux owns its key, result and error
+vocabulary, discovery, runner, refresh algorithm and cache (mux re-exports what
+workspaces need), on a long-lived worker that takes targets and refresh intent
+and returns results, importing no `Workspace` or server event. Pin explicit
+invalidation and clearing (today `mark_due` and `clear`), completion after a
+failed or panicking refresh, and coherent cache commits (a caught panic must not
+leave a half-mutated persistent cache). AGENTS.md's Git ownership sentence
+changes with it.
 
 ## STR-028 - Persistence orchestration lives in the server, and `persist/` files do several jobs each
 
@@ -442,8 +513,9 @@ Tests still build `ClientCopyModeState` field by field. `shepr-remote`'s `lib.rs
 beginning `use super::*`, `impl RemoteExecutable` methods in `launch.rs` for a
 type defined in `machine/executable.rs`, `SSH_OWN_FAILURE_EXIT_CODE` and
 `failed_before_remote_result` in `bridge.rs` reached through globs), so
-`pub(super)`/`pub(crate)` mean nothing there either. Reported by client-shell,
-client-core and edges.
+`pub(super)`/`pub(crate)` mean nothing there either; the `remote/` directory
+name itself reflects that older layout and goes with the fix. Reported by
+client-shell, client-core and edges.
 
 ## STR-043 - The shell's render mutates state
 
@@ -499,6 +571,13 @@ would check the token, and the `opened_since` orphan guard in `dropped_entry`
   endpoint error banner.
 
 (client-shell)
+
+Decided: frame composition (wide-glyph repair, clipping, hyperlink remapping)
+moves into STR-011's surface component; `TextEditor` to host-side input;
+preferences with chrome state, keeping typed errors until presentation.
+Declined: unifying the word definitions. Double-click deliberately prefers URLs
+and quoted paths while mux word motion distinguishes word and big-word, and
+that distinction stays explicit (CON-038 covers saying so at the code).
 
 ## STR-039 - The client move protocol has no owner, and ClientLoop is open
 
