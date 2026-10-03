@@ -10,9 +10,12 @@ pub(crate) enum CliError {
     ServerStop(shepr_api::server_stop::ServerStopError),
     Usage(String),
     Io(std::io::Error),
-    /// The configuration or the paths it resolves could not be loaded; one
-    /// entry per diagnostic.
-    Config(Vec<String>),
+    /// `client.toml` could not be loaded; one entry per diagnostic, each
+    /// carrying its file, key path and reason.
+    Config(Vec<shepr_config::ConfigDiagnostic>),
+    /// The application paths (XDG directories, socket target, pane markers)
+    /// could not be resolved.
+    Paths(shepr_config::PathsError),
     /// A TUI or client launch inside a pane of a server of this build profile.
     /// `quip` is the closing line.
     Nested {
@@ -65,6 +68,12 @@ impl CliError {
             Self::Config(diagnostics) => {
                 eprintln!("shepr: configuration error:");
                 for diagnostic in diagnostics {
+                    eprintln!("  {diagnostic}");
+                }
+            }
+            Self::Paths(error) => {
+                eprintln!("shepr: application paths could not be resolved:");
+                for diagnostic in error.diagnostics() {
                     eprintln!("  {diagnostic}");
                 }
             }
@@ -128,7 +137,18 @@ impl std::fmt::Display for CliError {
             Self::Usage(message) => f.write_str(message),
             Self::Io(error) => error.fmt(f),
             Self::Config(diagnostics) => {
-                write!(f, "configuration error:\n  {}", diagnostics.join("\n  "))
+                f.write_str("configuration error:")?;
+                for diagnostic in diagnostics {
+                    write!(f, "\n  {diagnostic}")?;
+                }
+                Ok(())
+            }
+            Self::Paths(error) => {
+                f.write_str("application paths could not be resolved:")?;
+                for diagnostic in error.diagnostics() {
+                    write!(f, "\n  {diagnostic}")?;
+                }
+                Ok(())
             }
             Self::Nested { .. } => f.write_str("nested shepr is refused"),
             Self::Client(error) => error.fmt(f),
@@ -143,6 +163,7 @@ impl std::error::Error for CliError {
             Self::ServerStop(error) => Some(error),
             Self::Io(error) => Some(error),
             Self::Client(error) => Some(error),
+            Self::Paths(error) => Some(error),
             _ => None,
         }
     }
@@ -151,6 +172,12 @@ impl std::error::Error for CliError {
 impl From<std::io::Error> for CliError {
     fn from(error: std::io::Error) -> Self {
         Self::Io(error)
+    }
+}
+
+impl From<shepr_config::PathsError> for CliError {
+    fn from(error: shepr_config::PathsError) -> Self {
+        Self::Paths(error)
     }
 }
 
@@ -163,7 +190,7 @@ mod tests {
         assert_eq!(CliError::Usage("bad".into()).exit_code(), 2);
         for error in [
             CliError::Io(std::io::Error::other("io")),
-            CliError::Config(vec!["bad key".into()]),
+            CliError::Config(vec![shepr_config::ConfigDiagnostic::parse("bad key")]),
             CliError::Nested { quip: "deeper" },
             CliError::BridgeIdle,
         ] {

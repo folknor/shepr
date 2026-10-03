@@ -44,7 +44,8 @@ pub use host::{
 pub use owned_runtime::{release_remote_ssh_config_dir, release_single_use_socket_lock};
 pub use private_file::{create_private_file, open_regular_file, sync_directory};
 pub use process::{
-    ProcessHandle, Signal, reap_pidfd, session_member_handles, wait_for_process_exits,
+    Pgid, Pid, ProcStat, ProcState, ProcessHandle, SessionId, Signal, reap_pidfd,
+    session_member_handles, session_members, wait_for_process_exits,
 };
 pub use random::unpredictable_token;
 pub use remote_bridge_io::{

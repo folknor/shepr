@@ -53,6 +53,7 @@ fn pasted_help_and_copy_queries_normalize_single_line_text() {
     state.overlay = None;
     state.mode = ClientShellMode::Copy;
     state.copy_mode = Some(ClientCopyModeState {
+        scroll: shepr_vt::ScrollMetrics::new(0, 0, 24, shepr_vt::AbsRow(0)),
         pane_id: test_pane_id("w1:p1"),
         geometry: (80, 24),
         alternate_screen_active: false,
@@ -60,9 +61,6 @@ fn pasted_help_and_copy_queries_normalize_single_line_text() {
             row: shepr_vt::AbsRow(0),
             col: 0,
         },
-        history_origin: shepr_vt::AbsRow(0),
-        offset_from_bottom: 0,
-        max_offset_from_bottom: 0,
         entry_offset_from_bottom: 0,
         selection: None,
         search: Some(ClientCopySearch {
@@ -106,12 +104,12 @@ fn copy_cursor_is_never_left_under_the_mode_bar() {
     };
     pane_surface.panes[0].rect = rect;
     pane_surface.panes[0].inner_rect = rect;
-    pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics {
-        offset_from_bottom: 0,
-        max_offset_from_bottom: 50,
-        viewport_rows: u64::from(area.height),
-        history_origin: shepr_vt::AbsRow(0),
-    });
+    pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics::new(
+        0,
+        50,
+        usize::from(area.height),
+        shepr_vt::AbsRow(0),
+    ));
     state.receive_pane_surface(pane_surface);
     state.compose(106, 20).expect("terminal frame");
     let mut outcome = ClientShellInput::default();
@@ -144,13 +142,13 @@ fn copy_cursor_is_never_left_under_the_mode_bar() {
     // cursor under the bar.
     let height = u64::from(area.height);
     if let Some(copy_mode) = state.copy_mode.as_mut() {
-        copy_mode.offset_from_bottom = 10;
+        copy_mode.scroll = copy_mode.scroll.with_offset(10);
         copy_mode.cursor.row = shepr_vt::AbsRow(40 + height - 2);
     }
     state.handle_input_bytes(b"j");
     let copy_mode = state.copy_mode.as_ref().expect("still in copy mode");
     assert_eq!(copy_mode.cursor.row, shepr_vt::AbsRow(40 + height - 1));
-    assert_eq!(copy_mode.offset_from_bottom, 9);
+    assert_eq!(copy_mode.scroll.offset_from_bottom, 9);
 }
 
 #[test]
@@ -452,12 +450,12 @@ fn selection_edge_drag_requests_scroll_and_timer_continues_it() {
     );
     pane_surface.panes[0].rect.y = 1;
     pane_surface.panes[0].inner_rect.y = 1;
-    pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics {
-        offset_from_bottom: 0,
-        max_offset_from_bottom: 20,
-        viewport_rows: 2,
-        history_origin: shepr_vt::AbsRow(0),
-    });
+    pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics::new(
+        0,
+        20,
+        2,
+        shepr_vt::AbsRow(0),
+    ));
     state.receive_pane_surface(pane_surface);
     state.compose(106, 20).expect("composed frame");
     let pane = state.hits.panes[0].clone();
@@ -515,12 +513,12 @@ fn keyboard_copy_mode_owns_cursor_selection_copy_and_scroll_restore() {
     state.config.copy_on_select = false;
     state.set_snapshot(Box::new(snapshot()));
     let mut pane_surface = surface();
-    pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics {
-        offset_from_bottom: 0,
-        max_offset_from_bottom: 20,
-        viewport_rows: 2,
-        history_origin: shepr_vt::AbsRow(0),
-    });
+    pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics::new(
+        0,
+        20,
+        2,
+        shepr_vt::AbsRow(0),
+    ));
     state.receive_pane_surface(pane_surface);
     state.compose(106, 20).expect("composed frame");
 
@@ -638,12 +636,12 @@ fn keyboard_selections_survive_output_and_copy_live_ranges() {
             ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
         state.set_snapshot(Box::new(snapshot()));
         let mut pane_surface = surface();
-        pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics {
-            offset_from_bottom: 0,
-            max_offset_from_bottom: 0,
-            viewport_rows: 2,
-            history_origin: shepr_vt::AbsRow(0),
-        });
+        pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics::new(
+            0,
+            0,
+            2,
+            shepr_vt::AbsRow(0),
+        ));
         state.receive_pane_surface(pane_surface.clone());
         state.compose(106, 20).expect("composed frame");
         state.handle_input_bytes(b"\x02[");
@@ -709,12 +707,12 @@ fn empty_keyboard_anchor_keeps_search_fallback_revision_guard() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
     let mut pane_surface = surface();
-    pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics {
-        offset_from_bottom: 0,
-        max_offset_from_bottom: 0,
-        viewport_rows: 2,
-        history_origin: shepr_vt::AbsRow(0),
-    });
+    pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics::new(
+        0,
+        0,
+        2,
+        shepr_vt::AbsRow(0),
+    ));
     state.receive_pane_surface(pane_surface);
     state.compose(106, 20).expect("composed frame");
     state.handle_input_bytes(b"\x02[");
@@ -763,12 +761,12 @@ fn keyboard_selection_does_not_return_after_resize_or_screen_switch() {
             ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
         state.set_snapshot(Box::new(snapshot()));
         let mut pane_surface = surface();
-        pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics {
-            offset_from_bottom: 0,
-            max_offset_from_bottom: 0,
-            viewport_rows: 2,
-            history_origin: shepr_vt::AbsRow(0),
-        });
+        pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics::new(
+            0,
+            0,
+            2,
+            shepr_vt::AbsRow(0),
+        ));
         state.receive_pane_surface(pane_surface.clone());
         state.compose(106, 20).expect("composed frame");
         state.handle_input_bytes(b"\x02[");
@@ -808,12 +806,12 @@ fn keyboard_copy_mode_content_motion_is_endpoint_backed() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
     let mut pane_surface = surface();
-    pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics {
-        offset_from_bottom: 0,
-        max_offset_from_bottom: 0,
-        viewport_rows: 2,
-        history_origin: shepr_vt::AbsRow(0),
-    });
+    pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics::new(
+        0,
+        0,
+        2,
+        shepr_vt::AbsRow(0),
+    ));
     state.receive_pane_surface(pane_surface);
     state.compose(106, 20).expect("composed frame");
     let mut enter = ClientShellInput::default();
@@ -862,12 +860,12 @@ fn keys_after_an_exit_key_reach_the_pane_once_an_in_flight_copy_motion_replays()
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
     let mut pane_surface = surface();
-    pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics {
-        offset_from_bottom: 0,
-        max_offset_from_bottom: 0,
-        viewport_rows: 2,
-        history_origin: shepr_vt::AbsRow(0),
-    });
+    pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics::new(
+        0,
+        0,
+        2,
+        shepr_vt::AbsRow(0),
+    ));
     state.receive_pane_surface(pane_surface);
     state.compose(106, 20).expect("composed frame");
     let mut enter = ClientShellInput::default();
@@ -929,12 +927,12 @@ fn copy_search_owns_prompt_repeat_highlights_selection_and_restore() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
     let mut pane_surface = surface();
-    pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics {
-        offset_from_bottom: 0,
-        max_offset_from_bottom: 20,
-        viewport_rows: 2,
-        history_origin: shepr_vt::AbsRow(0),
-    });
+    pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics::new(
+        0,
+        20,
+        2,
+        shepr_vt::AbsRow(0),
+    ));
     state.receive_pane_surface(pane_surface);
     state.compose(106, 20).expect("composed frame");
     let mut enter = ClientShellInput::default();
@@ -1059,11 +1057,13 @@ fn copy_search_owns_prompt_repeat_highlights_selection_and_restore() {
         Ok(pane_scroll_result(15, 20, 2)),
     );
     let mut scrolled_surface = state.pane_surface().cloned().expect("pane surface");
-    scrolled_surface.panes[0]
-        .scroll
-        .as_mut()
-        .expect("scroll metrics")
-        .offset_from_bottom = 15;
+    {
+        let metrics = scrolled_surface.panes[0]
+            .scroll
+            .as_mut()
+            .expect("scroll metrics");
+        *metrics = metrics.with_offset(15);
+    }
     state.receive_pane_surface(scrolled_surface);
     let frame = state.compose(106, 20).expect("search frame");
     let hit = state.hits.panes[0].clone();
@@ -1626,7 +1626,7 @@ fn navigator_scrollbar_click_and_drag_scroll_without_opening_a_destination() {
     let track = state.hits.navigator_scrollbar;
     let metrics = state.hits.navigator_scroll_metrics.expect("scroll metrics");
     assert!(!track.is_empty());
-    assert_eq!(metrics.offset_from_bottom, metrics.max_offset_from_bottom);
+    assert_eq!(metrics.start(), 0);
     assert!(track.y > state.hits.navigator_search.y);
     assert!(track.bottom() < state.hits.navigator_popup.bottom() - 3);
     assert!(
@@ -1668,8 +1668,8 @@ fn navigator_scrollbar_click_and_drag_scroll_without_opening_a_destination() {
             .hits
             .navigator_scroll_metrics
             .expect("metrics")
-            .offset_from_bottom,
-        0
+            .start(),
+        metrics.max_start()
     );
     let last_pane = shepr_protocol::PublicPaneId::new(&crate::tests::test_workspace_id("w1"), 60);
     assert!(state.hits.navigator_rows.iter().any(|(_, target)| matches!(target, ClientNavigatorTarget::Pane { pane_id, .. } if *pane_id == last_pane)));
@@ -1680,8 +1680,8 @@ fn navigator_scrollbar_click_and_drag_scroll_without_opening_a_destination() {
             .hits
             .navigator_scroll_metrics
             .expect("metrics")
-            .offset_from_bottom,
-        metrics.max_offset_from_bottom
+            .start(),
+        0
     );
     let thumb = shepr_termio::scroll::scrollbar_thumb(metrics, track).expect("thumb");
     let grab = thumb.len - 1;
@@ -1704,8 +1704,8 @@ fn navigator_scrollbar_click_and_drag_scroll_without_opening_a_destination() {
             .hits
             .navigator_scroll_metrics
             .expect("metrics")
-            .offset_from_bottom,
-        metrics.max_offset_from_bottom
+            .start(),
+        0
     );
     mouse(
         &mut state,
@@ -1718,8 +1718,8 @@ fn navigator_scrollbar_click_and_drag_scroll_without_opening_a_destination() {
             .hits
             .navigator_scroll_metrics
             .expect("metrics")
-            .offset_from_bottom,
-        0
+            .start(),
+        metrics.max_start()
     );
     mouse(
         &mut state,
@@ -1736,8 +1736,8 @@ fn navigator_scrollbar_click_and_drag_scroll_without_opening_a_destination() {
             .hits
             .navigator_scroll_metrics
             .expect("metrics")
-            .offset_from_bottom,
-        1
+            .start(),
+        metrics.max_start() - 1
     );
 
     let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_mut() else {
@@ -1971,12 +1971,12 @@ fn copy_mode_survives_mouse_motion_and_parks_across_focus_changes() {
     state.config.copy_on_select = false;
     state.set_snapshot(Box::new(snapshot()));
     let mut pane_surface = surface();
-    pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics {
-        offset_from_bottom: 0,
-        max_offset_from_bottom: 10,
-        viewport_rows: 2,
-        history_origin: shepr_vt::AbsRow(0),
-    });
+    pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics::new(
+        0,
+        10,
+        2,
+        shepr_vt::AbsRow(0),
+    ));
     state.receive_pane_surface(pane_surface);
     state.compose(106, 20).expect("composed frame");
     let mut enter = ClientShellInput::default();
@@ -2114,12 +2114,12 @@ fn clicking_the_pane_scrollbar_preserves_copy_mode_for_its_focused_pane() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
     let mut pane_surface = surface();
-    pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics {
-        offset_from_bottom: 0,
-        max_offset_from_bottom: 10,
-        viewport_rows: 2,
-        history_origin: shepr_vt::AbsRow(0),
-    });
+    pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics::new(
+        0,
+        10,
+        2,
+        shepr_vt::AbsRow(0),
+    ));
     pane_surface.panes[0].scrollbar_rect = Some(SurfaceRect {
         x: 3,
         y: 0,
@@ -2185,12 +2185,12 @@ fn rapid_copy_motions_are_chained_from_the_previous_result() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
     let mut pane_surface = surface();
-    pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics {
-        offset_from_bottom: 0,
-        max_offset_from_bottom: 0,
-        viewport_rows: 2,
-        history_origin: shepr_vt::AbsRow(0),
-    });
+    pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics::new(
+        0,
+        0,
+        2,
+        shepr_vt::AbsRow(0),
+    ));
     state.receive_pane_surface(pane_surface);
     state.compose(106, 20).expect("composed frame");
     let mut enter = ClientShellInput::default();
@@ -2235,12 +2235,12 @@ fn copy_prefix_and_detach_act_after_an_in_flight_copy_operation_replays() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
     let mut pane_surface = surface();
-    pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics {
-        offset_from_bottom: 0,
-        max_offset_from_bottom: 10,
-        viewport_rows: 2,
-        history_origin: shepr_vt::AbsRow(0),
-    });
+    pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics::new(
+        0,
+        10,
+        2,
+        shepr_vt::AbsRow(0),
+    ));
     state.receive_pane_surface(pane_surface);
     state.compose(106, 20).expect("composed frame");
     let mut enter = ClientShellInput::default();
@@ -2286,12 +2286,12 @@ fn copy_mode_exit_keys_act_after_earlier_queued_input() {
             ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
         state.set_snapshot(Box::new(snapshot()));
         let mut pane_surface = surface();
-        pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics {
-            offset_from_bottom: 0,
-            max_offset_from_bottom: 10,
-            viewport_rows: 2,
-            history_origin: shepr_vt::AbsRow(0),
-        });
+        pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics::new(
+            0,
+            10,
+            2,
+            shepr_vt::AbsRow(0),
+        ));
         state.receive_pane_surface(pane_surface);
         state.compose(106, 20).expect("composed frame");
         let mut enter = ClientShellInput::default();
@@ -2334,12 +2334,12 @@ fn an_interrupt_key_leaves_copy_mode_behind_a_full_queue_and_the_late_reply_is_i
             ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
         state.set_snapshot(Box::new(snapshot()));
         let mut pane_surface = surface();
-        pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics {
-            offset_from_bottom: 0,
-            max_offset_from_bottom: 10,
-            viewport_rows: 2,
-            history_origin: shepr_vt::AbsRow(0),
-        });
+        pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics::new(
+            0,
+            10,
+            2,
+            shepr_vt::AbsRow(0),
+        ));
         state.receive_pane_surface(pane_surface);
         state.compose(106, 20).expect("composed frame");
         let mut enter = ClientShellInput::default();
@@ -2403,12 +2403,12 @@ fn failed_copy_operation_replays_keys_while_the_copy_pane_still_owns_input() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
     let mut pane_surface = surface();
-    pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics {
-        offset_from_bottom: 0,
-        max_offset_from_bottom: 10,
-        viewport_rows: 2,
-        history_origin: shepr_vt::AbsRow(0),
-    });
+    pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics::new(
+        0,
+        10,
+        2,
+        shepr_vt::AbsRow(0),
+    ));
     state.receive_pane_surface(pane_surface);
     state.compose(106, 20).expect("composed frame");
     let mut enter = ClientShellInput::default();
@@ -2442,12 +2442,12 @@ fn deferred_copy_input_is_bounded() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
     let mut pane_surface = surface();
-    pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics {
-        offset_from_bottom: 0,
-        max_offset_from_bottom: 10,
-        viewport_rows: 2,
-        history_origin: shepr_vt::AbsRow(0),
-    });
+    pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics::new(
+        0,
+        10,
+        2,
+        shepr_vt::AbsRow(0),
+    ));
     state.receive_pane_surface(pane_surface);
     state.compose(106, 20).expect("composed frame");
     let mut enter = ClientShellInput::default();
@@ -2474,12 +2474,12 @@ fn cancelled_copy_requests_discard_dependent_input_without_starting_work() {
                     ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
                 state.set_snapshot(Box::new(snapshot()));
                 let mut pane_surface = surface();
-                pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics {
-                    offset_from_bottom: 0,
-                    max_offset_from_bottom: 10,
-                    viewport_rows: 2,
-                    history_origin: shepr_vt::AbsRow(0),
-                });
+                pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics::new(
+                    0,
+                    10,
+                    2,
+                    shepr_vt::AbsRow(0),
+                ));
                 state.receive_pane_surface(pane_surface);
                 state.compose(106, 20).expect("composed frame");
                 let mut enter = ClientShellInput::default();
@@ -2534,12 +2534,12 @@ fn mismatched_boot_copy_result_rolls_back_the_old_pipeline() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
     let mut pane_surface = surface();
-    pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics {
-        offset_from_bottom: 0,
-        max_offset_from_bottom: 10,
-        viewport_rows: 2,
-        history_origin: shepr_vt::AbsRow(0),
-    });
+    pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics::new(
+        0,
+        10,
+        2,
+        shepr_vt::AbsRow(0),
+    ));
     state.receive_pane_surface(pane_surface);
     state.compose(106, 20).expect("composed frame");
     let mut enter = ClientShellInput::default();
@@ -2554,7 +2554,7 @@ fn mismatched_boot_copy_result_rolls_back_the_old_pipeline() {
     assert!(!state.copy_pipeline.keys_is_empty());
 
     let outcome = state.answer_request(
-        "replacement-boot",
+        &crate::tests::test_boot_id("replacement-boot"),
         &request_id,
         Err(ClientShellEndpointError::Server(
             shepr_protocol::command::EndpointError::StaleBoot,
@@ -2575,12 +2575,12 @@ fn cancelling_an_old_copy_request_does_not_reset_a_new_session() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
     let mut pane_surface = surface();
-    pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics {
-        offset_from_bottom: 0,
-        max_offset_from_bottom: 10,
-        viewport_rows: 2,
-        history_origin: shepr_vt::AbsRow(0),
-    });
+    pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics::new(
+        0,
+        10,
+        2,
+        shepr_vt::AbsRow(0),
+    ));
     state.receive_pane_surface(pane_surface);
     state.compose(106, 20).expect("composed frame");
     let mut enter = ClientShellInput::default();
@@ -2618,12 +2618,12 @@ fn copy_operation_does_not_capture_input_after_focus_moves() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
     let mut pane_surface = surface();
-    pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics {
-        offset_from_bottom: 0,
-        max_offset_from_bottom: 10,
-        viewport_rows: 2,
-        history_origin: shepr_vt::AbsRow(0),
-    });
+    pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics::new(
+        0,
+        10,
+        2,
+        shepr_vt::AbsRow(0),
+    ));
     state.receive_pane_surface(pane_surface);
     state.compose(106, 20).expect("composed frame");
     let mut enter = ClientShellInput::default();
@@ -2671,21 +2671,20 @@ fn reentering_copy_mode_on_the_same_pane_is_a_no_op() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
     let mut pane_surface = surface();
-    pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics {
-        offset_from_bottom: 0,
-        max_offset_from_bottom: 10,
-        viewport_rows: 2,
-        history_origin: shepr_vt::AbsRow(0),
-    });
+    pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics::new(
+        0,
+        10,
+        2,
+        shepr_vt::AbsRow(0),
+    ));
     state.receive_pane_surface(pane_surface);
     state.compose(106, 20).expect("composed frame");
     let mut first = ClientShellInput::default();
     assert!(state.enter_copy_mode(&mut first));
-    state
-        .copy_mode
-        .as_mut()
-        .expect("copy mode")
-        .offset_from_bottom = 10;
+    {
+        let copy_mode = state.copy_mode.as_mut().expect("copy mode");
+        copy_mode.scroll = copy_mode.scroll.with_offset(10);
+    }
     let mut reenter = ClientShellInput::default();
     assert!(state.enter_copy_mode(&mut reenter));
     assert!(reenter.actions.is_empty());
@@ -2703,12 +2702,12 @@ fn copy_waits_for_endpoint_motion_before_copying_selection() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
     let mut pane_surface = surface();
-    pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics {
-        offset_from_bottom: 0,
-        max_offset_from_bottom: 0,
-        viewport_rows: 2,
-        history_origin: shepr_vt::AbsRow(0),
-    });
+    pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics::new(
+        0,
+        0,
+        2,
+        shepr_vt::AbsRow(0),
+    ));
     state.receive_pane_surface(pane_surface);
     state.compose(106, 20).expect("composed frame");
     let mut enter = ClientShellInput::default();
@@ -2756,12 +2755,12 @@ fn copy_search_matches_survive_output_but_not_a_resize() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
     let mut pane_surface = surface();
-    pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics {
-        offset_from_bottom: 0,
-        max_offset_from_bottom: 0,
-        viewport_rows: 2,
-        history_origin: shepr_vt::AbsRow(0),
-    });
+    pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics::new(
+        0,
+        0,
+        2,
+        shepr_vt::AbsRow(0),
+    ));
     state.receive_pane_surface(pane_surface.clone());
     state.compose(106, 20).expect("composed frame");
     let mut enter = ClientShellInput::default();
@@ -2798,11 +2797,18 @@ fn copy_search_matches_survive_output_but_not_a_resize() {
         .checked_next()
         .expect("test precondition");
     pane_surface.panes[0].content_revision = 2;
-    pane_surface.panes[0]
-        .scroll
-        .as_mut()
-        .expect("scroll metrics")
-        .history_origin = shepr_vt::AbsRow(5);
+    {
+        let metrics = pane_surface.panes[0]
+            .scroll
+            .as_mut()
+            .expect("scroll metrics");
+        *metrics = shepr_vt::ScrollMetrics::new(
+            metrics.offset_from_bottom,
+            metrics.max_offset_from_bottom,
+            metrics.viewport_rows,
+            shepr_vt::AbsRow(5),
+        );
+    }
     state.receive_pane_surface(pane_surface.clone());
     let copy_mode = state.copy_mode.as_ref().expect("copy mode retained");
     let search = copy_mode.search.as_ref().expect("search state retained");
@@ -2810,7 +2816,7 @@ fn copy_search_matches_survive_output_but_not_a_resize() {
     assert_eq!(search.total, 1);
     assert_eq!(search.current, Some(0));
     assert_eq!(search.current_global, Some(0));
-    assert_eq!(copy_mode.history_origin, shepr_vt::AbsRow(5));
+    assert_eq!(copy_mode.scroll.history_origin, shepr_vt::AbsRow(5));
     assert_eq!(copy_mode.cursor.row, shepr_vt::AbsRow(5));
     assert!(matches!(
         copy_mode.selection,
@@ -2848,12 +2854,7 @@ fn word_selection_result_survives_focus_snapshot_lag() {
     state.compose(106, 20).expect("composed frame");
     let hit = state.hits.panes[0].clone();
     let mut request = ClientShellInput::default();
-    let metrics = shepr_termio::ScrollMetrics {
-        offset_from_bottom: 0,
-        max_offset_from_bottom: 0,
-        viewport_rows: 2,
-        history_origin: shepr_vt::AbsRow(0),
-    };
+    let metrics = shepr_termio::ScrollMetrics::new(0, 0, 2, shepr_vt::AbsRow(0));
     state.request_word_selection(&hit, metrics, 0, 1, &mut request);
     let request_id = match &request.actions[0] {
         ClientShellAction::Endpoint { request, .. } => request.id.clone(),
@@ -2889,12 +2890,12 @@ fn copy_mode_repeat_during_projection_gap_stays_active() {
             ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
         state.set_snapshot(Box::new(snapshot()));
         let mut pane_surface = surface();
-        pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics {
-            offset_from_bottom: 0,
-            max_offset_from_bottom: 20,
-            viewport_rows: 2,
-            history_origin: shepr_vt::AbsRow(0),
-        });
+        pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics::new(
+            0,
+            20,
+            2,
+            shepr_vt::AbsRow(0),
+        ));
         state.receive_pane_surface(pane_surface);
         state.compose(106, 20).expect("composed frame");
         let mut enter = ClientShellInput::default();

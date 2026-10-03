@@ -9,14 +9,9 @@ pub(in crate::shell) fn list_scroll_metrics(
     gaps_after: &[u16],
     body_height: u16,
     requested_start: usize,
-) -> shepr_termio::ScrollMetrics {
+) -> shepr_termio::scroll::ListScroll {
     if row_heights.is_empty() || body_height == 0 {
-        return shepr_termio::ScrollMetrics {
-            offset_from_bottom: 0,
-            max_offset_from_bottom: 0,
-            viewport_rows: 0,
-            history_origin: shepr_vt::AbsRow(0),
-        };
+        return shepr_termio::scroll::ListScroll::new(0, 0, 0);
     }
 
     let mut used = 0u16;
@@ -49,12 +44,7 @@ pub(in crate::shell) fn list_scroll_metrics(
         used = used.saturating_add(gap);
     }
 
-    shepr_termio::ScrollMetrics {
-        offset_from_bottom: max_start.saturating_sub(start),
-        max_offset_from_bottom: max_start,
-        viewport_rows,
-        history_origin: shepr_vt::AbsRow(0),
-    }
+    shepr_termio::scroll::ListScroll::new(start, max_start, viewport_rows)
 }
 
 pub(in crate::shell) fn list_scroll_start_to_reveal(
@@ -65,15 +55,11 @@ pub(in crate::shell) fn list_scroll_start_to_reveal(
     target: usize,
 ) -> usize {
     let mut metrics = list_scroll_metrics(row_heights, gaps_after, body_height, requested_start);
-    let mut start = metrics
-        .max_offset_from_bottom
-        .saturating_sub(metrics.offset_from_bottom);
+    let mut start = metrics.start();
     if target < start {
         return target;
     }
-    while target >= start.saturating_add(metrics.viewport_rows)
-        && start < metrics.max_offset_from_bottom
-    {
+    while target >= start.saturating_add(metrics.viewport_rows()) && start < metrics.max_start() {
         start = start.saturating_add(1);
         metrics = list_scroll_metrics(row_heights, gaps_after, body_height, start);
     }
@@ -83,7 +69,7 @@ pub(in crate::shell) fn list_scroll_start_to_reveal(
 pub(in crate::shell) fn render_list_scrollbar(
     buffer: &mut Buffer,
     track: Rect,
-    metrics: shepr_termio::ScrollMetrics,
+    metrics: shepr_termio::scroll::ListScroll,
     palette: &Palette,
 ) {
     shepr_termio::scroll::render_scrollbar_buffer(
@@ -104,16 +90,16 @@ mod tests {
     #[test]
     fn list_metrics_preserve_variable_rows_and_caller_owned_gap_policy() {
         let top = list_scroll_metrics(&[1, 3, 2], &[1, 1, 0], 5, 0);
-        assert_eq!(top.max_offset_from_bottom, 2);
-        assert_eq!(top.offset_from_bottom, 2);
-        assert_eq!(top.viewport_rows, 2);
+        assert_eq!(top.max_start(), 2);
+        assert_eq!(top.start(), 0);
+        assert_eq!(top.viewport_rows(), 2);
 
         let bottom = list_scroll_metrics(&[1, 3, 2], &[1, 1, 0], 5, usize::MAX);
-        assert_eq!(bottom.offset_from_bottom, 0);
-        assert_eq!(bottom.viewport_rows, 1);
+        assert_eq!(bottom.start(), 2);
+        assert_eq!(bottom.viewport_rows(), 1);
 
         let parent_child = list_scroll_metrics(&[2, 2, 2], &[0, 1, 0], 5, 0);
-        assert_eq!(parent_child.max_offset_from_bottom, 1);
-        assert_eq!(parent_child.viewport_rows, 2);
+        assert_eq!(parent_child.max_start(), 1);
+        assert_eq!(parent_child.viewport_rows(), 2);
     }
 }

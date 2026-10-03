@@ -37,21 +37,35 @@ raw reports are in the commit that precedes this file's.
 
 (wave-1 review and gate, wave-3 review, wave-5 fixer and review, wave-7 and wave-8 reviews)
 
-## CLN-026 - Leftovers from the third light-loop wave
+## CLN-026 - Publish helpers take the pane id twice
 
-- `Workspace::resize_focused_pane` (`crates/shepr-mux/src/workspace/pane_tree.rs`)
-  has no caller; resizing goes through `resize_pane`.
-- `WorkspaceGitStatusSnapshot::into_workspace_status`
-  (`crates/shepr-mux/src/git/mod.rs`) reimplements `fallback_label_from_cwd`
-  inline for the outside-repository case.
-- `publish_state_changed_event` and `publish_agent_process_detected_event` in
-  mux take an `EventSender` (which carries the pane id) and a separate
-  `pane_id`; if the two disagree, admission drops the event.
-- `crates/shepr-agent/src/detect/manifests/codex.toml` matches curly-quote
-  characters, the one non-ASCII punctuation in the source tree; if it is
-  deliberate screen-text matching, a comment there should say so.
+`publish_state_changed_event` and `publish_agent_process_detected_event` in
+`crates/shepr-mux/src/pane/process_probe.rs` take an `EventSender` (which
+carries the pane id) and a separate `pane_id`; if the two disagree, admission
+drops the event. The event's pane id should come from the sender. (wave-3
+review)
 
-(wave-3 review)
+## CLN-027 - Leftovers from the fourth light-loop wave
+
+- `ServerMessage::Clipboard { data: Vec<u8> }` goes through `serialize_seq` and
+  decodes one visitor call per byte; the codec has `serialize_bytes`, and a
+  bytes wrapper would make a large clipboard one copy.
+- `crates/shepr-protocol/src/framing.rs` `read_frames` picks the oversized-frame
+  `LimitKind` by comparing `max_frame == MAX_FRAME_SIZE`; a reader whose cap is
+  neither reports `MessageBytes` with the wrong maximum. The caller should pass
+  the kind.
+- `crates/shepr-protocol/src/codec.rs` carries bounded-vec limit errors through
+  serde's string-only `custom` channel with a private prefix and parses them
+  back.
+- `ServerStatusJson` validates `boot_id` on decode but stores a `String`; it
+  could hold a `BootId` with the same JSON spelling.
+- `parse_client_config` and `parse_server_config` report an unreachable
+  "could not produce validated values" fallback as a path diagnostic; it should
+  be unrepresentable or its own internal kind.
+- The no-shell diagnostic says "Configure a shell shepr recognizes" where
+  "Set it to a shell shepr recognizes" would read with the key path prefix.
+
+(wave-4 review)
 
 ## Test-only twins and test seams in production
 

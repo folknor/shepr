@@ -244,6 +244,7 @@ impl App {
             workspace_geometry: std::collections::HashMap::new(),
             settings,
             next_agent_state_change_seq: 0,
+            lifecycle_authority_dirty: std::collections::HashSet::new(),
             host_terminal_appearance: None,
             host_terminal_appearance_explicit: false,
             host_terminal_theme: restored_host_theme,
@@ -261,7 +262,7 @@ impl App {
         let mut app = Self {
             state,
             clock,
-            terminal_runtimes: restored_terminal_runtimes,
+            terminal_runtimes: shepr_mux::pane::PaneRuntimeRegistry::new(),
             event_tx,
             event_rx,
             git_refresh: git_refresh::GitRefreshScheduler::new(clock.now),
@@ -290,6 +291,9 @@ impl App {
             paths,
             restore_notice,
         };
+        for (terminal_id, runtime) in restored_terminal_runtimes {
+            app.install_terminal_runtime(terminal_id, runtime);
+        }
         app.configure_validated_window_title(config.ui().window_title.as_ref());
         app
     }
@@ -426,7 +430,7 @@ mod tests {
                 .find_map(|ws| ws.terminal_id(pane_id))
                 .cloned()
                 .expect("test runtime pane must be in a workspace");
-            self.terminal_runtimes.insert(terminal_id, runtime);
+            self.install_terminal_runtime(terminal_id, runtime);
         }
 
         /// Installs an idle test runtime for a pane, so events can be
@@ -1222,17 +1226,25 @@ mod tests {
         )
         .expect("official session");
         let terminal = app.state.terminals.get_mut(&terminal_id).expect("terminal");
-        terminal.set_detected_agent_process_at(Agent::Claude, app.clock.now);
-        terminal.set_persisted_agent_session(session.clone());
+        terminal
+            .ownership_mut()
+            .set_detected_agent_process_at(Agent::Claude, app.clock.now);
+        terminal
+            .ownership_mut()
+            .set_persisted_agent_session(session.clone());
         // Delivered from the live runtime, so admission passes them and only
         // the exited child decides that they are ignored.
         release_agent(&mut app, pane_id);
         assert_eq!(
-            app.state.terminals[&terminal_id].detected_agent,
+            app.state.terminals[&terminal_id]
+                .ownership()
+                .detected_agent(),
             Some(Agent::Claude),
         );
         assert_eq!(
-            app.state.terminals[&terminal_id].current_session_identity_for_persistence(),
+            app.state.terminals[&terminal_id]
+                .ownership()
+                .current_session_identity_for_persistence(),
             Some(session.clone()),
         );
         app.persist_for_test();
@@ -1285,8 +1297,12 @@ mod tests {
         )
         .expect("official session");
         let terminal = app.state.terminals.get_mut(&terminal_id).expect("terminal");
-        terminal.set_detected_agent_process_at(Agent::Claude, app.clock.now);
-        terminal.set_persisted_agent_session(session.clone());
+        terminal
+            .ownership_mut()
+            .set_detected_agent_process_at(Agent::Claude, app.clock.now);
+        terminal
+            .ownership_mut()
+            .set_persisted_agent_session(session.clone());
         (app, pane_id, terminal_id, session)
     }
 
@@ -1311,9 +1327,16 @@ mod tests {
         let (mut app, pane_id, terminal_id, session) = app_with_agent_session().await;
         release_agent(&mut app, pane_id);
         // The release took effect at once: no agent, nothing to resume.
-        assert_eq!(app.state.terminals[&terminal_id].detected_agent, None);
         assert_eq!(
-            app.state.terminals[&terminal_id].current_session_identity_for_persistence(),
+            app.state.terminals[&terminal_id]
+                .ownership()
+                .detected_agent(),
+            None
+        );
+        assert_eq!(
+            app.state.terminals[&terminal_id]
+                .ownership()
+                .current_session_identity_for_persistence(),
             None
         );
         app.persist_for_test();
@@ -1340,6 +1363,7 @@ mod tests {
             .adopt_checkpoint_candidates_for_shutdown(app.clock.now + Duration::from_millis(100));
         assert_eq!(
             app.state.terminals[&terminal_id]
+                .ownership()
                 .current_session_identity_for_persistence()
                 .map(|identity| identity.session_ref),
             Some(session.session_ref.clone())

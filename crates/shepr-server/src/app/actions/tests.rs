@@ -421,8 +421,8 @@ fn state_changed_updates_pane() {
         .terminals
         .get(&terminal_id)
         .expect("test precondition");
-    assert_eq!(terminal.state, AgentState::Working);
-    assert_eq!(terminal.detected_agent, Some(Agent::Pi));
+    assert_eq!(terminal.ownership().state(), AgentState::Working);
+    assert_eq!(terminal.ownership().detected_agent(), Some(Agent::Pi));
 }
 
 #[test]
@@ -443,7 +443,9 @@ fn state_changed_events_advance_the_agent_state_change_sequence() {
             observed_at: Instant::now(),
         });
         assert_eq!(
-            app.terminals[&terminal_id].last_agent_state_change_seq,
+            app.terminals[&terminal_id]
+                .ownership()
+                .last_agent_state_change_seq(),
             Some(sequence)
         );
     }
@@ -467,22 +469,34 @@ fn agent_state_change_sequence_ignores_idle_unknown_presentation_changes() {
     };
 
     app.handle_app_event(state_changed(AgentState::Idle));
-    assert_eq!(app.terminals[&terminal_id].state, AgentState::Idle);
     assert_eq!(
-        app.terminals[&terminal_id].last_agent_state_change_seq,
+        app.terminals[&terminal_id].ownership().state(),
+        AgentState::Idle
+    );
+    assert_eq!(
+        app.terminals[&terminal_id]
+            .ownership()
+            .last_agent_state_change_seq(),
         None
     );
 
     app.handle_app_event(state_changed(AgentState::Unknown));
-    assert_eq!(app.terminals[&terminal_id].state, AgentState::Unknown);
     assert_eq!(
-        app.terminals[&terminal_id].last_agent_state_change_seq,
+        app.terminals[&terminal_id].ownership().state(),
+        AgentState::Unknown
+    );
+    assert_eq!(
+        app.terminals[&terminal_id]
+            .ownership()
+            .last_agent_state_change_seq(),
         None
     );
 
     app.handle_app_event(state_changed(AgentState::Working));
     assert_eq!(
-        app.terminals[&terminal_id].last_agent_state_change_seq,
+        app.terminals[&terminal_id]
+            .ownership()
+            .last_agent_state_change_seq(),
         Some(1)
     );
 }
@@ -533,7 +547,7 @@ fn visible_blocker_overrides_hook_working() {
         .terminals
         .get(&bg_terminal_id)
         .expect("test precondition");
-    assert_eq!(terminal.state, AgentState::Blocked);
+    assert_eq!(terminal.ownership().state(), AgentState::Blocked);
 }
 
 #[test]
@@ -572,9 +586,9 @@ fn reserved_native_state_report_does_not_override_screen_state() {
         .terminals
         .get(&terminal_id)
         .expect("test precondition");
-    assert_eq!(terminal.state, AgentState::Working);
-    assert!(terminal.hook_authority().is_none());
-    assert!(terminal.persisted_agent_session().is_some());
+    assert_eq!(terminal.ownership().state(), AgentState::Working);
+    assert!(terminal.ownership().hook_authority().is_none());
+    assert!(terminal.ownership().persisted_agent_session().is_some());
 
     state.handle_app_event(AppEvent::StateChanged {
         pane_id,
@@ -589,7 +603,7 @@ fn reserved_native_state_report_does_not_override_screen_state() {
         .terminals
         .get(&terminal_id)
         .expect("test precondition");
-    assert_eq!(terminal.state, AgentState::Idle);
+    assert_eq!(terminal.ownership().state(), AgentState::Idle);
 }
 
 #[test]
@@ -628,9 +642,9 @@ fn devin_state_report_refreshes_session_without_overriding_screen_state() {
         .terminals
         .get(&terminal_id)
         .expect("test precondition");
-    assert_eq!(terminal.state, AgentState::Idle);
-    assert!(terminal.hook_authority().is_none());
-    assert!(terminal.persisted_agent_session().is_some());
+    assert_eq!(terminal.ownership().state(), AgentState::Idle);
+    assert!(terminal.ownership().hook_authority().is_none());
+    assert!(terminal.ownership().persisted_agent_session().is_some());
 }
 
 #[test]
@@ -878,7 +892,8 @@ fn pane_process_exit_publish_marks_agent_idle_before_pane_removal() {
             .terminals
             .get(&terminal_id)
             .expect("test precondition")
-            .state,
+            .ownership()
+            .state(),
         AgentState::Working
     );
 
@@ -896,7 +911,8 @@ fn pane_process_exit_publish_marks_agent_idle_before_pane_removal() {
             .terminals
             .get(&terminal_id)
             .expect("test precondition")
-            .state,
+            .ownership()
+            .state(),
         AgentState::Idle
     );
 }

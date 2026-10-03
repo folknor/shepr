@@ -8,7 +8,7 @@ use crate::limits::{
 /// oldest retained line, so the viewport starts below the history that is not
 /// scrolled into view.
 fn viewport_point(terminal: &Terminal, col: u16, row: u16) -> Point<ScreenRow> {
-    let top = terminal.scrollbar().offset;
+    let top = terminal.scrollbar().viewport_start();
     Point::new(ScreenRow(top + usize::from(row)), col)
 }
 
@@ -615,19 +615,19 @@ fn max_scrollback_limit_bytes_retains_more_history_for_larger_limits() {
 }
 
 #[test]
-fn large_negative_scroll_delta_reaches_top_of_scrollback() {
+fn large_older_scroll_reaches_top_of_scrollback() {
     let mut terminal = Terminal::new(80, 3, 1_000_000);
     write_numbered_lines(&mut terminal, 1000);
 
     let before = terminal.scrollbar();
-    assert!(before.total > before.len);
+    assert!(before.max_offset_from_bottom > 0);
 
     terminal.scroll_viewport_bottom();
-    terminal.scroll_viewport_delta(-10_000);
+    terminal.scroll_viewport_delta(ScrollTowards::Older(10_000));
 
     let after = terminal.scrollbar();
-    assert_eq!(after.offset, 0);
-    assert_eq!(after.len, before.len);
+    assert_eq!(after.viewport_start(), 0);
+    assert_eq!(after.viewport_rows, before.viewport_rows);
 }
 
 #[test]
@@ -636,14 +636,14 @@ fn absolute_scroll_row_round_trips_and_clamps() {
     write_numbered_lines(&mut terminal, 1000);
 
     let before = terminal.scrollbar();
-    let max_row = before.total.saturating_sub(before.len);
+    let max_row = before.max_offset_from_bottom;
     assert!(max_row > 0);
 
     for row in [0, max_row / 2, max_row, usize::MAX] {
         terminal.scroll_viewport_row(ScreenRow(row));
         let after = terminal.scrollbar();
-        assert_eq!(after.offset, row.min(max_row));
-        assert_eq!(after.len, before.len);
+        assert_eq!(after.viewport_start(), row.min(max_row));
+        assert_eq!(after.viewport_rows, before.viewport_rows);
     }
 }
 
@@ -664,8 +664,8 @@ fn deep_scrollback_resize_preserves_unicode_and_hyperlinks() {
     terminal.write(input.as_bytes());
 
     assert!(terminal.scrollback_rows() > u16::MAX as usize);
-    terminal.scroll_viewport_delta(-100_000);
-    assert_eq!(terminal.scrollbar().offset, 0);
+    terminal.scroll_viewport_delta(ScrollTowards::Older(100_000));
+    assert_eq!(terminal.scrollbar().viewport_start(), 0);
     assert!(
         terminal
             .read_text_screen(
@@ -684,10 +684,10 @@ fn deep_scrollback_resize_preserves_unicode_and_hyperlinks() {
     );
 
     terminal.resize(shepr_core::geometry::PaneGeometry::new(10, 5, 8, 16));
-    terminal.scroll_viewport_delta(-100_000);
+    terminal.scroll_viewport_delta(ScrollTowards::Older(100_000));
     let metrics = terminal.scrollbar();
-    assert_eq!(metrics.offset, 0);
-    assert_eq!(metrics.len, 5);
+    assert_eq!(metrics.viewport_start(), 0);
+    assert_eq!(metrics.viewport_rows, 5);
     assert!(
         terminal
             .read_text_screen(
@@ -1183,7 +1183,7 @@ fn scrolling_the_viewport_marks_every_row_dirty() {
     render_state.update(&terminal);
     render_state.clean();
 
-    terminal.scroll_viewport_delta(-2);
+    terminal.scroll_viewport_delta(ScrollTowards::Older(2));
     render_state.update(&terminal);
     assert_eq!(render_state.dirty(), Dirty::Full);
     // The cursor sits on the bottom row, which is now two rows below the viewport.
@@ -2054,4 +2054,31 @@ fn a_blank_continuation_of_a_wrapped_line_reports_content() {
         .read_ansi_screen_carrying(sr(0, 1), sr(cols - 1, 1), &mut AnsiCarry::default(), false)
         .expect("test precondition");
     assert_eq!((text.as_str(), end), ("", None));
+}
+
+#[test]
+fn history_scroll_metrics_clamp_offsets_and_share_the_row_base() {
+    let metrics = ScrollMetrics::new(usize::MAX, 10, 3, AbsRow(40));
+    assert_eq!(metrics.offset_from_bottom, 10);
+    assert_eq!(metrics.viewport_top_row(), AbsRow(40));
+    let metrics = metrics.with_offset(4);
+    assert_eq!(metrics.viewport_start(), 6);
+    assert_eq!(metrics.absolute_row_at_viewport(ViewportRow(2)), AbsRow(48));
+}
+
+#[test]
+fn explicit_viewport_directions_saturate_at_both_ends() {
+    let mut terminal = Terminal::new(80, 3, 1_000_000);
+    write_numbered_lines(&mut terminal, 30);
+    terminal.scroll_viewport_delta(ScrollTowards::Older(usize::MAX));
+    let metrics = terminal.scrollbar();
+    assert!(metrics.max_offset_from_bottom > 3);
+    assert_eq!(metrics.offset_from_bottom, metrics.max_offset_from_bottom);
+    terminal.scroll_viewport_delta(ScrollTowards::Newer(2));
+    assert_eq!(
+        terminal.scrollbar().offset_from_bottom,
+        metrics.max_offset_from_bottom - 2
+    );
+    terminal.scroll_viewport_delta(ScrollTowards::Newer(usize::MAX));
+    assert_eq!(terminal.scrollbar().offset_from_bottom, 0);
 }

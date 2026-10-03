@@ -23,7 +23,7 @@ impl Workspace {
         aggregate_attention(self.panes.values().filter_map(|pane| {
             terminals
                 .get(&pane.attached_terminal_id)
-                .map(|terminal| terminal.state.presentation_state())
+                .map(|terminal| terminal.ownership().state().presentation_state())
         }))
     }
 }
@@ -88,7 +88,14 @@ mod tests {
         let unknown = terminal_for_pane(&ws, first);
         terminals.insert(unknown.id.clone(), unknown);
         let mut idle = terminal_for_pane(&ws, second);
-        idle.state = AgentState::Idle;
+        idle.ownership_mut()
+            .set_detected_state_with_screen_signals_at(
+                None,
+                AgentState::Idle,
+                false,
+                false,
+                std::time::Instant::now(),
+            );
         terminals.insert(idle.id.clone(), idle);
 
         assert_eq!(ws.aggregate_state(&terminals), PresentedAgentState::Idle);
@@ -106,10 +113,25 @@ mod tests {
             .expect("test precondition");
         let mut terminals = HashMap::new();
         let mut idle = terminal_for_pane(&ws, first);
-        idle.state = AgentState::Idle;
+        idle.ownership_mut()
+            .set_detected_state_with_screen_signals_at(
+                None,
+                AgentState::Idle,
+                false,
+                false,
+                std::time::Instant::now(),
+            );
         terminals.insert(idle.id.clone(), idle);
         let mut blocked = terminal_for_pane(&ws, second);
-        blocked.state = AgentState::Blocked;
+        blocked
+            .ownership_mut()
+            .set_detected_state_with_screen_signals_at(
+                None,
+                AgentState::Blocked,
+                false,
+                false,
+                std::time::Instant::now(),
+            );
         terminals.insert(blocked.id.clone(), blocked);
 
         assert_eq!(ws.aggregate_state(&terminals), PresentedAgentState::Blocked);

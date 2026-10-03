@@ -8,13 +8,14 @@ impl AgentOwnership {
     ) -> Option<EffectiveStateChange> {
         let effective = self.effective_agent();
         let state = effective.state;
-        let agent_label = effective.label;
+        let changed = previous_agent_label != effective.label || previous_state != state;
 
-        if previous_agent_label == agent_label && previous_state == state {
+        self.state = state;
+
+        if !changed {
             return None;
         }
 
-        self.state = state;
         Some(EffectiveStateChange {
             previous_state,
             state,
@@ -25,5 +26,100 @@ impl AgentOwnership {
 impl AgentOwnership {
     pub fn has_agent(&self) -> bool {
         self.effective_agent_label().is_some()
+    }
+}
+
+impl AgentOwnership {
+    pub fn state(&self) -> AgentState {
+        self.state
+    }
+    pub fn detected_agent(&self) -> Option<Agent> {
+        self.detected_agent
+    }
+    pub fn fallback_state(&self) -> AgentState {
+        self.fallback_state
+    }
+    /// The arbitration row that decides the effective state, read from the
+    /// same `effective_agent()` evaluation that `recompute_effective_state`
+    /// takes the state from. It is derived live rather than cached next to
+    /// `state`: the table is pure and cheap, and a cached owner would go stale
+    /// whenever a mutation changed an arbitration input without recomputing,
+    /// leaving the detector pause and detect explain on an old answer.
+    pub fn state_owner(&self) -> EffectiveStateSource {
+        self.effective_agent().source
+    }
+    pub fn last_agent_state_change_seq(&self) -> Option<u64> {
+        self.last_agent_state_change_seq
+    }
+    pub fn record_agent_state_change_seq(&mut self, seq: u64) {
+        self.last_agent_state_change_seq = Some(seq);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_equal_state_hook_records_the_winning_source() {
+        let mut ownership = AgentOwnership::new();
+        let now = Instant::now();
+        ownership.set_detected_state_with_screen_signals_at(
+            Some(Agent::Claude),
+            AgentState::Blocked,
+            true,
+            false,
+            now,
+        );
+        assert_eq!(ownership.state_owner(), EffectiveStateSource::Screen);
+        let mutation = ownership
+            .set_hook_authority_at("custom", "claude", AgentState::Blocked, None, None, now)
+            .expect("custom hook report");
+        assert_eq!(mutation.effective_state_change, None);
+        assert_eq!(ownership.state_owner(), EffectiveStateSource::Hook);
+        assert_eq!(ownership.state(), AgentState::Blocked);
+    }
+
+    #[test]
+    fn equal_state_authority_changes_still_move_the_detector_pause() {
+        let mut ownership = AgentOwnership::new();
+        let now = Instant::now();
+        ownership.set_detected_state_with_screen_signals_at(
+            Some(Agent::Omp),
+            AgentState::Idle,
+            false,
+            false,
+            now,
+        );
+        // Only a full-lifecycle source (Omp, not Codex) pauses detection, and
+        // it owns the state only once a session anchors it.
+        let session = crate::agent::resume::AgentSessionRef::id("session").expect("session ref");
+        ownership.set_persisted_agent_session(
+            crate::agent::resume::PersistedAgentSession::from_report(
+                "shepr:omp",
+                "omp",
+                session.clone(),
+            )
+            .expect("persisted session"),
+        );
+        let mutation = ownership
+            .set_hook_authority_at(
+                "shepr:omp",
+                "omp",
+                AgentState::Idle,
+                Some(session),
+                None,
+                now,
+            )
+            .expect("full lifecycle report");
+        assert_eq!(mutation.effective_state_change, None);
+        assert_eq!(
+            ownership.state_owner(),
+            EffectiveStateSource::FullLifecycleHook
+        );
+        assert!(ownership.full_lifecycle_hook_authority_active());
+        ownership.set_pane_process_exit_at(shepr_platform::ChildExitReason::Exited, now);
+        assert_eq!(ownership.state_owner(), EffectiveStateSource::ProcessExit);
+        assert!(!ownership.full_lifecycle_hook_authority_active());
     }
 }

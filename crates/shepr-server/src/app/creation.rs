@@ -125,7 +125,7 @@ impl App {
         let outcome = self.state.commit_workspace_creation(ws, terminal);
         self.state
             .record_workspace_geometry(&outcome.workspace_id, geometry);
-        self.terminal_runtimes.insert(terminal_id, runtime);
+        self.install_terminal_runtime(terminal_id, runtime);
         crate::logging::workspace_created(&outcome.workspace_id, outcome.root_pane.raw());
         Ok(outcome.workspace_index)
     }
@@ -145,12 +145,7 @@ impl App {
         let scroll = self
             .state
             .runtime_for_pane_in_workspace(&self.terminal_runtimes, ws_idx, pane_id)
-            .and_then(shepr_mux::pane::PaneRuntime::scroll_metrics)
-            .map(|metrics| shepr_protocol::command::PaneScrollInfo {
-                offset_from_bottom: metrics.offset_from_bottom as u64,
-                max_offset_from_bottom: metrics.max_offset_from_bottom as u64,
-                viewport_rows: metrics.viewport_rows as u64,
-            });
+            .and_then(shepr_mux::pane::PaneRuntime::scroll_metrics);
         Some(shepr_protocol::command::PaneInfo {
             pane_id: self.public_pane_id(ws_idx, pane_id)?,
             scroll,

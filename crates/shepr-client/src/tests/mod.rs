@@ -316,11 +316,6 @@ fn client_error_display_connection_lost() {
 }
 
 #[test]
-fn decode_clipboard_payload_decodes_base64() {
-    assert_eq!(decode_clipboard_payload("dGVzdA=="), Some(b"test".to_vec()));
-}
-
-#[test]
 fn ioctl_cell_size_accepts_fractional_terminal_geometry() {
     assert_eq!(ioctl_cell_size(80, 24, 800, 480), Some((10, 20)));
     assert_eq!(ioctl_cell_size(80, 24, 805, 480), Some((10, 20)));
@@ -329,19 +324,11 @@ fn ioctl_cell_size_accepts_fractional_terminal_geometry() {
 }
 
 #[test]
-fn decode_clipboard_payload_rejects_invalid_base64() {
-    assert_eq!(decode_clipboard_payload("not-base64!!!"), None);
-}
-
-#[test]
 fn forward_clipboard_writes_osc52_to_the_supplied_test_sink() {
     let mut output = Vec::new();
-    clipboard_forwarding::forward_clipboard("dGVzdA==", true, &mut output)
-        .expect("valid base64 is written through OSC 52");
+    clipboard_forwarding::forward_clipboard(b"test", true, &mut output)
+        .expect("clipboard bytes are written through OSC 52");
     assert_eq!(output, b"\x1b]52;c;dGVzdA==\x07");
-    let error = clipboard_forwarding::forward_clipboard("not base64", true, &mut output)
-        .expect_err("invalid base64 is rejected");
-    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
 }
 
 pub(crate) mod endpoint_choice;

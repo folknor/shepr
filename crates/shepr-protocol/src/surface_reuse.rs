@@ -20,7 +20,7 @@ pub enum SurfaceDecodeError {
     Delta(super::surface_delta::SurfaceDeltaError),
     /// Identifies the surface whose validation failed.
     WithSubject {
-        subject: SurfaceDecodeSubject,
+        subject: Box<SurfaceDecodeSubject>,
         source: Box<Self>,
     },
 }
@@ -87,7 +87,7 @@ impl std::error::Error for SurfaceDecodeError {}
 impl SurfaceDecodeError {
     fn with_subject(self, subject: SurfaceDecodeSubject) -> Self {
         Self::WithSubject {
-            subject,
+            subject: Box::new(subject),
             source: Box::new(self),
         }
     }
@@ -278,7 +278,7 @@ impl SurfaceDecodeSubject {
 
 /// Named revision transition prevents swapping base and next revisions at admission.
 pub struct SurfaceTransition<'a> {
-    pub boot_id: &'a str,
+    pub boot_id: &'a super::BootId,
     pub base_surface_revision: SurfaceRevision,
     pub surface_revision: SurfaceRevision,
     pub base_projection_revision: ProjectionRevision,
@@ -298,14 +298,14 @@ impl<'a> From<&'a SurfaceUpdate> for SurfaceTransition<'a> {
 }
 
 pub struct Baseline<'a> {
-    boot_id: &'a str,
+    boot_id: &'a super::BootId,
     projection_revision: ProjectionRevision,
     surface_revision: SurfaceRevision,
 }
 
 impl<'a> Baseline<'a> {
     pub fn new(
-        boot_id: &'a str,
+        boot_id: &'a super::BootId,
         projection_revision: ProjectionRevision,
         surface_revision: SurfaceRevision,
     ) -> Self {
@@ -401,7 +401,7 @@ pub enum DecodedWireServerMessage {
         reason: super::ShutdownReason,
     },
     Clipboard {
-        data: String,
+        data: Vec<u8>,
     },
     WindowTitle {
         title: Option<String>,

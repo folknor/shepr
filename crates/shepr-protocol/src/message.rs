@@ -44,16 +44,13 @@ impl std::fmt::Display for SurfaceRefusal {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[expect(
-    variant_size_differences,
-    reason = "a four-byte limit beside one-byte refusals; boxing it would add an allocation to save three bytes"
-)]
 pub enum HandshakeRefusal {
     ExpectedHello,
     InvalidSurface(SurfaceRefusal),
     /// The server already serves its limit of active client connections,
-    /// the value carried. Transient: a connection frees a slot when it ends.
-    ConnectionLimit(u32),
+    /// which the carried limit names. Transient: a connection frees a slot
+    /// when it ends.
+    ConnectionLimit(crate::LimitExceeded),
     /// The server has bound its socket but is still restoring panes.
     /// Transient: it accepts clients once its panes are restored.
     ServerStarting,
@@ -67,9 +64,10 @@ impl std::fmt::Display for HandshakeRefusal {
             Self::ServerStarting => f.write_str(
                 "the server is still starting; it accepts clients once its panes are restored",
             ),
-            Self::ConnectionLimit(limit) => write!(
+            Self::ConnectionLimit(error) => write!(
                 f,
-                "the server is already serving its limit of {limit} client connections"
+                "the server is already serving its limit of {} client connections",
+                error.limit.max()
             ),
         }
     }
@@ -83,16 +81,9 @@ pub enum NoticeKind {
         pane_id: PublicPaneId,
         events: usize,
     },
-    PasteRejected {
-        size: usize,
-        max: usize,
-    },
-    /// A pane surface encoded past `MAX_MESSAGE_SIZE`, so it cannot be sent
-    /// even in parts.
-    OversizedSurface {
-        claimed: usize,
-        max: usize,
-    },
+    /// A bounded request or result could not be carried because it exceeded
+    /// the named protocol resource limit.
+    LimitExceeded(crate::LimitExceeded),
 }
 
 /// The server's saved session did not come back in full when it started.
@@ -186,14 +177,21 @@ impl std::fmt::Display for NoticeKind {
                     "Input to pane {pane_id} dropped ({events} {unit}): the pane is not reading its input"
                 )
             }
-            Self::PasteRejected { size, max } => write!(
-                f,
-                "Paste rejected: Input message is {size} bytes; Shepr's limit is {max} bytes"
-            ),
-            Self::OversizedSurface { claimed, max } => write!(
-                f,
-                "The screen is too large to send ({claimed} bytes; the limit is {max}). Make the window smaller; the display resumes once the screen fits."
-            ),
+            Self::LimitExceeded(error) => match error.limit.kind() {
+                crate::LimitKind::InputPayloadBytes => write!(
+                    f,
+                    "Paste rejected: Input message is {} bytes; Shepr's limit is {} bytes",
+                    error.actual,
+                    error.limit.max()
+                ),
+                crate::LimitKind::SurfaceMessageBytes => write!(
+                    f,
+                    "The screen is too large to send ({} bytes; the limit is {}). Make the window smaller; the display resumes once the screen fits.",
+                    error.actual,
+                    error.limit.max()
+                ),
+                _ => write!(f, "{error}"),
+            },
         }
     }
 }
@@ -209,8 +207,8 @@ pub enum ServerMessage {
 
     /// OSC 52 clipboard data forwarded from a PTY through the server.
     Clipboard {
-        /// Base64-encoded clipboard data.
-        data: String,
+        /// Bytes decoded from OSC 52 and bounded by the terminal parser.
+        data: Vec<u8>,
     },
 
     /// Set the foreground client's outer terminal window title.
@@ -238,8 +236,7 @@ pub enum ServerMessage {
 
     /// The one response to a `ClientShellEndpointRequest`. A large result (a
     /// selection copy of a long scrollback) crosses in as many frames as it
-    /// needs; only one past `MAX_MESSAGE_SIZE` is answered with an
-    /// `EndpointError::ResponseTooLarge` instead.
+    /// needs; a response past `MAX_MESSAGE_SIZE` gets a typed size-limit error.
     ClientShellEndpointResponse {
         boot_id: BootId,
         request_id: RequestId,

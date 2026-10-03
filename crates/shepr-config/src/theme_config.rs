@@ -1,6 +1,7 @@
 use serde::Deserialize;
 
 use crate::theme::{DEFAULT_THEME, ParsedThemeColors, THEME_NAMES};
+use crate::{ConfigDiagnostic, ConfigKeyPath};
 
 /// Theme configuration: pick a built-in or override individual tokens.
 ///
@@ -34,11 +35,11 @@ macro_rules! define_custom_theme_colors {
         }
 
         impl CustomThemeColors {
-            pub(crate) fn parse(&self) -> Result<ParsedThemeColors, Vec<String>> {
+            pub(crate) fn parse(&self) -> Result<ParsedThemeColors, Vec<ConfigDiagnostic>> {
                 let mut diagnostics = Vec::new();
                 let parsed = ParsedThemeColors {
                     $($field: match parse_configured_color(
-                        concat!("theme.custom.", stringify!($field)),
+                        ConfigKeyPath::root().key("theme").key("custom").key(stringify!($field)),
                         self.$field.as_deref(),
                     ) {
                         Ok(color) => color,
@@ -61,26 +62,32 @@ macro_rules! define_custom_theme_colors {
 crate::theme::palette_tokens!(define_custom_theme_colors);
 
 fn parse_configured_color(
-    field: &str,
+    key: ConfigKeyPath,
     value: Option<&str>,
-) -> Result<Option<ratatui::style::Color>, Vec<String>> {
+) -> Result<Option<ratatui::style::Color>, Vec<ConfigDiagnostic>> {
     let Some(value) = value else {
         return Ok(None);
     };
     try_parse_color(value).map(Some).ok_or_else(|| {
-        vec![format!(
-            "invalid color {field} = {value:?}; expected #rrggbb, #rgb, rgb(r, g, b), a color name, or reset"
+        vec![ConfigDiagnostic::validation(
+            key,
+            format!("invalid color {value:?}; expected #rrggbb, #rgb, rgb(r, g, b), a color name, or reset"),
         )]
     })
 }
 
-pub(crate) fn resolve_palette(config: &ThemeConfig) -> Result<crate::theme::Palette, Vec<String>> {
+pub(crate) fn resolve_palette(
+    config: &ThemeConfig,
+) -> Result<crate::theme::Palette, Vec<ConfigDiagnostic>> {
     let mut diagnostics = Vec::new();
     let name = config.name.as_deref().unwrap_or(DEFAULT_THEME);
     let base_palette = crate::theme::Palette::from_name(name).or_else(|| {
-        diagnostics.push(format!(
-            "unknown theme name theme.name = {name:?}; valid themes: {}",
-            THEME_NAMES.join(", ")
+        diagnostics.push(ConfigDiagnostic::validation(
+            ConfigKeyPath::root().key("theme").key("name"),
+            format!(
+                "unknown theme name {name:?}; valid themes: {}",
+                THEME_NAMES.join(", ")
+            ),
         ));
         None
     });
@@ -91,7 +98,10 @@ pub(crate) fn resolve_palette(config: &ThemeConfig) -> Result<crate::theme::Pale
     if let Err(errors) = &overrides {
         diagnostics.extend(errors.iter().cloned());
     }
-    let theme_accent = match parse_configured_color("theme.accent", config.accent.as_deref()) {
+    let theme_accent = match parse_configured_color(
+        ConfigKeyPath::root().key("theme").key("accent"),
+        config.accent.as_deref(),
+    ) {
         Ok(color) => color,
         Err(errors) => {
             diagnostics.extend(errors);
@@ -215,7 +225,7 @@ name = "catppucin"
 
         let diagnostics = config.collect_diagnostics();
         assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
-        assert!(diagnostics[0].contains("theme.name = \"catppucin\""));
+        assert!(diagnostics[0].contains("theme.name: unknown theme name \"catppucin\""));
         assert!(diagnostics[0].contains("valid themes:"));
     }
 
@@ -311,8 +321,8 @@ peach = "#aééb"
 
         let diagnostics = config.collect_diagnostics();
         assert_eq!(diagnostics.len(), 2, "{diagnostics:?}");
-        assert!(diagnostics[0].contains("theme.custom.red = \"bluish\""));
-        assert!(diagnostics[1].contains("theme.custom.peach = \"#aééb\""));
+        assert!(diagnostics[0].contains("theme.custom.red: invalid color \"bluish\""));
+        assert!(diagnostics[1].contains("theme.custom.peach: invalid color \"#aééb\""));
         assert!(diagnostics.iter().all(|d| d.contains("expected #rrggbb")));
     }
 
@@ -324,13 +334,13 @@ peach = "#aééb"
         assert!(
             diagnostics
                 .iter()
-                .any(|d| d.contains("invalid color theme.accent = \"#aééb\"")),
+                .any(|d| d.contains("theme.accent: invalid color \"#aééb\"")),
             "{diagnostics:?}"
         );
         assert!(
             diagnostics
                 .iter()
-                .any(|d| d.contains("invalid color theme.accent"))
+                .any(|d| d.contains("theme.accent: invalid color"))
         );
 
         let custom: ClientConfig =
@@ -340,7 +350,7 @@ peach = "#aééb"
             custom
                 .collect_diagnostics()
                 .iter()
-                .any(|d| { d.contains("invalid color theme.accent") })
+                .any(|d| { d.contains("theme.accent: invalid color") })
         );
 
         let valid: ClientConfig =

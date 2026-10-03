@@ -4,10 +4,8 @@ use std::time::Instant;
 use shepr_agent::detect::AgentState;
 use shepr_protocol::TerminalId;
 
-pub use shepr_agent::ownership::{
-    AgentOwnership, AgentOwnershipMutation as TerminalStateMutation, CheckpointContext,
-    EffectiveStateChange, HookAuthority, HookClockSample,
-};
+use shepr_agent::ownership::AgentOwnership;
+pub use shepr_agent::ownership::{EffectiveStateChange, HookAuthority, HookClockSample};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct TerminalTitleChange {
@@ -162,26 +160,46 @@ impl std::fmt::Display for RestoreFailure {
 pub struct TerminalState {
     pub id: TerminalId,
     cwd: PathBuf,
-    pub terminal_title: Option<String>,
-    pub manual_label: Option<String>,
+    terminal_title: Option<String>,
+    manual_label: Option<String>,
     ownership: AgentOwnership,
-    pub agent_resume: AgentResumeState,
-    pub restore_error: Option<RestoreFailure>,
+    agent_resume: AgentResumeState,
+    restore_error: Option<RestoreFailure>,
 }
 
-// Callers read and drive the ownership machine through the terminal record,
-// so `AgentOwnership`'s public fields are writable from here too.
-impl std::ops::Deref for TerminalState {
-    type Target = AgentOwnership;
-
-    fn deref(&self) -> &Self::Target {
+impl TerminalState {
+    pub fn ownership(&self) -> &AgentOwnership {
         &self.ownership
     }
-}
-
-impl std::ops::DerefMut for TerminalState {
-    fn deref_mut(&mut self) -> &mut Self::Target {
+    pub fn ownership_mut(&mut self) -> &mut AgentOwnership {
         &mut self.ownership
+    }
+    pub fn terminal_title(&self) -> Option<&str> {
+        self.terminal_title.as_deref()
+    }
+    pub fn manual_label(&self) -> Option<&str> {
+        self.manual_label.as_deref()
+    }
+    pub fn agent_resume(&self) -> &AgentResumeState {
+        &self.agent_resume
+    }
+    pub fn plan_agent_resume(&mut self, plan: shepr_agent::agent::resume::AgentResumePlan) {
+        self.agent_resume = AgentResumeState::Planned(plan);
+    }
+    pub fn begin_agent_resume_launch(&mut self, command: bytes::Bytes) {
+        self.agent_resume.begin_launch(command);
+    }
+    pub fn take_agent_resume_command(&mut self) -> Option<bytes::Bytes> {
+        self.agent_resume.take_command()
+    }
+    pub fn clear_agent_resume(&mut self) {
+        self.agent_resume = AgentResumeState::None;
+    }
+    pub fn restore_error(&self) -> Option<&RestoreFailure> {
+        self.restore_error.as_ref()
+    }
+    pub fn record_start_failure(&mut self, failure: RestoreFailure) {
+        self.restore_error = Some(failure);
     }
 }
 

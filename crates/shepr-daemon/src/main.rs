@@ -5,6 +5,7 @@
 //! build identity the client compares against, and the private
 //! `--client-spawned` marks a launch by a shepr client.
 
+use std::fmt::Display;
 use std::process::ExitCode;
 
 use shepr_api::daemon_exit::{CLIENT_SPAWNED_FLAG, DaemonExit};
@@ -57,14 +58,11 @@ fn usage_error(message: &str) -> ExitCode {
 fn serve(client_spawned: bool) -> ExitCode {
     let paths = match shepr_config::AppPaths::resolve_for_server() {
         Ok(paths) => paths,
-        Err(errors) => return config_error(&errors),
+        Err(errors) => return config_error(errors.diagnostics()),
     };
     let config = match shepr_config::load_server_validated(&paths) {
         Ok(config) => config,
-        Err(diagnostics) => {
-            let errors: Vec<String> = diagnostics.iter().map(ToString::to_string).collect();
-            return config_error(&errors);
-        }
+        Err(diagnostics) => return config_error(&diagnostics),
     };
     let on_ready = |ready: &shepr_server::server::headless::ServerReady| {
         if !client_spawned {
@@ -89,7 +87,11 @@ fn exit_with(code: i32) -> ExitCode {
     u8::try_from(code).map_or(ExitCode::FAILURE, ExitCode::from)
 }
 
-fn config_error(diagnostics: &[String]) -> ExitCode {
+fn config_error<I, D>(diagnostics: I) -> ExitCode
+where
+    I: IntoIterator<Item = D>,
+    D: Display,
+{
     eprintln!("shepr-server: configuration error:");
     for diagnostic in diagnostics {
         eprintln!("  {diagnostic}");

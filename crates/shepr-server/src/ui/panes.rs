@@ -173,7 +173,7 @@ pub(super) fn render_panes(
         } else if let Some(reason) = ws
             .terminal_id(info.id)
             .and_then(|id| app.terminals.get(id))
-            .and_then(|terminal| terminal.restore_error.as_ref())
+            .and_then(|terminal| terminal.restore_error())
         {
             let mut scratch = Buffer::empty(info.inner_rect);
             Paragraph::new(restore_failure_text(reason))
@@ -627,9 +627,9 @@ mod tests {
         app.terminals
             .get_mut(&terminal_id)
             .expect("test precondition")
-            .restore_error = Some(RestoreFailure::DirectoryUnavailable {
-            path: "/missing".into(),
-        });
+            .record_start_failure(RestoreFailure::DirectoryUnavailable {
+                path: "/missing".into(),
+            });
         let runtimes = PaneRuntimeRegistry::new();
         let area = Rect::new(0, 0, 80, 24);
         let layout = crate::ui::compute_surface_for(

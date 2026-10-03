@@ -2,6 +2,27 @@
 // Protocol constants
 // ---------------------------------------------------------------------------
 
+/// Largest grid, in cells, a client may request for a pane surface. Surfaces
+/// cross in as many frames as they need, so this is not a frame budget: it
+/// bounds the grids the server keeps per pane and per client. The server
+/// enforces it; a client of the same build can clamp to it before asking.
+pub use shepr_core::limits::MAX_TERMINAL_GRID_CELLS as MAX_SURFACE_CELLS;
+
+/// Largest width or height, in cells, a client may request. The per-axis cap
+/// keeps very long, narrow grids from bypassing the total cell budget.
+pub use shepr_core::limits::MAX_TERMINAL_GRID_DIMENSION as MAX_SURFACE_DIMENSION;
+
+/// Maximum expanded pane input events (see
+/// [`ClientPaneInputEvent::expanded_event_count`](crate::ClientPaneInputEvent::expanded_event_count))
+/// in one `ClientShellPaneInput` message. The client batcher splits messages
+/// before they cross it and the server refuses a message past it. Every event
+/// counts at least once, so the wire field also caps the raw event count at
+/// this value: a longer list fails to decode before its events are
+/// materialized, and the server's expanded-count check still charges key
+/// repeats and scroll lines. One configured scroll step also fits this budget
+/// because each scrolled line expands to one input event.
+pub use shepr_core::limits::MAX_INPUT_EVENT_BATCH;
+
 // Exact source and build-profile fingerprint shared by the wire preamble and
 // JSON status API. Compare it through `is_this_build`, never with `==`.
 include!(concat!(env!("OUT_DIR"), "/build_identity.rs"));
@@ -51,17 +72,6 @@ pub const MAX_INPUT_PAYLOAD: usize = MAX_CLIENT_REQUEST_BYTES;
 /// Reuses the shared client-request budget so the API line reader and pane
 /// input enforce one limit.
 pub const MAX_INITIAL_REQUEST_BYTES: usize = MAX_CLIENT_REQUEST_BYTES;
-
-/// Maximum expanded pane input events (see
-/// [`ClientPaneInputEvent::expanded_event_count`](crate::ClientPaneInputEvent::expanded_event_count))
-/// in one `ClientShellPaneInput` message. The client batcher splits messages
-/// before they cross it and the server refuses a message past it. Every event
-/// counts at least once, so the wire field also caps the raw event count at
-/// this value: a longer list fails to decode before its events are
-/// materialized, and the server's expanded-count check still charges key
-/// repeats and scroll lines. The config
-/// crate owns the value because it also caps one configured mouse scroll step.
-pub const MAX_INPUT_EVENT_BATCH: usize = shepr_config::MAX_INPUT_EVENT_BATCH;
 
 impl crate::ClientPaneInputEvent {
     /// Expanded input work represented by this event, as charged against
@@ -162,21 +172,6 @@ impl InputBatchCharge {
     }
 }
 
-/// Largest grid, in cells, a client may request for a pane surface. Surfaces
-/// cross in as many frames as they need, so this is not a frame budget: it
-/// bounds the grids the server keeps per pane and per client. It sits far above
-/// any real display (an 8K panel of 4-pixel-wide cells is about a million).
-/// The server enforces it; a client of the same build can clamp to it before
-/// asking.
-pub const MAX_SURFACE_CELLS: usize = shepr_config::MAX_TERMINAL_GRID_CELLS;
-
-/// Largest width or height, in cells, a client may request.
-///
-/// The per-axis cap prevents very long, narrow grids from bypassing the total
-/// cell budget; the cap supports unusually large terminals without unbounded
-/// coordinate ranges.
-pub const MAX_SURFACE_DIMENSION: u16 = shepr_config::MAX_TERMINAL_GRID_DIMENSION;
-
 /// Minimum permitted width or height for a client-requested surface grid.
 ///
 /// A surface used by the terminal renderer must be nonempty on each axis;
@@ -213,7 +208,9 @@ pub const MAX_SURFACE_PATCH_SPANS: usize = 4096;
 
 /// Returns the checked number of cells in a permitted surface grid.
 pub fn surface_grid_size(width: u16, height: u16) -> Option<usize> {
-    shepr_config::terminal_grid_cells(width, height)
+    shepr_core::geometry::BoundedGridSize::new(width, height)
+        .ok()
+        .map(shepr_core::geometry::BoundedGridSize::cell_count)
 }
 
 /// Largest reported cell width or height in pixels.

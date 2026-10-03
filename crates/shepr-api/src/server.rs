@@ -1,15 +1,14 @@
 use std::io::{self, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use tracing::{debug, info, warn};
 
 use crate::limits::{
-    BUSY_REQUEST_ID_TIMEOUT, INITIAL_REQUEST_READ_CHUNK_BYTES, MAX_API_INGRESS_CONNECTIONS,
-    MAX_APP_REQUESTS_IN_FLIGHT, MAX_INITIAL_REQUEST_BYTES, ORDINARY_REQUEST_TIMEOUT,
-    STREAM_WRITE_TIMEOUT,
+    BUSY_REQUEST_ID_TIMEOUT, INITIAL_REQUEST_READ_CHUNK_BYTES, MAX_INITIAL_REQUEST_BYTES,
+    ORDINARY_REQUEST_TIMEOUT, STREAM_WRITE_TIMEOUT,
 };
 use crate::schema::{
     AppRequest, ErrorResponse, MethodRoute, MethodTraits, Request, ResponseResult, SocketMethod,
@@ -26,6 +25,7 @@ const ORDINARY_REQUEST_TIMEOUT_MESSAGE: &str =
 
 mod client_protocol;
 mod listener;
+pub(crate) use client_protocol::ConnectionAdmission;
 pub use client_protocol::{
     ClientGate, ClientHandshakeOutcome, ClientHandshakeSilence, ClientProtocolHandler,
     ConnectionSlot, read_client_handshake,
@@ -150,7 +150,7 @@ fn request_id_from_line(line: &str) -> String {
 /// Refuses an API connection over the limit, echoing the caller's request ID
 /// when its request line arrives within a short bound. Runs on the refuser
 /// thread, or inline on a classification thread that found the limit full.
-fn reject_busy_connection(mut stream: LocalStream) {
+fn reject_busy_connection(mut stream: LocalStream, admission: &ConnectionAdmission) {
     // clock-io-ok: the bound covers a real socket read of the request line.
     let deadline = Instant::now() + BUSY_REQUEST_ID_TIMEOUT;
     let request_id = match read_request_line_until(&mut stream, deadline) {
@@ -161,10 +161,10 @@ fn reject_busy_connection(mut stream: LocalStream) {
             String::new()
         }
     };
-    send_busy_refusal(stream, &request_id);
+    send_busy_refusal(stream, &request_id, admission);
 }
 
-fn send_busy_refusal(mut stream: LocalStream, request_id: &str) {
+fn send_busy_refusal(mut stream: LocalStream, request_id: &str, admission: &ConnectionAdmission) {
     // The refuser serves every refused peer in turn; an unbounded write to a
     // stalled one would hold all the others.
     if let Err(err) = stream.set_write_timeout(Some(STREAM_WRITE_TIMEOUT)) {
@@ -175,7 +175,8 @@ fn send_busy_refusal(mut stream: LocalStream, request_id: &str) {
         request_id,
         crate::error::ApiErrorCode::EndpointBusy,
         format!(
-            "API server is at its limit of {MAX_API_INGRESS_CONNECTIONS} connections reading requests"
+            "API server is at its limit of {} connections reading requests",
+            admission.limit().max()
         ),
     );
     if let Err(err) = write_text_line_allow_disconnect(&mut stream, &response.body) {
@@ -199,7 +200,7 @@ fn handle_connection(
     mut stream: LocalStream,
     deadline: Instant,
     ingress: ConnectionSlot,
-    app_requests: &Arc<AtomicUsize>,
+    app_requests: &ConnectionAdmission,
     api_tx: &ApiRequestSender,
     server_stop: &crate::ServerStopSignal,
     gate: &ClientGate,
@@ -248,14 +249,13 @@ fn handle_connection(
     let response = match route_request(request, server_stop, gate) {
         Route::Immediate(response) => response,
         Route::App(request) => {
-            let Some(app_slot) =
-                ConnectionSlot::try_acquire(app_requests, MAX_APP_REQUESTS_IN_FLIGHT)
-            else {
+            let Ok(app_slot) = app_requests.try_acquire() else {
                 let busy = error_response_json(
                     &request_id,
                     crate::error::ApiErrorCode::EndpointBusy,
                     format!(
-                        "API server is at its limit of {MAX_APP_REQUESTS_IN_FLIGHT} requests waiting on the server loop"
+                        "API server is at its limit of {} requests waiting on the server loop",
+                        app_requests.limit().max()
                     ),
                 );
                 return finish_api_response(&mut stream, &request_id, method_traits, &busy);
@@ -553,6 +553,7 @@ mod tests {
     use crate::schema::{AppMethod, Method};
     use shepr_test_support::ScratchDir;
     use std::io::{BufRead, BufReader, Read};
+    use std::sync::atomic::AtomicUsize;
     use std::time::Duration;
     use tokio::sync::mpsc;
 
@@ -577,10 +578,16 @@ mod tests {
     fn serve_connection(
         server: LocalStream,
         api_tx: &ApiRequestSender,
-        app_requests: &Arc<AtomicUsize>,
+        app_requests: &ConnectionAdmission,
     ) -> io::Result<()> {
         let ingress_count = Arc::new(AtomicUsize::new(0));
-        let ingress = ConnectionSlot::try_acquire(&ingress_count, 1).expect("ingress slot");
+        let ingress_admission = ConnectionAdmission::new(
+            ingress_count,
+            shepr_protocol::Limit::new(shepr_protocol::LimitKind::ConnectionCount, 1),
+        );
+        let ingress = ingress_admission
+            .try_acquire()
+            .map_err(|exceeded| io::Error::other(exceeded.to_string()))?;
         handle_connection(
             server,
             Instant::now() + crate::limits::INITIAL_REQUEST_TIMEOUT,
@@ -589,6 +596,16 @@ mod tests {
             api_tx,
             &running(),
             &ClientGate::default(),
+        )
+    }
+
+    fn app_admission(active: Arc<AtomicUsize>) -> ConnectionAdmission {
+        ConnectionAdmission::new(
+            active,
+            shepr_protocol::Limit::new(
+                shepr_protocol::LimitKind::ConnectionCount,
+                crate::limits::MAX_APP_REQUESTS_IN_FLIGHT,
+            ),
         )
     }
 
@@ -637,7 +654,14 @@ mod tests {
         client
             .write_all(b"\n")
             .expect("terminate busy request line");
-        reject_busy_connection(server);
+        let admission = ConnectionAdmission::new(
+            Arc::new(AtomicUsize::new(0)),
+            shepr_protocol::Limit::new(
+                shepr_protocol::LimitKind::ConnectionCount,
+                crate::limits::MAX_API_INGRESS_CONNECTIONS,
+            ),
+        );
+        reject_busy_connection(server, &admission);
 
         let response: ErrorResponse =
             serde_json::from_str(&read_line(&mut client)).expect("valid refusal response");
@@ -647,10 +671,10 @@ mod tests {
             crate::error::ApiErrorCode::EndpointBusy
         );
         assert!(
-            response
-                .error
-                .message
-                .contains(&format!("{MAX_API_INGRESS_CONNECTIONS} connections")),
+            response.error.message.contains(&format!(
+                "{} connections",
+                crate::limits::MAX_API_INGRESS_CONNECTIONS
+            )),
             "{}",
             response.error.message
         );
@@ -793,7 +817,8 @@ mod tests {
             .expect("test precondition");
         client.flush().expect("test precondition");
 
-        serve_connection(server, &api_tx, &Arc::default()).expect("test precondition");
+        serve_connection(server, &api_tx, &app_admission(Arc::default()))
+            .expect("test precondition");
 
         let response = read_line(&mut client);
         let response: serde_json::Value =
@@ -812,7 +837,8 @@ mod tests {
             .expect("test precondition");
         client.flush().expect("test precondition");
 
-        serve_connection(server, &api_tx, &Arc::default()).expect("test precondition");
+        serve_connection(server, &api_tx, &app_admission(Arc::default()))
+            .expect("test precondition");
 
         let response = read_line(&mut client);
         let response: serde_json::Value =
@@ -825,12 +851,9 @@ mod tests {
     /// answered, and another app request is refused at once.
     #[test]
     fn full_app_admission_still_admits_control_requests() {
-        let app_requests = Arc::new(AtomicUsize::new(0));
-        let _held = (0..MAX_APP_REQUESTS_IN_FLIGHT)
-            .map(|_| {
-                ConnectionSlot::try_acquire(&app_requests, MAX_APP_REQUESTS_IN_FLIGHT)
-                    .expect("app slot")
-            })
+        let app_requests = app_admission(Arc::new(AtomicUsize::new(0)));
+        let _held = (0..crate::limits::MAX_APP_REQUESTS_IN_FLIGHT)
+            .map(|_| app_requests.try_acquire().expect("app slot"))
             .collect::<Vec<_>>();
         let (api_tx, mut api_rx) = mpsc::channel::<ApiRequestMessage>(1);
 
@@ -858,8 +881,8 @@ mod tests {
         assert_eq!(refused["error"]["code"], "endpoint_busy");
         assert!(api_rx.try_recv().is_err(), "nothing reached the app");
         assert_eq!(
-            app_requests.load(Ordering::Acquire),
-            MAX_APP_REQUESTS_IN_FLIGHT
+            app_requests.active_count(),
+            crate::limits::MAX_APP_REQUESTS_IN_FLIGHT
         );
     }
 
@@ -1095,7 +1118,8 @@ mod tests {
             let (api_tx, mut api_rx) = mpsc::channel(1);
             let (mut client, server) = local_stream_pair("invalid-request-id");
             writeln!(client, "{request}").expect("test precondition");
-            serve_connection(server, &api_tx, &Arc::default()).expect("test precondition");
+            serve_connection(server, &api_tx, &app_admission(Arc::default()))
+                .expect("test precondition");
 
             let mut response = String::new();
             BufReader::new(client)

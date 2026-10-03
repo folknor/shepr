@@ -414,7 +414,7 @@ mod tests {
             .expect("private parent");
             let live = ProcessIdentity::current().expect("current identity").tag();
             let (_, rest) = live.split_once('-').expect("identity fields");
-            let dead = format!("{:08x}-{rest}", u32::MAX);
+            let dead = format!("{:08x}-{rest}", i32::MAX);
             let fixture = |token, marker| {
                 private_fixture(scratch.path(), &kind.directory_name(token), marker)
             };

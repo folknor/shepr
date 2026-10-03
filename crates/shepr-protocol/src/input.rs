@@ -1,6 +1,6 @@
 use super::*;
 use serde::{Deserialize, Serialize};
-use shepr_core::limits::PALETTE_COLOR_COUNT;
+use shepr_core::{geometry::BoundedGridSize, limits::PALETTE_COLOR_COUNT};
 pub use shepr_vt::KittyKeyboardFlags;
 
 // ---------------------------------------------------------------------------
@@ -18,18 +18,10 @@ impl ClientSurfaceSize {
     /// Fit a requested grid into the server's surface limits. Keep its width
     /// first so the shell layout tracks the host; trim excess height.
     pub fn clamped(self) -> Self {
-        let cols = self
-            .cols
-            .clamp(MIN_SURFACE_DIMENSION, MAX_SURFACE_DIMENSION);
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "bounded by MAX_SURFACE_DIMENSION (a u16) via .min(...), so this never truncates"
-        )]
-        let max_rows =
-            (MAX_SURFACE_CELLS / usize::from(cols)).min(usize::from(MAX_SURFACE_DIMENSION)) as u16;
+        let grid = BoundedGridSize::clamped(self.cols, self.rows);
         Self {
-            cols,
-            rows: self.rows.clamp(MIN_SURFACE_DIMENSION, max_rows),
+            cols: grid.cols(),
+            rows: grid.rows(),
         }
     }
 }

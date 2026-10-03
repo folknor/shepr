@@ -2190,12 +2190,7 @@ fn resize_shrinks_both_axes_with_cursor_at_old_bottom() {
     assert_eq!(pane.detection_text(), "beta\ngamma\ndelta\n");
     assert_eq!(
         pane.scroll_metrics(),
-        Some(ScrollMetrics {
-            offset_from_bottom: 0,
-            max_offset_from_bottom: 1,
-            viewport_rows: 3,
-            history_origin: AbsRow(4),
-        })
+        Some(ScrollMetrics::new(0, 1, 3, AbsRow(4),))
     );
 }
 

@@ -416,7 +416,7 @@ mod tests {
                 AgentState::Working,
                 shepr_agent::agent::resume::AgentSessionRef::id("codex-session"),
                 Some(1),
-                shepr_mux::terminal::state::HookClockSample {
+                shepr_agent::ownership::HookClockSample {
                     monotonic: observed_at + std::time::Duration::from_secs(1),
                     wall: std::time::SystemTime::now(),
                 },
@@ -440,7 +440,7 @@ mod tests {
         app.handle_internal_event(exit_report);
 
         let terminal = &app.state.terminals[&terminal_id];
-        assert_eq!(terminal.state, AgentState::Idle);
-        assert!(terminal.hook_authority().is_none());
+        assert_eq!(terminal.ownership().state(), AgentState::Idle);
+        assert!(terminal.ownership().hook_authority().is_none());
     }
 }

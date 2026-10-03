@@ -118,7 +118,7 @@ async fn pane_scroll_sets_and_clamps_endpoint_owned_history() {
     let handled = app
         .handle_pane_scroll(&PaneScrollParams {
             pane_id: public_pane_id,
-            offset_from_bottom: u64::MAX,
+            offset_from_bottom: usize::MAX,
         })
         .expect("the pane scrolls");
 
@@ -128,7 +128,7 @@ async fn pane_scroll_sets_and_clamps_endpoint_owned_history() {
     };
     assert_eq!(
         pane.scroll.expect("scroll metrics").offset_from_bottom,
-        max_offset as u64
+        max_offset
     );
 }
 
@@ -459,7 +459,7 @@ fn pane_rename_returns_the_renamed_pane() {
         .attached_terminal_id
         .clone();
     assert_eq!(
-        app.state.terminals[&terminal_id].manual_label.as_deref(),
+        app.state.terminals[&terminal_id].manual_label(),
         Some("build")
     );
 }
@@ -480,7 +480,7 @@ fn pane_rename_sets_and_clears_the_manual_label() {
     })
     .expect("the pane is renamed");
     assert_eq!(
-        app.state.terminals[&terminal_id].manual_label.as_deref(),
+        app.state.terminals[&terminal_id].manual_label(),
         Some("reviewer")
     );
 
@@ -495,7 +495,7 @@ fn pane_rename_sets_and_clears_the_manual_label() {
             ..
         })
     ));
-    assert!(app.state.terminals[&terminal_id].manual_label.is_none());
+    assert!(app.state.terminals[&terminal_id].manual_label().is_none());
 }
 
 fn app_with_workspace() -> App {

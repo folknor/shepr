@@ -14,6 +14,24 @@ pub const UTF8_MAX_BYTES_PER_CODEPOINT: usize = 4;
 /// index can address. Fixed by the xterm palette format, not a tunable.
 pub const PALETTE_COLOR_COUNT: usize = 1usize << u8::BITS;
 
+/// Maximum expanded input events accepted in one client pane-input message.
+///
+/// One configured mouse scroll step also fits this budget because every line
+/// expands to one pane input event.
+pub const MAX_INPUT_EVENT_BATCH: usize = 4096;
+
+/// Maximum width or height in cells for a terminal grid.
+///
+/// This bounds both configured headless terminals and client-requested pane
+/// surfaces without constraining the raw geometry a host terminal can report.
+pub const MAX_TERMINAL_GRID_DIMENSION: u16 = 4096;
+
+/// Maximum number of cells in a terminal grid.
+///
+/// This bounds both configured headless terminals and client-requested pane
+/// surfaces, independently of the per-axis limit.
+pub const MAX_TERMINAL_GRID_CELLS: usize = 1 << 22;
+
 /// An SSH bridge must outlive several client heartbeat cycles while idle.
 /// This gives a healthy bridge multiple chances to answer endpoint probes;
 /// its minimum cycle ratio is checked below.

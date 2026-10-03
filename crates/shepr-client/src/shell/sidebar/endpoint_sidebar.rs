@@ -403,12 +403,10 @@ pub(in crate::shell) fn render_expanded(
         body.height,
         *state.workspace_scroll,
     );
-    hits.workspace_max_scroll = metrics.max_offset_from_bottom;
+    hits.workspace_max_scroll = metrics.max_start();
     hits.workspace_scroll_metrics = Some(metrics);
-    *state.workspace_scroll = metrics
-        .max_offset_from_bottom
-        .saturating_sub(metrics.offset_from_bottom);
-    let show_scrollbar = metrics.max_offset_from_bottom > 0 && body.width > 1;
+    *state.workspace_scroll = metrics.start();
+    let show_scrollbar = metrics.max_start() > 0 && body.width > 1;
     let content_width = body.width.saturating_sub(u16::from(show_scrollbar));
     let mut y = body.y;
     for (row_index, row) in rows.iter().enumerate().skip(*state.workspace_scroll) {

@@ -7,11 +7,11 @@ use crate::workspace::Workspace;
 use shepr_protocol::TerminalId;
 
 use super::actor::{PersistJob, SessionBundle};
-use super::snapshot::{capture_deferred, capture_pending_history};
+use super::snapshot::{SavedPaneRef, capture_deferred, capture_pending_history};
 
 /// Captures the current session, clearing its saved state when no workspace
 /// remains and otherwise writing one structural snapshot with optional pane
-/// history.
+/// history. The returned terminal index uses the same pane keys as the snapshot.
 pub fn capture_job(
     workspaces: &[Workspace],
     terminals: &HashMap<TerminalId, TerminalState>,
@@ -20,11 +20,11 @@ pub fn capture_job(
     active: Option<usize>,
     host_theme: shepr_termio::host_term::theme::TerminalTheme,
     persist_pane_history: bool,
-) -> PersistJob {
+) -> (PersistJob, HashMap<SavedPaneRef, TerminalId>) {
     if workspaces.is_empty() {
-        return PersistJob::Clear;
+        return (PersistJob::Clear, HashMap::new());
     }
-    let (snapshot, cwds) = capture_deferred(
+    let (snapshot, cwds, terminal_ids) = capture_deferred(
         workspaces,
         terminals,
         terminal_runtimes,
@@ -34,9 +34,12 @@ pub fn capture_job(
     );
     let history =
         persist_pane_history.then(|| capture_pending_history(workspaces, terminal_runtimes));
-    PersistJob::Save(SessionBundle {
-        snapshot,
-        cwds,
-        history,
-    })
+    (
+        PersistJob::Save(SessionBundle {
+            snapshot,
+            cwds,
+            history,
+        }),
+        terminal_ids,
+    )
 }

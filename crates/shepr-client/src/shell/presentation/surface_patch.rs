@@ -182,14 +182,7 @@ impl ClientShellState {
                         rect.height,
                     )
                 });
-                hit.scroll = updated.scroll.map(|metrics| shepr_termio::ScrollMetrics {
-                    offset_from_bottom: usize::try_from(metrics.offset_from_bottom)
-                        .unwrap_or(usize::MAX),
-                    max_offset_from_bottom: usize::try_from(metrics.max_offset_from_bottom)
-                        .unwrap_or(usize::MAX),
-                    viewport_rows: usize::try_from(metrics.viewport_rows).unwrap_or(usize::MAX),
-                    history_origin: metrics.history_origin,
-                });
+                hit.scroll = updated.scroll;
                 hit.mouse_reporting = updated.mouse_reporting;
                 hit.sgr_pixel_mouse = updated.sgr_pixel_mouse;
                 hit.pixel_width = updated.pixel_width;
@@ -306,16 +299,19 @@ mod tests {
             splits: Vec::new(),
         });
         state.copy_mode = Some(ClientCopyModeState {
+            scroll: shepr_vt::ScrollMetrics::new(
+                0,
+                0,
+                usize::from(area.height),
+                shepr_vt::AbsRow(0),
+            ),
             pane_id: copy_pane_id,
-            history_origin: shepr_vt::AbsRow(0),
             geometry: (area.width, area.height),
             alternate_screen_active: false,
             cursor: shepr_protocol::command::PaneTextPoint {
                 row: shepr_vt::AbsRow(0),
                 col: 0,
             },
-            offset_from_bottom: 0,
-            max_offset_from_bottom: 0,
             entry_offset_from_bottom: 0,
             selection: None,
             search: None,

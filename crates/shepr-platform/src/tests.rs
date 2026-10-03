@@ -95,11 +95,15 @@ fn read_limited_reader_retries_interrupted_reads() {
 #[test]
 fn proc_stat_yields_session_and_controlling_tty() {
     assert_eq!(
-        session_and_tty_from_stat("4242 (shepr (srv) x) S 1 4242 4242 0 -1 4194560"),
+        session_and_tty_from_stat(
+            "4242 (shepr (srv) x) S 1 4242 4242 0 -1 4194560 0 0 0 0 0 0 0 0 0 0 0 0 0"
+        ),
         Some((4242, 0))
     );
     assert_eq!(
-        session_and_tty_from_stat("77 (shepr) S 70 77 77 34817 77 4194560"),
+        session_and_tty_from_stat(
+            "77 (shepr) S 70 77 77 34817 77 4194560 0 0 0 0 0 0 0 0 0 0 0 0 0"
+        ),
         Some((77, 34817))
     );
     assert_eq!(session_and_tty_from_stat("77 (shepr) S 70"), None);
@@ -284,7 +288,7 @@ fn dead_process_tag() -> String {
     let current = process_identity::ProcessIdentity::current().expect("current process identity");
     let tag = current.tag();
     let (_, rest) = tag.split_once('-').expect("serialized process identity");
-    format!("{:08x}-{rest}", u32::MAX)
+    format!("{:08x}-{rest}", i32::MAX)
 }
 
 #[test]

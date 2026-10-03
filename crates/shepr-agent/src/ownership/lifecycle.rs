@@ -4,7 +4,7 @@ pub(super) struct EffectiveAgent<'a> {
     pub(super) label: Option<&'a str>,
     pub(super) known_agent: Option<Agent>,
     pub(super) state: AgentState,
-    pub(super) full_lifecycle_hook: bool,
+    pub(super) source: EffectiveStateSource,
 }
 
 impl AgentOwnership {
@@ -44,7 +44,13 @@ impl AgentOwnership {
                     } else {
                         authority.state
                     },
-                    full_lifecycle_hook,
+                    source: if full_lifecycle_hook {
+                        EffectiveStateSource::FullLifecycleHook
+                    } else if visible_blocker {
+                        EffectiveStateSource::Screen
+                    } else {
+                        EffectiveStateSource::Hook
+                    },
                 }
             }
             None => {
@@ -58,7 +64,11 @@ impl AgentOwnership {
                     label: known_agent.map(Agent::label),
                     known_agent,
                     state: self.fallback_state,
-                    full_lifecycle_hook: false,
+                    source: if self.pane_ended || self.process_evidence.exit().is_some() {
+                        EffectiveStateSource::ProcessExit
+                    } else {
+                        EffectiveStateSource::Screen
+                    },
                 }
             }
         }
@@ -79,7 +89,10 @@ impl AgentOwnership {
         }
     }
 
+    /// Whether a live full-lifecycle hook owns the state, which pauses screen
+    /// detection. Derived from the same row as `state_owner()`, so the pause
+    /// and detect explain never disagree.
     pub fn full_lifecycle_hook_authority_active(&self) -> bool {
-        self.effective_agent().full_lifecycle_hook
+        self.state_owner() == EffectiveStateSource::FullLifecycleHook
     }
 }

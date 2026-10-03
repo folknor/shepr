@@ -822,12 +822,12 @@ from = "shepr-config"
 allow = ["crossterm", "ratatui", "serde", "serde_ignored", "shepr-agent", "shepr-core", "shepr-platform", "toml"]
 kinds = ["normal"]
 
-# Protocol shares grid and input-batch limits with config; config never
-# depends on protocol.
+# Protocol takes the grid and input-batch resource budgets from core, which
+# config also reads; config never depends on protocol.
 [[dependency_rule]]
 name = "shepr-protocol-layer"
 from = "shepr-protocol"
-allow = ["ratatui", "serde", "shepr-config", "shepr-core", "shepr-vt", "tracing"]
+allow = ["ratatui", "serde", "shepr-core", "shepr-vt", "tracing"]
 kinds = ["normal"]
 
 [[dependency_rule]]

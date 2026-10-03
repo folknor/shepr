@@ -5,7 +5,9 @@ use std::num::{NonZeroU16, NonZeroU32};
 
 use serde::{Deserialize, Serialize};
 
-use crate::limits::{PANE_MIN_COLS, PANE_MIN_ROWS};
+use crate::limits::{
+    MAX_TERMINAL_GRID_CELLS, MAX_TERMINAL_GRID_DIMENSION, PANE_MIN_COLS, PANE_MIN_ROWS,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum SplitBranch {
@@ -42,6 +44,80 @@ impl GridSize {
             cols: NonZeroU16::new(cols.max(PANE_MIN_COLS)).unwrap_or(NonZeroU16::MIN),
             rows: NonZeroU16::new(rows.max(PANE_MIN_ROWS)).unwrap_or(NonZeroU16::MIN),
         }
+    }
+}
+
+/// A nonempty terminal grid that fits the shared per-axis and cell-count
+/// resource budgets.
+///
+/// Raw host geometry remains a [`GridSize`]: a host terminal can report
+/// dimensions outside these budgets, and the server handshake needs to see
+/// those values so it can return the matching refusal. Use this type for
+/// grids that the application is about to retain or allocate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BoundedGridSize(GridSize);
+
+/// Why a grid cannot be represented by [`BoundedGridSize`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BoundedGridSizeError {
+    /// At least one axis has no cells.
+    ZeroDimension,
+    /// At least one axis exceeds the per-axis limit.
+    DimensionTooLarge,
+    /// The grid exceeds the total cell-count limit.
+    TooManyCells,
+}
+
+impl BoundedGridSize {
+    /// Validate nonzero dimensions against the shared grid resource budgets.
+    pub fn new(cols: u16, rows: u16) -> Result<Self, BoundedGridSizeError> {
+        let grid = GridSize::new(cols, rows).ok_or(BoundedGridSizeError::ZeroDimension)?;
+        Self::try_from(grid)
+    }
+
+    /// Clamp a requested grid to the shared budgets, keeping its width first
+    /// and trimming excess height.
+    pub fn clamped(cols: u16, rows: u16) -> Self {
+        let cols = cols.clamp(1, MAX_TERMINAL_GRID_DIMENSION);
+        let row_budget = MAX_TERMINAL_GRID_CELLS / usize::from(cols);
+        let max_rows_by_cells = u16::try_from(row_budget).unwrap_or(MAX_TERMINAL_GRID_DIMENSION);
+        let max_rows = MAX_TERMINAL_GRID_DIMENSION.min(max_rows_by_cells);
+        let rows = rows.clamp(1, max_rows);
+        Self(GridSize::clamped(cols, rows))
+    }
+
+    /// The ordinary nonzero grid carried by this bounded value.
+    pub fn grid(self) -> GridSize {
+        self.0
+    }
+
+    pub fn cols(self) -> u16 {
+        self.0.cols.get()
+    }
+
+    pub fn rows(self) -> u16 {
+        self.0.rows.get()
+    }
+
+    /// Number of cells in this already-validated grid.
+    pub fn cell_count(self) -> usize {
+        usize::from(self.cols()) * usize::from(self.rows())
+    }
+}
+
+impl TryFrom<GridSize> for BoundedGridSize {
+    type Error = BoundedGridSizeError;
+
+    fn try_from(grid: GridSize) -> Result<Self, Self::Error> {
+        let cols = grid.cols.get();
+        let rows = grid.rows.get();
+        if cols > MAX_TERMINAL_GRID_DIMENSION || rows > MAX_TERMINAL_GRID_DIMENSION {
+            return Err(BoundedGridSizeError::DimensionTooLarge);
+        }
+        if usize::from(cols) * usize::from(rows) > MAX_TERMINAL_GRID_CELLS {
+            return Err(BoundedGridSizeError::TooManyCells);
+        }
+        Ok(Self(grid))
     }
 }
 

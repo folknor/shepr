@@ -98,7 +98,7 @@ impl App {
             drop(runtime);
             return rejected("the split target is no longer available");
         };
-        self.terminal_runtimes.insert(terminal_id, runtime);
+        self.install_terminal_runtime(terminal_id, runtime);
         let effects = EndpointEffects {
             shell_projection_changed: true,
             pane_surface_changed: true,
@@ -183,7 +183,7 @@ impl App {
             return Err(pane_missing(&params.pane_id).into());
         };
         let label = normalized_user_label(params.label);
-        let changed = terminal.manual_label != label;
+        let changed = terminal.manual_label() != label.as_deref();
         if changed {
             match label {
                 Some(label) => terminal.set_manual_label(label),

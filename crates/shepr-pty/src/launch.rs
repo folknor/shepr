@@ -153,12 +153,12 @@ fn protocol_error(message: &str) -> io::Error {
 pub type StatusDelivery = Box<dyn FnOnce(OwnedFd) + Send>;
 
 struct Waiting {
-    pid: u32,
+    pid: shepr_platform::Pid,
     deliver: StatusDelivery,
 }
 
 struct Parked {
-    pid: u32,
+    pid: shepr_platform::Pid,
     channel: OwnedFd,
     at: Instant,
 }
@@ -299,7 +299,7 @@ impl LaunchService {
     pub(crate) fn register(
         &'static self,
         ticket: u64,
-        pid: u32,
+        pid: shepr_platform::Pid,
         deliver: StatusDelivery,
     ) -> Registration {
         let parked = {
@@ -386,7 +386,7 @@ impl Router {
         }
     }
 
-    fn route(&self, ticket: u64, pid: u32, channel: OwnedFd) {
+    fn route(&self, ticket: u64, pid: shepr_platform::Pid, channel: OwnedFd) {
         let delivery = {
             let mut routes = lock_auxiliary(&self.routes);
             // clock-io-ok: an accepted connection is the IO boundary that stamps parking.
@@ -397,7 +397,7 @@ impl Router {
                 Some(waiting) => {
                     // A connection for this ticket from another process.
                     routes.waiting.insert(ticket, waiting);
-                    tracing::warn!(ticket, pid, "pane launch status from an unexpected process");
+                    tracing::warn!(ticket, pid = %pid, "pane launch status from an unexpected process");
                     return;
                 }
                 None if routes.retired.remove(&ticket).is_some() => {
@@ -446,7 +446,9 @@ impl Drop for Registration {
 /// `pid` from its credentials), bounded by `LAUNCH_HELLO_TIMEOUT` so a stray
 /// local connection cannot stall the listener, then clears the receive
 /// timeout for the channel's reader.
-fn accept_hello(channel: &OwnedFd, pid: u32) -> io::Result<(u64, u32)> {
+fn accept_hello(channel: &OwnedFd, pid: u32) -> io::Result<(u64, shepr_platform::Pid)> {
+    let pid = shepr_platform::Pid::new(pid)
+        .ok_or_else(|| protocol_error("invalid launch peer process id"))?;
     let timeout = libc::timeval {
         tv_sec: libc::time_t::try_from(LAUNCH_HELLO_TIMEOUT.as_secs())
             .map_err(|_| io::Error::other("hello timeout out of range"))?,

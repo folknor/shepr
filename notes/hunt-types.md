@@ -134,56 +134,22 @@ and derive it from list order; `AppState::workspace(&WorkspaceId) ->
 Option<WorkspaceRef>` so handlers keep the id and positional indices exist only
 for ordering. Reported by contracts, server-app and client-shell.
 
-## TYP-005 - `BootId` is parsed, then thrown back into a `String` at every hop
+## TYP-005 - Stop and status flows still carry the boot id as text
 
-`shepr_protocol::BootId` validates its spelling but is a `String` newtype with
-`Deref<str>`, `Borrow<str>`, `PartialEq<str | &str | String>` and
-`PartialEq<BootId> for String`, and `process_id()` re-parses its own text.
-Everything on the JSON side and in stop and launch flows carries the boot as
-text: `ResponseResult::Pong { boot_id: String }`,
-`ServerStopIfBootParams::expected_boot_id`, `RuntimeStatus::boot_id`,
-`ServerStatusJson::boot_id`, `stop_active_server(expected_boot_id:
-Option<&str>)`, `BootProbe::Changed(String)`, `BootStopWait::Changed`,
-`LeaseWait::NewBoot`, `ServerStopError::{BootMismatch, OccupantChanged}`,
-`server::stop_server` comparing through `PartialEq<&str>`,
-`surface_reuse::Baseline::new/accepts(boot_id: &str, ..)`, the CLI's
-`ServerRuntimeStatus::Running { boot_id: String }`, `spec.rs::boot_id` (parses
-then returns `value.to_owned()`), `server::Command::Stop { expected_boot:
-Option<String> }`, `RemoteCliCommand::ServerStop { expected_boot: &str }`,
-`DifferentBuildServer::boot_id`, `judge_remote_server` (parses only as a
-filter), `restart_local`'s `stop: impl FnMut(&str)`,
-`local_server::boot_id_process_id` (parses again for the pid), and in the
-client shell `answer_request(boot_id: &str)` and `active_boot_key: String =
-format!("{}:{}", storage_key, boot_id)`. A test uses the non-canonical
-`"test"`.
+`BootId` stores its parsed pid and clock (`crates/shepr-protocol/src/identity.rs`)
+and the surface baselines and client request answers take it typed. Still
+open: the JSON-side identities (`RuntimeStatus`, the ping result), the stop
+guards, probes and errors in `crates/shepr-api/src/server_stop.rs`, and the
+remote restart identities in shepr-remote still carry `String` boot ids and
+compare through text. Some API presence and remote startup tests use the
+non-canonical `"test"`. The JSON fixtures stay as they are. (contracts, edges)
 
-Proposal: a structured `BootId { pid, clock }` with `Display`/`FromStr`/serde at
-the boundary only, carried end to end, deserialized in the schema so junk is an
-invalid request (see the bug about malformed `--expect-boot`). Reported by
-contracts, edges, server-serving and client-shell.
+## TYP-006 - Build ids still travel as strings outside the comparisons
 
-## TYP-006 - A build id has no type and a sentinel spelling
-
-`BUILD_ID: &str` is sixteen hex digits or the marker `"unidentifiable--"`. Every
-judgment goes through `is_identifiable_build_id`, `builds_match` and
-`is_this_build(&str)` (eight call sites across `src/cli.rs`,
-`src/cli/status.rs`, `src/preflight.rs`, `shepr-remote` `host.rs` and
-`local_server.rs`). `PeerBuild { build_id: String }`, `Pong::build_id`,
-`RuntimeStatus::build_id`, `ClientStatusJson`, `SiblingServerJson`,
-`ServerStatusJson`, `DifferentBuildServer` and `RemoteServerStatus` carry it raw;
-`preamble_for(&str)` pads or truncates whatever it is given;
-`server_lifecycle::printable_remote_token` parses it by hand just to show it;
-`"unknown"` stands in for absence. The `--version` line format
-(`"{CARGO_PKG_VERSION}+{BUILD_ID}"`, printed by both binaries) is written in
-one crate and parsed in another by `local_server::parse_server_version_line`
-with no shared type.
-
-Proposal: `enum BuildIdentity { Known([u8; 16]), Unidentifiable }` with
-`matches()` (false when either side is unidentifiable), a fixed-size preamble
-encoding, `RuntimeStatus` carrying a classification computed once at parse, and
-a `{ version, build_id }` value with `Display`/`FromStr` for the version line.
-Reported by contracts and edges. contracts notes the single predicate is good;
-the problem is the untyped input.
+`BuildIdentity` and a shared `BuildVersion` parser now exist
+(`crates/shepr-protocol/src/build.rs`) and comparisons use them. Still open: the
+schema fields, `PeerBuild` and the launch and remote status values carry the
+build id as `String`. (contracts, edges)
 
 ## TYP-007 - `RequestId` is any string, and the client encodes structure in it
 
@@ -265,30 +231,15 @@ counter (`CheckpointGeneration` minted only by the machine with
 `is_released_by(through)`, a warning generation, a location generation, a
 session generation). Reported by server-app and server-serving.
 
-## TYP-010 - Process ids, process groups and process states are bare integers and chars
+## TYP-010 - Foreground job and tree walks still use numeric process ids
 
-Pids appear as `u32` (`PaneChild::id`, `ProcessHandle::pid`,
-`SpawnedDaemon::id`, `ProcessIdentity.pid`, launch `Waiting.pid`,
-`ChildLiveness::pid()`, `live_pid() -> Option<u32>`) and as `libc::pid_t`
-(`daemon.rs` `kill_process_group`, `PaneChild::raw_pid`); session ids as both
-`u32` and `i32`. Process groups are `u32` beside pids
-(`foreground_process_group_members(child_pid, process_group_id)`,
-`process_tree_pids([process_group_id, child_pid], ..)`,
-`ProcessProbeResult::process_group_id`,
-`transient_default_color_owner_pgid`,
-`should_restore_host_terminal_theme(owner_pgid: u32, shell_pid: u32, ..)`,
-whose tests pass `42, 7` positionally). `follow_cwd_from_processes` decides
-"the shell is in the foreground" with `shell_pid != foreground_pgid`, comparing
-a pid with a pgid, correct only because the shell is a session and group leader.
-`process_pgrp_comm_and_state` returns `(i32, String, char)` and kernel states
-are compared as `'T'`, `'D' | 'Z' | 'X' | 'x'`. `0` is the absence sentinel
-(`root > 0`, `process_cwd(0)` returns `None`, `ChildLiveness::new(0, None)`).
-Each boundary re-checks `> 0` and the `pid_t` range by hand.
-
-Proposal: in `shepr-platform`, `Pid(NonZeroU32)` with `as_pid_t()`, `Pgid` and
-`SessionId` as distinct wrappers with `Pgid::led_by(Pid)` and
-`SessionId::of_leader(Pid)`, and `enum ProcState` with `is_finished()` and
-`allows_remote_memory_read()`. Reported by foundation, agents and mux-panes.
+`Pid`, `Pgid`, `SessionId` and `ProcState` live in shepr-platform and cover
+process identities, pidfds, PTY launch, child liveness, teardown, probe results
+and the daemon group kill. Still numeric: the foreground-job fields and the
+task and children traversal in `crates/shepr-agent/src/detect/proc_tree.rs`,
+the detection scheduling fields, the terminal colour-owner storage, and some
+accessors and probe parameters; and `boot_id_process_id` in shepr-remote could
+use `Pid`. (foundation, agents, mux-panes)
 
 ## TYP-011 - `SshTarget` still derefs to `str`
 
@@ -724,29 +675,6 @@ an `AbsRange`, row iterators and `Rect::viewport_row_at`, `Selection::range()`
 and `belongs_to`, and a `SurfaceRect`/`ScreenRect` split with one
 `SurfaceOrigin::to_screen`. Reported by terminal and client-shell.
 
-## TYP-050 - Scroll position travels as a sign, three widths and two bases
-
-`Terminal::scroll_viewport_delta(isize)` means "negative is older history"
-while alacritty's `Scroll::Delta` means the opposite; mux `scroll_up(lines)`
-passes `-lines` and vt negates again before clamping to `i32`, two sign flips
-held in step by comments. Scroll metrics are `u64` on the wire
-(`PaneSurfaceScrollMetrics`) and `usize` in termio (`ScrollMetrics`), converted
-field by field with `as u64` (server `client_shell.rs`, `retained_surface.rs`,
-`pane_info`) and `try_from(..).unwrap_or(usize::MAX)` (client `composition.rs`,
-`surface_patch.rs`, `scroll_target_shown`, `presented_surface_changed`,
-`answer_pane_scroll`, the patch fast path, `compose`; server
-`handle_pane_scroll`, `handle_pane_copy_search`). The client's sidebar lists,
-navigator and Help reuse the terminal-history `ScrollMetrics` with a dummy
-`history_origin: AbsRow(0)` and convert top-based starts to offsets from bottom
-by hand at four renderers and four scrollbar arms in `mouse.rs`;
-`ClientCopyModeState` keeps its own `history_origin`, offsets and `geometry`
-and reimplements `viewport_top_row`. Proposal: `ScrollTowards::{Older(n),
-Newer(n)}`, one `ScrollMetrics` from vt that is also the wire type with
-`offset_from_bottom <= max` by construction, a `ListScroll { start, max_start,
-viewport_rows }` for chrome lists, and copy mode holding a `HistoryScroll`.
-Where offsets are computed from the bottom is filed among the consolidations.
-Reported by terminal, client-shell and server-app.
-
 ## TYP-051 - Scrollback bytes and history lines are both `usize`
 
 `Terminal::new(cols, rows, max_scrollback: usize)` takes a byte budget;
@@ -858,22 +786,6 @@ so the ledger's continuation cannot receive the wrong variant. The `32f70f2`
 move typed the loop's errors but left the app's as one variant. Reported by
 contracts, server-app, server-serving and client-shell.
 
-## TYP-063 - "Over a size limit" has six shapes, and caps are attributes
-
-`FramingError::Oversized { claimed: usize, max: usize }`,
-`NoticeKind::PasteRejected { size, max }`, `NoticeKind::OversizedSurface {
-claimed, max }`, `EndpointError::ResponseTooLarge { size: u64, limit: u64 }`,
-`CodecError::CollectionLimitExceeded { len: u64, max: usize }`, and
-`serialize_bounded_vec`/`deserialize_bounded_vec` reporting the same condition as
-`CodecError::Message(String)`. The `#[serde(serialize_with =
-"codec::serialize_bounded_vec::<N, _, _>", deserialize_with = ..)]` pair is
-repeated on about fifteen fields; a field that forgets it falls back to
-`MAX_COLLECTION_ITEMS`. `ConnectionSlot::try_acquire(&Arc<AtomicUsize>, cap)`
-takes the cap at every call, and each site picks the matching constant, so a
-wrong pairing compiles. Proposal: `LimitExceeded { limit: Limit, actual }` with
-a closed `Limit`, `BoundedVec<T, const N: usize>`, and an `Admission { count,
-cap, limit }` built once per kind that also words the refusal. (contracts)
-
 ## TYP-064 - Wire grid cells: the wide-glyph tail is a sentinel and `FrameData` has no invariant
 
 A `FrameGrid` view with private fields now owns the shape, budget and
@@ -885,63 +797,14 @@ ratatui diff hint on the wire. Proposal: `GridCellWidth::{Grapheme, One,
 WideLead, WideTail}` and `try_from` deserialization into the validated grid.
 Reported by contracts and client-shell.
 
-## TYP-065 - Clipboard payload is base64 text inside the binary codec
+## TYP-066 - Status structs still admit states the decoder refuses
 
-`ServerMessage::Clipboard { data: String }` carries base64; the client decodes
-it in `decode_clipboard_payload` and an invalid payload becomes `InvalidData` at
-runtime. `Vec<u8>` makes the malformed case unconstructible. (client-core)
-
-## TYP-066 - JSON status and error schema are state machines written as structs
-
-`ServerStatusJson { running: bool, version: Option, build_id: Option, boot_id:
-Option, compatible: Option<bool>, socket, restart_needed: bool }` admits
-`running: false` with `compatible: Some(true)`; `SiblingServerJson` documents
-"either the identity is present or `error` says why" with four `Option`s, and
-`print_client_status_body` and `shepr-remote` discovery each decide which
-combination means what (`parse_client_status_json` falls back to "some line had
-`version` or `build_id`"); `ClientStatusJson.version`/`build_id` are `Option` but
-always filled; `RuntimeStatus { stopping: bool, starting: bool }` is folded by
-`ServerPresence` into three states, while `ServerPresence::Running(RuntimeStatus)`
-still carries both false bools. The CLI's private `ServerRuntimeStatus` produces
-`ServerStatusJson` and `shepr-remote`'s private `RemoteServerStatus` consumes it.
-`ErrorBody::code: String`. `"unknown"` stands in for absent version or build id
-(`option_label`, `printable_remote_value`, `local_server`, `current_exe_label`,
-detect's printer). Proposal: serde enums in `shepr-api` used by both sides.
-Reported by contracts and edges.
-
-## TYP-067 - Config provenance is a string lookup because "unset" is not modelled
-
-`ConfigProvenance` collects every TOML key path as strings and answers
-`is_explicit(UiPreferenceKey)` by matching `"ui.sidebar_width"`,
-`"ui.sidebar_start_collapsed"`, `"ui.agent_panel_sort"`; keybinding validation
-asks `key_is_configured(&format!("keys.{field}"))`. These literals are a third
-copy of the field names. It exists because `ClientUiConfig::sidebar_width: u16`
-cannot be unset (`Default` fills 26). The client reassembles the fact in
-`ConfiguredChrome` and keeps `(sidebar_width, sidebar_width_manual)`,
-`(sidebar_collapsed, _manual)`, `(sidebar_section_split, _manual)`,
-`(agent_panel_sort, _manual)`, with `agent_panel_sort` mutated inside
-`ClientShellConfig`; `sidebar_width` is a raw `u16` clamped by
-`SidebarBounds::clamp_width` at two entry points. Proposal: `Option<T>` in the
-raw model for settings whose absence means something, validation producing
-`Setting<T>::{Explicit, Default}`; on the client a `Chrome<T> { value, origin:
-Default | Configured | Remembered | Manual }` and a `SidebarWidth` minted by the
-clamp. Reported by contracts and client-shell.
-
-## TYP-068 - Config diagnostics carry their key path in prose
-
-`ConfigDiagnostic::{Read, Parse, Unknown, Validation, Path}(String)`; every
-message embeds its key path, `with_file` splices the file path into the text,
-`AppPaths::resolve` returns `Vec<String>`, `KeybindValidation::diagnostics` is
-`Vec<String>`, and tests find diagnostics with `contains("keys.prefix")`. The
-resolution structs are `{ diagnostics: Vec<String>, values: Option<..> }`,
-representing "no diagnostics and no values", for which three places produce a
-runtime error string. `AppPaths::resolve`'s `Vec<String>` is rendered four ways
-with two error classes (`main::resolve_bridge_paths` and
-`cli::resolve_app_paths` as `CliError::Io` with different layouts,
-`main::load_validated_config` as `CliError::Config`, `cli::print_help` as
-"unavailable (a; b)"). Proposal: `ConfigDiagnostic { file, key: Option<KeyPath>,
-kind }`, `Result<Values, Vec<ConfigDiagnostic>>`, a typed `PathsError` with one
-`From<PathsError> for CliError`. Reported by contracts and edges.
+`crates/shepr-api/src/schema/server.rs` now rejects presence and identity
+contradictions and partial identities when decoding. Still open: the public
+structs can be built in those states directly; the client and sibling status
+fields and `RuntimeStatus`'s `stopping` and `starting` flags stay optional
+fields and bools rather than a state enum. The ping JSON shape is frozen.
+(contracts, edges)
 
 ## TYP-069 - Smaller config axes
 

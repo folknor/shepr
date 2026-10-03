@@ -264,7 +264,7 @@ mod tests {
         let broken_path = scratch.join("broken-claude-state.sh");
         std::fs::write(&broken_path, broken).expect("write broken asset copy in scratch");
 
-        let detected = shepr_mux::terminal::state::HookClockSample {
+        let detected = shepr_agent::ownership::HookClockSample {
             monotonic: std::time::Instant::now(),
             wall: std::time::SystemTime::now(),
         };
@@ -282,7 +282,7 @@ mod tests {
         let error = app
             .apply_request(
                 request,
-                shepr_mux::terminal::state::HookClockSample {
+                shepr_agent::ownership::HookClockSample {
                     monotonic: detected.monotonic + std::time::Duration::from_millis(1),
                     wall: detected.wall + std::time::Duration::from_millis(1),
                 },
@@ -293,6 +293,7 @@ mod tests {
         assert!(
             app.terminal_state()
                 .expect("the test pane keeps its terminal")
+                .ownership()
                 .current_session_identity_for_persistence()
                 .is_none()
         );

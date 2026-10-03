@@ -285,13 +285,16 @@ impl ClientShellState {
                 "pane_input_dropped".to_owned(),
                 "Pane input dropped".to_owned(),
             ),
-            shepr_protocol::NoticeKind::PasteRejected { .. } => {
-                ("paste_rejected".to_owned(), "Paste rejected".to_owned())
-            }
-            shepr_protocol::NoticeKind::OversizedSurface { .. } => (
-                "oversized_surface".to_owned(),
-                "Screen too large".to_owned(),
-            ),
+            shepr_protocol::NoticeKind::LimitExceeded(error) => match error.limit.kind() {
+                shepr_protocol::LimitKind::InputPayloadBytes => {
+                    ("paste_rejected".to_owned(), "Paste rejected".to_owned())
+                }
+                shepr_protocol::LimitKind::SurfaceMessageBytes => (
+                    "oversized_surface".to_owned(),
+                    "Screen too large".to_owned(),
+                ),
+                _ => ("size_limit".to_owned(), "Size limit reached".to_owned()),
+            },
         };
         self.push_endpoint_notice(
             ClientEndpointNoticeKind::Rejected,

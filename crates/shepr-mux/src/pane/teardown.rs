@@ -25,20 +25,31 @@ pub(super) struct ChildLiveness {
 
 impl ChildLiveness {
     /// A child known to run its program already.
-    pub(super) fn new(pid: u32, leader: Option<Arc<shepr_platform::ProcessHandle>>) -> Self {
+    fn from_parts(
+        pid: Option<shepr_platform::Pid>,
+        leader: Option<Arc<shepr_platform::ProcessHandle>>,
+    ) -> Self {
         Self {
-            pid: AtomicU32::new(pid),
+            // Zero encodes None in the atomic storage, never a process id.
+            pid: AtomicU32::new(pid.map_or(0, shepr_platform::Pid::get)),
             wait_completed: AtomicBool::new(false),
             launched: AtomicBool::new(true),
             leader,
         }
     }
 
+    pub(super) fn absent() -> Self {
+        Self::from_parts(None, None)
+    }
+
     /// A child just forked, not yet past its exec.
-    pub(super) fn launching(pid: u32, leader: Arc<shepr_platform::ProcessHandle>) -> Self {
+    pub(super) fn launching(
+        pid: shepr_platform::Pid,
+        leader: Arc<shepr_platform::ProcessHandle>,
+    ) -> Self {
         Self {
             launched: AtomicBool::new(false),
-            ..Self::new(pid, Some(leader))
+            ..Self::from_parts(Some(pid), Some(leader))
         }
     }
 
@@ -51,22 +62,24 @@ impl ChildLiveness {
     }
 
     /// The pid the pane owns, launched or not: teardown signals it.
-    pub(super) fn pid(&self) -> u32 {
+    pub(super) fn process_id(&self) -> Option<shepr_platform::Pid> {
         self.leader
             .as_ref()
-            .map_or_else(|| self.pid.load(Ordering::Acquire), |leader| leader.pid())
+            .map(|leader| leader.process_id())
+            .or_else(|| shepr_platform::Pid::new(self.pid.load(Ordering::Acquire)))
     }
 
     /// The child pid while it names this unreaped child running the pane's
-    /// program. A numeric pid is unsafe for /proc reads once the child has been
-    /// reaped and the kernel may have assigned that number to another process,
-    /// and before exec committed the process is not the shell yet. Every
-    /// observation of the child (cwd, foreground job, detection, theme probes)
-    /// goes through this, so launch gating lives here once.
+    /// program. Before exec it is still the server image, and after reaping
+    /// its pid may name another process. All observations use this gate.
+    pub(super) fn live_process_id(&self) -> Option<shepr_platform::Pid> {
+        (self.is_launched() && !self.wait_completed() && !self.is_reaped())
+            .then(|| self.process_id())
+            .flatten()
+    }
+
     pub(super) fn live_pid(&self) -> Option<u32> {
-        let pid = self.pid();
-        (pid != 0 && self.is_launched() && !self.wait_completed() && !self.is_reaped())
-            .then_some(pid)
+        self.live_process_id().map(shepr_platform::Pid::get)
     }
 
     pub(super) fn mark_wait_completed(&self) {
@@ -164,17 +177,14 @@ impl Drop for PaneTeardownInFlight {
 /// its process handle; finding the other members (a `/proc` scan) and the
 /// SIGHUP/SIGTERM/SIGKILL escalation with its grace periods run on a
 /// background thread, so closing a workspace never stalls the caller for
-/// them. Every signal goes through a `platform::ProcessHandle` (a pidfd, or
-/// on kernels without pidfds a pid checked against its start time right
-/// before the kill), so a pid the kernel has handed to an unrelated process
-/// is not signalled.
+/// them. Every signal goes through a pidfd-backed `platform::ProcessHandle`,
+/// so a pid the kernel has handed to an unrelated process is not signalled.
 pub(super) fn shutdown_pane_processes(
     pane_id: PaneId,
     child_liveness: Arc<ChildLiveness>,
     tracker: &Arc<PaneTeardownTracker>,
 ) {
-    let session_id = child_liveness.pid();
-    if session_id == 0 {
+    if child_liveness.process_id().is_none() {
         return;
     }
     if let Some(leader) = child_liveness.leader()
@@ -209,13 +219,16 @@ fn run_pane_teardown(pane_id: PaneId, work: &PaneTeardownWork) {
 }
 
 fn terminate_pane_session(pane_id: PaneId, child_liveness: &ChildLiveness) {
-    let session_id = child_liveness.pid();
+    let Some(leader_pid) = child_liveness.process_id() else {
+        return;
+    };
+    let session_id = shepr_platform::SessionId::of_leader(leader_pid);
     let leader_reaped = || child_liveness.is_reaped();
     let mut members = Vec::new();
     for (signal, grace) in PANE_TEARDOWN_STEPS {
         // Rescan every round: a process that forked while being hung up is
         // still in the session and must not escape the next signal.
-        members = shepr_platform::session_member_handles(session_id, leader_reaped);
+        members = shepr_platform::session_members(session_id, leader_reaped);
         let handles: Vec<&shepr_platform::ProcessHandle> = child_liveness
             .leader()
             .into_iter()
@@ -230,10 +243,10 @@ fn terminate_pane_session(pane_id: PaneId, child_liveness: &ChildLiveness) {
             // A signalled member can fork before it exits. The newly forked
             // process was absent from `handles`, so confirm the whole session
             // is empty before ending the escalation.
-            if shepr_platform::session_member_handles(session_id, leader_reaped).is_empty() {
+            if shepr_platform::session_members(session_id, leader_reaped).is_empty() {
                 info!(
                     pane = pane_id.raw(),
-                    session = session_id,
+                    session = session_id.get(),
                     ?signal,
                     "pane session terminated"
                 );
@@ -251,7 +264,7 @@ fn terminate_pane_session(pane_id: PaneId, child_liveness: &ChildLiveness) {
         .collect();
     warn!(
         pane = pane_id.raw(),
-        session = session_id,
+        session = session_id.get(),
         ?survivors,
         "pane session still alive after forced shutdown"
     );
@@ -259,6 +272,10 @@ fn terminate_pane_session(pane_id: PaneId, child_liveness: &ChildLiveness) {
 
 #[cfg(test)]
 impl ChildLiveness {
+    pub(super) fn new(pid: u32, leader: Option<Arc<shepr_platform::ProcessHandle>>) -> Self {
+        Self::from_parts(shepr_platform::Pid::new(pid), leader)
+    }
+
     pub(super) fn set_pid_for_test(&self, pid: u32) {
         self.pid.store(pid, Ordering::Release);
     }

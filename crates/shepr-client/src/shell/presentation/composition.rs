@@ -191,15 +191,7 @@ impl ClientShellState {
                                 rect.height,
                             )
                         }),
-                        scroll: pane.scroll.map(|metrics| shepr_termio::ScrollMetrics {
-                            offset_from_bottom: usize::try_from(metrics.offset_from_bottom)
-                                .unwrap_or(usize::MAX),
-                            max_offset_from_bottom: usize::try_from(metrics.max_offset_from_bottom)
-                                .unwrap_or(usize::MAX),
-                            viewport_rows: usize::try_from(metrics.viewport_rows)
-                                .unwrap_or(usize::MAX),
-                            history_origin: metrics.history_origin,
-                        }),
+                        scroll: pane.scroll,
                         pane_id: pane.pane_id.clone(),
                         mouse_reporting: pane.mouse_reporting,
                         sgr_pixel_mouse: pane.sgr_pixel_mouse,
@@ -591,9 +583,9 @@ fn client_copy_surface_coherent(copy_mode: Option<&ClientCopyModeState>, hit: &P
         .is_none_or(|copy_mode| {
             copy_mode.geometry == (hit.inner_rect.width, hit.inner_rect.height)
                 && hit.scroll.is_some_and(|scroll| {
-                    scroll.offset_from_bottom == copy_mode.offset_from_bottom
-                        && scroll.max_offset_from_bottom == copy_mode.max_offset_from_bottom
-                        && scroll.history_origin == copy_mode.history_origin
+                    scroll.offset_from_bottom == copy_mode.scroll.offset_from_bottom
+                        && scroll.max_offset_from_bottom == copy_mode.scroll.max_offset_from_bottom
+                        && scroll.history_origin == copy_mode.scroll.history_origin
                 })
         })
 }
@@ -738,12 +730,12 @@ mod tests {
             rect: Rect::new(0, 0, 6, 4),
             inner_rect: Rect::new(0, 0, 6, 4),
             scrollbar_rect: None,
-            scroll: Some(shepr_termio::ScrollMetrics {
-                offset_from_bottom: 0,
-                max_offset_from_bottom: 0,
-                viewport_rows: 4,
-                history_origin: shepr_vt::AbsRow(0),
-            }),
+            scroll: Some(shepr_termio::ScrollMetrics::new(
+                0,
+                0,
+                4,
+                shepr_vt::AbsRow(0),
+            )),
             pane_id: crate::tests::test_pane_id("w1:p1"),
             mouse_reporting: false,
             sgr_pixel_mouse: false,
@@ -751,6 +743,7 @@ mod tests {
             pixel_height: 0,
         };
         let copy_mode = ClientCopyModeState {
+            scroll: shepr_vt::ScrollMetrics::new(0, 0, 4, shepr_vt::AbsRow(0)),
             pane_id: crate::tests::test_pane_id("w1:p1"),
             geometry: (6, 4),
             alternate_screen_active: false,
@@ -758,9 +751,6 @@ mod tests {
                 row: shepr_vt::AbsRow(3),
                 col: 0,
             },
-            history_origin: shepr_vt::AbsRow(0),
-            offset_from_bottom: 0,
-            max_offset_from_bottom: 0,
             entry_offset_from_bottom: 0,
             selection: None,
             search: Some(ClientCopySearch {

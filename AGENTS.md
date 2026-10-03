@@ -155,8 +155,8 @@ orientation, and nothing checks them:
 - `shepr-test-support`: shared environment isolation, scratch directories and hook asset capture for tests.
 - `shepr-agent`: detection manifests and agent integrations.
 - `shepr-config`: configuration parsing and validation.
-- `shepr-protocol`: compact wire types and codec; it depends on `shepr-config`
-  for the grid and input-batch limits the two share.
+- `shepr-protocol`: compact wire types and codec; it uses `shepr-core` for
+  shared grid and input-batch resource budgets that config also borrows.
 - `shepr-api`: JSON API schema and client, and the server socket: its listener
   tells JSON requests from TUI connections and hands the latter to the server's
   client protocol.

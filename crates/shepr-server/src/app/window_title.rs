@@ -70,9 +70,7 @@ impl App {
                     }
                 }
                 WindowTitlePart::Token(WindowTitleToken::Pane) => {
-                    if let Some(label) =
-                        terminal.and_then(|terminal| terminal.manual_label.as_deref())
-                    {
+                    if let Some(label) = terminal.and_then(|terminal| terminal.manual_label()) {
                         title.push_str(label);
                     }
                 }
@@ -140,7 +138,7 @@ mod tests {
             .terminals
             .get_mut(&terminal_id)
             .expect("focused terminal");
-        terminal.manual_label = Some("api".into());
+        terminal.set_manual_label("api".into());
         terminal.set_terminal_title(Some("⠋ building".into()));
 
         assert_eq!(app.window_title_for(0).as_deref(), Some("api|building"));

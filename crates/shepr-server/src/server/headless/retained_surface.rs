@@ -584,12 +584,7 @@ impl HeadlessServer {
                 pane.sgr_pixel_mouse = collected_pane.sgr_pixel_mouse;
                 pane.alternate_screen_active = collected_pane.alternate_screen_active;
                 let metrics = collected_pane.scroll_metrics;
-                pane.scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics {
-                    offset_from_bottom: metrics.offset_from_bottom as u64,
-                    max_offset_from_bottom: metrics.max_offset_from_bottom as u64,
-                    viewport_rows: metrics.viewport_rows as u64,
-                    history_origin: metrics.history_origin,
-                });
+                pane.scroll = Some(metrics);
                 metadata_changed |= *pane != previous_pane;
                 changed_panes.push(pane.clone());
             }
@@ -815,12 +810,7 @@ mod tests {
         let resolved = resolve_retained_panes(&app, &surface, &identities, layout)
             .expect("the committed pane geometry matches its layout");
         assert_eq!(resolved[0].reserved_scrollbar_gutter, None);
-        let metrics = shepr_mux::pane::ScrollMetrics {
-            offset_from_bottom: 1,
-            max_offset_from_bottom: 4,
-            viewport_rows: 3,
-            history_origin: shepr_vt::AbsRow(1),
-        };
+        let metrics = shepr_mux::pane::ScrollMetrics::new(1, 4, 3, shepr_vt::AbsRow(1));
 
         let rows = retained_scrollbar_patch(
             &app,

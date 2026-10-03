@@ -306,14 +306,15 @@ impl TerminalStateFixture for TerminalState {
         agent: Option<Agent>,
         fallback_state: AgentState,
     ) -> Option<EffectiveStateChange> {
-        self.set_detected_state_with_screen_signals_at(
-            agent,
-            fallback_state,
-            false,
-            false,
-            Instant::now(),
-        )
-        .effective_state_change
+        self.ownership_mut()
+            .set_detected_state_with_screen_signals_at(
+                agent,
+                fallback_state,
+                false,
+                false,
+                Instant::now(),
+            )
+            .effective_state_change
     }
 }
 

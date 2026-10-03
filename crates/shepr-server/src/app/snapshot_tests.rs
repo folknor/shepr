@@ -742,19 +742,21 @@ fn capture_contract_tracks_hook_authority_agent_session() {
         Some(shepr_agent::detect::Agent::Pi),
         shepr_agent::detect::AgentState::Idle,
     );
-    terminal.set_persisted_agent_session(shepr_agent::agent::resume::PersistedAgentSession {
-        source: shepr_agent::agent::AgentSource::parse("shepr:pi"),
-        agent: shepr_agent::agent::Agent::Pi,
-        session_ref: shepr_agent::agent::resume::AgentSessionRef::path(session_path.clone())
-            .expect("test precondition"),
-    });
+    terminal.ownership_mut().set_persisted_agent_session(
+        shepr_agent::agent::resume::PersistedAgentSession {
+            source: shepr_agent::agent::AgentSource::parse("shepr:pi"),
+            agent: shepr_agent::agent::Agent::Pi,
+            session_ref: shepr_agent::agent::resume::AgentSessionRef::path(session_path.clone())
+                .expect("test precondition"),
+        },
+    );
     terminal.set_hook_authority_at(
         "shepr:pi",
         "pi",
         shepr_agent::detect::AgentState::Working,
         shepr_agent::agent::resume::AgentSessionRef::path(session_path.clone()),
         Some(20),
-        shepr_mux::terminal::state::HookClockSample {
+        shepr_agent::ownership::HookClockSample {
             monotonic: std::time::Instant::now(),
             wall: std::time::SystemTime::now(),
         },
@@ -787,6 +789,7 @@ fn capture_contract_preserves_restored_agent_session() {
         .terminals
         .get_mut(&terminal_id)
         .expect("test precondition")
+        .ownership_mut()
         .set_persisted_agent_session(shepr_agent::agent::resume::PersistedAgentSession {
             source: shepr_agent::agent::AgentSource::parse("shepr:opencode"),
             agent: shepr_agent::agent::Agent::OpenCode,

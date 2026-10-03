@@ -253,7 +253,7 @@ impl ClientShellState {
     /// Notices report the server answer even if a feature no longer awaits it.
     pub(crate) fn answer_request(
         &mut self,
-        boot_id: &str,
+        boot_id: &shepr_protocol::BootId,
         request_id: &str,
         result: Result<EndpointReply, ClientShellEndpointError>,
         now: Instant,
@@ -263,11 +263,11 @@ impl ClientShellState {
             return outcome;
         };
         let request: RequestId = request_id.into();
-        if entry.boot_id != boot_id
+        if entry.boot_id != *boot_id
             || self
                 .snapshot
                 .as_deref()
-                .is_none_or(|s| s.boot_id != boot_id)
+                .is_none_or(|s| s.boot_id != *boot_id)
         {
             outcome.repaint = self.dropped_entry(entry, &request, DropReason::WrongBoot);
             return outcome;
@@ -368,7 +368,7 @@ impl ClientShellState {
     /// are lost.
     pub(crate) fn handle_endpoint_result(
         &mut self,
-        boot_id: &str,
+        boot_id: &shepr_protocol::BootId,
         request_id: &str,
         result: Result<EndpointReply, ClientShellEndpointError>,
     ) -> ClientShellInput {

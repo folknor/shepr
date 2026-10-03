@@ -45,6 +45,15 @@ pub struct AgentOwnershipMutation {
     pub agent_released: bool,
 }
 
+/// The winning row of the effective-state arbitration table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EffectiveStateSource {
+    FullLifecycleHook,
+    Hook,
+    Screen,
+    ProcessExit,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct RecentAgentProcessExit {
     agent: Agent,
@@ -86,8 +95,8 @@ pub enum CheckpointContext {
 /// Agent identity, hook authority and detector arbitration for one pane.
 /// Independent of terminal runtime, geometry and presentation metadata.
 pub struct AgentOwnership {
-    pub detected_agent: Option<Agent>,
-    pub fallback_state: AgentState,
+    detected_agent: Option<Agent>,
+    fallback_state: AgentState,
     fallback_visible_blocker: bool,
     fallback_observed_at: Option<Instant>,
     // State authority and resume ownership can belong to different sources.
@@ -98,8 +107,8 @@ pub struct AgentOwnership {
     // Sequence numbers belong to a reporter, even if its custom label changes.
     // Keying by the complete origin would let a renamed label bypass ordering.
     hook_sources: HashMap<AgentSource, HookSourceState>,
-    pub state: AgentState,
-    pub last_agent_state_change_seq: Option<u64>,
+    state: AgentState,
+    last_agent_state_change_seq: Option<u64>,
     process_evidence: AgentProcessEvidence,
     checkpoint_candidate: Option<CheckpointCandidate>,
     /// The pane's ending was applied (`transition_pane_exit`). Detector

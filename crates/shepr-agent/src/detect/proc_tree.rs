@@ -1,3 +1,4 @@
+use shepr_platform::{Pgid, Pid, ProcStat, ProcState};
 use std::{
     collections::{HashSet, VecDeque},
     io::Read,
@@ -56,7 +57,7 @@ impl ForegroundScanBudget {
 struct ProcGroupMember {
     pid: u32,
     comm: String,
-    state: char,
+    state: ProcState,
 }
 
 pub fn foreground_job(child_pid: u32) -> Option<ForegroundJob> {
@@ -75,10 +76,11 @@ pub(super) fn suspended_processes(child_pid: u32) -> Vec<ForegroundProcess> {
         .into_iter()
         .filter_map(|pid| {
             let (_, name, state) = process_pgrp_comm_and_state(pid)?;
-            if pid == child_pid || !matches!(state, 'T' | 't') {
+            if pid == child_pid || !state.is_stopped() {
                 return None;
             }
-            let argv = process_state_allows_remote_memory_read(state)
+            let argv = state
+                .allows_remote_memory_read()
                 .then(|| process_argv(pid))
                 .flatten();
             Some(ForegroundProcess { pid, name, argv })
@@ -96,7 +98,9 @@ fn foreground_job_from_members(
         .map(|member| {
             // Reading procfs cmdline enters access_remote_vm, which can block on a
             // process that is exiting or in uninterruptible sleep.
-            let argv = process_state_allows_remote_memory_read(member.state)
+            let argv = member
+                .state
+                .allows_remote_memory_read()
                 .then(|| read_argv(member.pid))
                 .flatten();
             ForegroundProcess {
@@ -290,16 +294,17 @@ fn numeric_file_name(entry: &std::fs::DirEntry) -> Option<u32> {
 
 fn live_process_group_member(process_group_id: u32, pid: u32) -> Option<ProcGroupMember> {
     let (pgrp, comm, state) = process_pgrp_comm_and_state(pid)?;
-    (u32::try_from(pgrp) == Ok(process_group_id)).then_some(ProcGroupMember { pid, comm, state })
+    (Some(pgrp) == Pgid::new(process_group_id)).then_some(ProcGroupMember { pid, comm, state })
 }
 
 pub fn foreground_group_leader_job(process_group_id: u32) -> Option<ForegroundJob> {
     let (pgrp, name, state) = process_pgrp_comm_and_state(process_group_id)?;
-    if u32::try_from(pgrp) != Ok(process_group_id) {
+    if Some(pgrp) != Pgid::new(process_group_id) {
         return None;
     }
 
-    let argv = process_state_allows_remote_memory_read(state)
+    let argv = state
+        .allows_remote_memory_read()
         .then(|| process_argv(process_group_id))
         .flatten();
     Some(ForegroundJob {
@@ -313,33 +318,15 @@ pub fn foreground_group_leader_job(process_group_id: u32) -> Option<ForegroundJo
 }
 
 pub fn foreground_process_group_id(child_pid: u32) -> Option<u32> {
-    // /proc/<pid>/stat format: "pid (comm) state ppid pgrp session tty_nr tpgid ..."
-    // The (comm) field can contain spaces and parens, so we find the last ')' first.
-    let stat = std::fs::read_to_string(format!("/proc/{child_pid}/stat")).ok()?;
-    let rest = stat.get(stat.rfind(')')? + 2..)?;
-    let fields: Vec<&str> = rest.split_whitespace().collect();
-    // After (comm): state(0) ppid(1) pgrp(2) session(3) tty_nr(4) tpgid(5)
-    let tpgid: i32 = fields.get(5)?.parse().ok()?;
-    (tpgid > 0).then(|| u32::try_from(tpgid).unwrap_or_default())
+    ProcStat::read(Pid::new(child_pid)?)
+        .ok()?
+        .foreground_group
+        .map(Pgid::get)
 }
 
-fn process_pgrp_comm_and_state(pid: u32) -> Option<(i32, String, char)> {
-    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    process_pgrp_comm_and_state_from_stat(&stat)
-}
-
-fn process_pgrp_comm_and_state_from_stat(stat: &str) -> Option<(i32, String, char)> {
-    let close = stat.rfind(')')?;
-    let comm = stat.get(1 + stat.find('(')?..close)?.to_string();
-    let rest = stat.get(close + 2..)?;
-    let fields: Vec<&str> = rest.split_whitespace().collect();
-    let state = fields.first()?.chars().next()?;
-    let pgrp: i32 = fields.get(2)?.parse().ok()?;
-    Some((pgrp, comm, state))
-}
-
-fn process_state_allows_remote_memory_read(state: char) -> bool {
-    !matches!(state, 'D' | 'Z' | 'X' | 'x')
+fn process_pgrp_comm_and_state(pid: u32) -> Option<(Pgid, String, ProcState)> {
+    let stat = ProcStat::read(Pid::new(pid)?).ok()?;
+    Some((stat.process_group, stat.comm, stat.state))
 }
 
 fn process_argv(pid: u32) -> Option<Vec<String>> {
@@ -375,6 +362,12 @@ pub fn is_pane_shell_process_name(name: &str) -> bool {
     SHELL_NAMES
         .iter()
         .any(|shell| shell.eq_ignore_ascii_case(normalized))
+}
+
+#[cfg(test)]
+fn process_pgrp_comm_and_state_from_stat(stat: &str) -> Option<(Pgid, String, ProcState)> {
+    let stat = ProcStat::parse(stat)?;
+    Some((stat.process_group, stat.comm, stat.state))
 }
 
 #[cfg(test)]

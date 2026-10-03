@@ -95,7 +95,7 @@ fn mismatched_boot_scroll_result_rolls_back_queued_scroll_state() {
     assert!(state.scroll_lanes.queued(&pane_id).is_some());
 
     let outcome = state.answer_request(
-        "replacement-boot",
+        &crate::tests::test_boot_id("replacement-boot"),
         &id,
         Err(ClientShellEndpointError::Server(
             shepr_protocol::command::EndpointError::StaleBoot,
@@ -465,7 +465,10 @@ fn server_errors_become_unavailable_or_rejected_notices() {
         EndpointError::Rejected("no such pane".into()),
         EndpointError::StaleBoot,
         EndpointError::SurfaceInactive,
-        EndpointError::ResponseTooLarge { size: 2, limit: 1 },
+        EndpointError::LimitExceeded(shepr_protocol::LimitExceeded::new(
+            shepr_protocol::Limit::new(shepr_protocol::LimitKind::EndpointResponseBytes, 1),
+            2,
+        )),
     ] {
         let (kind, code, title, body) = answer(error.clone());
         assert_eq!(kind, ClientEndpointNoticeKind::Rejected);
@@ -507,11 +510,12 @@ fn scroll_reply(offset: u64) -> EndpointReply {
     EndpointReply::PaneInfo {
         pane: Box::new(shepr_protocol::command::PaneInfo {
             pane_id: test_pane_id("w1:p1"),
-            scroll: Some(shepr_protocol::command::PaneScrollInfo {
-                offset_from_bottom: offset,
-                max_offset_from_bottom: 20,
-                viewport_rows: 2,
-            }),
+            scroll: Some(shepr_protocol::command::PaneScrollInfo::new(
+                usize::try_from(offset).expect("test offset fits usize"),
+                20,
+                2,
+                shepr_vt::AbsRow(0),
+            )),
         }),
     }
 }
@@ -692,16 +696,11 @@ fn a_scroll_answer_does_not_bring_back_a_target_a_surface_already_showed() {
     let mut s = ready_shell();
     let id = start_scroll(&mut s, 3);
     let mut shown = surface();
-    shown.panes[0]
-        .scroll
-        .as_mut()
-        .expect("scroll")
-        .offset_from_bottom = 3;
-    shown.panes[0]
-        .scroll
-        .as_mut()
-        .expect("scroll")
-        .max_offset_from_bottom = 20;
+    {
+        let metrics = shown.panes[0].scroll.as_mut().expect("scroll");
+        *metrics =
+            shepr_vt::ScrollMetrics::new(3, 20, metrics.viewport_rows, metrics.history_origin);
+    }
     s.receive_pane_surface(shown);
     assert!(s.scroll_lanes.target(&test_pane_id("w1:p1")).is_none());
     answer(&mut s, &id, Ok(scroll_reply(3)));

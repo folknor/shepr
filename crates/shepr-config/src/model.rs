@@ -203,6 +203,16 @@ pub struct SidebarBounds {
     max: u16,
 }
 
+/// An expanded sidebar width that has passed through its configured bounds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SidebarWidth(u16);
+
+impl SidebarWidth {
+    pub fn value(self) -> u16 {
+        self.0
+    }
+}
+
 impl SidebarBounds {
     pub fn min(self) -> u16 {
         self.min
@@ -212,8 +222,14 @@ impl SidebarBounds {
         self.max
     }
 
-    pub fn clamp_width(self, width: u16) -> u16 {
-        width.clamp(self.min, self.max)
+    pub fn clamp_width(self, width: u16) -> SidebarWidth {
+        SidebarWidth(width.clamp(self.min, self.max))
+    }
+
+    pub(crate) fn checked_width(self, width: u16) -> Option<SidebarWidth> {
+        (self.min..=self.max)
+            .contains(&width)
+            .then_some(SidebarWidth(width))
     }
 }
 
@@ -301,7 +317,7 @@ pub struct ClientUiConfig {
     /// Expanded sidebar width (columns). Default: 26. While unset, the client
     /// shell remembers a width set by dragging the sidebar divider; once set,
     /// it wins at every launch.
-    pub sidebar_width: u16,
+    pub sidebar_width: Option<u16>,
     /// Minimum sidebar width (columns) when expanded. Default: 18.
     pub sidebar_min_width: u16,
     /// Maximum sidebar width (columns) when expanded. Default: 36.
@@ -309,7 +325,7 @@ pub struct ClientUiConfig {
     /// Start with the sidebar collapsed. Default: false. While unset, the
     /// client shell remembers the last collapse toggle; once set, it wins at
     /// every launch.
-    pub sidebar_start_collapsed: bool,
+    pub sidebar_start_collapsed: Option<bool>,
     /// Collapsed sidebar presentation. Default: compact.
     pub sidebar_collapsed_mode: SidebarCollapsedModeConfig,
     /// Capture mouse input for Shepr's mouse UI. Default: true.
@@ -331,7 +347,7 @@ pub struct ClientUiConfig {
     /// Agent sidebar ordering: "spaces" or "priority". Default: "spaces".
     /// While unset, the client shell remembers the last toggle of the agent
     /// panel's sort control; once set, it wins at every launch.
-    pub agent_panel_sort: AgentPanelSortConfig,
+    pub agent_panel_sort: Option<AgentPanelSortConfig>,
     /// Agent status indicator style. Values are "dots" or "symbols". Default: "dots".
     pub status_indicators: StatusIndicatorStyle,
     /// Expanded sidebar row composition.
@@ -466,10 +482,10 @@ pub struct ExperimentalConfig {
 impl Default for ClientUiConfig {
     fn default() -> Self {
         Self {
-            sidebar_width: 26,
+            sidebar_width: None,
             sidebar_min_width: 18,
             sidebar_max_width: 36,
-            sidebar_start_collapsed: false,
+            sidebar_start_collapsed: None,
             sidebar_collapsed_mode: SidebarCollapsedModeConfig::Compact,
             mouse_capture: true,
             copy_on_select: true,
@@ -479,7 +495,7 @@ impl Default for ClientUiConfig {
             mouse_scroll_lines: None,
             confirm_close: true,
             prompt_new_workspace_name: true,
-            agent_panel_sort: AgentPanelSortConfig::Spaces,
+            agent_panel_sort: None,
             status_indicators: StatusIndicatorStyle::Dots,
             sidebar: SidebarConfig::default(),
         }
@@ -609,17 +625,17 @@ startup_per_agent_delay_ms = 0
 
     #[test]
     fn agent_panel_sort_config_parses_and_defaults() {
-        assert_eq!(
-            ClientConfig::default().ui.agent_panel_sort,
-            AgentPanelSortConfig::Spaces
-        );
+        assert_eq!(ClientConfig::default().ui.agent_panel_sort, None);
 
         let toml = r#"
 [ui]
 agent_panel_sort = "priority"
 "#;
         let config: ClientConfig = toml::from_str(toml).expect("test precondition");
-        assert_eq!(config.ui.agent_panel_sort, AgentPanelSortConfig::Priority);
+        assert_eq!(
+            config.ui.agent_panel_sort,
+            Some(AgentPanelSortConfig::Priority)
+        );
     }
 
     #[test]
@@ -771,14 +787,14 @@ sidebar_max_width = 80
     #[test]
     fn sidebar_start_collapsed_defaults_off_and_parses_on() {
         let default_config = ClientConfig::default();
-        assert!(!default_config.ui.sidebar_start_collapsed);
+        assert_eq!(default_config.ui.sidebar_start_collapsed, None);
 
         let toml = r#"
 [ui]
 sidebar_start_collapsed = true
 "#;
         let config: ClientConfig = toml::from_str(toml).expect("test precondition");
-        assert!(config.ui.sidebar_start_collapsed);
+        assert_eq!(config.ui.sidebar_start_collapsed, Some(true));
     }
 
     #[test]

@@ -1,5 +1,7 @@
 //! Shared wire protocol and presentation encoding code.
 
+mod build;
+pub use build::{BuildIdentity, BuildIdentityParseError, BuildVersion};
 pub mod codec;
 pub mod command;
 pub mod endpoint;
@@ -9,6 +11,7 @@ mod geometry;
 mod identity;
 mod ids;
 mod input;
+mod limit;
 mod limits;
 mod message;
 mod pane_row;
@@ -37,6 +40,7 @@ pub use identity::*;
 pub use ids::{PublicIdParseError, PublicPaneId, decode_public_number, encode_public_number};
 pub use ids::{TerminalId, TerminalIdParseError, WorkspaceId, WorkspaceIdParseError};
 pub use input::*;
+pub use limit::{Limit, LimitExceeded, LimitKind};
 pub use message::*;
 pub use pane_row::{blank_pane_cell, normalize_pane_row, pane_row_is_normalized};
 pub use projection::*;
@@ -49,7 +53,11 @@ pub use surface::*;
 /// It includes the build ID for display; `ping` also carries `build_id` as its
 /// separate machine-comparison field.
 pub fn build_version() -> String {
-    format!("{}+{}", env!("CARGO_PKG_VERSION"), limits::BUILD_ID)
+    BuildVersion {
+        version: env!("CARGO_PKG_VERSION").to_owned(),
+        build_id: BUILD_ID.parse().unwrap_or(BuildIdentity::Unidentifiable),
+    }
+    .to_string()
 }
 
 /// Whether `id` states a build identity: exactly the sixteen lowercase hex
@@ -57,10 +65,7 @@ pub fn build_version() -> String {
 /// inputs could not be established is not hex, and neither is an empty,
 /// truncated or garbled field, so none of them is an identity.
 pub fn is_identifiable_build_id(id: &str) -> bool {
-    id.len() == preamble::BUILD_ID_BYTES
-        && id
-            .bytes()
-            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+    matches!(id.parse(), Ok(BuildIdentity::Known(_)))
 }
 
 /// Whether two builds are provably the same build: `ours` states an identity
@@ -68,7 +73,10 @@ pub fn is_identifiable_build_id(id: &str) -> bool {
 /// cannot establish its own identity matches nothing, itself included, so it
 /// is refused everywhere rather than attaching to whatever answers.
 pub fn builds_match(ours: &str, peer: &str) -> bool {
-    is_identifiable_build_id(ours) && ours == peer
+    match (ours.parse::<BuildIdentity>(), peer.parse::<BuildIdentity>()) {
+        (Ok(ours), Ok(peer)) => ours.matches(peer),
+        _ => false,
+    }
 }
 
 /// Whether a peer that announced `peer` is this exact build. Every build

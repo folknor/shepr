@@ -83,12 +83,11 @@ pub fn preamble_for(build_id: &str) -> [u8; PREAMBLE_LEN] {
     let mut preamble = [0u8; PREAMBLE_LEN];
     let (magic, id) = preamble.split_at_mut(PREAMBLE_MAGIC.len());
     magic.copy_from_slice(&PREAMBLE_MAGIC);
-    // `BUILD_ID` is 16 hex digits or the 16-byte unidentifiable marker
-    // (`build.rs`); anything shorter is padded with zeros and anything longer
-    // truncated, so the record stays fixed.
-    for (slot, byte) in id.iter_mut().zip(build_id.bytes()) {
-        *slot = byte;
-    }
+    // Invalid input cannot become a truncated valid fingerprint.
+    let identity = build_id
+        .parse::<super::BuildIdentity>()
+        .unwrap_or(super::BuildIdentity::Unidentifiable);
+    id.copy_from_slice(&identity.preamble_bytes());
     preamble
 }
 

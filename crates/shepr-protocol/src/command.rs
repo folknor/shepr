@@ -163,7 +163,7 @@ pub struct PaneResizeParams {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaneScrollParams {
     pub pane_id: PublicPaneId,
-    pub offset_from_bottom: u64,
+    pub offset_from_bottom: usize,
 }
 
 /// A terminal cell addressed by a stable absolute row: output and history
@@ -246,12 +246,7 @@ pub struct PaneRenameParams {
     pub label: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PaneScrollInfo {
-    pub offset_from_bottom: u64,
-    pub max_offset_from_bottom: u64,
-    pub viewport_rows: u64,
-}
+pub use shepr_vt::ScrollMetrics as PaneScrollInfo;
 
 /// What a client shell reads back about one pane after a command: which pane
 /// it was and its scroll position. Focus is part of the requester-specific
@@ -561,8 +556,8 @@ pub enum EndpointError {
     StaleBoot,
     /// The requesting client's surface is not active.
     SurfaceInactive,
-    /// The reply did not fit the wire limit.
-    ResponseTooLarge { size: u64, limit: u64 },
+    /// The reply did not fit its wire limit.
+    LimitExceeded(crate::LimitExceeded),
 }
 
 impl std::fmt::Display for EndpointError {
@@ -572,10 +567,7 @@ impl std::fmt::Display for EndpointError {
             Self::ShuttingDown => f.write_str("the server is shutting down"),
             Self::StaleBoot => f.write_str("the command was aimed at a previous server boot"),
             Self::SurfaceInactive => f.write_str("the client surface is not active"),
-            Self::ResponseTooLarge { size, limit } => write!(
-                f,
-                "the response of {size} bytes exceeds the {limit} byte limit"
-            ),
+            Self::LimitExceeded(error) => write!(f, "the {error}"),
         }
     }
 }

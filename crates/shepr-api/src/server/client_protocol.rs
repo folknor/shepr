@@ -54,16 +54,36 @@ pub struct ConnectionSlot {
     active: Arc<AtomicUsize>,
 }
 
-impl ConnectionSlot {
-    pub(crate) fn try_acquire(active: &Arc<AtomicUsize>, cap: usize) -> Option<Self> {
-        active
+/// One connection class's shared counter and named admission limit.
+#[derive(Clone)]
+pub(crate) struct ConnectionAdmission {
+    active: Arc<AtomicUsize>,
+    limit: shepr_protocol::Limit,
+}
+
+impl ConnectionAdmission {
+    pub(crate) fn new(active: Arc<AtomicUsize>, limit: shepr_protocol::Limit) -> Self {
+        Self { active, limit }
+    }
+
+    pub(crate) fn try_acquire(&self) -> Result<ConnectionSlot, shepr_protocol::LimitExceeded> {
+        match self
+            .active
             .try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
-                (count < cap).then_some(count + 1)
-            })
-            .ok()?;
-        Some(Self {
-            active: Arc::clone(active),
-        })
+                (count < self.limit.max()).then_some(count + 1)
+            }) {
+            Ok(_) => Ok(ConnectionSlot {
+                active: Arc::clone(&self.active),
+            }),
+            Err(count) => Err(shepr_protocol::LimitExceeded::new(
+                self.limit,
+                count.saturating_add(1),
+            )),
+        }
+    }
+
+    pub(crate) fn limit(&self) -> shepr_protocol::Limit {
+        self.limit
     }
 }
 
@@ -171,6 +191,13 @@ pub(super) fn refuse_client(mut stream: LocalStream, reason: shepr_protocol::Han
 }
 
 #[cfg(test)]
+impl ConnectionAdmission {
+    pub(crate) fn active_count(&self) -> usize {
+        self.active.load(Ordering::Acquire)
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -178,12 +205,16 @@ mod tests {
     fn connection_slots_cap_at_their_limit_and_release_on_drop() {
         let active = Arc::new(AtomicUsize::new(0));
         let cap = crate::limits::MAX_API_INGRESS_CONNECTIONS;
+        let admission = ConnectionAdmission::new(
+            Arc::clone(&active),
+            shepr_protocol::Limit::new(shepr_protocol::LimitKind::ConnectionCount, cap),
+        );
         let mut slots = (0..cap)
-            .map(|_| ConnectionSlot::try_acquire(&active, cap).expect("slot"))
+            .map(|_| admission.try_acquire().expect("slot"))
             .collect::<Vec<_>>();
-        assert!(ConnectionSlot::try_acquire(&active, cap).is_none());
+        assert!(admission.try_acquire().is_err());
         drop(slots.pop());
-        let replacement = ConnectionSlot::try_acquire(&active, cap).expect("released slot");
+        let replacement = admission.try_acquire().expect("released slot");
         assert_eq!(active.load(Ordering::Acquire), cap);
         drop(replacement);
         drop(slots);
@@ -194,12 +225,20 @@ mod tests {
     fn independent_counters_have_independent_slots() {
         let first = Arc::new(AtomicUsize::new(0));
         let second = Arc::new(AtomicUsize::new(0));
-        let slot = ConnectionSlot::try_acquire(&first, 1).expect("first");
-        assert!(ConnectionSlot::try_acquire(&first, 1).is_none());
-        let other = ConnectionSlot::try_acquire(&second, 1).expect("second");
+        let first = ConnectionAdmission::new(
+            first,
+            shepr_protocol::Limit::new(shepr_protocol::LimitKind::ConnectionCount, 1),
+        );
+        let second = ConnectionAdmission::new(
+            second,
+            shepr_protocol::Limit::new(shepr_protocol::LimitKind::ConnectionCount, 1),
+        );
+        let slot = first.try_acquire().expect("first");
+        assert!(first.try_acquire().is_err());
+        let other = second.try_acquire().expect("second");
         drop(slot);
-        assert_eq!(first.load(Ordering::Acquire), 0);
-        assert_eq!(second.load(Ordering::Acquire), 1);
+        assert_eq!(first.active_count(), 0);
+        assert_eq!(second.active_count(), 1);
         drop(other);
     }
 }

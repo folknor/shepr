@@ -20,8 +20,8 @@ use serde_json::Value;
 use shepr_agent::agent::resume::{AgentSessionRef, PersistedAgentSession};
 use shepr_agent::agent::{Agent, AgentSource, ReportOrigin};
 use shepr_agent::detect::AgentState;
+use shepr_agent::ownership::HookClockSample;
 use shepr_api::schema::Request;
-use shepr_mux::terminal::state::HookClockSample;
 use shepr_test_support::{IsolatedEnv, ScratchDir, capture_hook, command_in_scratch};
 
 const PANE_ID: &str = "w1:p1";
@@ -259,6 +259,7 @@ fn unknown_session_start_source_records_a_session_but_never_replaces_one() {
     let current_session = |app: &AgentReportHarness| {
         app.terminal_state()
             .expect("test pane keeps terminal")
+            .ownership()
             .current_session_identity_for_persistence()
             .expect("a session is stored")
             .session_ref
@@ -459,7 +460,10 @@ fn replay_and_assert_contract(
         .terminal_state()
         .expect("the test pane keeps its terminal");
     assert_eq!(
-        terminal.current_session_identity_for_persistence().as_ref(),
+        terminal
+            .ownership()
+            .current_session_identity_for_persistence()
+            .as_ref(),
         Some(&expected_session),
         "{} did not persist the scripted session",
         contract.asset
@@ -468,6 +472,7 @@ fn replay_and_assert_contract(
     match contract.state {
         Some(expected_state) => {
             let authority = terminal
+                .ownership()
                 .hook_authority()
                 .unwrap_or_else(|| panic!("{} did not establish hook authority", contract.asset));
             assert_eq!(authority.origin, origin);
@@ -475,7 +480,7 @@ fn replay_and_assert_contract(
             assert_eq!(authority.session_ref, Some(expected_session.session_ref));
         }
         None => assert!(
-            terminal.hook_authority().is_none(),
+            terminal.ownership().hook_authority().is_none(),
             "{} should report session identity without state authority",
             contract.asset
         ),

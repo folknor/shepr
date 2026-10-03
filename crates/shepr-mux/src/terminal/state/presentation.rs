@@ -4,7 +4,7 @@ impl TerminalState {
     pub fn border_label(&self, show_agent_labels: bool) -> Option<String> {
         self.manual_label.clone().or_else(|| {
             show_agent_labels
-                .then(|| self.effective_agent_label().map(str::to_string))
+                .then(|| self.ownership.effective_agent_label().map(str::to_string))
                 .flatten()
         })
     }
@@ -18,7 +18,7 @@ mod tests {
     #[test]
     fn border_label_prefers_manual_label_over_agent_label() {
         let mut terminal = TerminalState::new(TerminalId::alloc(), "/".into());
-        terminal.set_detected_state_with_screen_signals_at(
+        terminal.ownership_mut().set_detected_state_with_screen_signals_at(
             Some(Agent::Claude),
             AgentState::Idle,
             false,

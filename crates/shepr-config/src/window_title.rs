@@ -117,10 +117,13 @@ impl WindowTitleTemplate {
 }
 
 #[cfg(test)]
-pub(crate) fn window_title_diagnostics(template: &str) -> Option<String> {
-    WindowTitleTemplate::parse(template)
-        .err()
-        .map(|err| format!("ui.window_title {err}"))
+pub(crate) fn window_title_diagnostics(template: &str) -> Option<crate::ConfigDiagnostic> {
+    WindowTitleTemplate::parse(template).err().map(|err| {
+        crate::ConfigDiagnostic::validation(
+            crate::ConfigKeyPath::root().key("ui").key("window_title"),
+            err,
+        )
+    })
 }
 
 #[cfg(test)]
@@ -166,21 +169,25 @@ mod tests {
         assert!(
             window_title_diagnostics("{hostname")
                 .expect("diagnostic")
+                .message()
                 .contains("unclosed")
         );
         assert!(
             window_title_diagnostics("a } b")
                 .expect("diagnostic")
+                .message()
                 .contains("unmatched")
         );
         assert!(
             window_title_diagnostics("{session}")
                 .expect("diagnostic")
+                .message()
                 .contains("unknown token '{session}'")
         );
         assert!(
             window_title_diagnostics("{tab}")
                 .expect("diagnostic")
+                .message()
                 .contains("unknown token '{tab}'")
         );
     }

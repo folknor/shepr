@@ -1029,7 +1029,7 @@ impl ClientLoop {
             DecodedWireServerMessage::Clipboard { data } => {
                 // write_clipboard_bytes flushes its own OSC 52 fallback, so no flush is
                 // needed here. Once per user copy, so a warn cannot flood; only the
-                // base64 length is logged because the payload is the user's selection.
+                // payload length is logged because the bytes are the user's selection.
                 if let Err(error) = forward_clipboard(
                     &data,
                     state.settings.prefers_osc52_clipboard(),
@@ -1038,7 +1038,7 @@ impl ClientLoop {
                     warn!(
                         endpoint = %endpoint_id,
                         generation,
-                        encoded_bytes = data.len(),
+                        bytes = data.len(),
                         %error,
                         "clipboard copy from the server did not reach the host clipboard"
                     );
@@ -1151,8 +1151,6 @@ impl ClientLoop {
     }
 }
 
-#[cfg(test)]
-use clipboard_forwarding::decode_clipboard_payload;
 #[cfg(test)]
 use terminal_geometry::{
     cell_size_fallback, current_terminal_geometry_with, ioctl_cell_size, pack_cell_size,

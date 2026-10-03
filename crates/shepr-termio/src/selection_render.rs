@@ -208,12 +208,12 @@ mod tests {
     };
 
     fn zero_origin_metrics(viewport_rows: usize) -> Option<crate::ScrollMetrics> {
-        Some(crate::ScrollMetrics {
-            offset_from_bottom: 0,
-            max_offset_from_bottom: 0,
+        Some(crate::ScrollMetrics::new(
+            0,
+            0,
             viewport_rows,
-            history_origin: shepr_vt::AbsRow(0),
-        })
+            shepr_vt::AbsRow(0),
+        ))
     }
 
     fn sink(buffer: &mut Buffer) -> impl FnMut(u16, u16, Style) + '_ {

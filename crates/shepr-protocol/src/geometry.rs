@@ -1,7 +1,7 @@
 //! Cell geometry at the client protocol boundary.
 
 use serde::{Deserialize, Serialize};
-use shepr_core::geometry::{CellPx, GridSize};
+use shepr_core::geometry::{BoundedGridSize, BoundedGridSizeError, CellPx, GridSize};
 
 /// Coherent geometry carried by a client.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -40,6 +40,9 @@ impl TryFrom<ReceivedTerminalGeometry> for TerminalGeometry {
         if received.pixel_mouse && received.cell.is_none() {
             return Err("pixel mouse requires known cell geometry");
         }
+        // Keep representable raw dimensions intact here. The server checks
+        // them during the handshake so it can distinguish an oversized axis
+        // from an excessive cell count in its refusal.
         Ok(Self {
             grid: received.grid,
             cell: received.cell,
@@ -79,6 +82,14 @@ impl TerminalGeometry {
             cols: self.cols(),
             rows: self.rows(),
         }
+    }
+
+    /// Validate this raw geometry against the retained-surface grid budget.
+    ///
+    /// Handshake decoding deliberately does not call this: the server must
+    /// inspect the raw dimensions to return the appropriate refusal reason.
+    pub fn bounded_grid(self) -> Result<BoundedGridSize, BoundedGridSizeError> {
+        self.grid.try_into()
     }
 }
 

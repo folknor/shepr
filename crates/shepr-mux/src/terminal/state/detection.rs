@@ -38,11 +38,15 @@ impl TerminalState {
     // Failure presentation and persistence are handled by the resume caller.
     // Removing its synthetic detected identity is not a new agent activity
     // transition: Unknown and Idle have the same sidebar presentation.
-    pub fn abandon_agent_resume(&mut self, error: super::RestoreFailure, now: Instant) {
+    pub fn abandon_agent_resume(
+        &mut self,
+        error: super::RestoreFailure,
+        now: Instant,
+    ) -> shepr_agent::ownership::AgentOwnershipMutation {
         self.agent_resume = AgentResumeState::None;
         self.restore_error = Some(error);
-        if self.detected_agent.is_some() {
-            let _ = self.set_detected_state_with_screen_signals_at(
+        if self.ownership.detected_agent().is_some() {
+            return self.ownership.set_detected_state_with_screen_signals_at(
                 None,
                 AgentState::Unknown,
                 false,
@@ -50,5 +54,6 @@ impl TerminalState {
                 now,
             );
         }
+        shepr_agent::ownership::AgentOwnershipMutation::default()
     }
 }

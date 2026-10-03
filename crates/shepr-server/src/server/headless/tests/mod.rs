@@ -261,7 +261,7 @@ fn server_message_encoding_splits_payloads_over_the_frame_cap() {
 
     // Clipboard data past one frame crosses as a continued frame and a final
     // one, and reads back whole.
-    let data = "x".repeat(MAX_FRAME_SIZE + 1);
+    let data = vec![b'x'; MAX_FRAME_SIZE + 1];
     let large = shepr_protocol::encode_message(&ServerMessage::Clipboard { data: data.clone() })
         .expect("large message frames");
     let first_prefix = u32::from_le_bytes(large[..4].try_into().expect("test precondition"));
@@ -373,7 +373,11 @@ async fn headless_api_reads_latest_title() {
         .terminals
         .get_mut(&terminal_id)
         .expect("test precondition")
-        .detected_agent = Some(shepr_agent::detect::Agent::Claude);
+        .ownership_mut()
+        .set_detected_agent_process_at(
+            shepr_agent::detect::Agent::Claude,
+            std::time::Instant::now(),
+        );
     let runtime = shepr_mux::pane::PaneRuntime::test_with_screen_bytes(80, 24, b"");
     runtime.test_process_pty_bytes(b"\x1b]0;\xe2\xa0\x8b task\x07");
     server
@@ -486,7 +490,7 @@ fn server_event_drain_is_bounded_and_keeps_remaining_events_in_order() {
     assert_eq!(server.server_event_rx.len(), 2);
     for expected_size in 1..=crate::limits::SERVER_EVENT_DRAIN_LIMIT {
         let ServerMessage::ClientShellError {
-            kind: shepr_protocol::NoticeKind::PasteRejected { size, max },
+            kind: shepr_protocol::NoticeKind::LimitExceeded(error),
         } = read_server_message(
             control_rx
                 .recv_timeout(Duration::from_secs(1))
@@ -495,14 +499,14 @@ fn server_event_drain_is_bounded_and_keeps_remaining_events_in_order() {
         else {
             panic!("expected paste rejection notice");
         };
-        assert_eq!(size, expected_size);
-        assert_eq!(max, shepr_protocol::MAX_INPUT_PAYLOAD);
+        assert_eq!(error.actual, expected_size);
+        assert_eq!(error.limit.max(), shepr_protocol::MAX_INPUT_PAYLOAD);
     }
 
     assert!(!server.test_drain_server_events());
     for expected_size in (crate::limits::SERVER_EVENT_DRAIN_LIMIT + 1)..=event_count {
         let ServerMessage::ClientShellError {
-            kind: shepr_protocol::NoticeKind::PasteRejected { size, max },
+            kind: shepr_protocol::NoticeKind::LimitExceeded(error),
         } = read_server_message(
             control_rx
                 .recv_timeout(Duration::from_secs(1))
@@ -511,8 +515,8 @@ fn server_event_drain_is_bounded_and_keeps_remaining_events_in_order() {
         else {
             panic!("expected paste rejection notice");
         };
-        assert_eq!(size, expected_size);
-        assert_eq!(max, shepr_protocol::MAX_INPUT_PAYLOAD);
+        assert_eq!(error.actual, expected_size);
+        assert_eq!(error.limit.max(), shepr_protocol::MAX_INPUT_PAYLOAD);
     }
     assert_eq!(server.server_event_rx.len(), 0);
     shutdown_test_runtimes(&mut server);
@@ -1169,7 +1173,7 @@ async fn promoted_client_window_title_uses_its_own_view() {
         .terminals
         .get_mut(&survivor_terminal)
         .expect("survivor terminal state");
-    terminal.manual_label = Some("client-pane".into());
+    terminal.set_manual_label("client-pane".into());
     terminal.set_terminal_title(Some("CLIENT OSC".into()));
     server
         .app
@@ -4761,7 +4765,7 @@ fn resizing_a_background_shell_does_not_change_foreground_or_host_theme() {
                 .recv_timeout(Duration::from_millis(100))
                 .expect("foreground clipboard message")
         ),
-        ServerMessage::Clipboard { data } if data == "dGVzdA=="
+        ServerMessage::Clipboard { data } if data == b"test"
     ));
     assert!(
         second_control
@@ -4997,10 +5001,13 @@ async fn a_surface_larger_than_one_frame_crosses_in_parts() {
             .oversized_surface_reported
     );
     assert!(
-        shepr_protocol::NoticeKind::OversizedSurface {
-            claimed: 3_000_000,
-            max: shepr_protocol::MAX_MESSAGE_SIZE
-        }
+        shepr_protocol::NoticeKind::LimitExceeded(shepr_protocol::LimitExceeded::new(
+            shepr_protocol::Limit::new(
+                shepr_protocol::LimitKind::SurfaceMessageBytes,
+                shepr_protocol::MAX_MESSAGE_SIZE,
+            ),
+            3_000_000,
+        ))
         .to_string()
         .contains("too large")
     );
@@ -5588,8 +5595,7 @@ async fn headless_scheduled_tasks_start_pending_agent_resume_without_foreground_
         .terminals
         .get_mut(&terminal_id)
         .expect("test terminal should exist")
-        .agent_resume =
-        shepr_mux::terminal::AgentResumeState::Planned(crate::test_support::test_codex_plan(
+        .plan_agent_resume(crate::test_support::test_codex_plan(
             "shepr:codex\0codex\0Id\0codex-session",
             vec![crate::app::exiting_test_command().into()],
         ));
@@ -5639,8 +5645,7 @@ async fn headless_scheduled_tasks_keep_pending_agent_resume_deadline_across_tick
         .terminals
         .get_mut(&terminal_id)
         .expect("test terminal should exist")
-        .agent_resume =
-        shepr_mux::terminal::AgentResumeState::Planned(crate::test_support::test_codex_plan(
+        .plan_agent_resume(crate::test_support::test_codex_plan(
             "shepr:codex\0codex\0Id\0codex-session",
             vec![crate::app::exiting_test_command().into()],
         ));
@@ -5676,7 +5681,7 @@ async fn settle_resume_launch(
 ) {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     while server.app.state.terminals[terminal_id]
-        .agent_resume
+        .agent_resume()
         .is_pending()
     {
         let event = tokio::time::timeout_at(deadline, server.app.event_rx.recv())
@@ -6011,7 +6016,7 @@ async fn clipboard_write_goes_to_the_clients_viewing_the_writing_pane() {
             other => panic!("expected clipboard message, got {other:?}"),
         }
     };
-    assert_eq!(clipboard, "dGVzdA==");
+    assert_eq!(clipboard, b"test");
     while let Ok(bytes) = first_control.recv_timeout(Duration::from_millis(50)) {
         assert!(
             !matches!(read_server_message(bytes), ServerMessage::Clipboard { .. }),
@@ -6058,7 +6063,7 @@ fn clipboard_write_from_an_unviewed_pane_targets_foreground_client_only() {
             .recv_timeout(Duration::from_millis(100))
             .expect("foreground clipboard message"),
     ) {
-        ServerMessage::Clipboard { data } => assert_eq!(data, "dGVzdA=="),
+        ServerMessage::Clipboard { data } => assert_eq!(data, b"test"),
         other => panic!("expected clipboard message, got {other:?}"),
     }
     assert!(

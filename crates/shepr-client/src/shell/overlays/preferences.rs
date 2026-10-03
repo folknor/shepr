@@ -45,16 +45,11 @@ impl ConfiguredChrome {
     pub(in crate::shell) fn from_validated_config(
         config: &shepr_config::ValidatedClientConfig,
     ) -> Self {
+        let ui = config.ui();
         Self {
-            sidebar_width: config
-                .provenance()
-                .is_explicit(shepr_config::UiPreferenceKey::SidebarWidth),
-            sidebar_collapsed: config
-                .provenance()
-                .is_explicit(shepr_config::UiPreferenceKey::SidebarStartCollapsed),
-            agent_panel_sort: config
-                .provenance()
-                .is_explicit(shepr_config::UiPreferenceKey::AgentPanelSort),
+            sidebar_width: ui.sidebar_width_is_explicit(),
+            sidebar_collapsed: ui.sidebar_start_collapsed_is_explicit(),
+            agent_panel_sort: ui.agent_panel_sort_is_explicit(),
         }
     }
 }
@@ -275,8 +270,12 @@ mod tests {
             ConfiguredChrome::from_validated_config(&default_config),
             ConfiguredChrome::default()
         );
+        // Explicitness comes from the config value being set, so an explicit
+        // `false` still counts as configured.
+        let mut values = shepr_config::ClientConfig::default();
+        values.ui.sidebar_start_collapsed = Some(false);
         let config = shepr_config::ValidatedClientConfig::test_from_config(
-            shepr_config::ClientConfig::default(),
+            values,
             Some("[ui]\nsidebar_start_collapsed = false\n"),
         );
         assert_eq!(

@@ -69,7 +69,7 @@ impl App {
         Some(SnapshotPane {
             pane_id: self.public_pane_id(ws_idx, pane_id)?,
             workspace_id: self.public_workspace_id(ws_idx)?,
-            label: terminal.manual_label.clone(),
+            label: terminal.manual_label().map(str::to_owned),
             cwd: ws
                 .cwd_for_pane(pane_id, &self.state.terminals, &self.terminal_runtimes)
                 .map(|cwd| cwd.display().to_string()),

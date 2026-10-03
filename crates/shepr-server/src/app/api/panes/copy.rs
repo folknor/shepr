@@ -32,9 +32,7 @@ impl App {
             return Err(pane_missing(&params.pane_id).into());
         };
         let scroll_changed = runtime
-            .set_scroll_offset_from_bottom(
-                usize::try_from(params.offset_from_bottom).unwrap_or(usize::MAX),
-            )
+            .set_scroll_offset_from_bottom(params.offset_from_bottom)
             .is_changed();
         let Some(pane) = self.pane_info(ws_idx, pane_id) else {
             return Err(HandlerError {

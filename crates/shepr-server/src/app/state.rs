@@ -61,6 +61,12 @@ pub struct AppState {
     /// Immutable settings resolved from the launch configuration.
     pub(crate) settings: AppSettings,
     pub next_agent_state_change_seq: u64,
+    /// Terminals whose ownership an update touched since `App` last mirrored
+    /// full-lifecycle authority into their runtimes. It holds ids, not
+    /// values: the drain reads the live authority, so a change no mutation
+    /// reported is still delivered. A set, so it stays bounded by the terminal
+    /// count when no `App` drains it.
+    pub(super) lifecycle_authority_dirty: std::collections::HashSet<shepr_protocol::TerminalId>,
     /// Last known foreground host terminal appearance.
     pub host_terminal_appearance: Option<HostAppearance>,
     /// True when the foreground host explicitly reported appearance via Mode 2031.
@@ -363,6 +369,7 @@ impl AppState {
             workspace_geometry: std::collections::HashMap::new(),
             settings: AppSettings::from_config(&shepr_config::ValidatedServerConfig::test_default()),
             next_agent_state_change_seq: 0,
+            lifecycle_authority_dirty: std::collections::HashSet::new(),
             host_terminal_appearance: None,
             host_terminal_appearance_explicit: false,
             host_terminal_theme: TerminalTheme::default(),

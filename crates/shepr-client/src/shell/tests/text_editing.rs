@@ -26,12 +26,12 @@ fn shell(field: usize) -> ClientShellState {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
     let mut frame = surface();
-    frame.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics {
-        offset_from_bottom: 0,
-        max_offset_from_bottom: 0,
-        viewport_rows: 2,
-        history_origin: shepr_vt::AbsRow(0),
-    });
+    frame.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics::new(
+        0,
+        0,
+        2,
+        shepr_vt::AbsRow(0),
+    ));
     state.receive_pane_surface(frame);
     state.compose(106, 30).expect("initial shell");
     match field {

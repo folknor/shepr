@@ -19,13 +19,7 @@ pub struct PaneSurfacePane {
     pub pixel_height: u32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PaneSurfaceScrollMetrics {
-    pub offset_from_bottom: u64,
-    pub max_offset_from_bottom: u64,
-    pub viewport_rows: u64,
-    pub history_origin: shepr_vt::AbsRow,
-}
+pub use shepr_vt::ScrollMetrics as PaneSurfaceScrollMetrics;
 
 /// One draggable BSP split handle relative to a pane surface.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -343,4 +337,39 @@ pub struct SurfaceUpdate {
         deserialize_with = "codec::deserialize_bounded_vec::<MAX_SURFACE_PATCH_SPANS, _, _>"
     )]
     pub spans: Vec<PaneSurfacePatchRow>,
+}
+
+#[cfg(test)]
+mod scroll_metrics_tests {
+    use super::PaneSurfaceScrollMetrics;
+    use crate::codec;
+
+    #[test]
+    fn scroll_metrics_wire_rejects_an_offset_outside_history() {
+        let fields = shepr_vt::ScrollMetricsFields {
+            offset_from_bottom: 11,
+            max_offset_from_bottom: 10,
+            viewport_rows: 3,
+            history_origin: shepr_vt::AbsRow(40),
+        };
+        let mut bytes = Vec::new();
+        codec::encode_into(&mut bytes, &fields).expect("encode metric fields");
+        assert!(
+            codec::Decoder::new(&bytes)
+                .decode::<PaneSurfaceScrollMetrics>()
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn scroll_metrics_wire_preserves_the_history_base() {
+        let metrics = PaneSurfaceScrollMetrics::new(4, 10, 3, shepr_vt::AbsRow(40));
+        let mut bytes = Vec::new();
+        codec::encode_into(&mut bytes, &metrics).expect("encode metrics");
+        let mut decoder = codec::Decoder::new(&bytes);
+        let decoded: PaneSurfaceScrollMetrics = decoder.decode().expect("decode metrics");
+        decoder.finish().expect("all fields consumed");
+        assert_eq!(decoded, metrics);
+        assert_eq!(decoded.viewport_top_row(), shepr_vt::AbsRow(46));
+    }
 }

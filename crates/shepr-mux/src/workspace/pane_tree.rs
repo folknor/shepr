@@ -172,19 +172,6 @@ impl Workspace {
         self.has_consistent_panes() && self.layout.swap_panes(first, second)
     }
 
-    pub fn resize_focused_pane(
-        &mut self,
-        direction: NavDirection,
-        delta: shepr_core::layout::RatioDelta,
-        area: shepr_core::geometry::Rect,
-    ) -> bool {
-        if !self.has_consistent_panes() {
-            return false;
-        }
-        self.layout.resize_focused(direction, delta, area);
-        true
-    }
-
     pub fn resize_pane(
         &mut self,
         pane_id: PaneId,

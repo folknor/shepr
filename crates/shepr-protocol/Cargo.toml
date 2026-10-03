@@ -8,7 +8,6 @@ build = "build.rs"
 [dependencies]
 ratatui = { workspace = true }
 serde = { workspace = true }
-shepr-config = { path = "../shepr-config" }
 shepr-core = { path = "../shepr-core" }
 shepr-vt = { path = "../shepr-vt" }
 

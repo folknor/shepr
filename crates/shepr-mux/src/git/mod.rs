@@ -158,16 +158,14 @@ impl WorkspaceGitStatusSnapshot {
         resolved_identity_cwd: PathBuf,
         status_cache_key: PathBuf,
     ) -> WorkspaceGitStatus {
-        let home = if self.repo_root.is_none() {
-            shepr_core::pathutil::home_dir().ok()
-        } else {
-            None
+        let auto_label = match self.repo_root.as_deref() {
+            Some(repo_root) => shepr_core::workspace_label::workspace_label_from_cwd(
+                &resolved_identity_cwd,
+                Some(repo_root),
+                None,
+            ),
+            None => fallback_label_from_cwd(&resolved_identity_cwd),
         };
-        let auto_label = shepr_core::workspace_label::workspace_label_from_cwd(
-            &resolved_identity_cwd,
-            self.repo_root.as_deref(),
-            home.as_deref(),
-        );
         WorkspaceGitStatus {
             workspace_id,
             resolved_identity_cwd,

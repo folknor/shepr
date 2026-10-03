@@ -442,11 +442,8 @@ pub fn sibling_server_status() -> SiblingServerJson {
 /// into the version and the build id. `None` for any other text.
 fn parse_server_version_line(line: &str) -> Option<(String, String)> {
     let identity = line.trim().strip_prefix(SERVER_BINARY_NAME)?.trim();
-    let (version, build_id) = identity.rsplit_once('+')?;
-    if version.is_empty() || build_id.is_empty() || identity.contains(char::is_whitespace) {
-        return None;
-    }
-    Some((version.to_owned(), build_id.to_owned()))
+    let identity = identity.parse::<shepr_protocol::BuildVersion>().ok()?;
+    Some((identity.version, identity.build_id.to_string()))
 }
 
 /// Runs `server --version` under a deadline and returns its first output line.

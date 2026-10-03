@@ -4,11 +4,11 @@ use std::path::{Path, PathBuf};
 use shepr_core::env::EnvVar;
 
 use super::validated::{
-    ClientConfigResolution, ServerConfigResolution, ValidatedClientValues, ValidatedServerValues,
+    ValidatedClientValues, ValidatedServerValues, parse_client_config, parse_server_config,
 };
 use super::{
-    ClientConfig, ConfigDiagnostic, ConfigProvenance, ServerConfig, ValidatedClientConfig,
-    ValidatedServerConfig,
+    ClientConfig, ConfigDiagnostic, ConfigKeyPath, ConfigKeyPathSegment, ConfigProvenance,
+    PathsError, ServerConfig, ValidatedClientConfig, ValidatedServerConfig,
 };
 
 include!(concat!(env!("OUT_DIR"), "/build_profile.rs"));
@@ -102,11 +102,11 @@ struct PaneMarker {
 }
 
 impl PaneMarker {
-    fn read(diagnostics: &mut Vec<String>) -> Self {
+    fn read(diagnostics: &mut Vec<ConfigDiagnostic>) -> Self {
         let in_pane = match shepr_core::env::read_text(EnvVar::SheprEnv) {
             Ok(value) => value.as_deref() == Some(shepr_core::env::SHEPR_ENV_IN_PANE),
             Err(error) => {
-                diagnostics.push(error.to_string());
+                diagnostics.push(ConfigDiagnostic::path(error.to_string()));
                 false
             }
         };
@@ -117,21 +117,21 @@ impl PaneMarker {
         }
     }
 
-    fn read_profile(diagnostics: &mut Vec<String>) -> Option<BuildProfile> {
+    fn read_profile(diagnostics: &mut Vec<ConfigDiagnostic>) -> Option<BuildProfile> {
         match shepr_core::env::read_text(EnvVar::SheprBuildProfile) {
             Ok(Some(marker)) => match BuildProfile::from_marker(&marker) {
                 Some(profile) => Some(profile),
                 None => {
-                    diagnostics.push(format!(
+                    diagnostics.push(ConfigDiagnostic::path(format!(
                         "{} must be `release` or `dev`, got `{marker}`",
                         EnvVar::SheprBuildProfile
-                    ));
+                    )));
                     None
                 }
             },
             Ok(None) => None,
             Err(error) => {
-                diagnostics.push(error.to_string());
+                diagnostics.push(ConfigDiagnostic::path(error.to_string()));
                 None
             }
         }
@@ -244,19 +244,19 @@ impl AppPaths {
 
     /// Resolve XDG directories and the local socket target once from the
     /// inherited process environment, for this build's profile.
-    pub fn resolve() -> Result<Self, Vec<String>> {
+    pub fn resolve() -> Result<Self, PathsError> {
         resolve_paths_from_env(BuildProfile::current(), CurrentDirOrigin::Process)
     }
 
     /// Resolve paths for a TUI or its internal client launch. A client launched
     /// from a pane owned by this build profile is refused before path or config
     /// loading; `None` represents that refusal.
-    pub fn resolve_for_client() -> Result<Option<Self>, Vec<String>> {
+    pub fn resolve_for_client() -> Result<Option<Self>, PathsError> {
         let profile = BuildProfile::current();
         let mut diagnostics = Vec::new();
         let marker = PaneMarker::read(&mut diagnostics);
         if !diagnostics.is_empty() {
-            return Err(diagnostics);
+            return Err(PathsError::new(diagnostics));
         }
         if marker.owner(profile) == PaneOwner::SameProfile {
             return Ok(None);
@@ -273,7 +273,7 @@ impl AppPaths {
     /// relative `terminal.new_cwd` and the new-terminal fallback resolve
     /// against. A server started without the handoff (by hand, from a shell)
     /// uses its own working directory.
-    pub fn resolve_for_server() -> Result<Self, Vec<String>> {
+    pub fn resolve_for_server() -> Result<Self, PathsError> {
         resolve_paths_from_env(BuildProfile::current(), CurrentDirOrigin::StartupHandoff)
     }
 
@@ -320,9 +320,12 @@ fn platform_xdg_dir(
     Ok(home_dir.join(home_suffix).join(app_dir))
 }
 
-fn socket_path_override(variable: EnvVar, diagnostics: &mut Vec<String>) -> Option<PathBuf> {
+fn socket_path_override(
+    variable: EnvVar,
+    diagnostics: &mut Vec<ConfigDiagnostic>,
+) -> Option<PathBuf> {
     shepr_core::env::read_path(variable).unwrap_or_else(|error| {
-        diagnostics.push(error.to_string());
+        diagnostics.push(ConfigDiagnostic::path(error.to_string()));
         None
     })
 }
@@ -362,7 +365,7 @@ fn resolve_current_dir(
 fn resolve_paths_from_env(
     profile: BuildProfile,
     current_dir_origin: CurrentDirOrigin,
-) -> Result<AppPaths, Vec<String>> {
+) -> Result<AppPaths, PathsError> {
     let mut target_env_diagnostics = Vec::new();
     let pane_marker = PaneMarker {
         in_pane: false,
@@ -380,8 +383,8 @@ fn resolve_paths_from_env_with_marker(
     profile: BuildProfile,
     current_dir_origin: CurrentDirOrigin,
     pane_marker: PaneMarker,
-    mut target_env_diagnostics: Vec<String>,
-) -> Result<AppPaths, Vec<String>> {
+    mut target_env_diagnostics: Vec<ConfigDiagnostic>,
+) -> Result<AppPaths, PathsError> {
     let mut socket_override =
         socket_path_override(EnvVar::SheprSocketPath, &mut target_env_diagnostics);
     // A pane names the profile of the server that owns it next to the socket
@@ -395,12 +398,13 @@ fn resolve_paths_from_env_with_marker(
         socket_override = None;
     }
     if !target_env_diagnostics.is_empty() {
-        return Err(target_env_diagnostics);
+        return Err(PathsError::new(target_env_diagnostics));
     }
 
-    let home_dir = shepr_core::pathutil::home_dir().map_err(|error| vec![error.to_string()])?;
-    let (current_dir, startup_cwd) =
-        resolve_current_dir(current_dir_origin).map_err(|error| vec![error])?;
+    let home_dir = shepr_core::pathutil::home_dir()
+        .map_err(|error| PathsError::one(ConfigDiagnostic::path(error.to_string())))?;
+    let (current_dir, startup_cwd) = resolve_current_dir(current_dir_origin)
+        .map_err(|error| PathsError::one(ConfigDiagnostic::path(error)))?;
     let config_dir = platform_xdg_dir(
         EnvVar::XdgConfigHome,
         ".config",
@@ -431,7 +435,9 @@ fn resolve_paths_from_env_with_marker(
     let config_dir = match config_dir {
         Ok(path) => Some(path),
         Err(error) => {
-            diagnostics.push(format!("config directory error: {error}"));
+            diagnostics.push(ConfigDiagnostic::path(format!(
+                "config directory error: {error}"
+            )));
             None
         }
     };
@@ -439,14 +445,18 @@ fn resolve_paths_from_env_with_marker(
     let state_dir = match state_dir {
         Ok(path) => Some(path),
         Err(error) => {
-            diagnostics.push(format!("state directory error: {error}"));
+            diagnostics.push(ConfigDiagnostic::path(format!(
+                "state directory error: {error}"
+            )));
             None
         }
     };
     let runtime_dir = match runtime_dir {
         Ok(path) => Some(path),
         Err(error) => {
-            diagnostics.push(format!("runtime directory error: {error}"));
+            diagnostics.push(ConfigDiagnostic::path(format!(
+                "runtime directory error: {error}"
+            )));
             None
         }
     };
@@ -460,7 +470,11 @@ fn resolve_paths_from_env_with_marker(
                 &runtime_dir,
                 socket_override.as_deref(),
             )
-            .map_err(|error| vec![format!("server socket path error: {error}")])?;
+            .map_err(|error| {
+                PathsError::one(ConfigDiagnostic::path(format!(
+                    "server socket path error: {error}"
+                )))
+            })?;
             // The saved layout sits beside the shared state directory under the
             // profile's directory name: the state directory itself for release.
             let data_dir = state_dir.with_file_name(profile.app_dir_name());
@@ -476,10 +490,10 @@ fn resolve_paths_from_env_with_marker(
                 server_address,
             })
         }
-        _ if diagnostics.is_empty() => Err(vec![
-            "paths could not be resolved; no path-specific error was reported".to_owned(),
-        ]),
-        _ => Err(diagnostics),
+        _ if diagnostics.is_empty() => Err(PathsError::one(ConfigDiagnostic::path(
+            "paths could not be resolved; no path-specific error was reported",
+        ))),
+        _ => Err(PathsError::new(diagnostics)),
     }
 }
 
@@ -531,89 +545,31 @@ fn read_optional_config(path: &Path) -> std::io::Result<Option<String>> {
     }
 }
 
-trait ConfigResolution {
-    type Values;
-
-    fn append_diagnostics(&self, diagnostics: &mut Vec<ConfigDiagnostic>);
-    fn into_values(self) -> Option<Self::Values>;
-}
-
-impl ConfigResolution for ClientConfigResolution {
-    type Values = ValidatedClientValues;
-
-    fn append_diagnostics(&self, diagnostics: &mut Vec<ConfigDiagnostic>) {
-        diagnostics.extend(
-            self.diagnostics
-                .iter()
-                .cloned()
-                .map(ConfigDiagnostic::Validation),
-        );
-    }
-
-    fn into_values(self) -> Option<Self::Values> {
-        self.values
-    }
-}
-
-impl ConfigResolution for ServerConfigResolution {
-    type Values = ValidatedServerValues;
-
-    fn append_diagnostics(&self, diagnostics: &mut Vec<ConfigDiagnostic>) {
-        diagnostics.extend(
-            self.diagnostics
-                .iter()
-                .cloned()
-                .map(ConfigDiagnostic::Validation),
-        );
-        diagnostics.extend(
-            self.path_diagnostics
-                .iter()
-                .cloned()
-                .map(ConfigDiagnostic::Path),
-        );
-    }
-
-    fn into_values(self) -> Option<Self::Values> {
-        self.values
-    }
-}
-
 #[derive(Debug)]
-struct LoadedConfig<C, R> {
+struct LoadedConfig<C, V> {
     config: C,
-    provenance: ConfigProvenance,
-    resolution: Option<R>,
-    diagnostics: Vec<ConfigDiagnostic>,
+    resolution: Result<V, Vec<ConfigDiagnostic>>,
 }
 
-impl<C: Default, R: ConfigResolution> LoadedConfig<C, R> {
+impl<C: Default, V> LoadedConfig<C, V> {
     fn failed(diagnostics: Vec<ConfigDiagnostic>) -> Self {
         Self {
             config: C::default(),
-            provenance: ConfigProvenance::defaults(),
-            resolution: None,
-            diagnostics,
+            resolution: Err(diagnostics),
         }
     }
 
-    fn into_validated_with<V>(
+    fn into_validated_with<O>(
         self,
         paths: AppPaths,
-        construct: impl FnOnce(C, ConfigProvenance, R::Values, AppPaths) -> V,
-    ) -> Result<V, Vec<ConfigDiagnostic>> {
-        if !self.diagnostics.is_empty() {
-            return Err(self.diagnostics);
-        }
-        match self.resolution.and_then(ConfigResolution::into_values) {
-            Some(values) => Ok(construct(self.config, self.provenance, values, paths)),
-            None => Err(vec![ConfigDiagnostic::Validation(
-                "configuration resolution produced no values and no diagnostic".to_owned(),
-            )]),
-        }
+        construct: impl FnOnce(C, V, AppPaths) -> O,
+    ) -> Result<O, Vec<ConfigDiagnostic>> {
+        self.resolution
+            .map(|values| construct(self.config, values, paths))
     }
 }
 
-impl LoadedConfig<ClientConfig, ClientConfigResolution> {
+impl LoadedConfig<ClientConfig, ValidatedClientValues> {
     fn into_validated(
         self,
         paths: AppPaths,
@@ -622,12 +578,12 @@ impl LoadedConfig<ClientConfig, ClientConfigResolution> {
     }
 }
 
-impl LoadedConfig<ServerConfig, ServerConfigResolution> {
+impl LoadedConfig<ServerConfig, ValidatedServerValues> {
     fn into_validated(
         self,
         paths: AppPaths,
     ) -> Result<ValidatedServerConfig, Vec<ConfigDiagnostic>> {
-        self.into_validated_with(paths, |config, _provenance, values, paths| {
+        self.into_validated_with(paths, |config, values, paths| {
             ValidatedServerConfig::from_loaded(config, values, paths)
         })
     }
@@ -637,26 +593,25 @@ fn resolve_client_config(
     config: &ClientConfig,
     provenance: &ConfigProvenance,
     _paths: &AppPaths,
-) -> ClientConfigResolution {
-    ClientConfigResolution::parse(config, provenance)
+) -> Result<ValidatedClientValues, Vec<ConfigDiagnostic>> {
+    parse_client_config(config, provenance)
 }
 
 fn resolve_server_config(
     config: &ServerConfig,
     _provenance: &ConfigProvenance,
     paths: &AppPaths,
-) -> ServerConfigResolution {
-    ServerConfigResolution::parse(config, paths)
+) -> Result<ValidatedServerValues, Vec<ConfigDiagnostic>> {
+    parse_server_config(config, paths)
 }
 
-fn load_config_from_path<C, R>(
+fn load_config_from_path<C, V>(
     path: &Path,
     paths: &AppPaths,
-    resolve: impl Fn(&C, &ConfigProvenance, &AppPaths) -> R,
-) -> LoadedConfig<C, R>
+    resolve: impl Fn(&C, &ConfigProvenance, &AppPaths) -> Result<V, Vec<ConfigDiagnostic>>,
+) -> LoadedConfig<C, V>
 where
     C: Default + serde::de::DeserializeOwned,
-    R: ConfigResolution,
 {
     match read_optional_config(path) {
         Ok(Some(content)) => load_config_from_str(&content, paths, resolve),
@@ -664,68 +619,55 @@ where
             let config = C::default();
             let provenance = ConfigProvenance::from_document(None);
             let resolution = resolve(&config, &provenance, paths);
-            let mut diagnostics = Vec::new();
-            resolution.append_diagnostics(&mut diagnostics);
-            LoadedConfig {
-                config,
-                provenance,
-                resolution: Some(resolution),
-                diagnostics,
-            }
+            LoadedConfig { config, resolution }
         }
-        Err(error) => LoadedConfig::failed(vec![ConfigDiagnostic::Read(error.to_string())]),
+        Err(error) => LoadedConfig::failed(vec![ConfigDiagnostic::read(error.to_string())]),
     }
 }
 
-fn load_config_from_str<C, R>(
+fn load_config_from_str<C, V>(
     content: &str,
     paths: &AppPaths,
-    resolve: impl Fn(&C, &ConfigProvenance, &AppPaths) -> R,
-) -> LoadedConfig<C, R>
+    resolve: impl Fn(&C, &ConfigProvenance, &AppPaths) -> Result<V, Vec<ConfigDiagnostic>>,
+) -> LoadedConfig<C, V>
 where
     C: Default + serde::de::DeserializeOwned,
-    R: ConfigResolution,
 {
     let table = match content.parse::<toml::Table>() {
         Ok(table) => table,
         Err(error) => {
-            return LoadedConfig::failed(vec![ConfigDiagnostic::Parse(error.to_string())]);
+            return LoadedConfig::failed(vec![ConfigDiagnostic::parse(error.to_string())]);
         }
     };
     let document = toml::Value::Table(table);
     let (config, ignored_keys) = match deserialize_with_ignored::<C, _>(document.clone()) {
         Ok(config) => config,
         Err(error) => {
-            return LoadedConfig::failed(vec![ConfigDiagnostic::Parse(error.to_string())]);
+            return LoadedConfig::failed(vec![ConfigDiagnostic::parse(error.to_string())]);
         }
     };
     let provenance = ConfigProvenance::from_document(Some(&document));
     let resolution = resolve(&config, &provenance, paths);
     let (unknown_sections, unknown_diagnostics) =
         unknown_top_level_sections(&document, &ignored_keys);
-    let mut diagnostics = unknown_diagnostics
-        .into_iter()
-        .map(ConfigDiagnostic::Unknown)
-        .collect::<Vec<_>>();
-    diagnostics.extend(
-        unknown_config_key_diagnostics(
-            ignored_keys
-                .into_iter()
-                .filter(|path| {
-                    !matches!(path.as_slice(), [ConfigKeyPathSegment::Key(key)] if unknown_sections.contains(key))
-                })
-                .collect(),
-        )
-        .into_iter()
-        .map(ConfigDiagnostic::Unknown),
-    );
-    resolution.append_diagnostics(&mut diagnostics);
-    LoadedConfig {
-        config,
-        provenance,
-        resolution: Some(resolution),
-        diagnostics,
-    }
+    let mut unknown_diagnostics = unknown_diagnostics;
+    unknown_diagnostics.extend(unknown_config_key_diagnostics(
+        ignored_keys
+            .into_iter()
+            .filter(|path| {
+                !matches!(path.segments(), [ConfigKeyPathSegment::Key(key)] if unknown_sections.contains(key))
+            })
+            .collect(),
+    ));
+    let resolution = match resolution {
+        Ok(values) if unknown_diagnostics.is_empty() => Ok(values),
+        Ok(_) => Err(unknown_diagnostics),
+        Err(mut diagnostics) => {
+            unknown_diagnostics.append(&mut diagnostics);
+            Err(unknown_diagnostics)
+        }
+    };
+    LoadedConfig { config, resolution }
 }
 
 pub fn load_client_validated(
@@ -758,102 +700,62 @@ pub fn load_server_validated(
 
 fn unknown_top_level_sections(
     document: &toml::Value,
-    ignored_paths: &[Vec<ConfigKeyPathSegment>],
-) -> (std::collections::BTreeSet<String>, Vec<String>) {
+    ignored_paths: &[ConfigKeyPath],
+) -> (std::collections::BTreeSet<String>, Vec<ConfigDiagnostic>) {
     let Some(table) = document.as_table() else {
         return (std::collections::BTreeSet::new(), Vec::new());
     };
     let mut keys = Vec::new();
     let mut diagnostics = Vec::new();
     for path in ignored_paths {
-        let [ConfigKeyPathSegment::Key(key)] = path.as_slice() else {
+        let [ConfigKeyPathSegment::Key(key)] = path.segments() else {
             continue;
         };
         let Some(value) = table.get(key) else {
             continue;
         };
-        if let Some(diagnostic) = unknown_top_level_section_diagnostic(key, value) {
+        if let Some(array_table) = unknown_top_level_section_diagnostic(value) {
             keys.push(key.clone());
-            diagnostics.push(diagnostic);
+            diagnostics.push(ConfigDiagnostic::unknown_section(path.clone(), array_table));
         }
     }
     (keys.into_iter().collect(), diagnostics)
 }
 
-fn unknown_top_level_section_diagnostic(key: &str, value: &toml::Value) -> Option<String> {
-    let header = if value.is_table() {
-        format!("[{key}]")
+fn unknown_top_level_section_diagnostic(value: &toml::Value) -> Option<bool> {
+    if value.is_table() {
+        Some(false)
     } else if value
         .as_array()
         .is_some_and(|items| !items.is_empty() && items.iter().all(toml::Value::is_table))
     {
-        format!("[[{key}]]")
+        Some(true)
     } else {
-        return None;
-    };
-
-    Some(format!("section {header}"))
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-enum ConfigKeyPathSegment {
-    Key(String),
-    Index(usize),
-}
-
-fn config_key_path(path: &serde_ignored::Path<'_>) -> Vec<ConfigKeyPathSegment> {
-    fn visit(path: &serde_ignored::Path<'_>, segments: &mut Vec<ConfigKeyPathSegment>) {
-        match path {
-            serde_ignored::Path::Root => {}
-            serde_ignored::Path::Seq { parent, index } => {
-                visit(parent, segments);
-                segments.push(ConfigKeyPathSegment::Index(*index));
-            }
-            serde_ignored::Path::Map { parent, key } => {
-                visit(parent, segments);
-                segments.push(ConfigKeyPathSegment::Key(key.clone()));
-            }
-            serde_ignored::Path::Some { parent }
-            | serde_ignored::Path::NewtypeStruct { parent }
-            | serde_ignored::Path::NewtypeVariant { parent } => visit(parent, segments),
-        }
+        None
     }
-
-    let mut segments = Vec::new();
-    visit(path, &mut segments);
-    segments
 }
 
-fn format_config_key_path(path: &[ConfigKeyPathSegment]) -> String {
-    path.iter()
-        .map(|segment| match segment {
-            ConfigKeyPathSegment::Key(key)
-                if !key.is_empty()
-                    && key.bytes().all(|byte| {
-                        byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-')
-                    }) =>
-            {
-                key.clone()
-            }
-            ConfigKeyPathSegment::Key(key) => toml::Value::String(key.clone()).to_string(),
-            ConfigKeyPathSegment::Index(index) => index.to_string(),
-        })
-        .collect::<Vec<_>>()
-        .join(".")
+fn config_key_path(path: &serde_ignored::Path<'_>) -> ConfigKeyPath {
+    match path {
+        serde_ignored::Path::Root => ConfigKeyPath::root(),
+        serde_ignored::Path::Seq { parent, index } => config_key_path(parent).index(*index),
+        serde_ignored::Path::Map { parent, key } => config_key_path(parent).key(key.clone()),
+        serde_ignored::Path::Some { parent }
+        | serde_ignored::Path::NewtypeStruct { parent }
+        | serde_ignored::Path::NewtypeVariant { parent } => config_key_path(parent),
+    }
 }
 
-fn unknown_config_key_diagnostics(mut paths: Vec<Vec<ConfigKeyPathSegment>>) -> Vec<String> {
+fn unknown_config_key_diagnostics(mut paths: Vec<ConfigKeyPath>) -> Vec<ConfigDiagnostic> {
     paths.sort();
     paths.dedup();
     paths
         .into_iter()
-        .map(|path| format!("key {}", format_config_key_path(&path)))
+        .map(ConfigDiagnostic::unknown_key)
         .collect()
 }
 
-fn deserialize_with_ignored<'de, T, D>(
-    deserializer: D,
-) -> Result<(T, Vec<Vec<ConfigKeyPathSegment>>), D::Error>
+fn deserialize_with_ignored<'de, T, D>(deserializer: D) -> Result<(T, Vec<ConfigKeyPath>), D::Error>
 where
     T: serde::Deserialize<'de>,
     D: serde::Deserializer<'de>,
@@ -866,9 +768,9 @@ where
 }
 
 #[cfg(test)]
-type LoadedClientConfig = LoadedConfig<ClientConfig, ClientConfigResolution>;
+type LoadedClientConfig = LoadedConfig<ClientConfig, ValidatedClientValues>;
 #[cfg(test)]
-type LoadedServerConfig = LoadedConfig<ServerConfig, ServerConfigResolution>;
+type LoadedServerConfig = LoadedConfig<ServerConfig, ValidatedServerValues>;
 
 #[cfg(test)]
 impl ClientConfig {
@@ -944,9 +846,11 @@ mod tests {
                 .into_validated(AppPaths::default())
                 .expect_err("server setting in client file");
             assert!(
-                errors
-                    .iter()
-                    .any(|error| matches!(error, ConfigDiagnostic::Unknown(_))),
+                errors.iter().any(|error| matches!(
+                    error.kind(),
+                    super::super::ConfigDiagnosticKind::UnknownKey
+                        | super::super::ConfigDiagnosticKind::UnknownSection { .. }
+                )),
                 "{source}: {errors:?}"
             );
         }
@@ -967,9 +871,11 @@ mod tests {
                 .into_validated(AppPaths::default())
                 .expect_err("client setting in server file");
             assert!(
-                errors
-                    .iter()
-                    .any(|error| matches!(error, ConfigDiagnostic::Unknown(_))),
+                errors.iter().any(|error| matches!(
+                    error.kind(),
+                    super::super::ConfigDiagnosticKind::UnknownKey
+                        | super::super::ConfigDiagnosticKind::UnknownSection { .. }
+                )),
                 "{source}: {errors:?}"
             );
         }
@@ -1068,24 +974,19 @@ mod tests {
     fn load_diagnostics_keep_their_kind() {
         let _env = shepr_test_support::IsolatedEnv::new();
         let parse = ClientConfig::load_from_str("[keys\nprefix = 'ctrl+a'");
-        assert!(matches!(
-            parse.diagnostics.as_slice(),
-            [ConfigDiagnostic::Parse(_)]
-        ));
+        assert!(matches!(parse.resolution, Err(ref errors)
+            if matches!(errors.as_slice(), [diagnostic]
+                if matches!(diagnostic.kind(), super::super::ConfigDiagnosticKind::Parse(_)))));
 
         let unknown = ClientConfig::load_from_str("[keys]\nunknown_binding = 'ctrl+a'");
-        assert!(matches!(
-            unknown.diagnostics.as_slice(),
-            [ConfigDiagnostic::Unknown(_)]
-        ));
+        assert!(matches!(unknown.resolution, Err(ref errors)
+            if matches!(errors.as_slice(), [diagnostic]
+                if matches!(diagnostic.kind(),
+                    super::super::ConfigDiagnosticKind::UnknownKey
+                        | super::super::ConfigDiagnosticKind::UnknownSection { .. }))));
 
         let invalid = ClientConfig::load_from_str("[keys]\nprefix = 'ctrl+'");
-        assert!(
-            invalid
-                .diagnostics
-                .iter()
-                .any(|diagnostic| matches!(diagnostic, ConfigDiagnostic::Validation(_)))
-        );
+        assert!(invalid.resolution.as_ref().is_err());
     }
 
     #[test]
@@ -1093,8 +994,7 @@ mod tests {
         let _env = shepr_test_support::IsolatedEnv::new();
         let loaded = ClientConfig::load_from_str("[broken");
 
-        assert!(loaded.resolution.is_none());
-        assert!(!loaded.diagnostics.is_empty());
+        assert!(loaded.resolution.is_err());
     }
 
     #[test]
@@ -1105,12 +1005,11 @@ mod tests {
         let startup = ClientConfig::load_from_path(scratch.path());
         let server = ServerConfig::load_from_path(scratch.path());
         assert!(server.into_validated(AppPaths::default()).is_err());
-        assert!(
-            startup
-                .diagnostics
+        assert!(startup.resolution.as_ref().is_err_and(|diagnostics| {
+            diagnostics
                 .iter()
                 .any(|diagnostic| diagnostic.to_string().contains("config read error"))
-        );
+        }));
     }
 
     #[test]
@@ -1215,7 +1114,7 @@ ssh = "ssh://gpu.example"
         for (content, message) in [
             (
                 "[[machines]]\nlabel = \"a\"\nssh = \"h1\"\n[[machines]]\nlabel = \"a\"\nssh = \"h2\"\n",
-                "duplicates machines[0]",
+                "duplicates an earlier machine (related: machines[0].label)",
             ),
             (
                 "[[machines]]\nlabel = \"  \"\nssh = \"h\"\n",
@@ -1240,7 +1139,7 @@ ssh = "ssh://gpu.example"
             ("[[machines]]\nlabel = \"a\"\n", "ssh"),
             (
                 "[[machines]]\nlabel = \"a\"\nssh = \"h\"\nhost = \"x\"\n",
-                "unknown config key machines.0.host",
+                "unknown config key machines[0].host",
             ),
         ] {
             let errors = ClientConfig::load_from_str(content)
@@ -1337,9 +1236,9 @@ sidebar_max_width = 36
 
         let errors = load_server_validated(&paths).expect_err("home cwd needs absolute HOME");
         assert!(
-            errors
-                .iter()
-                .any(|error| error.message().contains("terminal.new_cwd")),
+            errors.iter().any(|error| error
+                .key()
+                .is_some_and(|key| key.to_string() == "terminal.new_cwd")),
             "{errors:?}"
         );
     }
@@ -1400,8 +1299,10 @@ sidebar_max_width = 36
         let errors = AppPaths::resolve_for_server().expect_err("a relative handoff is refused");
         assert!(
             errors
+                .diagnostics()
                 .iter()
-                .any(|error| error.contains("SHEPR_STARTUP_CWD") && error.contains("absolute")),
+                .any(|error| error.to_string().contains("SHEPR_STARTUP_CWD")
+                    && error.to_string().contains("absolute")),
             "{errors:?}"
         );
     }
@@ -1419,8 +1320,10 @@ sidebar_max_width = 36
             let errors = AppPaths::resolve().expect_err("invalid socket override");
             assert!(
                 errors
+                    .diagnostics()
                     .iter()
-                    .any(|error| error.contains(variable.name()) && error.contains(expected)),
+                    .any(|error| error.to_string().contains(variable.name())
+                        && error.to_string().contains(expected)),
                 "{variable}={value:?}: {errors:?}"
             );
         }
@@ -1515,8 +1418,10 @@ sidebar_max_width = 36
             .expect_err("an unknown marker is refused");
         assert!(
             errors
+                .diagnostics()
                 .iter()
-                .any(|error| error.contains("SHEPR_BUILD_PROFILE") && error.contains("staging")),
+                .any(|error| error.to_string().contains("SHEPR_BUILD_PROFILE")
+                    && error.to_string().contains("staging")),
             "{errors:?}"
         );
     }
@@ -1556,7 +1461,9 @@ mouse_captur = true
 
         assert_eq!(
             loaded
-                .diagnostics
+                .resolution
+                .as_ref()
+                .expect_err("unknown keys fail the resolution")
                 .iter()
                 .map(ToString::to_string)
                 .collect::<Vec<_>>(),
@@ -1572,7 +1479,7 @@ mouse_captur = true
     }
 
     #[test]
-    fn config_load_records_provenance_for_ui_values() {
+    fn config_load_keeps_optional_ui_values_explicit() {
         let _env = shepr_test_support::IsolatedEnv::new();
         let loaded = ClientConfig::load_from_str(
             r#"
@@ -1581,45 +1488,31 @@ sidebar_width = 26
 agent_panel_sort = "priority"
 "#,
         );
-        assert!(
-            loaded
-                .resolution
-                .as_ref()
-                .is_some_and(|resolution| resolution.values.is_some())
+        assert!(loaded.resolution.is_ok());
+        assert_eq!(loaded.config.ui.sidebar_width, Some(26));
+        assert_eq!(
+            loaded.config.ui.agent_panel_sort,
+            Some(super::super::AgentPanelSortConfig::Priority)
         );
-        assert!(
-            loaded
-                .provenance
-                .is_explicit(super::super::UiPreferenceKey::SidebarWidth)
-        );
-        assert!(
-            loaded
-                .provenance
-                .is_explicit(super::super::UiPreferenceKey::AgentPanelSort)
-        );
-        assert!(
-            !loaded
-                .provenance
-                .is_explicit(super::super::UiPreferenceKey::SidebarStartCollapsed)
-        );
+        assert_eq!(loaded.config.ui.sidebar_start_collapsed, None);
 
         let empty = ClientConfig::load_from_str("");
-        assert!(
-            !empty
-                .provenance
-                .is_explicit(super::super::UiPreferenceKey::SidebarWidth)
-        );
+        assert_eq!(empty.config.ui.sidebar_width, None);
     }
 
     #[test]
     fn config_provenance_queries_array_fields_by_their_parent_key() {
         let _env = shepr_test_support::IsolatedEnv::new();
-        let configured =
-            ClientConfig::load_from_str("[keys]\nfocus_agent = [\"prefix+1\", \"prefix+2\"]\n");
-        assert!(configured.provenance.key_is_configured("keys.focus_agent"));
+        let document: toml::Value =
+            toml::from_str("[keys]\nfocus_agent = [\"prefix+1\", \"prefix+2\"]\n")
+                .expect("array binding fixture parses");
+        let configured = ConfigProvenance::from_document(Some(&document));
+        assert!(
+            configured.key_is_configured(&ConfigKeyPath::root().key("keys").key("focus_agent"))
+        );
 
-        let defaults = ClientConfig::load_from_str("[keys]\n");
-        assert!(!defaults.provenance.key_is_configured("keys.focus_agent"));
+        let defaults = ConfigProvenance::from_document(None);
+        assert!(!defaults.key_is_configured(&ConfigKeyPath::root().key("keys").key("focus_agent")));
     }
 
     #[test]
@@ -1634,7 +1527,9 @@ id = "example"
 
         assert_eq!(
             loaded
-                .diagnostics
+                .resolution
+                .as_ref()
+                .expect_err("the unknown section fails resolution")
                 .iter()
                 .map(ToString::to_string)
                 .collect::<Vec<_>>(),
@@ -1679,7 +1574,10 @@ id = "example"
                 env.set(key, refused);
                 let errors = AppPaths::resolve().expect_err("an invalid XDG base is refused");
                 assert!(
-                    errors.iter().any(|error| error.contains(key)),
+                    errors
+                        .diagnostics()
+                        .iter()
+                        .any(|error| error.to_string().contains(key)),
                     "{key}={refused:?}: {errors:?}"
                 );
             }
@@ -1703,8 +1601,10 @@ id = "example"
             let errors = AppPaths::resolve().expect_err("runtime dir has no XDG default");
             assert!(
                 errors
+                    .diagnostics()
                     .iter()
-                    .any(|error| error.contains("XDG_RUNTIME_DIR") && error.contains(expected)),
+                    .any(|error| error.to_string().contains("XDG_RUNTIME_DIR")
+                        && error.to_string().contains(expected)),
                 "XDG_RUNTIME_DIR={invalid:?}: {errors:?}"
             );
         }

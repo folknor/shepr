@@ -25,8 +25,6 @@ use ratatui::layout::Rect;
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
-use base64::Engine;
-
 use crate::app;
 use crate::limits::SERVER_EVENT_CHANNEL_CAPACITY;
 use crate::server::client_shell::render_pane_surface as render_client_shell_pane_surface;
@@ -1246,10 +1244,15 @@ impl HeadlessServer {
                 self.send_to_client(
                     client_id,
                     &ServerMessage::ClientShellError {
-                        kind: shepr_protocol::NoticeKind::PasteRejected {
-                            size,
-                            max: shepr_protocol::MAX_INPUT_PAYLOAD,
-                        },
+                        kind: shepr_protocol::NoticeKind::LimitExceeded(
+                            shepr_protocol::LimitExceeded::new(
+                                shepr_protocol::Limit::new(
+                                    shepr_protocol::LimitKind::InputPayloadBytes,
+                                    shepr_protocol::MAX_INPUT_PAYLOAD,
+                                ),
+                                size,
+                            ),
+                        ),
                     },
                 );
             }

@@ -336,29 +336,14 @@ pub(super) fn terminal_recent_read_range(
 }
 
 pub(super) fn terminal_scroll_metrics(terminal: &shepr_vt::Terminal) -> ScrollMetrics {
-    let scrollbar = terminal.scrollbar();
-    ScrollMetrics {
-        offset_from_bottom: scrollbar
-            .total
-            .saturating_sub(scrollbar.offset + scrollbar.len),
-        max_offset_from_bottom: scrollbar.total.saturating_sub(scrollbar.len),
-        viewport_rows: scrollbar.len,
-        history_origin: terminal.history_origin(),
-    }
+    terminal.scrollbar()
 }
 
 pub(super) fn terminal_set_scroll_offset_from_bottom(
     terminal: &mut shepr_vt::Terminal,
     offset_from_bottom: usize,
 ) {
-    let scrollbar = terminal.scrollbar();
-    let max_offset = scrollbar.total.saturating_sub(scrollbar.len);
-    let offset_from_bottom = offset_from_bottom.min(max_offset);
-    if offset_from_bottom == 0 {
-        terminal.scroll_viewport_bottom();
-    } else {
-        terminal.scroll_viewport_row(ScreenRow(max_offset - offset_from_bottom));
-    }
+    terminal.set_scroll_offset_from_bottom(offset_from_bottom);
 }
 
 pub(super) fn terminal_extract_selection<P>(
@@ -725,7 +710,7 @@ pub(super) fn terminal_visible_ansi(
     if rows == 0 || cols == 0 {
         return Ok(String::new());
     }
-    let offset = core.terminal.scrollbar().offset;
+    let offset = core.terminal.scrollbar().viewport_start();
     terminal_read_ansi_screen(
         &core.terminal,
         Point::new(ScreenRow(offset), 0),

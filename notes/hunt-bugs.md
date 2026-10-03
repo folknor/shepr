@@ -30,6 +30,13 @@ status and are retried as ordinary failures. (edges)
 
 ## Latent defects
 
+## BUG-079 - Process command lines are read without a byte limit
+
+`process_argv` in `crates/shepr-agent/src/detect/proc_tree.rs` reads
+`/proc/<pid>/cmdline` unbounded, while the stat reads are capped. The detector
+probes per tick per pane, so a process with a huge argv costs a large read
+every probe. (wave-4 fixer)
+
 ## BUG-071 - Parked hook starts have no expiry or process attribution
 
 Comments in the hook arbitration (`crates/shepr-mux/src/terminal/state/`)

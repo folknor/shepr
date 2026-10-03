@@ -249,12 +249,16 @@ fn handle_client_handshake(
             return Ok(());
         }
         Ok(shepr_api::ClientHandshakeOutcome::Silent(
-            shepr_api::ClientHandshakeSilence::Hello(shepr_protocol::FramingError::Oversized {
-                claimed,
-                max,
-            }),
+            shepr_api::ClientHandshakeSilence::Hello(shepr_protocol::FramingError::LimitExceeded(
+                error,
+            )),
         )) => {
-            warn!(?client_id, claimed, max, "oversized handshake from client");
+            warn!(
+                ?client_id,
+                claimed = error.actual,
+                max = error.limit.max(),
+                "oversized handshake from client"
+            );
             return Ok(());
         }
         Ok(shepr_api::ClientHandshakeOutcome::Silent(
@@ -465,10 +469,12 @@ fn client_read_loop_with_endpoint_controls(
                 send_client_disconnected(server_event_tx, client_id);
                 break;
             }
-            Err(shepr_protocol::FramingError::Oversized { claimed, max }) => {
+            Err(shepr_protocol::FramingError::LimitExceeded(error)) => {
                 warn!(
                     ?client_id,
-                    claimed, max, "oversized message from client, closing"
+                    claimed = error.actual,
+                    max = error.limit.max(),
+                    "oversized message from client, closing"
                 );
                 send_client_disconnected(server_event_tx, client_id);
                 break;

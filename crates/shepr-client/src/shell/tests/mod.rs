@@ -71,12 +71,12 @@ pub(in crate::shell) fn surface() -> PaneSurfaceFrame {
             scrollbar_rect: None,
             // A live pane always reports its scroll position; selections
             // need it to map viewport rows to absolute rows.
-            scroll: Some(shepr_protocol::PaneSurfaceScrollMetrics {
-                offset_from_bottom: 0,
-                max_offset_from_bottom: 0,
-                viewport_rows: 2,
-                history_origin: shepr_vt::AbsRow(0),
-            }),
+            scroll: Some(shepr_protocol::PaneSurfaceScrollMetrics::new(
+                0,
+                0,
+                2,
+                shepr_vt::AbsRow(0),
+            )),
             focused: true,
             mouse_reporting: false,
             sgr_pixel_mouse: false,
@@ -151,18 +151,19 @@ fn cell_symbol_position(frame: &FrameData, area: Rect, needle: &str) -> (u16, u1
 }
 
 pub(in crate::shell) fn pane_scroll_result(
-    offset_from_bottom: u64,
-    max_offset_from_bottom: u64,
-    viewport_rows: u64,
+    offset_from_bottom: usize,
+    max_offset_from_bottom: usize,
+    viewport_rows: usize,
 ) -> EndpointReply {
     EndpointReply::PaneInfo {
         pane: Box::new(shepr_protocol::command::PaneInfo {
             pane_id: shepr_test_fixtures::id("w1:p1"),
-            scroll: Some(shepr_protocol::command::PaneScrollInfo {
+            scroll: Some(shepr_protocol::command::PaneScrollInfo::new(
                 offset_from_bottom,
                 max_offset_from_bottom,
                 viewport_rows,
-            }),
+                shepr_vt::AbsRow(0),
+            )),
         }),
     }
 }

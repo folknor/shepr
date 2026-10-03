@@ -4,13 +4,15 @@ use shepr_remote::COMMAND_STOP;
 pub(crate) enum Command {
     /// Stops the server. With `expected_boot` (the hidden `--expect-boot`,
     /// which shepr passes over SSH) only the server of that boot is stopped.
-    Stop { expected_boot: Option<String> },
+    Stop {
+        expected_boot: Option<shepr_protocol::BootId>,
+    },
 }
 
 pub(super) fn parse(matches: &clap::ArgMatches) -> Option<Command> {
     match matches.subcommand() {
         Some((COMMAND_STOP, command)) => {
-            let expected_boot = super::matches::try_string(
+            let expected_boot = super::matches::try_value::<shepr_protocol::BootId>(
                 command,
                 shepr_remote::option_name_from_flag(shepr_remote::FLAG_EXPECT_BOOT),
             )
@@ -26,7 +28,7 @@ pub(super) fn run_server_command(
     paths: &shepr_config::AppPaths,
 ) -> super::CliResult<i32> {
     match command {
-        Command::Stop { expected_boot } => server_stop(paths, expected_boot.as_deref()),
+        Command::Stop { expected_boot } => server_stop(paths, expected_boot.as_ref()),
     }
 }
 
@@ -38,9 +40,12 @@ pub(super) fn run_server_command(
 /// with `ServerStopExit::BootMismatch` (see `CliError::exit_code`).
 fn server_stop(
     paths: &shepr_config::AppPaths,
-    expected_boot: Option<&str>,
+    expected_boot: Option<&shepr_protocol::BootId>,
 ) -> super::CliResult<i32> {
-    shepr_api::server_stop::stop_active_server(paths, expected_boot)
-        .map_err(super::CliError::ServerStop)?;
+    shepr_api::server_stop::stop_active_server(
+        paths,
+        expected_boot.map(shepr_protocol::BootId::as_str),
+    )
+    .map_err(super::CliError::ServerStop)?;
     Ok(0)
 }

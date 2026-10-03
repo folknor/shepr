@@ -13,9 +13,14 @@ use std::{
 /// (`<pid>-<nanos>` or `<pid>-before-<nanos>`); deserialization goes through
 /// the same parse. Clients only echo a boot id they were sent, so there is no
 /// empty or placeholder boot id.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Deserialize)]
 #[serde(try_from = "String")]
-pub struct BootId(String);
+pub struct BootId {
+    text: String,
+    process_id: u32,
+    before_epoch: bool,
+    nanos: u128,
+}
 
 impl BootId {
     /// The boot identity of this server process, built on first use and the
@@ -45,12 +50,20 @@ impl BootId {
     }
 
     pub fn as_str(&self) -> &str {
-        &self.0
+        &self.text
     }
 
     /// The pid of the server process this boot identity names.
     pub fn process_id(&self) -> Option<u32> {
-        self.0.split_once('-')?.0.parse().ok()
+        Some(self.process_id)
+    }
+
+    pub fn clock_nanos(&self) -> u128 {
+        self.nanos
+    }
+
+    pub fn is_before_epoch(&self) -> bool {
+        self.before_epoch
     }
 
     /// The boot identity of process `process_id` whose clock read
@@ -64,10 +77,16 @@ impl BootId {
     }
 
     fn from_parts(process_id: u32, before_epoch: bool, nanos: u128) -> Self {
-        if before_epoch {
-            Self(format!("{process_id}-before-{nanos}"))
+        let text = if before_epoch {
+            format!("{process_id}-before-{nanos}")
         } else {
-            Self(format!("{process_id}-{nanos}"))
+            format!("{process_id}-{nanos}")
+        };
+        Self {
+            text,
+            process_id,
+            before_epoch,
+            nanos,
         }
     }
 }
@@ -99,7 +118,7 @@ impl std::str::FromStr for BootId {
         // The number parsers accept signs and leading zeros; re-encoding and
         // comparing refuses every spelling `for_this_process` never writes.
         Some(Self::from_parts(process_id, before_epoch, nanos))
-            .filter(|id| id.0 == value)
+            .filter(|id| id.text == value)
             .ok_or(BootIdParseError)
     }
 }
@@ -109,6 +128,21 @@ impl TryFrom<String> for BootId {
 
     fn try_from(value: String) -> Result<Self, Self::Error> {
         value.parse()
+    }
+}
+
+impl serde::Serialize for BootId {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl From<BootId> for String {
+    fn from(value: BootId) -> Self {
+        value.text
     }
 }
 

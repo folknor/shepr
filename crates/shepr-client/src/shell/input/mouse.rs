@@ -171,7 +171,7 @@ impl ClientShellState {
             shepr_protocol::command::EndpointCommand::PaneScroll(
                 shepr_protocol::command::PaneScrollParams {
                     pane_id: pane_id.clone(),
-                    offset_from_bottom: offset as u64,
+                    offset_from_bottom: offset,
                 },
             ),
             Work::PaneScroll {
@@ -200,8 +200,7 @@ impl ClientShellState {
                 if let ScrollAnswer::Next(Some(offset)) = self.scroll_lanes.answered(
                     pane_id,
                     request,
-                    pane.scroll
-                        .map(|s| usize::try_from(s.offset_from_bottom).unwrap_or(usize::MAX)),
+                    pane.scroll.map(|s| s.offset_from_bottom),
                 ) {
                     self.dispatch_pane_scroll(pane_id.clone(), offset, outcome);
                 }
@@ -249,11 +248,13 @@ impl ClientShellState {
                 .autoscroll
                 .as_ref()
                 .filter(|autoscroll| autoscroll.pane_id == hit.pane_id)
-                .map_or(metrics, |autoscroll| shepr_termio::ScrollMetrics {
-                    offset_from_bottom: autoscroll.offset_from_bottom,
-                    max_offset_from_bottom: autoscroll.max_offset_from_bottom,
-                    viewport_rows: metrics.viewport_rows,
-                    history_origin: metrics.history_origin,
+                .map_or(metrics, |autoscroll| {
+                    shepr_termio::ScrollMetrics::new(
+                        autoscroll.offset_from_bottom,
+                        autoscroll.max_offset_from_bottom,
+                        metrics.viewport_rows,
+                        metrics.history_origin,
+                    )
                 }),
         )
     }
@@ -403,10 +404,7 @@ impl ClientShellState {
             }
         };
         if offset_from_bottom != metrics.offset_from_bottom {
-            let projected = shepr_termio::ScrollMetrics {
-                offset_from_bottom,
-                ..metrics
-            };
+            let projected = metrics.with_offset(offset_from_bottom);
             self.update_selection_cursor_with_metrics(
                 hit,
                 column,
@@ -459,10 +457,7 @@ impl ClientShellState {
             _ => unreachable!(),
         };
         if offset_from_bottom != metrics.offset_from_bottom {
-            let projected = shepr_termio::ScrollMetrics {
-                offset_from_bottom,
-                ..metrics
-            };
+            let projected = metrics.with_offset(offset_from_bottom);
             self.update_selection_cursor_with_metrics(
                 &hit,
                 mouse.column,
@@ -558,12 +553,12 @@ impl ClientShellState {
             return outcome;
         };
         autoscroll.offset_from_bottom = next_offset;
-        let metrics = shepr_termio::ScrollMetrics {
-            offset_from_bottom: next_offset,
-            max_offset_from_bottom: autoscroll.max_offset_from_bottom,
-            viewport_rows: scroll.viewport_rows,
-            history_origin: scroll.history_origin,
-        };
+        let metrics = shepr_termio::ScrollMetrics::new(
+            next_offset,
+            autoscroll.max_offset_from_bottom,
+            scroll.viewport_rows,
+            scroll.history_origin,
+        );
         self.update_selection_cursor_with_metrics(
             &hit,
             autoscroll.last_mouse_column,
@@ -846,13 +841,13 @@ impl ClientShellState {
                 }
                 Some(ClientChromeDrag::WorkspaceScrollbar { grab_row_offset }) => {
                     if let Some(metrics) = self.hits.workspace_scroll_metrics {
-                        let offset = shepr_termio::scroll::scrollbar_offset_from_drag_row(
+                        let offset = shepr_termio::scroll::scrollbar_start_from_drag_row(
                             metrics,
                             self.hits.workspace_scrollbar,
                             mouse.row,
                             *grab_row_offset,
                         );
-                        let next = metrics.max_offset_from_bottom.saturating_sub(offset);
+                        let next = offset;
                         if next != self.workspace_scroll {
                             self.workspace_scroll = next;
                             outcome.repaint = true;
@@ -862,13 +857,13 @@ impl ClientShellState {
                 }
                 Some(ClientChromeDrag::AgentScrollbar { grab_row_offset }) => {
                     if let Some(metrics) = self.hits.agent_scroll_metrics {
-                        let offset = shepr_termio::scroll::scrollbar_offset_from_drag_row(
+                        let offset = shepr_termio::scroll::scrollbar_start_from_drag_row(
                             metrics,
                             self.hits.agent_scrollbar,
                             mouse.row,
                             *grab_row_offset,
                         );
-                        let next = metrics.max_offset_from_bottom.saturating_sub(offset);
+                        let next = offset;
                         if next != self.agent_scroll {
                             self.agent_scroll = next;
                             outcome.repaint = true;
@@ -878,16 +873,13 @@ impl ClientShellState {
                 }
                 Some(ClientChromeDrag::NavigatorScrollbar { grab_row_offset }) => {
                     if let Some(metrics) = self.hits.navigator_scroll_metrics {
-                        let offset = shepr_termio::scroll::scrollbar_offset_from_drag_row(
+                        let offset = shepr_termio::scroll::scrollbar_start_from_drag_row(
                             metrics,
                             self.hits.navigator_scrollbar,
                             mouse.row,
                             *grab_row_offset,
                         );
-                        self.scroll_navigator_to(
-                            metrics.max_offset_from_bottom.saturating_sub(offset),
-                            metrics.viewport_rows,
-                        );
+                        self.scroll_navigator_to(offset, metrics.viewport_rows());
                         outcome.repaint = true;
                     }
                     return;
@@ -896,13 +888,13 @@ impl ClientShellState {
                     if let (Some(metrics), Some(ClientShellOverlay::Help(help))) =
                         (self.hits.help_scroll_metrics, self.overlay.as_mut())
                     {
-                        let offset = shepr_termio::scroll::scrollbar_offset_from_drag_row(
+                        let offset = shepr_termio::scroll::scrollbar_start_from_drag_row(
                             metrics,
                             self.hits.help_scrollbar,
                             mouse.row,
                             *grab_row_offset,
                         );
-                        let next = metrics.max_offset_from_bottom.saturating_sub(offset);
+                        let next = offset;
                         if next != help.scroll {
                             help.scroll = next;
                             outcome.repaint = true;
@@ -1203,15 +1195,14 @@ impl ClientShellState {
                                 self.chrome_drag =
                                     Some(ClientChromeDrag::HelpScrollbar { grab_row_offset });
                             } else {
-                                let offset = shepr_termio::scroll::scrollbar_offset_from_row(
+                                let offset = shepr_termio::scroll::scrollbar_start_from_row(
                                     metrics,
                                     self.hits.help_scrollbar,
                                     mouse.row,
                                 );
                                 if let Some(ClientShellOverlay::Help(help)) = self.overlay.as_mut()
                                 {
-                                    help.scroll =
-                                        metrics.max_offset_from_bottom.saturating_sub(offset);
+                                    help.scroll = offset;
                                     outcome.repaint = true;
                                 }
                             }
@@ -1279,15 +1270,12 @@ impl ClientShellState {
                                 self.chrome_drag =
                                     Some(ClientChromeDrag::NavigatorScrollbar { grab_row_offset });
                             } else {
-                                let offset = shepr_termio::scroll::scrollbar_offset_from_row(
+                                let offset = shepr_termio::scroll::scrollbar_start_from_row(
                                     metrics,
                                     self.hits.navigator_scrollbar,
                                     mouse.row,
                                 );
-                                self.scroll_navigator_to(
-                                    metrics.max_offset_from_bottom.saturating_sub(offset),
-                                    metrics.viewport_rows,
-                                );
+                                self.scroll_navigator_to(offset, metrics.viewport_rows());
                                 outcome.repaint = true;
                             }
                         }
@@ -1568,12 +1556,12 @@ impl ClientShellState {
                             self.chrome_drag =
                                 Some(ClientChromeDrag::WorkspaceScrollbar { grab_row_offset });
                         } else {
-                            let offset = shepr_termio::scroll::scrollbar_offset_from_row(
+                            let offset = shepr_termio::scroll::scrollbar_start_from_row(
                                 metrics,
                                 self.hits.workspace_scrollbar,
                                 mouse.row,
                             );
-                            let next = metrics.max_offset_from_bottom.saturating_sub(offset);
+                            let next = offset;
                             if next != self.workspace_scroll {
                                 self.workspace_scroll = next;
                                 outcome.repaint = true;
@@ -1594,12 +1582,12 @@ impl ClientShellState {
                             self.chrome_drag =
                                 Some(ClientChromeDrag::AgentScrollbar { grab_row_offset });
                         } else {
-                            let offset = shepr_termio::scroll::scrollbar_offset_from_row(
+                            let offset = shepr_termio::scroll::scrollbar_start_from_row(
                                 metrics,
                                 self.hits.agent_scrollbar,
                                 mouse.row,
                             );
-                            let next = metrics.max_offset_from_bottom.saturating_sub(offset);
+                            let next = offset;
                             if next != self.agent_scroll {
                                 self.agent_scroll = next;
                                 outcome.repaint = true;
@@ -1618,7 +1606,7 @@ impl ClientShellState {
                         }
                     };
                     self.config.agent_panel_sort = sort;
-                    self.agent_panel_sort_manual = true;
+                    self.agent_panel_sort_chrome.set_manual(sort);
                     self.rebuild_agent_panel_model();
                     self.agent_scroll = 0;
                     self.persist_chrome_preferences(outcome);

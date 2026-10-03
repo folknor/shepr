@@ -347,8 +347,8 @@ pub enum DirectionSnapshot {
     Vertical,
 }
 
-/// Where a pane sits in a snapshot: workspace index, pane number.
-type PaneKey = (usize, u32);
+/// Where a pane sits in a snapshot: workspace index and saved pane ID.
+pub type SavedPaneRef = (usize, u32);
 
 /// The live cwd probe reads a capture left for whoever writes the snapshot.
 /// Reading a cwd is a /proc access per pane, which the event loop should not
@@ -359,7 +359,7 @@ type PaneKey = (usize, u32);
 /// [`resolve`]: Self::resolve
 #[derive(Default)]
 pub struct PendingCwds {
-    probes: Vec<(PaneKey, crate::pane::PaneCwdProbe)>,
+    probes: Vec<(SavedPaneRef, crate::pane::PaneCwdProbe)>,
 }
 
 impl PendingCwds {
@@ -393,7 +393,7 @@ pub fn capture(
     active: Option<usize>,
     host_theme: shepr_termio::host_term::theme::TerminalTheme,
 ) -> SessionSnapshot {
-    let (mut snapshot, cwds) = capture_deferred(
+    let (mut snapshot, cwds, _) = capture_deferred(
         workspaces,
         terminals,
         terminal_runtimes,
@@ -406,8 +406,8 @@ pub fn capture(
 }
 
 /// Capture the current app state without reading any shell's /proc cwd: the
-/// snapshot holds each pane's best known cwd, and the returned [`PendingCwds`]
-/// refreshes it where the snapshot is written.
+/// snapshot holds each pane's best known cwd, [`PendingCwds`] refreshes it where
+/// the snapshot is written, and the map keys each saved pane to its terminal.
 pub fn capture_deferred(
     workspaces: &[Workspace],
     terminals: &std::collections::HashMap<
@@ -418,8 +418,13 @@ pub fn capture_deferred(
     fallback_cwd: &std::path::Path,
     active: Option<usize>,
     host_theme: shepr_termio::host_term::theme::TerminalTheme,
-) -> (SessionSnapshot, PendingCwds) {
+) -> (
+    SessionSnapshot,
+    PendingCwds,
+    HashMap<SavedPaneRef, TerminalId>,
+) {
     let mut cwds = PendingCwds::default();
+    let mut terminal_ids = HashMap::new();
     let snapshot = SessionSnapshot {
         version: SNAPSHOT_VERSION,
         host_theme: host_theme.into(),
@@ -434,12 +439,13 @@ pub fn capture_deferred(
                     terminal_runtimes,
                     fallback_cwd,
                     &mut cwds,
+                    &mut terminal_ids,
                 )
             })
             .collect(),
         active,
     };
-    (snapshot, cwds)
+    (snapshot, cwds, terminal_ids)
 }
 
 fn capture_workspace(
@@ -452,24 +458,31 @@ fn capture_workspace(
     terminal_runtimes: &PaneRuntimeRegistry,
     fallback_cwd: &std::path::Path,
     cwds: &mut PendingCwds,
+    terminal_ids: &mut HashMap<SavedPaneRef, TerminalId>,
 ) -> WorkspaceSnapshot {
     let mut panes = HashMap::new();
     for (id, workspace_pane) in &ws.panes {
+        let pane_ref: SavedPaneRef = (workspace_index, id.raw());
         let terminal_id = ws.terminal_id(*id);
+        if let Some(terminal_id) = terminal_id {
+            terminal_ids.insert(pane_ref, terminal_id.clone());
+        }
         let terminal = terminal_id.and_then(|id| terminals.get(id));
         let runtime = terminal_id.and_then(|id| terminal_runtimes.get(id));
         let cwd =
             crate::workspace::terminal_cwd(runtime, terminal, crate::workspace::CwdPurpose::Save)
                 .unwrap_or_else(|| fallback_cwd.to_path_buf());
         if let Some(runtime) = runtime {
-            cwds.probes
-                .push(((workspace_index, id.raw()), runtime.cwd_probe()));
+            cwds.probes.push((pane_ref, runtime.cwd_probe()));
         }
-        let label = terminal.and_then(|terminal| terminal.manual_label.clone());
-        let agent_session = terminal
-            .and_then(crate::terminal::TerminalState::current_session_identity_for_persistence);
+        let label = terminal.and_then(|terminal| terminal.manual_label().map(str::to_owned));
+        let agent_session = terminal.and_then(|terminal| {
+            terminal
+                .ownership()
+                .current_session_identity_for_persistence()
+        });
         panes.insert(
-            id.raw(),
+            pane_ref.1,
             PaneSnapshot {
                 cwd,
                 public_number: workspace_pane.public_number,
@@ -953,7 +966,7 @@ fn pending_pane_history(
 /// history. The terminal map must have been captured with `snapshot`.
 pub fn capture_pending_history_for_snapshot(
     snapshot: &SessionSnapshot,
-    terminal_ids: &HashMap<(usize, u32), TerminalId>,
+    terminal_ids: &HashMap<SavedPaneRef, TerminalId>,
     terminal_runtimes: &PaneRuntimeRegistry,
 ) -> Option<PendingHistory> {
     let mut workspaces = Vec::with_capacity(snapshot.workspaces.len());
@@ -976,7 +989,7 @@ pub fn capture_pending_history_for_snapshot(
 /// checkpoint workspace and pane keys even if removals changed workspace indexes.
 pub fn capture_pending_cwds_for_snapshot(
     snapshot: &SessionSnapshot,
-    terminal_ids: &HashMap<(usize, u32), TerminalId>,
+    terminal_ids: &HashMap<SavedPaneRef, TerminalId>,
     terminal_runtimes: &PaneRuntimeRegistry,
 ) -> Option<PendingCwds> {
     let mut cwds = PendingCwds::default();
@@ -1330,7 +1343,7 @@ mod tests {
                 reported_at: std::time::Instant::now(),
                 session_ref: Some(live_ref),
             }));
-            terminal.set_persisted_agent_session(
+            terminal.ownership_mut().set_persisted_agent_session(
                 shepr_agent::agent::resume::PersistedAgentSession {
                     source: shepr_agent::agent::AgentSource::Official(
                         shepr_agent::agent::IntegrationTarget::Claude,

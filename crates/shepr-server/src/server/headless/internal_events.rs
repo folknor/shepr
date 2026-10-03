@@ -44,8 +44,9 @@ impl HeadlessServer {
                 // the clients viewing the writing pane, or, when none views
                 // it (a hidden workspace, a background program), to the foreground
                 // client so the write is not lost.
-                let data = base64::engine::general_purpose::STANDARD.encode(content.as_slice());
-                let message = ServerMessage::Clipboard { data };
+                let message = ServerMessage::Clipboard {
+                    data: content.clone(),
+                };
                 let viewers = self.pane_viewers(*pane_id);
                 if viewers.is_empty() {
                     self.send_to_foreground_client(&message);

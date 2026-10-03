@@ -80,8 +80,15 @@ mod tests {
             .terminals
             .get_mut(&terminal_id)
             .expect("test precondition");
-        terminal.detected_agent = Some(Agent::Claude);
-        terminal.state = AgentState::Working;
+        terminal
+            .ownership_mut()
+            .set_detected_state_with_screen_signals_at(
+                Some(Agent::Claude),
+                AgentState::Working,
+                false,
+                false,
+                std::time::Instant::now(),
+            );
         let runtime = shepr_mux::pane::PaneRuntime::test_with_screen_bytes(80, 24, b"");
         runtime.test_process_pty_bytes("\x1b]0;⠋ 修复\u{1F642}标题\x07".as_bytes());
         app.terminal_runtimes.insert(terminal_id.clone(), runtime);

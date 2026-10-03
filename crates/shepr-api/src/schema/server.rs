@@ -73,6 +73,7 @@ pub enum ServerPresenceJson {
 /// JSON emitted by `shepr status server --json`, also read by configured-machine checks.
 /// Human-readable status text is rendered separately by the CLI.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "ServerStatusFields")]
 pub struct ServerStatusJson {
     pub presence: ServerPresenceJson,
     /// The identity fields are set whenever the server answered (starting,
@@ -83,4 +84,75 @@ pub struct ServerStatusJson {
     /// (`shepr server stop --expect-boot`) names.
     pub boot_id: Option<String>,
     pub socket: String,
+}
+
+// Status discovery crosses builds. Keep the published field names, but do not
+// turn a partial answer or an identity attached to absence into a live server.
+#[derive(Deserialize)]
+struct ServerStatusFields {
+    presence: ServerPresenceJson,
+    version: Option<String>,
+    build_id: Option<String>,
+    boot_id: Option<String>,
+    socket: String,
+}
+
+impl TryFrom<ServerStatusFields> for ServerStatusJson {
+    type Error = &'static str;
+
+    fn try_from(fields: ServerStatusFields) -> Result<Self, Self::Error> {
+        let answered = matches!(
+            fields.presence,
+            ServerPresenceJson::Starting
+                | ServerPresenceJson::Running
+                | ServerPresenceJson::Stopping
+        );
+        let complete =
+            fields.version.is_some() && fields.build_id.is_some() && fields.boot_id.is_some();
+        let absent =
+            fields.version.is_none() && fields.build_id.is_none() && fields.boot_id.is_none();
+        if (answered && !complete) || (!answered && !absent) {
+            return Err("server presence and identity disagree");
+        }
+        if let Some(boot_id) = &fields.boot_id {
+            boot_id
+                .parse::<shepr_protocol::BootId>()
+                .map_err(|_| "invalid server boot identity")?;
+        }
+        Ok(Self {
+            presence: fields.presence,
+            version: fields.version,
+            build_id: fields.build_id,
+            boot_id: fields.boot_id,
+            socket: fields.socket,
+        })
+    }
+}
+
+#[cfg(test)]
+mod status_tests {
+    use super::*;
+
+    #[test]
+    fn status_requires_an_identity_exactly_when_the_server_answered() {
+        for presence in ["starting", "running", "stopping", "gone", "unresponsive"] {
+            let answered = matches!(presence, "starting" | "running" | "stopping");
+            for identity in [false, true] {
+                let fields = if identity {
+                    serde_json::json!({"version":"1.0", "build_id":"0123456789abcdef", "boot_id":"17-23"})
+                } else {
+                    serde_json::json!({"version":null, "build_id":null, "boot_id":null})
+                };
+                let mut value = fields;
+                value["presence"] = serde_json::json!(presence);
+                value["socket"] = serde_json::json!("server.sock");
+                assert_eq!(
+                    serde_json::from_value::<ServerStatusJson>(value).is_ok(),
+                    answered == identity
+                );
+            }
+        }
+        let partial = serde_json::json!({"presence":"running", "version":"1.0", "build_id":null, "boot_id":"17-23", "socket":"server.sock"});
+        assert!(serde_json::from_value::<ServerStatusJson>(partial).is_err());
+    }
 }

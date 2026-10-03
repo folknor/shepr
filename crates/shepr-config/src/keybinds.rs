@@ -6,6 +6,7 @@ use crate::limits::{
     FIRST_INDEXED_BINDING_KEY, LAST_INDEXED_BINDING_KEY, MAX_FUNCTION_KEY_NUMBER,
     MIN_FUNCTION_KEY_NUMBER,
 };
+use crate::{ConfigDiagnostic, ConfigKeyPath};
 
 pub(crate) type KeyCombo = (KeyCode, KeyModifiers);
 
@@ -448,7 +449,7 @@ impl Keybinds {
 /// prefix or any candidate binding is invalid.
 #[derive(Debug, Clone)]
 pub(crate) struct KeybindValidation {
-    pub(super) diagnostics: Vec<String>,
+    pub(super) diagnostics: Vec<ConfigDiagnostic>,
     pub(super) live: Option<LiveKeybindConfig>,
 }
 
@@ -466,6 +467,7 @@ enum BindingSource {
 
 struct RegisteredBinding {
     field: String,
+    key: Option<ConfigKeyPath>,
     source: BindingSource,
 }
 
@@ -487,10 +489,16 @@ impl BindingRegistry {
     }
 
     fn reserve_direct(&mut self, combo: KeyCombo, field: &str, source: BindingSource) {
+        let is_prefix = field == "keys.prefix";
         self.direct
             .entry(CanonicalKey::from_combo(combo))
             .or_insert_with(|| RegisteredBinding {
-                field: field.to_string(),
+                field: if is_prefix {
+                    "configured prefix".to_owned()
+                } else {
+                    field.to_owned()
+                },
+                key: is_prefix.then(|| ConfigKeyPath::from_dotted(field)),
                 source,
             });
     }
@@ -510,6 +518,7 @@ impl BindingRegistry {
     fn register(&mut self, binding: &ResolvedBinding, field: &str, source: BindingSource) {
         let registered = || RegisteredBinding {
             field: field.to_string(),
+            key: Some(ConfigKeyPath::from_dotted(field)),
             source,
         };
         match binding.trigger {
@@ -675,7 +684,7 @@ fn reserve_navigate_runtime_keys(registry: &mut BindingRegistry) {
     crate::keybinding_table!(reserve_aliases);
 }
 
-fn invalid_keybinding_diagnostic(field: &str, raw: &str) -> String {
+fn invalid_keybinding_diagnostic(field: &str, raw: &str) -> ConfigDiagnostic {
     let unsupported_function_key = raw.split('+').any(|part| {
         let token = part.trim().to_ascii_lowercase();
         let Some(suffix) = token.strip_prefix('f') else {
@@ -689,21 +698,21 @@ fn invalid_keybinding_diagnostic(field: &str, raw: &str) -> String {
             Ok(number) if (MIN_FUNCTION_KEY_NUMBER..=MAX_FUNCTION_KEY_NUMBER).contains(&number)
         )
     });
-    let message = format!("invalid keybinding: {field} = {raw:?}");
-    if unsupported_function_key {
+    let message = if unsupported_function_key {
         format!(
-            "{message}; supported function keys are F{MIN_FUNCTION_KEY_NUMBER} through F{MAX_FUNCTION_KEY_NUMBER}"
+            "invalid keybinding value {raw:?}; supported function keys are F{MIN_FUNCTION_KEY_NUMBER} through F{MAX_FUNCTION_KEY_NUMBER}"
         )
     } else {
-        message
-    }
+        format!("invalid keybinding value {raw:?}")
+    };
+    ConfigDiagnostic::validation(ConfigKeyPath::from_dotted(field), message)
 }
 
 fn parse_action_bindings(
     field: &str,
     config: &BindingConfig,
     registry: &mut BindingRegistry,
-    diagnostics: &mut Vec<String>,
+    diagnostics: &mut Vec<ConfigDiagnostic>,
     source: BindingSource,
 ) -> ActionKeybinds {
     let mut bindings = Vec::new();
@@ -721,8 +730,9 @@ fn parse_action_bindings(
                 bindings.push(binding);
             }
             Some(ParsedBinding::Range(_)) => {
-                let diag = format!(
-                    "range keybinding is only valid for indexed actions: {field} = {raw:?}"
+                let diag = ConfigDiagnostic::validation(
+                    ConfigKeyPath::from_dotted(field),
+                    format!("range keybinding is only valid for indexed actions: {raw:?}"),
                 );
                 diagnostics.push(diag);
             }
@@ -739,7 +749,7 @@ fn parse_navigate_bindings(
     field: &'static str,
     config: &BindingConfig,
     registry: &mut BindingRegistry,
-    diagnostics: &mut Vec<String>,
+    diagnostics: &mut Vec<ConfigDiagnostic>,
     source: BindingSource,
 ) -> ActionKeybinds {
     let mut bindings = Vec::new();
@@ -757,8 +767,9 @@ fn parse_navigate_bindings(
                 bindings.push(binding);
             }
             Some(ParsedBinding::Range(_)) => {
-                let diag = format!(
-                    "range keybinding is only valid for indexed actions: {field} = {raw:?}"
+                let diag = ConfigDiagnostic::validation(
+                    ConfigKeyPath::from_dotted(field),
+                    format!("range keybinding is only valid for indexed actions: {raw:?}"),
                 );
                 diagnostics.push(diag);
             }
@@ -775,7 +786,7 @@ fn parse_indexed_bindings(
     field: &'static str,
     config: &BindingConfig,
     registry: &mut BindingRegistry,
-    diagnostics: &mut Vec<String>,
+    diagnostics: &mut Vec<ConfigDiagnostic>,
     source: BindingSource,
 ) -> Vec<IndexedKeybind> {
     let mut bindings = Vec::new();
@@ -813,7 +824,7 @@ fn parse_navigate_indexed_bindings(
     field: &'static str,
     config: &BindingConfig,
     registry: &mut BindingRegistry,
-    diagnostics: &mut Vec<String>,
+    diagnostics: &mut Vec<ConfigDiagnostic>,
     source: BindingSource,
 ) -> Vec<IndexedKeybind> {
     let mut bindings = Vec::new();
@@ -857,15 +868,18 @@ fn push_indexed_binding(
     field: &str,
     binding: ResolvedBinding,
     registry: &mut BindingRegistry,
-    diagnostics: &mut Vec<String>,
+    diagnostics: &mut Vec<ConfigDiagnostic>,
     source: BindingSource,
     bindings: &mut Vec<IndexedKeybind>,
 ) {
     if !IndexedRange::contains_key(binding.trigger.combo().0) {
-        let diag = format!(
-            "indexed keybinding must use {}: {field} = {:?}",
-            IndexedRange::syntax(),
-            binding.label
+        let diag = ConfigDiagnostic::validation(
+            ConfigKeyPath::from_dotted(field),
+            format!(
+                "indexed keybinding must use {}: {:?}",
+                IndexedRange::syntax(),
+                binding.label
+            ),
         );
         diagnostics.push(diag);
         return;
@@ -884,15 +898,18 @@ fn push_navigate_indexed_binding(
     field: &str,
     binding: ResolvedBinding,
     registry: &mut BindingRegistry,
-    diagnostics: &mut Vec<String>,
+    diagnostics: &mut Vec<ConfigDiagnostic>,
     source: BindingSource,
     bindings: &mut Vec<IndexedKeybind>,
 ) {
     if !IndexedRange::contains_key(binding.trigger.combo().0) {
-        diagnostics.push(format!(
-            "indexed keybinding must use {}: {field} = {:?}",
-            IndexedRange::syntax(),
-            binding.label
+        diagnostics.push(ConfigDiagnostic::validation(
+            ConfigKeyPath::from_dotted(field),
+            format!(
+                "indexed keybinding must use {}: {:?}",
+                IndexedRange::syntax(),
+                binding.label
+            ),
         ));
         return;
     }
@@ -910,13 +927,16 @@ fn reject_navigate_binding(
     field: &str,
     binding: &ResolvedBinding,
     registry: &BindingRegistry,
-    diagnostics: &mut Vec<String>,
+    diagnostics: &mut Vec<ConfigDiagnostic>,
     source: BindingSource,
 ) -> bool {
     if binding.trigger.is_prefix() {
-        let diag = format!(
-            "navigate keybinding must not include prefix: {field} = {:?}",
-            binding.label
+        let diag = ConfigDiagnostic::validation(
+            ConfigKeyPath::from_dotted(field),
+            format!(
+                "navigate keybinding must not include prefix: {:?}",
+                binding.label
+            ),
         );
         diagnostics.push(diag);
         return true;
@@ -935,24 +955,34 @@ fn reject_binding(
     field: &str,
     binding: &ResolvedBinding,
     registry: &BindingRegistry,
-    diagnostics: &mut Vec<String>,
+    diagnostics: &mut Vec<ConfigDiagnostic>,
     source: BindingSource,
 ) -> bool {
     if binding.trigger.is_prefix()
         && let Some(prefix_combo) = registry.reserved_prefix(binding.trigger.combo())
     {
         let prefix = format_key_combo(prefix_combo);
+        let key = ConfigKeyPath::from_dotted(field);
+        let prefix_key = ConfigKeyPath::from_dotted("keys.prefix");
         let diag = if source == BindingSource::Default
             && registry.prefix_source == BindingSource::User
         {
-            format!(
-                "reserved keybinding: default {field} = {:?} conflicts with configured keys.prefix = {prefix:?}; set {field} explicitly to replace or clear its default",
-                binding.label
+            ConfigDiagnostic::validation_related(
+                key,
+                vec![prefix_key],
+                format!(
+                    "reserved keybinding: default value {:?} conflicts with configured prefix {prefix:?}; set this key explicitly to replace or clear its default",
+                    binding.label
+                ),
             )
         } else {
-            format!(
-                "reserved keybinding: {field} = {:?} uses keys.prefix = {prefix:?} as the action key; pressing the prefix twice sends a literal prefix key",
-                binding.label
+            ConfigDiagnostic::validation_related(
+                key,
+                vec![prefix_key],
+                format!(
+                    "reserved keybinding value {:?} uses prefix {prefix:?} as the action key; pressing the prefix twice sends a literal prefix key",
+                    binding.label
+                ),
             )
         };
         diagnostics.push(diag);
@@ -967,9 +997,12 @@ fn reject_binding(
 
     if binding.trigger.is_direct() && is_unmodified_printable(binding.trigger.combo()) {
         let suggestion = format!("prefix+{}", binding.label);
-        let diag = format!(
-            "unsafe direct keybinding: {field} = {:?} would intercept typing; use {:?} to require the prefix",
-            binding.label, suggestion
+        let diag = ConfigDiagnostic::validation(
+            ConfigKeyPath::from_dotted(field),
+            format!(
+                "unsafe direct keybinding value {:?} would intercept typing; use {:?} to require the prefix",
+                binding.label, suggestion
+            ),
         );
         diagnostics.push(diag);
         return true;
@@ -983,16 +1016,33 @@ fn keybinding_conflict_diagnostic(
     field: &str,
     first_binding: &RegisteredBinding,
     source: BindingSource,
-) -> String {
+) -> ConfigDiagnostic {
+    let related_keys = first_binding.key.clone().into_iter().collect();
     if source == BindingSource::Default && first_binding.source == BindingSource::User {
-        format!(
-            "keybinding conflict: default {field} = {:?} conflicts with configured {}; set {field} explicitly to replace or clear its default",
-            binding.label, first_binding.field
+        ConfigDiagnostic::validation_related(
+            ConfigKeyPath::from_dotted(field),
+            related_keys,
+            format!(
+                "keybinding conflict: default value {:?} conflicts with a configured binding; set this key explicitly to replace or clear its default",
+                binding.label
+            ),
         )
     } else {
-        format!(
-            "keybinding conflict: {:?} is assigned to both {} and {field}",
-            binding.label, first_binding.field
+        let reason = if first_binding.key.is_none() {
+            format!(
+                "keybinding conflict: {:?} is assigned to reserved {}",
+                binding.label, first_binding.field
+            )
+        } else {
+            format!(
+                "keybinding conflict: {:?} is assigned to another binding",
+                binding.label
+            )
+        };
+        ConfigDiagnostic::validation_related(
+            ConfigKeyPath::from_dotted(field),
+            related_keys,
+            reason,
         )
     }
 }
@@ -1322,7 +1372,11 @@ mod tests {
     ) -> (Vec<String>, Option<Keybinds>) {
         let validation = config.compute_keybind_validation(|field| configured.contains(&field));
         (
-            validation.diagnostics,
+            validation
+                .diagnostics
+                .into_iter()
+                .map(|diagnostic| diagnostic.to_string())
+                .collect(),
             validation.live.map(|live| live.keybinds),
         )
     }

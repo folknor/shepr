@@ -309,11 +309,89 @@ impl InputModes {
     }
 }
 
+/// Movement of the user-visible viewport, independent of screen observation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct TerminalScrollbar {
-    pub total: usize,
-    pub offset: usize,
-    pub len: usize,
+pub enum ScrollTowards {
+    Older(usize),
+    Newer(usize),
+}
+
+/// A bottom-based history viewport. Construction clamps the offset to retained history.
+/// The read-only fields are exposed through Deref; there is no mutable field access.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(try_from = "ScrollMetricsFields", into = "ScrollMetricsFields")]
+pub struct ScrollMetrics(ScrollMetricsFields);
+
+/// Read-only observations and the serde payload for a history viewport.
+/// Converting this payload into ScrollMetrics validates the offset bound.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ScrollMetricsFields {
+    pub offset_from_bottom: usize,
+    pub max_offset_from_bottom: usize,
+    pub viewport_rows: usize,
+    pub history_origin: AbsRow,
+}
+
+impl std::ops::Deref for ScrollMetrics {
+    type Target = ScrollMetricsFields;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl From<ScrollMetrics> for ScrollMetricsFields {
+    fn from(metrics: ScrollMetrics) -> Self {
+        metrics.0
+    }
+}
+
+impl TryFrom<ScrollMetricsFields> for ScrollMetrics {
+    type Error = &'static str;
+    fn try_from(fields: ScrollMetricsFields) -> Result<Self, Self::Error> {
+        if fields.offset_from_bottom > fields.max_offset_from_bottom {
+            return Err("scroll offset exceeds retained history");
+        }
+        Ok(Self(fields))
+    }
+}
+
+impl ScrollMetrics {
+    pub fn new(
+        offset_from_bottom: usize,
+        max_offset_from_bottom: usize,
+        viewport_rows: usize,
+        history_origin: AbsRow,
+    ) -> Self {
+        Self(ScrollMetricsFields {
+            offset_from_bottom: offset_from_bottom.min(max_offset_from_bottom),
+            max_offset_from_bottom,
+            viewport_rows,
+            history_origin,
+        })
+    }
+
+    pub fn with_offset(self, offset_from_bottom: usize) -> Self {
+        Self::new(
+            offset_from_bottom,
+            self.max_offset_from_bottom,
+            self.viewport_rows,
+            self.history_origin,
+        )
+    }
+
+    /// Retained-buffer row at the top, counted from the oldest retained row.
+    pub fn viewport_start(self) -> usize {
+        self.max_offset_from_bottom - self.offset_from_bottom
+    }
+
+    pub fn viewport_top_row(self) -> AbsRow {
+        self.history_origin
+            .saturating_add(u64::try_from(self.viewport_start()).unwrap_or(u64::MAX))
+    }
+
+    pub fn absolute_row_at_viewport(self, row: ViewportRow) -> AbsRow {
+        AbsRow::from_viewport_top(self.viewport_top_row(), row)
+    }
 }
 
 /// A reply the terminal wants written back to the child, in byte order.
@@ -1070,13 +1148,18 @@ impl Terminal {
         self.term.total_lines()
     }
 
-    pub fn scrollbar(&self) -> TerminalScrollbar {
-        let history = self.term.history_size();
-        TerminalScrollbar {
-            total: self.term.total_lines(),
-            offset: history.saturating_sub(self.term.grid().display_offset()),
-            len: self.term.screen_lines(),
-        }
+    pub fn scrollbar(&self) -> ScrollMetrics {
+        ScrollMetrics::new(
+            self.term.grid().display_offset(),
+            self.term.history_size(),
+            self.term.screen_lines(),
+            self.history_origin(),
+        )
+    }
+
+    pub fn set_scroll_offset_from_bottom(&mut self, offset: usize) {
+        let offset = offset.min(self.term.history_size());
+        self.scroll_viewport_row(ScreenRow(self.term.history_size() - offset));
     }
 
     /// The absolute row id of screen row 0, the oldest retained line.
@@ -1188,19 +1271,14 @@ impl Terminal {
         self.collect_damage();
     }
 
-    /// Scrolls the viewport by `delta` rows; negative values move toward
-    /// older history.
-    pub fn scroll_viewport_delta(&mut self, delta: isize) {
-        let delta = i32::try_from(
-            delta
-                .saturating_neg()
-                .clamp(i32::MIN as isize, i32::MAX as isize),
-        )
-        .unwrap_or(i32::MAX);
-        if delta != 0 {
-            self.term.scroll_display(Scroll::Delta(delta));
-            self.collect_damage();
-        }
+    /// Scroll the user-visible viewport without signed caller conventions.
+    pub fn scroll_viewport_delta(&mut self, towards: ScrollTowards) {
+        let current = self.term.grid().display_offset();
+        let target = match towards {
+            ScrollTowards::Older(rows) => current.saturating_add(rows),
+            ScrollTowards::Newer(rows) => current.saturating_sub(rows),
+        };
+        self.set_scroll_offset_from_bottom(target);
     }
 
     /// Scrolls so the viewport's top row is screen row `row` (0 = oldest),

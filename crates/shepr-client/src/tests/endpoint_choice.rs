@@ -407,7 +407,7 @@ fn target_host_effects_are_dropped_until_commit_and_the_replay_applies_after() {
             title: Some("TARGET-TITLE".into()),
         },
         ServerMessage::Clipboard {
-            data: "dGV4dA==".into(),
+            data: b"text".to_vec(),
         },
     ] {
         f.inbound(&remote(), message);

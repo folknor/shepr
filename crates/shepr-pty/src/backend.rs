@@ -68,9 +68,12 @@ impl PaneChild {
         self.handle.pid()
     }
 
-    fn raw_pid(&self) -> io::Result<libc::pid_t> {
-        libc::pid_t::try_from(self.id())
-            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "pane pid out of range"))
+    pub fn process_id(&self) -> shepr_platform::Pid {
+        self.handle.process_id()
+    }
+
+    fn raw_pid(&self) -> libc::pid_t {
+        self.process_id().as_pid_t()
     }
 
     /// SIGKILL to the child, unless it has already been reaped here (its pid
@@ -117,7 +120,7 @@ impl PaneChild {
         if let Some(status) = self.status {
             return Ok(Some(status));
         }
-        let pid = self.raw_pid()?;
+        let pid = self.raw_pid();
         let mut raw = 0;
         loop {
             // SAFETY: `raw` is a live writable int; waitpid(2) reaps only this
@@ -241,11 +244,11 @@ pub fn spawn_pty(
     let pid = fork_child(&plan)?;
     drop(slave);
     // No watcher can reap this child yet, so pidfd_open names this fork.
-    let Some(handle) = shepr_platform::ProcessHandle::open(pid) else {
+    let Some(handle) = shepr_platform::ProcessHandle::open_process(pid) else {
         // SAFETY: this fork has never been handed to a waiter, so its pid
         // cannot have been reused. This is only the failed acquisition path.
-        if unsafe { libc::kill(pid.cast_signed(), libc::SIGKILL) } != 0 {
-            tracing::warn!(pid, error = %io::Error::last_os_error(), "could not kill failed pane launch");
+        if unsafe { libc::kill(pid.as_pid_t(), libc::SIGKILL) } != 0 {
+            tracing::warn!(pid = %pid, error = %io::Error::last_os_error(), "could not kill failed pane launch");
         }
         if let Err(error) = std::thread::Builder::new()
             .name("shepr-launch-reaper".into())
@@ -253,7 +256,7 @@ pub fn spawn_pty(
                 let mut status = 0;
                 loop {
                     // SAFETY: this is our unreaped child and status is writable.
-                    let result = unsafe { libc::waitpid(pid.cast_signed(), &mut status, 0) };
+                    let result = unsafe { libc::waitpid(pid.as_pid_t(), &mut status, 0) };
                     if result >= 0
                         || io::Error::last_os_error().kind() != io::ErrorKind::Interrupted
                     {
@@ -262,13 +265,13 @@ pub fn spawn_pty(
                 }
             })
         {
-            tracing::warn!(pid, %error, "could not start failed launch reaper");
+            tracing::warn!(pid = %pid, %error, "could not start failed launch reaper");
         }
         return Err(io::Error::other("no process handle for the pane's child"));
     };
     // Registered right after the fork: a connection that arrives first waits
     // for it.
-    let status = service.register(ticket, pid, deliver);
+    let status = service.register(ticket, handle.process_id(), deliver);
     Ok(SpawnedPty {
         master_fd: master,
         child: PaneChild {
@@ -349,7 +352,7 @@ impl<'a> ChildPlan<'a> {
 
 /// Forks with every signal blocked on this thread, so no server handler can
 /// run in the child before it resets them, and restores this thread's mask.
-fn fork_child(plan: &ChildPlan<'_>) -> io::Result<u32> {
+fn fork_child(plan: &ChildPlan<'_>) -> io::Result<shepr_platform::Pid> {
     // SAFETY: sigset_t is a plain bit array; all-zero is valid and sigfillset
     // sets it fully.
     let mut all: libc::sigset_t = unsafe { std::mem::zeroed() };
@@ -377,7 +380,10 @@ fn fork_child(plan: &ChildPlan<'_>) -> io::Result<u32> {
     if let Some(error) = fork_error {
         return Err(error);
     }
-    u32::try_from(pid).map_err(|_| io::Error::other("fork returned a negative pid"))
+    u32::try_from(pid)
+        .ok()
+        .and_then(shepr_platform::Pid::new)
+        .ok_or_else(|| io::Error::other("fork returned an invalid pid"))
 }
 
 fn errno() -> libc::c_int {

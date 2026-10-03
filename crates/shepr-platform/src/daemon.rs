@@ -114,6 +114,10 @@ impl SpawnedDaemon {
         self.child.as_ref().map(Child::id)
     }
 
+    pub fn process_id(&self) -> Option<crate::Pid> {
+        self.id().and_then(crate::Pid::new)
+    }
+
     /// Polls the child without waiting and reports its exit status once. A
     /// later call returns `None`, just as a call made while it is still
     /// running does; the caller that needs the status again must retain it.
@@ -155,7 +159,10 @@ impl Drop for SpawnedDaemon {
             return;
         };
         let pid = child.id();
-        if let Err(error) = kill_process_group(pid) {
+        if let Err(error) = crate::Pid::new(pid)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid daemon pid"))
+            .and_then(|pid| kill_process_group(crate::Pgid::led_by(pid)))
+        {
             tracing::warn!(pid, %error, "could not kill the server daemon's process group");
         }
         // A child that does not lead its own group has none to signal above.
@@ -171,13 +178,16 @@ impl Drop for SpawnedDaemon {
     }
 }
 
-/// SIGKILLs the process group led by the unreaped process `pid`. A group that
+/// SIGKILLs the group of an unreaped process-group leader. A group that
 /// no longer exists is success.
-fn kill_process_group(pid: u32) -> io::Result<()> {
-    let group = libc::pid_t::try_from(pid)
-        .ok()
-        .filter(|group| *group > 1)
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid process group"))?;
+fn kill_process_group(group: crate::Pgid) -> io::Result<()> {
+    if group.get() <= 1 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid process group",
+        ));
+    }
+    let group = group.as_pid_t();
     // SAFETY: kill(2) with a negative pid signals the group `group`; it reads
     // and writes no memory of ours. The caller holds the unreaped leader, so
     // the id cannot have been reused for another process.

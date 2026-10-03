@@ -24,12 +24,14 @@ use shepr_platform::ipc::{
 };
 use tracing::{debug, error, info, warn};
 
-use super::client_protocol::{ClientGate, ClientProtocolHandler, ConnectionSlot, refuse_client};
+use super::client_protocol::{
+    ClientGate, ClientProtocolHandler, ConnectionAdmission, ConnectionSlot, refuse_client,
+};
 use super::{handle_connection, reject_busy_connection, send_busy_refusal};
 use crate::limits::{
     ACCEPT_BACKOFF_MAX, ACCEPT_BACKOFF_MIN, BUSY_REFUSAL_QUEUE, BUSY_REQUEST_ID_TIMEOUT,
     INITIAL_REQUEST_TIMEOUT, MAX_ACTIVE_CLIENT_CONNECTIONS, MAX_API_INGRESS_CONNECTIONS,
-    MAX_UNCLASSIFIED_CONNECTIONS,
+    MAX_APP_REQUESTS_IN_FLIGHT, MAX_UNCLASSIFIED_CONNECTIONS,
 };
 
 #[derive(Clone, Copy)]
@@ -55,9 +57,16 @@ struct Dispatch {
     api_tx: crate::ApiRequestSender,
     stop: Arc<crate::ServerStopSignal>,
     gate: ClientGate,
-    api: Arc<AtomicUsize>,
-    api_app: Arc<AtomicUsize>,
-    client: Arc<AtomicUsize>,
+    api: ConnectionAdmission,
+    api_app: ConnectionAdmission,
+    client: ConnectionAdmission,
+}
+
+fn connection_admission(cap: usize) -> ConnectionAdmission {
+    ConnectionAdmission::new(
+        Arc::new(AtomicUsize::new(0)),
+        shepr_protocol::Limit::new(shepr_protocol::LimitKind::ConnectionCount, cap),
+    )
 }
 
 /// The outcome of a kind's admission: served with a slot, or refused in the
@@ -72,26 +81,22 @@ enum Service {
 impl Dispatch {
     fn admit(&self, kind: Kind) -> Service {
         match kind {
-            Kind::Api => ConnectionSlot::try_acquire(&self.api, MAX_API_INGRESS_CONNECTIONS)
+            Kind::Api => self
+                .api
+                .try_acquire()
                 .map_or(Service::RefuseApi, Service::Api),
             Kind::Client => {
                 let Some(handler) = self.gate.handler() else {
                     return Service::RefuseClient(shepr_protocol::HandshakeRefusal::ServerStarting);
                 };
-                // The cap is a small compile-time constant that fits the wire's
-                // u32 field; the u32::MAX fallback only keeps the conversion total.
-                ConnectionSlot::try_acquire(&self.client, MAX_ACTIVE_CLIENT_CONNECTIONS)
-                    .map_or_else(
-                        || {
-                            Service::RefuseClient(
-                                shepr_protocol::HandshakeRefusal::ConnectionLimit(
-                                    u32::try_from(MAX_ACTIVE_CLIENT_CONNECTIONS)
-                                        .unwrap_or(u32::MAX),
-                                ),
-                            )
-                        },
-                        |slot| Service::Client(handler, slot),
-                    )
+                self.client.try_acquire().map_or_else(
+                    |error| {
+                        Service::RefuseClient(shepr_protocol::HandshakeRefusal::ConnectionLimit(
+                            error,
+                        ))
+                    },
+                    |slot| Service::Client(handler, slot),
+                )
             }
         }
     }
@@ -112,7 +117,7 @@ impl Dispatch {
                 }
             }
             Service::Client(handler, slot) => handler.serve(stream, slot, accepted),
-            Service::RefuseApi => reject_busy_connection(stream),
+            Service::RefuseApi => reject_busy_connection(stream, &self.api),
             Service::RefuseClient(reason) => refuse_client(stream, reason),
         }
     }
@@ -182,7 +187,11 @@ fn spawn_refuser(dispatch: Dispatch) -> Option<SyncSender<Pending>> {
     }
 }
 
-fn hand_off(refuser: Option<&SyncSender<Pending>>, pending: Pending) {
+fn hand_off(
+    refuser: Option<&SyncSender<Pending>>,
+    pending: Pending,
+    api_admission: &ConnectionAdmission,
+) {
     let pending = match refuser {
         Some(refuser) => match refuser.try_send(pending) {
             Ok(()) => return,
@@ -191,7 +200,7 @@ fn hand_off(refuser: Option<&SyncSender<Pending>>, pending: Pending) {
         None => pending,
     };
     if matches!(pending.kind, Some(Kind::Api)) {
-        send_busy_refusal(pending.stream, "");
+        send_busy_refusal(pending.stream, "", api_admission);
     }
 }
 
@@ -206,11 +215,11 @@ pub(super) fn start_listener(
         api_tx,
         stop,
         gate,
-        api: Arc::new(AtomicUsize::new(0)),
-        api_app: Arc::new(AtomicUsize::new(0)),
-        client: Arc::new(AtomicUsize::new(0)),
+        api: connection_admission(MAX_API_INGRESS_CONNECTIONS),
+        api_app: connection_admission(MAX_APP_REQUESTS_IN_FLIGHT),
+        client: connection_admission(MAX_ACTIVE_CLIENT_CONNECTIONS),
     };
-    let unclassified = Arc::new(AtomicUsize::new(0));
+    let unclassified = connection_admission(MAX_UNCLASSIFIED_CONNECTIONS);
     start_listener_with_dispatch(listener, running, dispatch, unclassified)
 }
 
@@ -218,7 +227,7 @@ fn start_listener_with_dispatch(
     listener: LocalListener,
     running: Arc<AtomicBool>,
     dispatch: Dispatch,
-    unclassified: Arc<AtomicUsize>,
+    unclassified: ConnectionAdmission,
 ) -> io::Result<std::thread::JoinHandle<()>> {
     let refuser = spawn_refuser(dispatch.clone());
     std::thread::Builder::new()
@@ -260,6 +269,7 @@ fn start_listener_with_dispatch(
                                         accepted,
                                         kind: Some(kind),
                                     },
+                                    &dispatch.api,
                                 );
                                 Ok(())
                             }
@@ -267,9 +277,7 @@ fn start_listener_with_dispatch(
                         }
                     }
                     Err(error) if error.kind() == io::ErrorKind::TimedOut => {
-                        if let Some(slot) =
-                            ConnectionSlot::try_acquire(&unclassified, MAX_UNCLASSIFIED_CONNECTIONS)
-                        {
+                        if let Ok(slot) = unclassified.try_acquire() {
                             let dispatch = dispatch.clone();
                             std::thread::Builder::new()
                                 .name("shepr-conn".into())
@@ -285,6 +293,7 @@ fn start_listener_with_dispatch(
                                     accepted,
                                     kind: None,
                                 },
+                                &dispatch.api,
                             );
                             Ok(())
                         }
@@ -347,9 +356,9 @@ mod tests {
             api_tx,
             stop: Arc::default(),
             gate: ClientGate::default(),
-            api: Arc::default(),
-            api_app: Arc::default(),
-            client: Arc::default(),
+            api: connection_admission(MAX_API_INGRESS_CONNECTIONS),
+            api_app: connection_admission(MAX_APP_REQUESTS_IN_FLIGHT),
+            client: connection_admission(MAX_ACTIVE_CLIENT_CONNECTIONS),
         }
     }
 
@@ -420,9 +429,9 @@ mod tests {
         serde_json::from_str(&line).expect("json")
     }
 
-    fn hold(active: &Arc<AtomicUsize>, cap: usize) -> Vec<ConnectionSlot> {
-        (0..cap)
-            .map(|_| ConnectionSlot::try_acquire(active, cap).expect("slot"))
+    fn hold(admission: &ConnectionAdmission, count: usize) -> Vec<ConnectionSlot> {
+        (0..count)
+            .map(|_| admission.try_acquire().expect("slot"))
             .collect()
     }
 
@@ -436,9 +445,19 @@ mod tests {
             shepr_platform::ipc::bind_private_socket(&path).expect("bind");
         let running = Arc::new(AtomicBool::new(true));
         let gate = dispatch.gate.clone();
-        let thread =
-            start_listener_with_dispatch(listener, Arc::clone(&running), dispatch, unclassified)
-                .expect("listener");
+        let thread = start_listener_with_dispatch(
+            listener,
+            Arc::clone(&running),
+            dispatch,
+            ConnectionAdmission::new(
+                unclassified,
+                shepr_protocol::Limit::new(
+                    shepr_protocol::LimitKind::ConnectionCount,
+                    MAX_UNCLASSIFIED_CONNECTIONS,
+                ),
+            ),
+        )
+        .expect("listener");
         let handle = super::super::ServerHandle {
             thread: Some(thread),
             path,
@@ -472,7 +491,11 @@ mod tests {
     fn a_connection_that_sends_nothing_releases_its_classification_slot() {
         let dispatch = dispatch();
         let active: Arc<AtomicUsize> = Arc::default();
-        let slot = ConnectionSlot::try_acquire(&active, 1).expect("slot");
+        let admission = ConnectionAdmission::new(
+            Arc::clone(&active),
+            shepr_protocol::Limit::new(shepr_protocol::LimitKind::ConnectionCount, 1),
+        );
+        let slot = admission.try_acquire().expect("slot");
         let (_peer, stream) = LocalStream::pair().expect("pair");
         dispatch.classify_and_serve(stream, Instant::now() - INITIAL_REQUEST_TIMEOUT, slot);
         assert_eq!(active.load(Ordering::Acquire), 0);
@@ -492,7 +515,7 @@ mod tests {
             .expect("client admission independent");
         drop(client);
         drop(api_slots);
-        wait_count(&dispatch.client, 0);
+        wait_admission_count(&dispatch.client, 0);
         let client_slots = hold(&dispatch.client, MAX_ACTIVE_CLIENT_CONNECTIONS);
         assert_eq!(ping(&mut connect(&handle))["result"]["type"], "pong");
         drop(client_slots);
@@ -505,6 +528,18 @@ mod tests {
                 Instant::now() < deadline,
                 "counter did not reach {count}: {}",
                 active.load(Ordering::Acquire)
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    fn wait_admission_count(admission: &ConnectionAdmission, count: usize) {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while admission.active_count() != count {
+            assert!(
+                Instant::now() < deadline,
+                "counter did not reach {count}: {}",
+                admission.active_count()
             );
             std::thread::sleep(Duration::from_millis(1));
         }
@@ -547,6 +582,7 @@ mod tests {
                 accepted: Instant::now(),
                 kind: Some(Kind::Api),
             },
+            &connection_admission(MAX_API_INGRESS_CONNECTIONS),
         );
         let mut line = String::new();
         BufReader::new(&mut peer)
@@ -561,6 +597,7 @@ mod tests {
     fn the_busy_refuser_thread_echoes_the_request_id() {
         let dispatch = dispatch();
         let _slots = hold(&dispatch.api, MAX_API_INGRESS_CONNECTIONS);
+        let api_admission = dispatch.api.clone();
         let tx = spawn_refuser(dispatch).expect("refuser");
         let (mut peer, stream) = LocalStream::pair().expect("pair");
         hand_off(
@@ -570,6 +607,7 @@ mod tests {
                 accepted: Instant::now(),
                 kind: Some(Kind::Api),
             },
+            &api_admission,
         );
         let answer = ping(&mut peer);
         assert_eq!(answer["id"], "ping");
@@ -588,6 +626,7 @@ mod tests {
                 accepted: Instant::now(),
                 kind: None,
             },
+            &connection_admission(MAX_API_INGRESS_CONNECTIONS),
         );
         assert_eq!(ping(&mut peer)["result"]["type"], "pong");
     }
@@ -603,6 +642,7 @@ mod tests {
                 accepted: Instant::now(),
                 kind: None,
             },
+            &connection_admission(MAX_API_INGRESS_CONNECTIONS),
         );
         let mut bytes = Vec::new();
         peer.read_to_end(&mut bytes).expect("closed");
@@ -615,13 +655,23 @@ mod tests {
         let worker = std::thread::spawn(move || {
             refuse_client(
                 stream,
-                shepr_protocol::HandshakeRefusal::ConnectionLimit(64),
+                shepr_protocol::HandshakeRefusal::ConnectionLimit(
+                    shepr_protocol::LimitExceeded::new(
+                        shepr_protocol::Limit::new(shepr_protocol::LimitKind::ConnectionCount, 64),
+                        65,
+                    ),
+                ),
             );
         });
         hello(&mut peer);
         assert_eq!(
             welcome(&mut peer),
-            EndpointServerWelcome::Refused(shepr_protocol::HandshakeRefusal::ConnectionLimit(64))
+            EndpointServerWelcome::Refused(shepr_protocol::HandshakeRefusal::ConnectionLimit(
+                shepr_protocol::LimitExceeded::new(
+                    shepr_protocol::Limit::new(shepr_protocol::LimitKind::ConnectionCount, 64,),
+                    65,
+                ),
+            ))
         );
         worker.join().expect("refuser");
     }
@@ -670,7 +720,12 @@ mod tests {
         let worker = std::thread::spawn(move || {
             refuse_client(
                 stream,
-                shepr_protocol::HandshakeRefusal::ConnectionLimit(64),
+                shepr_protocol::HandshakeRefusal::ConnectionLimit(
+                    shepr_protocol::LimitExceeded::new(
+                        shepr_protocol::Limit::new(shepr_protocol::LimitKind::ConnectionCount, 64),
+                        65,
+                    ),
+                ),
             );
         });
         let mut bytes = Vec::new();
@@ -694,7 +749,7 @@ mod tests {
         let dispatch = dispatch();
         let (mut peer, stream) = LocalStream::pair().expect("pair");
         peer.write_all(b"{").expect("late first byte");
-        let ingress = ConnectionSlot::try_acquire(&dispatch.api, 1).expect("slot");
+        let ingress = dispatch.api.try_acquire().expect("slot");
         let error = handle_connection(
             stream,
             Instant::now(),

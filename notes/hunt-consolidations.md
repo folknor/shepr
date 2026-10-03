@@ -21,23 +21,6 @@ file's.
 
 ## Platform, process and files
 
-## CON-003 - Parsing `/proc/<pid>/stat`, and "is this process dead"
-
-`process.rs` `session_and_tty_from_stat` (skip past the last `)`, then
-`skip(3)`), `process_identity.rs` `process_snapshot` (its own split, `nth(18)`,
-dead means `Z | X`), and in shepr-agent `proc_tree.rs`
-`foreground_process_group_id` (field 5) and
-`process_pgrp_comm_and_state_from_stat` with
-`process_state_allows_remote_memory_read` refusing `D | Z | X | x`. Field
-arithmetic is repeated with different offsets and the finished states differ
-(`x` only in agent). Owner: shepr-platform `ProcStat::read(Pid)` with typed
-fields and `ProcState::is_finished()`. agents adds that all of `proc_tree.rs`
-(task and children walking, cmdline, cwd readlink, budgets) is `/proc`
-plumbing that AGENTS.md puts in platform, and mux reaches through
-`shepr_agent::detect::` for it (`foreground_process_group_id`, `process_cwd`,
-`foreground_job`, `foreground_group_leader_job`). Reported by foundation and
-agents.
-
 ## CON-005 - When is a cell size exact, how big may it be, and how small may a host grid be?
 
 "Pixel coordinates are exact only with a known cell" is decided in
@@ -153,16 +136,6 @@ publishes per-client extents while the child was told the geometry-source
 client's. Owner: `PaneGeometry`, with the wire carrying `Option<PixelExtent>`
 from it. (terminal)
 
-## CON-024 - Where is the viewport, counted from the bottom?
-
-vt `scrollbar()` returns from-top numbers; mux `terminal_scroll_metrics`,
-`terminal_set_scroll_offset_from_bottom` and an inline copy in
-`PaneTerminal::resize` each compute `total - (offset + len)` and `total - len`;
-termio `ScrollMetrics::viewport_top_row` computes the inverse; the client's copy
-mode reimplements it as `viewport_top`; four field-by-field conversions run
-between termio's and protocol's scroll metrics. Owner: vt returning one
-`ScrollMetrics`, also the wire type. Reported by terminal and client-shell.
-
 ## CON-027 - How are styles, colours and colour replies spelled in VT sequences?
 
 `UnderlineStyle` to SGR is in `format.rs` `UNDERLINE_SGR` and `blit.rs`
@@ -245,33 +218,6 @@ differ; whether that is intended is written nowhere. Reported by terminal,
 client-shell and contracts.
 
 ## Agents and hooks
-
-## CON-041 - Who decided this pane's state: hook or screen?
-
-`handle_detect_explain` reconstructs after the fact whether hook authority
-decided the effective state: `(!full_lifecycle ||
-terminal.full_lifecycle_hook_authority_active()) && terminal.state ==
-authority.state`, calling `full_lifecycle_hook_authority` twice on re-parsed
-strings. If screen detection lands on the same state as the hook, explain
-credits the hook. The live decision is in mux terminal state (`source/detection.rs`,
-`source/report.rs`, `lifecycle.rs`, which call `full_lifecycle_hook_authority` in
-at least six places). Owner: `recompute_effective_state` records
-`EffectiveStateSource::{FullLifecycleHook, Hook, Screen, ProcessExit}` (server-app
-names it `TerminalState::state_owner()`), used by detection, the detection pause
-and explain. Reported by agents and server-app.
-
-## CON-042 - Full-lifecycle authority is mirrored into the runtime by hand
-
-`TerminalState::full_lifecycle_hook_authority_active()` is derived state; the
-server copies it into `PaneRuntime::full_lifecycle_authority_active:
-Arc<AtomicBool>` through `sync_pane_lifecycle_authority_detection_pause`, called
-after `handle_state_event` for the touched pane and after
-`publish_pane_process_exit`. Other mutations (`set_persisted_agent_session`
-during restore, `abandon_agent_resume`, a fresh runtime for a terminal that
-already has authority) do not call it, so the copy is correct only when the last
-mutation went through one of the two synced paths. Owner: report the change in
-`TerminalStateMutation`, apply it at `update_terminal_state`, and set it on
-runtime installation. (mux-panes)
 
 ## CON-049 - Hook asset contracts are spelled in every asset
 
@@ -411,14 +357,6 @@ Pruning and pane-id collection now live on core's `Node`, and core's
 `pane_below`, `u16` saturating) separately from core's helper (`u32` ends), and
 the two differ at the right or bottom edge of a `u16::MAX` area. (mux-state)
 
-## CON-060 - How does a snapshot key its panes?
-
-`capture_workspace` keys each pane by `(workspace index, PaneId::raw())`; the
-server's `capture_preserved_layout` builds `HashMap<(usize, u32), TerminalId>` by
-the same rule independently and then compares only the total count. Owner:
-capture returns the index it used (`SavedPaneRef -> TerminalId`) and the
-checkpoint code takes that value. (mux-state)
-
 ## CON-061 - Which pane maps to which terminal and runtime?
 
 `AppState` now keeps a `PaneId -> TerminalId` index with `terminal_of` and
@@ -543,16 +481,6 @@ open: the client's `endpoint/choice/preparing.rs` keeps a second full baseline
 and applies patches to it instead of reading the connection decoder's baseline
 (`Decoder::current_surface`); the boundary is commented there. Reported by
 contracts and server-serving.
-
-## CON-081 - How large may a grid be?
-
-`shepr-config` `limits.rs::terminal_grid_cells` (dimension and cell caps);
-protocol `ClientSurfaceSize::clamped` re-derives the row bound
-(`MAX_SURFACE_CELLS / cols`, min `MAX_SURFACE_DIMENSION`); core
-`GridSize::clamped` clamps only the minimum, so a decoded `TerminalGeometry`
-holds any grid up to 65535 by 65535 until `client_shell_geometry_error` checks
-it. They agree. Owner: core, as a bounded grid type that refuses over-budget
-grids, which also lets protocol drop its config edge. (contracts)
 
 ## Config and keybindings
 

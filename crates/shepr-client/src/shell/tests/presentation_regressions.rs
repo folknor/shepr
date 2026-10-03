@@ -28,14 +28,17 @@ fn client_presentation_regression_server_notice_titles_follow_the_notice_kind() 
             "Pane input dropped",
         ),
         (
-            shepr_protocol::NoticeKind::PasteRejected { size: 20, max: 10 },
+            shepr_protocol::NoticeKind::LimitExceeded(shepr_protocol::LimitExceeded::new(
+                shepr_protocol::Limit::new(shepr_protocol::LimitKind::InputPayloadBytes, 10),
+                20,
+            )),
             "Paste rejected",
         ),
         (
-            shepr_protocol::NoticeKind::OversizedSurface {
-                claimed: 20,
-                max: 10,
-            },
+            shepr_protocol::NoticeKind::LimitExceeded(shepr_protocol::LimitExceeded::new(
+                shepr_protocol::Limit::new(shepr_protocol::LimitKind::SurfaceMessageBytes, 10),
+                20,
+            )),
             "Screen too large",
         ),
     ];

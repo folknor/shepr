@@ -33,8 +33,8 @@ const CONTINUED: u32 = 1 << 31;
 /// Errors that can occur during framing operations.
 #[derive(Debug)]
 pub enum FramingError {
-    /// A frame or a whole message exceeds the applicable fixed limit.
-    Oversized { claimed: usize, max: usize },
+    /// A frame or a whole message exceeds the applicable payload limit.
+    LimitExceeded(crate::LimitExceeded),
     /// A continued frame is not a full `MAX_FRAME_SIZE` payload.
     InvalidContinuation { claimed: usize, expected: usize },
     /// A message was continued where the reader permits only one frame.
@@ -52,9 +52,7 @@ pub enum FramingError {
 impl std::fmt::Display for FramingError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            FramingError::Oversized { claimed, max } => {
-                write!(f, "frame size {claimed} exceeds maximum {max}")
-            }
+            FramingError::LimitExceeded(error) => write!(f, "{error}"),
             FramingError::InvalidContinuation { claimed, expected } => write!(
                 f,
                 "continued frame size {claimed} does not match required size {expected}"
@@ -93,7 +91,7 @@ impl From<CodecError> for FramingError {
 ///
 /// # Errors
 ///
-/// Returns `FramingError::Oversized`, without writing anything, if the
+/// Returns `FramingError::LimitExceeded`, without writing anything, if the
 /// payload exceeds `MAX_MESSAGE_SIZE`.
 pub fn write_message<W: Write, M: Serialize>(writer: &mut W, msg: &M) -> Result<(), FramingError> {
     let frames = encode_message(msg)?;
@@ -112,10 +110,10 @@ pub fn write_message<W: Write, M: Serialize>(writer: &mut W, msg: &M) -> Result<
 ///
 /// # Errors
 ///
-/// `FramingError::Oversized` if the payload exceeds `MAX_MESSAGE_SIZE` (the
+/// `FramingError::LimitExceeded` if the payload exceeds `MAX_MESSAGE_SIZE` (the
 /// encoded buffer is dropped), or `FramingError::Codec` if encoding fails.
 pub fn encode_message<M: Serialize>(msg: &M) -> Result<Vec<u8>, FramingError> {
-    encode_frames(msg, MAX_MESSAGE_SIZE)
+    encode_frames(msg, MAX_MESSAGE_SIZE, crate::LimitKind::MessageBytes)
 }
 
 /// Encodes a message that must fit in one frame, `[u32LE length][codec
@@ -125,17 +123,21 @@ pub fn encode_message<M: Serialize>(msg: &M) -> Result<Vec<u8>, FramingError> {
 ///
 /// # Errors
 ///
-/// `FramingError::Oversized` if the payload exceeds `MAX_FRAME_SIZE`, or
+/// `FramingError::LimitExceeded` if the payload exceeds `MAX_FRAME_SIZE`, or
 /// `FramingError::Codec` if encoding fails.
 pub fn encode_frame<M: Serialize>(msg: &M) -> Result<Vec<u8>, FramingError> {
-    encode_frames(msg, MAX_FRAME_SIZE)
+    encode_frames(msg, MAX_FRAME_SIZE, crate::LimitKind::FrameBytes)
 }
 
-fn encode_frames<M: Serialize>(msg: &M, max_message: usize) -> Result<Vec<u8>, FramingError> {
+fn encode_frames<M: Serialize>(
+    msg: &M,
+    max_message: usize,
+    limit_kind: crate::LimitKind,
+) -> Result<Vec<u8>, FramingError> {
     // Keep the output bounded during the one serialization pass. Calling
     // `encoded_len` first would traverse every field again on the client
     // fanout path; this buffer counts any excess bytes without retaining them.
-    let mut output = FramedPayloadBuffer::new(max_message);
+    let mut output = FramedPayloadBuffer::new(max_message, limit_kind);
     codec::encode_into(&mut output, msg)?;
     output.finish()
 }
@@ -147,14 +149,16 @@ struct FramedPayloadBuffer {
     frames: Vec<u8>,
     payload_len: usize,
     max_message: usize,
+    limit_kind: crate::LimitKind,
 }
 
 impl FramedPayloadBuffer {
-    fn new(max_message: usize) -> Self {
+    fn new(max_message: usize, limit_kind: crate::LimitKind) -> Self {
         Self {
             frames: vec![0u8; LENGTH_PREFIX_BYTES],
             payload_len: 0,
             max_message,
+            limit_kind,
         }
     }
 
@@ -162,17 +166,23 @@ impl FramedPayloadBuffer {
     fn finish(mut self) -> Result<Vec<u8>, FramingError> {
         let len = self.payload_len;
         let max = self.max_message;
-        let oversized = || FramingError::Oversized { claimed: len, max };
+        let limit_kind = self.limit_kind;
+        let limit_exceeded = || {
+            FramingError::LimitExceeded(crate::LimitExceeded::new(
+                crate::Limit::new(limit_kind, max),
+                len,
+            ))
+        };
         if len > max {
-            return Err(oversized());
+            return Err(limit_exceeded());
         }
         let continued = len.saturating_sub(1) / MAX_FRAME_SIZE;
-        let full = u32::try_from(MAX_FRAME_SIZE).map_err(|_| oversized())? | CONTINUED;
+        let full = u32::try_from(MAX_FRAME_SIZE).map_err(|_| limit_exceeded())? | CONTINUED;
         for frame in 0..continued {
             let at = frame * (LENGTH_PREFIX_BYTES + MAX_FRAME_SIZE);
             self.frames[at..at + LENGTH_PREFIX_BYTES].copy_from_slice(&full.to_le_bytes());
         }
-        let last = u32::try_from(len - continued * MAX_FRAME_SIZE).map_err(|_| oversized())?;
+        let last = u32::try_from(len - continued * MAX_FRAME_SIZE).map_err(|_| limit_exceeded())?;
         let at = continued * (LENGTH_PREFIX_BYTES + MAX_FRAME_SIZE);
         self.frames[at..at + LENGTH_PREFIX_BYTES].copy_from_slice(&last.to_le_bytes());
         Ok(self.frames)
@@ -269,10 +279,15 @@ fn read_frames<R: Read, M: for<'de> Deserialize<'de>>(
             return Err(FramingError::UnexpectedContinuation);
         }
         if claimed_len > max_frame {
-            return Err(FramingError::Oversized {
-                claimed: claimed_len,
-                max: max_frame,
-            });
+            let (kind, max) = if max_frame == MAX_FRAME_SIZE {
+                (crate::LimitKind::FrameBytes, max_frame)
+            } else {
+                (crate::LimitKind::MessageBytes, max_message)
+            };
+            return Err(FramingError::LimitExceeded(crate::LimitExceeded::new(
+                crate::Limit::new(kind, max),
+                claimed_len,
+            )));
         }
         if continued && claimed_len != MAX_FRAME_SIZE {
             return Err(FramingError::InvalidContinuation {
@@ -283,10 +298,10 @@ fn read_frames<R: Read, M: for<'de> Deserialize<'de>>(
         let start = payload.len();
         let total = start.saturating_add(claimed_len);
         if total > max_message {
-            return Err(FramingError::Oversized {
-                claimed: total,
-                max: max_message,
-            });
+            return Err(FramingError::LimitExceeded(crate::LimitExceeded::new(
+                crate::Limit::new(crate::LimitKind::MessageBytes, max_message),
+                total,
+            )));
         }
 
         // Read the payload, reassembling partial reads.

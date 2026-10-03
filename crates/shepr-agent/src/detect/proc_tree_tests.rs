@@ -53,7 +53,7 @@ fn foreground_members_follow_the_pane_tree_and_filter_by_process_group() {
             (*pgrp == process_group_id).then(|| ProcGroupMember {
                 pid,
                 comm: (*comm).to_string(),
-                state: 'S',
+                state: ProcState::Sleeping,
             })
         },
     )
@@ -111,7 +111,7 @@ fn foreground_tree_traversal_is_bounded_by_the_scan_limit() {
             (process_group_id == 2).then(|| ProcGroupMember {
                 pid,
                 comm: format!("p{pid}"),
-                state: 'S',
+                state: ProcState::Sleeping,
             })
         },
     )
@@ -164,7 +164,7 @@ fn foreground_tree_traversal_shares_the_scan_limit_between_roots() {
             (process_group_id == 2).then(|| ProcGroupMember {
                 pid,
                 comm: format!("p{pid}"),
-                state: 'S',
+                state: ProcState::Sleeping,
             })
         },
     )
@@ -248,7 +248,7 @@ fn foreground_members_degrade_to_the_direct_group_leader() {
             (pid == process_group_id).then(|| ProcGroupMember {
                 pid,
                 comm: "leader".to_string(),
-                state: 'S',
+                state: ProcState::Sleeping,
             })
         },
     )
@@ -259,7 +259,7 @@ fn foreground_members_degrade_to_the_direct_group_leader() {
         vec![ProcGroupMember {
             pid: 200,
             comm: "leader".to_string(),
-            state: 'S',
+            state: ProcState::Sleeping,
         }]
     );
 }
@@ -285,7 +285,7 @@ fn foreground_members_observe_new_children_without_a_snapshot_cache() {
                     .then(|| ProcGroupMember {
                         pid,
                         comm: format!("member-{pid}"),
-                        state: 'S',
+                        state: ProcState::Sleeping,
                     })
                     .filter(|_| process_group_id == 200)
             },
@@ -304,8 +304,14 @@ fn foreground_members_observe_new_children_without_a_snapshot_cache() {
 #[test]
 fn proc_stat_parsing_keeps_group_leader_inputs_live() {
     assert_eq!(
-        process_pgrp_comm_and_state_from_stat("123 (name with ) paren) S 1 456 789 0 456"),
-        Some((456, "name with ) paren".to_string(), 'S'))
+        process_pgrp_comm_and_state_from_stat(
+            "123 (name with ) paren) S 1 456 789 0 456 0 0 0 0 0 0 0 0 0 0 0 0 0 0"
+        ),
+        Some((
+            Pgid::new(456).expect("group"),
+            "name with ) paren".to_string(),
+            ProcState::Sleeping
+        ))
     );
 }
 
@@ -318,12 +324,12 @@ fn foreground_job_does_not_read_remote_memory_for_uninterruptible_members() {
             ProcGroupMember {
                 pid: 200,
                 comm: "codex".to_string(),
-                state: 'D',
+                state: ProcState::Uninterruptible,
             },
             ProcGroupMember {
                 pid: 201,
                 comm: "helper".to_string(),
-                state: 'S',
+                state: ProcState::Sleeping,
             },
         ],
         |pid| {
@@ -342,10 +348,18 @@ fn foreground_job_does_not_read_remote_memory_for_uninterruptible_members() {
 #[test]
 fn remote_memory_reads_reject_dead_and_uninterruptible_states() {
     for state in ['D', 'Z', 'X', 'x'] {
-        assert!(!process_state_allows_remote_memory_read(state));
+        assert!(
+            !ProcState::from_code(state)
+                .expect("known state")
+                .allows_remote_memory_read()
+        );
     }
     for state in ['R', 'S', 'I', 'T', 't'] {
-        assert!(process_state_allows_remote_memory_read(state));
+        assert!(
+            ProcState::from_code(state)
+                .expect("known state")
+                .allows_remote_memory_read()
+        );
     }
 }
 

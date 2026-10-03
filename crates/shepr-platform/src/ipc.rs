@@ -1389,7 +1389,7 @@ mod tests {
             .expect("current process identity")
             .tag();
         let (_, rest) = live_tag.split_once('-').expect("serialized identity");
-        let dead_tag = format!("{:08x}-{rest}", u32::MAX);
+        let dead_tag = format!("{:08x}-{rest}", i32::MAX);
 
         let stale_socket = |name: &str, marker: &[u8]| {
             let socket = runtime.join(name);

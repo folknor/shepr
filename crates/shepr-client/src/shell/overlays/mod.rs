@@ -56,10 +56,10 @@ pub(crate) struct OverlayRender {
     pub(crate) navigator_search: Rect,
     pub(crate) navigator_rows: Vec<(Rect, ClientNavigatorTarget)>,
     pub(crate) navigator_scrollbar: Rect,
-    pub(crate) navigator_scroll_metrics: Option<shepr_termio::ScrollMetrics>,
+    pub(crate) navigator_scroll_metrics: Option<shepr_termio::scroll::ListScroll>,
     pub(crate) help_popup: Rect,
     pub(crate) help_scrollbar: Rect,
-    pub(crate) help_scroll_metrics: Option<shepr_termio::ScrollMetrics>,
+    pub(crate) help_scroll_metrics: Option<shepr_termio::scroll::ListScroll>,
     pub(crate) help_max_scroll: usize,
     pub(crate) cursor: Option<shepr_protocol::CursorState>,
 }
@@ -460,12 +460,7 @@ fn render_navigator_overlay(
         .max(selected.saturating_sub(body.height.saturating_sub(1) as usize))
         .min(selected)
         .min(max);
-    let metrics = shepr_termio::ScrollMetrics {
-        offset_from_bottom: max.saturating_sub(scroll),
-        max_offset_from_bottom: max,
-        viewport_rows: usize::from(body.height),
-        history_origin: shepr_vt::AbsRow(0),
-    };
+    let metrics = shepr_termio::scroll::ListScroll::new(scroll, max, usize::from(body.height));
     let scrollbar =
         (max > 0 && body.width > 1).then_some(Rect::new(body.right() - 1, body.y, 1, body.height));
     let row_width = body.width.saturating_sub(u16::from(scrollbar.is_some()));
@@ -851,12 +846,7 @@ fn render_help_overlay(
     let total_rows = paragraph.line_count(text_area.width);
     let max_scroll = total_rows.saturating_sub(viewport_rows);
     let scroll = h.scroll.min(max_scroll);
-    let metrics = shepr_termio::ScrollMetrics {
-        offset_from_bottom: max_scroll.saturating_sub(scroll),
-        max_offset_from_bottom: max_scroll,
-        viewport_rows,
-        history_origin: shepr_vt::AbsRow(0),
-    };
+    let metrics = shepr_termio::scroll::ListScroll::new(scroll, max_scroll, viewport_rows);
     let scrollbar = needs_scrollbar.then_some(Rect::new(
         body.right().saturating_sub(1),
         body.y,

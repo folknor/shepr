@@ -595,7 +595,14 @@ async fn an_oversized_first_surface_is_refused_without_a_retry_loop() {
         &plan,
         &HashSet::new(),
         render::SurfaceBoundary {
-            encode: |_| Err(shepr_protocol::FramingError::Oversized { claimed: 2, max: 1 }),
+            encode: |_| {
+                Err(shepr_protocol::FramingError::LimitExceeded(
+                    shepr_protocol::LimitExceeded::new(
+                        shepr_protocol::Limit::new(shepr_protocol::LimitKind::MessageBytes, 1),
+                        2,
+                    ),
+                ))
+            },
             ..render::SurfaceBoundary::default()
         },
     );
@@ -608,12 +615,16 @@ async fn an_oversized_first_surface_is_refused_without_a_retry_loop() {
             .is_none()
     );
     assert!(!pair.server.render_plan(false).has_full());
-    assert!(matches!(
-        read_server_message(pair.control[1].recv().expect("oversized notice")),
-        ServerMessage::ClientShellError {
-            kind: shepr_protocol::NoticeKind::OversizedSurface { .. }
-        }
-    ));
+    let ServerMessage::ClientShellError {
+        kind: shepr_protocol::NoticeKind::LimitExceeded(error),
+    } = read_server_message(pair.control[1].recv().expect("oversized notice"))
+    else {
+        panic!("expected an oversized surface notice");
+    };
+    assert_eq!(
+        error.limit.kind(),
+        shepr_protocol::LimitKind::SurfaceMessageBytes
+    );
     pair.damage(b"\rSMALL");
     assert!(
         pair.server

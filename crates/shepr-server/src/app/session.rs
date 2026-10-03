@@ -359,7 +359,7 @@ impl App {
             .preserved()
             .filter(|_| !self.state.session_dirty)
         else {
-            return Some(self.capture_session_save_job());
+            return Some(self.capture_session_save_job().0);
         };
         let job = self.capture_save_job_from_preserved_layout(layout);
         if job.is_none() {
@@ -484,7 +484,12 @@ impl App {
     /// each shell's cwd. No terminal lock is taken and no /proc file is read;
     /// turning history into its saved form and reading the cwds are the
     /// persister's work.
-    fn capture_session_save_job(&self) -> shepr_mux::persist::PersistJob {
+    fn capture_session_save_job(
+        &self,
+    ) -> (
+        shepr_mux::persist::PersistJob,
+        HashMap<shepr_mux::persist::snapshot::SavedPaneRef, shepr_protocol::TerminalId>,
+    ) {
         shepr_mux::persist::capture_job(
             &self.state.workspaces,
             &self.state.terminals,
@@ -501,19 +506,15 @@ impl App {
     /// terminal identity to refresh its history and cwd from at the final
     /// save.
     fn capture_preserved_layout(
-        &self,
         job: &shepr_mux::persist::PersistJob,
+        terminal_ids: HashMap<
+            shepr_mux::persist::snapshot::SavedPaneRef,
+            shepr_protocol::TerminalId,
+        >,
     ) -> Option<PreservedLayout> {
         let shepr_mux::persist::PersistJob::Save(bundle) = job else {
             return None;
         };
-        let mut terminal_ids = HashMap::new();
-        for (workspace_index, workspace) in self.state.workspaces.iter().enumerate() {
-            for pane_id in workspace.panes().keys() {
-                let terminal_id = workspace.terminal_id(*pane_id)?.clone();
-                terminal_ids.insert((workspace_index, pane_id.raw()), terminal_id);
-            }
-        }
         if terminal_ids.len()
             != bundle
                 .snapshot
@@ -575,11 +576,11 @@ impl App {
                     self.session_saver.note_mutation(self.clock.now);
                 }
                 self.session_saver.autosave.clear();
-                let job = self.capture_session_save_job();
+                let (job, terminal_ids) = self.capture_session_save_job();
                 let ticket = CheckpointTicket {
                     exit: exit_generation.map(|generation| ExitTicket {
                         generation,
-                        layout: self.capture_preserved_layout(&job).map(Box::new),
+                        layout: Self::capture_preserved_layout(&job, terminal_ids).map(Box::new),
                     }),
                     host,
                 };
@@ -587,7 +588,8 @@ impl App {
             }
             Some(NextSave::Autosave) => {
                 self.session_saver.autosave.clear();
-                self.spawn_session_save(self.capture_session_save_job(), SaveKind::Autosave);
+                let (job, _) = self.capture_session_save_job();
+                self.spawn_session_save(job, SaveKind::Autosave);
             }
         }
     }

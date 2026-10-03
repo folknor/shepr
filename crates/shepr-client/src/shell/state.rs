@@ -63,7 +63,7 @@ impl std::fmt::Debug for TypedText {
 }
 
 pub struct ClientShellConfig {
-    pub(in crate::shell) sidebar_width: u16,
+    pub(in crate::shell) sidebar_width: shepr_config::SidebarWidth,
     pub(in crate::shell) sidebar_bounds: shepr_config::SidebarBounds,
     pub(in crate::shell) sidebar_start_collapsed: bool,
     pub(in crate::shell) sidebar_collapsed_mode: SidebarCollapsedModeConfig,
@@ -96,7 +96,7 @@ pub(in crate::shell) struct ShellHitMap {
     pub(in crate::shell) workspaces: Vec<WorkspaceHit>,
     pub(in crate::shell) workspace_body: Rect,
     pub(in crate::shell) workspace_scrollbar: Rect,
-    pub(in crate::shell) workspace_scroll_metrics: Option<shepr_termio::ScrollMetrics>,
+    pub(in crate::shell) workspace_scroll_metrics: Option<shepr_termio::scroll::ListScroll>,
     pub(in crate::shell) workspace_max_scroll: usize,
     pub(in crate::shell) panes: Vec<PaneHit>,
     pub(in crate::shell) pane_splits: Vec<PaneSplitHit>,
@@ -105,7 +105,7 @@ pub(in crate::shell) struct ShellHitMap {
         Vec<(Rect, ClientEndpointId, shepr_protocol::PublicPaneId)>,
     pub(in crate::shell) agent_body: Rect,
     pub(in crate::shell) agent_scrollbar: Rect,
-    pub(in crate::shell) agent_scroll_metrics: Option<shepr_termio::ScrollMetrics>,
+    pub(in crate::shell) agent_scroll_metrics: Option<shepr_termio::scroll::ListScroll>,
     pub(in crate::shell) agent_max_scroll: usize,
     pub(in crate::shell) agent_sort_toggle: Rect,
     pub(in crate::shell) sidebar_divider: Rect,
@@ -123,10 +123,10 @@ pub(in crate::shell) struct ShellHitMap {
     pub(in crate::shell) navigator_search: Rect,
     pub(in crate::shell) navigator_rows: Vec<(Rect, ClientNavigatorTarget)>,
     pub(in crate::shell) navigator_scrollbar: Rect,
-    pub(in crate::shell) navigator_scroll_metrics: Option<shepr_termio::ScrollMetrics>,
+    pub(in crate::shell) navigator_scroll_metrics: Option<shepr_termio::scroll::ListScroll>,
     pub(in crate::shell) help_popup: Rect,
     pub(in crate::shell) help_scrollbar: Rect,
-    pub(in crate::shell) help_scroll_metrics: Option<shepr_termio::ScrollMetrics>,
+    pub(in crate::shell) help_scroll_metrics: Option<shepr_termio::scroll::ListScroll>,
     pub(in crate::shell) help_max_scroll: usize,
 }
 
@@ -623,12 +623,10 @@ impl ClientCopySearch {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(in crate::shell) struct ClientCopyModeState {
     pub(in crate::shell) pane_id: shepr_protocol::PublicPaneId,
-    pub(in crate::shell) history_origin: shepr_vt::AbsRow,
+    pub(in crate::shell) scroll: shepr_vt::ScrollMetrics,
     pub(in crate::shell) geometry: (u16, u16),
     pub(in crate::shell) alternate_screen_active: bool,
     pub(in crate::shell) cursor: shepr_protocol::command::PaneTextPoint,
-    pub(in crate::shell) offset_from_bottom: usize,
-    pub(in crate::shell) max_offset_from_bottom: usize,
     pub(in crate::shell) entry_offset_from_bottom: usize,
     /// The anchor and selection shape drive the projected VT range in `MouseSelection`.
     /// They are not a duplicate range: the projection changes as the copy cursor moves.
@@ -679,7 +677,8 @@ pub struct ClientShellState {
     /// restart of its server is detectable when the next snapshot arrives.
     pub(in crate::shell) active_boot_key: Option<ClientEndpointBootKey>,
     pub(in crate::shell) chrome: crate::shell::sidebar::chrome::ChromeLayout,
-    pub(in crate::shell) agent_panel_sort_manual: bool,
+    pub(in crate::shell) agent_panel_sort_chrome:
+        crate::shell::sidebar::chrome::Chrome<shepr_config::AgentPanelSortConfig>,
     pub(in crate::shell) last_sidebar_divider_click: Option<std::time::Instant>,
     pub(in crate::shell) chrome_drag: Option<ClientChromeDrag>,
     pub(in crate::shell) workspace_press: Option<ClientWorkspacePress>,
@@ -726,7 +725,7 @@ fn prune_evicted_search_matches(copy_mode: &mut ClientCopyModeState) {
     let Some(search) = copy_mode.search.as_mut() else {
         return;
     };
-    let origin = copy_mode.history_origin;
+    let origin = copy_mode.scroll.history_origin;
     let before = search.matches.len();
     let current = search
         .current
@@ -752,9 +751,23 @@ impl ClientShellState {
         let preferences = config.preferences.clone();
         let overlay = None;
         let chrome = crate::shell::sidebar::chrome::ChromeLayout::new(&config);
-        if let Some(sort) = preferences.agent_panel_sort {
-            config.agent_panel_sort = sort;
-        }
+        let sort_origin = if preferences.configured.agent_panel_sort {
+            crate::shell::sidebar::chrome::ChromeOrigin::Configured
+        } else if preferences.agent_panel_sort.is_some() {
+            crate::shell::sidebar::chrome::ChromeOrigin::Remembered
+        } else {
+            crate::shell::sidebar::chrome::ChromeOrigin::Default
+        };
+        let agent_panel_sort = if preferences.configured.agent_panel_sort {
+            config.agent_panel_sort
+        } else {
+            preferences
+                .agent_panel_sort
+                .unwrap_or(config.agent_panel_sort)
+        };
+        config.agent_panel_sort = agent_panel_sort;
+        let agent_panel_sort_chrome =
+            crate::shell::sidebar::chrome::Chrome::new(agent_panel_sort, sort_origin);
         let endpoints = vec![local_endpoint()];
         let agent_panel_model =
             crate::shell::navigation::aggregate_navigation::AgentPanelModel::build(
@@ -776,7 +789,7 @@ impl ClientShellState {
             copy_pipeline: CopyPipeline::default(),
             active_boot_key: None,
             chrome,
-            agent_panel_sort_manual: preferences.agent_panel_sort.is_some(),
+            agent_panel_sort_chrome,
             last_sidebar_divider_click: None,
             chrome_drag: None,
             workspace_press: None,
@@ -1224,8 +1237,8 @@ impl ClientShellState {
         if let Some(scroll) = scroll {
             self.scroll_lanes.shown(
                 pane,
-                usize::try_from(scroll.offset_from_bottom).unwrap_or(usize::MAX),
-                usize::try_from(scroll.max_offset_from_bottom).unwrap_or(usize::MAX),
+                scroll.offset_from_bottom,
+                scroll.max_offset_from_bottom,
             );
         }
     }
@@ -1288,14 +1301,12 @@ impl ClientShellState {
                 copy_mode.operation_generation = copy_mode.operation_generation.saturating_add(1);
             }
             if let Some(scroll) = pane.scroll {
-                copy_mode.history_origin = scroll.history_origin;
-                let actual_offset =
-                    usize::try_from(scroll.offset_from_bottom).unwrap_or(usize::MAX);
-                if self.scroll_lanes.target(&pane.pane_id).is_none() {
-                    copy_mode.offset_from_bottom = actual_offset;
-                }
-                copy_mode.max_offset_from_bottom =
-                    usize::try_from(scroll.max_offset_from_bottom).unwrap_or(usize::MAX);
+                let offset = if self.scroll_lanes.target(&pane.pane_id).is_none() {
+                    scroll.offset_from_bottom
+                } else {
+                    copy_mode.scroll.offset_from_bottom
+                };
+                copy_mode.scroll = scroll.with_offset(offset);
                 let retained_cursor_row = copy_mode.retained_row(copy_mode.cursor.row);
                 clamped_copy_coordinates |= retained_cursor_row != copy_mode.cursor.row;
                 copy_mode.cursor.row = retained_cursor_row;

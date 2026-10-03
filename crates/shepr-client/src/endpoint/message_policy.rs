@@ -105,7 +105,7 @@ mod tests {
                 title: Some("remote".into()),
             },
             ServerMessage::Clipboard {
-                data: "text".into(),
+                data: b"text".to_vec(),
             },
         ] {
             let effect = wire(effect);

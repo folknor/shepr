@@ -29,32 +29,31 @@ impl ClientCopyModeState {
 
     /// The row at the top of the pane's viewport.
     pub(in crate::shell) fn viewport_top(&self) -> shepr_vt::AbsRow {
-        let from_origin = self
-            .max_offset_from_bottom
-            .saturating_sub(self.offset_from_bottom);
-        self.history_origin
-            .saturating_add(u64::try_from(from_origin).unwrap_or(u64::MAX))
+        self.scroll.viewport_top_row()
     }
 
     /// The newest row the pane retains.
     fn last_row(&self) -> shepr_vt::AbsRow {
         let rows = self
+            .scroll
             .max_offset_from_bottom
             .saturating_add(usize::from(self.geometry.1.max(1)))
             .saturating_sub(1);
-        self.history_origin
+        self.scroll
+            .history_origin
             .saturating_add(u64::try_from(rows).unwrap_or(u64::MAX))
     }
 
     /// `row` clamped to the rows the pane retains.
     pub(in crate::shell) fn retained_row(&self, row: shepr_vt::AbsRow) -> shepr_vt::AbsRow {
-        row.clamp(self.history_origin, self.last_row())
+        row.clamp(self.scroll.history_origin, self.last_row())
     }
 
     /// The scroll offset that puts `top` at the top of the viewport.
     fn offset_for_top(&self, top: shepr_vt::AbsRow) -> usize {
-        let from_origin = top.0.saturating_sub(self.history_origin.0);
-        self.max_offset_from_bottom
+        let from_origin = top.0.saturating_sub(self.scroll.history_origin.0);
+        self.scroll
+            .max_offset_from_bottom
             .saturating_sub(usize::try_from(from_origin).unwrap_or(usize::MAX))
     }
 }
@@ -362,13 +361,11 @@ impl ClientShellState {
             .and_then(|surface| surface.panes.iter().find(|pane| pane.pane_id == pane_id))
             .is_some_and(|pane| pane.alternate_screen_active);
         self.copy_mode = Some(ClientCopyModeState {
+            scroll: metrics,
             pane_id,
             geometry: (hit.inner_rect.width, hit.inner_rect.height),
             alternate_screen_active,
             cursor,
-            history_origin: metrics.history_origin,
-            offset_from_bottom: metrics.offset_from_bottom,
-            max_offset_from_bottom: metrics.max_offset_from_bottom,
             entry_offset_from_bottom: metrics.offset_from_bottom,
             selection: None,
             search: None,
@@ -911,16 +908,20 @@ impl ClientShellState {
             if direction < 0 {
                 copy_mode.cursor.row =
                     copy_mode.retained_row(copy_mode.cursor.row.saturating_sub(rows));
-                copy_mode.offset_from_bottom = copy_mode
-                    .offset_from_bottom
-                    .saturating_add(lines)
-                    .min(copy_mode.max_offset_from_bottom);
+                copy_mode.scroll = copy_mode
+                    .scroll
+                    .with_offset(copy_mode.scroll.offset_from_bottom.saturating_add(lines));
             } else {
                 copy_mode.cursor.row =
                     copy_mode.retained_row(copy_mode.cursor.row.saturating_add(rows));
-                copy_mode.offset_from_bottom = copy_mode.offset_from_bottom.saturating_sub(lines);
+                copy_mode.scroll = copy_mode
+                    .scroll
+                    .with_offset(copy_mode.scroll.offset_from_bottom.saturating_sub(lines));
             }
-            (copy_mode.pane_id.clone(), copy_mode.offset_from_bottom)
+            (
+                copy_mode.pane_id.clone(),
+                copy_mode.scroll.offset_from_bottom,
+            )
         }) else {
             return;
         };
@@ -935,13 +936,18 @@ impl ClientShellState {
         }
         let Some((pane_id, offset_from_bottom)) = self.copy_mode.as_mut().map(|copy_mode| {
             if top {
-                copy_mode.cursor.row = copy_mode.history_origin;
-                copy_mode.offset_from_bottom = copy_mode.max_offset_from_bottom;
+                copy_mode.cursor.row = copy_mode.scroll.history_origin;
+                copy_mode.scroll = copy_mode
+                    .scroll
+                    .with_offset(copy_mode.scroll.max_offset_from_bottom);
             } else {
                 copy_mode.cursor.row = copy_mode.last_row();
-                copy_mode.offset_from_bottom = 0;
+                copy_mode.scroll = copy_mode.scroll.with_offset(0);
             }
-            (copy_mode.pane_id.clone(), copy_mode.offset_from_bottom)
+            (
+                copy_mode.pane_id.clone(),
+                copy_mode.scroll.offset_from_bottom,
+            )
         }) else {
             return;
         };
@@ -989,10 +995,10 @@ impl ClientShellState {
                 current_top
             };
             let offset = copy_mode.offset_for_top(desired_top);
-            if offset == copy_mode.offset_from_bottom {
+            if offset == copy_mode.scroll.offset_from_bottom {
                 return None;
             }
-            copy_mode.offset_from_bottom = offset;
+            copy_mode.scroll = copy_mode.scroll.with_offset(offset);
             Some((copy_mode.pane_id.clone(), offset))
         });
         if let Some((pane_id, offset)) = request {

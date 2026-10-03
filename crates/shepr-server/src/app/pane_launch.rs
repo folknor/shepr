@@ -7,7 +7,8 @@
 use bytes::Bytes;
 use shepr_core::layout::PaneId;
 use shepr_mux::pane::{LaunchKind, LaunchOutcome, LaunchSettlement};
-use shepr_mux::terminal::AgentResumeState;
+
+use shepr_mux::terminal::TerminalState;
 
 use super::App;
 
@@ -21,7 +22,7 @@ impl App {
         command: Bytes,
     ) {
         if let Some(terminal) = self.state.terminals.get_mut(terminal_id) {
-            terminal.agent_resume.begin_launch(command);
+            terminal.begin_agent_resume_launch(command);
         }
     }
 
@@ -47,7 +48,7 @@ impl App {
                     .terminals
                     .get_mut(&terminal_id)
                     .filter(|_| kind == LaunchKind::AgentResume)
-                    .and_then(|terminal| terminal.agent_resume.take_command());
+                    .and_then(TerminalState::take_agent_resume_command);
                 if let Some(command) = command {
                     self.send_resume_command(pane_id, &terminal_id, command);
                 }
@@ -59,12 +60,10 @@ impl App {
                 // The child already exited; its death is reported by the
                 // runtime removed here, so it is not reported again.
                 self.terminal_runtimes.remove(&terminal_id);
-                if let Some(terminal) = self.state.terminals.get_mut(&terminal_id) {
-                    if kind == LaunchKind::AgentResume {
-                        terminal.abandon_agent_resume(failure, self.clock.now);
-                    } else {
-                        terminal.restore_error = Some(failure);
-                    }
+                if kind == LaunchKind::AgentResume {
+                    self.abandon_terminal_agent_resume(&terminal_id, failure, self.clock.now);
+                } else if let Some(terminal) = self.state.terminals.get_mut(&terminal_id) {
+                    terminal.record_start_failure(failure);
                 }
                 self.state.mark_session_dirty();
                 self.state.mark_shell_projection_dirty();
@@ -93,10 +92,8 @@ impl App {
                 if kind != LaunchKind::AgentResume {
                     return false;
                 }
-                let Some(terminal) = self.state.terminals.get_mut(&terminal_id) else {
-                    return false;
-                };
-                terminal.abandon_agent_resume(
+                self.abandon_terminal_agent_resume(
+                    &terminal_id,
                     shepr_mux::terminal::RestoreFailure::resume_unavailable(
                         "the shell for the resume did not confirm that it started",
                     ),
@@ -121,11 +118,12 @@ impl App {
             .terminal_runtimes
             .get(terminal_id)
             .map(|runtime| runtime.try_send_bytes(command));
-        let Some(terminal) = self.state.terminals.get_mut(terminal_id) else {
-            return;
-        };
         match sent {
-            Some(Ok(())) => terminal.agent_resume = AgentResumeState::None,
+            Some(Ok(())) => {
+                if let Some(terminal) = self.state.terminals.get_mut(terminal_id) {
+                    terminal.clear_agent_resume();
+                }
+            }
             Some(Err(error)) => {
                 tracing::warn!(
                     pane = pane_id.raw(),
@@ -133,7 +131,8 @@ impl App {
                     %error,
                     "failed to send deferred agent resume command to shell"
                 );
-                terminal.abandon_agent_resume(
+                self.abandon_terminal_agent_resume(
+                    terminal_id,
                     shepr_mux::terminal::RestoreFailure::resume_unavailable(
                         "the resume command could not be sent to the shell",
                     ),
@@ -167,13 +166,11 @@ mod tests {
             .expect("terminal")
             .clone();
         let terminal = app.state.terminals.get_mut(&terminal_id).expect("terminal");
-        terminal.agent_resume = AgentResumeState::Planned(crate::test_support::test_codex_plan(
+        terminal.plan_agent_resume(crate::test_support::test_codex_plan(
             "unconfirmed",
             vec!["codex".into()],
         ));
-        terminal
-            .agent_resume
-            .begin_launch(Bytes::from_static(b"codex resume\r"));
+        terminal.begin_agent_resume_launch(Bytes::from_static(b"codex resume\r"));
         app.insert_idle_test_runtime(pane_id);
         (app, pane_id, terminal_id)
     }
@@ -199,9 +196,12 @@ mod tests {
         assert!(settle(&mut app, pane_id, LaunchKind::AgentResume));
 
         let terminal = &app.state.terminals[&terminal_id];
-        assert!(!terminal.agent_resume.is_pending(), "nothing left to retry");
+        assert!(
+            !terminal.agent_resume().is_pending(),
+            "nothing left to retry"
+        );
         assert!(matches!(
-            terminal.restore_error,
+            terminal.restore_error(),
             Some(shepr_mux::terminal::RestoreFailure::ResumeUnavailable { .. })
         ));
         assert!(!app.has_pending_agent_resumes());
@@ -217,8 +217,8 @@ mod tests {
         assert!(!settle(&mut app, pane_id, LaunchKind::Fresh));
 
         let terminal = &app.state.terminals[&terminal_id];
-        assert!(terminal.agent_resume.is_launching());
-        assert!(terminal.restore_error.is_none());
+        assert!(terminal.agent_resume().is_launching());
+        assert!(terminal.restore_error().is_none());
         assert!(app.terminal_runtimes.get(&terminal_id).is_some());
     }
 }

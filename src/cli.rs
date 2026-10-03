@@ -169,9 +169,9 @@ pub(crate) fn print_help() {
                 shepr_platform::logging::help_log_paths_summary(paths.data_dir())
             );
         }
-        Err(errors) => {
-            println!("Config:        unavailable ({})", errors.join("; "));
-            println!("Logs:          unavailable ({})", errors.join("; "));
+        Err(error) => {
+            println!("Config:        unavailable ({error})");
+            println!("Logs:          unavailable ({error})");
         }
     }
 }
@@ -213,12 +213,7 @@ fn run_with_paths(run: impl FnOnce(&shepr_config::AppPaths) -> CliResult<i32>) -
 }
 
 fn resolve_app_paths() -> CliResult<shepr_config::AppPaths> {
-    shepr_config::AppPaths::resolve().map_err(|diagnostics| {
-        CliError::Io(std::io::Error::other(format!(
-            "application paths could not be resolved:\n  {}",
-            diagnostics.join("\n  ")
-        )))
-    })
+    shepr_config::AppPaths::resolve().map_err(CliError::from)
 }
 
 fn send_request(paths: &shepr_config::AppPaths, request: &Request) -> CliResult<serde_json::Value> {

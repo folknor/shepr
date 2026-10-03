@@ -13,11 +13,11 @@
 
 use std::path::Path;
 
+use shepr_agent::ownership::HookClockSample;
 use shepr_api::error::{ApiError, ApiErrorCode};
 use shepr_api::schema::{Method, Request};
 use shepr_mux::pane::PaneState;
 use shepr_mux::terminal::TerminalState;
-use shepr_mux::terminal::state::HookClockSample;
 use shepr_mux::workspace::{Workspace, WorkspacePane};
 
 use crate::app::{App, AppClock, AppPolicy};
@@ -44,7 +44,13 @@ impl AgentReportHarness {
             shepr_config::ServerConfig::default(),
             paths.clone(),
         )
-        .map_err(|errors| errors.join("; "))?;
+        .map_err(|errors| {
+            errors
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("; ")
+        })?;
         let lease = shepr_mux::persist::DataDirLease::acquire(paths.data_dir())
             .map_err(|error| error.to_string())?;
         // Requests are applied directly with `apply_request`.
@@ -53,7 +59,9 @@ impl AgentReportHarness {
         let pane = shepr_core::layout::PaneId::alloc();
         let terminal_id = shepr_protocol::TerminalId::alloc();
         let mut terminal = TerminalState::new(terminal_id.clone(), root.to_path_buf());
-        terminal.set_detected_agent_process_at(agent, at.monotonic);
+        terminal
+            .ownership_mut()
+            .set_detected_agent_process_at(agent, at.monotonic);
         app.state.terminals.insert(terminal_id.clone(), terminal);
         app.state.workspaces.push(Workspace::test_from_pane(
             Some("agent-report-contract".to_owned()),

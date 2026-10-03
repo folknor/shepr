@@ -177,10 +177,9 @@ fn expect_boot_option() -> Arg {
         .help("Stop only the server process with this boot identity")
 }
 
-fn boot_id(value: &str) -> Result<String, String> {
+fn boot_id(value: &str) -> Result<shepr_protocol::BootId, String> {
     value
         .parse::<shepr_protocol::BootId>()
-        .map(|_| value.to_owned())
         .map_err(|_| format!("{value:?} is not a server boot identity"))
 }
 

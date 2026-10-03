@@ -92,11 +92,11 @@ fn launch_with_args(raw_args: &[String]) -> CliResult<i32> {
     // Resolve the typed pane markers before reading client.toml. A same-profile
     // pane is refused even when the file is broken.
     let paths = shepr_config::AppPaths::resolve_for_client()
-        .map_err(CliError::Config)?
+        .map_err(CliError::from)?
         .ok_or_else(|| CliError::Nested {
             quip: random_nested_message(),
         })?;
-    let loaded_config = load_validated_config(Ok(paths))?;
+    let loaded_config = shepr_config::load_client_validated(&paths).map_err(CliError::Config)?;
     let paths = loaded_config.paths();
 
     if !run_tui {
@@ -155,21 +155,7 @@ fn init_client_logging(paths: &shepr_config::AppPaths) -> io::Result<()> {
 }
 
 fn resolve_bridge_paths() -> CliResult<shepr_config::AppPaths> {
-    shepr_config::AppPaths::resolve().map_err(|errors| {
-        CliError::Io(io::Error::other(format!(
-            "application paths could not be resolved: {}",
-            errors.join("; ")
-        )))
-    })
-}
-
-fn load_validated_config(
-    resolved_paths: Result<shepr_config::AppPaths, Vec<String>>,
-) -> CliResult<shepr_config::ValidatedClientConfig> {
-    let paths = resolved_paths.map_err(CliError::Config)?;
-    shepr_config::load_client_validated(&paths).map_err(|diagnostics| {
-        CliError::Config(diagnostics.iter().map(ToString::to_string).collect())
-    })
+    shepr_config::AppPaths::resolve().map_err(CliError::from)
 }
 
 #[cfg(test)]

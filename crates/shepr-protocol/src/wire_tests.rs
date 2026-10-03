@@ -122,7 +122,7 @@ mod tests {
         encoded.extend(codec::to_vec(&over_cap)?);
         assert!(matches!(
             codec::from_slice_exact::<ClientMessage>(&encoded),
-            Err(CodecError::Message(message)) if message.contains("item limit")
+            Err(CodecError::LimitExceeded(error)) if error.limit.max() == MAX_INPUT_EVENT_BATCH
         ));
         Ok(())
     }
@@ -260,10 +260,10 @@ mod tests {
             Err(EndpointError::ShuttingDown),
             Err(EndpointError::StaleBoot),
             Err(EndpointError::SurfaceInactive),
-            Err(EndpointError::ResponseTooLarge {
-                size: 9_000_000,
-                limit: 8_000_000,
-            }),
+            Err(EndpointError::LimitExceeded(LimitExceeded::new(
+                Limit::new(LimitKind::EndpointResponseBytes, 8_000_000),
+                9_000_000,
+            ))),
         ] {
             let response = ServerMessage::ClientShellEndpointResponse {
                 boot_id: "1-1".into(),
@@ -288,7 +288,10 @@ mod tests {
     fn server_welcome_with_error_roundtrip() -> TestResult {
         for reason in [
             crate::HandshakeRefusal::ExpectedHello,
-            crate::HandshakeRefusal::ConnectionLimit(64),
+            crate::HandshakeRefusal::ConnectionLimit(LimitExceeded::new(
+                Limit::new(LimitKind::ConnectionCount, 64),
+                65,
+            )),
             crate::HandshakeRefusal::ServerStarting,
         ] {
             let msg = ServerMessage::EndpointWelcome(
@@ -494,7 +497,7 @@ mod tests {
     #[test]
     fn server_clipboard_roundtrip() -> TestResult {
         let msg = ServerMessage::Clipboard {
-            data: "dGVzdA==".to_owned(), // base64 "test"
+            data: b"test".to_vec(),
         };
         assert_eq!(roundtrip(&msg)?, msg);
         Ok(())
@@ -529,7 +532,10 @@ mod tests {
     #[test]
     fn client_shell_error_roundtrip() -> TestResult {
         let msg = ServerMessage::ClientShellError {
-            kind: crate::NoticeKind::PasteRejected { size: 20, max: 10 },
+            kind: crate::NoticeKind::LimitExceeded(LimitExceeded::new(
+                Limit::new(LimitKind::InputPayloadBytes, 10),
+                20,
+            )),
         };
         assert_eq!(roundtrip(&msg)?, msg);
         Ok(())
@@ -657,12 +663,12 @@ mod tests {
 
         let result: Result<ClientMessage, FramingError> = read_message(&mut buf.as_slice());
         match result {
-            Err(FramingError::Oversized { claimed, max }) => {
+            Err(FramingError::LimitExceeded(error)) => {
                 // The top bit is the continuation marker, not length.
-                assert_eq!(claimed, (u32::MAX >> 1) as usize);
-                assert_eq!(max, MAX_FRAME_SIZE);
+                assert_eq!(error.actual, (u32::MAX >> 1) as usize);
+                assert_eq!(error.limit.max(), MAX_FRAME_SIZE);
             }
-            other => panic!("expected Oversized error, got: {other:?}"),
+            other => panic!("expected a size-limit error, got: {other:?}"),
         }
     }
 
@@ -770,8 +776,8 @@ mod tests {
             read_handshake_message(&mut prefix.as_slice());
         assert!(matches!(
             result,
-            Err(FramingError::Oversized { claimed: got, max })
-                if got == claimed && max == 64 * 1024
+            Err(FramingError::LimitExceeded(error))
+                if error.actual == claimed && error.limit.max() == 64 * 1024
         ));
     }
 
@@ -1022,8 +1028,9 @@ mod tests {
         u32::try_from(len).expect("test precondition")
     }
 
-    // Clipboard is one variant-index byte followed by a 3-byte varint length for strings
-    // under 2 MiB (4 bytes from 2 MiB on).
+    // Clipboard is one variant-index byte followed by a varint item count.
+    // Data sizes just below a frame use a three-byte count; the two-frame case
+    // uses four bytes and subtracts one extra byte below.
     const CLIPBOARD_ENVELOPE: usize = 4;
     // Everything in a `paste` message but its text, measured from an empty paste so no pane id
     // or variant byte is counted by hand. The text's own length varint is one byte at length 0
@@ -1062,7 +1069,7 @@ mod tests {
         let continued = frame_len(MAX_FRAME_SIZE) | (1 << 31);
         // One byte past the cap: a full continued frame and a one-byte final one.
         let over = ServerMessage::Clipboard {
-            data: "x".repeat(MAX_FRAME_SIZE - CLIPBOARD_ENVELOPE + 1),
+            data: vec![b'x'; MAX_FRAME_SIZE - CLIPBOARD_ENVELOPE + 1],
         };
         let len = codec::encoded_len(&over).expect("test precondition");
         let frames = encode_message(&over).expect("test precondition");
@@ -1078,7 +1085,7 @@ mod tests {
         // Exactly two frames' worth: the second frame is full and final, with
         // no empty frame after it.
         let two_full = ServerMessage::Clipboard {
-            data: "x".repeat(2 * MAX_FRAME_SIZE - CLIPBOARD_ENVELOPE - 1),
+            data: vec![b'x'; 2 * MAX_FRAME_SIZE - CLIPBOARD_ENVELOPE - 1],
         };
         assert_eq!(
             codec::encoded_len(&two_full).expect("test precondition"),
@@ -1097,11 +1104,11 @@ mod tests {
     fn encode_frame_refuses_what_one_frame_cannot_carry() {
         let over_limit = paste("x".repeat(MAX_FRAME_SIZE - paste_envelope() + 1));
         match encode_frame(&over_limit) {
-            Err(FramingError::Oversized { claimed, max }) => {
-                assert_eq!(claimed, MAX_FRAME_SIZE + 1);
-                assert_eq!(max, MAX_FRAME_SIZE);
+            Err(FramingError::LimitExceeded(error)) => {
+                assert_eq!(error.actual, MAX_FRAME_SIZE + 1);
+                assert_eq!(error.limit.max(), MAX_FRAME_SIZE);
             }
-            other => panic!("expected Oversized, got {other:?}"),
+            other => panic!("expected a size-limit error, got {other:?}"),
         }
     }
 
@@ -1113,7 +1120,8 @@ mod tests {
             read_message_limited(&mut frames.as_slice(), MAX_CLIENT_MESSAGE_SIZE);
         assert!(matches!(
             result,
-            Err(FramingError::Oversized { max, .. }) if max == MAX_CLIENT_MESSAGE_SIZE
+            Err(FramingError::LimitExceeded(error))
+                if error.limit.max() == MAX_CLIENT_MESSAGE_SIZE
         ));
         let decoded: ClientMessage =
             read_message(&mut frames.as_slice()).expect("the full cap reads it");
@@ -1123,7 +1131,7 @@ mod tests {
     #[test]
     fn a_stream_ending_inside_a_split_message_is_eof() {
         let over = ServerMessage::Clipboard {
-            data: "x".repeat(MAX_FRAME_SIZE),
+            data: vec![b'x'; MAX_FRAME_SIZE],
         };
         let frames = encode_message(&over).expect("test precondition");
         let cut = &frames[..MAX_FRAME_SIZE + 4];
@@ -1192,7 +1200,7 @@ mod tests {
         let over_limit = paste("x".repeat(MAX_FRAME_SIZE));
         assert!(matches!(
             encode_frame(&over_limit),
-            Err(FramingError::Oversized { max, .. }) if max == MAX_FRAME_SIZE
+            Err(FramingError::LimitExceeded(error)) if error.limit.max() == MAX_FRAME_SIZE
         ));
     }
 

@@ -380,8 +380,8 @@ pub(super) fn current_transient_default_color_owner(shell_pid: u32) -> Option<u3
 }
 
 pub(super) fn should_restore_host_terminal_theme(
-    owner_pgid: u32,
-    shell_pid: u32,
+    owner_pgid: shepr_platform::Pgid,
+    shell_pid: shepr_platform::Pid,
     alternate_screen: bool,
     foreground_job: Option<&shepr_agent::detect::ForegroundJob>,
 ) -> bool {
@@ -393,8 +393,8 @@ pub(super) fn should_restore_host_terminal_theme(
         return false;
     };
 
-    foreground_job.process_group_id != owner_pgid
-        && foreground_job_is_shell(foreground_job, shell_pid)
+    shepr_platform::Pgid::new(foreground_job.process_group_id) != Some(owner_pgid)
+        && foreground_job_is_shell(foreground_job, shell_pid.get())
 }
 
 /// Once the program that overrode the default colours has left the
@@ -414,8 +414,18 @@ pub(super) fn restore_host_terminal_theme_if_needed(
     if core.host_terminal_theme.is_empty() {
         return false;
     }
-    if !should_restore_host_terminal_theme(owner_pgid, shell_pid, alternate_screen, foreground_job)
-    {
+    let (Some(owner_group), Some(shell_process)) = (
+        shepr_platform::Pgid::new(owner_pgid),
+        shepr_platform::Pid::new(shell_pid),
+    ) else {
+        return false;
+    };
+    if !should_restore_host_terminal_theme(
+        owner_group,
+        shell_process,
+        alternate_screen,
+        foreground_job,
+    ) {
         return false;
     }
 
@@ -923,15 +933,20 @@ mod tests {
     #[test]
     fn host_theme_restore_waits_for_shell_and_non_alternate_screen() {
         assert!(!should_restore_host_terminal_theme(
-            42,
-            7,
+            shepr_platform::Pgid::new(42).expect("owner group"),
+            shepr_platform::Pid::new(7).expect("shell pid"),
             true,
             Some(&shell_job(7)),
         ));
-        assert!(!should_restore_host_terminal_theme(42, 7, false, None));
         assert!(!should_restore_host_terminal_theme(
-            42,
-            7,
+            shepr_platform::Pgid::new(42).expect("owner group"),
+            shepr_platform::Pid::new(7).expect("shell pid"),
+            false,
+            None,
+        ));
+        assert!(!should_restore_host_terminal_theme(
+            shepr_platform::Pgid::new(42).expect("owner group"),
+            shepr_platform::Pid::new(7).expect("shell pid"),
             false,
             Some(&shepr_agent::detect::ForegroundJob {
                 process_group_id: 42,
@@ -943,15 +958,15 @@ mod tests {
             }),
         ));
         assert!(should_restore_host_terminal_theme(
-            42,
-            7,
+            shepr_platform::Pgid::new(42).expect("owner group"),
+            shepr_platform::Pid::new(7).expect("shell pid"),
             false,
             Some(&shell_job(7)),
         ));
 
         assert!(!should_restore_host_terminal_theme(
-            7,
-            7,
+            shepr_platform::Pgid::new(7).expect("owner group"),
+            shepr_platform::Pid::new(7).expect("shell pid"),
             false,
             Some(&shell_job(7)),
         ));

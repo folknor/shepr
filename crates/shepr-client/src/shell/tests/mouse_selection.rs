@@ -445,7 +445,7 @@ fn mismatched_boot_word_row_result_cancels_the_pending_gesture() {
     state.ledger.retain(|id| id == &request_id);
 
     let outcome = state.answer_request(
-        "replacement-boot",
+        &crate::tests::test_boot_id("replacement-boot"),
         &request_id,
         Err(ClientShellEndpointError::Server(
             shepr_protocol::command::EndpointError::StaleBoot,
@@ -826,12 +826,12 @@ fn double_click_drag_resize_cancels_pending_word_lookup() {
 #[test]
 fn double_click_drag_autoscroll_keeps_absolute_word_anchor() {
     let mut state = word_drag_state(false);
-    state.hits.panes[0].scroll = Some(shepr_termio::ScrollMetrics {
-        max_offset_from_bottom: 10,
-        offset_from_bottom: 5,
-        viewport_rows: 3,
-        history_origin: shepr_vt::AbsRow(0),
-    });
+    state.hits.panes[0].scroll = Some(shepr_termio::ScrollMetrics::new(
+        5,
+        10,
+        3,
+        shepr_vt::AbsRow(0),
+    ));
     let initial = start_word_drag(&mut state);
     word_row_reply(&mut state, &initial, "alpha bravo charlie");
     word_drag_mouse(&mut state, MouseEventKind::Drag(MouseButton::Left), 0, 14);
@@ -875,12 +875,12 @@ fn pane_content_updates_preserve_live_ranges_until_geometry_or_screen_changes() 
         let mut pane_surface = surface();
         pane_surface.surface_revision = shepr_protocol::SurfaceRevision::new(surface_revision);
         pane_surface.panes[0].content_revision = content_revision;
-        pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics {
-            offset_from_bottom: 0,
-            max_offset_from_bottom: 11,
-            viewport_rows: 2,
-            history_origin: shepr_vt::AbsRow(0),
-        });
+        pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics::new(
+            0,
+            11,
+            2,
+            shepr_vt::AbsRow(0),
+        ));
         pane_surface.panes[0].alternate_screen_active = alternate_screen_active;
         pane_surface
     };
@@ -940,11 +940,13 @@ fn pane_content_updates_preserve_live_ranges_until_geometry_or_screen_changes() 
     // The selected row can leave the viewport during a drag. A later patch,
     // including an in-flight content revision, must keep that absolute range.
     let mut scrolled = surface_at(4, 5, true);
-    scrolled.panes[0]
-        .scroll
-        .as_mut()
-        .expect("test precondition")
-        .offset_from_bottom = 2;
+    {
+        let metrics = scrolled.panes[0]
+            .scroll
+            .as_mut()
+            .expect("test precondition");
+        *metrics = metrics.with_offset(2);
+    }
     assert!(matches!(
         state.apply_pane_surface_patch(&shepr_protocol::PaneSurfacePatch {
             boot_id: scrolled.boot_id,

@@ -347,14 +347,25 @@ mod tests {
                 1,
                 &boot_a(),
                 &request_a(),
-                Err(EndpointError::ResponseTooLarge { size: 9, limit: 8 }),
+                Err(EndpointError::LimitExceeded(
+                    shepr_protocol::LimitExceeded::new(
+                        shepr_protocol::Limit::new(
+                            shepr_protocol::LimitKind::EndpointResponseBytes,
+                            8,
+                        ),
+                        9,
+                    ),
+                )),
             )
             .expect("test precondition");
         assert!(matches!(
             completed.result,
             Err(ClientShellEndpointError::Server(
-                EndpointError::ResponseTooLarge { size: 9, limit: 8 }
-            ))
+                EndpointError::LimitExceeded(exceeded)
+            )) if exceeded == shepr_protocol::LimitExceeded::new(
+                shepr_protocol::Limit::new(shepr_protocol::LimitKind::EndpointResponseBytes, 8),
+                9,
+            )
         ));
     }
 

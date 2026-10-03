@@ -76,7 +76,8 @@ async fn full_internal_event_queue_eventually_applies_working_to_idle_transition
             .terminals
             .get(&terminal_id)
             .expect("test precondition")
-            .state,
+            .ownership()
+            .state(),
         AgentState::Working
     );
 
@@ -129,7 +130,8 @@ async fn full_internal_event_queue_eventually_applies_working_to_idle_transition
             .terminals
             .get(&terminal_id)
             .expect("test precondition")
-            .state
+            .ownership()
+            .state()
             == AgentState::Idle
         {
             break;
@@ -144,7 +146,8 @@ async fn full_internal_event_queue_eventually_applies_working_to_idle_transition
             .terminals
             .get(&terminal_id)
             .expect("test precondition")
-            .state,
+            .ownership()
+            .state(),
         AgentState::Idle,
         "Working to Idle should still apply after temporary queue pressure"
     );

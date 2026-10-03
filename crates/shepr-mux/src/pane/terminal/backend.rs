@@ -388,10 +388,7 @@ impl PaneTerminal {
         let synchronized_output_before = core
             .terminal
             .mode_get(shepr_vt::DecMode::SynchronizedOutput);
-        let offset_from_bottom = core.terminal.scrollbar();
-        let offset_from_bottom = offset_from_bottom
-            .total
-            .saturating_sub(offset_from_bottom.offset + offset_from_bottom.len);
+        let offset_from_bottom = core.terminal.scrollbar().offset_from_bottom;
         let resize_recovery_probe_lines = usize::from(rows)
             .saturating_mul(8)
             .max(DEFAULT_DETECTION_ROWS);
@@ -418,7 +415,9 @@ impl PaneTerminal {
             // introduces just one new row at the bottom.
             let viewport = core.terminal.scrollbar();
             let mut scratch = String::new();
-            let viewport_has_text = (viewport.offset..viewport.offset.saturating_add(viewport.len))
+            let viewport_start = viewport.viewport_start();
+            let viewport_has_text = (viewport_start
+                ..viewport_start.saturating_add(viewport.viewport_rows))
                 .any(|row| {
                     terminal_screen_row_has_text(&core.terminal, ScreenRow(row), &mut scratch)
                 });
@@ -428,9 +427,10 @@ impl PaneTerminal {
                     let entering_row = core
                         .terminal
                         .scrollbar()
-                        .offset
-                        .saturating_add(viewport.len);
-                    core.terminal.scroll_viewport_delta(1);
+                        .viewport_start()
+                        .saturating_add(viewport.viewport_rows);
+                    core.terminal
+                        .scroll_viewport_delta(shepr_vt::ScrollTowards::Newer(1));
                     if terminal_screen_row_has_text(
                         &core.terminal,
                         ScreenRow(entering_row),
@@ -465,16 +465,14 @@ impl PaneTerminal {
     }
 
     pub(crate) fn scroll_up(&self, lines: usize) -> SurfaceChange {
-        let lines = isize::try_from(lines).unwrap_or(isize::MAX);
         self.update_scroll_position("scroll up", |terminal| {
-            terminal.scroll_viewport_delta(-lines);
+            terminal.scroll_viewport_delta(shepr_vt::ScrollTowards::Older(lines));
         })
     }
 
     pub(crate) fn scroll_down(&self, lines: usize) -> SurfaceChange {
-        let lines = isize::try_from(lines).unwrap_or(isize::MAX);
         self.update_scroll_position("scroll down", |terminal| {
-            terminal.scroll_viewport_delta(lines);
+            terminal.scroll_viewport_delta(shepr_vt::ScrollTowards::Newer(lines));
         })
     }
 

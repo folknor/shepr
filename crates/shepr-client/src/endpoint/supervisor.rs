@@ -971,7 +971,12 @@ mod tests {
     fn a_full_server_refusal_is_retried_and_names_the_limit() {
         let full = handshake_error(
             crate::ClientError::HandshakeRejected {
-                error: shepr_protocol::HandshakeRefusal::ConnectionLimit(64),
+                error: shepr_protocol::HandshakeRefusal::ConnectionLimit(
+                    shepr_protocol::LimitExceeded::new(
+                        shepr_protocol::Limit::new(shepr_protocol::LimitKind::ConnectionCount, 64),
+                        65,
+                    ),
+                ),
             },
             None,
         );
@@ -1011,10 +1016,12 @@ mod tests {
         );
         assert!(!shepr_remote::SshFailureDiagnostic::from_error(&shutdown).needs_attention());
         let malformed = handshake_error(
-            crate::ClientError::Protocol(shepr_protocol::FramingError::Oversized {
-                claimed: 2,
-                max: 1,
-            }),
+            crate::ClientError::Protocol(shepr_protocol::FramingError::LimitExceeded(
+                shepr_protocol::LimitExceeded::new(
+                    shepr_protocol::Limit::new(shepr_protocol::LimitKind::MessageBytes, 1),
+                    2,
+                ),
+            )),
             None,
         );
         assert!(shepr_remote::SshFailureDiagnostic::from_error(&malformed).needs_attention());

@@ -220,14 +220,7 @@ pub(super) fn render_pane_surface(
                 rect: pane.rect.into(),
                 inner_rect: pane.inner_rect.into(),
                 scrollbar_rect: pane.scrollbar_rect.map(Into::into),
-                scroll: runtime
-                    .and_then(shepr_mux::pane::PaneRuntime::scroll_metrics)
-                    .map(|metrics| shepr_protocol::PaneSurfaceScrollMetrics {
-                        offset_from_bottom: metrics.offset_from_bottom as u64,
-                        max_offset_from_bottom: metrics.max_offset_from_bottom as u64,
-                        viewport_rows: metrics.viewport_rows as u64,
-                        history_origin: metrics.history_origin,
-                    }),
+                scroll: runtime.and_then(shepr_mux::pane::PaneRuntime::scroll_metrics),
                 focused: pane.is_focused,
                 mouse_reporting,
                 sgr_pixel_mouse,

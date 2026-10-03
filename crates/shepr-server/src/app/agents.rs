@@ -30,11 +30,17 @@ impl App {
         Some(SnapshotAgent {
             pane_id: self.public_pane_id(ws_idx, pane_id)?,
             workspace_id: self.public_workspace_id(ws_idx)?,
-            agent: terminal.effective_agent_label().map(str::to_string),
-            terminal_title: terminal.terminal_title.clone(),
+            agent: terminal
+                .ownership()
+                .effective_agent_label()
+                .map(str::to_string),
+            terminal_title: terminal.terminal_title().map(str::to_owned),
             terminal_title_stripped: terminal.terminal_title_stripped(),
-            agent_status: super::api_helpers::pane_agent_status(terminal.state),
-            state_change_seq: terminal.last_agent_state_change_seq.unwrap_or(0),
+            agent_status: super::api_helpers::pane_agent_status(terminal.ownership().state()),
+            state_change_seq: terminal
+                .ownership()
+                .last_agent_state_change_seq()
+                .unwrap_or(0),
         })
     }
 }

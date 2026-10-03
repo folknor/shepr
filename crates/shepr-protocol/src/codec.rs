@@ -71,8 +71,8 @@ pub enum CodecError {
     InvalidUtf8,
     /// A length prefix claims more items or bytes than the input can hold.
     LengthExceedsInput { len: u64, remaining: usize },
-    /// A sequence or map exceeds the codec's logical item limit.
-    CollectionLimitExceeded { len: u64, max: usize },
+    /// A sequence or map exceeds its named item limit.
+    LimitExceeded(crate::LimitExceeded),
     /// A sequence or map was serialized without a known length.
     UnknownLength,
     /// A struct field was skipped (`skip_serializing_if`), which a positional
@@ -115,9 +115,7 @@ impl fmt::Display for CodecError {
                     "length prefix {len} exceeds the {remaining} remaining input bytes"
                 )
             }
-            Self::CollectionLimitExceeded { len, max } => {
-                write!(f, "collection length {len} exceeds the item limit {max}")
-            }
+            Self::LimitExceeded(error) => write!(f, "{error}"),
             Self::UnknownLength => f.write_str("sequence or map length must be known"),
             Self::SkippedField => f.write_str("skipped struct fields are not supported"),
             Self::DepthLimitExceeded => f.write_str("nesting depth limit exceeded"),
@@ -139,14 +137,33 @@ impl std::error::Error for CodecError {}
 
 impl ser::Error for CodecError {
     fn custom<T: fmt::Display>(msg: T) -> Self {
-        Self::Message(msg.to_string())
+        let message = msg.to_string();
+        decode_bounded_vec_error(&message).unwrap_or(Self::Message(message))
     }
 }
 
 impl de::Error for CodecError {
     fn custom<T: fmt::Display>(msg: T) -> Self {
-        Self::Message(msg.to_string())
+        let message = msg.to_string();
+        decode_bounded_vec_error(&message).unwrap_or(Self::Message(message))
     }
+}
+
+const BOUNDED_VEC_ERROR_PREFIX: &str = "\u{1f}shepr-limit:collection-items:";
+
+fn bounded_vec_error_message(actual: usize, max: usize) -> String {
+    format!("{BOUNDED_VEC_ERROR_PREFIX}{actual}:{max}")
+}
+
+fn decode_bounded_vec_error(message: &str) -> Option<CodecError> {
+    let pair = message.strip_prefix(BOUNDED_VEC_ERROR_PREFIX)?;
+    let (actual, max) = pair.split_once(':')?;
+    let actual = actual.parse().ok()?;
+    let max = max.parse().ok()?;
+    Some(CodecError::LimitExceeded(crate::LimitExceeded::new(
+        crate::Limit::new(crate::LimitKind::CollectionItems, max),
+        actual,
+    )))
 }
 
 /// Encodes `value` into `writer` and returns the number of bytes written.
@@ -194,9 +211,15 @@ pub fn from_slice_exact<'de, T: Deserialize<'de>>(input: &'de [u8]) -> Result<T,
 
 /// Serializes a vector after checking its field-specific logical item limit.
 ///
-/// The codec applies its own general collection limit too; this adapter lets
-/// wire fields state a tighter rule without changing their in-memory `Vec`
-/// type.
+/// The codec applies its own general collection limit too; this adapter keeps
+/// each wire field's tighter cap explicit while preserving its in-memory
+/// `Vec` type. Serde's generic error API cannot return `CodecError` directly,
+/// so the codec recognizes the private marker used for this specific limit.
+/// These adapters stay beside public `Vec` fields because those fields are
+/// built and projected as vectors throughout the public protocol API. Moving
+/// the cap into a `BoundedVec` field type requires migrating those builders
+/// and projections with the type change; silently changing only the wire
+/// declarations would leave existing callers unable to construct messages.
 pub fn serialize_bounded_vec<const MAX: usize, T, S>(
     values: &Vec<T>,
     serializer: S,
@@ -208,9 +231,9 @@ where
     use ser::SerializeSeq as _;
 
     if values.len() > MAX {
-        return Err(<S::Error as ser::Error>::custom(format!(
-            "collection length {} exceeds the item limit {MAX}",
-            values.len()
+        return Err(<S::Error as ser::Error>::custom(bounded_vec_error_message(
+            values.len(),
+            MAX,
         )));
     }
     let mut sequence = serializer.serialize_seq(Some(values.len()))?;
@@ -242,15 +265,16 @@ where
             if let Some(len) = sequence.size_hint()
                 && len > MAX
             {
-                return Err(<A::Error as de::Error>::custom(format!(
-                    "collection length {len} exceeds the item limit {MAX}"
+                return Err(<A::Error as de::Error>::custom(bounded_vec_error_message(
+                    len, MAX,
                 )));
             }
             let mut values = Vec::with_capacity(sequence.size_hint().unwrap_or(0).min(MAX));
             while let Some(value) = sequence.next_element()? {
                 if values.len() == MAX {
-                    return Err(<A::Error as de::Error>::custom(format!(
-                        "collection length exceeds the item limit {MAX}"
+                    return Err(<A::Error as de::Error>::custom(bounded_vec_error_message(
+                        MAX.saturating_add(1),
+                        MAX,
                     )));
                 }
                 values.push(value);
@@ -385,10 +409,10 @@ impl<S: Sink> Encoder<S> {
 
     fn put_collection_len(&mut self, len: usize) -> Result<(), CodecError> {
         if len > MAX_COLLECTION_ITEMS {
-            return Err(CodecError::CollectionLimitExceeded {
-                len: len_to_u64(len)?,
-                max: MAX_COLLECTION_ITEMS,
-            });
+            return Err(CodecError::LimitExceeded(crate::LimitExceeded::new(
+                crate::Limit::new(crate::LimitKind::CollectionItems, MAX_COLLECTION_ITEMS),
+                len,
+            )));
         }
         self.put_len(len)
     }
@@ -740,10 +764,10 @@ impl<'de> Decoder<'de> {
     fn read_collection_len(&mut self) -> Result<usize, CodecError> {
         let len = self.read_len()?;
         if len > MAX_COLLECTION_ITEMS {
-            return Err(CodecError::CollectionLimitExceeded {
-                len: u64::try_from(len).map_err(|_| CodecError::SizeOverflow)?,
-                max: MAX_COLLECTION_ITEMS,
-            });
+            return Err(CodecError::LimitExceeded(crate::LimitExceeded::new(
+                crate::Limit::new(crate::LimitKind::CollectionItems, MAX_COLLECTION_ITEMS),
+                len,
+            )));
         }
         Ok(len)
     }
@@ -1514,21 +1538,21 @@ mod tests {
         encoded_vec.resize(encoded_vec.len() + over_limit, 0);
         assert!(matches!(
             from_slice_exact::<Vec<()>>(&encoded_vec),
-            Err(CodecError::CollectionLimitExceeded { max, .. })
-                if max == MAX_COLLECTION_ITEMS
+            Err(CodecError::LimitExceeded(error))
+                if error.limit.max() == MAX_COLLECTION_ITEMS
         ));
         assert!(matches!(
             to_vec(&vec![(); over_limit]),
-            Err(CodecError::CollectionLimitExceeded { max, .. })
-                if max == MAX_COLLECTION_ITEMS
+            Err(CodecError::LimitExceeded(error))
+                if error.limit.max() == MAX_COLLECTION_ITEMS
         ));
 
         let mut encoded_map = to_vec(&u64::try_from(over_limit)?)?;
         encoded_map.resize(encoded_map.len() + over_limit * 2, 0);
         assert!(matches!(
             from_slice_exact::<BTreeMap<u8, u8>>(&encoded_map),
-            Err(CodecError::CollectionLimitExceeded { max, .. })
-                if max == MAX_COLLECTION_ITEMS
+            Err(CodecError::LimitExceeded(error))
+                if error.limit.max() == MAX_COLLECTION_ITEMS
         ));
 
         let oversized_field = FieldBounded {
@@ -1536,11 +1560,11 @@ mod tests {
         };
         assert!(matches!(
             to_vec(&oversized_field),
-            Err(CodecError::Message(message)) if message.contains("item limit 2")
+            Err(CodecError::LimitExceeded(error)) if error.limit.max() == 2
         ));
         assert!(matches!(
             from_slice_exact::<FieldBounded>(&[3, 1, 2, 3]),
-            Err(CodecError::Message(message)) if message.contains("item limit 2")
+            Err(CodecError::LimitExceeded(error)) if error.limit.max() == 2
         ));
         Ok(())
     }

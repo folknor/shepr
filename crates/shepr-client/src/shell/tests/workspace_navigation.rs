@@ -51,12 +51,12 @@ fn pane_scrollbar_click_clears_a_workspace_preview_when_leaving_navigation() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(workspaces(2)));
     let mut pane_surface = surface();
-    pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics {
-        offset_from_bottom: 0,
-        max_offset_from_bottom: 10,
-        viewport_rows: 2,
-        history_origin: shepr_vt::AbsRow(0),
-    });
+    pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics::new(
+        0,
+        10,
+        2,
+        shepr_vt::AbsRow(0),
+    ));
     pane_surface.panes[0].scrollbar_rect = Some(SurfaceRect {
         x: 3,
         y: 0,
@@ -370,12 +370,12 @@ fn empty_workspace_navigation_enter_exits_without_focusing() {
 fn foreign_workspace_preview_blocks_paste_into_hidden_copy_search() {
     let (mut state, _) = state_with_remote();
     let mut pane_surface = surface();
-    pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics {
-        offset_from_bottom: 0,
-        max_offset_from_bottom: 20,
-        viewport_rows: 2,
-        history_origin: shepr_vt::AbsRow(0),
-    });
+    pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics::new(
+        0,
+        20,
+        2,
+        shepr_vt::AbsRow(0),
+    ));
     state.receive_pane_surface(pane_surface);
     state.compose(100, 28).expect("test precondition");
     assert!(state.enter_copy_mode(&mut ClientShellInput::default()));

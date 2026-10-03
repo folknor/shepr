@@ -356,7 +356,12 @@ mod tests {
             }
         }
         assert!(matches!(
-            hello_write_error(shepr_protocol::FramingError::Oversized { claimed: 2, max: 1 }),
+            hello_write_error(shepr_protocol::FramingError::LimitExceeded(
+                shepr_protocol::LimitExceeded::new(
+                    shepr_protocol::Limit::new(shepr_protocol::LimitKind::MessageBytes, 1),
+                    2,
+                ),
+            )),
             ClientError::EndpointSetup(_)
         ));
     }

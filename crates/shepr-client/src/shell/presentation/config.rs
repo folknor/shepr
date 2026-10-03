@@ -15,9 +15,7 @@ impl ClientShellState {
             return;
         };
         let preferences = preferences::ClientChromePreferences {
-            agent_panel_sort: self
-                .agent_panel_sort_manual
-                .then_some(self.config.agent_panel_sort),
+            agent_panel_sort: self.agent_panel_sort_chrome.remembered_value(),
             ..self.chrome.preferences()
         }
         // A value client.toml sets is only a session change: storing it would
@@ -49,11 +47,11 @@ impl ClientShellConfig {
         Self {
             sidebar_width: config.sidebar_width(),
             sidebar_bounds: config.sidebar_bounds(),
-            sidebar_start_collapsed: config.sidebar_start_collapsed,
+            sidebar_start_collapsed: *config.sidebar_start_collapsed.value(),
             sidebar_collapsed_mode: config.sidebar_collapsed_mode,
             spaces: config.sidebar.spaces.clone(),
             agents: config.sidebar.agents.clone(),
-            agent_panel_sort: config.agent_panel_sort,
+            agent_panel_sort: *config.agent_panel_sort.value(),
             status_indicators: config.status_indicators,
             copy_on_select: config.copy_on_select,
             palette,
@@ -119,7 +117,12 @@ impl ClientShellConfig {
     pub(crate) fn initial_surface_size(&self, cols: u16, rows: u16) -> ClientSurfaceSize {
         let chrome = self.initial_chrome();
         let surface = self
-            .layout(cols, rows, chrome.collapsed, chrome.width)
+            .layout(
+                cols,
+                rows,
+                chrome.collapsed.value(),
+                chrome.width.value().value(),
+            )
             .pane_surface;
         ClientSurfaceSize {
             cols: surface.width.max(1),
@@ -139,7 +142,7 @@ impl ClientShellConfig {
         let validated = shepr_config::ValidatedClientConfig::test_from_config(config.clone(), None);
         Self::from_config_with_configured(
             validated.ui(),
-            preferences::ConfiguredChrome::default(),
+            preferences::ConfiguredChrome::from_validated_config(&validated),
             validated.palette().clone(),
             validated.live_keybinds(),
         )
@@ -173,9 +176,17 @@ mod tests {
         let initial = config.initial_surface_size(100, 30);
         let state = ClientShellState::new(config);
         assert_eq!(initial, state.surface_size(100, 30));
-        assert_eq!(state.chrome.width(), initial_chrome.width);
-        assert_eq!(state.chrome.collapsed(), initial_chrome.collapsed);
-        assert_eq!(state.chrome.split(), initial_chrome.split);
+        assert_eq!(state.chrome.width(), initial_chrome.width.value().value());
+        assert_eq!(state.chrome.collapsed(), initial_chrome.collapsed.value());
+        assert_eq!(state.chrome.split(), initial_chrome.split.value());
+        assert_eq!(
+            state.chrome.width_origin(),
+            crate::shell::sidebar::chrome::ChromeOrigin::Remembered
+        );
+        assert_eq!(
+            state.chrome.collapsed_origin(),
+            crate::shell::sidebar::chrome::ChromeOrigin::Remembered
+        );
         std::fs::remove_file(path).expect("remove endpoint chrome");
     }
 
@@ -195,7 +206,8 @@ mod tests {
         .expect("persist endpoint chrome");
 
         let mut values = ClientConfig::default();
-        values.ui.sidebar_width = 24;
+        values.ui.sidebar_width = Some(24);
+        values.ui.agent_panel_sort = Some(shepr_config::AgentPanelSortConfig::Spaces);
         let config = shepr_config::ValidatedClientConfig::test_from_config(
             values,
             Some("[ui]\nsidebar_width = 24\nagent_panel_sort = \"spaces\"\n"),
@@ -206,18 +218,40 @@ mod tests {
 
         // Set keys win; the unset one keeps the remembered toggle.
         assert_eq!(state.chrome.width(), 24);
+        assert_eq!(
+            state.chrome.width_origin(),
+            crate::shell::sidebar::chrome::ChromeOrigin::Configured
+        );
         assert!(state.chrome.preferences().sidebar_width.is_none());
+        assert_eq!(
+            state.agent_panel_sort_chrome.origin(),
+            crate::shell::sidebar::chrome::ChromeOrigin::Configured
+        );
         assert_eq!(
             state.config.agent_panel_sort,
             shepr_config::AgentPanelSortConfig::Spaces
         );
         assert!(state.chrome.collapsed());
+        assert_eq!(
+            state.chrome.collapsed_origin(),
+            crate::shell::sidebar::chrome::ChromeOrigin::Remembered
+        );
 
         // A manual change still applies for the session but is not stored
         // for a value the config owns.
         state.chrome.set_width(30);
-        state.config.agent_panel_sort = shepr_config::AgentPanelSortConfig::Priority;
-        state.agent_panel_sort_manual = true;
+        assert_eq!(
+            state.chrome.width_origin(),
+            crate::shell::sidebar::chrome::ChromeOrigin::Manual
+        );
+        state
+            .agent_panel_sort_chrome
+            .set_manual(shepr_config::AgentPanelSortConfig::Priority);
+        assert_eq!(
+            state.agent_panel_sort_chrome.origin(),
+            crate::shell::sidebar::chrome::ChromeOrigin::Manual
+        );
+        state.config.agent_panel_sort = state.agent_panel_sort_chrome.value();
         state.persist_chrome_preferences(&mut ClientShellInput::default());
         let stored = preferences::load(&path).expect("stored chrome");
         assert_eq!(stored.sidebar_width, None);

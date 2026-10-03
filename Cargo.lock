@@ -1304,7 +1304,6 @@ dependencies = [
 name = "shepr-client"
 version = "0.1.0"
 dependencies = [
- "base64 0.23.1",
  "crossterm",
  "ctrlc",
  "ratatui",
@@ -1405,7 +1404,6 @@ version = "0.1.0"
 dependencies = [
  "ratatui",
  "serde",
- "shepr-config",
  "shepr-core",
  "shepr-test-support",
  "shepr-vt",
@@ -1444,7 +1442,6 @@ dependencies = [
 name = "shepr-server"
 version = "0.1.0"
 dependencies = [
- "base64 0.23.1",
  "bytes",
  "crossterm",
  "ctrlc",

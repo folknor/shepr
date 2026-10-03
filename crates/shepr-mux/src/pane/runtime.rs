@@ -316,13 +316,15 @@ fn remembered_cwd_for_save(
 }
 
 fn follow_cwd_from_processes(
-    shell_pid: Option<u32>,
-    foreground_pgid: Option<u32>,
+    shell_pid: Option<shepr_platform::Pid>,
+    foreground_pgid: Option<shepr_platform::Pgid>,
     pane_cwd: impl FnOnce() -> Option<std::path::PathBuf>,
-    foreground_group_cwd: impl FnOnce(u32) -> Option<std::path::PathBuf>,
+    foreground_group_cwd: impl FnOnce(shepr_platform::Pgid) -> Option<std::path::PathBuf>,
 ) -> Option<std::path::PathBuf> {
     match (shell_pid, foreground_pgid) {
-        (Some(shell_pid), Some(foreground_pgid)) if shell_pid != foreground_pgid => {
+        (Some(shell_pid), Some(foreground_pgid))
+            if shepr_platform::Pgid::led_by(shell_pid) != foreground_pgid =>
+        {
             foreground_group_cwd(foreground_pgid).or_else(pane_cwd)
         }
         _ => pane_cwd(),
@@ -835,7 +837,7 @@ impl PtySetup<'_> {
         };
         let pid = child.id();
         crate::logging::pane_spawned(pane_id.raw(), pid);
-        let child_liveness = Arc::new(ChildLiveness::launching(pid, child.handle()));
+        let child_liveness = Arc::new(ChildLiveness::launching(child.process_id(), child.handle()));
         let io: Box<dyn ChildIo> = {
             // Failure cleanup and read effects use the same child identity.
             let startup_child_liveness = Arc::clone(&child_liveness);
@@ -1115,7 +1117,7 @@ impl PaneRuntime {
             terminal: Arc::new(PaneTerminal::new(terminal)),
             io,
             current_size: Cell::new(shepr_core::geometry::PaneGeometry::new(cols, rows, 0, 0)),
-            child_liveness: Arc::new(ChildLiveness::new(0, None)),
+            child_liveness: Arc::new(ChildLiveness::absent()),
             // No child, so no teardown is ever started through this tracker.
             teardown_tracker: Arc::default(),
             exit_arbiter: Arc::default(),
@@ -1151,6 +1153,11 @@ impl PaneRuntime {
         if active && !previous {
             self.detect_reset_notify.notify_one();
         }
+    }
+
+    /// The full-lifecycle authority the detector task currently reads.
+    pub fn full_lifecycle_authority_active(&self) -> bool {
+        self.full_lifecycle_authority_active.load(Ordering::Acquire)
     }
 
     pub fn grid_size(&self) -> shepr_core::geometry::GridSize {
@@ -1595,10 +1602,12 @@ impl PaneRuntime {
     /// the foreground; a foreground job's group leader takes precedence while
     /// a different group owns the terminal.
     pub fn follow_cwd(&self) -> Option<std::path::PathBuf> {
-        let shell_pid = self.child_liveness.live_pid();
+        let shell_pid = self.child_liveness.live_process_id();
         let foreground_pgid = shell_pid.and_then(|pid| {
-            let foreground_pgid = shepr_agent::detect::foreground_process_group_id(pid);
-            (self.child_liveness.live_pid() == Some(pid))
+            let foreground_pgid = shepr_platform::ProcStat::read(pid)
+                .ok()
+                .and_then(|stat| stat.foreground_group);
+            (self.child_liveness.live_process_id() == Some(pid))
                 .then_some(foreground_pgid)
                 .flatten()
         });
@@ -1606,9 +1615,9 @@ impl PaneRuntime {
             shell_pid,
             foreground_pgid,
             || self.cwd(),
-            readlink_process_cwd,
+            |group| readlink_process_cwd(group.leader_pid().get()),
         );
-        if shell_pid.is_some_and(|pid| self.child_liveness.live_pid() != Some(pid)) {
+        if shell_pid.is_some_and(|pid| self.child_liveness.live_process_id() != Some(pid)) {
             None
         } else {
             cwd
@@ -2267,8 +2276,8 @@ mod tests {
         let read_foreground_group = Cell::new(false);
 
         let cwd = follow_cwd_from_processes(
-            Some(42),
-            Some(42),
+            shepr_platform::Pid::new(42),
+            shepr_platform::Pgid::new(42),
             || ReportedCwd::resolve(Some(&reported), Some(shell_cwd)),
             |_| {
                 read_foreground_group.set(true);
@@ -2416,7 +2425,7 @@ mod tests {
                 pane_id,
                 crate::events::RuntimeGeneration::alloc(),
             ),
-            child_liveness: Arc::new(ChildLiveness::new(0, None)),
+            child_liveness: Arc::new(ChildLiveness::absent()),
             sync_timeout_render: SyncTimeoutRender::default(),
             deferred_effect_order: Arc::default(),
             timer_writer: std::sync::OnceLock::new(),
@@ -2540,7 +2549,7 @@ mod tests {
         let tracker = Arc::new(PaneTeardownTracker::default());
         shutdown_pane_processes(
             shepr_test_fixtures::fixed_pane_id(1),
-            Arc::new(ChildLiveness::new(0, None)),
+            Arc::new(ChildLiveness::absent()),
             &tracker,
         );
         assert!(tracker.wait(std::time::Duration::ZERO));
@@ -2911,7 +2920,7 @@ mod tests {
             terminal,
             io: Box::new(io),
             current_size: Cell::new(shepr_core::geometry::PaneGeometry::new(24, 80, 0, 0)),
-            child_liveness: Arc::new(ChildLiveness::new(0, None)),
+            child_liveness: Arc::new(ChildLiveness::absent()),
             teardown_tracker: Arc::default(),
             exit_arbiter: Arc::default(),
             cwd: Arc::default(),
@@ -2939,7 +2948,7 @@ mod tests {
             terminal,
             io: Box::new(io),
             current_size: Cell::new(shepr_core::geometry::PaneGeometry::new(24, 80, 0, 0)),
-            child_liveness: Arc::new(ChildLiveness::new(0, None)),
+            child_liveness: Arc::new(ChildLiveness::absent()),
             teardown_tracker: Arc::default(),
             exit_arbiter: Arc::default(),
             cwd: Arc::default(),

@@ -64,28 +64,33 @@ impl App {
         let Some(pane) = self.lookup_runtime(ws_idx, pane_id) else {
             return Err(self.detect_terminal_unavailable_error(ws_idx, pane_id, &target.pane_id));
         };
-        if let Some(authority) = terminal.hook_authority().filter(|authority| {
-            let full_lifecycle = authority.origin.is_full_lifecycle();
-            (!full_lifecycle || terminal.full_lifecycle_hook_authority_active())
-                // A visible blocker can override a non-blocked hook report.
-                // In that case the screen rules are the explanation we need.
-                && terminal.state == authority.state
+        let owner = terminal.ownership().state_owner();
+        if let Some(authority) = terminal.ownership().hook_authority().filter(|_| {
+            matches!(
+                owner,
+                shepr_agent::ownership::EffectiveStateSource::FullLifecycleHook
+                    | shepr_agent::ownership::EffectiveStateSource::Hook
+            )
         }) {
-            let full_lifecycle = authority.origin.is_full_lifecycle();
-            let skip_reason = if full_lifecycle {
-                ScreenDetectionSkipReason::FullLifecycleHookAuthority
-            } else {
-                ScreenDetectionSkipReason::HookAuthority
-            };
+            let skip_reason =
+                if owner == shepr_agent::ownership::EffectiveStateSource::FullLifecycleHook {
+                    ScreenDetectionSkipReason::FullLifecycleHookAuthority
+                } else {
+                    ScreenDetectionSkipReason::HookAuthority
+                };
             let explain = DetectionExplanation::hook_authority(
                 authority.origin.label(),
-                terminal.state,
+                terminal.ownership().state(),
                 authority.origin.source().as_str(),
                 skip_reason,
             );
             return success(ResponseResult::DetectExplain { explain });
         }
-        let Some(agent) = terminal.effective_known_agent().or(terminal.detected_agent) else {
+        let Some(agent) = terminal
+            .ownership()
+            .effective_known_agent()
+            .or(terminal.ownership().detected_agent())
+        else {
             return failure(
                 ApiErrorCode::AgentExplainUnavailable,
                 format!(
@@ -121,7 +126,7 @@ impl App {
             .get(ws_idx)
             .and_then(|workspace| workspace.terminal_id(pane_id))
             .and_then(|terminal_id| self.state.terminals.get(terminal_id))
-            .and_then(|terminal| terminal.restore_error.as_ref());
+            .and_then(|terminal| terminal.restore_error());
         let message = match restore_failure {
             Some(failure) => format!("pane {public_pane_id} has no running terminal: {failure}"),
             None => format!("pane {public_pane_id} has no running terminal"),
@@ -166,7 +171,8 @@ mod tests {
             .terminals
             .get_mut(&terminal_id)
             .expect("test precondition")
-            .detected_agent = Some(Agent::Codex);
+            .ownership_mut()
+            .set_detected_agent_process_at(Agent::Codex, std::time::Instant::now());
         let runtime = shepr_mux::pane::PaneRuntime::test_with_screen_bytes(
             80,
             24,
@@ -202,7 +208,8 @@ mod tests {
             .terminals
             .get_mut(&terminal_id)
             .expect("test precondition")
-            .detected_agent = Some(Agent::Codex);
+            .ownership_mut()
+            .set_detected_agent_process_at(Agent::Codex, std::time::Instant::now());
         let runtime =
             shepr_mux::pane::PaneRuntime::test_with_screen_bytes(80, 24, b"captured screen");
         runtime.test_process_pty_bytes(b"\x1b]2;Action Required\x1b\\\x1b]9;4;3;\x1b\\");
@@ -325,7 +332,7 @@ mod tests {
             .get_mut(&terminal_id)
             .expect("test precondition");
         terminal.set_detected_state(Some(Agent::Codex), AgentState::Idle);
-        terminal.restore_error = Some(shepr_mux::terminal::RestoreFailure::shell_start_failed(
+        terminal.record_start_failure(shepr_mux::terminal::RestoreFailure::shell_start_failed(
             &std::io::Error::from(std::io::ErrorKind::NotFound),
         ));
         let pane = app
@@ -374,7 +381,7 @@ mod tests {
         )
         .expect("test precondition");
         terminal.set_detected_state(Some(Agent::Omp), AgentState::Idle);
-        terminal.set_persisted_agent_session(
+        terminal.ownership_mut().set_persisted_agent_session(
             shepr_agent::agent::resume::PersistedAgentSession::from_report(
                 "shepr:omp",
                 "omp",
@@ -389,7 +396,7 @@ mod tests {
                 AgentState::Working,
                 Some(session_ref),
                 Some(1),
-                shepr_mux::terminal::state::HookClockSample {
+                shepr_agent::ownership::HookClockSample {
                     monotonic: std::time::Instant::now(),
                     wall: std::time::SystemTime::now(),
                 },

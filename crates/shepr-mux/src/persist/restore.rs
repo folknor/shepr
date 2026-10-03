@@ -283,7 +283,9 @@ fn restored_terminal(
     if let Some(session) =
         restored_terminal_agent_session(pane.agent_session.as_ref(), duplicate_agent_session)
     {
-        terminal.set_persisted_agent_session(session);
+        terminal
+            .ownership_mut()
+            .set_persisted_agent_session(session);
     }
     match start {
         RestoredPaneStart::Running { .. } => {}
@@ -300,13 +302,15 @@ fn restored_terminal(
             // update, which withdraws it. A resume that can never launch
             // leaves no detector, so abandoning it withdraws the seed
             // (`abandon_agent_resume`).
-            let _ = terminal.set_detected_state_with_screen_signals_at(
-                Some(plan_agent),
-                AgentState::Idle,
-                false,
-                false,
-                now,
-            );
+            let _ = terminal
+                .ownership_mut()
+                .set_detected_state_with_screen_signals_at(
+                    Some(plan_agent),
+                    AgentState::Idle,
+                    false,
+                    false,
+                    now,
+                );
         }
         RestoredPaneStart::Unavailable(reason) => {
             warn!(
@@ -314,7 +318,7 @@ fn restored_terminal(
                 reason = ?reason,
                 "preserving unavailable restored pane"
             );
-            terminal.restore_error = Some(reason);
+            terminal.record_start_failure(reason);
         }
     }
     terminal
@@ -1805,7 +1809,7 @@ mod tests {
             if missing_shell {
                 // The launch is refused before any fork.
                 assert!(runtimes.get(terminal_id).is_none());
-                assert!(terminals[terminal_id].restore_error.is_some());
+                assert!(terminals[terminal_id].restore_error().is_some());
             } else {
                 // The child's chdir finds the saved directory gone and the
                 // launch settles as a failure, never in another directory.
@@ -1916,8 +1920,9 @@ mod tests {
             .values()
             .next()
             .expect("restored terminal should exist");
-        assert_eq!(terminal.manual_label.as_deref(), Some("reviewer"));
+        assert_eq!(terminal.manual_label(), Some("reviewer"));
         let session = terminal
+            .ownership()
             .persisted_agent_session()
             .expect("persisted agent session should survive restore");
         assert_eq!(session.source.as_str(), "shepr:opencode");
@@ -2084,7 +2089,12 @@ mod tests {
         let terminal_id = workspace
             .terminal_id(agent_pane)
             .expect("restored agent pane");
-        assert!(terminals[terminal_id].effective_agent_label().is_none());
+        assert!(
+            terminals[terminal_id]
+                .ownership()
+                .effective_agent_label()
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -2148,7 +2158,7 @@ mod tests {
             .next()
             .expect("native agent restore should create terminal state");
         assert!(
-            terminal.agent_resume.is_pending(),
+            terminal.agent_resume().is_pending(),
             // The launch waits for the event loop, not for a client: once a
             // view exists it starts after a short wait for a host theme, at
             // the headless size when no client is attached (see the headless

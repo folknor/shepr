@@ -537,7 +537,15 @@ impl HeadlessServer {
         report.surface_renders += shared.surface_renders;
         for (client_id, claimed, max) in shared.oversized_notices {
             let notice = ServerMessage::ClientShellError {
-                kind: shepr_protocol::NoticeKind::OversizedSurface { claimed, max },
+                kind: shepr_protocol::NoticeKind::LimitExceeded(
+                    shepr_protocol::LimitExceeded::new(
+                        shepr_protocol::Limit::new(
+                            shepr_protocol::LimitKind::SurfaceMessageBytes,
+                            max,
+                        ),
+                        claimed,
+                    ),
+                ),
             };
             self.send_to_client(client_id, &notice);
         }
@@ -736,7 +744,9 @@ impl HeadlessServer {
         // past `MAX_MESSAGE_SIZE` fails.
         let serialized = match (shared.boundary.encode)(prepared.message()) {
             Ok(frame) => frame,
-            Err(shepr_protocol::FramingError::Oversized { claimed, max }) => {
+            Err(shepr_protocol::FramingError::LimitExceeded(error)) => {
+                let claimed = error.actual;
+                let max = error.limit.max();
                 // Nothing is committed. The client is refused, which hides
                 // the debt its missing or stale baseline implies, so it stays
                 // out of the plan instead of retrying every pass. A new

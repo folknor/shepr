@@ -23,7 +23,7 @@ pub(crate) enum StateEvent {
     },
     HookStateReported {
         pane_id: PaneId,
-        sample: shepr_mux::terminal::state::HookClockSample,
+        sample: shepr_agent::ownership::HookClockSample,
         origin: shepr_agent::agent::ReportOrigin,
         state: AgentState,
         seq: Option<u64>,
@@ -31,7 +31,7 @@ pub(crate) enum StateEvent {
     },
     AgentSessionReported {
         pane_id: PaneId,
-        sample: shepr_mux::terminal::state::HookClockSample,
+        sample: shepr_agent::ownership::HookClockSample,
         origin: shepr_agent::agent::ReportOrigin,
         seq: Option<u64>,
         session_ref: Option<shepr_agent::agent::resume::AgentSessionRef>,
@@ -268,7 +268,6 @@ impl App {
 
         let mut removed = false;
         let mut state_changed = false;
-        let mut touched_pane = None;
         let session_was_dirty = self.state.session_dirty;
         let pane_removal_plan = if let AppEvent::PaneDied { pane_id, .. } = &ev {
             self.state.prepare_pane_removal_by_id(*pane_id)
@@ -319,12 +318,11 @@ impl App {
             }
         } else if let Some(event) = StateEvent::from_app_event(
             ev,
-            shepr_mux::terminal::state::HookClockSample {
+            shepr_agent::ownership::HookClockSample {
                 monotonic: self.clock.now,
                 wall: self.clock.wall_now,
             },
         ) {
-            touched_pane = Some(event.pane_id());
             state_changed =
                 self.state.handle_state_event(event) != super::actions::StateUpdate::Unchanged;
         }
@@ -333,9 +331,7 @@ impl App {
         if checkpointed_pane_exit && removed {
             self.finish_checkpointed_pane_exit_after_event(session_was_dirty);
         }
-        if let Some(pane_id) = touched_pane {
-            self.sync_pane_lifecycle_authority_detection_pause(pane_id);
-        }
+        self.apply_lifecycle_authority_changes();
         let changed =
             removed || state_changed || self.state.shell_projection_revision != projection_before;
         if terminal_cwd_reported && changed {
@@ -361,22 +357,60 @@ impl App {
             .state
             .publish_pane_process_exit(pane_id, exit_reason, ended_at)
         {
-            self.sync_pane_lifecycle_authority_detection_pause(pane_id);
             self.state.mark_shell_projection_dirty();
+        }
+        self.apply_lifecycle_authority_changes();
+    }
+
+    /// Mirrors full-lifecycle authority into the runtime of every terminal an
+    /// update touched. The runtime keeps it in an atomic the detector task
+    /// reads off the app thread, so it cannot be derived there on demand;
+    /// this drain and `install_terminal_runtime` are its only writers, and
+    /// both read the live `full_lifecycle_hook_authority_active()`. Writing an
+    /// unchanged value is cheap: the runtime only notifies on a transition.
+    pub(super) fn apply_lifecycle_authority_changes(&mut self) {
+        for terminal_id in self.state.lifecycle_authority_dirty.drain() {
+            if let (Some(terminal), Some(runtime)) = (
+                self.state.terminals.get(&terminal_id),
+                self.terminal_runtimes.get(&terminal_id),
+            ) {
+                runtime.set_full_lifecycle_authority_active(
+                    terminal.ownership().full_lifecycle_hook_authority_active(),
+                );
+            }
         }
     }
 
-    fn sync_pane_lifecycle_authority_detection_pause(&self, pane_id: PaneId) {
-        let Some(terminal_id) = self.state.terminal_of(pane_id) else {
-            return;
-        };
-        if let (Some(terminal), Some(runtime)) = (
-            self.state.terminals.get(terminal_id),
-            self.terminal_runtimes.get(terminal_id),
-        ) {
-            runtime.set_full_lifecycle_authority_active(
-                terminal.full_lifecycle_hook_authority_active(),
-            );
+    pub(super) fn install_terminal_runtime(
+        &mut self,
+        terminal_id: shepr_protocol::TerminalId,
+        runtime: shepr_mux::pane::PaneRuntime,
+    ) {
+        let active = self
+            .state
+            .terminals
+            .get(&terminal_id)
+            .is_some_and(|terminal| terminal.ownership().full_lifecycle_hook_authority_active());
+        runtime.set_full_lifecycle_authority_active(active);
+        self.terminal_runtimes.insert(terminal_id, runtime);
+    }
+
+    pub(super) fn abandon_terminal_agent_resume(
+        &mut self,
+        terminal_id: &shepr_protocol::TerminalId,
+        failure: shepr_mux::terminal::RestoreFailure,
+        now: std::time::Instant,
+    ) {
+        let pane_id = self.state.workspaces.iter().find_map(|workspace| {
+            workspace.panes().iter().find_map(|(pane_id, pane)| {
+                (&pane.attached_terminal_id == terminal_id).then_some(*pane_id)
+            })
+        });
+        if let Some(pane_id) = pane_id {
+            self.state.update_terminal_state(pane_id, |terminal| {
+                Some(terminal.abandon_agent_resume(failure, now))
+            });
+            self.apply_lifecycle_authority_changes();
         }
     }
 
@@ -512,6 +546,81 @@ mod runtime_generation_tests {
     use crate::test_support::*;
 
     #[test]
+    fn an_update_that_reports_nothing_still_resyncs_the_detector_pause() {
+        let _env = IsolatedEnv::new();
+        let mut app = App::new(
+            &shepr_config::ServerConfig::default(),
+            crate::app::AppPolicy::Test,
+        );
+        let workspace = shepr_mux::workspace::Workspace::test_new("authority");
+        let pane_id = workspace.root_pane();
+        app.state.workspaces = vec![workspace];
+        app.state.ensure_test_terminals();
+        let terminal_id = app.state.workspaces[0]
+            .terminal_id(pane_id)
+            .expect("terminal")
+            .clone();
+        app.insert_test_runtime(
+            pane_id,
+            shepr_mux::pane::PaneRuntime::test_with_screen_bytes(20, 5, b""),
+        );
+        let runtime_authority = |app: &App| {
+            app.terminal_runtimes
+                .get(&terminal_id)
+                .expect("runtime")
+                .full_lifecycle_authority_active()
+        };
+        assert!(!runtime_authority(&app));
+        let now = app.clock.now;
+        let sample = shepr_agent::ownership::HookClockSample {
+            monotonic: now,
+            wall: app.clock.wall_now,
+        };
+        // The update grants full-lifecycle authority but returns nothing, so
+        // only the touched-terminal sync can carry the change to the runtime.
+        app.state.update_terminal_state(pane_id, |terminal| {
+            let ownership = terminal.ownership_mut();
+            let _ = ownership.set_detected_state_with_screen_signals_at(
+                Some(shepr_agent::agent::Agent::Omp),
+                shepr_agent::detect::AgentState::Idle,
+                false,
+                false,
+                now,
+            );
+            // Only a full-lifecycle source (Omp, not Codex) pauses detection,
+            // and it owns the state only once a session anchors it.
+            ownership.set_persisted_agent_session(
+                shepr_agent::agent::resume::PersistedAgentSession::from_report(
+                    "shepr:omp",
+                    "omp",
+                    shepr_agent::agent::resume::AgentSessionRef::id("session").expect("session"),
+                )
+                .expect("official identity"),
+            );
+            let _ = ownership.set_hook_report_at(
+                shepr_agent::agent::ReportOrigin::parse("shepr:omp", "omp")
+                    .expect("test origin"),
+                shepr_agent::detect::AgentState::Idle,
+                shepr_agent::agent::resume::AgentSessionRef::id("session"),
+                None,
+                sample,
+            );
+            None
+        });
+        assert!(
+            app.state.terminals[&terminal_id]
+                .ownership()
+                .full_lifecycle_hook_authority_active()
+        );
+        app.apply_lifecycle_authority_changes();
+        assert!(runtime_authority(&app));
+
+        // An ending reported through the ordinary path withdraws it again.
+        app.publish_pane_process_exit(pane_id, shepr_platform::ChildExitReason::Exited, now);
+        assert!(!runtime_authority(&app));
+    }
+
+    #[test]
     fn agent_release_before_shell_death_preserves_exit_checkpoint_identity() {
         let _env = IsolatedEnv::new();
         let mut app = App::new(
@@ -534,8 +643,12 @@ mod runtime_generation_tests {
         .expect("official identity");
         let now = app.clock.now;
         let terminal = app.state.terminals.get_mut(&terminal_id).expect("terminal");
-        terminal.set_persisted_agent_session(session.clone());
-        terminal.set_detected_agent_process_at(shepr_agent::agent::Agent::Codex, now);
+        terminal
+            .ownership_mut()
+            .set_persisted_agent_session(session.clone());
+        terminal
+            .ownership_mut()
+            .set_detected_agent_process_at(shepr_agent::agent::Agent::Codex, now);
         let runtime = shepr_mux::pane::PaneRuntime::test_with_screen_bytes(20, 5, b"");
         let generation = runtime.generation();
         app.insert_test_runtime(pane_id, runtime);
@@ -553,7 +666,9 @@ mod runtime_generation_tests {
         });
         // The agent is released at once ...
         assert_eq!(
-            app.state.terminals[&terminal_id].current_session_identity_for_persistence(),
+            app.state.terminals[&terminal_id]
+                .ownership()
+                .current_session_identity_for_persistence(),
             None
         );
         // ... and the shell's signal death right after brings its identity
@@ -567,7 +682,9 @@ mod runtime_generation_tests {
         // the still-present pane; removal happens only after that checkpoint.
         assert!(app.state.workspaces[0].contains_pane(pane_id));
         assert_eq!(
-            app.state.terminals[&terminal_id].current_session_identity_for_persistence(),
+            app.state.terminals[&terminal_id]
+                .ownership()
+                .current_session_identity_for_persistence(),
             Some(session),
         );
     }
@@ -594,11 +711,10 @@ mod runtime_generation_tests {
         )
         .expect("persisted identity");
         let terminal = app.state.terminals.get_mut(&terminal_id).expect("terminal");
-        terminal.set_persisted_agent_session(session.clone());
-        terminal.agent_resume = shepr_mux::terminal::AgentResumeState::Planned(test_codex_plan(
-            "restored",
-            vec!["codex".into()],
-        ));
+        terminal
+            .ownership_mut()
+            .set_persisted_agent_session(session.clone());
+        terminal.plan_agent_resume(test_codex_plan("restored", vec!["codex".into()]));
         let discarded = shepr_mux::pane::PaneRuntime::test_with_screen_bytes(20, 5, b"");
         let generation = discarded.generation();
         drop(discarded);
@@ -614,10 +730,16 @@ mod runtime_generation_tests {
         assert!(!app.handle_internal_event_with_view_change(died()));
         assert!(app.state.workspaces[0].contains_pane(pane_id));
         assert_eq!(
-            app.state.terminals[&terminal_id].persisted_agent_session(),
+            app.state.terminals[&terminal_id]
+                .ownership()
+                .persisted_agent_session(),
             Some(&session)
         );
-        assert!(app.state.terminals[&terminal_id].agent_resume.is_pending());
+        assert!(
+            app.state.terminals[&terminal_id]
+                .agent_resume()
+                .is_pending()
+        );
 
         let replacement = shepr_mux::pane::PaneRuntime::test_with_screen_bytes(20, 5, b"");
         let replacement_generation = replacement.generation();

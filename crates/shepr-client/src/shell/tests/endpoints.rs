@@ -806,12 +806,12 @@ fn same_machine_reboot_still_resets_agent_scroll() {
 fn switching_machines_from_copy_mode_restores_terminal_input() {
     let (mut state, remote) = state_with_remote();
     let mut local_surface = surface();
-    local_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics {
-        offset_from_bottom: 0,
-        max_offset_from_bottom: 20,
-        viewport_rows: 2,
-        history_origin: shepr_vt::AbsRow(0),
-    });
+    local_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics::new(
+        0,
+        20,
+        2,
+        shepr_vt::AbsRow(0),
+    ));
     state.receive_pane_surface(local_surface);
     state.compose(100, 28).expect("test precondition");
     assert!(state.enter_copy_mode(&mut ClientShellInput::default()));
@@ -1156,9 +1156,9 @@ fn expanded_machine_sidebar_applies_space_row_gap_within_each_machine() {
         .hits
         .workspace_scroll_metrics
         .expect("workspace scroll metrics");
-    assert!(metrics.max_offset_from_bottom > 0);
-    assert_eq!(metrics.offset_from_bottom, 0);
-    assert_eq!(state.workspace_scroll, metrics.max_offset_from_bottom);
+    assert!(metrics.max_start() > 0);
+    assert_eq!(metrics.start(), metrics.max_start());
+    assert_eq!(state.workspace_scroll, metrics.max_start());
     let visible_remote = state
         .hits
         .workspaces
@@ -1293,7 +1293,7 @@ fn aggregate_priority_uses_client_observed_recency_across_machines() {
     use shepr_protocol::AgentStatus;
 
     let mut config = ClientConfig::default();
-    config.ui.agent_panel_sort = shepr_config::AgentPanelSortConfig::Priority;
+    config.ui.agent_panel_sort = Some(shepr_config::AgentPanelSortConfig::Priority);
     config.ui.sidebar.agents.rows =
         vec![vec![AgentSidebarToken::Machine, AgentSidebarToken::Agent]];
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
@@ -2581,11 +2581,15 @@ mod surface_baseline {
         let mut future = surface();
         future.projection_revision = 2.into();
         future.panes[0].inner_rect.width = 10;
-        future.panes[0]
-            .scroll
-            .as_mut()
-            .expect("scroll")
-            .history_origin = shepr_vt::AbsRow(100);
+        {
+            let metrics = future.panes[0].scroll.as_mut().expect("scroll");
+            *metrics = shepr_vt::ScrollMetrics::new(
+                metrics.offset_from_bottom,
+                metrics.max_offset_from_bottom,
+                metrics.viewport_rows,
+                shepr_vt::AbsRow(100),
+            );
+        }
         s.receive_pane_surface(future);
         assert!(s.mouse_selection.word_gesture.is_some());
         let mut next = snapshot();

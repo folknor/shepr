@@ -5,6 +5,224 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// A positive Linux process id, representable by every pid-taking syscall.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Pid(std::num::NonZeroI32);
+
+impl Pid {
+    pub fn new(value: u32) -> Option<Self> {
+        // A u32 that fits pid_t is never negative, so nonzero means positive.
+        libc::pid_t::try_from(value)
+            .ok()
+            .and_then(std::num::NonZeroI32::new)
+            .map(Self)
+    }
+
+    pub fn get(self) -> u32 {
+        self.0.get().unsigned_abs()
+    }
+
+    pub fn as_pid_t(self) -> libc::pid_t {
+        self.0.get()
+    }
+}
+
+impl std::fmt::Display for Pid {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Display::fmt(&self.get(), formatter)
+    }
+}
+
+/// A process-group id. Its numeric equality to a pid does not make it a pid.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Pgid(Pid);
+
+impl Pgid {
+    pub fn new(value: u32) -> Option<Self> {
+        Pid::new(value).map(Self)
+    }
+
+    pub fn led_by(leader: Pid) -> Self {
+        Self(leader)
+    }
+
+    pub fn leader_pid(self) -> Pid {
+        self.0
+    }
+
+    pub fn get(self) -> u32 {
+        self.0.get()
+    }
+
+    pub fn as_pid_t(self) -> libc::pid_t {
+        self.0.as_pid_t()
+    }
+}
+
+/// A session id, allocated from its leader's process id.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct SessionId(Pid);
+
+impl SessionId {
+    pub fn new(value: u32) -> Option<Self> {
+        Pid::new(value).map(Self)
+    }
+
+    pub fn of_leader(leader: Pid) -> Self {
+        Self(leader)
+    }
+
+    pub fn leader_pid(self) -> Pid {
+        self.0
+    }
+
+    pub fn get(self) -> u32 {
+        self.0.get()
+    }
+
+    pub fn as_pid_t(self) -> libc::pid_t {
+        self.0.as_pid_t()
+    }
+}
+
+/// Linux task states from proc_pid_stat(5), including historical kernel states.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProcState {
+    Running,
+    Sleeping,
+    Uninterruptible,
+    Zombie,
+    Dead,
+    Stopped,
+    TracingStop,
+    Idle,
+    Paging,
+    Wakekill,
+    Waking,
+    Parked,
+}
+
+impl ProcState {
+    pub fn from_code(code: char) -> Option<Self> {
+        Some(match code {
+            'R' => Self::Running,
+            'S' => Self::Sleeping,
+            'D' => Self::Uninterruptible,
+            'Z' => Self::Zombie,
+            'X' | 'x' => Self::Dead,
+            'T' => Self::Stopped,
+            't' => Self::TracingStop,
+            'I' => Self::Idle,
+            'W' => Self::Paging,
+            'K' => Self::Wakekill,
+            'w' => Self::Waking,
+            'P' => Self::Parked,
+            _ => return None,
+        })
+    }
+
+    pub fn is_finished(self) -> bool {
+        matches!(self, Self::Zombie | Self::Dead)
+    }
+
+    pub fn is_stopped(self) -> bool {
+        matches!(self, Self::Stopped | Self::TracingStop)
+    }
+
+    /// cmdline reads enter access_remote_vm and may block for an exiting
+    /// process or one in uninterruptible sleep.
+    pub fn allows_remote_memory_read(self) -> bool {
+        !self.is_finished() && self != Self::Uninterruptible
+    }
+}
+
+/// The stat fields used by process observation. Parent zero and foreground
+/// group -1 denote absence; neither is a valid process or group id.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProcStat {
+    pub pid: Pid,
+    pub comm: String,
+    pub state: ProcState,
+    pub parent: Option<Pid>,
+    pub process_group: Pgid,
+    pub session: SessionId,
+    pub tty_nr: i32,
+    pub foreground_group: Option<Pgid>,
+    pub start_ticks: u64,
+}
+
+impl ProcStat {
+    /// Read a bounded stat record, validating its pid against the proc path.
+    pub fn read(pid: Pid) -> std::io::Result<Self> {
+        use std::io::Read;
+
+        // limits-exempt: proc stat has a short comm and a fixed set of integer fields.
+        const MAX_STAT_BYTES: u64 = 4096;
+        let file = std::fs::File::open(format!("/proc/{pid}/stat"))?;
+        let mut bytes = Vec::new();
+        file.take(MAX_STAT_BYTES + 1).read_to_end(&mut bytes)?;
+        if bytes.len() as u64 > MAX_STAT_BYTES {
+            return Err(invalid_stat());
+        }
+        // comm is a kernel byte string, not necessarily UTF-8. All fields we
+        // interpret are ASCII; preserve best-effort display of the name.
+        let stat = Self::parse(&String::from_utf8_lossy(&bytes)).ok_or_else(invalid_stat)?;
+        if stat.pid != pid {
+            return Err(invalid_stat());
+        }
+        Ok(stat)
+    }
+
+    pub fn parse(record: &str) -> Option<Self> {
+        let open = record.find('(')?;
+        let close = record.rfind(')')?;
+        let pid = Pid::new(record.get(..open)?.trim().parse().ok()?)?;
+        let comm = record.get(open + 1..close)?.to_owned();
+        let mut fields = record.get(close + 1..)?.split_whitespace();
+        let code = fields.next()?;
+        let mut chars = code.chars();
+        let state = ProcState::from_code(chars.next()?)?;
+        if chars.next().is_some() {
+            return None;
+        }
+        let parent_raw: u32 = fields.next()?.parse().ok()?;
+        let parent = if parent_raw == 0 {
+            None
+        } else {
+            Some(Pid::new(parent_raw)?)
+        };
+        let process_group = Pgid::new(fields.next()?.parse().ok()?)?;
+        let session = SessionId::new(fields.next()?.parse().ok()?)?;
+        let tty_nr = fields.next()?.parse().ok()?;
+        let foreground_raw: i32 = fields.next()?.parse().ok()?;
+        let foreground_group = match foreground_raw {
+            -1 | 0 => None,
+            value if value > 0 => Some(Pgid::new(u32::try_from(value).ok()?)?),
+            _ => return None,
+        };
+        // tpgid is field 8; starttime is field 22.
+        let start_ticks = fields.nth(13)?.parse().ok()?;
+        Some(Self {
+            pid,
+            comm,
+            state,
+            parent,
+            process_group,
+            session,
+            tty_nr,
+            foreground_group,
+            start_ticks,
+        })
+    }
+}
+
+fn invalid_stat() -> std::io::Error {
+    std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        "malformed process stat record",
+    )
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Signal {
     Hangup,
@@ -25,7 +243,7 @@ fn signal_number(signal: Signal) -> libc::c_int {
 /// the kernel later gave the same pid.
 #[derive(Debug)]
 pub struct ProcessHandle {
-    pid: u32,
+    pid: Pid,
     pidfd: std::os::fd::OwnedFd,
 }
 
@@ -33,9 +251,13 @@ impl ProcessHandle {
     /// Open a handle on the process that holds `pid` right now. Returns
     /// `None` if it is absent or a pidfd cannot be opened; the latter is logged.
     pub fn open(pid: u32) -> Option<Self> {
+        Self::open_process(Pid::new(pid)?)
+    }
+
+    pub fn open_process(pid: Pid) -> Option<Self> {
         use std::os::fd::FromRawFd;
 
-        let raw_pid = libc::pid_t::try_from(pid).ok().filter(|pid| *pid > 0)?;
+        let raw_pid = pid.as_pid_t();
         // SAFETY: pidfd_open(2) takes a pid and a flags word and returns a new
         // close-on-exec fd or -1; it reads and writes no memory of ours.
         let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, raw_pid, 0_u32) };
@@ -48,7 +270,7 @@ impl ProcessHandle {
                 // fd exhaustion must refuse the handle instead of signalling
                 // through a pid that may have been reused.
                 _ => {
-                    tracing::error!(pid, %error, "could not open pidfd; refusing process handle");
+                    tracing::error!(pid = %pid, %error, "could not open pidfd; refusing process handle");
                     None
                 }
             };
@@ -60,6 +282,10 @@ impl ProcessHandle {
     }
 
     pub fn pid(&self) -> u32 {
+        self.pid.get()
+    }
+
+    pub fn process_id(&self) -> Pid {
         self.pid
     }
 
@@ -202,12 +428,14 @@ pub fn session_member_handles(
     session_id: u32,
     leader_reaped: impl Fn() -> bool,
 ) -> Vec<ProcessHandle> {
-    let Ok(wanted) = i32::try_from(session_id) else {
+    let Some(session) = SessionId::new(session_id) else {
         return Vec::new();
     };
-    if wanted <= 0 {
-        return Vec::new();
-    }
+    session_members(session, leader_reaped)
+}
+
+pub fn session_members(wanted: SessionId, leader_reaped: impl Fn() -> bool) -> Vec<ProcessHandle> {
+    let session_id = wanted.get();
     let mut handles = Vec::new();
     for entry in std::fs::read_dir("/proc").into_iter().flatten().flatten() {
         let Some(pid) = numeric_file_name(&entry) else {
@@ -245,20 +473,8 @@ fn numeric_file_name(entry: &std::fs::DirEntry) -> Option<u32> {
     value.parse().ok()
 }
 
-fn process_session_id(pid: u32) -> Option<i32> {
-    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    session_and_tty_from_stat(&stat).map(|(session, _tty)| session)
-}
-
-/// The session id and controlling-terminal device (`tty_nr`, 0 for none) from
-/// a `/proc/<pid>/stat` line. The command name is skipped by its last `)`, as
-/// it may itself contain spaces and parentheses.
-pub(super) fn session_and_tty_from_stat(stat: &str) -> Option<(i32, i32)> {
-    let rest = stat.get(stat.rfind(')')? + 2..)?;
-    let mut fields = rest.split_whitespace().skip(3);
-    let session = fields.next()?.parse().ok()?;
-    let tty_nr = fields.next()?.parse().ok()?;
-    Some((session, tty_nr))
+fn process_session_id(pid: u32) -> Option<SessionId> {
+    ProcStat::read(Pid::new(pid)?).ok().map(|stat| stat.session)
 }
 
 /// Reap the exited child behind `pidfd` with `waitid(P_PIDFD, WEXITED)` and
@@ -316,6 +532,11 @@ fn exit_status_from_waitid(
         _ => return None,
     };
     Some(std::process::ExitStatus::from_raw(raw))
+}
+
+#[cfg(test)]
+pub(super) fn session_and_tty_from_stat(stat: &str) -> Option<(i32, i32)> {
+    ProcStat::parse(stat).map(|stat| (stat.session.as_pid_t(), stat.tty_nr))
 }
 
 #[cfg(test)]
@@ -412,5 +633,73 @@ mod reap_tests {
             elapsed < Duration::from_secs(5),
             "the wait took {elapsed:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod stat_tests {
+    use super::*;
+
+    fn record(state: &str) -> String {
+        // Fields 9-21 differ from starttime to catch off-by-one offsets.
+        format!(
+            "123 (name with ) (parens)) {state} 0 456 789 34817 -1 {} 9001 42",
+            ["9"; 13].join(" ")
+        )
+    }
+
+    #[test]
+    fn parses_shared_fields_and_command_parentheses() {
+        let stat = ProcStat::parse(&record("S")).expect("valid record");
+        assert_eq!(stat.pid.get(), 123);
+        assert_eq!(stat.comm, "name with ) (parens)");
+        assert_eq!(stat.state, ProcState::Sleeping);
+        assert_eq!(stat.parent, None);
+        assert_eq!(stat.process_group.get(), 456);
+        assert_eq!(stat.session.get(), 789);
+        assert_eq!(stat.tty_nr, 34817);
+        assert_eq!(stat.foreground_group, None);
+        assert_eq!(stat.start_ticks, 9001);
+        let foreground = record("R").replace(" -1 ", " 456 ");
+        assert_eq!(
+            ProcStat::parse(&foreground)
+                .expect("valid record")
+                .foreground_group,
+            Pgid::new(456)
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_ids_states_and_truncated_fields() {
+        assert!(Pid::new(0).is_none());
+        assert!(Pid::new(u32::MAX).is_none());
+        assert_eq!(
+            Pid::new(i32::MAX as u32).expect("maximum pid").as_pid_t(),
+            i32::MAX
+        );
+        assert!(ProcStat::parse(&record("SS")).is_none());
+        assert!(ProcStat::parse(&record("?")).is_none());
+        assert!(ProcStat::parse(&record("S").replacen("123", "0", 1)).is_none());
+        assert!(ProcStat::parse("123 (short) S 0 456 789 0 -1").is_none());
+    }
+
+    #[test]
+    fn finished_and_remote_memory_predicates_agree_for_both_dead_codes() {
+        for code in ['Z', 'X', 'x'] {
+            let state = ProcState::from_code(code).expect("known state");
+            assert!(state.is_finished());
+            assert!(!state.allows_remote_memory_read());
+        }
+        assert!(!ProcState::Uninterruptible.is_finished());
+        assert!(!ProcState::Uninterruptible.allows_remote_memory_read());
+        assert!(ProcState::Stopped.is_stopped());
+        assert!(ProcState::TracingStop.is_stopped());
+        assert!(ProcState::Sleeping.allows_remote_memory_read());
+    }
+
+    #[test]
+    fn current_record_matches_requested_process() {
+        let pid = Pid::new(std::process::id()).expect("current pid");
+        assert_eq!(ProcStat::read(pid).expect("current stat").pid, pid);
     }
 }

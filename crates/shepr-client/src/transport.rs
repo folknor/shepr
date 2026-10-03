@@ -334,17 +334,17 @@ mod tests {
         assert!(io_error.to_string().contains("peer reset"));
 
         let decode_error = framing_error_to_io(
-            shepr_protocol::FramingError::Oversized {
-                claimed: 32,
-                max: 16,
-            },
+            shepr_protocol::FramingError::LimitExceeded(shepr_protocol::LimitExceeded::new(
+                shepr_protocol::Limit::new(shepr_protocol::LimitKind::MessageBytes, 16),
+                32,
+            )),
             endpoint_id.clone(),
         );
         assert_eq!(decode_error.kind(), io::ErrorKind::InvalidData);
         assert!(
             decode_error
                 .to_string()
-                .contains("frame size 32 exceeds maximum 16")
+                .contains("message of 32 bytes exceeds its limit of 16 bytes")
         );
 
         let surface_error = framing_error_to_io(
@@ -353,12 +353,12 @@ mod tests {
                     source: Box::new(
                         shepr_protocol::surface_reuse::SurfaceDecodeError::BaselineMismatch,
                     ),
-                    subject: shepr_protocol::surface_reuse::SurfaceDecodeSubject {
+                    subject: Box::new(shepr_protocol::surface_reuse::SurfaceDecodeSubject {
                         boot_id: crate::tests::test_boot_id("boot"),
                         projection_revision: shepr_protocol::ProjectionRevision::new(2),
                         surface_revision: shepr_protocol::SurfaceRevision::new(3),
                         pane_ids: Vec::new(),
-                    },
+                    }),
                 },
             ),
             endpoint_id,

@@ -113,15 +113,6 @@ platform by AGENTS.md's own rule; mux then stops reaching through
 that left; it can move into `resume.rs` or become `AgentSessionRef::is_id()`.
 (agents)
 
-## STR-009 - Cut `shepr-protocol -> shepr-config`
-
-The edge exists for `MAX_INPUT_EVENT_BATCH`, `MAX_TERMINAL_GRID_CELLS`,
-`MAX_TERMINAL_GRID_DIMENSION` and `terminal_grid_cells`; nothing else in protocol
-touches config. Through it protocol's graph includes `toml`, `serde_ignored`,
-`shepr-agent`, `shepr-platform` and crossterm. The grid budget belongs to core
-geometry and the input batch cap is a resource budget config only borrows.
-AGENTS.md's description of the edge changes with it. (contracts)
-
 ## STR-010 - shepr-config does four unrelated jobs
 
 1. TOML model, loading, unknown-key detection, validation.
@@ -263,24 +254,6 @@ or an explicit `commit()`, and remove `set_dirty` and `clear_dirty` from the
 public API. (terminal)
 
 ## Pane runtime and agent ownership
-
-## STR-020 - `TerminalState` public fields bypass the arbitration it centralises
-
-Its module opens with "Effective state arbitration is intentionally centralized
-here", but `state`, `detected_agent`, `fallback_state`, `terminal_title`,
-`manual_label`, `pending_agent_resume_plan`, `restore_error` and
-`last_agent_state_change_seq` are `pub`. `state` is a cache of
-`effective_agent().state` that any writer can desync; server tests set
-`detected_agent` and `state` directly, building states the machine cannot
-produce. Make the fields private, give the legitimate writers methods
-(`record_start_failure`, `clear_resume_plan`), and give tests a fixture
-constructor that goes through real transitions. The ownership machine now
-lives in shepr-agent as `AgentOwnership`, and mux keeps compatibility shims
-for it: `Deref`/`DerefMut` from `TerminalState`, an `AgentOwnershipMutation as
-TerminalStateMutation` re-export and a forwarding
-`current_session_identity_for_persistence`; callers could import from
-`shepr_agent::ownership` directly, and `DerefMut` keeps the ownership fields
-writable. (mux-panes, wave-3 review)
 
 ## STR-021 - `PaneRuntime` is a 60-method facade, and `runtime.rs` holds five jobs
 

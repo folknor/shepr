@@ -11,14 +11,6 @@ pub const DEFAULT_SCROLLBACK_LIMIT_BYTES: usize = 10_000_000;
 /// visible history.
 pub const DEFAULT_MOUSE_SCROLL_LINES: usize = 3;
 
-/// Maximum expanded input events accepted in one client pane-input message.
-///
-/// `shepr-protocol` re-exports this bound for the client batcher and the
-/// server's input validation; it lives here, below the protocol, because
-/// config also caps one mouse scroll step to it, since the server charges
-/// scroll lines as expanded input work.
-pub const MAX_INPUT_EVENT_BATCH: usize = 4096;
-
 /// Initial virtual terminal width when the server has no attached client.
 ///
 /// This gives headless shells a conventional wide terminal before an
@@ -30,27 +22,6 @@ pub const DEFAULT_HEADLESS_COLS: u16 = 120;
 /// This gives headless shells a useful multi-pane workspace before an
 /// attached client's real geometry is available.
 pub const DEFAULT_HEADLESS_ROWS: u16 = 40;
-
-/// Maximum width or height in cells for a configured terminal grid or a
-/// client-requested pane surface. The protocol reuses this limit so the
-/// headless grid and attached-client grids share one server resource ceiling.
-pub const MAX_TERMINAL_GRID_DIMENSION: u16 = 4096;
-
-/// Maximum number of cells in a configured terminal grid or a
-/// client-requested pane surface. The protocol reuses this limit so the
-/// headless grid and attached-client grids share one server resource ceiling.
-pub const MAX_TERMINAL_GRID_CELLS: usize = 1 << 22;
-
-/// Return the cell count when a grid fits the shared terminal resource budget.
-/// Zero dimensions remain representable here; callers that require a visible
-/// terminal grid must check that separately.
-pub fn terminal_grid_cells(cols: u16, rows: u16) -> Option<usize> {
-    if cols > MAX_TERMINAL_GRID_DIMENSION || rows > MAX_TERMINAL_GRID_DIMENSION {
-        return None;
-    }
-    let cells = usize::from(cols) * usize::from(rows);
-    (cells <= MAX_TERMINAL_GRID_CELLS).then_some(cells)
-}
 
 /// Maximum length in bytes of an SSH target.
 ///
@@ -74,6 +45,12 @@ pub(crate) const MAX_SIDEBAR_TOKENS_PER_ROW: usize = 16;
 /// The cap allows layered matching without letting one token carry an
 /// unbounded rule list.
 pub(crate) const MAX_SIDEBAR_RULES: usize = 16;
+
+/// Expanded sidebar width in columns while `ui.sidebar_width` is unset.
+///
+/// It sits inside the default sidebar bounds, so an unset width validates
+/// unless the configured bounds exclude it.
+pub(crate) const DEFAULT_SIDEBAR_WIDTH: u16 = 26;
 
 /// Default blank rows between entries in expanded sidebars.
 ///
@@ -112,19 +89,3 @@ pub(crate) const MIN_FUNCTION_KEY_NUMBER: u8 = 1;
 /// Crossterm's Unix parser sets the upper bound because larger function-key
 /// names cannot be represented by its key events.
 pub(crate) const MAX_FUNCTION_KEY_NUMBER: u8 = 35;
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn terminal_grid_cells_enforces_shared_dimension_and_area_limits() {
-        assert_eq!(
-            terminal_grid_cells(4096, 1024),
-            Some(MAX_TERMINAL_GRID_CELLS)
-        );
-        assert_eq!(terminal_grid_cells(4097, 1), None);
-        assert_eq!(terminal_grid_cells(4096, 1025), None);
-        assert_eq!(terminal_grid_cells(0, 24), Some(0));
-    }
-}

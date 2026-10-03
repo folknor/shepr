@@ -1094,16 +1094,14 @@ mod tests {
 
     fn copy_mode_state() -> ClientCopyModeState {
         ClientCopyModeState {
+            scroll: shepr_vt::ScrollMetrics::new(0, 0, 2, shepr_vt::AbsRow(0)),
             pane_id: test_pane_id(),
-            history_origin: shepr_vt::AbsRow(0),
             geometry: (10, 2),
             alternate_screen_active: false,
             cursor: shepr_protocol::command::PaneTextPoint {
                 row: shepr_vt::AbsRow(0),
                 col: 0,
             },
-            offset_from_bottom: 0,
-            max_offset_from_bottom: 0,
             entry_offset_from_bottom: 0,
             selection: None,
             search: None,

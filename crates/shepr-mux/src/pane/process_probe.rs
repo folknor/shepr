@@ -414,7 +414,7 @@ impl ProcessProbeScheduler {
 
 #[derive(Debug, Clone)]
 pub(super) struct ProcessProbeResult {
-    process_group_id: Option<u32>,
+    process_group_id: Option<shepr_platform::Pgid>,
     foreground_is_pane_shell: bool,
     suspended_agents: Vec<Agent>,
     identity: ProcessProbeIdentity,
@@ -428,7 +428,7 @@ enum ProcessProbeIdentity {
 
 impl ProcessProbeResult {
     pub(super) fn process_group_id(&self) -> Option<u32> {
-        self.process_group_id
+        self.process_group_id.map(shepr_platform::Pgid::get)
     }
 
     pub(super) fn foreground_is_pane_shell(&self) -> bool {
@@ -1094,7 +1094,7 @@ fn process_probe_result(
     process_name: String,
 ) -> ProcessProbeResult {
     ProcessProbeResult {
-        process_group_id: Some(job.process_group_id),
+        process_group_id: shepr_platform::Pgid::new(job.process_group_id),
         foreground_is_pane_shell: job.processes.iter().any(|process| process.pid == pid),
         suspended_agents: Vec::new(),
         identity: ProcessProbeIdentity::Agent {
@@ -1120,7 +1120,7 @@ pub(super) fn probe_foreground_process_from_jobs(
     if let Some(job) = foreground_job.as_ref() {
         let identified = shepr_agent::detect::identify_agent_in_job(job);
         return ProcessProbeResult {
-            process_group_id: Some(job.process_group_id),
+            process_group_id: shepr_platform::Pgid::new(job.process_group_id),
             foreground_is_pane_shell: job.processes.iter().any(|process| process.pid == pid),
             suspended_agents: Vec::new(),
             identity: identified.map_or(
@@ -1134,7 +1134,7 @@ pub(super) fn probe_foreground_process_from_jobs(
     }
 
     ProcessProbeResult {
-        process_group_id: foreground_pgid,
+        process_group_id: foreground_pgid.and_then(shepr_platform::Pgid::new),
         foreground_is_pane_shell: false,
         suspended_agents: Vec::new(),
         identity: ProcessProbeIdentity::Unidentified,
@@ -1234,7 +1234,7 @@ mod tests {
 
     fn tick_probe(agent: Option<Agent>) -> TickObservation {
         TickObservation::Probe(ProcessProbeResult {
-            process_group_id: Some(25),
+            process_group_id: shepr_platform::Pgid::new(25),
             foreground_is_pane_shell: false,
             suspended_agents: Vec::new(),
             identity: agent.map_or(ProcessProbeIdentity::Unidentified, |agent| {
@@ -1653,7 +1653,7 @@ mod tests {
         detector.probe_started(now);
 
         let probe = ProcessProbeResult {
-            process_group_id: Some(25),
+            process_group_id: shepr_platform::Pgid::new(25),
             foreground_is_pane_shell: false,
             suspended_agents: Vec::new(),
             identity: ProcessProbeIdentity::Agent {
@@ -1718,7 +1718,7 @@ mod tests {
         // Presence is not rebuilt from the exited identity.
         assert_eq!(detector.agent_presence.current_agent(), None);
         let probe = ProcessProbeResult {
-            process_group_id: Some(25),
+            process_group_id: shepr_platform::Pgid::new(25),
             foreground_is_pane_shell: true,
             suspended_agents: Vec::new(),
             identity: ProcessProbeIdentity::Unidentified,
@@ -1741,7 +1741,7 @@ mod tests {
         let mut detector = DetectorState::new(now, LaunchKind::Fresh);
         detector.agent_presence = AgentDetectionPresence::from_agent(Some(Agent::Pi));
         let probe = ProcessProbeResult {
-            process_group_id: Some(25),
+            process_group_id: shepr_platform::Pgid::new(25),
             foreground_is_pane_shell: false,
             suspended_agents: Vec::new(),
             identity: ProcessProbeIdentity::Unidentified,
@@ -1775,7 +1775,7 @@ mod tests {
         let mut detector = DetectorState::new(now, LaunchKind::Fresh);
         detector.agent_presence = AgentDetectionPresence::from_agent(Some(Agent::Pi));
         let mut command = ProcessProbeResult {
-            process_group_id: Some(25),
+            process_group_id: shepr_platform::Pgid::new(25),
             foreground_is_pane_shell: false,
             suspended_agents: Vec::new(),
             identity: ProcessProbeIdentity::Unidentified,
@@ -1788,7 +1788,7 @@ mod tests {
             detector.observe_process_probe(&command, now, Some(25), schedule);
         }
         assert!(detector.process_exited());
-        command.process_group_id = Some(26);
+        command.process_group_id = shepr_platform::Pgid::new(26);
         let owed = detector.observe_process_probe(&command, now, Some(26), schedule);
         assert!(!owed.agent_changed);
         assert_eq!(owed.agent, Some(Agent::Pi));
@@ -1821,7 +1821,7 @@ mod tests {
         let mut detector = DetectorState::new(now, LaunchKind::Fresh);
         detector.agent_presence = AgentDetectionPresence::from_agent(Some(Agent::Claude));
         let suspended_probe = ProcessProbeResult {
-            process_group_id: Some(25),
+            process_group_id: shepr_platform::Pgid::new(25),
             foreground_is_pane_shell: true,
             suspended_agents: vec![Agent::Claude],
             identity: ProcessProbeIdentity::Unidentified,
@@ -1843,7 +1843,7 @@ mod tests {
         assert_eq!(change.process_detected, None);
 
         let resumed_probe = ProcessProbeResult {
-            process_group_id: Some(27),
+            process_group_id: shepr_platform::Pgid::new(27),
             foreground_is_pane_shell: false,
             suspended_agents: Vec::new(),
             identity: ProcessProbeIdentity::Agent {
@@ -1889,7 +1889,7 @@ mod tests {
     #[test]
     fn unidentified_probe_cannot_carry_a_process_name() {
         let result = ProcessProbeResult {
-            process_group_id: Some(17),
+            process_group_id: shepr_platform::Pgid::new(17),
             foreground_is_pane_shell: false,
             suspended_agents: Vec::new(),
             identity: ProcessProbeIdentity::Unidentified,

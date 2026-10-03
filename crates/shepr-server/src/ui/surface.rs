@@ -105,7 +105,7 @@ pub(crate) fn surface_cursor(
                 .get(ws_idx)
                 .and_then(|ws| ws.terminal_id(info.id))
                 .and_then(|terminal_id| app.terminals.get(terminal_id))
-                .and_then(|terminal| terminal.detected_agent);
+                .and_then(|terminal| terminal.ownership().detected_agent());
             detected.is_some_and(|agent| {
                 app.settings
                     .cjk_ime_agents

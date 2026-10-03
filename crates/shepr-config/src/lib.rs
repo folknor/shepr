@@ -18,8 +18,7 @@ pub use self::address::operator_entrypoint;
 pub use self::agent::ConfigAgent;
 pub use self::limits::{
     DEFAULT_HEADLESS_COLS, DEFAULT_HEADLESS_ROWS, DEFAULT_MOUSE_SCROLL_LINES,
-    DEFAULT_SCROLLBACK_LIMIT_BYTES, MAX_INPUT_EVENT_BATCH, MAX_TERMINAL_GRID_CELLS,
-    MAX_TERMINAL_GRID_DIMENSION, terminal_grid_cells,
+    DEFAULT_SCROLLBACK_LIMIT_BYTES,
 };
 pub use self::machine::{
     IntoSshTarget, LOCAL_ENDPOINT_LABEL, MachineConfig, MachineLabel, MachineLabelError, SshTarget,
@@ -31,7 +30,9 @@ pub use self::machine::{
 pub use self::model::{ClientConfig, ServerConfig};
 pub use self::theme_config::CustomThemeColors;
 pub use self::{
-    diagnostic::ConfigDiagnostic,
+    diagnostic::{
+        ConfigDiagnostic, ConfigDiagnosticKind, ConfigKeyPath, ConfigKeyPathSegment, PathsError,
+    },
     io::{
         AppPaths, BuildProfile, DATA_DIR_LEASE_FILE_NAME, load_client_validated,
         load_server_validated,
@@ -43,7 +44,7 @@ pub use self::{
     model::{
         AgentPanelSortConfig, HostCursorModeConfig, NewTerminalCwdConfig, PaneBordersConfig,
         RightClickPassthroughModifierConfig, SidebarBounds, SidebarCollapsedModeConfig,
-        StatusIndicatorStyle, validated_sidebar_bounds,
+        SidebarWidth, StatusIndicatorStyle, validated_sidebar_bounds,
     },
     sidebar::{
         AgentSidebarToken, AgentsSidebarConfig, SidebarConfig, SidebarTokenRule, SidebarTokenStyle,
@@ -51,9 +52,8 @@ pub use self::{
     },
     theme_config::ThemeConfig,
     validated::{
-        ConfigProvenance, NewTerminalCwd, UiPreferenceKey, ValidatedClientConfig,
-        ValidatedClientUiConfig, ValidatedServerConfig, ValidatedServerUiConfig,
-        ValidatedTerminalConfig,
+        ConfigProvenance, NewTerminalCwd, Setting, ValidatedClientConfig, ValidatedClientUiConfig,
+        ValidatedServerConfig, ValidatedServerUiConfig, ValidatedTerminalConfig,
     },
     window_title::{WindowTitlePart, WindowTitleTemplate, WindowTitleToken},
 };
@@ -65,13 +65,13 @@ pub const DEFAULT_CLIENT_CONFIG: &str = include_str!("default-client.toml");
 pub const DEFAULT_SERVER_CONFIG: &str = include_str!("default-server.toml");
 
 impl ClientConfig {
-    pub fn resolve_palette(&self) -> Result<crate::theme::Palette, Vec<String>> {
+    pub fn resolve_palette(&self) -> Result<crate::theme::Palette, Vec<ConfigDiagnostic>> {
         theme_config::resolve_palette(&self.theme)
     }
 }
 
 impl ServerConfig {
-    pub fn resolve_palette(&self) -> Result<crate::theme::Palette, Vec<String>> {
+    pub fn resolve_palette(&self) -> Result<crate::theme::Palette, Vec<ConfigDiagnostic>> {
         theme_config::resolve_palette(&self.theme)
     }
 }
@@ -79,21 +79,25 @@ impl ServerConfig {
 #[cfg(test)]
 impl ClientConfig {
     pub fn collect_diagnostics(&self) -> Vec<String> {
-        let provenance = ConfigProvenance::defaults();
+        let provenance = ConfigProvenance::from_document(None);
         // Client document validation has no shell or working-directory lookup.
-        validated::ClientConfigResolution::parse(self, &provenance).diagnostics
+        validated::parse_client_config(self, &provenance)
+            .err()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|diagnostic| diagnostic.to_string())
+            .collect()
     }
 }
 
 #[cfg(test)]
 impl ServerConfig {
     pub fn collect_diagnostics(&self) -> Vec<String> {
-        let resolution =
-            validated::ServerConfigResolution::parse_document(self, &AppPaths::default());
-        resolution
-            .diagnostics
+        validated::parse_server_config(self, &AppPaths::default())
+            .err()
+            .unwrap_or_default()
             .into_iter()
-            .chain(resolution.path_diagnostics)
+            .map(|diagnostic| diagnostic.to_string())
             .collect()
     }
 }
@@ -159,6 +163,27 @@ mod tests {
         );
         // The optional input resolves to the same default, despite Some/None.
         documented.ui.mouse_scroll_lines = defaults.ui.mouse_scroll_lines;
+        // These values carry explicitness into validation; raw defaults keep
+        // them unset even though the documented template spells them out, so
+        // the documented values are checked against the validated defaults.
+        let validated =
+            ValidatedClientConfig::from_values(ClientConfig::default(), None, AppPaths::default())
+                .expect("built-in client defaults validate");
+        assert_eq!(
+            documented.ui.sidebar_width,
+            Some(validated.ui().sidebar_width().value())
+        );
+        assert_eq!(
+            documented.ui.sidebar_start_collapsed,
+            Some(*validated.ui().sidebar_start_collapsed.value())
+        );
+        assert_eq!(
+            documented.ui.agent_panel_sort,
+            Some(*validated.ui().agent_panel_sort.value())
+        );
+        documented.ui.sidebar_width = None;
+        documented.ui.sidebar_start_collapsed = None;
+        documented.ui.agent_panel_sort = None;
         assert_eq!(documented, defaults);
     }
 
@@ -634,10 +659,14 @@ mod tests {
         let validation = config.compute_keybind_validation(|_| false);
         assert!(validation.live.is_none());
         assert!(
-            validation
-                .diagnostics
-                .iter()
-                .any(|diag| diag.contains("navigate_back") && diag.contains("keys.prefix")),
+            validation.diagnostics.iter().any(|diag| {
+                diag.key()
+                    .is_some_and(|key| key.to_string().contains("navigate_back"))
+                    && diag
+                        .related_keys()
+                        .iter()
+                        .any(|key| key.to_string() == "keys.prefix")
+            }),
             "{:?}",
             validation.diagnostics
         );
@@ -663,12 +692,10 @@ mod tests {
             toml::from_str("[keys]\nprefix = \"ctrl+\"\n").expect("test precondition");
         let validation = config.compute_keybind_validation(|_| false);
         assert!(validation.live.is_none());
-        assert!(
-            validation
-                .diagnostics
-                .iter()
-                .any(|diag| diag.contains("keys.prefix"))
-        );
+        assert!(validation.diagnostics.iter().any(|diag| {
+            diag.key()
+                .is_some_and(|key| key.to_string() == "keys.prefix")
+        }));
     }
 
     #[test]

@@ -8,7 +8,7 @@ pub(crate) use crate::limits::MAX_ENDPOINT_REQUEST_ID_BYTES;
 /// The one response to an endpoint command. A large result (a selection of a
 /// long scrollback) crosses in as many frames as it needs, up to the control
 /// queue's byte cap including frame prefixes. A larger result becomes
-/// `EndpointError::ResponseTooLarge` instead of closing the client connection
+/// a typed size-limit error instead of closing the client connection
 /// and leaving it to wait out its command timeout. Held replies wait for
 /// earlier control traffic to drain before entering the bounded control lane.
 pub(crate) fn response_message(
@@ -39,10 +39,10 @@ fn response_within(
     };
     let refusal = match shepr_protocol::codec::encoded_len(&message) {
         Ok(size) if size <= max => return message,
-        Ok(size) => EndpointError::ResponseTooLarge {
-            size: u64::try_from(size).unwrap_or(u64::MAX),
-            limit: u64::try_from(max).unwrap_or(u64::MAX),
-        },
+        Ok(size) => EndpointError::LimitExceeded(shepr_protocol::LimitExceeded::new(
+            shepr_protocol::Limit::new(shepr_protocol::LimitKind::EndpointResponseBytes, max),
+            size,
+        )),
         Err(error) => {
             tracing::warn!(%error, "an endpoint response could not be encoded");
             EndpointError::Rejected("the response could not be encoded".to_owned())
@@ -152,11 +152,11 @@ mod tests {
             panic!("expected an error response, got {message:?}");
         };
         assert_eq!(request_id, "request-a");
-        let EndpointError::ResponseTooLarge { size, limit } = error else {
+        let EndpointError::LimitExceeded(error) = error else {
             panic!("expected a too-large refusal, got {error:?}");
         };
-        assert_eq!(*limit, 1024);
-        assert!(*size > 1024);
+        assert_eq!(error.limit.max(), 1024);
+        assert!(error.actual > 1024);
     }
 
     #[test]
@@ -170,14 +170,13 @@ mod tests {
             }),
         );
         let ServerMessage::ClientShellEndpointResponse {
-            result: Err(EndpointError::ResponseTooLarge { size, limit }),
+            result: Err(EndpointError::LimitExceeded(error)),
             ..
         } = &message
         else {
             panic!("expected an error response, got {message:?}");
         };
-        let bound = u64::try_from(MAX_ENDPOINT_RESPONSE_ENCODED_BYTES).expect("bound fits u64");
-        assert_eq!(*limit, bound);
-        assert!(*size > bound);
+        assert_eq!(error.limit.max(), MAX_ENDPOINT_RESPONSE_ENCODED_BYTES);
+        assert!(error.actual > MAX_ENDPOINT_RESPONSE_ENCODED_BYTES);
     }
 }
