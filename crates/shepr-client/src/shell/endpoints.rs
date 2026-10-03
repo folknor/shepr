@@ -13,12 +13,153 @@ use ratatui::layout::Rect;
 #[derive(Clone, Debug)]
 pub(crate) struct ClientShellEndpoint {
     pub(crate) endpoint_id: ClientEndpointId,
-    pub(crate) status: ClientEndpointStatus,
-    /// The cached endpoint and active projection share this immutable snapshot.
-    pub(crate) snapshot: Option<Arc<ClientShellSnapshot>>,
-    /// Connection generation that produced the snapshot; absent only in tests.
-    pub(crate) snapshot_generation: Option<u64>,
+    pub(crate) state: EndpointState,
     pub(crate) agent_recency: HashMap<shepr_protocol::PublicPaneId, u64>,
+}
+
+/// Owns endpoint selection and the endpoint presentations read by the shell.
+#[derive(Debug)]
+pub(crate) struct Endpoints {
+    pub(crate) choice: crate::endpoint::EndpointChoice,
+    entries: Vec<ClientShellEndpoint>,
+}
+
+impl Endpoints {
+    pub(crate) fn presented(&self) -> &ClientEndpointId {
+        self.choice.presented()
+    }
+
+    pub(crate) fn new(entries: Vec<ClientShellEndpoint>) -> Self {
+        Self {
+            choice: crate::endpoint::EndpointChoice::showing(ClientEndpointId::Local),
+            entries,
+        }
+    }
+}
+
+impl std::ops::Deref for Endpoints {
+    type Target = Vec<ClientShellEndpoint>;
+    fn deref(&self) -> &Self::Target {
+        &self.entries
+    }
+}
+
+impl std::ops::DerefMut for Endpoints {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.entries
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct EndpointSnapshot {
+    snapshot: Arc<ClientShellSnapshot>,
+    generation: Option<u64>,
+}
+
+/// A live presentation always has a snapshot. A disconnected presentation keeps its
+/// last snapshot for display, but cannot supply navigation or pane commands.
+#[derive(Clone, Debug)]
+pub(crate) enum EndpointState {
+    Connecting {
+        last: Option<EndpointSnapshot>,
+        connected: bool,
+        generation: Option<u64>,
+    },
+    Online(EndpointSnapshot),
+    Stale {
+        last: Option<EndpointSnapshot>,
+    },
+    Attention {
+        last: Option<EndpointSnapshot>,
+    },
+}
+
+impl EndpointState {
+    fn last(&self) -> Option<&EndpointSnapshot> {
+        match self {
+            Self::Online(snapshot) => Some(snapshot),
+            Self::Connecting { last, .. } | Self::Stale { last } | Self::Attention { last } => {
+                last.as_ref()
+            }
+        }
+    }
+
+    pub(crate) fn usable(&self) -> bool {
+        matches!(self, Self::Online(_))
+    }
+
+    pub(crate) fn stale(&self) -> bool {
+        !self.usable()
+    }
+
+    pub(crate) fn status(&self) -> ClientEndpointStatus {
+        match self {
+            Self::Connecting { .. } => ClientEndpointStatus::Connecting,
+            Self::Online(_) => ClientEndpointStatus::Online,
+            Self::Stale { .. } => ClientEndpointStatus::Reconnecting,
+            Self::Attention { .. } => ClientEndpointStatus::Attention,
+        }
+    }
+
+    fn set_status(&mut self, status: ClientEndpointStatus) {
+        let last = self.last().cloned();
+        *self = match status {
+            ClientEndpointStatus::Online => last.map_or(
+                Self::Connecting {
+                    last: None,
+                    connected: true,
+                    generation: None,
+                },
+                Self::Online,
+            ),
+            ClientEndpointStatus::Connecting => Self::Connecting {
+                last,
+                connected: false,
+                generation: None,
+            },
+            ClientEndpointStatus::Reconnecting => Self::Stale { last },
+            ClientEndpointStatus::Attention => Self::Attention { last },
+        };
+    }
+
+    fn cache(&mut self, snapshot: EndpointSnapshot) {
+        let last = Some(snapshot.clone());
+        *self = match self {
+            Self::Online(_) => Self::Online(snapshot),
+            Self::Connecting {
+                connected: true,
+                generation,
+                ..
+            } if generation.is_none() || *generation == snapshot.generation => {
+                Self::Online(snapshot)
+            }
+            Self::Connecting {
+                connected,
+                generation,
+                ..
+            } => Self::Connecting {
+                last,
+                connected: *connected,
+                generation: *generation,
+            },
+            Self::Stale { .. } => Self::Stale { last },
+            Self::Attention { .. } => Self::Attention { last },
+        };
+    }
+}
+
+impl ClientShellEndpoint {
+    pub(crate) fn snapshot(&self) -> Option<&ClientShellSnapshot> {
+        self.state.last().map(|last| last.snapshot.as_ref())
+    }
+
+    fn shared_snapshot(&self) -> Option<Arc<ClientShellSnapshot>> {
+        self.state.last().map(|last| Arc::clone(&last.snapshot))
+    }
+
+    pub(crate) fn snapshot_generation(&self) -> Option<u64> {
+        self.state.last().and_then(|last| last.generation)
+    }
 }
 
 pub(in crate::shell) struct MachineHit {
@@ -50,17 +191,67 @@ impl ClientShellState {
         for machine in machines {
             next.push(ClientShellEndpoint {
                 endpoint_id: ClientEndpointId::Ssh(machine.label.clone()),
-                status: ClientEndpointStatus::Connecting,
-                snapshot: None,
-                snapshot_generation: None,
+                state: EndpointState::Connecting {
+                    last: None,
+                    connected: false,
+                    generation: None,
+                },
                 agent_recency: HashMap::new(),
             });
         }
-        self.endpoints = next;
+        self.endpoints.entries = next;
         self.rebuild_endpoint_models();
     }
 
+    /// A handshake starts a new presentation generation. Until its own snapshot arrives,
+    /// the previous generation is retained only as stale display data.
+    pub(crate) fn endpoint_connected(&mut self, endpoint_id: &ClientEndpointId, generation: u64) {
+        if let Some(endpoint) = self
+            .endpoints
+            .iter_mut()
+            .find(|endpoint| &endpoint.endpoint_id == endpoint_id)
+        {
+            let last = endpoint.state.last().cloned();
+            endpoint.state = EndpointState::Connecting {
+                last,
+                connected: true,
+                generation: Some(generation),
+            };
+        }
+        self.clear_machine_diagnostic(endpoint_id);
+        self.rebuild_endpoint_models();
+    }
+
+    /// Records a status the supervisor reported for an endpoint with no live
+    /// connection (a failed or pending attempt). The selection is untouched: a
+    /// move waiting for Local's reconnect keeps waiting through its failed
+    /// attempts.
     pub fn set_endpoint_status(
+        &mut self,
+        endpoint_id: &ClientEndpointId,
+        status: ClientEndpointStatus,
+    ) {
+        self.apply_endpoint_status(endpoint_id, status);
+    }
+
+    /// A live connection was lost: the selection learns of the loss, the endpoint
+    /// takes its failure status, and the requests in flight to the presented endpoint
+    /// are interrupted. A status report for an endpoint with no live connection
+    /// leaves them alone.
+    pub(crate) fn transition_endpoint_status(
+        &mut self,
+        endpoint_id: &ClientEndpointId,
+        status: ClientEndpointStatus,
+    ) -> crate::endpoint::Lost {
+        let lost = self.endpoints.choice.connection_lost(endpoint_id);
+        self.apply_endpoint_status(endpoint_id, status);
+        if self.endpoint_is_active(endpoint_id) {
+            self.drop_all_requests(DropReason::Interrupted);
+        }
+        lost
+    }
+
+    fn apply_endpoint_status(
         &mut self,
         endpoint_id: &ClientEndpointId,
         status: ClientEndpointStatus,
@@ -68,7 +259,7 @@ impl ClientShellState {
         if status == ClientEndpointStatus::Online {
             self.clear_machine_diagnostic(endpoint_id);
         }
-        if endpoint_id == &self.active_endpoint_id && status != ClientEndpointStatus::Online {
+        if endpoint_id == self.endpoints.presented() && status != ClientEndpointStatus::Online {
             self.pending_workspace_highlight = None;
         }
         let mut changed = false;
@@ -77,27 +268,29 @@ impl ClientShellState {
             .iter_mut()
             .find(|endpoint| &endpoint.endpoint_id == endpoint_id)
         {
-            changed = endpoint.status != status;
-            endpoint.status = status;
+            let previous = endpoint.state.status();
+            endpoint.state.set_status(status);
+            changed = previous != endpoint.state.status();
         }
         if changed {
             self.rebuild_endpoint_models();
         }
     }
 
-    pub(crate) fn mark_endpoint_disconnected(&mut self, endpoint_id: &ClientEndpointId) {
-        self.set_endpoint_status(endpoint_id, ClientEndpointStatus::Reconnecting);
-        if endpoint_id == &self.active_endpoint_id {
-            self.drop_all_requests(DropReason::Interrupted);
-        }
+    /// The endpoint selection, for a caller that drives a move end to end.
+    pub fn endpoint_choice(&self) -> &crate::endpoint::EndpointChoice {
+        &self.endpoints.choice
     }
 
-    pub(crate) fn endpoint_projection_available(&self, endpoint_id: &ClientEndpointId) -> bool {
-        self.endpoints.iter().any(|endpoint| {
-            &endpoint.endpoint_id == endpoint_id
-                && endpoint.status == ClientEndpointStatus::Online
-                && endpoint.snapshot.is_some()
-        })
+    /// The endpoint selection, mutably, for a caller that drives a move end to end.
+    pub fn endpoint_choice_mut(&mut self) -> &mut crate::endpoint::EndpointChoice {
+        &mut self.endpoints.choice
+    }
+
+    pub(crate) fn endpoint_usable(&self, endpoint_id: &ClientEndpointId) -> bool {
+        self.endpoints
+            .iter()
+            .any(|endpoint| &endpoint.endpoint_id == endpoint_id && endpoint.state.usable())
     }
 
     pub(crate) fn activate_endpoint_projection(&mut self, endpoint_id: &ClientEndpointId) -> bool {
@@ -108,21 +301,21 @@ impl ClientShellState {
         else {
             return false;
         };
-        if endpoint.status != ClientEndpointStatus::Online {
+        if !endpoint.state.usable() {
             return false;
         }
-        let Some(snapshot) = endpoint.snapshot.clone() else {
+        let Some(snapshot) = endpoint.shared_snapshot() else {
             return false;
         };
-        let generation = endpoint.snapshot_generation;
+        let generation = endpoint.snapshot_generation();
         let pending_agent_reveal = self
             .pending_agent_reveal
             .take_if(|(target_endpoint, _)| target_endpoint == endpoint_id);
         let agent_body_height = self.hits.agent_body.height;
-        let switching_endpoint = endpoint_id != &self.active_endpoint_id;
+        let switching_endpoint = endpoint_id != self.endpoints.presented();
         let agent_scroll = self.agent_scroll;
+        self.endpoints.choice = crate::endpoint::EndpointChoice::showing(endpoint_id.clone());
         if switching_endpoint {
-            self.active_endpoint_id = endpoint_id.clone();
             self.surfaces = PaneSurfaces::default();
         }
         self.apply_active_snapshot(snapshot, generation);
@@ -143,19 +336,12 @@ impl ClientShellState {
         self.endpoints
             .iter()
             .find(|endpoint| &endpoint.endpoint_id == endpoint_id)
-            .map(|endpoint| endpoint.status)
+            .map(|endpoint| endpoint.state.status())
     }
 
-    pub(crate) fn endpoint_has_snapshot(&self, endpoint_id: &ClientEndpointId) -> bool {
-        self.endpoints
-            .iter()
-            .find(|endpoint| &endpoint.endpoint_id == endpoint_id)
-            .is_some_and(|endpoint| endpoint.snapshot.is_some())
-    }
-
-    pub(crate) fn endpoint_is_online(&self, endpoint_id: &ClientEndpointId) -> bool {
-        self.endpoint_status(endpoint_id) == Some(ClientEndpointStatus::Online)
-            && self.endpoint_has_snapshot(endpoint_id)
+    /// Local can be selected while unavailable so its reconnect can complete the pick.
+    pub(in crate::shell) fn endpoint_can_select(&self, endpoint_id: &ClientEndpointId) -> bool {
+        endpoint_id.is_local() || self.endpoint_usable(endpoint_id)
     }
 
     pub(crate) fn endpoint_boot_id(
@@ -165,8 +351,7 @@ impl ClientShellState {
         self.endpoints
             .iter()
             .find(|endpoint| &endpoint.endpoint_id == endpoint_id)?
-            .snapshot
-            .as_deref()
+            .snapshot()
             .map(|snapshot| &snapshot.boot_id)
     }
 
@@ -182,9 +367,9 @@ impl ClientShellState {
             .find(|endpoint| &endpoint.endpoint_id == endpoint_id)
             .is_some_and(|endpoint| {
                 endpoint
-                    .snapshot_generation
+                    .snapshot_generation()
                     .is_none_or(|snapshot_generation| snapshot_generation == generation)
-                    && endpoint.snapshot.as_deref().is_some_and(|snapshot| {
+                    && endpoint.snapshot().is_some_and(|snapshot| {
                         snapshot.boot_id == *boot_id && snapshot.revision == revision
                     })
             })
@@ -200,14 +385,13 @@ impl ClientShellState {
             .iter()
             .find(|endpoint| &endpoint.endpoint_id == endpoint_id)?;
         if endpoint
-            .snapshot_generation
+            .snapshot_generation()
             .is_some_and(|snapshot_generation| snapshot_generation != generation)
         {
             return None;
         }
         endpoint
-            .snapshot
-            .as_deref()
+            .snapshot()
             .map(|snapshot| (&snapshot.boot_id, snapshot.revision.get()))
     }
 
@@ -219,11 +403,11 @@ impl ClientShellState {
     }
 
     pub(crate) fn active_endpoint_label(&self) -> &str {
-        self.active_endpoint_id.display_label()
+        self.endpoints.presented().display_label()
     }
 
     pub fn endpoint_is_active(&self, endpoint_id: &ClientEndpointId) -> bool {
-        &self.active_endpoint_id == endpoint_id
+        self.endpoints.presented() == endpoint_id
     }
 
     pub(crate) fn multi_endpoint_active(&self) -> bool {
@@ -252,17 +436,14 @@ impl ClientShellState {
         else {
             return;
         };
-        if self.endpoints[index].snapshot_generation == generation
-            && self.endpoints[index]
-                .snapshot
-                .as_deref()
-                .is_some_and(|previous| {
-                    previous.boot_id == snapshot.boot_id && previous.revision > snapshot.revision
-                })
+        if self.endpoints[index].snapshot_generation() == generation
+            && self.endpoints[index].snapshot().is_some_and(|previous| {
+                previous.boot_id == snapshot.boot_id && previous.revision > snapshot.revision
+            })
         {
             return;
         }
-        let previous = self.endpoints[index].snapshot.as_deref();
+        let previous = self.endpoints[index].snapshot();
         let previous_sequences = previous
             .into_iter()
             .flat_map(|snapshot| snapshot.agents.iter())
@@ -295,8 +476,10 @@ impl ClientShellState {
         recency.retain(|pane_id, _| live_agent_ids.contains(pane_id));
         let endpoint = &mut self.endpoints[index];
         endpoint.agent_recency = recency;
-        endpoint.snapshot_generation = generation;
-        endpoint.snapshot = Some(snapshot);
+        endpoint.state.cache(EndpointSnapshot {
+            generation,
+            snapshot,
+        });
         self.rebuild_endpoint_models();
     }
 
@@ -317,14 +500,13 @@ impl ClientShellState {
             .find(|endpoint| &endpoint.endpoint_id == endpoint_id)
             .and_then(|endpoint| {
                 endpoint
-                    .snapshot
-                    .clone()
-                    .map(|snapshot| (snapshot, endpoint.snapshot_generation))
+                    .shared_snapshot()
+                    .map(|snapshot| (snapshot, endpoint.snapshot_generation()))
             })
         else {
             return;
         };
-        if endpoint_id == &self.active_endpoint_id {
+        if endpoint_id == self.endpoints.presented() {
             self.apply_active_snapshot(snapshot, generation);
         }
     }
@@ -359,17 +541,49 @@ pub(in crate::shell) fn endpoint_status_presentation(
 pub(in crate::shell) fn local_endpoint() -> ClientShellEndpoint {
     ClientShellEndpoint {
         endpoint_id: ClientEndpointId::Local,
-        status: ClientEndpointStatus::Online,
-        snapshot: None,
-        snapshot_generation: None,
+        state: EndpointState::Connecting {
+            last: None,
+            connected: true,
+            generation: None,
+        },
         agent_recency: HashMap::new(),
     }
 }
 
 #[cfg(test)]
+impl ClientShellEndpoint {
+    pub(crate) fn snapshot_mut(&mut self) -> Option<&mut Arc<ClientShellSnapshot>> {
+        match &mut self.state {
+            EndpointState::Online(last) => Some(&mut last.snapshot),
+            EndpointState::Connecting { last, .. }
+            | EndpointState::Stale { last }
+            | EndpointState::Attention { last } => last.as_mut().map(|last| &mut last.snapshot),
+        }
+    }
+}
+
+#[cfg(test)]
 impl ClientShellState {
+    pub(crate) fn mark_endpoint_disconnected(&mut self, endpoint_id: &ClientEndpointId) {
+        self.set_endpoint_status(endpoint_id, ClientEndpointStatus::Reconnecting);
+        if self.endpoint_is_active(endpoint_id) {
+            self.drop_all_requests(DropReason::Interrupted);
+        }
+    }
+
+    pub(crate) fn endpoint_has_snapshot(&self, endpoint_id: &ClientEndpointId) -> bool {
+        self.endpoints
+            .iter()
+            .find(|endpoint| &endpoint.endpoint_id == endpoint_id)
+            .is_some_and(|endpoint| endpoint.snapshot().is_some())
+    }
+
+    pub(crate) fn active_endpoint_id(&self) -> &ClientEndpointId {
+        self.endpoints.presented()
+    }
+
     pub fn set_snapshot(&mut self, snapshot: Box<ClientShellSnapshot>) {
-        let endpoint_id = self.active_endpoint_id.clone();
+        let endpoint_id = self.endpoints.presented().clone();
         self.set_endpoint_snapshot(&endpoint_id, snapshot);
     }
 
@@ -388,5 +602,61 @@ impl ClientShellState {
     ) {
         self.cache_endpoint_snapshot(endpoint_id, snapshot);
         self.apply_cached_endpoint_snapshot(endpoint_id);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn snapshot(generation: u64) -> EndpointSnapshot {
+        EndpointSnapshot {
+            snapshot: Arc::new(crate::shell::tests::snapshot()),
+            generation: Some(generation),
+        }
+    }
+
+    #[test]
+    fn online_requires_a_snapshot() {
+        let mut state = EndpointState::Connecting {
+            last: None,
+            connected: false,
+            generation: None,
+        };
+        state.set_status(ClientEndpointStatus::Online);
+        assert_eq!(state.status(), ClientEndpointStatus::Connecting);
+        assert!(!state.usable());
+        state.cache(snapshot(1));
+        assert_eq!(state.status(), ClientEndpointStatus::Online);
+        assert!(state.usable());
+    }
+
+    #[test]
+    fn a_reconnect_requires_its_own_generation_snapshot() {
+        let mut state = EndpointState::Connecting {
+            last: Some(snapshot(1)),
+            connected: true,
+            generation: Some(2),
+        };
+        assert!(state.stale());
+        state.cache(snapshot(1));
+        assert!(state.stale());
+        state.cache(snapshot(2));
+        assert!(state.usable());
+    }
+
+    #[test]
+    fn caching_cannot_clear_a_failure_or_make_its_last_snapshot_usable() {
+        for status in [
+            ClientEndpointStatus::Reconnecting,
+            ClientEndpointStatus::Attention,
+        ] {
+            let mut state = EndpointState::Online(snapshot(1));
+            state.set_status(status);
+            state.cache(snapshot(2));
+            assert_eq!(state.status(), status);
+            assert!(state.stale());
+            assert_eq!(state.last().expect("retained snapshot").generation, Some(2));
+        }
     }
 }

@@ -122,9 +122,8 @@ fn registered_names_where(
         .map(|(name, _)| name)
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LaunchKind {
-    #[default]
     Fresh,
     Restored,
     AgentResume,

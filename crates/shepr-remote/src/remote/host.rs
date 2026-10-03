@@ -18,9 +18,9 @@ pub fn run_remote_client_bridge(
     // socket may not speak this build's client protocol at all, and the
     // client must still read a typed mismatch rather than an EOF it would
     // retry forever.
-    if !shepr_protocol::is_this_build(&status.build_id) {
+    if !status.build_id.is_this_build() {
         shepr_platform::answer_remote_bridge(&shepr_protocol::preamble::preamble_for(
-            &status.build_id,
+            &status.build_id.to_string(),
         ))?;
         return Ok(shepr_platform::RemoteBridgeOutcome::Closed);
     }

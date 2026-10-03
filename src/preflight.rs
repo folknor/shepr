@@ -165,20 +165,10 @@ fn local_offer(status: &RuntimeStatus) -> String {
          Restarting it stops that server, which ends every pane process it hosts.\n\
          The saved layout is restored with fresh shells, and agents are resumed where they can be.\n\
          Restart it now? [y/N] ",
-        display_local_identity(&status.build_id),
-        display_local_identity(&status.boot_id),
+        status.build_id,
+        status.boot_id,
         shepr_protocol::BUILD_ID
     )
-}
-
-/// Local server identities are interpolated into a terminal prompt. Keep them
-/// to printable single tokens, matching the remote identity display rule.
-fn display_local_identity(value: &str) -> &str {
-    if !value.is_empty() && value.chars().all(|ch| ch.is_ascii_graphic()) {
-        value
-    } else {
-        "unknown"
-    }
 }
 
 fn remote_offer(machine: &MachineConfig, server: &DifferentBuildServer) -> String {
@@ -203,14 +193,14 @@ fn remote_offer(machine: &MachineConfig, server: &DifferentBuildServer) -> Strin
 /// and a still-different one is offered again, up to the local offer limit.
 fn restart_local(
     mut probe: impl FnMut() -> Option<RuntimeStatus>,
-    mut stop: impl FnMut(&str) -> Result<(), ServerStopError>,
+    mut stop: impl FnMut(&shepr_protocol::BootId) -> Result<(), ServerStopError>,
     decide: Option<&mut dyn FnMut(&RuntimeStatus) -> RestartDecision>,
 ) -> RestartResult {
     RestartResult::offer(
         crate::limits::MAX_LOCAL_OFFERS,
         decide,
         &mut probe,
-        |status| !shepr_protocol::is_this_build(&status.build_id),
+        |status| !status.build_id.is_this_build(),
         |status| match stop(&status.boot_id) {
             Ok(()) => Ok(RemoteStop::Stopped),
             Err(ServerStopError::NotRunning { .. }) => Ok(RemoteStop::NoServer),
@@ -403,8 +393,8 @@ mod tests {
     fn different_build_server() -> DifferentBuildServer {
         DifferentBuildServer {
             executable: RemoteExecutable::parse("/usr/bin/shepr").expect("test precondition"),
-            build_id: "ffffffffffffffff".into(),
-            boot_id: "17-23".into(),
+            build_id: "ffffffffffffffff".parse().expect("build identity"),
+            boot_id: "17-23".parse().expect("boot identity"),
         }
     }
 
@@ -589,13 +579,20 @@ mod tests {
     }
 
     #[test]
-    fn local_restart_offer_does_not_print_untrusted_identity_controls() {
-        let offer = local_offer(&status("build\u{1b}[2J", "boot\nforged"));
-        assert!(
-            offer.contains("server build unknown, boot unknown"),
-            "{offer}"
-        );
-        assert!(!offer.contains('\u{1b}'), "{offer:?}");
+    fn local_restart_identity_controls_are_rejected_before_the_offer() {
+        for (build_id, boot_id) in [
+            ("build\u{1b}[2J", "17-23"),
+            ("0123456789abcdef", "boot\nforged"),
+        ] {
+            let value = serde_json::json!({
+                "id": "status",
+                "result": {
+                    "type": "pong", "version": "1.0", "build_id": build_id,
+                    "boot_id": boot_id, "starting": false, "stopping": false,
+                },
+            });
+            assert!(serde_json::from_value::<shepr_api::schema::SuccessResponse>(value).is_err());
+        }
     }
 
     #[test]
@@ -624,10 +621,9 @@ mod tests {
     fn status(build_id: &str, boot_id: &str) -> RuntimeStatus {
         RuntimeStatus {
             version: "0.0.0-test".into(),
-            build_id: build_id.into(),
-            boot_id: boot_id.into(),
-            stopping: false,
-            starting: false,
+            build_id: build_id.parse().expect("build identity"),
+            boot_id: boot_id.parse().expect("boot identity"),
+            lifecycle: shepr_api::RuntimeLifecycle::Running,
         }
     }
 
@@ -642,7 +638,7 @@ mod tests {
     fn boot_mismatch() -> ServerStopError {
         ServerStopError::BootMismatch {
             label: "server".into(),
-            expected_boot_id: "1-1".into(),
+            expected_boot_id: "1-1".parse().expect("boot identity"),
             detail: "it is boot 2-2".into(),
         }
     }
@@ -680,7 +676,7 @@ mod tests {
             let stopped = std::cell::RefCell::new(Vec::new());
             let result = {
                 let mut decide = |status: &RuntimeStatus| {
-                    asked.borrow_mut().push(status.boot_id.clone());
+                    asked.borrow_mut().push(status.boot_id.to_string());
                     if answers.borrow_mut().remove(0) {
                         RestartDecision::Restart
                     } else {
@@ -699,7 +695,7 @@ mod tests {
                         }
                     },
                     |boot| {
-                        stopped.borrow_mut().push(boot.to_owned());
+                        stopped.borrow_mut().push(boot.to_string());
                         stops.borrow_mut().remove(0)
                     },
                     prompt,

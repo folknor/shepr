@@ -1,6 +1,4 @@
-use super::{
-    ClientEndpointId, ClientEndpointStatus, Committed, EndpointChoice, EndpointRegistry, ViewLease,
-};
+use super::{ClientEndpointId, Committed, EndpointChoice, EndpointRegistry, ViewLease};
 use crate::shell::ClientShellState;
 use shepr_protocol::{
     BootId, ClientHostThemeUpdate, ClientMessage, RequestId, TerminalGeometry,
@@ -86,7 +84,7 @@ pub(crate) fn selection_wait_notice_needed(
     shell: &ClientShellState,
 ) -> bool {
     matches!(
-        target_readiness(target, choice.shown().is_some(), None, endpoints, shell),
+        target_readiness(target, choice.live().is_some(), None, endpoints, shell),
         TargetReadiness::Waiting
     )
 }
@@ -109,14 +107,13 @@ pub(crate) fn surface_interest_request(
 /// from that metadata; `begin_preparing` runs before `turn_on`, so every send happens with the
 /// `Preparing` installed.
 pub fn start_move<'a>(
-    choice: &mut EndpointChoice,
     endpoints: &mut EndpointRegistry,
-    shell: &ClientShellState,
-    baseline: impl FnOnce() -> HostBaseline<'a>,
+    shell: &mut ClientShellState,
+    baseline: impl FnOnce(&ClientShellState) -> HostBaseline<'a>,
     serial: &mut u64,
     now: Instant,
 ) -> StartOutcome {
-    let Some(pending) = choice.pending_start() else {
+    let Some(pending) = shell.endpoints.choice.pending_start() else {
         return StartOutcome::Idle;
     };
     let (generation, boot_id, minimum_revision) = match target_readiness(
@@ -128,7 +125,9 @@ pub fn start_move<'a>(
     ) {
         TargetReadiness::Waiting => return StartOutcome::Waiting,
         TargetReadiness::Abandon => {
-            return choice
+            return shell
+                .endpoints
+                .choice
                 .abandon()
                 .map_or(StartOutcome::Waiting, StartOutcome::Abandoned);
         }
@@ -139,16 +138,20 @@ pub fn start_move<'a>(
             minimum_revision,
         } => (generation, boot_id, minimum_revision),
     };
-    let baseline = baseline();
+    let target = pending.to.clone();
+    let baseline = baseline(shell);
     let lease = ViewLease {
-        endpoint_id: pending.to.clone(),
+        endpoint_id: target,
         generation,
         boot_id,
         minimum_revision,
     };
     let request: RequestId = format!("client-shell-view:{serial}:on").into();
     *serial = serial.saturating_add(1);
-    choice.begin_preparing(lease.clone(), request.clone(), baseline.geometry, now);
+    shell
+        .endpoints
+        .choice
+        .begin_preparing(lease.clone(), request.clone(), baseline.geometry, now);
     turn_on(endpoints, &lease, &request, &baseline);
     StartOutcome::Started
 }
@@ -199,18 +202,18 @@ pub fn send_focus(choice: &mut EndpointChoice, endpoints: &mut EndpointRegistry)
 /// baseline and `ReplayHostEffects`; a failed send there does not undo the switch, it is a
 /// connection failure handled next turn.
 pub fn commit_move(
-    choice: &mut EndpointChoice,
     endpoints: &mut EndpointRegistry,
     shell: &mut ClientShellState,
     host_focused: bool,
 ) -> Result<Option<Committed>, String> {
-    let Some(preparing) = choice.preparing() else {
+    let Some(preparing) = shell.endpoints.choice.preparing() else {
         return Ok(None);
     };
     let Some(surface) = preparing.ready() else {
         return Ok(None);
     };
-    let lease = preparing.lease();
+    let lease = preparing.lease().clone();
+    let surface = surface.clone();
     // A failed send removes the connection at once and queues its failure for the next
     // turn. That loss must decide the move (an interrupted switch), not a commit to a
     // connection that is gone or a failure reported against it.
@@ -228,13 +231,15 @@ pub fn commit_move(
         return Err("endpoint move lost its coherent snapshot/surface pair".into());
     }
     let target = lease.endpoint_id.clone();
-    shell.set_endpoint_status(&target, ClientEndpointStatus::Online);
-    if !shell.endpoint_projection_available(&target) || !shell.activate_endpoint_projection(&target)
-    {
+    let previous = shell.endpoints.choice.live().cloned();
+    if !shell.endpoint_usable(&target) || !shell.activate_endpoint_projection(&target) {
         return Err("endpoint projection is unavailable".into());
     }
-    shell.receive_pane_surface_from(surface.clone(), lease.generation);
-    let committed = choice.commit();
+    shell.receive_pane_surface_from(surface, lease.generation);
+    let committed = Some(Committed {
+        previous,
+        shown: target.clone(),
+    });
     endpoints.send_to(
         &target,
         &ClientMessage::ClientShellFocus {
@@ -266,9 +271,9 @@ mod tests {
     use crate::tests::endpoint_choice::{Fixture, RecordingTransport, boot, remote, snapshot};
     fn start(f: &mut Fixture) -> StartOutcome {
         let host_geometry = f.client.state.reported_geometry;
-        let shell = &f.client.state.shell;
+        let shell = &mut f.client.state.shell;
         let theme = &f.client.state.host_theme_updates;
-        let baseline = || HostBaseline {
+        let baseline = |shell: &ClientShellState| HostBaseline {
             geometry: crate::shell_runtime::view_geometry(
                 host_geometry,
                 shell.surface_size(host_geometry.cols(), host_geometry.rows()),
@@ -276,7 +281,6 @@ mod tests {
             theme,
         };
         start_move(
-            &mut f.client.state.choice,
             &mut f.client.write_stream,
             shell,
             baseline,
@@ -316,7 +320,7 @@ mod tests {
         f.client.write_stream.set_viewed(&remote(), true);
         assert_eq!(start(&mut f), StartOutcome::Started);
         let first = f.on_request();
-        f.client.state.choice.fail_move();
+        f.client.state.shell.endpoints.choice.fail_move();
         f.pick(remote());
         assert_eq!(start(&mut f), StartOutcome::Started);
         assert_ne!(first, f.on_request());
@@ -327,7 +331,7 @@ mod tests {
         f.pick(remote());
         f.target.fail_next();
         assert_eq!(start(&mut f), StartOutcome::Started);
-        assert!(f.client.state.choice.preparing().is_some());
+        assert!(f.client.state.shell.endpoints.choice.preparing().is_some());
         assert!(f.client.write_stream.connection(&remote()).is_none());
         assert_eq!(f.client.write_stream.take_failures().len(), 1);
     }
@@ -338,7 +342,7 @@ mod tests {
         f.pick(remote());
         assert_eq!(start(&mut f), StartOutcome::Abandoned(remote()));
         assert_eq!(
-            f.client.state.choice.shown(),
+            f.client.state.shell.endpoints.choice.live(),
             Some(&ClientEndpointId::Local)
         );
     }
@@ -355,9 +359,9 @@ mod tests {
     #[test]
     fn start_move_restarts_a_failed_move_only_on_another_generation() {
         let mut f = Fixture::new();
-        f.client.state.choice = EndpointChoice::waiting_for(remote());
+        f.client.state.shell.endpoints.choice = EndpointChoice::waiting_for(remote());
         assert_eq!(start(&mut f), StartOutcome::Started);
-        f.client.state.choice.fail_move();
+        f.client.state.shell.endpoints.choice.fail_move();
         f.target.take();
         assert_eq!(start(&mut f), StartOutcome::Idle);
         assert!(f.target.take().is_empty());
@@ -384,17 +388,9 @@ mod tests {
         );
         let messages = f.target.take();
         assert!(!messages.is_empty());
-        assert!(
-            commit_move(
-                &mut f.client.state.choice,
-                &mut f.client.write_stream,
-                &mut f.client.state.shell,
-                true
-            )
-            .is_err()
-        );
+        assert!(commit_move(&mut f.client.write_stream, &mut f.client.state.shell, true).is_err());
         assert_eq!(
-            f.client.state.choice.shown(),
+            f.client.state.shell.endpoints.choice.live(),
             Some(&ClientEndpointId::Local)
         );
         assert!(
@@ -412,14 +408,9 @@ mod tests {
         f.evidence();
         f.target.take();
         assert!(
-            commit_move(
-                &mut f.client.state.choice,
-                &mut f.client.write_stream,
-                &mut f.client.state.shell,
-                false
-            )
-            .expect("commit")
-            .is_some()
+            commit_move(&mut f.client.write_stream, &mut f.client.state.shell, false)
+                .expect("commit")
+                .is_some()
         );
         assert!(matches!(
             f.target.take().as_slice(),
@@ -436,16 +427,14 @@ mod tests {
         f.evidence();
         f.target.fail_next();
         assert!(
-            commit_move(
-                &mut f.client.state.choice,
-                &mut f.client.write_stream,
-                &mut f.client.state.shell,
-                true
-            )
-            .expect("commit")
-            .is_some()
+            commit_move(&mut f.client.write_stream, &mut f.client.state.shell, true)
+                .expect("commit")
+                .is_some()
         );
-        assert_eq!(f.client.state.choice.shown(), Some(&remote()));
+        assert_eq!(
+            f.client.state.shell.endpoints.choice.live(),
+            Some(&remote())
+        );
         assert_eq!(f.client.write_stream.take_failures().len(), 1);
     }
     #[test]
@@ -455,7 +444,7 @@ mod tests {
         f.pick(ClientEndpointId::Local);
         assert_eq!(
             release_unwanted(
-                &f.client.state.choice,
+                &f.client.state.shell.endpoints.choice,
                 &mut f.client.write_stream,
                 &f.client.state.shell,
                 &mut f.client.next_view_serial

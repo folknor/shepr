@@ -75,7 +75,8 @@ impl PaneRuntime {
         self.terminal.wheel_routing()
     }
 
-    pub fn wheel_routing_for_modes(&self, modes: shepr_vt::InputModes) -> WheelRouting {
+    /// Choose input routing from one captured set of terminal modes.
+    pub fn wheel_routing_for_modes(modes: shepr_vt::InputModes) -> WheelRouting {
         PaneTerminal::wheel_routing_for_modes(modes)
     }
 
@@ -135,7 +136,7 @@ impl PaneRuntime {
         position: shepr_termio::input::mouse::Position,
         modifiers: crossterm::event::KeyModifiers,
     ) -> Option<Vec<u8>> {
-        if self.wheel_routing_for_modes(modes) != WheelRouting::MouseReport {
+        if PaneTerminal::wheel_routing_for_modes(modes) != WheelRouting::MouseReport {
             return None;
         }
         self.terminal
@@ -160,7 +161,7 @@ impl PaneRuntime {
         modes: shepr_vt::InputModes,
         kind: crossterm::event::MouseEventKind,
     ) -> Option<Vec<u8>> {
-        if self.wheel_routing_for_modes(modes) != WheelRouting::AlternateScroll {
+        if PaneTerminal::wheel_routing_for_modes(modes) != WheelRouting::AlternateScroll {
             return None;
         }
         let key = match kind {

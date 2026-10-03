@@ -64,6 +64,7 @@ impl App {
         ) else {
             return Err(pane_missing(&params.pane_id).into());
         };
+        let public_number = prepared.public_id.number();
         let runtime = match self.launch_pane(
             prepared.pane_id,
             prepared.public_id,
@@ -78,7 +79,6 @@ impl App {
             pane_id,
             terminal,
             prepared_layout,
-            public_number,
             ..
         } = prepared;
         let terminal_id = terminal.id.clone();
@@ -90,13 +90,7 @@ impl App {
             return rejected("the split target is no longer available");
         };
         self.install_terminal_runtime(terminal_id, runtime);
-        let effects = EndpointEffects {
-            shell_projection_changed: true,
-            pane_surface_changed: true,
-            focus_changed: true,
-            layout_changed: true,
-            ..EndpointEffects::default()
-        };
+        let effects = EndpointEffects::from(&outcome);
         let Some(pane) = self.pane_info(outcome.workspace_index, outcome.pane_id) else {
             return rejected_with_effects("the new pane is unavailable", effects);
         };
@@ -114,13 +108,7 @@ impl App {
     /// the pane already holds focus.
     pub(super) fn handle_pane_focus(&mut self, target: &PaneTarget) -> HandlerResult {
         let (ws_idx, pane_id) = self.endpoint_pane(&target.pane_id)?;
-        let focus_changed = self.state.focus_pane_in_workspace(ws_idx, pane_id);
-        let effects = EndpointEffects {
-            shell_projection_changed: focus_changed,
-            pane_surface_changed: focus_changed,
-            focus_changed,
-            ..EndpointEffects::default()
-        };
+        let effects = self.state.focus_pane_in_workspace(ws_idx, pane_id).into();
 
         let Some(pane) = self.pane_info(ws_idx, pane_id) else {
             return Err(HandlerError {
@@ -139,24 +127,15 @@ impl App {
 
     pub(super) fn handle_pane_input_set(&mut self, params: &PaneInputSetParams) -> HandlerResult {
         let (ws_idx, pane_id) = self.endpoint_pane(&params.pane_id)?;
-        let Some(pane) = self
-            .state
-            .workspaces
-            .get_mut(ws_idx)
-            .and_then(|workspace| workspace.pane_state_mut(pane_id))
-        else {
-            return Err(pane_missing(&params.pane_id).into());
-        };
         let right_click_passthrough = matches!(
             params.right_click,
             shepr_protocol::command::PaneRightClickTarget::Pane
         );
-        let changed = pane.right_click_passthrough != right_click_passthrough;
-        pane.right_click_passthrough = right_click_passthrough;
-        Handled::done_with_effects(EndpointEffects {
-            shell_projection_changed: changed,
-            ..EndpointEffects::default()
-        })
+        let outcome = self
+            .state
+            .set_pane_input(ws_idx, pane_id, right_click_passthrough)
+            .ok_or_else(|| pane_missing(&params.pane_id))?;
+        Handled::done_with_effects(outcome.into())
     }
 
     pub(super) fn handle_pane_rename(&mut self, params: PaneRenameParams) -> HandlerResult {
@@ -170,22 +149,11 @@ impl App {
         else {
             return Err(pane_missing(&params.pane_id).into());
         };
-        let Some(terminal) = self.state.terminals.get_mut(&terminal_id) else {
-            return Err(pane_missing(&params.pane_id).into());
-        };
-        let label = normalized_user_label(params.label);
-        let changed = terminal.manual_label() != label.as_deref();
-        if changed {
-            match label {
-                Some(label) => terminal.set_manual_label(label),
-                None => terminal.clear_manual_label(),
-            }
-            self.state.mark_session_dirty();
-        }
-        let effects = EndpointEffects {
-            shell_projection_changed: changed,
-            ..EndpointEffects::default()
-        };
+        let outcome = self
+            .state
+            .rename_terminal(&terminal_id, normalized_user_label(params.label))
+            .ok_or_else(|| pane_missing(&params.pane_id))?;
+        let effects = outcome.into();
         let Some(pane) = self.pane_info(ws_idx, pane_id) else {
             return Err(HandlerError {
                 error: pane_missing(&params.pane_id),
@@ -203,36 +171,16 @@ impl App {
 
     pub(super) fn handle_pane_close(&mut self, target: &PaneTarget) -> HandlerResult {
         let (ws_idx, pane_id) = self.endpoint_pane(&target.pane_id)?;
-        let focus_before = self
-            .state
-            .workspaces
-            .get(ws_idx)
-            .map(shepr_mux::workspace::Workspace::focused_pane_id);
         let Some(plan) = self.state.prepare_pane_removal(ws_idx, pane_id) else {
             return Err(pane_missing(&target.pane_id).into());
         };
         let PaneRemovalCommit::Removed(outcome) = self.state.commit_pane_removal(&plan) else {
             return Err(pane_missing(&target.pane_id).into());
         };
-        let workspace_removed =
-            outcome.removal.scope == shepr_mux::workspace::PaneRemovalScope::Workspace;
-        let focus_changed = !workspace_removed
-            && focus_before.is_some_and(|focused| {
-                self.state
-                    .workspaces
-                    .get(ws_idx)
-                    .is_some_and(|workspace| workspace.focused_pane_id() != focused)
-            });
+        let effects = EndpointEffects::from(&outcome);
         self.shutdown_detached_terminal_runtimes(&outcome.detached_terminal_ids);
 
-        Handled::done_with_effects(EndpointEffects {
-            shell_projection_changed: true,
-            pane_surface_changed: true,
-            focus_changed,
-            layout_changed: true,
-            workspace_membership_changed: workspace_removed,
-            ..EndpointEffects::default()
-        })
+        Handled::done_with_effects(effects)
     }
 }
 

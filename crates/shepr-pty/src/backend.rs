@@ -64,10 +64,6 @@ pub struct PaneChild {
 }
 
 impl PaneChild {
-    pub fn id(&self) -> u32 {
-        self.handle.pid()
-    }
-
     pub fn process_id(&self) -> shepr_platform::Pid {
         self.handle.process_id()
     }
@@ -244,7 +240,7 @@ pub fn spawn_pty(
     let pid = fork_child(&plan)?;
     drop(slave);
     // No watcher can reap this child yet, so pidfd_open names this fork.
-    let Some(handle) = shepr_platform::ProcessHandle::open_process(pid) else {
+    let Some(handle) = shepr_platform::ProcessHandle::open(pid) else {
         // SAFETY: this fork has never been handed to a waiter, so its pid
         // cannot have been reused. This is only the failed acquisition path.
         if unsafe { libc::kill(pid.as_pid_t(), libc::SIGKILL) } != 0 {
@@ -734,7 +730,7 @@ mod tests {
         let cmd = fixture_command(&[Step::Sleep(std::time::Duration::from_secs(30))]);
         let mut spawned =
             spawn_pty(test_geometry(), &cmd, ignore_status()).expect("pty setup succeeds");
-        let pid = libc::pid_t::try_from(spawned.child.id()).expect("pid fits pid_t");
+        let pid = spawned.child.process_id().as_pid_t();
 
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         let foreground = loop {
@@ -875,11 +871,12 @@ mod tests {
         assert!(leaked > 2, "test precondition");
         let cmd = fixture_command(&[Step::Sleep(std::time::Duration::from_secs(30))]);
         let (mut spawned, _) = spawn_and_read_status(&cmd);
-        let fds: Vec<String> = std::fs::read_dir(format!("/proc/{}/fd", spawned.child.id()))
-            .expect("list child fds")
-            .filter_map(Result::ok)
-            .map(|entry| entry.file_name().to_string_lossy().into_owned())
-            .collect();
+        let fds: Vec<String> =
+            std::fs::read_dir(format!("/proc/{}/fd", spawned.child.process_id()))
+                .expect("list child fds")
+                .filter_map(Result::ok)
+                .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                .collect();
         spawned.child.kill().expect("kill the shell");
         spawned.child.wait().expect("reap the shell");
         // SAFETY: closes the fd duplicated above.

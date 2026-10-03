@@ -27,7 +27,7 @@ impl ClientShellState {
         };
         let rows = self
             .navigator_index
-            .rows(&self.active_endpoint_id, &navigator);
+            .rows(self.endpoints.presented(), &navigator);
         navigator.selected = rows
             .iter()
             .find(|row| row.current)
@@ -41,7 +41,7 @@ impl ClientShellState {
         };
         let rows = self
             .navigator_index
-            .rows(&self.active_endpoint_id, navigator);
+            .rows(self.endpoints.presented(), navigator);
         if rows.is_empty() {
             navigator.selected = None;
             return;
@@ -64,7 +64,7 @@ impl ClientShellState {
         };
         let rows = self
             .navigator_index
-            .rows(&self.active_endpoint_id, navigator);
+            .rows(self.endpoints.presented(), navigator);
         let viewport_rows = viewport_rows.max(1);
         navigator.scroll = scroll.min(rows.len().saturating_sub(viewport_rows));
         let selected = crate::shell::navigation::aggregate_navigation::navigator_selected_index(
@@ -82,7 +82,7 @@ impl ClientShellState {
         };
         let rows = self
             .navigator_index
-            .rows(&self.active_endpoint_id, navigator);
+            .rows(self.endpoints.presented(), navigator);
         let Some(selected) =
             crate::shell::navigation::aggregate_navigation::navigator_selected_index(
                 &rows, navigator,
@@ -118,7 +118,7 @@ impl ClientShellState {
             ClientShellOverlay::Navigator(navigator) => {
                 let rows = self
                     .navigator_index
-                    .rows(&self.active_endpoint_id, navigator);
+                    .rows(self.endpoints.presented(), navigator);
                 crate::shell::navigation::aggregate_navigation::selected_navigator_target(
                     &rows, navigator,
                 )
@@ -159,7 +159,7 @@ impl ClientShellState {
         self.navigate_workspace_id
             .as_ref()
             .filter(|target| {
-                target.endpoint_id == self.active_endpoint_id
+                target.endpoint_id == *self.endpoints.presented()
                     && self.navigation_target_valid(target)
             })
             .map(|target| target.workspace_id.clone())
@@ -193,7 +193,7 @@ impl ClientShellState {
         };
         let mut label_lookup = None;
         if let Some(cwd) = cwd.as_deref()
-            && self.endpoint_is_online(&self.active_endpoint_id)
+            && self.endpoint_usable(self.endpoints.presented())
         {
             label_lookup = self.submit(
                 shepr_protocol::command::EndpointCommand::WorkspaceCheckoutRoot(
@@ -464,7 +464,7 @@ impl ClientShellState {
                 let last = self.overlay.as_ref().and_then(|overlay| match overlay {
                     ClientShellOverlay::Navigator(navigator) => self
                         .navigator_index
-                        .rows(&self.active_endpoint_id, navigator)
+                        .rows(self.endpoints.presented(), navigator)
                         .last()
                         .map(|row| row.target.clone()),
                     _ => None,

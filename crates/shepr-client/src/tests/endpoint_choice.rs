@@ -205,7 +205,7 @@ impl Fixture {
         )
     }
     pub(crate) fn pick(&mut self, id: ClientEndpointId) {
-        self.client.state.choice.select(id, None);
+        self.client.state.shell.endpoints.choice.select(id, None);
     }
     pub(crate) fn reconcile(&mut self) {
         self.client.reconcile(self.now).expect("reconcile");
@@ -324,17 +324,17 @@ impl Fixture {
         .expect("input");
     }
     fn assert_views(&self) {
-        if let Some(shown) = self.client.state.choice.shown()
+        if let Some(shown) = self.client.state.shell.endpoints.choice.live()
             && self.client.write_stream.connection(shown).is_some()
         {
             assert!(self.client.write_stream.viewed(shown));
         }
         for id in [ClientEndpointId::Local, remote()] {
-            if !self.client.state.choice.wants_view(&id) {
+            if !self.client.state.shell.endpoints.choice.wants_view(&id) {
                 assert!(!self.client.write_stream.viewed(&id));
             }
         }
-        if let Some(shown) = self.client.state.choice.shown() {
+        if let Some(shown) = self.client.state.shell.endpoints.choice.live() {
             assert!(self.client.state.shell.endpoint_is_active(shown));
         }
     }
@@ -433,7 +433,7 @@ fn a_failed_move_releases_the_target() {
     for cause in ["ack", "timeout", "focus"] {
         let mut f = Fixture::new();
         if cause == "focus" {
-            f.client.state.choice.select(
+            f.client.state.shell.endpoints.choice.select(
                 remote(),
                 Some(shell::ClientEndpointFocusTarget::Workspace(
                     test_workspace_id("w1"),
@@ -477,7 +477,7 @@ fn a_failed_move_releases_the_target() {
         assert!(off(&f.target.take()));
         assert!(f.client.write_stream.connection(&remote()).is_some());
         assert_eq!(
-            f.client.state.choice.shown(),
+            f.client.state.shell.endpoints.choice.live(),
             Some(&ClientEndpointId::Local)
         );
         f.assert_views();
@@ -490,7 +490,7 @@ fn a_move_timeout_returns_to_the_source_and_reports_it() {
     f.now += limits::ENDPOINT_MOVE_TIMEOUT;
     f.reconcile();
     assert_eq!(
-        f.client.state.choice.shown(),
+        f.client.state.shell.endpoints.choice.live(),
         Some(&ClientEndpointId::Local)
     );
     assert!(f.output().contains("coherent surface in time"));
@@ -517,13 +517,21 @@ fn a_failure_queued_at_the_deadline_reports_the_interruption() {
 #[test]
 fn a_send_failure_while_preparing_with_nothing_shown_waits_for_a_new_connection() {
     let mut f = Fixture::new();
-    f.client.state.choice = EndpointChoice::waiting_for(remote());
+    f.client.state.shell.endpoints.choice = EndpointChoice::waiting_for(remote());
     f.target.fail_next();
     f.reconcile();
-    assert!(f.client.state.choice.preparing().is_some());
+    assert!(f.client.state.shell.endpoints.choice.preparing().is_some());
     f.reconcile();
-    assert!(f.client.state.choice.pending_start().is_some());
-    assert!(f.client.state.choice.shown().is_none());
+    assert!(
+        f.client
+            .state
+            .shell
+            .endpoints
+            .choice
+            .pending_start()
+            .is_some()
+    );
+    assert!(f.client.state.shell.endpoints.choice.live().is_none());
     assert!(f.client.write_stream.connection(&remote()).is_none());
 }
 #[test]
@@ -533,10 +541,13 @@ fn a_failed_commit_send_completes_the_switch_and_then_reports_the_loss() {
     f.evidence();
     f.target.fail_next();
     f.reconcile();
-    assert_eq!(f.client.state.choice.shown(), Some(&remote()));
+    assert_eq!(
+        f.client.state.shell.endpoints.choice.live(),
+        Some(&remote())
+    );
     assert!(f.client.state.shell.endpoint_is_active(&remote()));
     f.reconcile();
-    assert!(f.client.state.choice.shown().is_none());
+    assert!(f.client.state.shell.endpoints.choice.live().is_none());
     assert!(f.output().contains("connection was lost"));
 }
 #[test]
@@ -596,15 +607,25 @@ fn local_selection_waits_for_metadata_while_the_shown_endpoint_stays_live() {
         }],
         &mut f.client.endpoint_commands,
         &mut f.client.write_stream,
-        &mut f.client.state.choice,
         &mut f.client.state.output_writer,
         false,
         &mut f.client.state.shell,
         f.now,
     );
     f.reconcile();
-    assert_eq!(f.client.state.choice.shown(), Some(&remote()));
-    assert!(f.client.state.choice.pending_start().is_some());
+    assert_eq!(
+        f.client.state.shell.endpoints.choice.live(),
+        Some(&remote())
+    );
+    assert!(
+        f.client
+            .state
+            .shell
+            .endpoints
+            .choice
+            .pending_start()
+            .is_some()
+    );
     let frame = f.client.state.shell.compose(100, 30).expect("chrome");
     f.client.state.present_chrome(frame);
     assert!(f.output().contains(
@@ -624,7 +645,6 @@ fn a_remote_pick_without_metadata_waits_with_a_notice() {
         }],
         &mut f.client.endpoint_commands,
         &mut f.client.write_stream,
-        &mut f.client.state.choice,
         &mut f.client.state.output_writer,
         false,
         &mut f.client.state.shell,
@@ -632,7 +652,15 @@ fn a_remote_pick_without_metadata_waits_with_a_notice() {
     );
     assert!(repaint);
     f.reconcile();
-    assert!(f.client.state.choice.pending_start().is_some());
+    assert!(
+        f.client
+            .state
+            .shell
+            .endpoints
+            .choice
+            .pending_start()
+            .is_some()
+    );
     let frame = f.client.state.shell.compose(100, 30).expect("chrome");
     f.client.state.present_chrome(frame);
     assert!(
@@ -651,7 +679,6 @@ fn a_remote_pick_without_a_connection_is_abandoned_with_one_notice() {
         }],
         &mut f.client.endpoint_commands,
         &mut f.client.write_stream,
-        &mut f.client.state.choice,
         &mut f.client.state.output_writer,
         false,
         &mut f.client.state.shell,
@@ -665,21 +692,31 @@ fn a_remote_pick_without_a_connection_is_abandoned_with_one_notice() {
     );
     f.reconcile();
     assert_eq!(
-        f.client.state.choice.shown(),
+        f.client.state.shell.endpoints.choice.live(),
         Some(&ClientEndpointId::Local)
     );
-    assert!(f.client.state.choice.pending_start().is_none());
+    assert!(
+        f.client
+            .state
+            .shell
+            .endpoints
+            .choice
+            .pending_start()
+            .is_none()
+    );
     assert!(f.output().contains("build is not ready"));
 }
 #[test]
 fn a_newer_selection_replaces_a_waiting_one() {
     let mut f = Fixture::new();
-    f.client.state.choice = EndpointChoice::waiting_for(ClientEndpointId::Local);
+    f.client.state.shell.endpoints.choice = EndpointChoice::waiting_for(ClientEndpointId::Local);
     f.pick(remote());
     f.reconcile();
     assert_eq!(
         f.client
             .state
+            .shell
+            .endpoints
             .choice
             .preparing()
             .expect("preparing")
@@ -708,7 +745,6 @@ fn pane_input_and_commands_go_only_to_the_shown_endpoint() {
         actions,
         &mut f.client.endpoint_commands,
         &mut f.client.write_stream,
-        &mut f.client.state.choice,
         &mut f.client.state.output_writer,
         false,
         &mut f.client.state.shell,
@@ -748,7 +784,6 @@ fn commit_retires_the_previous_command_lane() {
         actions,
         &mut f.client.endpoint_commands,
         &mut f.client.write_stream,
-        &mut f.client.state.choice,
         &mut f.client.state.output_writer,
         false,
         &mut f.client.state.shell,
@@ -782,6 +817,8 @@ fn a_resize_reaches_every_viewed_connection_and_drops_the_recorded_surface() {
     assert!(
         f.client
             .state
+            .shell
+            .endpoints
             .choice
             .preparing()
             .expect("preparing")
@@ -807,6 +844,8 @@ fn a_resize_with_an_unchanged_geometry_keeps_the_move_evidence() {
     assert!(
         f.client
             .state
+            .shell
+            .endpoints
             .choice
             .preparing()
             .expect("preparing")
@@ -814,7 +853,10 @@ fn a_resize_with_an_unchanged_geometry_keeps_the_move_evidence() {
             .is_some()
     );
     f.reconcile();
-    assert_eq!(f.client.state.choice.shown(), Some(&remote()));
+    assert_eq!(
+        f.client.state.shell.endpoints.choice.live(),
+        Some(&remote())
+    );
 }
 #[test]
 fn host_theme_updates_reach_a_new_target_before_its_on_request() {
@@ -852,13 +894,13 @@ fn a_reconnected_local_is_prepared_once_per_connection() {
         .write_stream
         .insert(ClientEndpointId::Local, f.local.clone(), 2, false, f.now);
     f.reconcile();
-    assert!(f.client.state.choice.preparing().is_none());
+    assert!(f.client.state.shell.endpoints.choice.preparing().is_none());
     f.inbound(
         &ClientEndpointId::Local,
         ServerMessage::EndpointSnapshot(snapshot(&ClientEndpointId::Local, 1)),
     );
     f.reconcile();
-    assert!(f.client.state.choice.preparing().is_some());
+    assert!(f.client.state.shell.endpoints.choice.preparing().is_some());
     f.local.take();
     f.reconcile();
     assert!(f.local.take().is_empty());
@@ -904,7 +946,7 @@ fn the_shell_projects_the_shown_endpoint() {
         &io::Error::new(io::ErrorKind::BrokenPipe, "lost"),
     );
     f.reconcile();
-    assert!(f.client.state.choice.shown().is_none());
+    assert!(f.client.state.shell.endpoints.choice.live().is_none());
     assert!(f.client.state.shell.endpoint_is_active(&remote()));
 }
 #[test]
@@ -918,10 +960,10 @@ fn local_selection_never_waits_for_a_remote() {
         f.pick(ClientEndpointId::Local);
         f.reconcile();
         assert_eq!(
-            f.client.state.choice.shown(),
+            f.client.state.shell.endpoints.choice.live(),
             Some(&ClientEndpointId::Local)
         );
-        assert!(f.client.state.choice.preparing().is_none());
+        assert!(f.client.state.shell.endpoints.choice.preparing().is_none());
         f.assert_views();
     }
 }
@@ -950,6 +992,8 @@ fn a_failed_local_proof_waits_for_another_generation() {
     assert_eq!(
         f.client
             .state
+            .shell
+            .endpoints
             .choice
             .pending_start()
             .expect("failed")
@@ -967,6 +1011,8 @@ fn a_failed_local_proof_waits_for_another_generation() {
     assert_eq!(
         f.client
             .state
+            .shell
+            .endpoints
             .choice
             .preparing()
             .expect("preparing")
@@ -1025,7 +1071,7 @@ fn host_theme_changes_reach_both_viewed_endpoints_during_a_move() {
 #[test]
 fn navigation_is_acknowledged_and_in_the_first_committed_projection() {
     let mut f = Fixture::new();
-    f.client.state.choice.select(
+    f.client.state.shell.endpoints.choice.select(
         remote(),
         Some(shell::ClientEndpointFocusTarget::Workspace(
             test_workspace_id("w1"),
@@ -1050,7 +1096,7 @@ fn navigation_is_acknowledged_and_in_the_first_committed_projection() {
     f.evidence();
     f.reconcile();
     assert_eq!(
-        f.client.state.choice.shown(),
+        f.client.state.shell.endpoints.choice.live(),
         Some(&ClientEndpointId::Local)
     );
     f.inbound(
@@ -1070,7 +1116,10 @@ fn navigation_is_acknowledged_and_in_the_first_committed_projection() {
         },
     );
     f.reconcile();
-    assert_eq!(f.client.state.choice.shown(), Some(&remote()));
+    assert_eq!(
+        f.client.state.shell.endpoints.choice.live(),
+        Some(&remote())
+    );
     assert!(f.client.state.shell.endpoint_is_active(&remote()));
     assert!(f.output().contains("TARGET"));
 }

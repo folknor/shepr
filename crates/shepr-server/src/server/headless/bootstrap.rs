@@ -314,7 +314,10 @@ mod startup_tests {
         let api =
             shepr_api::start_server(tx, Arc::clone(&stop), &paths).expect("socket before restore");
         let client = shepr_api::client::ApiClient::for_socket(paths.server_address().socket());
-        assert!(client.status().expect("starting pong").starting);
+        assert_eq!(
+            client.status().expect("starting pong").lifecycle,
+            shepr_api::RuntimeLifecycle::Starting
+        );
         let app = app::App::with_paths(
             &config,
             &paths,
@@ -322,16 +325,23 @@ mod startup_tests {
             app::AppPolicy::Test,
             super::super::sample_app_clock(),
         );
-        assert!(
+        assert_eq!(
             client
                 .status()
                 .expect("restore alone leaves gate closed")
-                .starting
+                .lifecycle,
+            shepr_api::RuntimeLifecycle::Starting
         );
         let server = HeadlessServer::new(app, rx, api, stop);
-        assert!(client.status().expect("constructed pong").starting);
+        assert_eq!(
+            client.status().expect("constructed pong").lifecycle,
+            shepr_api::RuntimeLifecycle::Starting
+        );
         server.open_client_protocol();
-        assert!(!client.status().expect("ready pong").starting);
+        assert_eq!(
+            client.status().expect("ready pong").lifecycle,
+            shepr_api::RuntimeLifecycle::Running
+        );
         let mut peer = shepr_platform::ipc::connect_local_stream(paths.server_address().socket())
             .expect("TUI connect");
         peer.set_read_timeout(Some(std::time::Duration::from_secs(1)))

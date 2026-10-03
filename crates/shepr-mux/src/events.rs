@@ -110,6 +110,12 @@ impl EventSender {
         }
     }
 
+    /// The pane every event from this sender is tagged with. Payloads that
+    /// also name their pane take it from here, so the two cannot disagree.
+    pub(crate) fn pane_id(&self) -> PaneId {
+        self.origin.0
+    }
+
     fn tag(&self, event: AppEvent) -> AppEvent {
         let (pane_id, generation) = self.origin;
         AppEvent::Runtime {

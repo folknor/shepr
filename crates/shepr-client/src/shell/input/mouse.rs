@@ -683,7 +683,7 @@ impl ClientShellState {
             || point.1 < self.hits.workspace_body.y.saturating_sub(1)
             || point.1 >= drop_bottom
             || self.hits.workspaces.iter().any(|hit| {
-                hit.endpoint_id != self.active_endpoint_id
+                hit.endpoint_id != *self.endpoints.presented()
                     && crate::shell::input::hit_test::contains(hit.rect, point)
             })
         {
@@ -693,7 +693,7 @@ impl ClientShellState {
             .hits
             .workspaces
             .iter()
-            .filter(|hit| hit.endpoint_id == self.active_endpoint_id)
+            .filter(|hit| hit.endpoint_id == *self.endpoints.presented())
             .map(|hit| (Some(hit.workspace_id.clone()), hit.rect.y.saturating_sub(1)))
             .collect::<Vec<_>>();
         let snapshot = self.snapshot.as_deref()?;
@@ -702,7 +702,7 @@ impl ClientShellState {
             .workspaces
             .iter()
             .rev()
-            .find(|hit| hit.endpoint_id == self.active_endpoint_id)?;
+            .find(|hit| hit.endpoint_id == *self.endpoints.presented())?;
         let last_position = snapshot
             .workspaces
             .iter()

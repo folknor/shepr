@@ -122,8 +122,8 @@ fn cross_build_ping_and_conditional_stop_json_is_frozen() {
         id: "cross-build:ping".into(),
         result: ResponseResult::Pong {
             version: "0.1.2".into(),
-            build_id: "0123456789abcdef".into(),
-            boot_id: "17-23".into(),
+            build_id: "0123456789abcdef".parse().expect("build identity"),
+            boot_id: "17-23".parse().expect("boot identity"),
             stopping: false,
             starting: false,
         },
@@ -145,7 +145,7 @@ fn cross_build_ping_and_conditional_stop_json_is_frozen() {
     let stop_request = Request {
         id: "cross-build:stop".into(),
         method: Method::ServerStopIfBoot(ServerStopIfBootParams {
-            expected_boot_id: "17-23".into(),
+            expected_boot_id: "17-23".parse().expect("boot identity"),
         }),
     };
     assert_eq!(
@@ -324,8 +324,8 @@ fn success_response_round_trips() {
         id: "req_1".into(),
         result: ResponseResult::Pong {
             version: "0.1.2".into(),
-            build_id: "0123456789abcdef".into(),
-            boot_id: "17-23".into(),
+            build_id: "0123456789abcdef".parse().expect("build identity"),
+            boot_id: "17-23".parse().expect("boot identity"),
             stopping: true,
             starting: false,
         },

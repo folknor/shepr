@@ -335,7 +335,7 @@ impl ClientShellState {
         let mut outcome = ClientShellInput::default();
         let request = self.submit(command, Work::Plain, &mut outcome);
         if let (Some(workspace_id), Some(request)) = (workspace_id, request)
-            && let Some(target) = self.navigation_target(&self.active_endpoint_id, &workspace_id)
+            && let Some(target) = self.navigation_target(self.endpoints.presented(), &workspace_id)
         {
             self.keep_workspace_highlight_until_snapshot(target, &request, self.now);
         }
@@ -378,12 +378,12 @@ impl ClientShellState {
                 let agents = self.agent_panel_model.targets();
                 let index = crate::shell::navigation::aggregate_navigation::agent_target_index(
                     agents,
-                    &self.active_endpoint_id,
+                    self.endpoints.presented(),
                     snapshot.focused_pane_id.as_deref(),
                     action,
                 )?;
                 let target = agents.get(index)?;
-                if target.endpoint_id != self.active_endpoint_id {
+                if target.endpoint_id != *self.endpoints.presented() {
                     return None;
                 }
                 let target_endpoint_id = target.endpoint_id.clone();

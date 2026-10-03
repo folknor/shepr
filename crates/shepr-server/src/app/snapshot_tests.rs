@@ -457,7 +457,7 @@ async fn capture_follows_live_cwd_arbitration_and_keeps_it_after_exit() {
     {
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
-    assert_eq!(shepr_agent::detect::process_cwd(pid), Some(new.clone()));
+    assert_eq!(shepr_agent::detect::process_cwd(pid,), Some(new.clone()));
     assert_eq!(
         runtime.cwd(),
         Some(old.clone()),
@@ -481,7 +481,7 @@ async fn capture_follows_live_cwd_arbitration_and_keeps_it_after_exit() {
         Some(old.clone())
     );
     assert!(
-        shepr_platform::ProcessHandle::open(pid)
+        shepr_platform::ProcessHandle::open(pid,)
             .expect("the pane child is running")
             .signal(shepr_platform::Signal::Kill)
     );
@@ -491,7 +491,7 @@ async fn capture_follows_live_cwd_arbitration_and_keeps_it_after_exit() {
     {
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
-    assert!(shepr_agent::detect::process_cwd(pid).is_none());
+    assert!(shepr_agent::detect::process_cwd(pid,).is_none());
     let after = capture_from_state_with_runtimes(&state, &runtimes);
     assert_eq!(
         after.workspaces[0]

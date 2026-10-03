@@ -377,7 +377,7 @@ resolved. It reports `ChdirOk` or a chdir or exec errno over a status socket it
 connects after the fork (`launch.rs`). A child-made socket is one no other fork
 can inherit. In shepr-mux, `pane/launch_status.rs` settles each launch from
 those reports. Exec committed while the child lives opens observation of the
-child (`ChildLiveness::live_pid`), starts detection and lets the pane's own
+child (`ChildLiveness::live_process_id`), starts detection and lets the pane's own
 screen supersede its carried history. A reported failure leaves the pane as a
 placeholder that says why. The child watcher, the PTY reader and the
 runtime's teardown only record how the pane ended with its exit arbiter

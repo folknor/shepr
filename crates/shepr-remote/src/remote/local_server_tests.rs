@@ -15,10 +15,9 @@ use std::os::unix::net::UnixListener;
 fn status_of_build(build_id: &str) -> RuntimeStatus {
     RuntimeStatus {
         version: "0.0.0".to_owned(),
-        build_id: build_id.to_owned(),
-        boot_id: "4242-1700000000".to_owned(),
-        stopping: false,
-        starting: false,
+        build_id: build_id.parse().expect("build identity"),
+        boot_id: "4242-1700000000".parse().expect("boot identity"),
+        lifecycle: shepr_api::RuntimeLifecycle::Running,
     }
 }
 
@@ -317,7 +316,7 @@ fn serve_starting_until_released(
                     if request.is_empty() {
                         continue;
                     }
-                    let body = serde_json::json!({"id":"api-client:status","result":{"type":"pong","version":"0.1.0","build_id":shepr_protocol::BUILD_ID,"boot_id":"test","starting":true}});
+                    let body = serde_json::json!({"id":"api-client:status","result":{"type":"pong","version":"0.1.0","build_id":shepr_protocol::BUILD_ID,"boot_id":"17-23","starting":true}});
                     writeln!(stream, "{body}").expect("pong");
                 }
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
@@ -374,7 +373,7 @@ fn a_live_server_is_probed_for_its_status() {
         panic!("a live server that answers is running");
     };
     assert_eq!(status.version, "0.5.5");
-    assert_eq!(status.build_id, shepr_protocol::BUILD_ID);
+    assert_eq!(status.build_id.to_string(), shepr_protocol::BUILD_ID);
 }
 
 #[test]
@@ -446,7 +445,10 @@ fn a_directory_named_like_the_server_is_an_install_error() {
 fn the_version_line_yields_the_version_and_build_id() {
     assert_eq!(
         parse_server_version_line("shepr-server 0.6.0+0123456789abcdef\n"),
-        Some(("0.6.0".to_owned(), "0123456789abcdef".to_owned()))
+        Some((
+            "0.6.0".to_owned(),
+            "0123456789abcdef".parse().expect("build identity")
+        ))
     );
     for bad in [
         "",
@@ -563,7 +565,7 @@ fn the_running_server_status_never_starts_a_server() {
         .expect("a live server answers")
         .expect("a server is running");
     server.join().expect("fake server thread");
-    assert_eq!(status.build_id, other_build_id());
+    assert_eq!(status.build_id.to_string(), other_build_id());
 }
 
 #[test]
@@ -631,7 +633,7 @@ fn a_daemon_that_gives_way_to_an_occupant_waits_for_the_occupant() {
         },
     );
     let status = result.expect("the occupant answers, so the client can attach");
-    assert!(shepr_protocol::is_this_build(&status.build_id));
+    assert!(status.build_id.is_this_build());
 }
 
 #[test]
@@ -656,7 +658,7 @@ fn an_occupant_of_another_build_is_handed_back_once_the_daemon_gave_way() {
         },
     );
     let status = result.expect("the caller's policy decides about the occupant");
-    assert!(!shepr_protocol::is_this_build(&status.build_id));
+    assert!(!status.build_id.is_this_build());
 }
 
 #[test]
@@ -732,7 +734,7 @@ fn a_daemon_refused_by_a_leaving_holder_is_started_again_once_nothing_listens() 
             })
         });
     let status = result.expect("the second daemon owns the directory and answers");
-    assert!(shepr_protocol::is_this_build(&status.build_id));
+    assert!(status.build_id.is_this_build());
     assert_eq!(spawned, 2, "one restart, not one per poll");
     assert!(
         !group_is_gone(group.process_group()),
@@ -758,8 +760,8 @@ fn a_stopping_occupant_is_outlasted_rather_than_attached_to() {
             })
         });
     let status = result.expect("the daemon started after the occupant left answers");
-    assert!(shepr_protocol::is_this_build(&status.build_id));
-    assert!(!status.stopping);
+    assert!(status.build_id.is_this_build());
+    assert_eq!(status.lifecycle, shepr_api::RuntimeLifecycle::Running);
     assert_eq!(
         spawned, 2,
         "the occupant's successor, not a daemon per poll"
@@ -864,9 +866,7 @@ fn launch_against_other_build(
                 boot_id: shepr_protocol::BootId::from_process_clock(
                     answering_pid(pid.get()),
                     Ok(Duration::from_secs(1_700_000_000)),
-                )
-                .as_str()
-                .to_owned(),
+                ),
                 ..other_build()
             }))
         },
@@ -905,7 +905,7 @@ fn another_builds_server_answering_for_a_live_daemon_is_not_blamed_on_it() {
         |daemon| daemon.wrapping_add(1),
     );
     let status = result.expect("the external occupant is handed back to the caller");
-    assert_eq!(status.build_id, other_build_id());
+    assert_eq!(status.build_id.to_string(), other_build_id());
     assert_ne!(group.process_group(), 0);
 }
 
@@ -1112,7 +1112,7 @@ fn ensure_running_hands_back_a_running_mismatch_for_the_bridge() {
         BuildCheck::AtClientHandshake,
     )
     .expect("the typed handshake reports the mismatch, not the launcher");
-    assert_eq!(status.build_id, other_build_id());
+    assert_eq!(status.build_id.to_string(), other_build_id());
     server.join().expect("fake server thread");
     assert_nothing_was_launched(&paths);
 }

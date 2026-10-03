@@ -835,10 +835,15 @@ mod tests {
         let scratch = shepr_test_support::ScratchDir::new("machine-probe-server-build");
         let cache = cache_in(&scratch);
         let mut probe = MachineProbe::default();
+        let other_build = if shepr_protocol::BUILD_ID == "ffffffffffffffff" {
+            "0000000000000000"
+        } else {
+            "ffffffffffffffff"
+        };
         let status = super::super::server_lifecycle::RemoteServerStatus::Running {
             version: Some("old".into()),
-            build_id: Some(format!("{}-other", shepr_protocol::BUILD_ID)),
-            boot_id: Some("17-23".into()),
+            build_id: Some(other_build.parse().expect("canonical build fingerprint")),
+            boot_id: Some("17-23".parse().expect("canonical boot identity")),
         };
         let target = SshTarget::parse("build.example").expect("test precondition");
         let (_, check) = probe

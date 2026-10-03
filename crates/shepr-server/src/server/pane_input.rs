@@ -151,7 +151,12 @@ fn apply_scroll(
         ScrollDirection::Down => MouseEventKind::ScrollDown,
     };
 
-    match input_modes.map(|modes| (modes, runtime.wheel_routing_for_modes(modes))) {
+    match input_modes.map(|modes| {
+        (
+            modes,
+            shepr_mux::pane::PaneRuntime::wheel_routing_for_modes(modes),
+        )
+    }) {
         Some((modes, shepr_mux::pane::WheelRouting::MouseReport)) => {
             runtime.scroll_reset();
             let Some(bytes) = runtime.encode_mouse_wheel_with_modes(

@@ -259,7 +259,7 @@ impl App {
                 );
                 self.abandon_terminal_agent_resume(
                     terminal_id,
-                    shepr_mux::terminal::RestoreFailure::shell_start_failed(&err),
+                    shepr_mux::terminal::PaneStartFailure::shell_start_failed(&err),
                     now,
                 );
                 return AttemptOutcome::Abandoned;
@@ -282,7 +282,7 @@ impl App {
     ) {
         self.abandon_terminal_agent_resume(
             terminal_id,
-            shepr_mux::terminal::RestoreFailure::resume_unavailable(reason),
+            shepr_mux::terminal::PaneStartFailure::resume_unavailable(reason),
             now,
         );
     }
@@ -406,7 +406,7 @@ mod tests {
         for terminal in app.state.terminals.values() {
             assert!(matches!(
                 terminal.restore_error(),
-                Some(shepr_mux::terminal::RestoreFailure::DirectoryUnavailable { path })
+                Some(shepr_mux::terminal::PaneStartFailure::DirectoryUnavailable { path, .. })
                     if *path == missing
             ));
         }
@@ -675,7 +675,7 @@ mod tests {
         assert!(!terminal.agent_resume().is_pending());
         assert!(matches!(
             terminal.restore_error(),
-            Some(shepr_mux::terminal::RestoreFailure::DirectoryUnavailable { .. })
+            Some(shepr_mux::terminal::PaneStartFailure::DirectoryUnavailable { .. })
         ));
     }
 

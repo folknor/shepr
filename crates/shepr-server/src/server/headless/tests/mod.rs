@@ -2261,7 +2261,7 @@ async fn workspace_rename_reprojects_without_copying_connection_config() {
         }),
         &crate::app::EndpointContext::without_geometry(),
     );
-    assert!(outcome.view_changed);
+    assert!(outcome.view_changed());
     server.render_now();
     let renamed = client_shell_snapshot(&control);
     assert_eq!(renamed.workspaces[0].label, "renamed");
@@ -5796,12 +5796,19 @@ async fn client_shell_release_cleanup_does_not_promote_and_survives_disconnect()
         Some(ClientId::test_new(2))
     );
 
+    // Taking the foreground back is not a view change by itself: the host
+    // theme setters invalidate what a changed foreground reaches, and both
+    // clients here present the same theme.
     assert!(
-        server.test_handle_server_event(ServerEvent::ShellPaneInput {
+        !server.test_handle_server_event(ServerEvent::ShellPaneInput {
             client_id: ClientId::test_new(1),
             pane_id: pane_id.parse().expect("test precondition"),
             events: vec![key(shepr_protocol::ClientKeyKind::Press)],
         })
+    );
+    assert_eq!(
+        server.clients.foreground_client_id(),
+        Some(ClientId::test_new(1))
     );
     assert!(
         !input_rx

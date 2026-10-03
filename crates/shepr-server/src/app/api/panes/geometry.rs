@@ -16,17 +16,10 @@ impl App {
         else {
             return Handled::done();
         };
-        let focus_changed = self.state.focus_pane_in_workspace(ws_idx, target_pane_id);
-        let effects = if focus_changed {
-            EndpointEffects {
-                shell_projection_changed: true,
-                pane_surface_changed: true,
-                focus_changed: true,
-                ..EndpointEffects::default()
-            }
-        } else {
-            EndpointEffects::default()
-        };
+        let effects = self
+            .state
+            .focus_pane_in_workspace(ws_idx, target_pane_id)
+            .into();
         Handled::navigating_with_effects(
             EndpointReply::Done,
             params.pane_id.workspace_id().clone(),
@@ -41,26 +34,15 @@ impl App {
         let direction: NavDirection = super::nav_direction(params.direction);
         let area = shepr_mux::workspace::layout_rect(self.state.workspace_layout_area(ws_idx));
         // A resize that moves no split edge is a successful no-op.
-        let changed = self.state.workspaces.get_mut(ws_idx).is_some_and(|ws| {
-            ws.resize_pane(
+        let outcome = self.state.edit_workspace_geometry(ws_idx, |workspace| {
+            workspace.resize_pane(
                 pane_id,
                 direction,
                 crate::limits::DEFAULT_PANE_RESIZE_AMOUNT,
                 area,
             )
         });
-        if changed {
-            self.state.mark_session_dirty();
-        }
-        Handled::done_with_effects(if changed {
-            EndpointEffects {
-                pane_surface_changed: true,
-                layout_changed: true,
-                ..EndpointEffects::default()
-            }
-        } else {
-            EndpointEffects::default()
-        })
+        Handled::done_with_effects(outcome.into())
     }
 
     /// Swaps two panes of one workspace, named by a direction from a pane or by
@@ -90,28 +72,16 @@ impl App {
         let Some((ws_idx, source_pane_id, target_pane_id)) = swap else {
             return Handled::done();
         };
-        let Some(workspace) = self.state.workspaces.get_mut(ws_idx) else {
+        let Some(workspace_id) = self.public_workspace_id(ws_idx) else {
             return Handled::done();
         };
-        let focus_before = workspace.focused_pane_id();
-        if !workspace.swap_panes(source_pane_id, target_pane_id) {
+        let outcome = self
+            .state
+            .swap_workspace_panes(ws_idx, source_pane_id, target_pane_id);
+        if !outcome.changed() {
             return Handled::done();
         }
-        workspace.focus_pane(source_pane_id);
-        let focus_changed = workspace.focused_pane_id() != focus_before;
-        let workspace_id = workspace.id.clone();
-        self.state.mark_session_dirty();
-        Handled::navigating_with_effects(
-            EndpointReply::Done,
-            workspace_id,
-            EndpointEffects {
-                shell_projection_changed: true,
-                pane_surface_changed: true,
-                focus_changed,
-                layout_changed: true,
-                ..EndpointEffects::default()
-            },
-        )
+        Handled::navigating_with_effects(EndpointReply::Done, workspace_id, outcome.into())
     }
 
     /// Toggles the zoom of the pane's workspace, focusing the pane first, and
@@ -127,13 +97,7 @@ impl App {
         Handled::navigating_with_effects(
             EndpointReply::Done,
             params.pane_id.workspace_id().clone(),
-            EndpointEffects {
-                shell_projection_changed: outcome.focus_changed,
-                pane_surface_changed: outcome.changed || outcome.focus_changed,
-                focus_changed: outcome.focus_changed,
-                layout_changed: outcome.changed,
-                ..EndpointEffects::default()
-            },
+            outcome.into(),
         )
     }
 }

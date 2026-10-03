@@ -6,9 +6,7 @@ use crate::shell::ledger::DropReason;
 use crate::shell::presentation::surfaces::Pairing;
 
 use crate::endpoint::{ClientEndpointBootKey, ClientEndpointId};
-use crate::shell::endpoints::{
-    ClientEndpointFocusTarget, ClientShellEndpoint, MachineHit, local_endpoint,
-};
+use crate::shell::endpoints::{ClientEndpointFocusTarget, Endpoints, MachineHit, local_endpoint};
 use crate::shell::input::copy_mode::CopyPipeline;
 use crate::shell::input::word_selection::ClientWordSelection;
 use crate::shell::ledger::Ledger;
@@ -691,8 +689,7 @@ pub struct ClientShellState {
     pub(in crate::shell) last_composed_at: Option<std::time::Instant>,
     pub(in crate::shell) mouse_selection: MouseSelection,
     pub(in crate::shell) hits: ShellHitMap,
-    pub(in crate::shell) endpoints: Vec<ClientShellEndpoint>,
-    pub(in crate::shell) active_endpoint_id: ClientEndpointId,
+    pub(crate) endpoints: Endpoints,
     pub(in crate::shell) collapsed_endpoints: HashSet<ClientEndpointId>,
     /// This is the input-mode authority. A copy session can be parked while its pane
     /// stays focused, so focus alone cannot say whether copy input is active.
@@ -801,8 +798,7 @@ impl ClientShellState {
             last_composed_at: None,
             mouse_selection: MouseSelection::default(),
             hits: ShellHitMap::default(),
-            endpoints,
-            active_endpoint_id: ClientEndpointId::Local,
+            endpoints: Endpoints::new(endpoints),
             collapsed_endpoints: HashSet::new(),
             mode: ClientShellMode::Terminal,
             navigate_workspace_id: None,
@@ -842,7 +838,7 @@ impl ClientShellState {
         }
         let snapshot = self.snapshot.as_deref();
         ClientPresentationLogContext {
-            endpoint: self.active_endpoint_id.clone(),
+            endpoint: self.endpoints.presented().clone(),
             generation: self.active_snapshot_generation,
             boot_id: surface
                 .map(|surface| surface.boot_id.to_string())
@@ -863,7 +859,7 @@ impl ClientShellState {
             // The multi-endpoint sidebar scrolls a flattened row list with endpoint headers
             // and workspace row gaps. An index in this endpoint's snapshot is not that list
             // offset, so let the sidebar reveal the focused workspace from the next snapshot.
-            self.collapsed_endpoints.remove(&self.active_endpoint_id);
+            self.collapsed_endpoints.remove(self.endpoints.presented());
             if self
                 .snapshot
                 .as_deref()
@@ -875,7 +871,7 @@ impl ClientShellState {
             return;
         }
         if self.hits.workspaces.iter().any(|hit| {
-            hit.endpoint_id == self.active_endpoint_id && hit.workspace_id == *workspace_id
+            hit.endpoint_id == *self.endpoints.presented() && hit.workspace_id == *workspace_id
         }) {
             return;
         }
@@ -976,7 +972,7 @@ impl ClientShellState {
         generation: Option<u64>,
     ) {
         let active_boot_key = Some(ClientEndpointBootKey::new(
-            &self.active_endpoint_id,
+            self.endpoints.presented(),
             &snapshot.boot_id,
         ));
         let endpoint_boot_changed =
@@ -1127,7 +1123,7 @@ impl ClientShellState {
             self.navigate_workspace_id = snapshot
                 .focused_workspace_id
                 .as_ref()
-                .and_then(|id| self.navigation_target(&self.active_endpoint_id, id));
+                .and_then(|id| self.navigation_target(self.endpoints.presented(), id));
         }
         let pane_exists = |pane_id: &shepr_protocol::PublicPaneId| {
             snapshot.panes.iter().any(|pane| &pane.pane_id == pane_id)

@@ -127,9 +127,9 @@ impl PtySetup<'_> {
             cwd_candidates: spawned.cwd_candidates,
             program: cmd.program().to_string_lossy().into_owned(),
         };
-        let pid = child.id();
+        let pid = child.process_id();
         crate::logging::pane_spawned(pane_id.raw(), pid);
-        let child_liveness = Arc::new(ChildLiveness::launching(child.process_id(), child.handle()));
+        let child_liveness = Arc::new(ChildLiveness::launching(child.handle()));
         let io: Box<dyn ChildIo> = {
             // Failure cleanup and read effects use the same child identity.
             let startup_child_liveness = Arc::clone(&child_liveness);
@@ -183,7 +183,7 @@ impl PtySetup<'_> {
                     if let Err(kill_err) = child.kill() {
                         warn!(
                             pane = pane_id.raw(),
-                            pid,
+                            %pid,
                             error = %kill_err,
                             "failed to kill pane child after PTY actor startup failed"
                         );

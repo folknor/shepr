@@ -25,7 +25,7 @@ pub(super) fn spawn(
             Err(err) => {
                 tracing::debug!(
                     pane = pane_id.raw(),
-                    pid = child.id(),
+                    pid = %child.process_id(),
                     error = %err,
                     "could not duplicate child pidfd; falling back to child wait"
                 );
@@ -100,7 +100,7 @@ fn reap_on_detached_thread(
     child: PaneChild,
     on_wait: impl FnOnce(std::io::Result<std::process::ExitStatus>) + Send + 'static,
 ) {
-    let pid = child.id();
+    let pid = child.process_id();
     let on_wait: ReaperCompletion = Box::new(on_wait);
     let spawned = std::thread::Builder::new()
         .name("shepr-pane-reaper".into())
@@ -110,7 +110,7 @@ fn reap_on_detached_thread(
         });
     if let Err(err) = spawned {
         tracing::warn!(
-            pid,
+            %pid,
             error = %err,
             "could not start a reaper for a pane child; it stays a zombie until the server exits"
         );
@@ -139,7 +139,7 @@ impl Drop for UnreapedChild {
             Ok(None) => {}
             Err(err) => {
                 tracing::warn!(
-                    pid = child.id(),
+                    pid = %child.process_id(),
                     error = %err,
                     "could not check an abandoned pane child before reaping"
                 );
@@ -147,11 +147,11 @@ impl Drop for UnreapedChild {
         }
         // The pane is gone, so its exit status has no reader; only a failed
         // reap (a possible zombie) is worth a line.
-        let pid = child.id();
+        let pid = child.process_id();
         reap_on_detached_thread(child, move |result| {
             if let Err(err) = result {
                 tracing::warn!(
-                    pid,
+                    %pid,
                     error = %err,
                     "could not reap an abandoned pane child"
                 );

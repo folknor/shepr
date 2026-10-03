@@ -47,7 +47,7 @@ impl ClientLoop {
             }
             self.endpoint_lost(&failure, now)?;
         }
-        if let Some(preparing) = self.state.choice.preparing() {
+        if let Some(preparing) = self.state.shell.endpoints.choice.preparing() {
             if let Some(rejection) = preparing.rejection() {
                 let rejection = rejection.to_owned();
                 self.fail_move(|label| format!("{label}: {rejection}"));
@@ -58,12 +58,12 @@ impl ClientLoop {
             }
         }
         let host_geometry = self.state.reported_geometry;
-        let shell = &self.state.shell;
+        let shell = &mut self.state.shell;
         let theme = &self.state.host_theme_updates;
         // Focus is sent at commit. Geometry and theme are used only if a move is ready to
         // start; deriving the layout on every ordinary event would repeat shell work.
         let focused = shell.host_focus_baseline();
-        let baseline = || HostBaseline {
+        let baseline = |shell: &ClientShellState| HostBaseline {
             geometry: view_geometry(
                 host_geometry,
                 shell.surface_size(host_geometry.cols(), host_geometry.rows()),
@@ -71,7 +71,6 @@ impl ClientLoop {
             theme,
         };
         if let StartOutcome::Abandoned(to) = view::start_move(
-            &mut self.state.choice,
             &mut self.write_stream,
             shell,
             baseline,
@@ -81,13 +80,11 @@ impl ClientLoop {
             let message = format!("{} is not ready", to.display_label());
             present_notice(&mut self.state, message);
         }
-        view::send_focus(&mut self.state.choice, &mut self.write_stream);
-        match view::commit_move(
-            &mut self.state.choice,
+        view::send_focus(
+            &mut self.state.shell.endpoints.choice,
             &mut self.write_stream,
-            &mut self.state.shell,
-            focused,
-        ) {
+        );
+        match view::commit_move(&mut self.write_stream, &mut self.state.shell, focused) {
             Ok(Some(committed)) => {
                 if let Some(previous) = committed.previous {
                     clear_endpoint_host_effects(&mut self.state)?;
@@ -105,7 +102,7 @@ impl ClientLoop {
             Ok(None) => {}
         }
         view::release_unwanted(
-            &self.state.choice,
+            &self.state.shell.endpoints.choice,
             &mut self.write_stream,
             &self.state.shell,
             &mut self.next_view_serial,
@@ -118,7 +115,7 @@ impl ClientLoop {
     /// target's label. The target needs no cleanup: it is no longer wanted, so the release
     /// step of this same turn turns it off.
     fn fail_move(&mut self, notice: impl FnOnce(&str) -> String) {
-        if let Some(failed) = self.state.choice.fail_move() {
+        if let Some(failed) = self.state.shell.endpoints.choice.fail_move() {
             let message = notice(failed.to.display_label());
             present_notice(&mut self.state, message);
         }
@@ -138,11 +135,9 @@ impl ClientLoop {
         self.supervisors
             .record_status(id, failure.generation, status, now);
         self.state.shell.set_machine_diagnostic(id, &diagnostic);
-        let lost = self.state.choice.connection_lost(id);
+        let lost = self.state.shell.transition_endpoint_status(id, status);
         let cancelled = self.endpoint_commands.disconnect(id);
         cancel_endpoint_commands(&mut self.state.shell, cancelled);
-        self.state.shell.mark_endpoint_disconnected(id);
-        self.state.shell.set_endpoint_status(id, status);
         let label = id.display_label();
         match lost {
             Lost::Shown => {

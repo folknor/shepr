@@ -79,13 +79,6 @@ pub fn builds_match(ours: &str, peer: &str) -> bool {
     }
 }
 
-/// Whether a peer that announced `peer` is this exact build. Every build
-/// comparison (the preamble, `ping`, `status`, the CLI's per-command check and
-/// the remote checks) goes through here.
-pub fn is_this_build(peer: &str) -> bool {
-    builds_match(BUILD_ID, peer)
-}
-
 #[cfg(test)]
 mod wire_tests;
 
@@ -109,6 +102,6 @@ mod build_version_tests {
             format!("{}+{}", env!("CARGO_PKG_VERSION"), BUILD_ID)
         );
         assert!(is_identifiable_build_id(BUILD_ID), "{BUILD_ID}");
-        assert!(is_this_build(BUILD_ID));
+        assert!(BuildIdentity::for_this_build().is_this_build());
     }
 }

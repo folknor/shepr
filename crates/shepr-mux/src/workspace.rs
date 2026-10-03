@@ -7,7 +7,7 @@ use crate::limits::FIRST_WORKSPACE_NUMBER;
 use crate::pane::{PaneRuntimeRegistry, PaneState};
 use crate::terminal::TerminalState;
 use shepr_core::layout::{PaneId, TileLayout};
-use shepr_protocol::{TerminalId, WorkspaceId};
+use shepr_protocol::{PublicPaneId, TerminalId, WorkspaceId};
 
 /// Whether a pane mutation changed the surface its clients render.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -352,14 +352,15 @@ impl Workspace {
         }
     }
 
-    /// Prepare one pane and its plain terminal state without starting a child.
-    pub fn prepare(initial_cwd: &Path) -> (Self, TerminalState) {
+    /// Prepare one pane, its terminal state and public id without starting a child.
+    pub fn prepare(initial_cwd: &Path) -> (Self, TerminalState, PublicPaneId) {
         let id = generate_workspace_id();
         let (layout, root_pane) = TileLayout::new();
         let terminal_id = TerminalId::alloc();
         let terminal = TerminalState::new(terminal_id.clone(), initial_cwd.to_path_buf());
         let mut pane = WorkspacePane::new(PaneState::new(terminal_id));
         pane.public_number = 1;
+        let root_public_id = PublicPaneId::new(&id, pane.public_number);
         let workspace = Self::assemble(
             id,
             None,
@@ -369,7 +370,7 @@ impl Workspace {
             HashMap::from([(root_pane, pane)]),
             2,
         );
-        (workspace, terminal)
+        (workspace, terminal, root_public_id)
     }
 
     pub fn commit_new_pane(
@@ -518,9 +519,6 @@ impl Workspace {
 
 #[cfg(test)]
 use shepr_core::layout::Direction;
-#[cfg(test)]
-use shepr_protocol::PublicPaneId;
-
 #[cfg(test)]
 impl Workspace {
     pub fn resolved_identity_cwd(&self) -> Option<PathBuf> {
@@ -684,7 +682,8 @@ mod tests {
     #[test]
     fn preparing_a_split_is_pure_and_commits_its_reserved_identity() {
         let cwd = Path::new("/__shepr_split_missing_directory__");
-        let (mut workspace, _) = Workspace::prepare(cwd);
+        let (mut workspace, _, root_public_id) = Workspace::prepare(cwd);
+        assert_eq!(root_public_id, PublicPaneId::new(&workspace.id, 1));
         let root = workspace.root_pane();
         let geometry = PaneGeometry {
             area: ratatui::layout::Rect::new(0, 0, 80, 24),
@@ -709,6 +708,7 @@ mod tests {
         assert_eq!(split.terminal.cwd(), cwd);
         assert_eq!(split.geometry, spawn_geometry(24, 40, None));
         assert_eq!(split.public_id, PublicPaneId::new(&workspace.id, 2));
+        let public_number = split.public_id.number();
         assert_eq!(split.prepared_layout.focused(), split.pane_id);
         assert!(
             workspace
@@ -716,7 +716,7 @@ mod tests {
                     split.pane_id,
                     split.prepared_layout,
                     split.terminal.id,
-                    split.public_number,
+                    public_number,
                     true
                 )
                 .is_some()

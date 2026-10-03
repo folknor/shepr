@@ -41,7 +41,7 @@ pub(in crate::shell) fn render_collapsed(
         if state.collapsed_endpoints.contains(&endpoint.endpoint_id) {
             continue;
         }
-        if let Some(snapshot) = endpoint.snapshot.as_deref() {
+        if let Some(snapshot) = endpoint.snapshot() {
             if reveal || reveal_focus {
                 let candidate = snapshot
                     .workspaces
@@ -109,7 +109,7 @@ pub(in crate::shell) fn render_collapsed(
                 rect.y,
                 rect.width.saturating_sub(1),
                 &format!("{marker}{label}"),
-                Style::default().fg(if endpoint.status == ClientEndpointStatus::Online {
+                Style::default().fg(if endpoint.state.usable() {
                     palette.text
                 } else {
                     palette.overlay0
@@ -117,7 +117,8 @@ pub(in crate::shell) fn render_collapsed(
             );
             let mut status_badge = Rect::default();
             if !endpoint.endpoint_id.is_local() {
-                let (glyph, _, color) = endpoint_status_presentation(endpoint.status, palette);
+                let (glyph, _, color) =
+                    endpoint_status_presentation(endpoint.state.status(), palette);
                 let width = display_width(glyph).min(rect.width);
                 status_badge = Rect::new(rect.right().saturating_sub(width), rect.y, width, 1);
                 put_right_text(
@@ -143,7 +144,7 @@ pub(in crate::shell) fn render_collapsed(
         if collapsed {
             continue;
         }
-        let Some(snapshot) = endpoint.snapshot.as_deref() else {
+        let Some(snapshot) = endpoint.snapshot() else {
             continue;
         };
         for workspace in &snapshot.workspaces {
@@ -173,7 +174,7 @@ pub(in crate::shell) fn render_collapsed(
                     )),
                 );
             }
-            let stale = endpoint.status != ClientEndpointStatus::Online;
+            let stale = endpoint.state.stale();
             let glyph = status_glyph(
                 workspace.agent_status,
                 config.status_indicators,
@@ -307,7 +308,7 @@ pub(in crate::shell) fn render_expanded(
         if state.collapsed_endpoints.contains(&endpoint.endpoint_id) {
             continue;
         }
-        if let Some(snapshot) = endpoint.snapshot.as_deref() {
+        if let Some(snapshot) = endpoint.snapshot() {
             rows.extend((0..snapshot.workspaces.len()).map(|entry| Row::Workspace {
                 endpoint: endpoint_index,
                 entry,
@@ -330,8 +331,7 @@ pub(in crate::shell) fn render_expanded(
             Row::Workspace { endpoint, entry } => {
                 let endpoint = &state.endpoints[*endpoint];
                 endpoint
-                    .snapshot
-                    .as_deref()
+                    .snapshot()
                     .and_then(|snapshot| {
                         let workspace = snapshot.workspaces.get(*entry)?;
                         let len = crate::shell::sidebar::workspace_rows(
@@ -368,8 +368,7 @@ pub(in crate::shell) fn render_expanded(
             Row::Workspace { endpoint, entry } => {
                 let endpoint = &state.endpoints[*endpoint];
                 endpoint
-                    .snapshot
-                    .as_deref()
+                    .snapshot()
                     .and_then(|snapshot| snapshot.workspaces.get(*entry))
                     .is_some_and(|workspace| {
                         if reveal_navigation {
@@ -445,7 +444,7 @@ pub(in crate::shell) fn render_expanded(
             }
             Row::Workspace { endpoint, entry } => {
                 let endpoint = &state.endpoints[*endpoint];
-                let Some(snapshot) = endpoint.snapshot.as_deref() else {
+                let Some(snapshot) = endpoint.snapshot() else {
                     continue;
                 };
                 let Some(workspace) = snapshot.workspaces.get(*entry) else {
@@ -494,7 +493,7 @@ pub(in crate::shell) fn render_expanded(
                     dragged,
                     palette,
                 );
-                if endpoint.status != ClientEndpointStatus::Online {
+                if endpoint.state.stale() {
                     buffer.set_style(
                         rect,
                         Style::default()
@@ -618,16 +617,13 @@ fn render_endpoint_row(
     if highlighted {
         buffer.set_style(rect, Style::default().bg(palette.active_row_bg));
     }
-    let (glyph, state, color) = endpoint_status_presentation(endpoint.status, palette);
-    let state = if endpoint.status == ClientEndpointStatus::Online {
-        ""
-    } else {
-        state
-    };
+    let (glyph, state, color) = endpoint_status_presentation(endpoint.state.status(), palette);
+    let state = if endpoint.state.usable() { "" } else { state };
     let signal = if auth.required_for(endpoint) {
         "! auth".to_owned()
-    } else if endpoint.status == ClientEndpointStatus::Attention {
-        "! error".to_owned()
+    } else if endpoint.state.status() == ClientEndpointStatus::Attention {
+        // The shared status presentation spells it, Local included.
+        format!("{glyph} {state}")
     } else if endpoint.endpoint_id.is_local() {
         String::new()
     } else if state.is_empty() {

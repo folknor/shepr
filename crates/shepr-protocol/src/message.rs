@@ -102,7 +102,7 @@ pub struct SessionRestoreNotice {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SessionRestoreLoss {
     /// The session file could not be used at all.
-    Unusable { reason: String },
+    Unusable { failure: SessionRestoreFailure },
     /// The session file loaded, and these saved workspaces were dropped whole;
     /// `panes_pruned` says whether workspaces that did restore lost panes too.
     Workspaces {
@@ -114,16 +114,88 @@ pub enum SessionRestoreLoss {
     Panes,
 }
 
-impl SessionRestoreLoss {
-    /// The loss of a session file that loaded, or `None` when nothing in it
-    /// was discarded.
-    pub fn partial(dropped_workspaces: usize, panes_pruned: bool) -> Option<Self> {
-        match std::num::NonZeroUsize::new(dropped_workspaces) {
-            Some(dropped) => Some(Self::Workspaces {
-                dropped,
-                panes_pruned,
-            }),
-            None => panes_pruned.then_some(Self::Panes),
+/// Why a saved session file could not be used. `detail` preserves the
+/// filesystem or schema diagnostic shown to the user; the variant and parse
+/// coordinates keep the outcome machine-readable.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SessionRestoreFailure {
+    /// Reading the file failed for this operating-system reason.
+    Unreadable {
+        kind: SessionIoErrorKind,
+        detail: String,
+    },
+    /// The path resolved to a directory, special file or other non-regular object.
+    NotRegularFile {
+        kind: SessionFileKind,
+        detail: String,
+    },
+    /// The file exceeded the reader's byte limit.
+    TooLarge { limit_bytes: usize },
+    /// JSON decoding or schema validation failed at this location.
+    Unparseable {
+        line: usize,
+        column: usize,
+        category: SessionParseCategory,
+        detail: String,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SessionIoErrorKind {
+    NotFound,
+    PermissionDenied,
+    AlreadyExists,
+    ConnectionRefused,
+    ConnectionReset,
+    ConnectionAborted,
+    NotConnected,
+    AddrInUse,
+    AddrNotAvailable,
+    BrokenPipe,
+    WouldBlock,
+    InvalidInput,
+    InvalidData,
+    ResourceBusy,
+    TimedOut,
+    Interrupted,
+    Unsupported,
+    UnexpectedEof,
+    OutOfMemory,
+    WriteZero,
+    Other,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SessionFileKind {
+    Directory,
+    Fifo,
+    Socket,
+    CharacterDevice,
+    BlockDevice,
+    Other,
+}
+
+/// serde_json's high-level category for a session parse failure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SessionParseCategory {
+    Io,
+    Syntax,
+    Data,
+    Eof,
+}
+
+impl std::fmt::Display for SessionRestoreFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unreadable { detail, .. } | Self::NotRegularFile { detail, .. } => {
+                write!(f, "it could not be read: {detail}")
+            }
+            Self::TooLarge { limit_bytes } => {
+                write!(f, "it exceeds the {limit_bytes}-byte session file limit")
+            }
+            Self::Unparseable { detail, .. } => {
+                write!(f, "it could not be parsed: {detail}")
+            }
         }
     }
 }
@@ -132,8 +204,8 @@ impl std::fmt::Display for SessionRestoreNotice {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let Self { loss, backup_dir } = self;
         let lost = match loss {
-            SessionRestoreLoss::Unusable { reason } => {
-                write!(f, "The saved session was not restored: {reason}.")?;
+            SessionRestoreLoss::Unusable { failure } => {
+                write!(f, "The saved session was not restored: {failure}.")?;
                 None
             }
             SessionRestoreLoss::Workspaces {
@@ -208,6 +280,10 @@ pub enum ServerMessage {
     /// OSC 52 clipboard data forwarded from a PTY through the server.
     Clipboard {
         /// Bytes decoded from OSC 52 and bounded by the terminal parser.
+        #[serde(
+            serialize_with = "codec::serialize_byte_vec",
+            deserialize_with = "codec::deserialize_byte_vec"
+        )]
         data: Vec<u8>,
     },
 
@@ -276,18 +352,16 @@ mod tests {
     }
 
     #[test]
-    fn a_restore_that_lost_nothing_has_no_loss() {
-        assert_eq!(SessionRestoreLoss::partial(0, false), None);
-        assert_eq!(
-            SessionRestoreLoss::partial(0, true),
-            Some(SessionRestoreLoss::Panes)
-        );
-    }
-
-    #[test]
     fn every_loss_names_what_was_lost() {
         let partial = |dropped, pruned| {
-            rendered(SessionRestoreLoss::partial(dropped, pruned).expect("a partial loss"))
+            let loss = match std::num::NonZeroUsize::new(dropped) {
+                Some(dropped) => SessionRestoreLoss::Workspaces {
+                    dropped,
+                    panes_pruned: pruned,
+                },
+                None => SessionRestoreLoss::Panes,
+            };
+            rendered(loss)
         };
         assert!(
             partial(1, false).contains("restored in part: 1 saved workspace could not"),
@@ -305,10 +379,17 @@ mod tests {
             partial(0, true)
         );
         let unusable = rendered(SessionRestoreLoss::Unusable {
-            reason: "it could not be parsed".into(),
+            failure: SessionRestoreFailure::Unparseable {
+                line: 1,
+                column: 2,
+                category: SessionParseCategory::Syntax,
+                detail: "expected a value at line 1 column 2".into(),
+            },
         });
         assert!(
-            unusable.starts_with("The saved session was not restored: it could not be parsed."),
+            unusable.starts_with(
+                "The saved session was not restored: it could not be parsed: expected a value at line 1 column 2."
+            ),
             "{unusable}"
         );
         assert!(unusable.ends_with("copied to /backups before the server first saves over it."));

@@ -6,8 +6,8 @@ mod focus_lane;
 mod preparing;
 pub use preparing::*;
 
-/// Which endpoint the client shows, and the move toward the one it wants. The only owner of
-/// that fact: nothing else records a selection. Plain data: no method takes the registry or
+/// The live or stale endpoint presentation, and the move toward the one the client wants.
+/// The shell and transport routing both derive their endpoint identity from this owner. Plain data: no method takes the registry or
 /// sends anything; the I/O lives in `endpoint::view` and the client loop's reconcile.
 #[derive(Debug)]
 pub enum EndpointChoice {
@@ -20,11 +20,31 @@ pub enum EndpointChoice {
 /// A move from the endpoint on screen (if any) to the selected one.
 #[derive(Debug)]
 pub struct Move {
-    /// On screen (live) until the move commits. `None` while nothing is: the shown
-    /// endpoint's connection was lost, or Local was unreachable at launch.
-    from: Option<ClientEndpointId>,
+    /// The one presentation retained until the move commits, including after a loss.
+    from: Presentation,
     to: ClientEndpointId,
     stage: MoveStage,
+}
+
+#[derive(Debug)]
+enum Presentation {
+    Live(ClientEndpointId),
+    Stale(ClientEndpointId),
+}
+
+impl Presentation {
+    fn endpoint(&self) -> &ClientEndpointId {
+        match self {
+            Self::Live(endpoint) | Self::Stale(endpoint) => endpoint,
+        }
+    }
+
+    fn live(&self) -> Option<&ClientEndpointId> {
+        match self {
+            Self::Live(endpoint) => Some(endpoint),
+            Self::Stale(_) => None,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -100,21 +120,29 @@ impl EndpointChoice {
     /// Launch with Local unreachable: nothing shown, waiting for `to`.
     pub fn waiting_for(to: ClientEndpointId) -> Self {
         Self::Moving(Move {
-            from: None,
+            from: Presentation::Stale(to.clone()),
             to,
             stage: MoveStage::Waiting { focus: None },
         })
     }
-    /// What the client draws and sends input to.
-    pub fn shown(&self) -> Option<&ClientEndpointId> {
+    /// The endpoint whose live or stale presentation the client draws.
+    pub fn presented(&self) -> &ClientEndpointId {
+        match self {
+            Self::Showing(endpoint) => endpoint,
+            Self::Moving(movement) => movement.from.endpoint(),
+        }
+    }
+
+    /// The live endpoint eligible for input and inbound host effects.
+    pub fn live(&self) -> Option<&ClientEndpointId> {
         match self {
             Self::Showing(e) => Some(e),
-            Self::Moving(m) => m.from.as_ref(),
+            Self::Moving(m) => m.from.live(),
         }
     }
 
     pub fn role(&self, endpoint: &ClientEndpointId) -> ConnectionRole {
-        if self.shown() == Some(endpoint) {
+        if self.live() == Some(endpoint) {
             ConnectionRole::Shown
         } else if self
             .preparing()
@@ -139,7 +167,7 @@ impl EndpointChoice {
         endpoint: ClientEndpointId,
         focus: Option<ClientEndpointFocusTarget>,
     ) -> Selection {
-        if self.shown() == Some(&endpoint) {
+        if self.live() == Some(&endpoint) {
             *self = Self::Showing(endpoint);
             return focus.map_or(Selection::Unchanged, Selection::FocusShown);
         }
@@ -152,7 +180,11 @@ impl EndpointChoice {
             }
         } else {
             *self = Self::Moving(Move {
-                from: self.shown().cloned(),
+                from: if self.live().is_some() {
+                    Presentation::Live(self.presented().clone())
+                } else {
+                    Presentation::Stale(self.presented().clone())
+                },
                 to: endpoint,
                 stage: MoveStage::Waiting { focus },
             });
@@ -164,19 +196,20 @@ impl EndpointChoice {
     /// being prepared keeps preparing). Losing the target returns to the shown endpoint, or
     /// waits for the target's next connection when nothing is shown.
     pub fn connection_lost(&mut self, endpoint: &ClientEndpointId) -> Lost {
-        if self.shown() == Some(endpoint) {
+        if self.live() == Some(endpoint) {
             match self {
                 Self::Showing(e) => *self = Self::waiting_for(e.clone()),
-                Self::Moving(m) => m.from = None,
+                Self::Moving(m) => m.from = Presentation::Stale(m.from.endpoint().clone()),
             }
             Lost::Shown
         } else if let Self::Moving(m) = self
             && &m.to == endpoint
         {
-            *self = m
-                .from
-                .clone()
-                .map_or_else(|| Self::waiting_for(m.to.clone()), Self::Showing);
+            if let Some(from) = m.from.live() {
+                *self = Self::Showing(from.clone());
+            } else {
+                m.stage = MoveStage::Waiting { focus: None };
+            }
             Lost::Target
         } else {
             Lost::Unrelated
@@ -194,7 +227,7 @@ impl EndpointChoice {
         };
         Some(PendingStart {
             to: &m.to,
-            from: m.from.as_ref(),
+            from: m.from.live(),
             failed_generation,
         })
     }
@@ -204,7 +237,7 @@ impl EndpointChoice {
     pub fn abandon(&mut self) -> Option<ClientEndpointId> {
         if let Self::Moving(m) = self
             && matches!(m.stage, MoveStage::Waiting { .. })
-            && let Some(from) = m.from.clone()
+            && let Some(from) = m.from.live().cloned()
         {
             let to = m.to.clone();
             *self = Self::Showing(from);
@@ -272,9 +305,9 @@ impl EndpointChoice {
         };
         let failed = FailedMove {
             to: m.to.clone(),
-            returned_to: m.from.clone(),
+            returned_to: m.from.live().cloned(),
         };
-        if let Some(from) = &m.from {
+        if let Some(from) = m.from.live() {
             *self = Self::Showing(from.clone());
         } else {
             m.stage = MoveStage::Failed {
@@ -293,7 +326,7 @@ impl EndpointChoice {
             return None;
         }
         let committed = Committed {
-            previous: m.from.clone(),
+            previous: m.from.live().cloned(),
             shown: m.to.clone(),
         };
         *self = Self::Showing(m.to.clone());
@@ -335,7 +368,7 @@ mod tests {
     #[test]
     fn a_launch_with_local_connected_shows_local() {
         let c = EndpointChoice::showing(ClientEndpointId::Local);
-        assert_eq!(c.shown(), Some(&ClientEndpointId::Local));
+        assert_eq!(c.live(), Some(&ClientEndpointId::Local));
     }
     #[test]
     fn an_unreachable_local_at_launch_waits_with_nothing_shown() {
@@ -366,7 +399,7 @@ mod tests {
     fn selecting_another_endpoint_keeps_the_shown_one_until_commit() {
         let mut c = EndpointChoice::showing(ClientEndpointId::Local);
         c.select(remote(), None);
-        assert_eq!(c.shown(), Some(&ClientEndpointId::Local));
+        assert_eq!(c.live(), Some(&ClientEndpointId::Local));
         assert_eq!(c.pending_start().expect("waiting").to, &remote());
     }
     #[test]
@@ -375,7 +408,7 @@ mod tests {
         let next = ClientEndpointId::Ssh(super::super::MachineLabel::parse("next").expect("label"));
         c.select(next.clone(), None);
         assert_eq!(c.pending_start().expect("waiting").to, &next);
-        assert_eq!(c.shown(), Some(&ClientEndpointId::Local));
+        assert_eq!(c.live(), Some(&ClientEndpointId::Local));
         assert!(!c.wants_view(&remote()));
     }
     #[test]
@@ -416,7 +449,7 @@ mod tests {
         let mut c = preparing();
         let committed = c.commit().expect("commit");
         assert_eq!(committed.previous, Some(ClientEndpointId::Local));
-        assert_eq!(c.shown(), Some(&remote()));
+        assert_eq!(c.live(), Some(&remote()));
         assert!(c.preparing().is_none());
     }
     #[test]
@@ -424,7 +457,7 @@ mod tests {
         let mut c = preparing();
         let failed = c.fail_move().expect("failed");
         assert_eq!(failed.returned_to, Some(ClientEndpointId::Local));
-        assert_eq!(c.shown(), Some(&ClientEndpointId::Local));
+        assert_eq!(c.live(), Some(&ClientEndpointId::Local));
         assert!(c.pending_start().is_none());
     }
     #[test]
@@ -434,7 +467,7 @@ mod tests {
         c.fail_move();
         let p = c.pending_start().expect("failed");
         assert_eq!(p.failed_generation, Some(7));
-        assert!(c.shown().is_none());
+        assert!(c.live().is_none());
     }
     #[test]
     fn an_explicit_selection_rearms_a_failed_move() {
@@ -455,7 +488,7 @@ mod tests {
         c = EndpointChoice::showing(ClientEndpointId::Local);
         c.select(remote(), None);
         assert_eq!(c.abandon(), Some(remote()));
-        assert_eq!(c.shown(), Some(&ClientEndpointId::Local));
+        assert_eq!(c.live(), Some(&ClientEndpointId::Local));
     }
     #[test]
     fn commit_and_fail_move_do_nothing_outside_preparing() {
@@ -463,38 +496,49 @@ mod tests {
             EndpointChoice::showing(ClientEndpointId::Local),
             EndpointChoice::waiting_for(remote()),
         ] {
-            let shown = c.shown().cloned();
+            let shown = c.live().cloned();
             assert!(c.commit().is_none());
             assert!(c.fail_move().is_none());
-            assert_eq!(c.shown(), shown.as_ref());
+            assert_eq!(c.live(), shown.as_ref());
         }
     }
     #[test]
     fn losing_the_shown_connection_leaves_nothing_shown_and_keeps_the_selection() {
         let mut c = EndpointChoice::showing(remote());
         assert_eq!(c.connection_lost(&remote()), Lost::Shown);
-        assert!(c.shown().is_none());
+        assert!(c.live().is_none());
+        assert_eq!(c.presented(), &remote());
         assert_eq!(c.pending_start().expect("waiting").to, &remote());
     }
     #[test]
     fn losing_the_target_connection_returns_to_the_shown_endpoint() {
         let mut c = preparing();
         assert_eq!(c.connection_lost(&remote()), Lost::Target);
-        assert_eq!(c.shown(), Some(&ClientEndpointId::Local));
+        assert_eq!(c.live(), Some(&ClientEndpointId::Local));
         assert!(c.preparing().is_none());
     }
     #[test]
     fn losing_the_shown_connection_keeps_a_healthy_target_preparing() {
         let mut c = preparing();
         assert_eq!(c.connection_lost(&ClientEndpointId::Local), Lost::Shown);
-        assert!(c.shown().is_none());
+        assert!(c.live().is_none());
+        assert_eq!(c.presented(), &ClientEndpointId::Local);
         assert!(c.preparing().is_some());
+    }
+    #[test]
+    fn losing_both_connections_retains_the_source_presentation() {
+        let mut c = preparing();
+        assert_eq!(c.connection_lost(&ClientEndpointId::Local), Lost::Shown);
+        assert_eq!(c.connection_lost(&remote()), Lost::Target);
+        assert!(c.live().is_none());
+        assert_eq!(c.presented(), &ClientEndpointId::Local);
+        assert_eq!(c.pending_start().expect("waiting target").to, &remote());
     }
     #[test]
     fn losing_an_unrelated_connection_changes_nothing() {
         let mut c = EndpointChoice::showing(ClientEndpointId::Local);
         assert_eq!(c.connection_lost(&remote()), Lost::Unrelated);
-        assert_eq!(c.shown(), Some(&ClientEndpointId::Local));
+        assert_eq!(c.live(), Some(&ClientEndpointId::Local));
     }
     #[test]
     fn wants_view_is_the_shown_endpoint_and_the_preparing_target() {

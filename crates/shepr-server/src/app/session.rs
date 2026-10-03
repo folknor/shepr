@@ -827,7 +827,7 @@ impl App {
             .expect("the test data directory lease is free");
         self.session_saver.persister = shepr_mux::persist::SessionPersister::spawn(
             lease,
-            false,
+            shepr_mux::persist::SessionBackupPolicy::NoBackupNeeded,
             shepr_mux::persist::HistoryCarry::default(),
             Arc::clone(&self.session_saver.save_finished),
         );
@@ -1665,7 +1665,11 @@ mod tests {
         );
         let backups = data_dir.join("session-backups");
         let Some(shepr_protocol::SessionRestoreNotice {
-            loss: shepr_protocol::SessionRestoreLoss::Unusable { reason },
+            loss:
+                shepr_protocol::SessionRestoreLoss::Unusable {
+                    failure:
+                        shepr_protocol::SessionRestoreFailure::Unparseable { line, category, .. },
+                },
             backup_dir,
         }) = app.restore_notice.clone()
         else {
@@ -1674,7 +1678,8 @@ mod tests {
                 app.restore_notice
             );
         };
-        assert!(reason.contains("parsed"), "{reason}");
+        assert_eq!(line, 1);
+        assert_eq!(category, shepr_protocol::SessionParseCategory::Syntax);
         assert_eq!(backup_dir, backups.display().to_string());
 
         assert!(app.save_session_now(), "first save");

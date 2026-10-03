@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::SessionSnapshot;
-use super::error::{SaveError, SaveRefusal};
+use super::error::SaveError;
 use super::snapshot::SessionHistory;
 
 fn history_file_stamp(path: &Path) -> io::Result<Option<shepr_platform::FileStamp>> {
@@ -155,8 +155,8 @@ impl HistoryIntent {
 /// Shared by autosave, pane-exit checkpoints, and shutdown.
 pub struct SessionWriter {
     path: PathBuf,
-    protect_unloaded: bool,
-    lease: Option<super::lock::DataDirLease>,
+    backup_policy: SessionBackupPolicy,
+    _lease: super::lock::DataDirLease,
     /// Digest and file stamp for the history JSON this writer last put on
     /// disk. History is the bulk of a save (full scrollback per pane) and is
     /// rewritten and fsynced on every save otherwise, even when no pane printed
@@ -169,44 +169,41 @@ pub struct SessionWriter {
     trimming_history: bool,
 }
 
+/// Whether the source file must be copied before this writer replaces it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SessionBackupPolicy {
+    /// Preserve the existing session file before the first replacement.
+    PreserveExisting,
+    /// Restore used the file in full, or there is no source file to preserve.
+    NoBackupNeeded,
+}
+
 impl SessionWriter {
     /// Canonical file name for the saved session layout.
     pub const SESSION_FILE_NAME: &'static str = super::io::SESSION_FILE_NAME;
 
-    pub fn new(lease: super::lock::DataDirLease, protect_unloaded: bool) -> Self {
+    pub fn new(lease: super::lock::DataDirLease, backup_policy: SessionBackupPolicy) -> Self {
         let path = super::io::session_path(lease.directory());
         Self {
             path,
-            protect_unloaded,
-            lease: Some(lease),
+            backup_policy,
+            _lease: lease,
             written_history: None,
             snapshot_fingerprints: SnapshotFingerprintCache::default(),
             trimming_history: false,
         }
     }
 
-    fn may_write(&self) -> Result<bool, SaveError> {
-        // A missing lease means this writer was retired and should quietly
-        // ignore later direct calls. A present but released lease must refuse
-        // writes because another server may own the directory now.
-        match self.lease.as_ref() {
-            None => Ok(false),
-            Some(lease) if lease.is_active() => Ok(true),
-            Some(_) => Err(SaveError::Refused(SaveRefusal::InactiveLease)),
-        }
-    }
-
-    /// Release ownership after the final shutdown save. Later saves and
-    /// clears are ignored.
-    pub fn retire(&mut self) {
-        if let Some(mut lease) = self.lease.take() {
-            lease.release();
-        }
+    /// Consumes the writer and releases its data-directory lease.
+    pub fn retire(self) {
+        drop(self);
     }
 
     fn preserve_unloaded(&mut self, now: SystemTime) -> io::Result<()> {
-        if self.protect_unloaded && preserve_existing(&self.path, now)? {
-            self.protect_unloaded = false;
+        if self.backup_policy == SessionBackupPolicy::PreserveExisting
+            && preserve_existing(&self.path, now)?
+        {
+            self.backup_policy = SessionBackupPolicy::NoBackupNeeded;
         }
         Ok(())
     }
@@ -237,9 +234,6 @@ impl SessionWriter {
         history: Option<&SessionHistory>,
         now: SystemTime,
     ) -> Result<Option<super::io::HistoryDigest>, SaveError> {
-        if !self.may_write()? {
-            return Ok(None);
-        }
         let history = match history {
             None => HistoryIntent::Remove,
             Some(history) => self.prepare_history(history),
@@ -258,9 +252,6 @@ impl SessionWriter {
         digest: &super::io::HistoryDigest,
         now: SystemTime,
     ) -> Result<Option<super::io::HistoryDigest>, SaveError> {
-        if !self.may_write()? {
-            return Ok(None);
-        }
         self.save_with(snapshot, HistoryIntent::Keep(*digest), now)
     }
 
@@ -343,7 +334,7 @@ impl SessionWriter {
             }
         }
         // Optional history failure must not reclassify our committed layout as unloaded.
-        self.protect_unloaded = false;
+        self.backup_policy = SessionBackupPolicy::NoBackupNeeded;
         let history_path =
             super::io::session_history_path(super::io::containing_directory(&self.path));
         if let Err(err) = self.save_history(&history_path, history) {
@@ -470,9 +461,6 @@ impl SessionWriter {
     /// Clears the layout and history, reporting either file's clear failure.
     /// `now` supplies the time used for recovery-copy naming and preservation.
     pub fn clear(&mut self, now: SystemTime) -> Result<(), SaveError> {
-        if !self.may_write()? {
-            return Ok(());
-        }
         self.written_history = None;
         let result = self.preserve_unloaded(now).and_then(|()| {
             self.preserve_snapshot_history(now);
@@ -1012,11 +1000,15 @@ mod tests {
         }
     }
 
-    fn writer(protect_unloaded: bool) -> SessionWriter {
+    fn writer(preserve_existing: bool) -> SessionWriter {
         let directory = crate::test_support::ScratchDir::new("session-recovery");
         SessionWriter::new(
             super::super::lock::DataDirLease::acquire(&directory).expect("lease"),
-            protect_unloaded,
+            if preserve_existing {
+                SessionBackupPolicy::PreserveExisting
+            } else {
+                SessionBackupPolicy::NoBackupNeeded
+            },
         )
     }
 
@@ -1107,7 +1099,7 @@ mod tests {
             writer = SessionWriter::new(
                 super::super::lock::DataDirLease::acquire(path.parent().expect("directory"))
                     .expect("lease"),
-                false,
+                SessionBackupPolicy::NoBackupNeeded,
             );
         }
         writer.clear_for_test().expect("clear");
@@ -1245,7 +1237,7 @@ mod tests {
         writer = SessionWriter::new(
             super::super::lock::DataDirLease::acquire(path.parent().expect("directory"))
                 .expect("lease"),
-            false,
+            SessionBackupPolicy::NoBackupNeeded,
         );
         changed.workspaces[0].custom_name = Some("after restart".into());
         writer.save_for_test(&changed, None).expect("save");
@@ -1330,14 +1322,14 @@ mod tests {
 
     #[test]
     fn healthy_and_fresh_sessions_save_and_clear_without_backups() {
-        for protect_unloaded in [false, true] {
-            let mut writer = writer(protect_unloaded);
-            if !protect_unloaded {
+        for preserve_existing in [false, true] {
+            let mut writer = writer(preserve_existing);
+            if !preserve_existing {
                 super::super::io::save_to_path(&writer.path, &snapshot(), None)
                     .expect("test precondition");
             }
             writer.save_for_test(&snapshot(), None).expect("save");
-            assert!(!writer.protect_unloaded);
+            assert_eq!(writer.backup_policy, SessionBackupPolicy::NoBackupNeeded);
             assert!(writer.path.try_exists().expect("test stat"));
             writer.save_for_test(&snapshot(), None).expect("save");
             writer.clear_for_test().expect("clear");
@@ -1365,7 +1357,7 @@ mod tests {
         writer
             .clear_for_test()
             .expect_err("a blocked recovery copy must fail the clear");
-        assert!(writer.protect_unloaded);
+        assert_eq!(writer.backup_policy, SessionBackupPolicy::PreserveExisting);
         assert_eq!(
             std::fs::read(&writer.path).expect("test precondition"),
             original
@@ -1377,7 +1369,7 @@ mod tests {
 
         std::fs::remove_file(&directory).expect("test precondition");
         writer.save_for_test(&snapshot(), None).expect("save");
-        assert!(!writer.protect_unloaded);
+        assert_eq!(writer.backup_policy, SessionBackupPolicy::NoBackupNeeded);
         writer.save_for_test(&snapshot(), None).expect("save");
         writer.clear_for_test().expect("clear");
         assert!(!writer.path.try_exists().expect("test stat"));
@@ -1404,7 +1396,7 @@ mod tests {
         .expect("test precondition");
         assert!(writer.save_for_test(&snapshot(), None).is_err());
         assert!(
-            !writer.protect_unloaded,
+            writer.backup_policy == SessionBackupPolicy::NoBackupNeeded,
             "structural session was saved successfully"
         );
         let mut changed = snapshot();
@@ -1444,7 +1436,7 @@ mod tests {
                 )
                 .is_err()
         );
-        assert!(!writer.protect_unloaded);
+        assert_eq!(writer.backup_policy, SessionBackupPolicy::NoBackupNeeded);
         assert!(
             history_path.try_exists().expect("test stat"),
             "history pairs with the new layout"
@@ -1456,7 +1448,7 @@ mod tests {
         let mut failed = SessionWriter::new(
             super::super::lock::DataDirLease::acquire(path.parent().expect("directory"))
                 .expect("lease"),
-            true,
+            SessionBackupPolicy::PreserveExisting,
         );
         std::fs::remove_file(&history_path).expect("test precondition");
         assert!(
@@ -1468,7 +1460,7 @@ mod tests {
                 )
                 .is_err()
         );
-        assert!(failed.protect_unloaded);
+        assert_eq!(failed.backup_policy, SessionBackupPolicy::PreserveExisting);
         assert!(!history_path.try_exists().expect("test stat"));
         std::fs::remove_dir_all(path.parent().expect("test precondition"))
             .expect("test precondition");
@@ -1480,7 +1472,7 @@ mod tests {
         let directory = scratch.join("data");
         let _writer = SessionWriter::new(
             super::super::lock::DataDirLease::acquire(&directory).expect("lease"),
-            false,
+            SessionBackupPolicy::NoBackupNeeded,
         );
         assert_eq!(
             super::super::lock::DataDirLease::acquire(&directory)
@@ -1491,38 +1483,23 @@ mod tests {
     }
 
     #[test]
-    fn retiring_releases_the_directory_and_ignores_later_saves() {
+    fn retiring_consumes_the_writer_and_releases_the_directory() {
         let mut writer = writer(false);
         writer.save_for_test(&snapshot(), None).expect("save");
-        assert!(writer.may_write().expect("active lease"));
-        let lock = File::open(
-            writer
-                .path
-                .with_file_name(super::super::lock::LOCK_FILE_NAME),
-        )
-        .expect("test precondition");
+        let path = writer.path.clone();
+        let lock_path = path.with_file_name(super::super::lock::LOCK_FILE_NAME);
+        let lock = File::open(lock_path).expect("test precondition");
         assert!(matches!(
             lock.try_lock(),
             Err(std::fs::TryLockError::WouldBlock)
         ));
+        let saved = std::fs::read(&path).expect("test precondition");
 
         writer.retire();
         lock.try_lock().expect("the next server can take over");
-        let saved = std::fs::read(&writer.path).expect("test precondition");
-        let mut changed = snapshot();
-        changed.workspaces[0].custom_name = Some("after shutdown".into());
-        writer
-            .save_for_test(&changed, None)
-            .expect("a retired writer ignores the save");
-        writer
-            .clear_for_test()
-            .expect("a retired writer ignores the clear");
-        assert_eq!(
-            std::fs::read(&writer.path).expect("test precondition"),
-            saved
-        );
+        assert_eq!(std::fs::read(&path).expect("test precondition"), saved);
         drop(lock);
-        std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
+        std::fs::remove_dir_all(path.parent().expect("test precondition"))
             .expect("test precondition");
     }
 
@@ -1649,7 +1626,7 @@ mod tests {
         // The unloaded session is still preserved, without its history, and
         // the layout is saved; only the history write fails.
         assert!(writer.save_for_test(&snapshot(), Some(&history)).is_err());
-        assert!(!writer.protect_unloaded);
+        assert_eq!(writer.backup_policy, SessionBackupPolicy::NoBackupNeeded);
         assert_eq!(backups(&writer), vec![b"unloaded session".to_vec()]);
         assert!(
             std::fs::metadata(&history_path)
@@ -1735,7 +1712,7 @@ mod tests {
         let manual = directory.join("session-000-manual.json");
         std::fs::write(&manual, b"manual recovery copy").expect("test precondition");
         for i in 0..5u8 {
-            writer.protect_unloaded = true;
+            writer.backup_policy = SessionBackupPolicy::PreserveExisting;
             std::fs::write(&writer.path, [i]).expect("test precondition");
             writer.save_for_test(&snapshot(), None).expect("save");
         }
@@ -1757,7 +1734,7 @@ mod tests {
     fn first_clear_preserves_an_unloaded_file_even_after_an_earlier_missing_clear() {
         let mut writer = writer(true);
         writer.clear_for_test().expect("clear");
-        assert!(writer.protect_unloaded);
+        assert_eq!(writer.backup_policy, SessionBackupPolicy::PreserveExisting);
         std::fs::write(&writer.path, b"late layout").expect("test precondition");
         writer.clear_for_test().expect("clear");
         assert!(!writer.path.try_exists().expect("test stat"));
@@ -1863,7 +1840,7 @@ mod tests {
             .expect("test precondition");
         }
         for i in 2..4u8 {
-            writer.protect_unloaded = true;
+            writer.backup_policy = SessionBackupPolicy::PreserveExisting;
             std::fs::write(&writer.path, [i]).expect("test precondition");
             writer.save_for_test(&snapshot(), None).expect("save");
         }
@@ -1876,7 +1853,7 @@ mod tests {
     fn recovery_keeps_three_copies_and_healthy_saves_do_not_rotate_them() {
         let mut writer = writer(true);
         for i in 0..5u8 {
-            writer.protect_unloaded = true;
+            writer.backup_policy = SessionBackupPolicy::PreserveExisting;
             std::fs::write(&writer.path, [i]).expect("test precondition");
             let history_path = super::super::io::session_history_path(
                 super::super::io::containing_directory(&writer.path),

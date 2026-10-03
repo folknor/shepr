@@ -202,13 +202,21 @@ mod tests {
     fn a_refused_conditional_stop_has_its_own_exit_code() {
         let refused = CliError::ServerStop(shepr_api::server_stop::ServerStopError::BootMismatch {
             label: "the server".into(),
-            expected_boot_id: "1-1".into(),
+            expected_boot_id: "1-1".parse().expect("boot identity"),
             detail: "this server is boot 2-2".into(),
         });
         assert_eq!(
             refused.exit_code(),
             shepr_api::server_stop::ServerStopExit::BootMismatch.code()
         );
+        let replaced =
+            CliError::ServerStop(shepr_api::server_stop::ServerStopError::OccupantChanged {
+                label: "the server".into(),
+                expected_boot_id: "1-1".parse().expect("expected boot identity"),
+                actual_boot_id: "2-2".parse().expect("replacement boot identity"),
+            });
+        assert_eq!(refused.exit_code(), 3);
+        assert_eq!(replaced.exit_code(), 3);
         let failed = CliError::ServerStop(shepr_api::server_stop::ServerStopError::Protocol(
             "bad".into(),
         ));

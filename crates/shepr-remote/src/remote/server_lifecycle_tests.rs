@@ -12,8 +12,8 @@ fn status_json(presence: &str, identity: bool) -> String {
 fn answered() -> RemoteServerStatus {
     RemoteServerStatus::Running {
         version: Some("0.6.0".into()),
-        build_id: Some("0123456789abcdef".into()),
-        boot_id: Some("4242-1700000000".into()),
+        build_id: Some("0123456789abcdef".parse().expect("build identity")),
+        boot_id: Some("4242-1700000000".parse().expect("boot identity")),
     }
 }
 

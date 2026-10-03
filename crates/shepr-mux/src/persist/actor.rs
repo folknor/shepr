@@ -239,7 +239,7 @@ impl PersistState {
         }
     }
 
-    fn retire(&mut self) {
+    fn retire(self) {
         self.writer.retire();
     }
 }
@@ -285,18 +285,18 @@ impl SessionPersister {
         }
     }
 
-    /// Takes over the data directory `lease` guards. `protect_unloaded`: the
+    /// Takes over the data directory `lease` guards. `backup_policy`: the
     /// first save must copy the session file aside before replacing it (it
     /// could not be loaded, or restore dropped part of it). `history` is the
     /// carried history restore produced. `finished` is fired each time a
     /// submitted job ends, once its result can be read.
     pub fn spawn(
         lease: DataDirLease,
-        protect_unloaded: bool,
+        backup_policy: super::writer::SessionBackupPolicy,
         history: HistoryCarry,
         finished: Arc<Notify>,
     ) -> Self {
-        let state = PersistState::new(SessionWriter::new(lease, protect_unloaded), history);
+        let state = PersistState::new(SessionWriter::new(lease, backup_policy), history);
         // The state is handed over only once the thread runs, so a failed
         // spawn leaves it here for the inline fallback.
         let (state_sender, state_receiver) = mpsc::channel::<PersistState>();
@@ -378,8 +378,8 @@ impl SessionPersister {
                     );
                 }
             }
-            Worker::Inline(mut state) => state.retire(),
-            Worker::LeaseOnly(mut lease) => lease.release(),
+            Worker::Inline(state) => (*state).retire(),
+            Worker::LeaseOnly(lease) => lease.release(),
             Worker::Retired => {}
         }
     }
@@ -406,13 +406,13 @@ mod tests {
     /// thread, and `finished` fires before `submit` returns.
     fn inline(
         lease: DataDirLease,
-        protect_unloaded: bool,
+        backup_policy: super::super::writer::SessionBackupPolicy,
         history: HistoryCarry,
         finished: Arc<Notify>,
     ) -> SessionPersister {
         SessionPersister {
             worker: Worker::Inline(Box::new(PersistState::new(
-                SessionWriter::new(lease, protect_unloaded),
+                SessionWriter::new(lease, backup_policy),
                 history,
             ))),
             finished,
@@ -449,8 +449,12 @@ mod tests {
         let scratch = crate::test_support::ScratchDir::new("persister");
         let directory = scratch.join("data");
         let lease = DataDirLease::acquire(&directory).expect("lease");
-        let mut persister =
-            SessionPersister::spawn(lease, false, HistoryCarry::default(), signal());
+        let mut persister = SessionPersister::spawn(
+            lease,
+            super::super::writer::SessionBackupPolicy::NoBackupNeeded,
+            HistoryCarry::default(),
+            signal(),
+        );
         let now = SystemTime::now();
         let saved = persister.submit(
             PersistJob::Save(SessionBundle {
@@ -511,7 +515,7 @@ mod tests {
         let directory = scratch.join("data");
         let persister = SessionPersister::spawn(
             DataDirLease::acquire(&directory).expect("lease"),
-            false,
+            super::super::writer::SessionBackupPolicy::NoBackupNeeded,
             HistoryCarry::default(),
             signal(),
         );
@@ -525,7 +529,7 @@ mod tests {
         let directory = scratch.join("data");
         let mut persister = inline(
             DataDirLease::acquire(&directory).expect("lease"),
-            false,
+            super::super::writer::SessionBackupPolicy::NoBackupNeeded,
             HistoryCarry::default(),
             signal(),
         );
@@ -639,7 +643,7 @@ mod tests {
         let directory = scratch.join("data");
         let persister = SessionPersister::spawn(
             DataDirLease::acquire(&directory).expect("lease"),
-            false,
+            super::super::writer::SessionBackupPolicy::NoBackupNeeded,
             HistoryCarry::default(),
             signal(),
         );
@@ -653,7 +657,7 @@ mod tests {
         let directory = scratch.join("data");
         let persister = inline(
             DataDirLease::acquire(&directory).expect("lease"),
-            false,
+            super::super::writer::SessionBackupPolicy::NoBackupNeeded,
             HistoryCarry::default(),
             signal(),
         );
@@ -679,7 +683,7 @@ mod tests {
         let finished = signal();
         let mut persister = SessionPersister::spawn(
             DataDirLease::acquire(&directory).expect("lease"),
-            false,
+            super::super::writer::SessionBackupPolicy::NoBackupNeeded,
             HistoryCarry::default(),
             Arc::clone(&finished),
         );
@@ -706,7 +710,7 @@ mod tests {
         let finished = signal();
         let mut persister = inline(
             DataDirLease::acquire(&directory).expect("lease"),
-            false,
+            super::super::writer::SessionBackupPolicy::NoBackupNeeded,
             HistoryCarry::default(),
             Arc::clone(&finished),
         );

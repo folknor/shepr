@@ -73,9 +73,7 @@ impl HeadlessServer {
             return;
         }
 
-        if self.promote_client_to_foreground(client_id) {
-            self.mark_view_changed();
-        }
+        self.promote_client_to_foreground(client_id);
         let result = match command {
             AppOrCheckoutRoot::App(command) => {
                 self.handle_client_shell_app_command(client_id, command)
@@ -143,27 +141,13 @@ impl HeadlessServer {
         let ctx = EndpointContext {
             requester_geometry: self.client_geometry(client_id),
         };
-        let scrolled_pane = match &command {
-            EndpointAppCommand::PaneScroll(params) => self
-                .app
-                .parse_pane_id(&params.pane_id)
-                .map(|(_, pane)| pane),
-            _ => None,
-        };
-        let projection_before = self.app.state.shell_projection_revision;
         let outcome = self
             .app
             .handle_endpoint_app_command_with_render(command, &ctx);
-        if let Some(pane) = scrolled_pane {
-            if outcome.effects.pane_surface_changed {
-                self.invalidate_pane_viewers(pane);
-            }
-            // Scrolling is local to its viewers, but the app can also sync
-            // shared title metadata while dispatching the same command.
-            changed |= outcome.effects.shell_projection_changed
-                || self.app.state.shell_projection_revision != projection_before;
-        } else {
-            changed |= outcome.view_changed;
+        match outcome.invalidation {
+            crate::app::Invalidation::None => {}
+            crate::app::Invalidation::Shared => changed = true,
+            crate::app::Invalidation::PaneViewers(pane) => self.invalidate_pane_viewers(pane),
         }
         let mut immediate_sources_changed = outcome.effects.changes_immediate_pty_sources();
 

@@ -14,8 +14,8 @@ use shepr_api::error::ApiResult;
 use shepr_protocol::WorkspaceId;
 use shepr_protocol::command::{EndpointAppCommand, EndpointError, EndpointReply};
 
-pub(crate) use endpoint::EndpointEffects;
 use endpoint::HandlerResult;
+pub(crate) use endpoint::{EndpointEffects, Invalidation};
 
 /// What the server loop knows about the requesting client that no app state
 /// holds.
@@ -35,17 +35,38 @@ pub(crate) struct EndpointOutcome {
     /// Shared effects committed by the handler, including changes committed
     /// before a later refusal.
     pub(crate) effects: EndpointEffects,
-    pub(crate) view_changed: bool,
+    pub(crate) invalidation: Invalidation,
 }
 
 impl App {
+    /// Publishes a shared surface change at its mutation site. Projection
+    /// changes additionally invalidate the client-shell snapshot cache.
+    pub(super) fn invalidate_shared_view(&mut self, projection_changed: bool) {
+        if projection_changed {
+            self.state.mark_shell_projection_dirty();
+        }
+        self.render_dirty.request_generic();
+        self.render_notify.notify_one();
+    }
+
+    /// Observes committed projection changes, including a mutation followed by
+    /// a refusal. Surface-only changes travel in the mutation's effects.
+    pub(crate) fn observe_projection_change<T>(
+        &mut self,
+        apply: impl FnOnce(&mut Self) -> T,
+    ) -> (T, bool) {
+        let before = self.state.shell_projection_revision;
+        let result = apply(self);
+        (result, self.state.shell_projection_revision != before)
+    }
+
     pub(crate) fn handle_api_request_with_render(
         &mut self,
         request: shepr_api::schema::AppRequest,
     ) -> Outcome {
-        let projection_before = self.state.shell_projection_revision;
-        let response = self.handle_api_request_after_internal_events_drained(request);
-        let view_changed = self.state.shell_projection_revision != projection_before;
+        let (response, view_changed) = self.observe_projection_change(|app| {
+            app.handle_api_request_after_internal_events_drained(request)
+        });
         Outcome {
             response,
             view_changed,
@@ -80,25 +101,25 @@ impl App {
         command: EndpointAppCommand,
         ctx: &EndpointContext,
     ) -> EndpointOutcome {
-        // Some app operations publish their projection revision at the state
-        // mutation site. Keep that signal too: a handler can commit before a
-        // later reply lookup refuses the command.
-        let projection_before = self.state.shell_projection_revision;
-        self.sync_pending_terminal_titles();
-        let (result, navigate, effects) = match self.dispatch_endpoint_command(command, ctx) {
-            Ok(handled) => (Ok(handled.reply), handled.navigate, handled.effects),
-            Err(error) => (Err(error.error), None, error.effects),
-        };
-        let projection_revision_changed = self.state.shell_projection_revision != projection_before;
-        if effects.shell_projection_changed && !projection_revision_changed {
+        let ((result, navigate, effects), projection_changed) =
+            self.observe_projection_change(|app| {
+                app.sync_pending_terminal_titles();
+                let (result, navigate, effects) = match app.dispatch_endpoint_command(command, ctx)
+                {
+                    Ok(handled) => (Ok(handled.reply), handled.navigate, handled.effects),
+                    Err(error) => (Err(error.error), None, error.effects),
+                };
+                (result, navigate, effects)
+            });
+        if effects.shell_projection_changed && !projection_changed {
             self.state.mark_shell_projection_dirty();
         }
-        let view_changed = effects.needs_render() || projection_revision_changed;
+        let invalidation = effects.invalidation(projection_changed);
         EndpointOutcome {
             result,
             navigate,
             effects,
-            view_changed,
+            invalidation,
         }
     }
 
@@ -146,6 +167,14 @@ use shepr_mux::events::AppEvent;
 use shepr_protocol::command::EndpointCommand;
 
 #[cfg(test)]
+impl EndpointOutcome {
+    /// Whether the command left any render owed.
+    pub(crate) fn view_changed(&self) -> bool {
+        self.invalidation != Invalidation::None
+    }
+}
+
+#[cfg(test)]
 impl EndpointContext {
     /// A requester that presents no geometry of its own.
     pub(crate) fn without_geometry() -> Self {
@@ -184,7 +213,7 @@ impl App {
                 ))),
                 navigate: None,
                 effects: EndpointEffects::default(),
-                view_changed: false,
+                invalidation: Invalidation::None,
             },
         }
     }
@@ -270,7 +299,7 @@ mod tests {
             }),
             &EndpointContext::without_geometry(),
         );
-        assert!(!read.view_changed);
+        assert!(!read.view_changed());
 
         let rename = app.handle_endpoint_command_with_render(
             EndpointCommand::PaneRename(shepr_protocol::command::PaneRenameParams {
@@ -279,7 +308,7 @@ mod tests {
             }),
             &EndpointContext::without_geometry(),
         );
-        assert!(!rename.view_changed);
+        assert!(!rename.view_changed());
         assert!(rename.result.is_err());
     }
 
@@ -301,10 +330,11 @@ mod tests {
                 &EndpointContext::without_geometry(),
             );
             assert!(outcome.result.is_ok(), "{label:?}");
+            let view_changed = outcome.view_changed();
             (
                 app.state.workspaces[0].custom_name.clone(),
                 outcome.effects,
-                outcome.view_changed,
+                view_changed,
                 before,
                 app.state.shell_projection_revision,
             )

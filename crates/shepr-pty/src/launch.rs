@@ -42,7 +42,7 @@ const RECORD_EXEC_FAILED: u32 = 4;
 
 /// One status report from a launching pane child.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum LaunchRecord {
+pub(crate) enum LaunchRecord {
     /// The child changed into cwd candidate `index` and is about to exec.
     ChdirOk(u32),
     /// No cwd candidate could be entered; the errno of candidate 0, the
@@ -56,11 +56,89 @@ pub enum LaunchRecord {
 
 /// What one nonblocking read of a status channel found.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RecordRead {
+pub(crate) enum RecordRead {
     Record(LaunchRecord),
     /// The child's end is closed: exec committed, or the child is gone.
     Eof,
     WouldBlock,
+}
+
+/// A validated report from the child. EOF is only a commitment candidate:
+/// the caller must still establish that the child lives at that instant.
+#[derive(Debug)]
+pub enum LaunchStatusEvent {
+    Entered(std::path::PathBuf),
+    DirectoryFailed {
+        path: std::path::PathBuf,
+        error: io::Error,
+    },
+    ExecFailed(io::Error),
+    CommitCandidate(std::path::PathBuf),
+    Unconfirmed,
+    WouldBlock,
+}
+
+/// Owns the status protocol's ordering and candidate validation. It performs
+/// nonblocking reads only; waiting and the lifetime policy belong to the mux.
+pub struct LaunchStatusReader {
+    candidates: Vec<std::path::PathBuf>,
+    phase: StatusPhase,
+}
+
+enum StatusPhase {
+    AwaitDirectory,
+    Entered(std::path::PathBuf),
+    Finished,
+}
+
+impl LaunchStatusReader {
+    pub fn new(candidates: Vec<std::path::PathBuf>) -> Self {
+        Self {
+            candidates,
+            phase: StatusPhase::AwaitDirectory,
+        }
+    }
+
+    pub fn read(&mut self, channel: &OwnedFd) -> io::Result<LaunchStatusEvent> {
+        let record = read_record(channel)?;
+        self.accept(record)
+    }
+
+    fn accept(&mut self, record: RecordRead) -> io::Result<LaunchStatusEvent> {
+        if matches!(record, RecordRead::WouldBlock) {
+            return Ok(LaunchStatusEvent::WouldBlock);
+        }
+        let phase = std::mem::replace(&mut self.phase, StatusPhase::Finished);
+        match (phase, record) {
+            (StatusPhase::AwaitDirectory, RecordRead::Record(LaunchRecord::ChdirOk(index))) => {
+                let path = usize::try_from(index)
+                    .ok()
+                    .and_then(|index| self.candidates.get(index))
+                    .cloned()
+                    .ok_or_else(|| protocol_error("unknown launch cwd candidate"))?;
+                self.phase = StatusPhase::Entered(path.clone());
+                Ok(LaunchStatusEvent::Entered(path))
+            }
+            (StatusPhase::AwaitDirectory, RecordRead::Record(LaunchRecord::ChdirFailed(errno))) => {
+                let path =
+                    self.candidates.first().cloned().ok_or_else(|| {
+                        protocol_error("directory failure without a cwd candidate")
+                    })?;
+                Ok(LaunchStatusEvent::DirectoryFailed {
+                    path,
+                    error: io::Error::from_raw_os_error(errno),
+                })
+            }
+            (StatusPhase::Entered(_), RecordRead::Record(LaunchRecord::ExecFailed(errno))) => Ok(
+                LaunchStatusEvent::ExecFailed(io::Error::from_raw_os_error(errno)),
+            ),
+            (StatusPhase::Entered(path), RecordRead::Eof) => {
+                Ok(LaunchStatusEvent::CommitCandidate(path))
+            }
+            (StatusPhase::AwaitDirectory, RecordRead::Eof) => Ok(LaunchStatusEvent::Unconfirmed),
+            _ => Err(protocol_error("launch status record out of order")),
+        }
+    }
 }
 
 pub(crate) fn encode_record(kind: u32, value: u64) -> [u8; LAUNCH_STATUS_RECORD_BYTES] {
@@ -101,7 +179,7 @@ fn errno_value(errno: i32) -> u64 {
 
 /// Reads one record from a nonblocking status channel. A record of the wrong
 /// size, an unknown kind or a second hello is a protocol error.
-pub fn read_record(channel: &OwnedFd) -> io::Result<RecordRead> {
+pub(crate) fn read_record(channel: &OwnedFd) -> io::Result<RecordRead> {
     let mut buffer = [0_u8; LAUNCH_STATUS_RECORD_BYTES + 1];
     loop {
         // SAFETY: `buffer` is a live writable stack buffer of the length
@@ -131,8 +209,12 @@ pub fn read_record(channel: &OwnedFd) -> io::Result<RecordRead> {
         let Some((kind, value)) = decode_record(&buffer[..read]) else {
             return Err(protocol_error("launch status record has the wrong size"));
         };
-        let errno =
-            || i32::try_from(value).map_err(|_| protocol_error("launch status errno out of range"));
+        let errno = || {
+            i32::try_from(value)
+                .ok()
+                .filter(|errno| *errno > 0)
+                .ok_or_else(|| protocol_error("launch status errno out of range"))
+        };
         return Ok(RecordRead::Record(match kind {
             RECORD_CHDIR_OK => LaunchRecord::ChdirOk(
                 u32::try_from(value)
@@ -514,6 +596,88 @@ fn set_receive_timeout(channel: &OwnedFd, timeout: &libc::timeval) -> io::Result
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn directory_selection_and_commitment_are_validated_together() {
+        let mut reader = LaunchStatusReader::new(vec!["/requested".into(), "/fallback".into()]);
+        assert!(
+            matches!(reader.accept(RecordRead::Record(LaunchRecord::ChdirOk(1))),
+            Ok(LaunchStatusEvent::Entered(path)) if path == std::path::Path::new("/fallback"))
+        );
+        assert!(matches!(
+            reader.accept(RecordRead::WouldBlock),
+            Ok(LaunchStatusEvent::WouldBlock)
+        ));
+        assert!(matches!(reader.accept(RecordRead::Eof),
+            Ok(LaunchStatusEvent::CommitCandidate(path)) if path == std::path::Path::new("/fallback")));
+        assert!(reader.accept(RecordRead::Eof).is_err());
+    }
+
+    #[test]
+    fn invalid_candidate_and_out_of_order_reports_are_protocol_errors() {
+        for record in [
+            LaunchRecord::ChdirOk(1),
+            LaunchRecord::ExecFailed(libc::ENOENT),
+        ] {
+            let mut reader = LaunchStatusReader::new(vec!["/requested".into()]);
+            assert_eq!(
+                reader
+                    .accept(RecordRead::Record(record))
+                    .expect_err("invalid report")
+                    .kind(),
+                io::ErrorKind::InvalidData
+            );
+        }
+        for record in [
+            LaunchRecord::ChdirOk(0),
+            LaunchRecord::ChdirFailed(libc::ENOENT),
+        ] {
+            let mut reader = LaunchStatusReader::new(vec!["/requested".into()]);
+            reader
+                .accept(RecordRead::Record(LaunchRecord::ChdirOk(0)))
+                .expect("enter directory");
+            assert!(reader.accept(RecordRead::Record(record)).is_err());
+        }
+    }
+
+    #[test]
+    fn failures_keep_the_requested_path_and_errno() {
+        let mut reader = LaunchStatusReader::new(vec!["/requested".into(), "/fallback".into()]);
+        let LaunchStatusEvent::DirectoryFailed { path, error } = reader
+            .accept(RecordRead::Record(LaunchRecord::ChdirFailed(libc::EACCES)))
+            .expect("directory failure")
+        else {
+            panic!("wrong report")
+        };
+        assert_eq!(path, std::path::Path::new("/requested"));
+        assert_eq!(error.raw_os_error(), Some(libc::EACCES));
+        let mut reader = LaunchStatusReader::new(vec!["/requested".into()]);
+        reader
+            .accept(RecordRead::Record(LaunchRecord::ChdirOk(0)))
+            .expect("directory selected");
+        let LaunchStatusEvent::ExecFailed(error) = reader
+            .accept(RecordRead::Record(LaunchRecord::ExecFailed(libc::ENOEXEC)))
+            .expect("exec failure")
+        else {
+            panic!("wrong report")
+        };
+        assert_eq!(error.raw_os_error(), Some(libc::ENOEXEC));
+    }
+
+    #[test]
+    fn eof_without_entering_is_unconfirmed() {
+        let mut reader = LaunchStatusReader::new(vec!["/requested".into()]);
+        assert!(matches!(
+            reader.accept(RecordRead::Eof),
+            Ok(LaunchStatusEvent::Unconfirmed)
+        ));
+        let mut reader = LaunchStatusReader::new(Vec::new());
+        assert!(
+            reader
+                .accept(RecordRead::Record(LaunchRecord::ChdirFailed(libc::ENOENT)))
+                .is_err()
+        );
+    }
 
     #[test]
     fn records_round_trip_through_the_wire_encoding() {

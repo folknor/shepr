@@ -37,52 +37,28 @@ raw reports are in the commit that precedes this file's.
 
 (wave-1 review and gate, wave-3 review, wave-5 fixer and review, wave-7 and wave-8 reviews)
 
-## CLN-026 - Publish helpers take the pane id twice
+## CLN-029 - Leftovers from the sixth light-loop wave
 
-`publish_state_changed_event` and `publish_agent_process_detected_event` in
-`crates/shepr-mux/src/pane/process_probe.rs` take an `EventSender` (which
-carries the pane id) and a separate `pane_id`; if the two disagree, admission
-drops the event. The event's pane id should come from the sender. (wave-3
-review)
+- `SpawnedDaemon` (`crates/shepr-platform/src/daemon.rs`) keeps both
+  `id() -> Option<u32>` and `process_id() -> Option<Pid>`.
+- `EndpointState::set_status(Online)` (client shell endpoints) promotes a
+  retained snapshot to Online with no generation check; no production path
+  sets Online through it any more, only tests.
+- `activate_endpoint_projection` overwrites `endpoints.choice` with `Showing`,
+  bypassing `EndpointChoice::commit`, which is now used only by tests.
+- `RemoteServerStatus::Running` keeps `Option` identity fields that are always
+  `Some` now that `ServerStatusJson` guarantees the identity.
+- `client_status_json` puts `build_version()` (`version+id`) into
+  `BuildVersion.version`, so its `Display` would print the build id twice.
+- Clipboard payloads are no longer bounded by `MAX_COLLECTION_ITEMS`, only by
+  the OSC parser and the message size; decide whether that is the intended
+  bound.
+- `process_argv`'s oversized and empty refusal has no test; splitting the parse
+  from the `/proc` read would make it testable.
+- The `coordinate` doc in `crates/shepr-mux/src/pane/launch_status.rs` ends with
+  a sentence about an old watcher-side publisher.
 
-## CLN-027 - Leftovers from the fourth light-loop wave
-
-- `ServerMessage::Clipboard { data: Vec<u8> }` goes through `serialize_seq` and
-  decodes one visitor call per byte; the codec has `serialize_bytes`, and a
-  bytes wrapper would make a large clipboard one copy.
-- `crates/shepr-protocol/src/framing.rs` `read_frames` picks the oversized-frame
-  `LimitKind` by comparing `max_frame == MAX_FRAME_SIZE`; a reader whose cap is
-  neither reports `MessageBytes` with the wrong maximum. The caller should pass
-  the kind.
-- `crates/shepr-protocol/src/codec.rs` carries bounded-vec limit errors through
-  serde's string-only `custom` channel with a private prefix and parses them
-  back.
-- `ServerStatusJson` validates `boot_id` on decode but stores a `String`; it
-  could hold a `BootId` with the same JSON spelling.
-- `parse_client_config` and `parse_server_config` report an unreachable
-  "could not produce validated values" fallback as a path diagnostic; it should
-  be unrepresentable or its own internal kind.
-- The no-shell diagnostic says "Configure a shell shepr recognizes" where
-  "Set it to a shell shepr recognizes" would read with the key path prefix.
-
-(wave-4 review)
-
-## CLN-028 - Leftovers from the pane launcher carve-up
-
-- `crates/shepr-server/src/app/creation.rs` `create_workspace` hard-codes
-  `PublicPaneId::new(&ws.id, 1)`, restating that `Workspace::prepare` gives the
-  root number 1; prepare could return the root's public id.
-- `PreparedSplit` carries both `public_id` and `public_number`; one derives from
-  the other plus the workspace id.
-- `PaneRead::on_next_dirty_collection` installs a closure into the terminal core
-  through a read handle, for `shepr-server/src/test_support.rs` only: a
-  mutation seam on the narrow read surface.
-- `PaneRuntime::wheel_routing_for_modes(&self, modes)` ignores `self`.
-- `RestoredLaunch` clones the whole `PaneSnapshot` when it needs the cwd and
-  what the failure placeholder reads.
-- `LaunchKind` derives `Default` with `Fresh`, which nothing may need now.
-
-(wave-5 review)
+(wave-6 review)
 
 ## Test-only twins and test seams in production
 

@@ -1,5 +1,4 @@
 use crate::endpoint::ClientEndpointId;
-use crate::endpoint::ClientEndpointStatus;
 use crate::shell::endpoints::ClientEndpointFocusTarget;
 use crate::shell::endpoints::ClientShellEndpoint;
 use crate::shell::state::ClientShellMode;
@@ -36,10 +35,10 @@ pub(in crate::shell) fn workspace_navigation_targets(
 ) -> Vec<WorkspaceNavigationTarget> {
     let mut targets = Vec::new();
     for endpoint in endpoints {
-        if endpoint.status != ClientEndpointStatus::Online {
+        if endpoint.state.stale() {
             continue;
         }
-        let Some(snapshot) = endpoint.snapshot.as_deref() else {
+        let Some(snapshot) = endpoint.snapshot() else {
             continue;
         };
         for workspace in &snapshot.workspaces {
@@ -47,7 +46,7 @@ pub(in crate::shell) fn workspace_navigation_targets(
                 endpoint_id: endpoint.endpoint_id.clone(),
                 workspace_id: workspace.workspace_id.clone(),
                 boot_id: snapshot.boot_id.clone(),
-                generation: endpoint.snapshot_generation,
+                generation: endpoint.snapshot_generation(),
             });
         }
     }
@@ -92,7 +91,7 @@ impl ClientShellState {
             .pending_workspace_highlight
             .as_ref()
             .is_some_and(|pending| {
-                pending.target.endpoint_id != self.active_endpoint_id
+                pending.target.endpoint_id != *self.endpoints.presented()
                     || !self.navigation_target_valid(&pending.target)
                     || self.snapshot.as_deref().is_some_and(|snapshot| {
                         snapshot.focused_workspace_id.as_deref()
@@ -113,18 +112,18 @@ impl ClientShellState {
             .endpoints
             .iter()
             .find(|entry| &entry.endpoint_id == endpoint_id)?;
-        let snapshot = endpoint.snapshot.as_deref()?;
+        let snapshot = endpoint.snapshot()?;
         Some(WorkspaceNavigationTarget {
             endpoint_id: endpoint_id.clone(),
             workspace_id: workspace_id.clone(),
             boot_id: snapshot.boot_id.clone(),
-            generation: endpoint.snapshot_generation,
+            generation: endpoint.snapshot_generation(),
         })
     }
 
     pub(in crate::shell) fn focused_navigation_target(&self) -> Option<WorkspaceNavigationTarget> {
         let workspace_id = self.snapshot.as_deref()?.focused_workspace_id.as_ref()?;
-        self.navigation_target(&self.active_endpoint_id, workspace_id)
+        self.navigation_target(self.endpoints.presented(), workspace_id)
     }
 
     pub(in crate::shell) fn navigation_target_valid(
@@ -133,9 +132,9 @@ impl ClientShellState {
     ) -> bool {
         self.endpoints.iter().any(|endpoint| {
             endpoint.endpoint_id == target.endpoint_id
-                && endpoint.status == ClientEndpointStatus::Online
-                && endpoint.snapshot_generation == target.generation
-                && endpoint.snapshot.as_deref().is_some_and(|snapshot| {
+                && endpoint.state.usable()
+                && endpoint.snapshot_generation() == target.generation
+                && endpoint.snapshot().is_some_and(|snapshot| {
                     snapshot.boot_id == target.boot_id
                         && snapshot
                             .workspaces
@@ -147,7 +146,8 @@ impl ClientShellState {
 
     pub(in crate::shell) fn workspace_preview_action_blocked(&self) -> bool {
         self.navigate_workspace_id.as_ref().is_some_and(|target| {
-            target.endpoint_id != self.active_endpoint_id || !self.navigation_target_valid(target)
+            target.endpoint_id != *self.endpoints.presented()
+                || !self.navigation_target_valid(target)
         })
     }
 

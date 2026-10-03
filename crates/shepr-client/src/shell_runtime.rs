@@ -52,14 +52,13 @@ pub(super) fn input_endpoint<'a>(
     choice: &'a endpoint::EndpointChoice,
     endpoints: &endpoint::EndpointRegistry,
 ) -> Option<&'a endpoint::ClientEndpointId> {
-    choice.shown().filter(|id| endpoints.viewed(id))
+    choice.live().filter(|id| endpoints.viewed(id))
 }
 
 pub(super) fn dispatch_client_shell_actions(
     actions: Vec<shell::ClientShellAction>,
     endpoint_commands: &mut endpoint::commands::EndpointCommands,
     endpoints: &mut endpoint::EndpointRegistry,
-    choice: &mut endpoint::EndpointChoice,
     output_writer: &mut impl io::Write,
     prefers_osc52_clipboard: bool,
     shell: &mut shell::ClientShellState,
@@ -74,7 +73,7 @@ pub(super) fn dispatch_client_shell_actions(
                 boot_id,
                 request,
             } => {
-                if input_endpoint(choice, endpoints) == Some(&endpoint_id)
+                if input_endpoint(&shell.endpoints.choice, endpoints) == Some(&endpoint_id)
                     && let Some(connection) = endpoints.connection(&endpoint_id)
                 {
                     endpoint_commands.enqueue(
@@ -107,7 +106,7 @@ pub(super) fn dispatch_client_shell_actions(
             shell::ClientShellAction::ActivateEndpoint {
                 endpoint_id,
                 target,
-            } => match choice.select(endpoint_id.clone(), target) {
+            } => match shell.endpoints.choice.select(endpoint_id.clone(), target) {
                 endpoint::Selection::Unchanged => {}
                 endpoint::Selection::FocusShown(target) => {
                     actions.extend(shell.focus_endpoint_target(target));
@@ -116,7 +115,7 @@ pub(super) fn dispatch_client_shell_actions(
                 endpoint::Selection::Moving => {
                     if endpoint::view::selection_wait_notice_needed(
                         &endpoint_id,
-                        choice,
+                        &shell.endpoints.choice,
                         endpoints,
                         shell,
                     ) {
@@ -130,7 +129,7 @@ pub(super) fn dispatch_client_shell_actions(
             },
         }
     }
-    if let Some(shown) = input_endpoint(choice, endpoints) {
+    if let Some(shown) = input_endpoint(&shell.endpoints.choice, endpoints) {
         let cancelled = endpoint_commands.send_next(shown, endpoints, now);
         repaint |= cancel_endpoint_commands(shell, cancelled);
     }
@@ -192,7 +191,7 @@ pub(super) fn resize_views(state: &mut ClientState, endpoints: &mut endpoint::En
             state.reported_geometry.rows(),
         ),
     );
-    if let Some(preparing) = state.choice.preparing_mut() {
+    if let Some(preparing) = state.shell.endpoints.choice.preparing_mut() {
         preparing.update_geometry(geometry);
     }
     endpoints.send_viewed(&ClientMessage::ClientShellResize { geometry });
@@ -247,9 +246,6 @@ pub(super) fn install_client_shell_snapshot(
         return;
     };
     let generation = connection.generation.get();
-    state
-        .shell
-        .set_endpoint_status(endpoint_id, endpoint::ClientEndpointStatus::Online);
     // Only the shown endpoint's snapshot moves the projection. Any other one (a target being
     // prepared included) is cached for its commit. Snapshot application only moves Copy and
     // Terminal modes; neither asks the host for report-all keys.
@@ -276,7 +272,7 @@ pub(super) fn finish_client_shell_input(
     if outcome.detach {
         // A failed send is recorded against the endpoint. The registry remembers a sent
         // Detach, so its Drop on the way out only flushes this connection.
-        if let Some(shown) = state.choice.shown() {
+        if let Some(shown) = state.shell.endpoints.choice.live() {
             endpoints.send_to(shown, &ClientMessage::Detach);
         }
         return Ok(true);
@@ -301,7 +297,6 @@ pub(super) fn finish_client_shell_input(
         outcome.actions,
         endpoint_commands,
         endpoints,
-        &mut state.choice,
         &mut state.output_writer,
         state.settings.prefers_osc52_clipboard(),
         &mut state.shell,
@@ -316,7 +311,7 @@ pub(super) fn finish_client_shell_input(
             // Pane input and host focus reach only the shown endpoint. A target learns of host
             // focus at its commit, and a released endpoint was sent focus-loss with its release.
             _ => {
-                if let Some(shown) = input_endpoint(&state.choice, endpoints) {
+                if let Some(shown) = input_endpoint(&state.shell.endpoints.choice, endpoints) {
                     endpoints.send_to(shown, &request);
                 }
             }

@@ -1,6 +1,7 @@
 use super::*;
 use crate::server::ClientId;
 use crate::server::clients::ClientPaneIdentity;
+use crate::server::pane_surface::PaneSurfaceMetadata;
 use tracing::trace;
 
 fn rect_fits_frame(rect: shepr_protocol::SurfaceRect, frame: &FrameData) -> bool {
@@ -172,24 +173,18 @@ fn retained_cursor(
         pane.workspace_index,
         pane.identity.pane_id,
     )?;
-    if runtime.read().synchronized_output_active() {
-        return None;
-    }
-    let area = Rect::new(
-        pane.pane.inner_rect.x,
-        pane.pane.inner_rect.y,
-        pane.pane.inner_rect.width,
-        pane.pane.inner_rect.height,
-    );
-    runtime
-        .read()
-        .cursor_state(area)
-        .map(|cursor| shepr_protocol::CursorState {
-            x: cursor.x,
-            y: cursor.y,
-            visible: cursor.visible && !crate::ui::pane_is_scrolled_back(runtime),
-            shape: cursor.shape,
-        })
+    crate::ui::pane_cursor(
+        &app.state,
+        runtime,
+        pane.workspace_index,
+        pane.identity.pane_id,
+        Rect::new(
+            pane.pane.inner_rect.x,
+            pane.pane.inner_rect.y,
+            pane.pane.inner_rect.width,
+            pane.pane.inner_rect.height,
+        ),
+    )
 }
 
 struct RetainedRecipient<'a> {
@@ -215,11 +210,7 @@ struct RetainedPaneLayout {
 struct CollectedPanePatch {
     identity: ClientPaneIdentity,
     patch: shepr_mux::pane::TerminalDirtyPatch,
-    content_revision: u64,
-    scroll_metrics: shepr_mux::pane::ScrollMetrics,
-    mouse_reporting: bool,
-    sgr_pixel_mouse: bool,
-    alternate_screen_active: bool,
+    metadata: PaneSurfaceMetadata,
 }
 
 struct RetainedRecipientUpdate {
@@ -505,17 +496,14 @@ impl HeadlessServer {
             };
             // A fallback read yields no snapshot at all (`terminal_snapshot`
             // above); `None` here means the terminal is clean.
+            let metadata = PaneSurfaceMetadata::from_dirty_snapshot(&snapshot);
             let patch = snapshot
                 .patch
                 .unwrap_or(shepr_mux::pane::TerminalDirtyPatch { rows: Vec::new() });
             collected.push(CollectedPanePatch {
                 identity,
                 patch,
-                content_revision: snapshot.content_revision,
-                scroll_metrics: snapshot.scroll_metrics,
-                mouse_reporting: snapshot.mouse_reporting,
-                sgr_pixel_mouse: snapshot.sgr_pixel_mouse,
-                alternate_screen_active: snapshot.alternate_screen_active,
+                metadata,
             });
         }
 
@@ -552,7 +540,7 @@ impl HeadlessServer {
                 // Alternate-screen transitions change whether the pane reserves
                 // a scrollbar gutter. Recompute layout and resize the runtime
                 // through the complete renderer before retaining further rows.
-                if pane.alternate_screen_active != collected_pane.alternate_screen_active {
+                if pane.alternate_screen_active != collected_pane.metadata.alternate_screen_active {
                     fallback!("alternate_screen_geometry", client_id, 'recipients);
                 }
                 if patch_intersects_hyperlinks(
@@ -574,18 +562,13 @@ impl HeadlessServer {
                     &surface.frame,
                     pane,
                     recipient.panes[pane_index].reserved_scrollbar_gutter,
-                    collected_pane.alternate_screen_active,
-                    Some(collected_pane.scroll_metrics),
+                    collected_pane.metadata.alternate_screen_active,
+                    collected_pane.metadata.scroll(),
                 ) else {
                     fallback!("scrollbar_patch", client_id, 'recipients);
                 };
                 patch_rows.extend(scrollbar_rows);
-                pane.content_revision = collected_pane.content_revision;
-                pane.mouse_reporting = collected_pane.mouse_reporting;
-                pane.sgr_pixel_mouse = collected_pane.sgr_pixel_mouse;
-                pane.alternate_screen_active = collected_pane.alternate_screen_active;
-                let metrics = collected_pane.scroll_metrics;
-                pane.scroll = Some(metrics);
+                collected_pane.metadata.apply(pane);
                 metadata_changed |= *pane != previous_pane;
                 changed_panes.push(pane.clone());
             }

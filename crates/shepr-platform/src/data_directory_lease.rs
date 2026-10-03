@@ -6,7 +6,7 @@ use crate::ipc::{FlockLock, acquire_flock_lock};
 /// Exclusive ownership of a session data directory's lease file.
 pub struct DataDirectoryLease {
     directory: PathBuf,
-    lock: Option<FlockLock>,
+    _lock: FlockLock,
 }
 
 impl DataDirectoryLease {
@@ -29,7 +29,7 @@ impl DataDirectoryLease {
         };
         Ok(Self {
             directory,
-            lock: Some(lock),
+            _lock: lock,
         })
     }
 
@@ -38,14 +38,9 @@ impl DataDirectoryLease {
         &self.directory
     }
 
-    /// Whether this value still owns its lock.
-    pub fn is_active(&self) -> bool {
-        self.lock.is_some()
-    }
-
-    /// Releases ownership while retaining the canonical directory path.
-    pub fn release(&mut self) {
-        self.lock.take();
+    /// Releases ownership by consuming the lease.
+    pub fn release(self) {
+        drop(self);
     }
 
     /// Briefly takes and releases the lease at `path`; `false` means held.

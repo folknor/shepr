@@ -62,31 +62,30 @@ impl AgentResumeState {
     }
 }
 
-/// Why a saved pane has no running shell. The pane surface renders its
+/// Why a pane has no running shell, whether newly opened or restored. The pane surface renders its
 /// `guidance` and `cause`; detect requests include its `Display` text in the
-/// existing API error message when a pane has no runtime. Causes are stored as
-/// strings when the failure is recorded, so both presentations can borrow
-/// them instead of retaining an OS error object.
+/// existing API error message when a pane has no runtime. OS causes retain
+/// their errno and error kind until the presentation boundary.
 #[derive(Debug)]
-pub enum RestoreFailure {
+pub enum PaneStartFailure {
     DirectoryUnavailable {
         path: PathBuf,
+        error: std::io::Error,
     },
     DirectoryUnreadable {
         path: PathBuf,
-        error: String,
+        error: std::io::Error,
     },
     ShellStartFailed {
-        error: String,
+        program: Option<PathBuf>,
+        error: std::io::Error,
     },
     /// The saved agent's resume cannot be issued at all (no command to run,
     /// the pane gone from under the attempt), whatever the directory and shell.
-    ResumeUnavailable {
-        reason: String,
-    },
+    ResumeUnavailable { reason: String },
 }
 
-impl RestoreFailure {
+impl PaneStartFailure {
     pub fn resume_unavailable(reason: impl Into<String>) -> Self {
         Self::ResumeUnavailable {
             reason: reason.into(),
@@ -96,13 +95,14 @@ impl RestoreFailure {
     pub fn directory_unreadable(path: PathBuf, error: &std::io::Error) -> Self {
         Self::DirectoryUnreadable {
             path,
-            error: error.to_string(),
+            error: copy_io_error(error),
         }
     }
 
     pub fn shell_start_failed(error: &std::io::Error) -> Self {
         Self::ShellStartFailed {
-            error: error.to_string(),
+            program: None,
+            error: copy_io_error(error),
         }
     }
 
@@ -110,13 +110,13 @@ impl RestoreFailure {
     pub fn guidance(&self) -> &'static str {
         match self {
             Self::DirectoryUnavailable { .. } => {
-                "Saved directory is unavailable. Restore the directory and restart this session."
+                "Pane directory is unavailable. Restore the directory and restart this session."
             }
             Self::DirectoryUnreadable { .. } => {
-                "Saved directory cannot be read. Fix its access and restart this session."
+                "Pane directory cannot be read. Fix its access and restart this session."
             }
             Self::ShellStartFailed { .. } => {
-                "Could not start the saved shell. Fix the shell configuration and restart this session."
+                "Could not start the pane shell. Fix the shell configuration and restart this session."
             }
             Self::ResumeUnavailable { .. } => {
                 "Could not resume the saved agent. Restart this session."
@@ -125,22 +125,28 @@ impl RestoreFailure {
     }
 
     /// The error behind the failure, when there is one.
-    pub fn cause(&self) -> Option<&str> {
+    pub fn cause(&self) -> Option<std::borrow::Cow<'_, str>> {
         match self {
-            Self::DirectoryUnavailable { .. } => None,
-            Self::DirectoryUnreadable { error, .. } | Self::ShellStartFailed { error } => {
-                Some(error)
-            }
-            Self::ResumeUnavailable { reason } => Some(reason),
+            Self::DirectoryUnavailable { error, .. }
+            | Self::DirectoryUnreadable { error, .. }
+            | Self::ShellStartFailed {
+                error,
+                program: None,
+            } => Some(error.to_string().into()),
+            Self::ShellStartFailed {
+                program: Some(program),
+                error,
+            } => Some(format!("{}: {error}", program.display()).into()),
+            Self::ResumeUnavailable { reason } => Some(reason.as_str().into()),
         }
     }
 }
 
-impl std::fmt::Display for RestoreFailure {
+impl std::fmt::Display for PaneStartFailure {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str(self.guidance())?;
         match self {
-            Self::DirectoryUnavailable { path } | Self::DirectoryUnreadable { path, .. } => {
+            Self::DirectoryUnavailable { path, .. } | Self::DirectoryUnreadable { path, .. } => {
                 write!(formatter, " Directory: {}.", path.display())?;
             }
             Self::ShellStartFailed { .. } | Self::ResumeUnavailable { .. } => {}
@@ -149,6 +155,15 @@ impl std::fmt::Display for RestoreFailure {
             write!(formatter, " Error: {cause}")?;
         }
         Ok(())
+    }
+}
+
+// An io::Error may come from preparation before a child exists, where there
+// is no errno. Preserve its kind and diagnostic in that case too.
+fn copy_io_error(error: &std::io::Error) -> std::io::Error {
+    match error.raw_os_error() {
+        Some(errno) => std::io::Error::from_raw_os_error(errno),
+        None => std::io::Error::new(error.kind(), error.to_string()),
     }
 }
 
@@ -164,7 +179,7 @@ pub struct TerminalState {
     manual_label: Option<String>,
     ownership: AgentOwnership,
     agent_resume: AgentResumeState,
-    restore_error: Option<RestoreFailure>,
+    restore_error: Option<PaneStartFailure>,
 }
 
 impl TerminalState {
@@ -195,10 +210,10 @@ impl TerminalState {
     pub fn clear_agent_resume(&mut self) {
         self.agent_resume = AgentResumeState::None;
     }
-    pub fn restore_error(&self) -> Option<&RestoreFailure> {
+    pub fn restore_error(&self) -> Option<&PaneStartFailure> {
         self.restore_error.as_ref()
     }
-    pub fn record_start_failure(&mut self, failure: RestoreFailure) {
+    pub fn record_start_failure(&mut self, failure: PaneStartFailure) {
         self.restore_error = Some(failure);
     }
 }
@@ -209,3 +224,39 @@ mod init;
 mod names;
 mod presentation;
 mod sessions;
+
+#[cfg(test)]
+mod start_failure_tests {
+    use super::PaneStartFailure;
+
+    #[test]
+    fn shell_failure_keeps_errno_and_program_until_presentation() {
+        let failure = PaneStartFailure::ShellStartFailed {
+            program: Some("/missing-shell".into()),
+            error: std::io::Error::from_raw_os_error(libc::ENOENT),
+        };
+        let PaneStartFailure::ShellStartFailed { error, .. } = &failure else {
+            panic!("shell failure");
+        };
+        assert_eq!(error.raw_os_error(), Some(libc::ENOENT));
+        assert!(
+            failure
+                .cause()
+                .expect("OS cause")
+                .starts_with("/missing-shell: ")
+        );
+    }
+
+    #[test]
+    fn preparation_errors_keep_their_kind_without_an_errno() {
+        let error = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "preparation denied");
+        let failure = PaneStartFailure::shell_start_failed(&error);
+        let PaneStartFailure::ShellStartFailed { program, error } = failure else {
+            panic!("shell failure");
+        };
+        assert!(program.is_none());
+        assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+        assert_eq!(error.raw_os_error(), None);
+        assert_eq!(error.to_string(), "preparation denied");
+    }
+}

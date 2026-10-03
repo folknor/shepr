@@ -315,15 +315,14 @@ async fn run_client_loop(
         repaint_pending: false,
         presentation_dirty: state::PresentationDirty::Clean,
         pending_surface_patch: None,
-        // A successful launch attach is the first view, with no previous endpoint to move from.
-        choice: if local_unavailable {
-            endpoint::EndpointChoice::waiting_for(endpoint::ClientEndpointId::Local)
-        } else {
-            endpoint::EndpointChoice::showing(endpoint::ClientEndpointId::Local)
-        },
         draw_host_cursor,
         frame_write_failure: HostWriteFailure::default(),
         title_write_failure: HostWriteFailure::default(),
+    };
+    state.shell.endpoints.choice = if local_unavailable {
+        endpoint::EndpointChoice::waiting_for(endpoint::ClientEndpointId::Local)
+    } else {
+        endpoint::EndpointChoice::showing(endpoint::ClientEndpointId::Local)
     };
     state.set_host_size(cols, rows);
     state.shell.set_machines(&machines);
@@ -399,6 +398,9 @@ async fn run_client_loop(
             surface_decoder,
         ) {
             Ok(()) => {
+                state
+                    .shell
+                    .endpoint_connected(&endpoint::ClientEndpointId::Local, 1);
                 let mut registry =
                     endpoint::EndpointRegistry::new_at(attached.writer, 1, launch_now);
                 registry.send_to(
@@ -419,7 +421,7 @@ async fn run_client_loop(
                     &endpoint::ClientEndpointId::Local,
                     endpoint::ClientEndpointStatus::after_failure(&diagnostic),
                 );
-                state.choice =
+                state.shell.endpoints.choice =
                     endpoint::EndpointChoice::waiting_for(endpoint::ClientEndpointId::Local);
                 initial_local_failure = Some(diagnostic);
                 local_unavailable = true;
@@ -585,7 +587,7 @@ impl ClientLoop {
     fn next_timer_deadline(&mut self, now: std::time::Instant) -> Option<std::time::Instant> {
         earliest_client_timer_deadline([
             self.state.shell.next_timer_deadline(),
-            self.state.choice.deadline(),
+            self.state.shell.endpoints.choice.deadline(),
             self.endpoint_commands.next_deadline(),
             self.write_stream.next_service_deadline(now),
             self.supervisors.next_retry_deadline(),
@@ -848,10 +850,7 @@ impl ClientLoop {
                     return Ok(ClientLoopAction::NextEvent);
                 }
                 write_stream.insert_native(endpoint_id.clone(), writer, generation, false, now);
-                // Reflect Online before the event's one presentation updates the machine list.
-                state
-                    .shell
-                    .set_endpoint_status(&endpoint_id, endpoint::ClientEndpointStatus::Online);
+                state.shell.endpoint_connected(&endpoint_id, generation);
                 // Connecting changes no pane projection (the connection has no
                 // surface yet), only the machine list.
                 state.mark_chrome_dirty();
@@ -877,20 +876,20 @@ impl ClientLoop {
         if !write_stream.accepts(endpoint_id, generation) {
             return Ok(ClientLoopAction::NextEvent);
         }
-        let role = state.choice.role(endpoint_id);
-        let move_response = match message.as_ref() {
-            DecodedClientServerMessage::Wire(
-                DecodedWireServerMessage::ClientShellEndpointResponse {
-                    boot_id,
-                    request_id,
-                    ..
-                },
-            ) => state
-                .choice
-                .preparing()
-                .is_some_and(|p| p.accepts_response(endpoint_id, generation, boot_id, request_id)),
-            _ => false,
-        };
+        let role = state.shell.endpoints.choice.role(endpoint_id);
+        let move_response =
+            match message.as_ref() {
+                DecodedClientServerMessage::Wire(
+                    DecodedWireServerMessage::ClientShellEndpointResponse {
+                        boot_id,
+                        request_id,
+                        ..
+                    },
+                ) => state.shell.endpoints.choice.preparing().is_some_and(|p| {
+                    p.accepts_response(endpoint_id, generation, boot_id, request_id)
+                }),
+                _ => false,
+            };
         let presentation_decision =
             endpoint::PresentationGate::new(role, move_response).decide(message.as_ref());
         if presentation_decision == endpoint::PresentationDecision::Drop {
@@ -900,7 +899,7 @@ impl ClientLoop {
             DecodedClientServerMessage::Wire(message) => message,
             DecodedClientServerMessage::PaneSurfacePatch(patch) => {
                 if presentation_decision.buffers() {
-                    if let Some(pending) = state.choice.preparing_mut() {
+                    if let Some(pending) = state.shell.endpoints.choice.preparing_mut() {
                         pending.receive_patch(endpoint_id, generation, &patch);
                     }
                     return Ok(ClientLoopAction::NextEvent);
@@ -948,7 +947,7 @@ impl ClientLoop {
         match message {
             DecodedWireServerMessage::PaneSurface(surface) => {
                 if presentation_decision.buffers() {
-                    if let Some(pending) = state.choice.preparing_mut() {
+                    if let Some(pending) = state.shell.endpoints.choice.preparing_mut() {
                         pending.receive_surface(endpoint_id, generation, surface);
                     }
                     return Ok(ClientLoopAction::NextEvent);
@@ -981,7 +980,7 @@ impl ClientLoop {
                 result,
             } => {
                 if presentation_decision.buffers() {
-                    if let Some(pending) = state.choice.preparing_mut() {
+                    if let Some(pending) = state.shell.endpoints.choice.preparing_mut() {
                         pending.receive_response(
                             endpoint_id,
                             generation,
@@ -1100,7 +1099,7 @@ impl ClientLoop {
                         .receive_session_saves_stopped(endpoint_id, &snapshot.boot_id);
                 }
                 if presentation_decision.buffers()
-                    && let Some(pending) = state.choice.preparing_mut()
+                    && let Some(pending) = state.shell.endpoints.choice.preparing_mut()
                 {
                     pending.receive_snapshot(endpoint_id, generation, &snapshot);
                 }

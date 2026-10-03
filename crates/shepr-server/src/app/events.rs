@@ -102,9 +102,7 @@ impl App {
             .collect();
         let changed = self.state.apply_workspace_git_statuses(results);
         if changed {
-            self.state.mark_shell_projection_dirty();
-            self.render_dirty.request_generic();
-            self.render_notify.notify_one();
+            self.invalidate_shared_view(true);
         }
         changed
     }
@@ -217,6 +215,12 @@ impl App {
         ev: AppEvent,
         prepared_checkpoint: Option<bool>,
     ) -> bool {
+        let (changed, projection_changed) =
+            self.observe_projection_change(|app| app.apply_internal_event(ev, prepared_checkpoint));
+        changed || projection_changed
+    }
+
+    fn apply_internal_event(&mut self, ev: AppEvent, prepared_checkpoint: Option<bool>) -> bool {
         let pane_exit_prepared = prepared_checkpoint.is_some();
         let Some(ev) = self.admit_runtime_event(ev) else {
             return false;
@@ -255,7 +259,6 @@ impl App {
             return false;
         }
 
-        let projection_before = self.state.shell_projection_revision;
         if let AppEvent::PaneDied {
             pane_id,
             exit_reason,
@@ -296,6 +299,9 @@ impl App {
         }
 
         let terminal_cwd_reported = matches!(ev, AppEvent::TerminalCwdReported { .. });
+        // A cwd report changes only the projection (the state update reports
+        // Unchanged), so the projection revision is what says the cwd moved.
+        let projection_before = self.state.shell_projection_revision;
         let mut detached_terminal_ids = Vec::new();
         if let AppEvent::PaneDied { pane_id, .. } = &ev {
             if let Some(plan) = pane_removal_plan {
@@ -332,12 +338,10 @@ impl App {
             self.finish_checkpointed_pane_exit_after_event(session_was_dirty);
         }
         self.apply_lifecycle_authority_changes();
-        let changed =
-            removed || state_changed || self.state.shell_projection_revision != projection_before;
-        if terminal_cwd_reported && changed {
+        let changed = removed || state_changed;
+        if terminal_cwd_reported && self.state.shell_projection_revision != projection_before {
             self.request_git_identity_refresh(self.clock.now);
-            self.render_dirty.request_generic();
-            self.render_notify.notify_one();
+            self.invalidate_shared_view(false);
         }
 
         self.shutdown_detached_terminal_runtimes(&detached_terminal_ids);
@@ -398,7 +402,7 @@ impl App {
     pub(super) fn abandon_terminal_agent_resume(
         &mut self,
         terminal_id: &shepr_protocol::TerminalId,
-        failure: shepr_mux::terminal::RestoreFailure,
+        failure: shepr_mux::terminal::PaneStartFailure,
         now: std::time::Instant,
     ) {
         let pane_id = self.state.workspaces.iter().find_map(|workspace| {

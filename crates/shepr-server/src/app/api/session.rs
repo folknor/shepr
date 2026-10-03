@@ -6,7 +6,7 @@ use shepr_protocol::{AgentStatus, PublicPaneId, WorkspaceId};
 /// `App` state and the client-shell snapshot each shell receives. It names no
 /// focused workspace: which workspace a shell views is its own location, and
 /// each projection derives the focus from it. It carries only what
-/// `server::client_shell` projects; the server rebuilds it on the loop, so a
+/// `HeadlessServer::snapshot_from_session` projects; the server rebuilds it on the loop, so a
 /// field nothing reads costs every rebuild.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct SessionSnapshot {

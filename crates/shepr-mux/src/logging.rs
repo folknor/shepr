@@ -18,13 +18,13 @@ pub(crate) fn pane_spawn_started(
     );
 }
 
-pub(crate) fn pane_spawned(pane_id: u32, pid: u32) {
+pub(crate) fn pane_spawned(pane_id: u32, pid: shepr_platform::Pid) {
     tracing::info!(
         event = "pane.spawned",
         subsystem = "pane",
         outcome = "ok",
         pane_id,
-        pid,
+        pid = pid.get(),
         "pane child spawned"
     );
 }

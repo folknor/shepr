@@ -134,23 +134,6 @@ and derive it from list order; `AppState::workspace(&WorkspaceId) ->
 Option<WorkspaceRef>` so handlers keep the id and positional indices exist only
 for ordering. Reported by contracts, server-app and client-shell.
 
-## TYP-005 - Stop and status flows still carry the boot id as text
-
-`BootId` stores its parsed pid and clock (`crates/shepr-protocol/src/identity.rs`)
-and the surface baselines and client request answers take it typed. Still
-open: the JSON-side identities (`RuntimeStatus`, the ping result), the stop
-guards, probes and errors in `crates/shepr-api/src/server_stop.rs`, and the
-remote restart identities in shepr-remote still carry `String` boot ids and
-compare through text. Some API presence and remote startup tests use the
-non-canonical `"test"`. The JSON fixtures stay as they are. (contracts, edges)
-
-## TYP-006 - Build ids still travel as strings outside the comparisons
-
-`BuildIdentity` and a shared `BuildVersion` parser now exist
-(`crates/shepr-protocol/src/build.rs`) and comparisons use them. Still open: the
-schema fields, `PeerBuild` and the launch and remote status values carry the
-build id as `String`. (contracts, edges)
-
 ## TYP-007 - `RequestId` is any string, and the client encodes structure in it
 
 `RequestId` has `From<String>`, `From<&str>`, `Deref<str>`, `Borrow<str>` and
@@ -230,16 +213,6 @@ yet" compared as `Option<u64>` across that sentinel. Proposal: a newtype per
 counter (`CheckpointGeneration` minted only by the machine with
 `is_released_by(through)`, a warning generation, a location generation, a
 session generation). Reported by server-app and server-serving.
-
-## TYP-010 - Foreground job and tree walks still use numeric process ids
-
-`Pid`, `Pgid`, `SessionId` and `ProcState` live in shepr-platform and cover
-process identities, pidfds, PTY launch, child liveness, teardown, probe results
-and the daemon group kill. Still numeric: the foreground-job fields and the
-task and children traversal in `crates/shepr-agent/src/detect/proc_tree.rs`,
-the detection scheduling fields, the terminal colour-owner storage, and some
-accessors and probe parameters; and `boot_id_process_id` in shepr-remote could
-use `Pid`. (foundation, agents, mux-panes)
 
 ## TYP-011 - `SshTarget` still derefs to `str`
 
@@ -402,18 +375,15 @@ input type. server-app and mux-panes also suggest putting the terminal id in the
 envelope so admission is one lookup. Reported by mux-panes, mux-state and
 server-app.
 
-## TYP-027 - `ChildLiveness` is a lifecycle spread over three atomics and an `Option`
+## TYP-027 - ChildLiveness still has test-only adapters in production
 
-`ChildLiveness { pid: AtomicU32, wait_completed: AtomicBool, launched:
-AtomicBool, leader: Option<ProcessHandle> }`. `launched`, `wait_completed` and
-"the handle says unreaped" encode a phase (Launching, Running, Exited-unreaped,
-Reaped) as independent bools; `leader: None` exists only for fixtures, yet
-`has_exited`, `is_reaped` and `launch_status::settle` carry the fallback.
-`LaunchProgress { launched: Option<bool> }` is a second store of "did exec
-commit", written right after `mark_launched()`. Proposal: the runtime holds
-`Option<Arc<ChildLiveness>>` (or `PaneChild::{Detached, Process(..)}`) so the
-fixture case lives where it belongs, and `ChildLiveness { pid: Pid, leader:
-ProcessHandle, phase }` whose phase the launch watch also reads. (mux-panes)
+`ChildLiveness` (`crates/shepr-mux/src/pane/teardown.rs`) is one locked identity
+and lifecycle state, and real children derive their pid from their process
+handle. Still open: a no-leader constructor used by
+`crates/shepr-mux/src/pane/detection_task.rs` tests and three pid-injection
+calls in `pane/runtime.rs` tests go through test-only adapters on the production
+type; moving those doubles into fixtures needs an observation seam through the
+runtime constructor. (mux-panes)
 
 ## TYP-029 - The dirty patch snapshot folds three reasons into `None`
 
@@ -459,24 +429,13 @@ newtypes per counter (`ContentRevision`, `DetectionSeq`, `SyncEpoch`,
 bookkeeping of these counters is filed among the consolidations. Reported by
 mux-panes and server-serving.
 
-## TYP-031 - Launch failures are prose by the time anything can branch
+## TYP-031 - Resume-unavailable reasons are still prose
 
-`LaunchRecord::ExecFailed(errno)` becomes
-`RestoreFailure::ShellStartFailed { error: format!("{program}: {error}") }`;
-`RestoreFailure` stores `error: String` deliberately and is read as text by the
-API's detect path and the pane placeholder; the name is wrong for a fresh
-split's failed exec. pty's `LaunchRecord::{ChdirOk(u32), ChdirFailed(i32),
-ExecFailed(i32)}` and `SpawnedPty { cwd_candidates }` are handed to mux
-separately, and mux `launch_status.rs` `settle` bounds-checks the index against
-pty's candidates, enforces record order (ChdirFailed only before ChdirOk,
-ExecFailed only after, EOF after ChdirOk means exec committed), turns errnos into
-`io::Error`, and uses the empty-path sentinel: the protocol is pty's, its state
-machine is in mux. Proposal: pty exposes a `LaunchStatusReader` yielding
-`LaunchOutcome::{Entered(PathBuf), DirectoryFailed { path, error },
-ExecFailed(io::Error), Committed, ProtocolViolation}`; mux keeps the waiting and
-settlement policy and records `PaneStartFailure { stage: StartStage::{
-EnterDirectory { path }, ExecShell { program }, ResumeUnavailable }, cause:
-Errno }`. Reported by foundation and mux-panes.
+Launch status records are read by a `LaunchStatusReader` in pty, and pane start
+failures are a `PaneStartFailure` that keeps real `io::Error`s until
+presentation. Still open: the resume-unavailable reasons are prose strings, and
+the spawn path converts the shell program to text lossily before it reaches the
+failure. (foundation, mux-panes)
 
 ## TYP-032 - The raw shell setting uses an empty string for unset
 
@@ -551,21 +510,6 @@ path (the boundary is commented in `app/git_refresh.rs`). `GitReadError`'s
 payloads are prose (`arguments: args.join(" ")`, `message: error.to_string()`);
 `FileRead` should carry a `FileReadReason` enum. (mux-state)
 
-## TYP-043 - Persistence load and restore outcomes are prose and loose primitives
-
-`SessionLoad::Unusable(String)` is `format!("it could not be read: {err}")` or
-`"... parsed: ..."`, copied into the wire's `SessionRestoreLoss::Unusable {
-reason: String }`; `parse_snapshot` and `parse_history_snapshot` return
-`Result<_, String>`. `RestoredSession { restore_damage: bool,
-dropped_workspaces: usize }` is folded by the server with the load variant into
-`protect_unloaded` and `SessionRestoreLoss::partial(usize, bool)`.
-`logging::session_restored(.., outcome: &'static str)` uses `"partial"`,
-`"empty"`, `"ok"`. Proposal: `UnusableSession::{Unreadable(io::ErrorKind),
-NotRegularFile(kind), TooLarge, Unparseable { line, column, category }}` and a
-`RestoreLoss` value. A not-regular session is refused at startup by
-`check_session_target`, so `load` should never see one; a type would show it.
-Reported by mux-state and server-app.
-
 ## TYP-045 - Cwds are `PathBuf`s right after `UsableCwd` exists
 
 Save-time process validation now returns `UsableCwd`; event-loop observations
@@ -585,17 +529,6 @@ deserialization for saved and wire cwds, `UsableCwd` (or an `ObservedCwd`) as th
 return of runtime cwd reads, and a `RemotePath` newtype for paths on the
 server's host that the client never opens. Reported by mux-state, contracts,
 server-app and server-serving.
-
-## TYP-046 - The data-directory lease and writer carry their own liveness flags
-
-`DataDirLease { file: Option<File> }` with `release(&mut self)` and
-`is_active()`, and `SessionWriter { lease: Option<DataDirLease> }` with
-`may_write()`. A released lease is still a `DataDirLease`, and
-`load`/`load_history` check `is_active()` and return `Missing`/`None` for a
-released one, indistinguishable from a fresh start. Proposal: `release(self)`
-consumes, `load(&DataDirLease)` needs no runtime check, and the writer holds the
-lease by value so retirement drops it. Whether a save may run is filed among the
-consolidations. (mux-state)
 
 ## Geometry and coordinates
 
@@ -796,15 +729,6 @@ checked, not by construction), a wide tail is still "`symbol` empty and
 ratatui diff hint on the wire. Proposal: `GridCellWidth::{Grapheme, One,
 WideLead, WideTail}` and `try_from` deserialization into the validated grid.
 Reported by contracts and client-shell.
-
-## TYP-066 - Status structs still admit states the decoder refuses
-
-`crates/shepr-api/src/schema/server.rs` now rejects presence and identity
-contradictions and partial identities when decoding. Still open: the public
-structs can be built in those states directly; the client and sibling status
-fields and `RuntimeStatus`'s `stopping` and `starting` flags stay optional
-fields and bools rather than a state enum. The ping JSON shape is frozen.
-(contracts, edges)
 
 ## TYP-069 - Smaller config axes
 

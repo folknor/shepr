@@ -102,7 +102,7 @@ impl PaneRuntimeFixture for PaneRuntime {
         let (start_tx, start_rx) = std::sync::mpsc::channel();
         let (ready_tx, ready_rx) = std::sync::mpsc::channel();
         let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
-        self.read().on_next_dirty_collection(Box::new(move || {
+        self.on_next_dirty_collection(Box::new(move || {
             start_tx.send(()).expect("test start channel is open");
             ready_rx
                 .recv_timeout(Duration::from_secs(5))

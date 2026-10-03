@@ -115,6 +115,9 @@ impl AttemptTarget {
     }
 }
 
+// These clocks schedule connection attempts, not presentation availability. A successful
+// handshake starts the stability clock before its first snapshot arrives; the shell's
+// endpoint state alone decides whether the presentation is usable and what status to draw.
 struct ReconnectState {
     target: ConnectTarget,
     attempts: u32,
@@ -568,7 +571,7 @@ pub(crate) fn handshake_error(
             )) if mismatch_guidance.is_some() => (
                 std::io::ErrorKind::Unsupported,
                 EndpointFailure::incompatible(local_build_mismatch(
-                    &peer.build_id,
+                    &peer.build_id.to_string(),
                     mismatch_guidance.unwrap_or_default(),
                 )),
             ),
@@ -1046,7 +1049,9 @@ mod tests {
     fn different_build() -> crate::ClientError {
         crate::ClientError::Preamble(shepr_protocol::preamble::PreambleError::DifferentBuild(
             shepr_protocol::preamble::PeerBuild {
-                build_id: "00000000deadbeef".into(),
+                build_id: "00000000deadbeef"
+                    .parse()
+                    .expect("canonical build fingerprint"),
             },
         ))
     }

@@ -12,6 +12,15 @@ pub enum BuildIdentity {
 }
 
 impl BuildIdentity {
+    pub fn for_this_build() -> Self {
+        super::BUILD_ID.parse().unwrap_or(Self::Unidentifiable)
+    }
+
+    /// Whether this identity names the current executable's build.
+    pub fn is_this_build(self) -> bool {
+        Self::for_this_build().matches(self)
+    }
+
     pub fn matches(self, peer: Self) -> bool {
         matches!((self, peer), (Self::Known(ours), Self::Known(theirs)) if ours == theirs)
     }

@@ -210,7 +210,7 @@ impl ClientShellState {
         if command.traits().changes_focus {
             outcome.repaint |= self.pending_workspace_highlight.take().is_some();
         }
-        if !self.endpoint_is_online(&self.active_endpoint_id) {
+        if !self.endpoint_usable(self.endpoints.presented()) {
             let label = self.active_endpoint_label().to_owned();
             outcome.repaint |= self.receive_endpoint_unavailable(format!("{label} is not ready"));
             return None;
@@ -221,7 +221,7 @@ impl ClientShellState {
             .ledger
             .open(snapshot.boot_id.clone(), method_name, work);
         outcome.actions.push(ClientShellAction::Endpoint {
-            endpoint_id: self.active_endpoint_id.clone(),
+            endpoint_id: self.endpoints.presented().clone(),
             boot_id: snapshot.boot_id.clone(),
             request: Box::new(ClientShellEndpointRequest {
                 id: request_id.to_string(),

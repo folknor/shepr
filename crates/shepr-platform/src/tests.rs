@@ -544,8 +544,9 @@ fn process_handle_follows_one_process_through_exit_and_reap() {
     let mut child = fixture::command(&[Step::Sleep(Duration::from_secs(30))])
         .spawn()
         .expect("spawn sleep");
-    let handle = ProcessHandle::open(child.id()).expect("pidfd_open on a live child");
-    assert_eq!(handle.pid(), child.id());
+    let handle = ProcessHandle::open(Pid::new(child.id()).expect("child pid"))
+        .expect("pidfd_open on a live child");
+    assert_eq!(handle.process_id().get(), child.id());
     assert!(handle.is_unreaped());
     assert!(!handle.has_exited());
 
@@ -568,7 +569,8 @@ fn wait_for_process_exits_times_out_on_a_live_process() {
     let mut child = fixture::command(&[Step::Sleep(Duration::from_secs(30))])
         .spawn()
         .expect("spawn sleep");
-    let handle = ProcessHandle::open(child.id()).expect("pidfd_open on a live child");
+    let handle = ProcessHandle::open(Pid::new(child.id()).expect("child pid"))
+        .expect("pidfd_open on a live child");
     assert!(!wait_for_process_exits(
         &[&handle],
         Duration::from_millis(30)
@@ -609,7 +611,10 @@ fn session_members_are_found_without_the_leader_and_signalled_by_handle() {
     let leader = child.id();
     let deadline = Instant::now() + Duration::from_secs(5);
     let members = loop {
-        let members = session_member_handles(leader, || false);
+        let members = session_member_handles(
+            SessionId::of_leader(Pid::new(leader).expect("session leader")),
+            || false,
+        );
         if !members.is_empty() || Instant::now() >= deadline {
             break members;
         }
@@ -617,7 +622,9 @@ fn session_members_are_found_without_the_leader_and_signalled_by_handle() {
     };
 
     assert!(
-        members.iter().all(|member| member.pid() != leader),
+        members
+            .iter()
+            .all(|member| member.process_id().get() != leader),
         "the leader is not a member handle"
     );
     assert_eq!(members.len(), 1, "the background sleep is the only member");
@@ -636,7 +643,10 @@ fn session_members_are_withheld_when_a_reaped_leaders_pid_is_held_again() {
     let leader = child.id();
     let deadline = Instant::now() + Duration::from_secs(5);
     let members = loop {
-        let members = session_member_handles(leader, || false);
+        let members = session_member_handles(
+            SessionId::of_leader(Pid::new(leader).expect("session leader")),
+            || false,
+        );
         if !members.is_empty() || Instant::now() >= deadline {
             break members;
         }
@@ -645,7 +655,13 @@ fn session_members_are_withheld_when_a_reaped_leaders_pid_is_held_again() {
     assert_eq!(members.len(), 1, "background sleep must be running");
     // The leader is alive, so from the point of view of a caller that has
     // already reaped its own leader, pid `leader` belongs to someone else.
-    assert!(session_member_handles(leader, || true).is_empty());
+    assert!(
+        session_member_handles(
+            SessionId::of_leader(Pid::new(leader).expect("session leader")),
+            || true,
+        )
+        .is_empty()
+    );
     child.kill().expect("kill session leader");
     child.wait().expect("reap session leader");
     // Clean up the background sleep, which outlives the leader.
@@ -832,10 +848,11 @@ fn selection_owning_helper_does_not_block_clipboard_write() {
     }
     let reap_deadline = Instant::now() + Duration::from_secs(2);
     let owner_pid_u32 = u32::try_from(owner_pid).expect("owner pid should be positive");
-    while process_exists(owner_pid_u32) && Instant::now() < reap_deadline {
+    let owner_pid = Pid::new(owner_pid_u32).expect("owner pid");
+    while process_exists(owner_pid) && Instant::now() < reap_deadline {
         std::thread::sleep(Duration::from_millis(10));
     }
-    let owner_was_reaped = !process_exists(owner_pid_u32);
+    let owner_was_reaped = !process_exists(owner_pid);
     cleanup.owner_pid = None;
     writer.join().expect("clipboard writer thread should join");
     drop(cleanup);

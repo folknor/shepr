@@ -1284,7 +1284,7 @@ fn navigator_renders_every_terminal_in_workspace_sections() {
     };
     navigator.scroll = 2;
     navigator.selected = Some(ClientNavigatorTarget::Pane {
-        endpoint_id: state.active_endpoint_id.clone(),
+        endpoint_id: state.endpoints.presented().clone(),
         pane_id: test_pane_id("w1:p2"),
     });
     let visible = visible_rows(&mut state, 11);
@@ -1328,14 +1328,14 @@ fn navigator_search_matches_non_adjacent_words_without_losing_the_pane_target() 
         navigator.query = query.into();
         navigator.selected = None;
         let rows =
-            render::client_navigator_rows(&state.endpoints, &state.active_endpoint_id, navigator);
+            render::client_navigator_rows(&state.endpoints, state.endpoints.presented(), navigator);
         let target = crate::shell::navigation::aggregate_navigation::selected_navigator_target(
             &rows, navigator,
         );
         assert_eq!(
             target,
             matches.then(|| ClientNavigatorTarget::Pane {
-                endpoint_id: state.active_endpoint_id.clone(),
+                endpoint_id: state.endpoints.presented().clone(),
                 pane_id: test_pane_id("w1:p1"),
             }),
             "query={query:?}"
@@ -1392,7 +1392,7 @@ fn navigator_searches_ancestor_context_and_keeps_split_agents_individually_actio
         navigator.filter = filter;
         navigator.selected = None;
         let rows =
-            render::client_navigator_rows(&state.endpoints, &state.active_endpoint_id, navigator);
+            render::client_navigator_rows(&state.endpoints, state.endpoints.presented(), navigator);
         let pane_ids = rows
             .iter()
             .filter_map(|row| match &row.target {
@@ -1476,7 +1476,7 @@ fn navigator_distinguishes_unnamed_terminals_in_one_workspace() {
         panic!("navigator");
     };
     let rows =
-        render::client_navigator_rows(&state.endpoints, &state.active_endpoint_id, navigator);
+        render::client_navigator_rows(&state.endpoints, state.endpoints.presented(), navigator);
     let labels = rows
         .iter()
         .filter(|row| matches!(row.target, ClientNavigatorTarget::Pane { .. }))
@@ -1506,7 +1506,7 @@ fn navigator_keeps_empty_workspaces_searchable_without_status_filters() {
         navigator.query = query.into();
         navigator.filter = filter;
         let rows =
-            render::client_navigator_rows(&state.endpoints, &state.active_endpoint_id, navigator);
+            render::client_navigator_rows(&state.endpoints, state.endpoints.presented(), navigator);
         assert_eq!(
             rows.len(),
             usize::from(expected),
@@ -1832,7 +1832,7 @@ fn navigator_grouping_keeps_snapshot_order_with_interleaved_panes() {
         panic!("navigator")
     };
     let rows =
-        render::client_navigator_rows(&state.endpoints, &state.active_endpoint_id, navigator);
+        render::client_navigator_rows(&state.endpoints, state.endpoints.presented(), navigator);
     let actual = rows
         .iter()
         .filter_map(|row| match &row.target {
@@ -1840,13 +1840,13 @@ fn navigator_grouping_keeps_snapshot_order_with_interleaved_panes() {
                 endpoint_id,
                 pane_id,
             } => {
-                assert!(endpoint_id == &state.active_endpoint_id || endpoint_id == &remote_id);
+                assert!(endpoint_id == state.endpoints.presented() || endpoint_id == &remote_id);
                 Some((endpoint_id.clone(), pane_id.clone()))
             }
             _ => None,
         })
         .collect::<Vec<_>>();
-    let expected = [state.active_endpoint_id.clone(), remote_id]
+    let expected = [state.endpoints.presented().clone(), remote_id]
         .into_iter()
         .flat_map(|endpoint| {
             expected
@@ -1915,7 +1915,7 @@ fn navigator_owns_search_mouse_selection_and_stable_target_focus() {
         else {
             panic!("expected navigator");
         };
-        render::client_navigator_rows(&state.endpoints, &state.active_endpoint_id, navigator)
+        render::client_navigator_rows(&state.endpoints, state.endpoints.presented(), navigator)
             .iter()
             .find(|row| matches!(row.target, ClientNavigatorTarget::Pane { .. }))
             .map(|row| row.target.clone())

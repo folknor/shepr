@@ -15,6 +15,7 @@ use super::terminal::PaneTerminal;
 use crate::events::EventSender;
 use crate::render_signal::RenderSignal;
 use shepr_core::layout::PaneId;
+use shepr_platform::Pid;
 
 /// Handles moved together between the async loop and its blocking tick.
 pub(super) struct DetectionHandles {
@@ -101,17 +102,10 @@ impl DetectionTask {
             if let Some(change) = output.process_change.take()
                 && let Some(agent) = change.process_detected
             {
-                publish_agent_process_detected_event(
-                    self.handles.events.clone(),
-                    self.pane_id,
-                    agent,
-                    now,
-                )
-                .await;
+                publish_agent_process_detected_event(self.handles.events.clone(), agent, now).await;
             }
             if let Some(update) = output.state_changed {
-                publish_state_changed_event(self.handles.events.clone(), self.pane_id, update)
-                    .await;
+                publish_state_changed_event(self.handles.events.clone(), update).await;
             }
         }
     }
@@ -127,13 +121,13 @@ impl DetectionTask {
         .await
     }
 
-    fn live(&self, pid: u32) -> bool {
+    fn live(&self, pid: Pid) -> bool {
         !self.cancelled.load(Ordering::Acquire)
-            && self.handles.child_liveness.live_pid() == Some(pid)
+            && self.handles.child_liveness.live_process_id() == Some(pid)
     }
 
     fn tick(&mut self, now: Instant) -> Option<TickOutput> {
-        let pid = self.handles.child_liveness.live_pid()?;
+        let pid = self.handles.child_liveness.live_process_id()?;
         if !self.live(pid) {
             return None;
         }
@@ -235,7 +229,7 @@ mod tests {
             pane_id: shepr_test_fixtures::fixed_pane_id(1),
             handles: DetectionHandles {
                 terminal: Arc::new(PaneTerminal::new(shepr_vt::Terminal::new(80, 24, 0))),
-                child_liveness: Arc::new(ChildLiveness::new(std::process::id(), None)),
+                child_liveness: Arc::new(ChildLiveness::running_unhandled(std::process::id())),
                 lifecycle_authority: Arc::new(AtomicBool::new(false)),
                 reset: Arc::new(Notify::new()),
                 events: EventSender::runtime(

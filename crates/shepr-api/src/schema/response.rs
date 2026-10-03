@@ -44,10 +44,10 @@ pub struct DetectionCapture {
 pub enum ResponseResult {
     Pong {
         version: String,
-        build_id: String,
+        build_id: shepr_protocol::BuildIdentity,
         /// Identifies this server process, which a build id cannot: a
         /// conditional `server.stop_if_boot` names the boot it expects.
-        boot_id: String,
+        boot_id: shepr_protocol::BootId,
         /// The server has begun stopping. Its socket stays up until the final
         /// session save is on disk, so a launcher waits for it to go rather
         /// than attaching to a server that no longer accepts TUI connections. Absent in

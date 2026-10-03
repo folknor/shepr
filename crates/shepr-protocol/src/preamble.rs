@@ -35,7 +35,7 @@ pub const PREAMBLE_LEN: usize = PREAMBLE_MAGIC.len() + BUILD_ID_BYTES;
 /// The build identity a peer announced in its preamble.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PeerBuild {
-    pub build_id: String,
+    pub build_id: super::BuildIdentity,
 }
 
 /// Why a peer's preamble was not accepted.
@@ -119,17 +119,14 @@ fn check_against(received: &[u8; PREAMBLE_LEN], ours: &str) -> Result<(), Preamb
     if *received == preamble_for(ours) && super::is_identifiable_build_id(ours) {
         return Ok(());
     }
-    let build_id = id
-        .iter()
-        .take_while(|byte| **byte != 0)
-        .map(|byte| {
-            if byte.is_ascii_graphic() {
-                char::from(*byte)
-            } else {
-                '?'
-            }
-        })
-        .collect();
+    // The magic already identified a shepr peer, so identity bytes that are
+    // not a canonical fingerprint still make it another build, one whose
+    // identity cannot be named: it gets the build-mismatch guidance and
+    // restart offer, never the not-a-shepr-endpoint refusal.
+    let build_id = std::str::from_utf8(id)
+        .ok()
+        .and_then(|id| id.parse().ok())
+        .unwrap_or(super::BuildIdentity::Unidentifiable);
     Err(PreambleError::DifferentBuild(PeerBuild { build_id }))
 }
 
@@ -156,7 +153,7 @@ mod tests {
         let other = preamble_for("00000000deadbeef");
         match read_preamble(&mut other.as_slice()) {
             Err(PreambleError::DifferentBuild(peer)) => {
-                assert_eq!(peer.build_id, "00000000deadbeef");
+                assert_eq!(peer.build_id.to_string(), "00000000deadbeef");
                 let message = PreambleError::DifferentBuild(peer).to_string();
                 assert!(message.contains("build mismatch"), "{message}");
                 assert!(message.contains("00000000deadbeef"), "{message}");
@@ -189,11 +186,25 @@ mod tests {
         let received = preamble_for(unidentifiable);
         match check_against(&received, unidentifiable) {
             Err(PreambleError::DifferentBuild(peer)) => {
-                assert_eq!(peer.build_id, unidentifiable);
+                assert_eq!(peer.build_id.to_string(), unidentifiable);
             }
             other => panic!("expected a refusal, got {other:?}"),
         }
         assert!(check_against(&preamble_for("0123456789abcdef"), "0123456789abcdef").is_ok());
+    }
+
+    #[test]
+    fn malformed_identity_bytes_are_an_unidentifiable_build() {
+        for id in [*b"0123456789abcdeF", *b"0123456789abcd\0\0", [0xff; 16]] {
+            let mut bytes = local_preamble();
+            bytes[PREAMBLE_MAGIC.len()..].copy_from_slice(&id);
+            assert!(matches!(
+                read_preamble(&mut bytes.as_slice()),
+                Err(PreambleError::DifferentBuild(PeerBuild {
+                    build_id: crate::BuildIdentity::Unidentifiable
+                }))
+            ));
+        }
     }
 
     #[test]

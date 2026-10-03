@@ -7,6 +7,7 @@ use serde::de::DeserializeOwned;
 
 use crate::limits::ORDINARY_RESPONSE_TIMEOUT;
 use crate::schema::{ErrorResponse, Method, PingParams, Request, ResponseResult, SuccessResponse};
+use crate::status::RuntimeLifecycle;
 use shepr_platform::ipc::{LocalStream, LocalStreamDeadlineReader};
 
 /// Reusable client for Shepr's newline-delimited JSON API.
@@ -153,8 +154,13 @@ fn runtime_status(
             version,
             build_id,
             boot_id,
-            stopping,
-            starting,
+            lifecycle: if stopping {
+                RuntimeLifecycle::Stopping
+            } else if starting {
+                RuntimeLifecycle::Starting
+            } else {
+                RuntimeLifecycle::Running
+            },
         }),
         result => Err(ApiClientError::UnexpectedResult(format!("{result:?}"))),
     }

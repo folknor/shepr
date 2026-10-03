@@ -16,7 +16,7 @@ pub use server::{
     ClientGate, ClientHandshakeOutcome, ClientHandshakeSilence, ClientProtocolHandler,
     ConnectionSlot, ServerHandle, read_client_handshake,
 };
-pub use status::{RuntimeStatus, ServerPresence, read_server_presence_at};
+pub use status::{RuntimeLifecycle, RuntimeStatus, ServerPresence, read_server_presence_at};
 pub use stop::ServerStopSignal;
 
 use tokio::sync::mpsc;

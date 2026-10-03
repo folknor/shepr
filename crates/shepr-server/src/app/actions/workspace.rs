@@ -5,9 +5,33 @@ use super::*;
 // ---------------------------------------------------------------------------
 
 impl AppState {
+    pub(crate) fn rename_workspace(
+        &mut self,
+        workspace_index: usize,
+        label: Option<String>,
+    ) -> Option<ViewMutation> {
+        let workspace = self.workspaces.get_mut(workspace_index)?;
+        if workspace.custom_name == label {
+            return Some(ViewMutation::Unchanged);
+        }
+        workspace.custom_name = label;
+        crate::logging::workspace_renamed(&workspace.id);
+        self.mark_session_dirty();
+        Some(ViewMutation::Metadata)
+    }
+
     pub fn move_workspace(&mut self, source_idx: usize, insert_idx: usize) -> bool {
+        self.move_workspace_outcome(source_idx, insert_idx)
+            .changed()
+    }
+
+    pub(crate) fn move_workspace_outcome(
+        &mut self,
+        source_idx: usize,
+        insert_idx: usize,
+    ) -> ViewMutation {
         if source_idx >= self.workspaces.len() || insert_idx > self.workspaces.len() {
-            return false;
+            return ViewMutation::Unchanged;
         }
 
         let target_idx = if source_idx < insert_idx {
@@ -16,7 +40,7 @@ impl AppState {
             insert_idx
         };
         if source_idx == target_idx {
-            return false;
+            return ViewMutation::Unchanged;
         }
 
         self.mark_session_dirty();
@@ -24,7 +48,7 @@ impl AppState {
         let workspace = self.workspaces.remove(source_idx);
         self.workspaces.insert(target_idx, workspace);
         self.reconcile_bookmark();
-        true
+        ViewMutation::WorkspaceOrder
     }
 
     pub(crate) fn terminal_ids_for_workspace(
@@ -109,15 +133,18 @@ impl AppState {
         let Some(workspace) = self.workspaces.get_mut(plan.workspace_index) else {
             return PaneRemovalCommit::Stale;
         };
+        let focus_before = workspace.focused_pane_id();
         let Some(removal) = workspace.remove_pane(&plan.workspace_plan) else {
             return PaneRemovalCommit::Stale;
         };
 
+        let focus_changed = workspace.focused_pane_id() != focus_before;
         if removal.scope == PaneRemovalScope::Workspace {
             let Some(closed) = self.close_workspace_at(plan.workspace_index) else {
                 return PaneRemovalCommit::Stale;
             };
             return PaneRemovalCommit::Removed(PaneRemovalOutcome {
+                focus_changed: false,
                 workspace_index: plan.workspace_index,
                 removal: PaneRemoval {
                     workspace_id: closed.workspace_id,
@@ -135,6 +162,7 @@ impl AppState {
             self.remove_unattached_terminal_ids(removal.terminal_ids.iter().cloned());
         self.mark_session_dirty();
         PaneRemovalCommit::Removed(PaneRemovalOutcome {
+            focus_changed,
             workspace_index: plan.workspace_index,
             removal,
             detached_terminal_ids,

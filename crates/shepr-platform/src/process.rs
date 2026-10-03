@@ -250,11 +250,7 @@ pub struct ProcessHandle {
 impl ProcessHandle {
     /// Open a handle on the process that holds `pid` right now. Returns
     /// `None` if it is absent or a pidfd cannot be opened; the latter is logged.
-    pub fn open(pid: u32) -> Option<Self> {
-        Self::open_process(Pid::new(pid)?)
-    }
-
-    pub fn open_process(pid: Pid) -> Option<Self> {
+    pub fn open(pid: Pid) -> Option<Self> {
         use std::os::fd::FromRawFd;
 
         let raw_pid = pid.as_pid_t();
@@ -279,10 +275,6 @@ impl ProcessHandle {
         // SAFETY: `fd` was just returned by pidfd_open and nothing else owns it.
         let fd = unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) };
         Some(Self { pid, pidfd: fd })
-    }
-
-    pub fn pid(&self) -> u32 {
-        self.pid.get()
     }
 
     pub fn process_id(&self) -> Pid {
@@ -425,23 +417,20 @@ fn wait_for_process_exits_with_clock(
 /// runs. That needs a full pid wraparound between the pane's leader dying
 /// and its teardown.
 pub fn session_member_handles(
-    session_id: u32,
+    session_id: SessionId,
     leader_reaped: impl Fn() -> bool,
 ) -> Vec<ProcessHandle> {
-    let Some(session) = SessionId::new(session_id) else {
-        return Vec::new();
-    };
-    session_members(session, leader_reaped)
+    session_members(session_id, leader_reaped)
 }
 
 pub fn session_members(wanted: SessionId, leader_reaped: impl Fn() -> bool) -> Vec<ProcessHandle> {
-    let session_id = wanted.get();
+    let session_leader = wanted.leader_pid();
     let mut handles = Vec::new();
     for entry in std::fs::read_dir("/proc").into_iter().flatten().flatten() {
         let Some(pid) = numeric_file_name(&entry) else {
             continue;
         };
-        if pid == session_id || process_session_id(pid) != Some(wanted) {
+        if pid == session_leader || process_session_id(pid) != Some(wanted) {
             continue;
         }
         let Some(handle) = ProcessHandle::open(pid) else {
@@ -455,7 +444,7 @@ pub fn session_members(wanted: SessionId, leader_reaped: impl Fn() -> bool) -> V
     // as "reused" and nothing is returned: the members are left alone rather
     // than risk signalling another session's processes.
     if leader_reaped()
-        && Path::new(&format!("/proc/{session_id}"))
+        && Path::new(&format!("/proc/{session_leader}"))
             .try_exists()
             .unwrap_or(true)
     {
@@ -464,17 +453,17 @@ pub fn session_members(wanted: SessionId, leader_reaped: impl Fn() -> bool) -> V
     handles
 }
 
-fn numeric_file_name(entry: &std::fs::DirEntry) -> Option<u32> {
+fn numeric_file_name(entry: &std::fs::DirEntry) -> Option<Pid> {
     let file_name = entry.file_name();
     let value = file_name.to_str()?;
     if !value.bytes().all(|byte| byte.is_ascii_digit()) {
         return None;
     }
-    value.parse().ok()
+    value.parse().ok().and_then(Pid::new)
 }
 
-fn process_session_id(pid: u32) -> Option<SessionId> {
-    ProcStat::read(Pid::new(pid)?).ok().map(|stat| stat.session)
+fn process_session_id(pid: Pid) -> Option<SessionId> {
+    ProcStat::read(pid).ok().map(|stat| stat.session)
 }
 
 /// Reap the exited child behind `pidfd` with `waitid(P_PIDFD, WEXITED)` and
@@ -540,15 +529,9 @@ pub(super) fn session_and_tty_from_stat(stat: &str) -> Option<(i32, i32)> {
 }
 
 #[cfg(test)]
-pub(super) fn process_exists(pid: u32) -> bool {
-    if pid == 0 {
-        return false;
-    }
-    let Ok(pid) = i32::try_from(pid) else {
-        return false;
-    };
+pub(super) fn process_exists(pid: Pid) -> bool {
     // SAFETY: kill(2) with signal 0 only probes for the pid.
-    let result = unsafe { libc::kill(pid, 0) };
+    let result = unsafe { libc::kill(pid.as_pid_t(), 0) };
     if result == 0 {
         true
     } else {
@@ -568,7 +551,8 @@ mod reap_tests {
         let child = fixture::command(&[step])
             .spawn()
             .expect("test precondition");
-        let handle = ProcessHandle::open(child.id()).expect("child is alive");
+        let handle =
+            ProcessHandle::open(Pid::new(child.id()).expect("child pid")).expect("child is alive");
         let pidfd = handle.try_clone_pidfd().expect("pidfd duplicates");
         (reap_pidfd(pidfd.as_fd()).expect("waitid reaps"), child)
     }
@@ -606,7 +590,8 @@ mod reap_tests {
         let mut child = fixture::command(&[Step::Sleep(Duration::from_secs(30))])
             .spawn()
             .expect("test precondition");
-        let handle = ProcessHandle::open(child.id()).expect("child is alive");
+        let handle =
+            ProcessHandle::open(Pid::new(child.id()).expect("child pid")).expect("child is alive");
         // The deadline is as far off as the child's sleep, but the injected
         // clock starts 20 ms short of it and reaches it on the next read.
         let started = Instant::now();

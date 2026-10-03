@@ -73,6 +73,11 @@ pub(crate) const FOREGROUND_CHILD_PID_LIMIT: usize = 2_048;
 /// amortizes reads without allocating in proportion to the entire child list.
 pub(crate) const PROC_CHILDREN_READ_BUFFER_BYTES: usize = 4096;
 
+/// Bytes of one `/proc/<pid>/cmdline` the detector reads. A longer argv is not
+/// identified at all, so one process with a huge command line cannot turn every
+/// detection probe into an unbounded procfs read and allocation.
+pub(crate) const PROCESS_CMDLINE_BYTE_LIMIT: usize = 16 * 1024;
+
 /// Maximum byte length of an agent session ID accepted from hook reports or
 /// saved state. This leaves ample room for opaque IDs while bounding persisted
 /// and command-line data.

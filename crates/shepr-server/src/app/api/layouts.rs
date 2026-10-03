@@ -1,7 +1,7 @@
 use crate::app::App;
 use shepr_protocol::command::LayoutSetSplitRatioParams;
 
-use super::endpoint::{EndpointEffects, Handled, HandlerResult, rejected};
+use super::endpoint::{Handled, HandlerResult, rejected};
 
 impl App {
     /// Sets one split's ratio. Moves nobody: a client changing the layout of a
@@ -34,23 +34,10 @@ impl App {
         else {
             return rejected("split children not found");
         };
-        let changed = self
-            .state
-            .workspaces
-            .get_mut(ws_idx)
-            .is_some_and(|workspace| workspace.set_split_ratio_at(&path, params.ratio));
-        if changed {
-            self.state.mark_session_dirty();
-        }
-        let effects = if changed {
-            EndpointEffects {
-                pane_surface_changed: true,
-                layout_changed: true,
-                ..EndpointEffects::default()
-            }
-        } else {
-            EndpointEffects::default()
-        };
+        let outcome = self.state.edit_workspace_geometry(ws_idx, |workspace| {
+            workspace.set_split_ratio_at(&path, params.ratio)
+        });
+        let effects = outcome.into();
         Handled::done_with_effects(effects)
     }
 }

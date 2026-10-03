@@ -42,10 +42,7 @@ fn server_stop(
     paths: &shepr_config::AppPaths,
     expected_boot: Option<&shepr_protocol::BootId>,
 ) -> super::CliResult<i32> {
-    shepr_api::server_stop::stop_active_server(
-        paths,
-        expected_boot.map(shepr_protocol::BootId::as_str),
-    )
-    .map_err(super::CliError::ServerStop)?;
+    shepr_api::server_stop::stop_active_server(paths, expected_boot)
+        .map_err(super::CliError::ServerStop)?;
     Ok(0)
 }

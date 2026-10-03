@@ -183,14 +183,14 @@ fn a_failed_handshake_marks_only_its_endpoint() {
         Some(ClientEndpointStatus::Attention)
     );
     assert!(!state.activate_endpoint_projection(&failed));
-    assert_eq!(state.active_endpoint_id, ClientEndpointId::Local);
+    assert_eq!(*state.active_endpoint_id(), ClientEndpointId::Local);
 
     assert_eq!(
         state.endpoint_status(&other),
         Some(ClientEndpointStatus::Online)
     );
     assert!(state.activate_endpoint_projection(&other));
-    assert_eq!(state.active_endpoint_id, other);
+    assert_eq!(*state.active_endpoint_id(), other);
     assert_eq!(prefix_key(&state), client_prefix);
 }
 
@@ -294,7 +294,7 @@ fn revealing_an_active_workspace_ignores_a_same_id_on_another_endpoint() {
         .endpoints
         .iter()
         .find(|endpoint| endpoint.endpoint_id == remote_id)
-        .and_then(|endpoint| endpoint.snapshot.as_deref())
+        .and_then(|endpoint| endpoint.snapshot())
         .expect("remote snapshot")
         .clone();
     remote.workspaces[0].workspace_id = test_workspace_id("w5");
@@ -433,8 +433,7 @@ fn state_with_scrollable_agents() -> (ClientShellState, ClientEndpointId) {
             .iter()
             .find(|endpoint| endpoint.endpoint_id == endpoint_id)
             .expect("test precondition")
-            .snapshot
-            .as_deref()
+            .snapshot()
             .cloned()
             .expect("test precondition");
         projection.agents = (0..8)
@@ -497,7 +496,7 @@ fn agent_navigation_reveals_offscreen_targets() {
         let mut outcome = ClientShellInput::default();
         assert!(state.handle_endpoint_navigation(action, &mut outcome));
         assert!(outcome.repaint, "agent navigation must request a frame");
-        if endpoint_id != state.active_endpoint_id {
+        if endpoint_id != *state.active_endpoint_id() {
             assert!(state.activate_endpoint_projection(&endpoint_id));
         }
         state.compose(100, 28).expect("test precondition");
@@ -586,7 +585,7 @@ fn single_endpoint_agent_indices_follow_the_rendered_client_recency_order() {
         .endpoints
         .iter()
         .find(|endpoint| endpoint.endpoint_id.is_local())
-        .and_then(|endpoint| endpoint.snapshot.as_deref())
+        .and_then(|endpoint| endpoint.snapshot())
         .expect("first local snapshot")
         .clone();
     second.boot_id = crate::tests::test_boot_id("restarted-local");
@@ -770,8 +769,7 @@ fn aggregate_agent_scroll_still_clamps_when_rows_shrink_on_activation() {
             .iter()
             .find(|endpoint| endpoint.endpoint_id == endpoint_id)
             .expect("test precondition")
-            .snapshot
-            .as_deref()
+            .snapshot()
             .cloned()
             .expect("test precondition");
         projection.revision = projection
@@ -986,7 +984,7 @@ fn local_and_ssh_sidebars_show_server_workspace_numbers() {
         .endpoints
         .iter()
         .find(|endpoint| endpoint.endpoint_id == endpoint_id)
-        .and_then(|endpoint| endpoint.snapshot.as_deref())
+        .and_then(|endpoint| endpoint.snapshot())
         .expect("remote snapshot")
         .clone();
     remote.workspaces[0].number = 42;
@@ -1380,11 +1378,11 @@ fn unselected_endpoint_snapshot_keeps_server_idle_status() {
         .endpoints
         .iter()
         .find(|endpoint| endpoint.endpoint_id == endpoint_id)
-        .and_then(|endpoint| endpoint.snapshot.as_deref())
+        .and_then(|endpoint| endpoint.snapshot())
         .and_then(|snapshot| snapshot.agents.first())
         .map(|agent| agent.agent_status);
     assert_eq!(status, Some(AgentStatus::Idle));
-    assert_eq!(state.active_endpoint_id, ClientEndpointId::Local);
+    assert_eq!(*state.active_endpoint_id(), ClientEndpointId::Local);
 }
 
 #[test]
@@ -1411,7 +1409,7 @@ fn clicking_remote_machine_name_requests_activation_without_mutating_projection(
             target: None,
         }] if activated == &endpoint_id
     ));
-    assert_eq!(state.active_endpoint_id, ClientEndpointId::Local);
+    assert_eq!(*state.active_endpoint_id(), ClientEndpointId::Local);
     assert_eq!(
         state.snapshot.as_deref().map(|snapshot| &snapshot.boot_id),
         Some(&crate::tests::test_boot_id("boot-1"))
@@ -1508,7 +1506,7 @@ fn clicking_local_can_cancel_a_remote_switch_while_local_is_still_displayed() {
         state.compose(100, 28).expect("test precondition");
         let mut pending = ClientShellInput::default();
         assert!(state.activate_endpoint(remote, &mut pending));
-        assert_eq!(state.active_endpoint_id, ClientEndpointId::Local);
+        assert_eq!(*state.active_endpoint_id(), ClientEndpointId::Local);
         let rect = if workspace {
             state
                 .hits
@@ -1623,7 +1621,7 @@ fn machine_arrow_toggles_inactive_machine_without_switching() {
                 );
                 assert!(outcome.requests.is_empty());
                 assert!(outcome.repaint);
-                assert_eq!(state.active_endpoint_id, ClientEndpointId::Local);
+                assert_eq!(*state.active_endpoint_id(), ClientEndpointId::Local);
                 assert_eq!(
                     state.snapshot.as_ref().expect("test precondition").boot_id,
                     crate::tests::test_boot_id("boot-1")
@@ -1746,7 +1744,7 @@ fn inactive_endpoint_snapshot_cache_never_regresses_revision() {
         .endpoints
         .iter()
         .find(|endpoint| endpoint.endpoint_id == endpoint_id)
-        .and_then(|endpoint| endpoint.snapshot.as_deref())
+        .and_then(|endpoint| endpoint.snapshot())
         .and_then(|snapshot| snapshot.workspaces.first())
         .map(|workspace| workspace.label.as_str());
     assert_eq!(label, Some("newest"));
@@ -1772,10 +1770,10 @@ fn new_connection_generation_accepts_a_lower_same_boot_projection_revision() {
         .iter()
         .find(|endpoint| endpoint.endpoint_id == endpoint_id)
         .expect("remote endpoint");
-    assert_eq!(endpoint.snapshot_generation, Some(5));
+    assert_eq!(endpoint.snapshot_generation(), Some(5));
     assert_eq!(
         endpoint
-            .snapshot
+            .snapshot()
             .as_ref()
             .expect("test precondition")
             .revision,
@@ -1783,7 +1781,7 @@ fn new_connection_generation_accepts_a_lower_same_boot_projection_revision() {
     );
     assert_eq!(
         endpoint
-            .snapshot
+            .snapshot()
             .as_ref()
             .expect("test precondition")
             .workspaces[0]
@@ -1919,7 +1917,7 @@ fn disconnected_active_endpoint_freezes_surface_and_marks_cached_ui_stale() {
         .iter_mut()
         .find(|endpoint| endpoint.endpoint_id == endpoint_id)
         .expect("remote endpoint");
-    std::sync::Arc::make_mut(endpoint.snapshot.as_mut().expect("remote snapshot")).agents =
+    std::sync::Arc::make_mut(endpoint.snapshot_mut().expect("remote snapshot")).agents =
         vec![agent(AgentStatus::Blocked, 1)];
     assert!(state.activate_endpoint_projection(&endpoint_id));
     let mut remote_surface = surface();
@@ -1968,7 +1966,7 @@ fn navigator_uses_machine_parents_only_for_federated_clients() {
         panic!("expected navigator");
     };
     let rows =
-        render::client_navigator_rows(&state.endpoints, &state.active_endpoint_id, navigator);
+        render::client_navigator_rows(&state.endpoints, state.active_endpoint_id(), navigator);
     let machines = rows
         .iter()
         .filter(|row| matches!(row.target, ClientNavigatorTarget::Machine { .. }))
@@ -2030,7 +2028,7 @@ fn navigator_uses_machine_parents_only_for_federated_clients() {
         panic!("expected navigator");
     };
     let rows =
-        render::client_navigator_rows(&local.endpoints, &local.active_endpoint_id, navigator);
+        render::client_navigator_rows(&local.endpoints, local.active_endpoint_id(), navigator);
     assert!(
         rows.iter()
             .all(|row| !matches!(row.target, ClientNavigatorTarget::Machine { .. }))
@@ -2050,8 +2048,11 @@ fn navigator_keeps_saved_machine_visible_before_metadata_arrives() {
         .iter_mut()
         .find(|endpoint| endpoint.endpoint_id == endpoint_id)
         .expect("saved remote endpoint");
-    endpoint.snapshot = None;
-    endpoint.status = ClientEndpointStatus::Connecting;
+    endpoint.state = crate::shell::endpoints::EndpointState::Connecting {
+        last: None,
+        connected: false,
+        generation: None,
+    };
     state.open_navigator_overlay();
     let ClientShellOverlay::Navigator(navigator) = state.overlay.as_ref().expect("navigator")
     else {
@@ -2059,7 +2060,7 @@ fn navigator_keeps_saved_machine_visible_before_metadata_arrives() {
     };
 
     let rows =
-        render::client_navigator_rows(&state.endpoints, &state.active_endpoint_id, navigator);
+        render::client_navigator_rows(&state.endpoints, state.active_endpoint_id(), navigator);
 
     assert!(rows.iter().any(|row| {
         matches!(
@@ -2090,7 +2091,7 @@ fn navigator_machine_selection_opens_its_remembered_view() {
         else {
             panic!("expected navigator");
         };
-        render::client_navigator_rows(&state.endpoints, &state.active_endpoint_id, navigator)
+        render::client_navigator_rows(&state.endpoints, state.active_endpoint_id(), navigator)
             .into_iter()
             .find(|row| {
                 matches!(
@@ -2127,7 +2128,7 @@ fn navigator_foreign_pane_selection_activates_its_endpoint() {
         else {
             panic!("expected navigator");
         };
-        render::client_navigator_rows(&state.endpoints, &state.active_endpoint_id, navigator)
+        render::client_navigator_rows(&state.endpoints, state.active_endpoint_id(), navigator)
             .iter()
             .find(|row| {
                 matches!(
@@ -2173,7 +2174,7 @@ fn focus_agent_index_uses_the_rendered_aggregate_rows() {
         .iter_mut()
         .find(|endpoint| endpoint.endpoint_id == endpoint_id)
         .expect("remote endpoint");
-    std::sync::Arc::make_mut(endpoint.snapshot.as_mut().expect("remote snapshot")).agents =
+    std::sync::Arc::make_mut(endpoint.snapshot_mut().expect("remote snapshot")).agents =
         vec![agent(AgentStatus::Working, 2)];
     state.rebuild_agent_panel_model();
     let focus_agent = |index| shepr_termio::input::KeybindAction::FocusAgent(index);
@@ -2232,7 +2233,7 @@ fn collapsed_aggregate_workspace_status_uses_its_status_color() {
         .iter_mut()
         .find(|endpoint| endpoint.endpoint_id == endpoint_id)
         .expect("remote endpoint");
-    std::sync::Arc::make_mut(endpoint.snapshot.as_mut().expect("remote snapshot")).workspaces[0]
+    std::sync::Arc::make_mut(endpoint.snapshot_mut().expect("remote snapshot")).workspaces[0]
         .agent_status = AgentStatus::Blocked;
     state.chrome.set_collapsed(true);
 
@@ -2284,7 +2285,7 @@ fn navigator_foreign_workspace_heading_keeps_the_workspace_target() {
         else {
             panic!("expected navigator");
         };
-        render::client_navigator_rows(&state.endpoints, &state.active_endpoint_id, navigator)
+        render::client_navigator_rows(&state.endpoints, state.active_endpoint_id(), navigator)
             .iter()
             .find(|row| {
                 matches!(

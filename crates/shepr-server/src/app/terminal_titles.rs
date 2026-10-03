@@ -14,9 +14,7 @@ impl App {
         let sources = self.render_dirty.pending_terminal_title_sources();
         let changes = self.sync_terminal_titles(&sources);
         if changes.raw_changed || changes.stripped_changed {
-            self.state.mark_shell_projection_dirty();
-            self.render_dirty.request_generic();
-            self.render_notify.notify_one();
+            self.invalidate_shared_view(true);
         }
         changes
     }

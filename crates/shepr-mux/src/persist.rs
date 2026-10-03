@@ -30,16 +30,17 @@ pub use self::io::{
 };
 pub use self::lock::{DataDirLease, DataDirLeaseHeld};
 pub use self::open::{
-    OpenedRestore, OpenedSession, SessionOpenOptions, SessionOpenPolicy, open_session,
+    OpenedRestore, OpenedSession, SessionOpenOptions, SessionOpenPolicy, SessionRestoreOutcome,
+    SessionRestoreSummary, open_session,
 };
-pub use self::restore::{RestoredSession, SessionRestorePlan, plan_restore};
+pub use self::restore::{RestoreLoss, RestoredSession, SessionRestorePlan, plan_restore};
 pub use self::snapshot::{
     DirectionSnapshot, HistoryCarry, LayoutSnapshot, SessionHistorySnapshot, SessionSnapshot,
     WorkspaceSnapshot, capture,
 };
 pub use self::snapshot::{PendingCwds, capture_deferred};
 pub use self::snapshot::{PendingHistory, capture_pending_history};
-pub use self::writer::SessionWriter;
+pub use self::writer::{SessionBackupPolicy, SessionWriter};
 
 #[cfg(test)]
 pub use self::snapshot::capture_history;

@@ -46,10 +46,33 @@ fn ensure_history_size(size: usize) -> std::io::Result<()> {
 
 /// A session or history path that resolves to something other than a regular
 /// file: a directory, a FIFO, a socket or a device.
+#[derive(Debug, Clone, Copy)]
+enum NotRegularKind {
+    Directory,
+    Fifo,
+    Socket,
+    CharacterDevice,
+    BlockDevice,
+    Other,
+}
+
+impl NotRegularKind {
+    fn description(self) -> &'static str {
+        match self {
+            Self::Directory => "a directory",
+            Self::Fifo => "a FIFO",
+            Self::Socket => "a socket",
+            Self::CharacterDevice => "a character device",
+            Self::BlockDevice => "a block device",
+            Self::Other => "something else",
+        }
+    }
+}
+
 #[derive(Debug)]
 struct NotRegularFile {
     path: PathBuf,
-    kind: &'static str,
+    kind: NotRegularKind,
 }
 
 impl std::fmt::Display for NotRegularFile {
@@ -58,27 +81,40 @@ impl std::fmt::Display for NotRegularFile {
             f,
             "{} is {}, not a regular file; remove it or make it a regular file",
             self.path.display(),
-            self.kind
+            self.kind.description()
         )
     }
 }
 
 impl std::error::Error for NotRegularFile {}
 
+#[derive(Debug)]
+struct SessionFileTooLarge {
+    limit_bytes: usize,
+}
+
+impl std::fmt::Display for SessionFileTooLarge {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "session file exceeds {} bytes", self.limit_bytes)
+    }
+}
+
+impl std::error::Error for SessionFileTooLarge {}
+
 pub(super) fn not_regular(path: &Path, file_type: std::fs::FileType) -> std::io::Error {
     use std::os::unix::fs::FileTypeExt;
     let kind = if file_type.is_dir() {
-        "a directory"
+        NotRegularKind::Directory
     } else if file_type.is_fifo() {
-        "a FIFO"
+        NotRegularKind::Fifo
     } else if file_type.is_socket() {
-        "a socket"
+        NotRegularKind::Socket
     } else if file_type.is_char_device() {
-        "a character device"
+        NotRegularKind::CharacterDevice
     } else if file_type.is_block_device() {
-        "a block device"
+        NotRegularKind::BlockDevice
     } else {
-        "something else"
+        NotRegularKind::Other
     };
     std::io::Error::other(NotRegularFile {
         path: path.to_path_buf(),
@@ -91,6 +127,53 @@ pub(super) fn is_not_regular(error: &std::io::Error) -> bool {
     error
         .get_ref()
         .is_some_and(<dyn std::error::Error + Send + Sync>::is::<NotRegularFile>)
+}
+
+fn session_file_kind(error: &std::io::Error) -> Option<shepr_protocol::SessionFileKind> {
+    let file = error.get_ref()?.downcast_ref::<NotRegularFile>()?;
+    Some(match file.kind {
+        NotRegularKind::Directory => shepr_protocol::SessionFileKind::Directory,
+        NotRegularKind::Fifo => shepr_protocol::SessionFileKind::Fifo,
+        NotRegularKind::Socket => shepr_protocol::SessionFileKind::Socket,
+        NotRegularKind::CharacterDevice => shepr_protocol::SessionFileKind::CharacterDevice,
+        NotRegularKind::BlockDevice => shepr_protocol::SessionFileKind::BlockDevice,
+        NotRegularKind::Other => shepr_protocol::SessionFileKind::Other,
+    })
+}
+
+fn session_io_error_kind(kind: std::io::ErrorKind) -> shepr_protocol::SessionIoErrorKind {
+    use shepr_protocol::SessionIoErrorKind;
+
+    match kind {
+        std::io::ErrorKind::NotFound => SessionIoErrorKind::NotFound,
+        std::io::ErrorKind::PermissionDenied => SessionIoErrorKind::PermissionDenied,
+        std::io::ErrorKind::AlreadyExists => SessionIoErrorKind::AlreadyExists,
+        std::io::ErrorKind::ConnectionRefused => SessionIoErrorKind::ConnectionRefused,
+        std::io::ErrorKind::ConnectionReset => SessionIoErrorKind::ConnectionReset,
+        std::io::ErrorKind::ConnectionAborted => SessionIoErrorKind::ConnectionAborted,
+        std::io::ErrorKind::NotConnected => SessionIoErrorKind::NotConnected,
+        std::io::ErrorKind::AddrInUse => SessionIoErrorKind::AddrInUse,
+        std::io::ErrorKind::AddrNotAvailable => SessionIoErrorKind::AddrNotAvailable,
+        std::io::ErrorKind::BrokenPipe => SessionIoErrorKind::BrokenPipe,
+        std::io::ErrorKind::WouldBlock => SessionIoErrorKind::WouldBlock,
+        std::io::ErrorKind::InvalidInput => SessionIoErrorKind::InvalidInput,
+        std::io::ErrorKind::InvalidData => SessionIoErrorKind::InvalidData,
+        std::io::ErrorKind::ResourceBusy => SessionIoErrorKind::ResourceBusy,
+        std::io::ErrorKind::TimedOut => SessionIoErrorKind::TimedOut,
+        std::io::ErrorKind::Interrupted => SessionIoErrorKind::Interrupted,
+        std::io::ErrorKind::Unsupported => SessionIoErrorKind::Unsupported,
+        std::io::ErrorKind::UnexpectedEof => SessionIoErrorKind::UnexpectedEof,
+        std::io::ErrorKind::OutOfMemory => SessionIoErrorKind::OutOfMemory,
+        std::io::ErrorKind::WriteZero => SessionIoErrorKind::WriteZero,
+        _ => SessionIoErrorKind::Other,
+    }
+}
+
+fn session_file_size_limit(error: &std::io::Error) -> Option<usize> {
+    error
+        .get_ref()?
+        .downcast_ref::<SessionFileTooLarge>()
+        .map(|too_large| too_large.limit_bytes)
 }
 
 enum SessionPathState {
@@ -284,16 +367,19 @@ fn read_history_file(path: &Path) -> std::io::Result<Vec<u8>> {
 
 pub(super) fn read_session_file(path: &Path) -> std::io::Result<String> {
     let file = open_regular(path)?;
-    let mut content = String::new();
+    let mut content = Vec::new();
     file.take((MAX_SESSION_FILE_BYTES as u64).saturating_add(1))
-        .read_to_string(&mut content)?;
+        .read_to_end(&mut content)?;
     if content.len() > MAX_SESSION_FILE_BYTES {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
-            format!("session file exceeds {MAX_SESSION_FILE_BYTES} bytes"),
+            SessionFileTooLarge {
+                limit_bytes: MAX_SESSION_FILE_BYTES,
+            },
         ));
     }
-    Ok(content)
+    String::from_utf8(content)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
 }
 
 /// The directory holding `path`; a bare file name lives in `.`.
@@ -982,7 +1068,7 @@ pub(super) fn clear_path(path: &Path) -> std::io::Result<()> {
 
 /// What reading the saved session found.
 pub enum SessionLoad {
-    /// No session file, or no lease to read it under: a fresh start.
+    /// No session file: a fresh start.
     Missing,
     Loaded {
         snapshot: SessionSnapshot,
@@ -993,7 +1079,7 @@ pub enum SessionLoad {
     /// A session file exists but could not be read or parsed; the reason.
     /// Nothing of it is restored, and the first save backs it up before
     /// replacing it.
-    Unusable(String),
+    Unusable(shepr_protocol::SessionRestoreFailure),
 }
 
 impl SessionLoad {
@@ -1029,11 +1115,6 @@ pub fn session_backup_directory(data_dir: &Path) -> PathBuf {
 
 /// Reads the saved layout while the caller owns the data directory.
 pub fn load(lease: &DataDirLease) -> SessionLoad {
-    // Restore requires current directory ownership; this resource check is
-    // independent of the app's policy for scheduling future writes.
-    if !lease.is_active() {
-        return SessionLoad::Missing;
-    }
     let path = session_path(lease.directory());
     let content = match read_session_file(&path) {
         Ok(content) => content,
@@ -1045,11 +1126,24 @@ pub fn load(lease: &DataDirLease) -> SessionLoad {
             return SessionLoad::Missing;
         }
         Err(err) => {
+            let failure = if let Some(kind) = session_file_kind(&err) {
+                shepr_protocol::SessionRestoreFailure::NotRegularFile {
+                    kind,
+                    detail: err.to_string(),
+                }
+            } else if let Some(limit_bytes) = session_file_size_limit(&err) {
+                shepr_protocol::SessionRestoreFailure::TooLarge { limit_bytes }
+            } else {
+                shepr_protocol::SessionRestoreFailure::Unreadable {
+                    kind: session_io_error_kind(err.kind()),
+                    detail: err.to_string(),
+                }
+            };
             warn!(
                 event = "persist.restore", subsystem = "persist", outcome = "read_error",
                 path = %path.display(), error = %err, "failed to read session file"
             );
-            return SessionLoad::Unusable(format!("it could not be read: {err}"));
+            return SessionLoad::Unusable(failure);
         }
     };
     match parse_session_file(&content) {
@@ -1062,7 +1156,7 @@ pub fn load(lease: &DataDirLease) -> SessionLoad {
                 event = "persist.restore", subsystem = "persist", outcome = "parse_error",
                 path = %path.display(), error = %err, "failed to parse session file, ignoring"
             );
-            SessionLoad::Unusable(format!("it could not be parsed: {err}"))
+            SessionLoad::Unusable(session_parse_failure(&err))
         }
     }
 }
@@ -1078,9 +1172,6 @@ pub fn load_history(
     lease: &DataDirLease,
     expected_digest: Option<&HistoryDigest>,
 ) -> Option<SessionHistorySnapshot> {
-    if !lease.is_active() {
-        return None;
-    }
     let expected_digest = expected_digest?;
     let path = session_history_path(lease.directory());
     let content = match read_history_file(&path) {
@@ -1127,6 +1218,23 @@ pub fn load_history(
             );
             None
         }
+    }
+}
+
+fn session_parse_failure(error: &serde_json::Error) -> shepr_protocol::SessionRestoreFailure {
+    use shepr_protocol::SessionParseCategory;
+
+    let category = match error.classify() {
+        serde_json::error::Category::Io => SessionParseCategory::Io,
+        serde_json::error::Category::Syntax => SessionParseCategory::Syntax,
+        serde_json::error::Category::Data => SessionParseCategory::Data,
+        serde_json::error::Category::Eof => SessionParseCategory::Eof,
+    };
+    shepr_protocol::SessionRestoreFailure::Unparseable {
+        line: error.line(),
+        column: error.column(),
+        category,
+        detail: error.to_string(),
     }
 }
 
@@ -1192,13 +1300,14 @@ mod tests {
     }
 
     #[test]
-    fn released_lease_cannot_load_session_files() {
+    fn reacquiring_after_release_loads_the_existing_session() {
         let scratch = crate::test_support::ScratchDir::new("released-session-lease");
-        let mut lease = DataDirLease::acquire(&scratch).expect("lease");
+        let lease = DataDirLease::acquire(&scratch).expect("lease");
         save_to_path(&session_path(lease.directory()), &empty_snapshot(), None).expect("save");
         assert!(matches!(load(&lease), SessionLoad::Loaded { .. }));
         lease.release();
-        assert!(matches!(load(&lease), SessionLoad::Missing));
+        let lease = DataDirLease::acquire(&scratch).expect("lease after release");
+        assert!(matches!(load(&lease), SessionLoad::Loaded { .. }));
         let digest = history_digest(b"any");
         assert!(load_history(&lease, Some(&digest)).is_none());
     }
@@ -1289,10 +1398,13 @@ mod tests {
         let lease = DataDirLease::acquire(&scratch).expect("lease");
         assert!(matches!(load(&lease), SessionLoad::Missing));
         std::fs::write(session_path(lease.directory()), b"{ not a session").expect("write");
-        let SessionLoad::Unusable(reason) = load(&lease) else {
+        let SessionLoad::Unusable(failure) = load(&lease) else {
             panic!("a damaged session file is unusable");
         };
-        assert!(reason.contains("parsed"), "{reason}");
+        assert!(matches!(
+            failure,
+            shepr_protocol::SessionRestoreFailure::Unparseable { .. }
+        ));
     }
 
     /// The reader admits the limit itself and refuses one byte more. The

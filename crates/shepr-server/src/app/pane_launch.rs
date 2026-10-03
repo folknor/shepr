@@ -66,9 +66,7 @@ impl App {
                     terminal.record_start_failure(failure);
                 }
                 self.state.mark_session_dirty();
-                self.state.mark_shell_projection_dirty();
-                self.render_dirty.request_generic();
-                self.render_notify.notify_one();
+                self.invalidate_shared_view(true);
                 true
             }
             // The pane's death follows and is handled as any other. The
@@ -94,15 +92,13 @@ impl App {
                 }
                 self.abandon_terminal_agent_resume(
                     &terminal_id,
-                    shepr_mux::terminal::RestoreFailure::resume_unavailable(
+                    shepr_mux::terminal::PaneStartFailure::resume_unavailable(
                         "the shell for the resume did not confirm that it started",
                     ),
                     self.clock.now,
                 );
                 self.state.mark_session_dirty();
-                self.state.mark_shell_projection_dirty();
-                self.render_dirty.request_generic();
-                self.render_notify.notify_one();
+                self.invalidate_shared_view(true);
                 true
             }
         }
@@ -133,7 +129,7 @@ impl App {
                 );
                 self.abandon_terminal_agent_resume(
                     terminal_id,
-                    shepr_mux::terminal::RestoreFailure::resume_unavailable(
+                    shepr_mux::terminal::PaneStartFailure::resume_unavailable(
                         "the resume command could not be sent to the shell",
                     ),
                     self.clock.now,
@@ -202,7 +198,7 @@ mod tests {
         );
         assert!(matches!(
             terminal.restore_error(),
-            Some(shepr_mux::terminal::RestoreFailure::ResumeUnavailable { .. })
+            Some(shepr_mux::terminal::PaneStartFailure::ResumeUnavailable { .. })
         ));
         assert!(!app.has_pending_agent_resumes());
         // The child may still be alive: its runtime stays for the death that

@@ -7,19 +7,19 @@ use std::{
 
 use crate::limits::{
     FOREGROUND_CHILD_BYTE_LIMIT, FOREGROUND_CHILD_PID_LIMIT, FOREGROUND_TASK_ENTRY_LIMIT,
-    FOREGROUND_TREE_SCAN_LIMIT, PROC_CHILDREN_READ_BUFFER_BYTES,
+    FOREGROUND_TREE_SCAN_LIMIT, PROC_CHILDREN_READ_BUFFER_BYTES, PROCESS_CMDLINE_BYTE_LIMIT,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForegroundProcess {
-    pub pid: u32,
+    pub pid: Pid,
     pub name: String,
     pub argv: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ForegroundJob {
-    pub process_group_id: u32,
+    pub process_group_id: Pgid,
     pub processes: Vec<ForegroundProcess>,
 }
 
@@ -55,12 +55,12 @@ impl ForegroundScanBudget {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ProcGroupMember {
-    pid: u32,
+    pid: Pid,
     comm: String,
     state: ProcState,
 }
 
-pub fn foreground_job(child_pid: u32) -> Option<ForegroundJob> {
+pub fn foreground_job(child_pid: Pid) -> Option<ForegroundJob> {
     let process_group_id = foreground_process_group_id(child_pid)?;
     let members = foreground_process_group_members(child_pid, process_group_id)?;
     foreground_job_from_members(process_group_id, members, process_argv)
@@ -71,7 +71,7 @@ pub fn foreground_job(child_pid: u32) -> Option<ForegroundJob> {
 /// process group, but its descendants remain in the shell's process tree.
 /// A stop under a tracer reads `t` instead of `T` (a traced process that is
 /// sent SIGTSTP enters a tracing stop), so both count as stopped.
-pub(super) fn suspended_processes(child_pid: u32) -> Vec<ForegroundProcess> {
+pub(super) fn suspended_processes(child_pid: Pid) -> Vec<ForegroundProcess> {
     process_tree_pids([child_pid], process_task_ids, process_task_children)
         .into_iter()
         .filter_map(|pid| {
@@ -89,9 +89,9 @@ pub(super) fn suspended_processes(child_pid: u32) -> Vec<ForegroundProcess> {
 }
 
 fn foreground_job_from_members(
-    process_group_id: u32,
+    process_group_id: Pgid,
     members: Vec<ProcGroupMember>,
-    mut read_argv: impl FnMut(u32) -> Option<Vec<String>>,
+    mut read_argv: impl FnMut(Pid) -> Option<Vec<String>>,
 ) -> Option<ForegroundJob> {
     let processes = members
         .into_iter()
@@ -122,10 +122,10 @@ fn foreground_job_from_members(
 }
 
 fn foreground_process_group_members(
-    child_pid: u32,
-    process_group_id: u32,
+    child_pid: Pid,
+    process_group_id: Pgid,
 ) -> Option<Vec<ProcGroupMember>> {
-    foreground_process_group_members_with(
+    foreground_process_group_members_from(
         child_pid,
         process_group_id,
         process_task_ids,
@@ -134,35 +134,39 @@ fn foreground_process_group_members(
     )
 }
 
-fn foreground_process_group_members_with(
-    child_pid: u32,
-    process_group_id: u32,
-    task_ids: impl FnMut(u32, &mut ForegroundScanBudget) -> Vec<u32>,
-    task_children: impl FnMut(u32, u32, &mut ForegroundScanBudget) -> Vec<u32>,
-    mut live_member: impl FnMut(u32, u32) -> Option<ProcGroupMember>,
+fn foreground_process_group_members_from(
+    child_pid: Pid,
+    process_group_id: Pgid,
+    task_ids: impl FnMut(Pid, &mut ForegroundScanBudget) -> Vec<Pid>,
+    task_children: impl FnMut(Pid, Pid, &mut ForegroundScanBudget) -> Vec<Pid>,
+    mut live_member: impl FnMut(Pgid, Pid) -> Option<ProcGroupMember>,
 ) -> Option<Vec<ProcGroupMember>> {
     // The leader is passed first; `process_tree_pids` advances both roots round-robin
     // so a truncated scan cannot let the pane shell's unrelated descendants starve
     // the foreground group, or vice versa.
-    let mut members = process_tree_pids([process_group_id, child_pid], task_ids, task_children)
-        .into_iter()
-        .filter_map(|pid| live_member(process_group_id, pid))
-        .collect::<Vec<_>>();
+    let mut members = process_tree_pids(
+        [process_group_id.leader_pid(), child_pid],
+        task_ids,
+        task_children,
+    )
+    .into_iter()
+    .filter_map(|pid| live_member(process_group_id, pid))
+    .collect::<Vec<_>>();
     members.sort_unstable_by_key(|member| member.pid);
     (!members.is_empty()).then_some(members)
 }
 
 fn process_tree_pids(
-    roots: impl IntoIterator<Item = u32>,
-    mut task_ids: impl FnMut(u32, &mut ForegroundScanBudget) -> Vec<u32>,
-    mut task_children: impl FnMut(u32, u32, &mut ForegroundScanBudget) -> Vec<u32>,
-) -> Vec<u32> {
+    roots: impl IntoIterator<Item = Pid>,
+    mut task_ids: impl FnMut(Pid, &mut ForegroundScanBudget) -> Vec<Pid>,
+    mut task_children: impl FnMut(Pid, Pid, &mut ForegroundScanBudget) -> Vec<Pid>,
+) -> Vec<Pid> {
     // Keep one breadth-first frontier with its own work budget per root, so a large
     // expansion on one side cannot consume the other side's allowance. Frontier turns
     // advance round-robin, sharing the candidate ceiling between the foreground-group
     // leader's subtree and the pane shell's descendants.
     struct Frontier {
-        pending: VecDeque<u32>,
+        pending: VecDeque<Pid>,
         budget: ForegroundScanBudget,
     }
 
@@ -170,7 +174,7 @@ fn process_tree_pids(
     let mut pids = Vec::new();
     let mut frontiers: Vec<Frontier> = Vec::new();
     for root in roots {
-        if root > 0 && visited.insert(root) {
+        if visited.insert(root) {
             frontiers.push(Frontier {
                 pending: VecDeque::from([root]),
                 budget: ForegroundScanBudget::for_probe(),
@@ -191,7 +195,7 @@ fn process_tree_pids(
             pids.push(pid);
             for tid in task_ids(pid, &mut frontier.budget) {
                 for child_pid in task_children(pid, tid, &mut frontier.budget) {
-                    if child_pid > 0 && visited.insert(child_pid) {
+                    if visited.insert(child_pid) {
                         frontier.pending.push_back(child_pid);
                     }
                 }
@@ -203,7 +207,7 @@ fn process_tree_pids(
     }
 }
 
-fn process_task_ids(pid: u32, budget: &mut ForegroundScanBudget) -> Vec<u32> {
+fn process_task_ids(pid: Pid, budget: &mut ForegroundScanBudget) -> Vec<Pid> {
     let mut ids = Vec::new();
     let Ok(entries) = std::fs::read_dir(format!("/proc/{pid}/task")) else {
         return ids;
@@ -220,7 +224,7 @@ fn process_task_ids(pid: u32, budget: &mut ForegroundScanBudget) -> Vec<u32> {
     ids
 }
 
-fn process_task_children(pid: u32, tid: u32, budget: &mut ForegroundScanBudget) -> Vec<u32> {
+fn process_task_children(pid: Pid, tid: Pid, budget: &mut ForegroundScanBudget) -> Vec<Pid> {
     if budget.child_bytes == 0 || budget.child_pids == 0 {
         return Vec::new();
     }
@@ -234,7 +238,7 @@ fn process_task_children(pid: u32, tid: u32, budget: &mut ForegroundScanBudget) 
 /// read and every parsed pid. A token cut off by the byte budget is discarded so a
 /// partial value is never parsed as a different pid; the final token is only kept
 /// when the reader reaches end-of-file.
-fn read_bounded_pid_list(mut reader: impl Read, budget: &mut ForegroundScanBudget) -> Vec<u32> {
+fn read_bounded_pid_list(mut reader: impl Read, budget: &mut ForegroundScanBudget) -> Vec<Pid> {
     let mut pids = Vec::new();
     let mut token = Vec::new();
     let mut buffer = [0_u8; PROC_CHILDREN_READ_BUFFER_BYTES];
@@ -268,7 +272,7 @@ fn read_bounded_pid_list(mut reader: impl Read, budget: &mut ForegroundScanBudge
     pids
 }
 
-fn push_pid_token(pids: &mut Vec<u32>, token: &mut Vec<u8>, budget: &mut ForegroundScanBudget) {
+fn push_pid_token(pids: &mut Vec<Pid>, token: &mut Vec<u8>, budget: &mut ForegroundScanBudget) {
     if token.is_empty() || budget.child_pids == 0 {
         token.clear();
         return;
@@ -276,6 +280,7 @@ fn push_pid_token(pids: &mut Vec<u32>, token: &mut Vec<u8>, budget: &mut Foregro
     if let Some(pid) = std::str::from_utf8(token)
         .ok()
         .and_then(|text| text.parse::<u32>().ok())
+        .and_then(Pid::new)
     {
         budget.child_pids -= 1;
         pids.push(pid);
@@ -283,55 +288,64 @@ fn push_pid_token(pids: &mut Vec<u32>, token: &mut Vec<u8>, budget: &mut Foregro
     token.clear();
 }
 
-fn numeric_file_name(entry: &std::fs::DirEntry) -> Option<u32> {
+fn numeric_file_name(entry: &std::fs::DirEntry) -> Option<Pid> {
     let file_name = entry.file_name();
     let value = file_name.to_str()?;
     if !value.bytes().all(|byte| byte.is_ascii_digit()) {
         return None;
     }
-    value.parse().ok()
+    value.parse().ok().and_then(Pid::new)
 }
 
-fn live_process_group_member(process_group_id: u32, pid: u32) -> Option<ProcGroupMember> {
+fn live_process_group_member(process_group_id: Pgid, pid: Pid) -> Option<ProcGroupMember> {
     let (pgrp, comm, state) = process_pgrp_comm_and_state(pid)?;
-    (Some(pgrp) == Pgid::new(process_group_id)).then_some(ProcGroupMember { pid, comm, state })
+    (pgrp == process_group_id).then_some(ProcGroupMember { pid, comm, state })
 }
 
-pub fn foreground_group_leader_job(process_group_id: u32) -> Option<ForegroundJob> {
-    let (pgrp, name, state) = process_pgrp_comm_and_state(process_group_id)?;
-    if Some(pgrp) != Pgid::new(process_group_id) {
+pub fn foreground_group_leader_job(process_group_id: Pgid) -> Option<ForegroundJob> {
+    let leader_pid = process_group_id.leader_pid();
+    let (pgrp, name, state) = process_pgrp_comm_and_state(leader_pid)?;
+    if pgrp != process_group_id {
         return None;
     }
 
     let argv = state
         .allows_remote_memory_read()
-        .then(|| process_argv(process_group_id))
+        .then(|| process_argv(leader_pid))
         .flatten();
     Some(ForegroundJob {
         process_group_id,
         processes: vec![ForegroundProcess {
-            pid: process_group_id,
+            pid: leader_pid,
             name,
             argv,
         }],
     })
 }
 
-pub fn foreground_process_group_id(child_pid: u32) -> Option<u32> {
-    ProcStat::read(Pid::new(child_pid)?)
-        .ok()?
-        .foreground_group
-        .map(Pgid::get)
+pub fn foreground_process_group_id(child_pid: Pid) -> Option<Pgid> {
+    ProcStat::read(child_pid).ok()?.foreground_group
 }
 
-fn process_pgrp_comm_and_state(pid: u32) -> Option<(Pgid, String, ProcState)> {
-    let stat = ProcStat::read(Pid::new(pid)?).ok()?;
+fn process_pgrp_comm_and_state(pid: Pid) -> Option<(Pgid, String, ProcState)> {
+    let stat = ProcStat::read(pid).ok()?;
     Some((stat.process_group, stat.comm, stat.state))
 }
 
-fn process_argv(pid: u32) -> Option<Vec<String>> {
-    let bytes = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
-    if bytes.is_empty() {
+/// The argv of `pid`, or `None` when it is empty, unreadable or longer than
+/// `PROCESS_CMDLINE_BYTE_LIMIT`. One byte past the limit is read so an
+/// oversized argv is refused instead of identified from a truncated prefix.
+/// The read grows a heap buffer only as far as the argv actually goes: this
+/// runs per foreground process per detector probe, and a typical argv is far
+/// below the limit.
+fn process_argv(pid: Pid) -> Option<Vec<String>> {
+    let file = std::fs::File::open(format!("/proc/{pid}/cmdline")).ok()?;
+    let read_limit = u64::try_from(PROCESS_CMDLINE_BYTE_LIMIT)
+        .ok()?
+        .saturating_add(1);
+    let mut bytes = Vec::new();
+    file.take(read_limit).read_to_end(&mut bytes).ok()?;
+    if bytes.is_empty() || bytes.len() > PROCESS_CMDLINE_BYTE_LIMIT {
         return None;
     }
     let parts: Vec<String> = bytes
@@ -344,10 +358,7 @@ fn process_argv(pid: u32) -> Option<Vec<String>> {
 
 /// Get the current working directory of a process.
 /// Uses the `/proc/<pid>/cwd` symlink.
-pub fn process_cwd(pid: u32) -> Option<PathBuf> {
-    if pid == 0 {
-        return None;
-    }
+pub fn process_cwd(pid: Pid) -> Option<PathBuf> {
     std::fs::read_link(format!("/proc/{pid}/cwd")).ok()
 }
 
@@ -368,6 +379,34 @@ pub fn is_pane_shell_process_name(name: &str) -> bool {
 fn process_pgrp_comm_and_state_from_stat(stat: &str) -> Option<(Pgid, String, ProcState)> {
     let stat = ProcStat::parse(stat)?;
     Some((stat.process_group, stat.comm, stat.state))
+}
+
+/// The production traversal driven by numeric test fixtures.
+#[cfg(test)]
+fn foreground_process_group_members_with(
+    child_pid: u32,
+    process_group_id: u32,
+    mut task_ids: impl FnMut(u32, &mut ForegroundScanBudget) -> Vec<u32>,
+    mut task_children: impl FnMut(u32, u32, &mut ForegroundScanBudget) -> Vec<u32>,
+    mut live_member: impl FnMut(u32, u32) -> Option<ProcGroupMember>,
+) -> Option<Vec<ProcGroupMember>> {
+    foreground_process_group_members_from(
+        Pid::new(child_pid)?,
+        Pgid::new(process_group_id)?,
+        |pid, budget| {
+            task_ids(pid.get(), budget)
+                .into_iter()
+                .filter_map(Pid::new)
+                .collect()
+        },
+        |pid, tid, budget| {
+            task_children(pid.get(), tid.get(), budget)
+                .into_iter()
+                .filter_map(Pid::new)
+                .collect()
+        },
+        |group, pid| live_member(group.get(), pid.get()),
+    )
 }
 
 #[cfg(test)]

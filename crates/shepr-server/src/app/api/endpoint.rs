@@ -10,6 +10,16 @@ use shepr_core::layout::PaneId;
 use shepr_protocol::command::{EndpointError, EndpointReply};
 use shepr_protocol::{PublicPaneId, WorkspaceId};
 
+/// Which render paths a committed mutation invalidates. A shared change
+/// includes pane viewers, so it dominates a simultaneous local surface change.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Invalidation {
+    #[default]
+    None,
+    Shared,
+    PaneViewers(PaneId),
+}
+
 /// The shared effects of one endpoint command.
 ///
 /// These describe committed changes, not what a command could change according
@@ -18,6 +28,8 @@ use shepr_protocol::{PublicPaneId, WorkspaceId};
 /// projection and surface fields to request rendering.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct EndpointEffects {
+    /// A surface change owed only to clients presenting this pane.
+    pub(crate) pane_viewers: Option<PaneId>,
     /// The client-shell snapshot derived from shared app state changed.
     pub(crate) shell_projection_changed: bool,
     /// A rendered pane surface changed without necessarily changing the shell
@@ -34,17 +46,133 @@ pub(crate) struct EndpointEffects {
 }
 
 impl EndpointEffects {
-    pub(crate) const fn needs_render(self) -> bool {
+    pub(crate) fn pane_viewers(pane: PaneId, changed: bool) -> Self {
+        Self {
+            pane_surface_changed: changed,
+            pane_viewers: changed.then_some(pane),
+            ..Self::default()
+        }
+    }
+
+    pub(crate) const fn needs_shared_render(self) -> bool {
         self.shell_projection_changed
-            || self.pane_surface_changed
+            || (self.pane_surface_changed && self.pane_viewers.is_none())
             || self.changes_immediate_pty_sources()
             || self.workspace_order_changed
+    }
+
+    pub(crate) fn invalidation(self, projection_changed: bool) -> Invalidation {
+        if projection_changed || self.needs_shared_render() {
+            Invalidation::Shared
+        } else if let Some(pane) = self.pane_viewers {
+            Invalidation::PaneViewers(pane)
+        } else {
+            Invalidation::None
+        }
     }
 
     /// Changes that can alter which pane surfaces a client presents or which
     /// workspace geometry it controls.
     pub(crate) const fn changes_immediate_pty_sources(self) -> bool {
         self.focus_changed || self.layout_changed || self.workspace_membership_changed
+    }
+}
+
+impl From<crate::app::actions::ViewMutation> for EndpointEffects {
+    fn from(outcome: crate::app::actions::ViewMutation) -> Self {
+        use crate::app::actions::ViewMutation;
+        match outcome {
+            ViewMutation::Unchanged => Self::default(),
+            ViewMutation::Metadata => Self {
+                shell_projection_changed: true,
+                ..Self::default()
+            },
+            ViewMutation::Focus => Self {
+                shell_projection_changed: true,
+                pane_surface_changed: true,
+                focus_changed: true,
+                ..Self::default()
+            },
+            ViewMutation::Geometry => Self {
+                pane_surface_changed: true,
+                layout_changed: true,
+                ..Self::default()
+            },
+            ViewMutation::WorkspaceOrder => Self {
+                shell_projection_changed: true,
+                workspace_order_changed: true,
+                ..Self::default()
+            },
+            ViewMutation::Swap { focus_changed } => Self {
+                shell_projection_changed: true,
+                pane_surface_changed: true,
+                focus_changed,
+                layout_changed: true,
+                ..Self::default()
+            },
+        }
+    }
+}
+
+impl From<&crate::app::actions::WorkspaceCreationOutcome> for EndpointEffects {
+    fn from(_: &crate::app::actions::WorkspaceCreationOutcome) -> Self {
+        Self {
+            shell_projection_changed: true,
+            pane_surface_changed: true,
+            layout_changed: true,
+            workspace_membership_changed: true,
+            ..Self::default()
+        }
+    }
+}
+
+impl From<&crate::app::actions::WorkspaceRemovalOutcome> for EndpointEffects {
+    fn from(_: &crate::app::actions::WorkspaceRemovalOutcome) -> Self {
+        Self {
+            shell_projection_changed: true,
+            pane_surface_changed: true,
+            layout_changed: true,
+            workspace_membership_changed: true,
+            ..Self::default()
+        }
+    }
+}
+
+impl From<&crate::app::actions::PaneCreationOutcome> for EndpointEffects {
+    fn from(_: &crate::app::actions::PaneCreationOutcome) -> Self {
+        Self {
+            shell_projection_changed: true,
+            pane_surface_changed: true,
+            focus_changed: true,
+            layout_changed: true,
+            ..Self::default()
+        }
+    }
+}
+
+impl From<&crate::app::actions::PaneRemovalOutcome> for EndpointEffects {
+    fn from(outcome: &crate::app::actions::PaneRemovalOutcome) -> Self {
+        Self {
+            shell_projection_changed: true,
+            pane_surface_changed: true,
+            focus_changed: outcome.focus_changed,
+            layout_changed: true,
+            workspace_membership_changed: outcome.removal.scope
+                == shepr_mux::workspace::PaneRemovalScope::Workspace,
+            ..Self::default()
+        }
+    }
+}
+
+impl From<crate::app::actions::PaneZoomOutcome> for EndpointEffects {
+    fn from(outcome: crate::app::actions::PaneZoomOutcome) -> Self {
+        Self {
+            shell_projection_changed: outcome.focus_changed,
+            pane_surface_changed: outcome.changed || outcome.focus_changed,
+            focus_changed: outcome.focus_changed,
+            layout_changed: outcome.changed,
+            ..Self::default()
+        }
     }
 }
 
@@ -199,6 +327,18 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shared_projection_dominates_a_local_surface_change() {
+        let pane = shepr_core::layout::PaneId::alloc();
+        let local = EndpointEffects::pane_viewers(pane, true);
+        assert_eq!(local.invalidation(false), Invalidation::PaneViewers(pane));
+        assert_eq!(local.invalidation(true), Invalidation::Shared);
+        assert_eq!(
+            EndpointEffects::pane_viewers(pane, false).invalidation(false),
+            Invalidation::None,
+        );
+    }
 
     #[test]
     fn not_found_refusals_name_the_subject() {

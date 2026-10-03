@@ -33,22 +33,19 @@ impl App {
         let geometry = ctx
             .requester_geometry
             .unwrap_or_else(|| self.headless_spawn_geometry());
-        let index = self.create_workspace(&cwd, geometry).map_err(|err| {
-            EndpointError::Rejected(format!("the workspace could not be created: {err}"))
-        })?;
+        let outcome = self
+            .create_workspace_outcome(&cwd, geometry)
+            .map_err(|err| {
+                EndpointError::Rejected(format!("the workspace could not be created: {err}"))
+            })?;
+        let index = outcome.workspace_index;
         if let Some(label) = normalized_user_label(params.label)
             && let Some(workspace) = self.state.workspaces.get_mut(index)
         {
             workspace.set_custom_name(label);
             crate::logging::workspace_renamed(&workspace.id);
         }
-        let effects = EndpointEffects {
-            shell_projection_changed: true,
-            pane_surface_changed: true,
-            layout_changed: true,
-            workspace_membership_changed: true,
-            ..EndpointEffects::default()
-        };
+        let effects = EndpointEffects::from(&outcome);
         let Some(workspace_id) = self.public_workspace_id(index) else {
             return rejected_with_effects("the new workspace is unavailable", effects);
         };
@@ -72,20 +69,11 @@ impl App {
         params: WorkspaceRenameParams,
     ) -> HandlerResult {
         let index = self.endpoint_workspace(&params.workspace_id)?;
-        let Some(ws) = self.state.workspaces.get_mut(index) else {
-            return Err(workspace_missing(&params.workspace_id).into());
-        };
-        let label = normalized_user_label(params.label);
-        let changed = ws.custom_name != label;
-        if changed {
-            ws.custom_name = label;
-            crate::logging::workspace_renamed(&ws.id);
-            self.state.mark_session_dirty();
-        }
-        let effects = EndpointEffects {
-            shell_projection_changed: changed,
-            ..EndpointEffects::default()
-        };
+        let outcome = self
+            .state
+            .rename_workspace(index, normalized_user_label(params.label))
+            .ok_or_else(|| workspace_missing(&params.workspace_id))?;
+        let effects = outcome.into();
         let Some(workspace) = self.workspace_info(index) else {
             return Err(HandlerError {
                 error: workspace_missing(&params.workspace_id),
@@ -103,16 +91,8 @@ impl App {
             Some(anchor) => self.endpoint_workspace(anchor)?,
             None => self.state.workspaces.len(),
         };
-        let changed = self.state.move_workspace(index, insert_index);
-        let effects = if changed {
-            EndpointEffects {
-                shell_projection_changed: true,
-                workspace_order_changed: true,
-                ..EndpointEffects::default()
-            }
-        } else {
-            EndpointEffects::default()
-        };
+        let outcome = self.state.move_workspace_outcome(index, insert_index);
+        let effects = outcome.into();
         Handled::done_with_effects(effects)
     }
 
@@ -123,13 +103,7 @@ impl App {
         let index = self.endpoint_workspace(&params.workspace_id)?;
         let effects = if let Some(outcome) = self.state.close_workspace_at(index) {
             self.shutdown_detached_terminal_runtimes(&outcome.detached_terminal_ids);
-            EndpointEffects {
-                shell_projection_changed: true,
-                pane_surface_changed: true,
-                layout_changed: true,
-                workspace_membership_changed: true,
-                ..EndpointEffects::default()
-            }
+            EndpointEffects::from(&outcome)
         } else {
             EndpointEffects::default()
         };

@@ -1,7 +1,7 @@
 //! Endpoint-qualified rows shared by aggregate navigation surfaces.
 
 use crate::endpoint::{ClientEndpointId, ClientEndpointStatus};
-use crate::shell::endpoints::ClientShellEndpoint;
+use crate::shell::endpoints::{ClientShellEndpoint, EndpointState};
 use crate::shell::state::{
     ClientNavigatorFilter, ClientNavigatorOverlay, ClientNavigatorRow, ClientNavigatorTarget,
     ClientShellConfig,
@@ -38,7 +38,7 @@ impl AgentPanelModel {
     ) -> Self {
         let mut rows = Vec::new();
         for (endpoint_order, endpoint) in endpoints.iter().enumerate() {
-            let Some(snapshot) = endpoint.snapshot.as_deref() else {
+            let Some(snapshot) = endpoint.snapshot() else {
                 continue;
             };
             let machine = (endpoints.len() > 1).then(|| endpoint.endpoint_id.display_label());
@@ -54,7 +54,7 @@ impl AgentPanelModel {
                         endpoint_order,
                         endpoint_id: endpoint.endpoint_id.clone(),
                         machine_label: endpoint.endpoint_id.display_label().to_owned(),
-                        stale: endpoint.status != ClientEndpointStatus::Online,
+                        stale: endpoint.state.stale(),
                         agent,
                     }),
             );
@@ -144,7 +144,7 @@ struct NavigatorEndpoint {
     endpoint_id: ClientEndpointId,
     label: String,
     search_label: String,
-    status: ClientEndpointStatus,
+    state: EndpointState,
     focused_pane_id: Option<shepr_protocol::PublicPaneId>,
     workspaces: Vec<NavigatorWorkspace>,
 }
@@ -170,11 +170,11 @@ impl NavigatorIndex {
                 endpoint_id: endpoint.endpoint_id.clone(),
                 label: endpoint.endpoint_id.display_label().to_owned(),
                 search_label: endpoint.endpoint_id.display_label().to_lowercase(),
-                status: endpoint.status,
+                state: endpoint.state.clone(),
                 focused_pane_id: None,
                 workspaces: Vec::new(),
             };
-            let Some(snapshot) = endpoint.snapshot.as_deref() else {
+            let Some(snapshot) = endpoint.snapshot() else {
                 indexed_endpoints.push(indexed);
                 continue;
             };
@@ -292,7 +292,7 @@ impl NavigatorIndex {
         self.endpoints
             .iter()
             .find(|endpoint| &endpoint.endpoint_id == endpoint_id)
-            .map(|endpoint| endpoint.status)
+            .map(|endpoint| endpoint.state.status())
     }
 
     pub(in crate::shell) fn rows(
@@ -305,7 +305,7 @@ impl NavigatorIndex {
         let filtering = navigator.filter.is_some() || !query.is_empty();
         let mut rows = Vec::new();
         for endpoint in &self.endpoints {
-            let stale = endpoint.status != ClientEndpointStatus::Online;
+            let stale = endpoint.state.stale();
             let endpoint_matches = !query.is_empty()
                 && search_matches(std::slice::from_ref(&endpoint.search_label), &words);
             let mut endpoint_rows = Vec::new();

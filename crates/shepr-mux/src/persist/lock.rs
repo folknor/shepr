@@ -24,11 +24,7 @@ impl DataDirLease {
         self.inner.directory()
     }
 
-    pub(super) fn is_active(&self) -> bool {
-        self.inner.is_active()
-    }
-
-    pub fn release(&mut self) {
+    pub fn release(self) {
         self.inner.release();
     }
 }

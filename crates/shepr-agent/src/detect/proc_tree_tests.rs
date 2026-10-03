@@ -5,6 +5,14 @@
 use super::*;
 use std::{cell::RefCell, collections::HashMap};
 
+fn process_id(value: u32) -> Pid {
+    Pid::new(value).expect("test process id")
+}
+
+fn process_group_id(value: u32) -> Pgid {
+    Pgid::new(value).expect("test process group")
+}
+
 #[test]
 fn foreground_members_follow_the_pane_tree_and_filter_by_process_group() {
     let tasks = HashMap::from([
@@ -51,7 +59,7 @@ fn foreground_members_follow_the_pane_tree_and_filter_by_process_group() {
             member_reads.borrow_mut().push(pid);
             let (pgrp, comm) = processes.get(&pid)?;
             (*pgrp == process_group_id).then(|| ProcGroupMember {
-                pid,
+                pid: process_id(pid),
                 comm: (*comm).to_string(),
                 state: ProcState::Sleeping,
             })
@@ -62,7 +70,7 @@ fn foreground_members_follow_the_pane_tree_and_filter_by_process_group() {
     assert_eq!(
         members
             .into_iter()
-            .map(|member| (member.pid, member.comm))
+            .map(|member| (member.pid.get(), member.comm))
             .collect::<Vec<_>>(),
         vec![
             (200, "leader".to_string()),
@@ -109,7 +117,7 @@ fn foreground_tree_traversal_is_bounded_by_the_scan_limit() {
             // Every visited pid triggers a /proc/<pid>/stat read; count them.
             stat_reads.borrow_mut().push(pid);
             (process_group_id == 2).then(|| ProcGroupMember {
-                pid,
+                pid: process_id(pid),
                 comm: format!("p{pid}"),
                 state: ProcState::Sleeping,
             })
@@ -129,11 +137,13 @@ fn foreground_tree_traversal_is_bounded_by_the_scan_limit() {
     // The foreground-group leader and its descendants are visited before the
     // shell's unrelated backlog, so the detected agent survives truncation.
     assert!(
-        members.iter().any(|member| member.pid == 2),
+        members.iter().any(|member| member.pid.get() == 2),
         "group leader must survive truncation"
     );
     assert!(
-        members.iter().any(|member| member.pid == agent_child_pid),
+        members
+            .iter()
+            .any(|member| member.pid.get() == agent_child_pid),
         "leader descendants must be visited before unrelated shell descendants"
     );
 }
@@ -162,7 +172,7 @@ fn foreground_tree_traversal_shares_the_scan_limit_between_roots() {
         |process_group_id, pid| {
             stat_reads.borrow_mut().push(pid);
             (process_group_id == 2).then(|| ProcGroupMember {
-                pid,
+                pid: process_id(pid),
                 comm: format!("p{pid}"),
                 state: ProcState::Sleeping,
             })
@@ -172,7 +182,9 @@ fn foreground_tree_traversal_shares_the_scan_limit_between_roots() {
 
     assert!(stat_reads.borrow().len() <= FOREGROUND_TREE_SCAN_LIMIT);
     assert!(
-        members.iter().any(|member| member.pid == pipeline_pid),
+        members
+            .iter()
+            .any(|member| member.pid.get() == pipeline_pid),
         "shell-side foreground members must survive an oversized leader subtree"
     );
 }
@@ -181,7 +193,7 @@ fn foreground_tree_traversal_shares_the_scan_limit_between_roots() {
 fn bounded_child_list_read_keeps_complete_tokens_at_eof() {
     let mut budget = ForegroundScanBudget::for_probe();
     let pids = read_bounded_pid_list(std::io::Cursor::new(b"10 20 30"), &mut budget);
-    assert_eq!(pids, vec![10, 20, 30]);
+    assert_eq!(pids, vec![process_id(10), process_id(20), process_id(30)]);
     assert!(budget.child_bytes < FOREGROUND_CHILD_BYTE_LIMIT);
 }
 
@@ -191,7 +203,7 @@ fn bounded_child_list_read_drops_a_token_cut_off_by_the_byte_budget() {
     // The byte budget ends inside the trailing pid, which must not parse as 3.
     budget.child_bytes = 8;
     let pids = read_bounded_pid_list(std::io::Cursor::new(b" 10 20 300"), &mut budget);
-    assert_eq!(pids, vec![10, 20]);
+    assert_eq!(pids, vec![process_id(10), process_id(20)]);
     assert_eq!(budget.child_bytes, 0);
 }
 
@@ -200,7 +212,7 @@ fn bounded_child_list_read_stops_at_the_pid_budget() {
     let mut budget = ForegroundScanBudget::for_probe();
     budget.child_pids = 2;
     let pids = read_bounded_pid_list(std::io::Cursor::new(b"10 20 30 40"), &mut budget);
-    assert_eq!(pids, vec![10, 20]);
+    assert_eq!(pids, vec![process_id(10), process_id(20)]);
     assert_eq!(budget.child_pids, 0);
 }
 
@@ -246,7 +258,7 @@ fn foreground_members_degrade_to_the_direct_group_leader() {
         |_, _, _budget| Vec::new(),
         |process_group_id, pid| {
             (pid == process_group_id).then(|| ProcGroupMember {
-                pid,
+                pid: process_id(pid),
                 comm: "leader".to_string(),
                 state: ProcState::Sleeping,
             })
@@ -257,7 +269,7 @@ fn foreground_members_degrade_to_the_direct_group_leader() {
     assert_eq!(
         members,
         vec![ProcGroupMember {
-            pid: 200,
+            pid: process_id(200),
             comm: "leader".to_string(),
             state: ProcState::Sleeping,
         }]
@@ -283,7 +295,7 @@ fn foreground_members_observe_new_children_without_a_snapshot_cache() {
                 [200, 201]
                     .contains(&pid)
                     .then(|| ProcGroupMember {
-                        pid,
+                        pid: process_id(pid),
                         comm: format!("member-{pid}"),
                         state: ProcState::Sleeping,
                     })
@@ -292,7 +304,7 @@ fn foreground_members_observe_new_children_without_a_snapshot_cache() {
         )
         .expect("test precondition")
         .into_iter()
-        .map(|member| member.pid)
+        .map(|member| member.pid.get())
         .collect::<Vec<_>>()
     };
 
@@ -319,15 +331,15 @@ fn proc_stat_parsing_keeps_group_leader_inputs_live() {
 fn foreground_job_does_not_read_remote_memory_for_uninterruptible_members() {
     let argv_reads = RefCell::new(Vec::new());
     let job = foreground_job_from_members(
-        200,
+        process_group_id(200),
         vec![
             ProcGroupMember {
-                pid: 200,
+                pid: process_id(200),
                 comm: "codex".to_string(),
                 state: ProcState::Uninterruptible,
             },
             ProcGroupMember {
-                pid: 201,
+                pid: process_id(201),
                 comm: "helper".to_string(),
                 state: ProcState::Sleeping,
             },
@@ -339,7 +351,7 @@ fn foreground_job_does_not_read_remote_memory_for_uninterruptible_members() {
     )
     .expect("test precondition");
 
-    assert_eq!(argv_reads.into_inner(), vec![201]);
+    assert_eq!(argv_reads.into_inner(), vec![process_id(201)]);
     assert_eq!(job.processes[0].name, "codex");
     assert_eq!(job.processes[0].argv, None);
     assert_eq!(job.processes[1].argv, Some(vec!["process-201".to_string()]));

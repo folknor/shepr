@@ -12,7 +12,7 @@ use super::scrollbar::{render_pane_scrollbar, should_show_scrollbar};
 use super::text::truncate_end;
 use crate::app::AppState;
 use shepr_mux::pane::{PaneRuntime, PaneRuntimeRegistry};
-use shepr_mux::terminal::RestoreFailure;
+use shepr_mux::terminal::PaneStartFailure;
 use shepr_mux::workspace::{PaneChromeInfo as PaneInfo, pane_inner_rect};
 use shepr_protocol::{CellData, FrameData, WireColor};
 
@@ -23,8 +23,8 @@ pub(crate) fn pane_is_scrolled_back(rt: &PaneRuntime) -> bool {
 }
 
 /// The unavailable-pane text: the guidance, then the error behind it on its
-/// own line. Both borrow from the failure, so a redraw formats nothing.
-fn restore_failure_text(failure: &RestoreFailure) -> Text<'_> {
+/// own line. OS errors are formatted only at this presentation boundary.
+fn restore_failure_text(failure: &PaneStartFailure) -> Text<'_> {
     let mut lines = vec![Line::raw(failure.guidance())];
     if let Some(cause) = failure.cause() {
         lines.push(Line::from(vec![Span::raw("Error: "), Span::raw(cause)]));
@@ -543,6 +543,61 @@ fn line_cell_symbol(line: LineCell) -> &'static str {
     }
 }
 
+pub(crate) fn split_hit_rect(
+    split: &shepr_core::layout::SplitBorder,
+    pane_borders: bool,
+    pane_gaps: bool,
+    pane_frames: &[Rect],
+) -> Option<Rect> {
+    let hit = match (split.direction, pane_borders, pane_gaps) {
+        (shepr_core::layout::Direction::Horizontal, true, false) => {
+            Rect::new(split.pos, split.area.y, 1, split.area.height)
+        }
+        (shepr_core::layout::Direction::Horizontal, true, true) => {
+            let start = split.pos.saturating_sub(1);
+            Rect::new(
+                start,
+                split.area.y,
+                split.pos.saturating_sub(start).saturating_add(1),
+                split.area.height,
+            )
+        }
+        (shepr_core::layout::Direction::Horizontal, false, true) => Rect::new(
+            split.pos.checked_sub(1)?,
+            split.area.y,
+            1,
+            split.area.height,
+        ),
+        (shepr_core::layout::Direction::Vertical, true, false) => {
+            Rect::new(split.area.x, split.pos, split.area.width, 1)
+        }
+        (shepr_core::layout::Direction::Vertical, true, true) => {
+            let start = split.pos.saturating_sub(1);
+            Rect::new(
+                split.area.x,
+                start,
+                split.area.width,
+                split.pos.saturating_sub(start).saturating_add(1),
+            )
+        }
+        (shepr_core::layout::Direction::Vertical, false, true) => {
+            Rect::new(split.area.x, split.pos.checked_sub(1)?, split.area.width, 1)
+        }
+        (_, false, false) => return None,
+    };
+    if !pane_borders
+        && pane_frames.iter().any(|pane| {
+            hit.x < pane.right()
+                && hit.right() > pane.x
+                && hit.y < pane.bottom()
+                && hit.bottom() > pane.y
+        })
+    {
+        return None;
+    }
+    Some(hit)
+}
+
 #[cfg(test)]
 use super::text::display_width;
 
@@ -629,8 +684,9 @@ mod tests {
         app.terminals
             .get_mut(&terminal_id)
             .expect("test precondition")
-            .record_start_failure(RestoreFailure::DirectoryUnavailable {
+            .record_start_failure(PaneStartFailure::DirectoryUnavailable {
                 path: "/missing".into(),
+                error: std::io::Error::from(std::io::ErrorKind::NotFound),
             });
         let runtimes = PaneRuntimeRegistry::new();
         let area = Rect::new(0, 0, 80, 24);
@@ -653,15 +709,15 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol.as_str())
             .collect();
-        assert!(text.contains("Saved directory is unavailable."));
+        assert!(text.contains("Pane directory is unavailable."));
         assert!(text.contains("Restore the directory and restart this session."));
-        assert!(!text.contains("Error:"));
+        assert!(text.contains("Error:"));
         assert!(cursor.is_none_or(|cursor| !cursor.visible));
     }
 
     #[test]
     fn restore_failure_text_shows_the_error_behind_a_failed_shell() {
-        let failure = RestoreFailure::shell_start_failed(&std::io::Error::from(
+        let failure = PaneStartFailure::shell_start_failed(&std::io::Error::from(
             std::io::ErrorKind::PermissionDenied,
         ));
         let lines: Vec<String> = restore_failure_text(&failure)
@@ -670,7 +726,7 @@ mod tests {
             .map(ToString::to_string)
             .collect();
         assert_eq!(lines.len(), 2);
-        assert!(lines[0].starts_with("Could not start the saved shell."));
+        assert!(lines[0].starts_with("Could not start the pane shell."));
         assert_eq!(lines[1], "Error: permission denied");
     }
 
@@ -1232,5 +1288,63 @@ mod tests {
         assert_eq!(info.rect, area);
         assert_eq!(info.scrollbar_rect, None);
         assert_eq!(info.inner_rect, area);
+    }
+}
+
+#[cfg(test)]
+mod split_hit_tests {
+    use super::*;
+
+    #[test]
+    fn split_hits_follow_released_border_and_gap_geometry() {
+        let horizontal = shepr_core::layout::SplitBorder {
+            pos: 20,
+            direction: shepr_core::layout::Direction::Horizontal,
+            ratio: shepr_core::layout::SplitRatio::EVEN,
+            area: shepr_core::geometry::Rect::new(2, 3, 40, 12),
+            path: vec![shepr_core::geometry::SplitBranch::First],
+        };
+        assert_eq!(
+            split_hit_rect(&horizontal, true, false, &[]),
+            Some(Rect::new(20, 3, 1, 12))
+        );
+        assert_eq!(
+            split_hit_rect(&horizontal, true, true, &[]),
+            Some(Rect::new(19, 3, 2, 12))
+        );
+        assert_eq!(
+            split_hit_rect(&horizontal, false, true, &[]),
+            Some(Rect::new(19, 3, 1, 12))
+        );
+        assert_eq!(split_hit_rect(&horizontal, false, false, &[]), None);
+
+        let vertical = shepr_core::layout::SplitBorder {
+            pos: 9,
+            direction: shepr_core::layout::Direction::Vertical,
+            ratio: shepr_core::layout::SplitRatio::EVEN,
+            area: shepr_core::geometry::Rect::new(2, 3, 40, 12),
+            path: vec![shepr_core::geometry::SplitBranch::Second],
+        };
+        assert_eq!(
+            split_hit_rect(&vertical, true, true, &[]),
+            Some(Rect::new(2, 8, 40, 2))
+        );
+
+        let edge = shepr_core::layout::SplitBorder {
+            pos: 0,
+            direction: shepr_core::layout::Direction::Horizontal,
+            ratio: shepr_core::layout::SplitRatio::EVEN,
+            area: shepr_core::geometry::Rect::new(0, 0, 1, 4),
+            path: Vec::new(),
+        };
+        assert_eq!(
+            split_hit_rect(&edge, true, true, &[]),
+            Some(Rect::new(0, 0, 1, 4))
+        );
+        assert_eq!(split_hit_rect(&edge, false, true, &[]), None);
+        assert_eq!(
+            split_hit_rect(&horizontal, false, true, &[Rect::new(19, 3, 1, 12)]),
+            None
+        );
     }
 }

@@ -394,8 +394,10 @@ fn exhausted_discovery_reports_not_ready_and_starts_over_next_time() {
 #[test]
 fn remote_client_status_requires_an_exact_build_id() {
     let matching = shepr_api::schema::ClientStatusJson {
-        version: Some("old-version".into()),
-        build_id: Some(shepr_protocol::BUILD_ID.into()),
+        identity: Some(shepr_protocol::BuildVersion {
+            version: "old-version".into(),
+            build_id: shepr_protocol::BuildIdentity::for_this_build(),
+        }),
         binary: None,
         server: None,
     };
@@ -407,8 +409,10 @@ fn remote_client_status_requires_an_exact_build_id() {
         "ffffffffffffffff"
     };
     let mismatched = shepr_api::schema::ClientStatusJson {
-        version: Some(shepr_protocol::build_version()),
-        build_id: Some(other_build.into()),
+        identity: Some(shepr_protocol::BuildVersion {
+            version: shepr_protocol::build_version(),
+            build_id: other_build.parse().expect("build identity"),
+        }),
         binary: None,
         server: None,
     };
@@ -421,8 +425,10 @@ fn remote_client_status_requires_an_exact_build_id() {
 #[test]
 fn client_build_mismatch_filters_remote_text_with_the_shared_rule() {
     let mismatched = shepr_api::schema::ClientStatusJson {
-        version: Some("1.0\x1b[2J".into()),
-        build_id: Some("build id".into()),
+        identity: Some(shepr_protocol::BuildVersion {
+            version: "1.0\x1b[2J".into(),
+            build_id: shepr_protocol::BuildIdentity::Unidentifiable,
+        }),
         binary: None,
         server: None,
     };
@@ -431,7 +437,7 @@ fn client_build_mismatch_filters_remote_text_with_the_shared_rule() {
     assert!(
         error
             .to_string()
-            .contains("found version unknown build build id")
+            .contains("found version unknown build unidentifiable--")
     );
     assert!(!error.to_string().contains('\x1b'));
 }
@@ -440,8 +446,10 @@ fn client_status_with_sibling(
     server: Option<shepr_api::schema::SiblingServerJson>,
 ) -> shepr_api::schema::ClientStatusJson {
     shepr_api::schema::ClientStatusJson {
-        version: Some(shepr_protocol::build_version()),
-        build_id: Some(shepr_protocol::BUILD_ID.into()),
+        identity: Some(shepr_protocol::BuildVersion {
+            version: shepr_protocol::build_version(),
+            build_id: shepr_protocol::BuildIdentity::for_this_build(),
+        }),
         binary: None,
         server,
     }
@@ -450,9 +458,14 @@ fn client_status_with_sibling(
 fn sibling(build_id: Option<&str>, error: Option<&str>) -> shepr_api::schema::SiblingServerJson {
     shepr_api::schema::SiblingServerJson {
         binary: Some("/home/u/.cargo/bin/shepr-server".into()),
-        version: build_id.map(|_| "1.0".into()),
-        build_id: build_id.map(str::to_owned),
-        error: error.map(str::to_owned),
+        identity: match (build_id, error) {
+            (Some(build), None) => Ok(shepr_protocol::BuildVersion {
+                version: "1.0".into(),
+                build_id: build.parse().expect("build identity"),
+            }),
+            (None, Some(error)) => Err(error.to_owned()),
+            _ => panic!("test requires exactly an identity or an error"),
+        },
     }
 }
 
@@ -501,18 +514,17 @@ fn remote_sibling_text_is_filtered_before_local_output() {
     let host = SshTarget::parse("host").expect("test precondition");
     let hostile = client_status_with_sibling(Some(shepr_api::schema::SiblingServerJson {
         binary: Some("/bin/\x1b[2Jshepr-server".into()),
-        version: Some("1.0\x1b[2J".into()),
-        build_id: Some("\x1b[2J".into()),
-        error: Some("boom\x1b[2J".into()),
+        identity: Err("boom\x1b[2J".into()),
     }));
     let error = ensure_remote_sibling_build(&host, &hostile).expect_err("hostile report");
     assert!(!error.to_string().contains('\x1b'), "{error}");
 
     let hostile = client_status_with_sibling(Some(shepr_api::schema::SiblingServerJson {
         binary: None,
-        version: Some("1.0\x1b[2J".into()),
-        build_id: Some("\x1b[2J".into()),
-        error: None,
+        identity: Ok(shepr_protocol::BuildVersion {
+            version: "1.0\x1b[2J".into(),
+            build_id: shepr_protocol::BuildIdentity::Unidentifiable,
+        }),
     }));
     let error = ensure_remote_sibling_build(&host, &hostile).expect_err("hostile report");
     assert!(!error.to_string().contains('\x1b'), "{error}");
@@ -656,8 +668,21 @@ fn parse_client_status_json_reads_last_json_record() {
         "wrapper output\n{\"version\":\"0.8.0\",\"build_id\":\"0123456789abcdef\"}\n{\"wrapper\":true}\n",
     )
     .expect("test precondition");
-    assert_eq!(status.version.as_deref(), Some("0.8.0"));
-    assert_eq!(status.build_id.as_deref(), Some("0123456789abcdef"));
+    assert_eq!(
+        status
+            .identity
+            .as_ref()
+            .map(|identity| identity.version.as_str()),
+        Some("0.8.0")
+    );
+    assert_eq!(
+        status
+            .identity
+            .as_ref()
+            .map(|identity| identity.build_id.to_string())
+            .as_deref(),
+        Some("0123456789abcdef")
+    );
 }
 
 struct RejectingHost {

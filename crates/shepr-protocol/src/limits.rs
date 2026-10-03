@@ -24,7 +24,8 @@ pub use shepr_core::limits::MAX_TERMINAL_GRID_DIMENSION as MAX_SURFACE_DIMENSION
 pub use shepr_core::limits::MAX_INPUT_EVENT_BATCH;
 
 // Exact source and build-profile fingerprint shared by the wire preamble and
-// JSON status API. Compare it through `is_this_build`, never with `==`.
+// JSON status API. Compare it through `BuildIdentity::is_this_build`, never
+// with `==`.
 include!(concat!(env!("OUT_DIR"), "/build_identity.rs"));
 
 /// Maximum payload of one frame in either direction. A message larger than

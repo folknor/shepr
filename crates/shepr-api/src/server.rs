@@ -323,8 +323,8 @@ fn route_request(
                     // Preserve the executable's display version; build_id is
                     // the separate machine-comparison field in this response.
                     version: shepr_protocol::build_version(),
-                    build_id: shepr_protocol::BUILD_ID.to_owned(),
-                    boot_id: shepr_protocol::BootId::for_this_process().to_string(),
+                    build_id: shepr_protocol::BuildIdentity::for_this_build(),
+                    boot_id: shepr_protocol::BootId::for_this_process(),
                     stopping: server_stop.is_requested(),
                     starting: !gate.is_open(),
                 },
@@ -359,7 +359,7 @@ fn route_request(
 
 fn stop_server(
     id: &str,
-    expected_boot_id: Option<&str>,
+    expected_boot_id: Option<&shepr_protocol::BootId>,
     server_stop: &crate::ServerStopSignal,
 ) -> crate::error::EncodedApiResponse {
     // The conditional operation has its own method name because this request
@@ -374,7 +374,7 @@ fn stop_server(
         // A stop aimed at one boot must not stop another: the caller observed
         // that instance, and the occupant may have been replaced since.
         let actual = shepr_protocol::BootId::for_this_process();
-        if actual != expected {
+        if &actual != expected {
             return error_response_json(
                 id,
                 crate::error::ApiErrorCode::ServerBootMismatch,
@@ -984,7 +984,8 @@ mod tests {
         let ResponseResult::Pong { boot_id, .. } = ping.result else {
             panic!("ping did not answer with a pong");
         };
-        let stop_with = |expected_boot_id: Option<String>, stop: &crate::ServerStopSignal| {
+        let stop_with = |expected_boot_id: Option<shepr_protocol::BootId>,
+                         stop: &crate::ServerStopSignal| {
             let method = match expected_boot_id {
                 Some(expected_boot_id) => {
                     Method::ServerStopIfBoot(crate::schema::ServerStopIfBootParams {
@@ -1006,7 +1007,10 @@ mod tests {
         };
 
         let other_boot = running();
-        let refused = stop_with(Some(format!("{boot_id}0")), &other_boot);
+        let refused = stop_with(
+            Some(format!("{boot_id}0").parse().expect("other boot identity")),
+            &other_boot,
+        );
         assert_eq!(refused["error"]["code"], "server_boot_mismatch");
         assert!(!other_boot.is_requested());
 

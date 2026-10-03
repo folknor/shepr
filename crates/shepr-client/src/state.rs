@@ -41,9 +41,6 @@ pub(super) struct ClientState {
     pub(super) repaint_pending: bool,
     pub(super) presentation_dirty: PresentationDirty,
     pub(super) pending_surface_patch: Option<shell::ClientComposedSurfacePatch>,
-    /// What is shown and the move toward what is selected; held in memory only, every
-    /// client starts on Local.
-    pub(super) choice: endpoint::EndpointChoice,
     pub(super) draw_host_cursor: bool,
     /// Frame and pane surface patch writes, which repeat on every presented frame.
     pub(super) frame_write_failure: HostWriteFailure,
@@ -352,7 +349,6 @@ impl ClientState {
             repaint_pending: false,
             presentation_dirty: PresentationDirty::Clean,
             pending_surface_patch: None,
-            choice: endpoint::EndpointChoice::showing(endpoint::ClientEndpointId::Local),
             draw_host_cursor: false,
             frame_write_failure: HostWriteFailure::default(),
             title_write_failure: HostWriteFailure::default(),

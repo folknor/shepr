@@ -62,13 +62,13 @@ pub(crate) fn workspace_renamed(workspace_id: &str) {
     );
 }
 
-pub(crate) fn session_restored(path: &Path, workspaces: usize, outcome: &'static str) {
+pub(crate) fn session_restored(path: &Path, summary: shepr_mux::persist::SessionRestoreSummary) {
     tracing::info!(
         event = "persist.restore",
         subsystem = "persist",
-        outcome,
+        outcome = summary.outcome.as_log_value(),
         path = %path.display(),
-        workspaces,
+        workspaces = summary.workspaces,
         "session restore evaluated"
     );
 }

@@ -75,8 +75,8 @@ type SurfaceRenderer = fn(
     Rect,
     shepr_termio::host_term::cell_size::HostCellSize,
 ) -> Result<
-    crate::server::client_shell::RenderedPaneSurface,
-    crate::server::client_shell::SurfaceRenderDeferred,
+    crate::server::pane_surface::RenderedPaneSurface,
+    crate::server::pane_surface::SurfaceRenderDeferred,
 >;
 
 pub(super) struct SurfaceBoundary {
@@ -98,8 +98,8 @@ struct SharedSurfaces {
     rendered: HashMap<
         PaneSurfaceRenderKey,
         Result<
-            crate::server::client_shell::RenderedPaneSurface,
-            crate::server::client_shell::SurfaceRenderDeferred,
+            crate::server::pane_surface::RenderedPaneSurface,
+            crate::server::pane_surface::SurfaceRenderDeferred,
         >,
     >,
     surface_renders: usize,
@@ -176,7 +176,7 @@ impl HeadlessServer {
         let mut changed = false;
         for (&client_id, client) in &self.clients {
             let shell = client.shell_state();
-            let candidate = crate::server::client_shell::snapshot_from_session(
+            let candidate = Self::snapshot_from_session(
                 &self.app,
                 &cache.session,
                 &self.client_shell_boot_id,
@@ -438,20 +438,17 @@ impl HeadlessServer {
         let mut report = PassReport::default();
         let mut full = plan.full.clone();
         if !sources.is_empty() {
-            if self.app.state.settings.reveal_hidden_cursor_for_cjk_ime {
-                full.extend(&plan.patch);
-            } else {
-                let patches = self.render_patches(&plan.patch, sources);
-                full.extend(patches.promote);
-                report.patched = patches.sent;
-                report.owed = patches.owed;
-                for id in &report.patched {
-                    if let Some(client) = self.clients.get_mut(id) {
-                        client.render_state.settle(epoch);
-                    }
+            let patches = self.render_patches(&plan.patch, sources);
+            full.extend(patches.promote);
+            report.patched = patches.sent;
+            report.owed = patches.owed;
+            for id in &report.patched {
+                if let Some(client) = self.clients.get_mut(id) {
+                    client.render_state.settle(epoch);
                 }
             }
         }
+
         full.sort_unstable();
         full.dedup();
         self.render_full(&full, epoch, &mut report, boundary);
@@ -602,7 +599,7 @@ impl HeadlessServer {
                     warn!(?client_id, "shell session cache missing while projecting");
                     return ClientPassOutcome::Owed;
                 };
-                crate::server::client_shell::snapshot_from_session(
+                Self::snapshot_from_session(
                     &self.app,
                     &cache.session,
                     &self.client_shell_boot_id,
@@ -700,7 +697,7 @@ impl HeadlessServer {
         // ahead of the snapshot its command changed. The client is owed; a
         // moved pane raised its own render signal, and a vanished workspace
         // moved the view epoch, so nothing more is requested here.
-        let Some(crate::server::client_shell::RenderedPaneSurface {
+        let Some(crate::server::pane_surface::RenderedPaneSurface {
             frame,
             panes,
             splits,
@@ -787,6 +784,124 @@ impl HeadlessServer {
             // ever empties the slot, so this is a bug guard: owe and drop.
             crate::server::outbox::SurfaceOffer::Occupied => ClientPassOutcome::Owed,
             crate::server::outbox::SurfaceOffer::Closed => ClientPassOutcome::Closed,
+        }
+    }
+}
+
+impl HeadlessServer {
+    /// Projects an already built `app.session_snapshot()` for one shell
+    /// client.
+    ///
+    /// The session snapshot underneath is cached by the headless server and shared
+    /// across clients. Borrowing it avoids cloning its source vectors before
+    /// building the owned client snapshot; fields carried onto the wire still need
+    /// their own owned values. Rendering re-projects it when the shared generation
+    /// moves, this client's location generation moves, or its snapshot is
+    /// missing. The shared generation advances after an application revision or
+    /// when the cwd timer finds a changed projection; a location change invalidates
+    /// only the client that moved.
+    pub(in crate::server) fn snapshot_from_session(
+        app: &app::App,
+        snapshot: &crate::app::SessionSnapshot,
+        boot_id: &shepr_protocol::BootId,
+        revision: u64,
+        location: &crate::server::clients::ClientShellLocation,
+    ) -> shepr_protocol::ClientShellSnapshot {
+        // The client views what its own location names and nothing else: a client
+        // with no workspace has no focus, never the session's bookmark.
+        let focused_workspace_id = location
+            .focused_workspace_id()
+            .cloned()
+            .filter(|workspace_id| app.resolve_workspace_id(workspace_id).is_some());
+        let focused_pane_id = focused_workspace_id
+            .as_ref()
+            .and_then(|workspace_id| app.resolve_workspace_id(workspace_id))
+            .and_then(|workspace_index| {
+                let pane_id = app.state.workspaces.get(workspace_index)?.focused_pane_id();
+                app.public_pane_id(workspace_index, pane_id)
+            });
+        // Snapshot entries are joined to live state by their public ids, never by
+        // position: a snapshot that filtered or reordered entries would otherwise
+        // hand one workspace's labels and branch to another. The snapshot is built
+        // from this same `app`, so the positional slot is tried first and the id
+        // lookup only runs when it does not match.
+        let workspaces = snapshot
+            .workspaces
+            .iter()
+            .enumerate()
+            .map(|(position, workspace)| {
+                let workspace_id = &workspace.workspace_id;
+                let workspace_index = app
+                    .state
+                    .workspaces
+                    .get(position)
+                    .is_some_and(|state| &state.id == workspace_id)
+                    .then_some(position)
+                    .or_else(|| app.resolve_workspace_id(workspace_id));
+                let state = workspace_index.and_then(|index| app.state.workspaces.get(index));
+                let new_workspace_cwd = workspace_index.map_or_default(|workspace_index| {
+                    app.resolved_new_workspace_cwd(workspace_index)
+                        .display()
+                        .to_string()
+                });
+                shepr_protocol::ClientShellWorkspace {
+                    workspace_id: workspace_id.clone(),
+                    new_workspace_cwd,
+                    number: workspace.number,
+                    label: workspace.label.clone(),
+                    branch: state.and_then(shepr_mux::workspace::Workspace::branch),
+                    git_ahead_behind: state
+                        .and_then(shepr_mux::workspace::Workspace::git_ahead_behind)
+                        .map(|counts| (counts.ahead, counts.behind)),
+                    agent_status: workspace.agent_status,
+                }
+            })
+            .collect();
+        let panes = snapshot
+            .panes
+            .iter()
+            .map(|pane| {
+                let right_click_passthrough = app
+                    .resolve_pane_id(&pane.pane_id)
+                    .and_then(|(workspace_index, pane_id)| {
+                        app.state
+                            .workspaces
+                            .get(workspace_index)?
+                            .pane_state(pane_id)
+                    })
+                    .is_some_and(|pane| pane.right_click_passthrough);
+                shepr_protocol::ClientShellPane {
+                    pane_id: pane.pane_id.clone(),
+                    label: pane.label.clone(),
+                    cwd: pane.cwd.clone(),
+                    foreground_cwd: pane.foreground_cwd.clone(),
+                    right_click_passthrough,
+                }
+            })
+            .collect();
+        let agents = snapshot
+            .agents
+            .iter()
+            .map(|agent| shepr_protocol::ClientShellAgent {
+                pane_id: agent.pane_id.clone(),
+                agent: agent.agent.clone(),
+                terminal_title: agent.terminal_title.clone(),
+                terminal_title_stripped: agent.terminal_title_stripped.clone(),
+                agent_status: agent.agent_status,
+                state_change_seq: agent.state_change_seq,
+            })
+            .collect();
+
+        shepr_protocol::ClientShellSnapshot {
+            boot_id: boot_id.clone(),
+            revision: revision.into(),
+            restore_notice: app.restore_notice.clone(),
+            session_saves_stopped: app.session_saves_stopped(),
+            focused_workspace_id,
+            focused_pane_id,
+            workspaces,
+            panes,
+            agents,
         }
     }
 }

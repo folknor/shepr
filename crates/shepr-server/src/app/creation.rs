@@ -108,11 +108,20 @@ impl App {
         initial_cwd: &std::path::Path,
         geometry: SpawnGeometry,
     ) -> std::io::Result<usize> {
+        self.create_workspace_outcome(initial_cwd, geometry)
+            .map(|outcome| outcome.workspace_index)
+    }
+
+    pub(crate) fn create_workspace_outcome(
+        &mut self,
+        initial_cwd: &std::path::Path,
+        geometry: SpawnGeometry,
+    ) -> std::io::Result<super::actions::WorkspaceCreationOutcome> {
         let chrome = self.state.pane_geometry_in(geometry.area);
-        let (ws, terminal) = Workspace::prepare(initial_cwd);
+        let (ws, terminal, root_public_id) = Workspace::prepare(initial_cwd);
         let runtime = self.launch_pane(
             ws.root_pane(),
-            shepr_protocol::PublicPaneId::new(&ws.id, 1),
+            root_public_id,
             chrome.sole_pane_spawn_geometry(geometry.cell_px()),
             initial_cwd,
             shepr_mux::pane::LaunchKind::Fresh,
@@ -123,7 +132,7 @@ impl App {
             .record_workspace_geometry(&outcome.workspace_id, geometry);
         self.install_terminal_runtime(terminal_id, runtime);
         crate::logging::workspace_created(&outcome.workspace_id, outcome.root_pane.raw());
-        Ok(outcome.workspace_index)
+        Ok(outcome)
     }
 
     /// The reply acknowledges the pane target and includes its scroll position.

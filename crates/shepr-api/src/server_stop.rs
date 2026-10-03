@@ -1,3 +1,4 @@
+use shepr_protocol::BootId;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -84,7 +85,7 @@ pub enum ServerStopError {
     /// changed after it was observed (it stopped and another server started).
     BootMismatch {
         label: String,
-        expected_boot_id: String,
+        expected_boot_id: BootId,
         /// The server's own words, naming the boot it is.
         detail: String,
     },
@@ -92,8 +93,8 @@ pub enum ServerStopError {
     /// answered while the requested boot was shutting down.
     OccupantChanged {
         label: String,
-        expected_boot_id: String,
-        actual_boot_id: String,
+        expected_boot_id: BootId,
+        actual_boot_id: BootId,
     },
 }
 
@@ -234,14 +235,14 @@ impl From<ServerStopError> for String {
 /// does not stop answering in time, or a different boot answers.
 pub fn stop_active_server(
     paths: &shepr_config::AppPaths,
-    expected_boot_id: Option<&str>,
+    expected_boot_id: Option<&BootId>,
 ) -> Result<(), ServerStopError> {
     stop_active_server_with_timeout(paths, expected_boot_id, STOP_WAIT_TIMEOUT)
 }
 
 fn stop_active_server_with_timeout(
     paths: &shepr_config::AppPaths,
-    expected_boot_id: Option<&str>,
+    expected_boot_id: Option<&BootId>,
     timeout: Duration,
 ) -> Result<(), ServerStopError> {
     let address = paths.server_address();
@@ -265,7 +266,7 @@ fn stop_socket_with_timeout(
     lease: Option<(&Path, Duration)>,
     timeout: Duration,
     label: &str,
-    expected_boot_id: Option<&str>,
+    expected_boot_id: Option<&BootId>,
 ) -> Result<(), ServerStopError> {
     // clock-io-ok: one deadline bounds the real stop request's socket reads
     // and the server process's exit, so it must share their real clock.
@@ -278,7 +279,7 @@ fn stop_socket_with_timeout(
             BootStopWait::Changed(actual_boot_id) => {
                 return Err(ServerStopError::OccupantChanged {
                     label: label.into(),
-                    expected_boot_id: expected_boot_id.into(),
+                    expected_boot_id: expected_boot_id.clone(),
                     actual_boot_id,
                 });
             }
@@ -314,7 +315,7 @@ fn stop_socket_with_timeout(
                 LeaseWait::NewBoot(actual_boot_id) => {
                     return Err(ServerStopError::OccupantChanged {
                         label: label.into(),
-                        expected_boot_id: expected_boot_id.into(),
+                        expected_boot_id: expected_boot_id.clone(),
                         actual_boot_id,
                     });
                 }
@@ -352,7 +353,7 @@ fn stop_socket_with_timeout(
             BootStopWait::Changed(actual_boot_id) => {
                 return Err(ServerStopError::OccupantChanged {
                     label: label.into(),
-                    expected_boot_id: expected_boot_id.into(),
+                    expected_boot_id: expected_boot_id.clone(),
                     actual_boot_id,
                 });
             }
@@ -371,7 +372,7 @@ fn stop_socket_with_timeout(
             BootProbe::Changed(actual_boot_id) => {
                 return Err(ServerStopError::OccupantChanged {
                     label: label.into(),
-                    expected_boot_id: expected_boot_id.into(),
+                    expected_boot_id: expected_boot_id.clone(),
                     actual_boot_id,
                 });
             }
@@ -381,7 +382,7 @@ fn stop_socket_with_timeout(
                     BootStopWait::Changed(actual_boot_id) => {
                         return Err(ServerStopError::OccupantChanged {
                             label: label.into(),
-                            expected_boot_id: expected_boot_id.into(),
+                            expected_boot_id: expected_boot_id.clone(),
                             actual_boot_id,
                         });
                     }
@@ -432,31 +433,31 @@ fn data_dir_lease_is_free(lease_path: &Path) -> io::Result<bool> {
 enum BootProbe {
     Gone,
     Expected,
-    Changed(String),
+    Changed(BootId),
 }
 
 enum BootStopWait {
     Gone,
-    Changed(String),
+    Changed(BootId),
     TimedOut,
 }
 
 enum LeaseWait {
     Released,
     Held,
-    NewBoot(String),
+    NewBoot(BootId),
 }
 
 fn probe_boot(
     socket_path: &Path,
-    expected_boot_id: &str,
+    expected_boot_id: &BootId,
     label: &str,
     deadline: Instant,
 ) -> Result<BootProbe, ServerStopError> {
     // clock-io-ok: bounds one real status request on the socket.
     let probe_deadline = (Instant::now() + STOP_STATUS_PROBE_TIMEOUT).min(deadline);
     match crate::status::read_runtime_status_until(socket_path, probe_deadline) {
-        Ok(status) if status.boot_id == expected_boot_id => Ok(BootProbe::Expected),
+        Ok(status) if &status.boot_id == expected_boot_id => Ok(BootProbe::Expected),
         Ok(status) => Ok(BootProbe::Changed(status.boot_id)),
         Err(error) if crate::status::status_probe_has_no_answer(&error) => Ok(BootProbe::Gone),
         Err(error) => Err(status_probe_error(error, label)),
@@ -465,7 +466,7 @@ fn probe_boot(
 
 fn wait_until_boot_stops(
     socket_path: &Path,
-    expected_boot_id: &str,
+    expected_boot_id: &BootId,
     deadline: Instant,
     label: &str,
 ) -> Result<BootStopWait, ServerStopError> {
@@ -494,7 +495,7 @@ fn wait_until_boot_stops(
 /// the address during lease retirement or socket removal.
 fn wait_until_socket_stopped_or_new_boot(
     socket_path: &Path,
-    expected_boot_id: &str,
+    expected_boot_id: &BootId,
     deadline: Instant,
     label: &str,
 ) -> Result<BootStopWait, ServerStopError> {
@@ -526,7 +527,7 @@ fn wait_for_lease_release_or_new_boot(
     lease_path: &Path,
     deadline: Instant,
     socket_path: &Path,
-    expected_boot_id: &str,
+    expected_boot_id: &BootId,
     label: &str,
 ) -> Result<LeaseWait, ServerStopError> {
     if !lease_path
@@ -583,7 +584,7 @@ fn send_stop_request(
     request: &crate::schema::Request,
     deadline: Instant,
     label: &str,
-    expected_boot_id: Option<&str>,
+    expected_boot_id: Option<&BootId>,
 ) -> Result<(), ServerStopError> {
     // clock-io-ok: the deadline is the one the real socket reader below keeps.
     if deadline.saturating_duration_since(Instant::now()).is_zero() {
@@ -633,7 +634,7 @@ fn send_stop_request(
                 {
                     Err(ServerStopError::BootMismatch {
                         label: label.into(),
-                        expected_boot_id: expected.into(),
+                        expected_boot_id: expected.clone(),
                         detail: response.error.message,
                     })
                 }
@@ -661,11 +662,11 @@ fn stop_socket_io_error(socket_path: &Path, label: &str, error: io::Error) -> Se
     }
 }
 
-fn server_stop_request(id: &str, expected_boot_id: Option<&str>) -> crate::schema::Request {
+fn server_stop_request(id: &str, expected_boot_id: Option<&BootId>) -> crate::schema::Request {
     let method = match expected_boot_id {
         Some(expected_boot_id) => {
             crate::schema::Method::ServerStopIfBoot(crate::schema::ServerStopIfBootParams {
-                expected_boot_id: expected_boot_id.to_owned(),
+                expected_boot_id: expected_boot_id.clone(),
             })
         }
         None => crate::schema::Method::ServerStop(crate::schema::ServerStopParams::default()),
@@ -766,14 +767,17 @@ mod tests {
                 .expect("stop request line");
             request
         });
-        let request = server_stop_request("cli:server:stop", Some("17-23"));
+        let request = server_stop_request(
+            "cli:server:stop",
+            Some(&"17-23".parse().expect("boot identity")),
+        );
 
         send_stop_request(
             &socket_path,
             &request,
             Instant::now() + Duration::from_millis(100),
             "test server",
-            Some("17-23"),
+            Some(&"17-23".parse().expect("boot identity")),
         )
         .expect("test precondition");
         let received = handle.join().expect("test precondition");
@@ -781,7 +785,10 @@ mod tests {
             serde_json::from_str(&received).expect("stop request is valid API JSON");
         assert_eq!(
             received,
-            server_stop_request("cli:server:stop", Some("17-23"))
+            server_stop_request(
+                "cli:server:stop",
+                Some(&"17-23".parse().expect("boot identity"))
+            )
         );
         assert_eq!(received.method.traits().name, "server.stop_if_boot");
     }
@@ -885,7 +892,7 @@ mod tests {
             "{\"id\":\"cli:server:stop\",\"error\":{\"code\":\"server_boot_mismatch\",\"message\":\"this server is boot 9-9\"}}\n",
         );
 
-        let error = stop_active_server(&paths, Some("1-1"))
+        let error = stop_active_server(&paths, Some(&"1-1".parse().expect("boot identity")))
             .expect_err("a stop aimed at another boot is refused");
 
         keep_running.store(false, Ordering::Relaxed);
@@ -935,12 +942,12 @@ mod tests {
                         } else {
                             status_requests += 1;
                             let boot_id = if status_requests == 1 {
-                                "old-boot"
+                                "17-23"
                             } else {
-                                "new-boot"
+                                "17-24"
                             };
                             format!(
-                                "{{\"id\":\"api-client:status\",\"result\":{{\"type\":\"pong\",\"version\":\"0.1.0\",\"build_id\":\"build\",\"boot_id\":\"{boot_id}\"}}}}\n"
+                                "{{\"id\":\"api-client:status\",\"result\":{{\"type\":\"pong\",\"version\":\"0.1.0\",\"build_id\":\"0123456789abcdef\",\"boot_id\":\"{boot_id}\"}}}}\n"
                             )
                         };
                         drop(stream.write_all(response.as_bytes()));
@@ -958,7 +965,7 @@ mod tests {
             None,
             Duration::from_secs(2),
             "test server",
-            Some("old-boot"),
+            Some(&"17-23".parse().expect("boot identity")),
         )
         .expect_err("a new boot must be reported instead of waiting for its socket");
 
@@ -971,7 +978,7 @@ mod tests {
                     expected_boot_id,
                     actual_boot_id,
                     ..
-                } if expected_boot_id == "old-boot" && actual_boot_id == "new-boot"
+                } if expected_boot_id == "17-23" && actual_boot_id == "17-24"
             ),
             "{error}"
         );
@@ -1006,7 +1013,7 @@ mod tests {
         let socket_path = scratch.join("api.sock");
         let reply = concat!(
             r#"{"id":"cli:server:stop","result":{"type":"pong","version":"0.1.0","#,
-            r#""build_id":"build","boot_id":"17-23"}}"#,
+            r#""build_id":"0123456789abcdef","boot_id":"17-23"}}"#,
             "\n"
         );
         let (keep_running, handle) = serve_reply(&socket_path, reply);
@@ -1144,7 +1151,7 @@ mod tests {
                     None,
                     Duration::from_secs(2),
                     "test server",
-                    Some("old-boot"),
+                    Some(&"17-23".parse().expect("boot identity")),
                 ))
                 .expect("result");
         });
@@ -1190,7 +1197,7 @@ mod tests {
                     Some((&lease_path, Duration::from_millis(500))),
                     Duration::from_millis(75),
                     "test server",
-                    Some("old-boot"),
+                    Some(&"17-23".parse().expect("boot identity")),
                 ))
                 .expect("result");
         });

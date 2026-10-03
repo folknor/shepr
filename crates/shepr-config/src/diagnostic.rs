@@ -85,9 +85,13 @@ pub enum ConfigDiagnosticKind {
     Read(String),
     Parse(String),
     UnknownKey,
-    UnknownSection { array_table: bool },
+    UnknownSection {
+        array_table: bool,
+    },
     Validation(String),
     Path(String),
+    /// An internal inconsistency while resolving validated config values.
+    Internal(String),
 }
 
 /// A config problem with its source file and setting path kept as data.
@@ -136,6 +140,10 @@ impl ConfigDiagnostic {
         Self::new(ConfigDiagnosticKind::Path(reason.into()), None, Some(key))
     }
 
+    pub(crate) fn internal(reason: impl Into<String>) -> Self {
+        Self::new(ConfigDiagnosticKind::Internal(reason.into()), None, None)
+    }
+
     pub(crate) fn validation_related(
         key: ConfigKeyPath,
         related_keys: Vec<ConfigKeyPath>,
@@ -182,7 +190,8 @@ impl ConfigDiagnostic {
             ConfigDiagnosticKind::Read(message)
             | ConfigDiagnosticKind::Parse(message)
             | ConfigDiagnosticKind::Validation(message)
-            | ConfigDiagnosticKind::Path(message) => message,
+            | ConfigDiagnosticKind::Path(message)
+            | ConfigDiagnosticKind::Internal(message) => message,
             ConfigDiagnosticKind::UnknownKey => "unknown key",
             ConfigDiagnosticKind::UnknownSection { .. } => "unknown section",
         }
@@ -215,6 +224,9 @@ impl std::fmt::Display for ConfigDiagnostic {
                     write!(f, "{}: ", file.display())?;
                 }
                 f.write_str(message)
+            }
+            ConfigDiagnosticKind::Internal(message) => {
+                write!(f, "internal config resolution error: {message}")
             }
             ConfigDiagnosticKind::UnknownKey => {
                 f.write_str("unknown config key ")?;

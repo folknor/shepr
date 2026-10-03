@@ -1,111 +1,185 @@
 use crate::limits::{PANE_TEARDOWN_BUDGET, PANE_TEARDOWN_STEPS};
-use std::sync::{
-    Arc, Mutex,
-    atomic::{AtomicBool, AtomicU32, Ordering},
-};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tracing::{info, warn};
 
 use shepr_core::layout::PaneId;
 
-/// The pane's child identity and the observations used to decide whether it
-/// has exited or has been reaped. Keeping the process handle with the pid and
-/// wait result prevents each lifecycle path from choosing its own authority.
+/// The stable child identity and its coordinated lifecycle. A pending runtime
+/// has no child; an owned child always has its pidfd-backed identity.
 pub(super) struct ChildLiveness {
-    pid: AtomicU32,
-    wait_completed: AtomicBool,
-    /// Whether the child's exec committed. Until then the process is the
-    /// server's own image (in chdir, or exec'ing) and nothing about it, cwd or
-    /// foreground job, describes the pane's shell.
-    launched: AtomicBool,
-    /// The child's shared pidfd identity, acquired by PTY before returning.
-    /// Teardown signals through it so a reused pid is never hit.
-    leader: Option<Arc<shepr_platform::ProcessHandle>>,
+    state: Mutex<ChildState>,
+}
+
+struct ChildState {
+    identity: ChildIdentity,
+    phase: ChildPhase,
+}
+
+enum ChildIdentity {
+    Absent,
+    Process(Arc<shepr_platform::ProcessHandle>),
+    // Unit tests model a reused numeric pid without giving it signalling
+    // authority. Only tests construct this identity, so a production build
+    // never holds one.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "constructed only by unit tests; a test-gated variant would release the production code below it from the skip_after lint"
+        )
+    )]
+    Unhandled(shepr_platform::Pid),
+}
+
+#[derive(Clone, Copy)]
+enum LaunchPhase {
+    Pending,
+    Committed,
+    Unconfirmed,
+}
+
+#[derive(Clone, Copy)]
+enum ChildPhase {
+    Launching,
+    Running,
+    Unconfirmed,
+    /// Waiting ended, successfully or otherwise. The process handle remains
+    /// the authority for exit and reaping; a failed wait proves neither.
+    WaitEnded(LaunchPhase),
+}
+
+impl ChildPhase {
+    fn launch(self) -> LaunchPhase {
+        match self {
+            Self::Launching => LaunchPhase::Pending,
+            Self::Running => LaunchPhase::Committed,
+            Self::Unconfirmed => LaunchPhase::Unconfirmed,
+            Self::WaitEnded(launch) => launch,
+        }
+    }
 }
 
 impl ChildLiveness {
-    /// A child known to run its program already.
-    fn from_parts(
-        pid: Option<shepr_platform::Pid>,
-        leader: Option<Arc<shepr_platform::ProcessHandle>>,
-    ) -> Self {
+    /// A pane whose program is reached through a seam instead of a child
+    /// process (`PaneRuntime::with_child_io`): it counts as launched, so its
+    /// own screen is the pane's content, and it has no process to observe or
+    /// signal.
+    pub(super) fn launched_without_child() -> Self {
         Self {
-            // Zero encodes None in the atomic storage, never a process id.
-            pid: AtomicU32::new(pid.map_or(0, shepr_platform::Pid::get)),
-            wait_completed: AtomicBool::new(false),
-            launched: AtomicBool::new(true),
-            leader,
+            state: Mutex::new(ChildState {
+                identity: ChildIdentity::Absent,
+                phase: ChildPhase::Running,
+            }),
         }
     }
 
-    pub(super) fn absent() -> Self {
-        Self::from_parts(None, None)
-    }
-
-    /// A child just forked, not yet past its exec.
-    pub(super) fn launching(
-        pid: shepr_platform::Pid,
-        leader: Arc<shepr_platform::ProcessHandle>,
-    ) -> Self {
+    /// A child just forked, not yet past its exec. The handle supplies its
+    /// identity; the caller cannot pair it with a different pid.
+    pub(super) fn launching(leader: Arc<shepr_platform::ProcessHandle>) -> Self {
         Self {
-            launched: AtomicBool::new(false),
-            ..Self::from_parts(Some(pid), Some(leader))
+            state: Mutex::new(ChildState {
+                identity: ChildIdentity::Process(leader),
+                phase: ChildPhase::Launching,
+            }),
         }
     }
 
-    pub(super) fn mark_launched(&self) {
-        self.launched.store(true, Ordering::Release);
+    pub(super) fn settle_launch(&self, committed: bool) {
+        let mut state = shepr_vt::lock_auxiliary(&self.state);
+        let launch = if committed {
+            LaunchPhase::Committed
+        } else {
+            LaunchPhase::Unconfirmed
+        };
+        state.phase = match state.phase {
+            ChildPhase::WaitEnded(_) => ChildPhase::WaitEnded(launch),
+            _ if committed => ChildPhase::Running,
+            _ => ChildPhase::Unconfirmed,
+        };
+    }
+
+    pub(super) fn launch_committed(&self) -> Option<bool> {
+        match shepr_vt::lock_auxiliary(&self.state).phase.launch() {
+            LaunchPhase::Pending => None,
+            LaunchPhase::Committed => Some(true),
+            LaunchPhase::Unconfirmed => Some(false),
+        }
     }
 
     pub(super) fn is_launched(&self) -> bool {
-        self.launched.load(Ordering::Acquire)
+        self.launch_committed() == Some(true)
     }
 
     /// The pid the pane owns, launched or not: teardown signals it.
     pub(super) fn process_id(&self) -> Option<shepr_platform::Pid> {
-        self.leader
-            .as_ref()
-            .map(|leader| leader.process_id())
-            .or_else(|| shepr_platform::Pid::new(self.pid.load(Ordering::Acquire)))
+        match &shepr_vt::lock_auxiliary(&self.state).identity {
+            ChildIdentity::Process(leader) => Some(leader.process_id()),
+            ChildIdentity::Unhandled(pid) => Some(*pid),
+            ChildIdentity::Absent => None,
+        }
     }
 
     /// The child pid while it names this unreaped child running the pane's
     /// program. Before exec it is still the server image, and after reaping
-    /// its pid may name another process. All observations use this gate.
+    /// its pid may name another process. Observation is allowed only after
+    /// commitment and before waiting ends or the identity has been reaped.
+    /// One lock hold: detection and cwd reads call this per probe.
     pub(super) fn live_process_id(&self) -> Option<shepr_platform::Pid> {
-        (self.is_launched() && !self.wait_completed() && !self.is_reaped())
-            .then(|| self.process_id())
-            .flatten()
-    }
-
-    pub(super) fn live_pid(&self) -> Option<u32> {
-        self.live_process_id().map(shepr_platform::Pid::get)
+        let state = shepr_vt::lock_auxiliary(&self.state);
+        if !matches!(state.phase, ChildPhase::Running) {
+            return None;
+        }
+        match &state.identity {
+            ChildIdentity::Process(leader) => leader.is_unreaped().then(|| leader.process_id()),
+            // `Running` excludes an ended wait, the only way an unhandled
+            // test identity reads as reaped.
+            ChildIdentity::Unhandled(pid) => Some(*pid),
+            ChildIdentity::Absent => None,
+        }
     }
 
     pub(super) fn mark_wait_completed(&self) {
-        self.wait_completed.store(true, Ordering::Release);
+        let mut state = shepr_vt::lock_auxiliary(&self.state);
+        state.phase = ChildPhase::WaitEnded(state.phase.launch());
     }
 
     pub(super) fn wait_completed(&self) -> bool {
-        self.wait_completed.load(Ordering::Acquire)
+        matches!(
+            shepr_vt::lock_auxiliary(&self.state).phase,
+            ChildPhase::WaitEnded(_)
+        )
     }
 
-    /// Whether the child has exited; a zombie counts as exited.
+    /// Whether the child exited, including zombies. Wait failure alone must
+    /// never make an owned child read as exited.
     pub(super) fn has_exited(&self) -> bool {
-        self.leader
+        self.leader()
             .as_ref()
-            .map_or_else(|| self.wait_completed(), |leader| leader.has_exited())
+            .is_some_and(|leader| leader.has_exited())
+            || self.unhandled_wait_ended()
     }
 
-    /// Whether the child has been reaped and its pid can be reused.
     pub(super) fn is_reaped(&self) -> bool {
-        self.leader
+        self.leader()
             .as_ref()
-            .map_or_else(|| self.wait_completed(), |leader| !leader.is_unreaped())
+            .is_some_and(|leader| !leader.is_unreaped())
+            || self.unhandled_wait_ended()
     }
 
-    pub(super) fn leader(&self) -> Option<&shepr_platform::ProcessHandle> {
-        self.leader.as_deref()
+    /// A test identity has no handle, so its ended wait stands in for exit
+    /// and reaping.
+    fn unhandled_wait_ended(&self) -> bool {
+        let state = shepr_vt::lock_auxiliary(&self.state);
+        matches!(state.identity, ChildIdentity::Unhandled(_))
+            && matches!(state.phase, ChildPhase::WaitEnded(_))
+    }
+
+    pub(super) fn leader(&self) -> Option<Arc<shepr_platform::ProcessHandle>> {
+        match &shepr_vt::lock_auxiliary(&self.state).identity {
+            ChildIdentity::Process(leader) => Some(Arc::clone(leader)),
+            _ => None,
+        }
     }
 }
 
@@ -225,12 +299,13 @@ fn terminate_pane_session(pane_id: PaneId, child_liveness: &ChildLiveness) {
     let session_id = shepr_platform::SessionId::of_leader(leader_pid);
     let leader_reaped = || child_liveness.is_reaped();
     let mut members = Vec::new();
+    let leader = child_liveness.leader();
     for (signal, grace) in PANE_TEARDOWN_STEPS {
         // Rescan every round: a process that forked while being hung up is
         // still in the session and must not escape the next signal.
         members = shepr_platform::session_members(session_id, leader_reaped);
-        let handles: Vec<&shepr_platform::ProcessHandle> = child_liveness
-            .leader()
+        let handles: Vec<&shepr_platform::ProcessHandle> = leader
+            .as_deref()
             .into_iter()
             .chain(members.iter())
             .collect();
@@ -255,12 +330,12 @@ fn terminate_pane_session(pane_id: PaneId, child_liveness: &ChildLiveness) {
         }
     }
 
-    let survivors: Vec<u32> = child_liveness
-        .leader()
+    let survivors: Vec<u32> = leader
+        .as_deref()
         .into_iter()
         .chain(members.iter())
         .filter(|handle| !handle.has_exited())
-        .map(shepr_platform::ProcessHandle::pid)
+        .map(|handle| handle.process_id().get())
         .collect();
     warn!(
         pane = pane_id.raw(),
@@ -272,18 +347,68 @@ fn terminate_pane_session(pane_id: PaneId, child_liveness: &ChildLiveness) {
 
 #[cfg(test)]
 impl ChildLiveness {
-    pub(super) fn new(pid: u32, leader: Option<Arc<shepr_platform::ProcessHandle>>) -> Self {
-        Self::from_parts(shepr_platform::Pid::new(pid), leader)
+    /// A runtime that has not forked a child yet.
+    pub(super) fn absent() -> Self {
+        Self {
+            state: Mutex::new(ChildState {
+                identity: ChildIdentity::Absent,
+                phase: ChildPhase::Launching,
+            }),
+        }
     }
 
-    pub(super) fn set_pid_for_test(&self, pid: u32) {
-        self.pid.store(pid, Ordering::Release);
+    /// A launched child owned through its process handle.
+    pub(super) fn running_with_handle(leader: Arc<shepr_platform::ProcessHandle>) -> Self {
+        Self::running(ChildIdentity::Process(leader))
+    }
+
+    /// A launched child known only by its numeric pid, with no signalling
+    /// authority.
+    pub(super) fn running_unhandled(pid: u32) -> Self {
+        Self::running(
+            shepr_platform::Pid::new(pid).map_or(ChildIdentity::Absent, ChildIdentity::Unhandled),
+        )
+    }
+
+    fn running(identity: ChildIdentity) -> Self {
+        Self {
+            state: Mutex::new(ChildState {
+                identity,
+                phase: ChildPhase::Running,
+            }),
+        }
+    }
+
+    pub(super) fn set_pid_for_test(&self, pid: shepr_platform::Pid) {
+        let mut state = shepr_vt::lock_auxiliary(&self.state);
+        state.identity = ChildIdentity::Unhandled(pid);
+        state.phase = ChildPhase::Running;
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn settlement_after_wait_completion_never_reopens_observation() {
+        let child = ChildLiveness::absent();
+        child.mark_wait_completed();
+        child.settle_launch(true);
+        assert_eq!(child.launch_committed(), Some(true));
+        assert!(child.wait_completed());
+        assert!(child.live_process_id().is_none());
+    }
+
+    #[test]
+    fn unsuccessful_settlement_is_shared_with_the_launch_watch() {
+        let child = ChildLiveness::absent();
+        assert_eq!(child.launch_committed(), None);
+        child.settle_launch(false);
+        assert_eq!(child.launch_committed(), Some(false));
+        child.mark_wait_completed();
+        assert_eq!(child.launch_committed(), Some(false));
+    }
 
     #[test]
     fn teardown_trackers_wait_independently() {

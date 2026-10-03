@@ -126,7 +126,7 @@ impl PaneTerminal {
         pane_id: PaneId,
         child_liveness: &ChildLiveness,
     ) -> bool {
-        let Some(shell_pid) = child_liveness.live_pid() else {
+        let Some(shell_pid) = child_liveness.live_process_id() else {
             return false;
         };
         {
@@ -141,7 +141,7 @@ impl PaneTerminal {
         }
 
         let foreground_job = shepr_agent::detect::foreground_job(shell_pid);
-        if child_liveness.live_pid() != Some(shell_pid) {
+        if child_liveness.live_process_id() != Some(shell_pid) {
             return false;
         }
         let Ok(mut core) = shepr_vt::lock_terminal_core(&self.core) else {
@@ -278,13 +278,13 @@ impl PaneTerminal {
         child_liveness: &ChildLiveness,
         generation: DefaultColorGeneration,
     ) {
-        let Some(shell_pid) = child_liveness.live_pid() else {
+        let Some(shell_pid) = child_liveness.live_process_id() else {
             return;
         };
         let Some(owner_pgid) = current_transient_default_color_owner(shell_pid) else {
             return;
         };
-        if child_liveness.live_pid() != Some(shell_pid) {
+        if child_liveness.live_process_id() != Some(shell_pid) {
             return;
         }
         let Ok(mut core) = shepr_vt::lock_terminal_core(&self.core) else {
@@ -297,7 +297,8 @@ impl PaneTerminal {
             core.transient_default_color_owner_pgid = Some(owner_pgid);
             debug!(
                 pane = pane_id.raw(),
-                owner_pgid, "tracked transient default color override"
+                owner_pgid = owner_pgid.get(),
+                "tracked transient default color override"
             );
         }
     }

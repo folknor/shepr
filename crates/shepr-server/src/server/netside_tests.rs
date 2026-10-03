@@ -2,7 +2,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use shepr_client::endpoint::{
-    ClientEndpointId, ClientEndpointStatus, EndpointChoice, EndpointRegistry, EndpointTransport,
+    ClientEndpointId, ClientEndpointStatus, EndpointRegistry, EndpointTransport,
     view::{self, HostBaseline, StartOutcome},
 };
 use shepr_protocol::ServerMessage;
@@ -174,7 +174,6 @@ async fn two_headless_servers_switch_endpoints_without_a_lease() {
         false,
         now,
     );
-    let mut choice = EndpointChoice::showing(ClientEndpointId::Local);
     let mut serial = 41;
     headless_tests::dispatch_lifecycle_messages(
         &mut source_server,
@@ -226,13 +225,12 @@ async fn two_headless_servers_switch_endpoints_without_a_lease() {
         };
         // A non-viewed connection still supplies metadata; drain earlier control effects.
         while control.try_recv().is_ok() {}
-        choice.select(to.clone(), None);
+        shell.endpoint_choice_mut().select(to.clone(), None);
         assert_eq!(
             view::start_move(
-                &mut choice,
                 &mut endpoints,
-                &shell,
-                baseline,
+                &mut shell,
+                |_| baseline(),
                 &mut serial,
                 Instant::now()
             ),
@@ -272,17 +270,16 @@ async fn two_headless_servers_switch_endpoints_without_a_lease() {
                     request_id,
                     result,
                 } if request_id.ends_with(":on") => {
-                    choice.preparing_mut().expect("preparing").receive_response(
-                        &to,
-                        generation,
-                        &boot_id,
-                        &request_id,
-                        result,
-                    );
+                    shell
+                        .endpoint_choice_mut()
+                        .preparing_mut()
+                        .expect("preparing")
+                        .receive_response(&to, generation, &boot_id, &request_id, result);
                     ack = true;
                 }
                 ServerMessage::EndpointSnapshot(s) => {
-                    choice
+                    shell
+                        .endpoint_choice_mut()
                         .preparing_mut()
                         .expect("preparing")
                         .receive_snapshot(&to, generation, &s);
@@ -297,18 +294,26 @@ async fn two_headless_servers_switch_endpoints_without_a_lease() {
         else {
             panic!("expected full surface");
         };
-        choice
+        shell
+            .endpoint_choice_mut()
             .preparing_mut()
             .expect("preparing")
             .receive_surface(&to, generation, surface);
-        assert!(choice.preparing().expect("preparing").ready().is_some());
-        view::send_focus(&mut choice, &mut endpoints);
         assert!(
-            view::commit_move(&mut choice, &mut endpoints, &mut shell, true)
+            shell
+                .endpoint_choice()
+                .preparing()
+                .expect("preparing")
+                .ready()
+                .is_some()
+        );
+        view::send_focus(shell.endpoint_choice_mut(), &mut endpoints);
+        assert!(
+            view::commit_move(&mut endpoints, &mut shell, true)
                 .expect("commit")
                 .is_some()
         );
-        assert_eq!(choice.shown(), Some(&to));
+        assert_eq!(shell.endpoint_choice().presented(), &to);
         assert!(shell.endpoint_is_active(&to));
         assert!(endpoints.viewed(&to));
         let messages = std::mem::take(&mut *sent.lock().expect("messages"));
@@ -341,7 +346,7 @@ async fn two_headless_servers_switch_endpoints_without_a_lease() {
             Some(true)
         );
         assert_eq!(
-            view::release_unwanted(&choice, &mut endpoints, &shell, &mut serial),
+            view::release_unwanted(shell.endpoint_choice(), &mut endpoints, &shell, &mut serial),
             1
         );
         let messages = std::mem::take(&mut *previous_sent.lock().expect("messages"));

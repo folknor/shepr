@@ -232,7 +232,7 @@ fn ensure_server_build_matches(
     let status = client
         .status()
         .map_err(|err| map_server_not_running_or_io(paths, err, request_id, client))?;
-    if shepr_protocol::is_this_build(&status.build_id) {
+    if status.build_id.is_this_build() {
         return Ok(());
     }
     let response = shepr_api::schema::ErrorResponse {

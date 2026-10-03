@@ -11,6 +11,23 @@ use shepr_mux::workspace::{
 
 use super::state::AppState;
 
+/// Committed presentation changes shared by the small state mutators.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ViewMutation {
+    Unchanged,
+    Metadata,
+    Focus,
+    Geometry,
+    WorkspaceOrder,
+    Swap { focus_changed: bool },
+}
+
+impl ViewMutation {
+    pub(crate) fn changed(self) -> bool {
+        self != Self::Unchanged
+    }
+}
+
 /// What applying an event did to a terminal's effective agent state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StateUpdate {
@@ -30,6 +47,7 @@ pub(crate) struct PaneRemovalPlan {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PaneRemovalOutcome {
+    pub(crate) focus_changed: bool,
     pub(crate) workspace_index: usize,
     pub(crate) removal: PaneRemoval,
     /// Terminals the removal detached from state; the caller shuts down

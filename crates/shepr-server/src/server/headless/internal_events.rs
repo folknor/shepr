@@ -65,11 +65,11 @@ impl HeadlessServer {
                 // Publishing the process exit can change what the sidebar shows
                 // (the agent goes idle) even when the pane itself stays, held for
                 // its checkpoint or not removed at all.
-                let projection_before = self.app.state.shell_projection_revision;
                 let replay_generation = self.replaying_checkpointed_pane_exit.take();
                 // A replayed exit was held for its checkpoint, so it was
                 // decided as checkpointed; it is finished that way whatever
                 // has happened to the pane since.
+                let mut projection_changed = false;
                 let prepared = if let Some(generation) = replay_generation {
                     if !self.app.pane_exit_checkpoint_generation_settled(generation) {
                         self.pending_checkpointed_pane_exits.push_back(
@@ -82,9 +82,10 @@ impl HeadlessServer {
                     }
                     crate::app::PreparedPaneExit::Held(generation)
                 } else {
-                    let prepared = self
-                        .app
-                        .prepare_pane_exit(*pane_id, *exit_reason, *ended_at);
+                    let (prepared, changed) = self.app.observe_projection_change(|app| {
+                        app.prepare_pane_exit(*pane_id, *exit_reason, *ended_at)
+                    });
+                    projection_changed = changed;
                     if let Some(checkpoint_generation) = prepared.held_generation() {
                         // Keep the pre-exit layout live until its checkpoint is durable.
                         self.pending_checkpointed_pane_exits.push_back(
@@ -93,7 +94,7 @@ impl HeadlessServer {
                                 checkpoint_generation,
                             },
                         );
-                        return self.app.state.shell_projection_revision != projection_before;
+                        return projection_changed;
                     }
                     prepared
                 };
@@ -102,7 +103,7 @@ impl HeadlessServer {
                     preserve_runtime_origin(runtime_origin, ev),
                     prepared,
                 ) {
-                    return self.app.state.shell_projection_revision != projection_before;
+                    return projection_changed;
                 }
                 self.immediate_pty_sources_dirty = true;
                 self.host_input_modes_dirty = true;

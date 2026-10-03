@@ -6,6 +6,7 @@
 pub mod manifest;
 
 pub use crate::agent::Agent;
+use shepr_platform::Pid;
 
 mod proc_tree;
 mod title_activity;
@@ -177,7 +178,7 @@ pub fn identify_agent_in_job(job: &ForegroundJob) -> Option<(Agent, String)> {
     if let Some(process) = job
         .processes
         .iter()
-        .find(|process| process.pid == job.process_group_id)
+        .find(|process| process.pid == job.process_group_id.leader_pid())
         && let Some(identified) = identify_process(process)
     {
         return Some(identified);
@@ -186,7 +187,7 @@ pub fn identify_agent_in_job(job: &ForegroundJob) -> Option<(Agent, String)> {
     let mut best: Option<(ProcessPriority, Agent, String)> = None;
 
     for process in &job.processes {
-        if process.pid == job.process_group_id {
+        if process.pid == job.process_group_id.leader_pid() {
             continue;
         }
         let Some((agent, candidate)) = identify_process(process) else {
@@ -205,7 +206,7 @@ pub fn identify_agent_in_job(job: &ForegroundJob) -> Option<(Agent, String)> {
 
 /// Blocking: scans descendants of the pane shell for job-control-stopped
 /// processes that still identify as agents. Call from a blocking context.
-pub fn suspended_agent_processes(child_pid: u32) -> Vec<Agent> {
+pub fn suspended_agent_processes(child_pid: Pid) -> Vec<Agent> {
     let mut agents = Vec::new();
     for process in proc_tree::suspended_processes(child_pid) {
         let Some((agent, _)) = identify_process(&process) else {
@@ -308,7 +309,7 @@ const PYTHON_VALUE_FLAGS: &[&str] = &["-W", "-X", "--check-hash-based-pycs"];
 fn wrapped_agent_name_from_runtime_argv(
     runtime: &str,
     argv: Option<&[String]>,
-    cwd_pid: Option<u32>,
+    cwd_pid: Option<Pid>,
 ) -> Option<String> {
     let argv = argv?;
     let runtime_name = normalized_agent_lookup_name(path_basename(runtime));
@@ -328,7 +329,7 @@ fn wrapped_agent_name_from_runtime_argv(
 }
 
 /// Inspect only a direct command word from shell `-c` input; do not parse shell grammar.
-fn shell_agent_name_from_runtime_argv(argv: &[String], cwd_pid: Option<u32>) -> Option<String> {
+fn shell_agent_name_from_runtime_argv(argv: &[String], cwd_pid: Option<Pid>) -> Option<String> {
     let mut args = argv.iter().skip(1);
     while let Some(arg) = args.next() {
         if arg == "--" {
@@ -362,7 +363,7 @@ fn shell_agent_name_from_runtime_argv(argv: &[String], cwd_pid: Option<u32>) -> 
     None
 }
 
-fn shell_command_agent_name(command: &str, cwd_pid: Option<u32>) -> Option<String> {
+fn shell_command_agent_name(command: &str, cwd_pid: Option<Pid>) -> Option<String> {
     let mut words = command.split_whitespace();
     let first = words.next()?;
     let executable = if first == "exec" {
@@ -379,7 +380,7 @@ fn script_arg_agent_name(
     eval_flags: &[&str],
     module_flags: &[&str],
     value_flags: &[&str],
-    cwd_pid: Option<u32>,
+    cwd_pid: Option<Pid>,
 ) -> Option<String> {
     let index = script_arg_index(argv, eval_flags, module_flags, value_flags)?;
     agent_name_from_path_token(argv.get(index)?, cwd_pid)
@@ -473,13 +474,13 @@ fn shell_option_takes_value(arg: &str) -> bool {
     matches!(arg, "-o" | "-O" | "+o" | "+O")
 }
 
-fn argv0_agent_name(argv: Option<&[String]>, cwd_pid: Option<u32>) -> Option<String> {
+fn argv0_agent_name(argv: Option<&[String]>, cwd_pid: Option<Pid>) -> Option<String> {
     agent_name_from_path_token(argv?.first()?, cwd_pid)
 }
 
 /// `cwd_pid` is the process the token came from; relative paths resolve
 /// against its working directory (see `resolved_agent_name_from_path_token`).
-fn agent_name_from_path_token(token: &str, cwd_pid: Option<u32>) -> Option<String> {
+fn agent_name_from_path_token(token: &str, cwd_pid: Option<Pid>) -> Option<String> {
     let trimmed = token.trim_matches(|c| matches!(c, '"' | '\''));
     if trimmed.is_empty() || trimmed.starts_with('-') {
         return None;
@@ -560,7 +561,7 @@ fn agent_name_from_known_package_path(path: &str) -> Option<String> {
     None
 }
 
-fn letta_entrypoint_index(argv: &[String], cwd_pid: Option<u32>) -> Option<usize> {
+fn letta_entrypoint_index(argv: &[String], cwd_pid: Option<Pid>) -> Option<usize> {
     let is_letta = |arg: &str| {
         agent_name_from_path_token(arg, cwd_pid).as_deref() == Some(agent_label(Agent::Letta))
     };
@@ -653,7 +654,7 @@ fn is_interactive_letta_process(process: &ForegroundProcess) -> bool {
 /// foreground-process probe (`identify_agent_in_job` and the `/proc` readers
 /// behind `foreground_job`), so async callers must run the probe off the
 /// runtime's worker threads, e.g. inside `tokio::task::spawn_blocking`.
-fn resolved_agent_name_from_path_token(token: &str, cwd_pid: Option<u32>) -> Option<String> {
+fn resolved_agent_name_from_path_token(token: &str, cwd_pid: Option<Pid>) -> Option<String> {
     let path = std::path::Path::new(token);
     if path.components().count() < 2 {
         return None;
@@ -742,6 +743,7 @@ pub fn detect_state(agent: Option<Agent>, screen_content: &str) -> AgentState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use shepr_platform::Pgid;
     use shepr_test_support::fixture::{self, Held, Step};
     use std::time::Duration;
 
@@ -761,10 +763,14 @@ mod tests {
 
     fn foreground_process(pid: u32, name: &str, argv: &[&str]) -> ForegroundProcess {
         ForegroundProcess {
-            pid,
+            pid: Pid::new(pid).expect("test process id"),
             name: name.to_string(),
             argv: Some(argv.iter().map(|arg| (*arg).to_string()).collect()),
         }
+    }
+
+    fn pgid(value: u32) -> Pgid {
+        Pgid::new(value).expect("test process group")
     }
 
     /// A path that does not exist yet, in a fresh scratch directory.
@@ -951,7 +957,7 @@ mod tests {
     #[test]
     fn identify_agent_in_job_prefers_wrapped_codex() {
         let job = ForegroundJob {
-            process_group_id: 123,
+            process_group_id: pgid(123),
             processes: vec![
                 foreground_process(1, "node", &["node", "/path/to/bin/codex"]),
                 foreground_process(2, "bash", &["bash"]),
@@ -974,7 +980,7 @@ mod tests {
             ],
         ] {
             let job = ForegroundJob {
-                process_group_id: 123,
+                process_group_id: pgid(123),
                 processes: vec![foreground_process(123, "MainThread", &argv)],
             };
 
@@ -998,7 +1004,7 @@ mod tests {
             ),
         ] {
             let job = ForegroundJob {
-                process_group_id: 123,
+                process_group_id: pgid(123),
                 processes: vec![foreground_process(123, name, &[executable, "--tui"])],
             };
 
@@ -1022,7 +1028,7 @@ mod tests {
             ),
         ] {
             let job = ForegroundJob {
-                process_group_id: 123,
+                process_group_id: pgid(123),
                 processes: vec![foreground_process(123, name, &argv)],
             };
 
@@ -1044,7 +1050,7 @@ mod tests {
             vec!["/path/to/other", "/path/to/cline"],
         ] {
             let job = ForegroundJob {
-                process_group_id: 123,
+                process_group_id: pgid(123),
                 processes: vec![foreground_process(123, "MainThread", &argv)],
             };
 
@@ -1071,7 +1077,7 @@ mod tests {
             ],
         ] {
             let job = ForegroundJob {
-                process_group_id: 123,
+                process_group_id: pgid(123),
                 processes: vec![foreground_process(123, "MainThread", &argv)],
             };
 
@@ -1099,7 +1105,7 @@ mod tests {
             let mut argv = vec!["node", "/home/user/project/node_modules/.bin/letta"];
             argv.extend(args);
             let job = ForegroundJob {
-                process_group_id: 123,
+                process_group_id: pgid(123),
                 processes: vec![foreground_process(123, "MainThread", &argv)],
             };
 
@@ -1107,7 +1113,7 @@ mod tests {
         }
 
         let unrelated = ForegroundJob {
-            process_group_id: 123,
+            process_group_id: pgid(123),
             processes: vec![foreground_process(
                 123,
                 "node",
@@ -1117,7 +1123,7 @@ mod tests {
         assert_eq!(identify_agent_in_job(&unrelated), None);
 
         let source_checkout = ForegroundJob {
-            process_group_id: 123,
+            process_group_id: pgid(123),
             processes: vec![foreground_process(
                 123,
                 "node",
@@ -1130,7 +1136,7 @@ mod tests {
     #[test]
     fn identify_agent_in_job_prefers_recognized_process_group_leader() {
         let job = ForegroundJob {
-            process_group_id: 42,
+            process_group_id: pgid(42),
             processes: vec![
                 foreground_process(42, "claude", &["claude"]),
                 foreground_process(43, "node", &["node", "/tmp/mcp/bin/codex"]),
@@ -1146,7 +1152,7 @@ mod tests {
     #[test]
     fn identify_agent_in_job_falls_back_when_process_group_leader_is_unrecognized() {
         let job = ForegroundJob {
-            process_group_id: 42,
+            process_group_id: pgid(42),
             processes: vec![
                 foreground_process(42, "bash", &["bash"]),
                 foreground_process(43, "node", &["node", "/tmp/mcp/bin/codex"]),
@@ -1162,7 +1168,7 @@ mod tests {
     #[test]
     fn identify_agent_in_job_prefers_an_agent_executable_over_a_wrapped_alias() {
         let job = ForegroundJob {
-            process_group_id: 42,
+            process_group_id: pgid(42),
             processes: vec![
                 foreground_process(42, "bash", &["bash"]),
                 foreground_process(43, "node", &["node", "/opt/mcp/bin/codex"]),
@@ -1179,7 +1185,7 @@ mod tests {
     #[test]
     fn identify_agent_in_job_detects_python_version_wrapped_script() {
         let job = ForegroundJob {
-            process_group_id: 123,
+            process_group_id: pgid(123),
             processes: vec![foreground_process(
                 123,
                 "python3.12",
@@ -1201,7 +1207,7 @@ mod tests {
     #[test]
     fn identify_agent_in_job_skips_python_hash_based_pyc_option_value() {
         let job = ForegroundJob {
-            process_group_id: 123,
+            process_group_id: pgid(123),
             processes: vec![foreground_process(
                 123,
                 "python3",
@@ -1218,7 +1224,7 @@ mod tests {
     #[test]
     fn identify_agent_in_job_detects_nix_wrapped_codex_from_argv0() {
         let job = ForegroundJob {
-            process_group_id: 123,
+            process_group_id: pgid(123),
             processes: vec![foreground_process(
                 1,
                 ".codex-wrapped",
@@ -1235,7 +1241,7 @@ mod tests {
     #[test]
     fn identify_agent_in_job_canonicalizes_nix_wrapped_aliases_from_argv0() {
         let job = ForegroundJob {
-            process_group_id: 123,
+            process_group_id: pgid(123),
             processes: vec![foreground_process(
                 1,
                 ".claude-code-wrapped",
@@ -1252,7 +1258,7 @@ mod tests {
     #[test]
     fn identify_agent_in_job_detects_shell_wrapped_pi() {
         let job = ForegroundJob {
-            process_group_id: 123,
+            process_group_id: pgid(123),
             processes: vec![foreground_process(
                 1,
                 "sh",
@@ -1276,7 +1282,7 @@ mod tests {
             ),
         ] {
             let job = ForegroundJob {
-                process_group_id: 123,
+                process_group_id: pgid(123),
                 processes: vec![foreground_process(123, runtime, &[runtime, script])],
             };
             assert_eq!(
@@ -1287,7 +1293,7 @@ mod tests {
         }
 
         let other_script = ForegroundJob {
-            process_group_id: 123,
+            process_group_id: pgid(123),
             processes: vec![foreground_process(
                 123,
                 "bun",
@@ -1303,7 +1309,7 @@ mod tests {
     #[test]
     fn identify_agent_in_job_detects_node_wrapped_pi_package_cli() {
         let job = ForegroundJob {
-            process_group_id: 123,
+            process_group_id: pgid(123),
             processes: vec![foreground_process(
                 123,
                 "node",
@@ -1323,7 +1329,7 @@ mod tests {
     #[test]
     fn identify_agent_in_job_detects_node_wrapped_pi_bundled_cli() {
         let job = ForegroundJob {
-            process_group_id: 123,
+            process_group_id: pgid(123),
             processes: vec![foreground_process(
                 123,
                 "node",
@@ -1343,7 +1349,7 @@ mod tests {
     #[test]
     fn identify_agent_in_job_detects_node_wrapped_mastracode_package_cli() {
         let job = ForegroundJob {
-            process_group_id: 123,
+            process_group_id: pgid(123),
             processes: vec![foreground_process(
                 123,
                 "node",
@@ -1360,7 +1366,7 @@ mod tests {
     #[test]
     fn identify_agent_in_job_detects_node_wrapped_kimi_package_cli() {
         let job = ForegroundJob {
-            process_group_id: 123,
+            process_group_id: pgid(123),
             processes: vec![foreground_process(
                 123,
                 "node",
@@ -1390,7 +1396,7 @@ mod tests {
             "/workspace/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js/other.js",
         ] {
             let job = ForegroundJob {
-                process_group_id: 123,
+                process_group_id: pgid(123),
                 processes: vec![foreground_process(123, "node", &["node", script])],
             };
 
@@ -1401,7 +1407,7 @@ mod tests {
     #[test]
     fn identify_agent_in_job_detects_opencode2_as_opencode() {
         let job = ForegroundJob {
-            process_group_id: 123,
+            process_group_id: pgid(123),
             processes: vec![foreground_process(
                 123,
                 "opencode2",
@@ -1418,7 +1424,7 @@ mod tests {
     #[test]
     fn identify_agent_in_job_detects_opencode_exe_from_pnpm_package() {
         let job = ForegroundJob {
-            process_group_id: 123,
+            process_group_id: pgid(123),
             processes: vec![foreground_process(
                 123,
                 "opencode.exe",
@@ -1435,7 +1441,7 @@ mod tests {
     #[test]
     fn identify_agent_in_job_detects_opencode_exe_from_argv0_path() {
         let job = ForegroundJob {
-            process_group_id: 123,
+            process_group_id: pgid(123),
             processes: vec![foreground_process(
                 123,
                 "MainThread",
@@ -1464,7 +1470,7 @@ mod tests {
     #[test]
     fn identify_agent_in_job_ignores_python_c_argument_named_codex() {
         let job = ForegroundJob {
-            process_group_id: 123,
+            process_group_id: pgid(123),
             processes: vec![foreground_process(
                 1,
                 "python3",
@@ -1478,7 +1484,7 @@ mod tests {
     #[test]
     fn identify_agent_in_job_ignores_node_eval_argument_named_codex() {
         let job = ForegroundJob {
-            process_group_id: 123,
+            process_group_id: pgid(123),
             processes: vec![foreground_process(
                 1,
                 "node",
@@ -1492,7 +1498,7 @@ mod tests {
     #[test]
     fn identify_agent_in_job_ignores_shell_c_argument_named_codex() {
         let job = ForegroundJob {
-            process_group_id: 123,
+            process_group_id: pgid(123),
             processes: vec![foreground_process(
                 1,
                 "bash",
@@ -1512,7 +1518,7 @@ mod tests {
             &["xonsh", "-c", "exec codex"][..],
         ] {
             let job = ForegroundJob {
-                process_group_id: 123,
+                process_group_id: pgid(123),
                 processes: vec![foreground_process(1, argv[0], argv)],
             };
 
@@ -1527,7 +1533,7 @@ mod tests {
     #[test]
     fn identify_agent_in_job_detects_python_script_named_codex() {
         let job = ForegroundJob {
-            process_group_id: 123,
+            process_group_id: pgid(123),
             processes: vec![foreground_process(
                 1,
                 "python3",
@@ -1556,8 +1562,9 @@ mod tests {
             .current_dir(&dir)
             .spawn()
             .expect("the fixture should spawn");
-        let resolved_via_target = agent_name_from_path_token("bin/agent", Some(child.id()));
-        let resolved_via_dot = agent_name_from_path_token("./bin/agent", Some(child.id()));
+        let child_pid = Pid::new(child.id()).expect("test child pid");
+        let resolved_via_target = agent_name_from_path_token("bin/agent", Some(child_pid));
+        let resolved_via_dot = agent_name_from_path_token("./bin/agent", Some(child_pid));
         child.kill().expect("kill the stand-in process");
         child.wait().expect("reap the stand-in process");
 
@@ -1590,7 +1597,7 @@ mod tests {
 
         let argv0 = link.to_string_lossy().into_owned();
         let job = ForegroundJob {
-            process_group_id: 42,
+            process_group_id: pgid(42),
             processes: vec![foreground_process(
                 42,
                 "MainThread",
@@ -1634,7 +1641,7 @@ mod tests {
             Box::new(drop),
         )
         .expect("failed to spawn");
-        let pid = spawned.child.id();
+        let pid = spawned.child.process_id();
 
         // Give the process a moment to become the foreground group
         std::thread::sleep(std::time::Duration::from_millis(50));
@@ -1688,7 +1695,7 @@ mod tests {
             Box::new(drop),
         )
         .expect("failed to spawn");
-        let pid = spawned.child.id();
+        let pid = spawned.child.process_id();
 
         // Write a command to the shell
         let mut writer = std::fs::File::from(spawned.master_fd.try_clone().expect("clone master"));
@@ -1745,13 +1752,14 @@ mod tests {
             Box::new(drop),
         )
         .expect("failed to spawn");
-        let pid = spawned.child.id();
+        let child_pid = spawned.child.process_id();
         std::thread::sleep(std::time::Duration::from_millis(100));
 
-        let job = foreground_job(pid);
-        let process_group_id = job.as_ref().map_or(pid, |job| job.process_group_id);
-        let process_group_id =
-            i32::try_from(process_group_id).expect("test process group fits pid_t");
+        let job = foreground_job(child_pid);
+        let process_group_id = job
+            .as_ref()
+            .map_or(Pgid::led_by(child_pid), |job| job.process_group_id)
+            .as_pid_t();
         // SAFETY: the process group belongs to this test's PTY child; a negative PID
         // targets that group and the value was checked before conversion.
         unsafe {

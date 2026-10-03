@@ -13,7 +13,7 @@ impl ClientShellState {
             .workspaces
             .iter()
             .find(|hit| {
-                hit.endpoint_id == self.active_endpoint_id
+                hit.endpoint_id == *self.endpoints.presented()
                     && crate::shell::input::hit_test::contains(hit.rect, point)
             })
             .map(|hit| hit.workspace_id.clone())
@@ -23,7 +23,7 @@ impl ClientShellState {
         &self,
         press: &ClientWorkspacePress,
     ) -> bool {
-        press.endpoint_id == self.active_endpoint_id
+        press.endpoint_id == *self.endpoints.presented()
             && self.snapshot.as_deref().is_some_and(|snapshot| {
                 snapshot
                     .workspaces
@@ -64,14 +64,14 @@ impl ClientShellState {
                 self.collapsed_endpoints.insert(endpoint_id.clone());
             }
             outcome.repaint = true;
-        } else if endpoint_id == self.active_endpoint_id {
+        } else if endpoint_id == *self.endpoints.presented() {
             if !self.collapsed_endpoints.remove(&endpoint_id) {
                 self.collapsed_endpoints.insert(endpoint_id.clone());
             }
             // Selecting the shown endpoint cancels a move in progress.
             self.activate_endpoint(endpoint_id, outcome);
             outcome.repaint = true;
-        } else if endpoint_id.is_local() || self.endpoint_is_online(&endpoint_id) {
+        } else if self.endpoint_can_select(&endpoint_id) {
             outcome.actions.push(ClientShellAction::ActivateEndpoint {
                 endpoint_id,
                 target: None,
@@ -131,7 +131,7 @@ impl ClientShellState {
                 .as_deref()
                 .and_then(|snapshot| snapshot.focused_workspace_id.as_ref());
             let current = workspaces.iter().position(|target| {
-                target.endpoint_id == self.active_endpoint_id
+                target.endpoint_id == *self.endpoints.presented()
                     && Some(&target.workspace_id) == focused
             });
             let delta = if action == KeybindAction::PreviousWorkspace {
@@ -168,7 +168,7 @@ impl ClientShellState {
                 .and_then(|snapshot| snapshot.focused_pane_id.as_deref());
             let Some(next) = crate::shell::navigation::aggregate_navigation::agent_target_index(
                 agents,
-                &self.active_endpoint_id,
+                self.endpoints.presented(),
                 focused,
                 action,
             ) else {
@@ -181,7 +181,7 @@ impl ClientShellState {
                 ClientEndpointFocusTarget::Pane(target_pane_id.clone()),
                 outcome,
             ) {
-                if target_endpoint_id == self.active_endpoint_id {
+                if target_endpoint_id == *self.endpoints.presented() {
                     self.reveal_endpoint_agent(
                         &target_endpoint_id,
                         &target_pane_id,
@@ -204,9 +204,8 @@ impl ClientShellState {
     ) -> bool {
         self.pending_workspace_highlight = None;
         self.pending_agent_reveal = None;
-        let online = self.endpoint_is_online(&endpoint_id);
-        if !online && !endpoint_id.is_local() {
-            if endpoint_id != self.active_endpoint_id {
+        if !self.endpoint_can_select(&endpoint_id) {
+            if endpoint_id != *self.endpoints.presented() {
                 let label = endpoint_id.display_label().to_owned();
                 self.receive_endpoint_unavailable(format!("{label} is not ready"));
                 outcome.repaint = true;
@@ -228,8 +227,7 @@ impl ClientShellState {
     ) -> bool {
         self.pending_workspace_highlight = None;
         self.pending_agent_reveal = None;
-        let online = self.endpoint_is_online(&endpoint_id);
-        if !online && !endpoint_id.is_local() {
+        if !self.endpoint_can_select(&endpoint_id) {
             let label = endpoint_id.display_label().to_owned();
             self.receive_endpoint_unavailable(format!("{label} is not ready"));
             outcome.repaint = true;

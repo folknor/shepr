@@ -368,13 +368,18 @@ fn hex_value(byte: u8) -> Option<u8> {
     }
 }
 
-fn foreground_job_is_shell(job: &shepr_agent::detect::ForegroundJob, shell_pid: u32) -> bool {
+fn foreground_job_is_shell(
+    job: &shepr_agent::detect::ForegroundJob,
+    shell_pid: shepr_platform::Pid,
+) -> bool {
     job.processes.iter().any(|process| process.pid == shell_pid)
 }
 
 /// The process group of the foreground program when it is not the shell.
 /// Scans `/proc`: never call it with the terminal lock held.
-pub(super) fn current_transient_default_color_owner(shell_pid: u32) -> Option<u32> {
+pub(super) fn current_transient_default_color_owner(
+    shell_pid: shepr_platform::Pid,
+) -> Option<shepr_platform::Pgid> {
     let job = shepr_agent::detect::foreground_job(shell_pid)?;
     (!foreground_job_is_shell(&job, shell_pid)).then_some(job.process_group_id)
 }
@@ -393,8 +398,8 @@ pub(super) fn should_restore_host_terminal_theme(
         return false;
     };
 
-    shepr_platform::Pgid::new(foreground_job.process_group_id) != Some(owner_pgid)
-        && foreground_job_is_shell(foreground_job, shell_pid.get())
+    foreground_job.process_group_id != owner_pgid
+        && foreground_job_is_shell(foreground_job, shell_pid)
 }
 
 /// Once the program that overrode the default colours has left the
@@ -404,7 +409,7 @@ pub(super) fn should_restore_host_terminal_theme(
 pub(super) fn restore_host_terminal_theme_if_needed(
     core: &mut PaneTerminalCore,
     pane_id: PaneId,
-    shell_pid: u32,
+    shell_pid: shepr_platform::Pid,
     alternate_screen: bool,
     foreground_job: Option<&shepr_agent::detect::ForegroundJob>,
 ) -> bool {
@@ -414,18 +419,8 @@ pub(super) fn restore_host_terminal_theme_if_needed(
     if core.host_terminal_theme.is_empty() {
         return false;
     }
-    let (Some(owner_group), Some(shell_process)) = (
-        shepr_platform::Pgid::new(owner_pgid),
-        shepr_platform::Pid::new(shell_pid),
-    ) else {
-        return false;
-    };
-    if !should_restore_host_terminal_theme(
-        owner_group,
-        shell_process,
-        alternate_screen,
-        foreground_job,
-    ) {
+    if !should_restore_host_terminal_theme(owner_pgid, shell_pid, alternate_screen, foreground_job)
+    {
         return false;
     }
 
@@ -433,7 +428,8 @@ pub(super) fn restore_host_terminal_theme_if_needed(
     core.terminal.reset_default_color_overrides();
     info!(
         pane = pane_id.raw(),
-        owner_pgid, "restored host terminal default colors after transient override"
+        owner_pgid = owner_pgid.get(),
+        "restored host terminal default colors after transient override"
     );
     true
 }
@@ -500,9 +496,11 @@ mod tests {
 
     fn shell_job(shell_pid: u32) -> shepr_agent::detect::ForegroundJob {
         shepr_agent::detect::ForegroundJob {
-            process_group_id: shell_pid,
+            process_group_id: shepr_platform::Pgid::led_by(
+                shepr_platform::Pid::new(shell_pid).expect("test shell pid"),
+            ),
             processes: vec![shepr_agent::detect::ForegroundProcess {
-                pid: shell_pid,
+                pid: shepr_platform::Pid::new(shell_pid).expect("test shell pid"),
                 name: "zsh".to_string(),
                 argv: Some(vec!["zsh".to_string()]),
             }],
@@ -949,9 +947,9 @@ mod tests {
             shepr_platform::Pid::new(7).expect("shell pid"),
             false,
             Some(&shepr_agent::detect::ForegroundJob {
-                process_group_id: 42,
+                process_group_id: shepr_platform::Pgid::new(42).expect("test group"),
                 processes: vec![shepr_agent::detect::ForegroundProcess {
-                    pid: 42,
+                    pid: shepr_platform::Pid::new(42).expect("test pid"),
                     name: "droid".to_string(),
                     argv: Some(vec!["droid".to_string()]),
                 }],
@@ -977,7 +975,7 @@ mod tests {
         let terminal = shepr_vt::Terminal::new(80, 24, 0);
         let pane = super::super::PaneTerminal::new(terminal);
         let pane_id = shepr_test_fixtures::fixed_pane_id(1);
-        let shell_pid = 7;
+        let shell_pid = shepr_platform::Pid::new(7).expect("test shell pid");
         let host_theme = shepr_termio::host_term::theme::TerminalTheme {
             foreground: Some(shepr_termio::host_term::theme::RgbColor {
                 r: 0xaa,
@@ -995,7 +993,8 @@ mod tests {
         pane.apply_host_terminal_theme(host_theme);
         {
             let mut core = shepr_vt::lock_terminal_core(&pane.core).expect("test precondition");
-            core.transient_default_color_owner_pgid = Some(42);
+            core.transient_default_color_owner_pgid =
+                Some(shepr_platform::Pgid::new(42).expect("test group"));
             core.terminal
                 .write(b"\x1b]10;rgb:01/02/03\x1b\\\x1b]11;rgb:dd/ee/ff\x1b\\");
         }
@@ -1018,7 +1017,7 @@ mod tests {
                 pane_id,
                 shell_pid,
                 false,
-                Some(&shell_job(shell_pid)),
+                Some(&shell_job(shell_pid.get())),
             ));
             core.terminal.write(b"1mX");
             assert_eq!(

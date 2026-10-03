@@ -27,13 +27,13 @@ use tracing::{debug, info, warn};
 
 use crate::app;
 use crate::limits::SERVER_EVENT_CHANNEL_CAPACITY;
-use crate::server::client_shell::render_pane_surface as render_client_shell_pane_surface;
 use crate::server::client_transport::ServerEvent;
 use crate::server::clients::{
     ClientConnection, ClientDeparture, ClientRegistry, ClientShellState, render_targets,
 };
 use crate::server::outbox::{ClientOutbox, Delivery, ReleaseMode, ReplyTicket};
 use crate::server::pane_input::apply_client_pane_input_events;
+use crate::server::pane_surface::render_pane_surface as render_client_shell_pane_surface;
 use crate::server::render_stream::ViewEpoch;
 use shepr_mux::events::AppEvent;
 use shepr_protocol::{FrameData, ServerMessage};
@@ -1206,7 +1206,7 @@ impl HeadlessServer {
                     self.remove_client(client_id);
                     return;
                 };
-                let seed_snapshot = crate::server::client_shell::snapshot_from_session(
+                let seed_snapshot = Self::snapshot_from_session(
                     &self.app,
                     &session_cache.session,
                     &self.client_shell_boot_id,
@@ -1336,9 +1336,7 @@ impl HeadlessServer {
                 // of it through `sync_pane_focus` once the event is applied.
                 client.shell_state_mut().outer_terminal_focus = Some(focused);
                 if focused {
-                    if self.promote_client_to_foreground(client_id) {
-                        self.mark_view_changed();
-                    }
+                    self.promote_client_to_foreground(client_id);
                     if self.claim_shell_workspace_geometry(client_id, false) {
                         self.mark_view_changed();
                     }
@@ -1423,11 +1421,12 @@ impl HeadlessServer {
                 if let Some(client) = self.clients.get_mut(&client_id) {
                     client.track_shell_input(&pane_id, &events);
                 }
-                let foreground_changed =
-                    interaction && self.promote_client_to_foreground(client_id);
+                if interaction {
+                    self.promote_client_to_foreground(client_id);
+                }
                 let geometry_changed =
                     interaction && self.claim_shell_workspace_geometry(client_id, false);
-                if foreground_changed | geometry_changed {
+                if geometry_changed {
                     self.mark_view_changed();
                 }
                 let Some(runtime) = self.app.state.runtime_for_pane_in_workspace(

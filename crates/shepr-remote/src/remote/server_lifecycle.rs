@@ -6,8 +6,8 @@ use std::io;
 pub(super) enum RemoteServerStatus {
     Running {
         version: Option<String>,
-        build_id: Option<String>,
-        boot_id: Option<String>,
+        build_id: Option<shepr_protocol::BuildIdentity>,
+        boot_id: Option<shepr_protocol::BootId>,
     },
     NotRunning,
 }
@@ -32,9 +32,9 @@ pub struct DifferentBuildServer {
     /// server), through which the stop runs.
     pub executable: RemoteExecutable,
     /// The running server's build id, printable.
-    pub build_id: String,
+    pub build_id: shepr_protocol::BuildIdentity,
     /// The running server's boot identity, which the conditional stop names.
-    pub boot_id: String,
+    pub boot_id: shepr_protocol::BootId,
 }
 
 /// Judges a remote server's state against this build, before a bridge starts and
@@ -60,20 +60,11 @@ pub(super) fn judge_remote_server(
     else {
         return Ok(MachineSshCheck::Ready);
     };
-    if build_id
-        .as_deref()
-        .is_some_and(shepr_protocol::is_this_build)
-    {
+    if build_id.is_some_and(shepr_protocol::BuildIdentity::is_this_build) {
         return Ok(MachineSshCheck::Ready);
     }
-    let build = printable_remote_token(build_id.as_deref());
-    // The conditional stop runs the remote `server stop --expect-boot`, whose
-    // parser takes only a canonical boot id, so a boot identity in any other
-    // form is refused here rather than after the operator consented to a restart.
-    let boot = boot_id
-        .as_deref()
-        .filter(|boot| boot.parse::<shepr_protocol::BootId>().is_ok())
-        .map(str::to_owned);
+    let build = *build_id;
+    let boot = boot_id.clone();
     if let (Some(build_id), Some(boot_id)) = (build, boot) {
         return Ok(MachineSshCheck::DifferentBuild(DifferentBuildServer {
             executable: executable.clone(),
@@ -84,7 +75,7 @@ pub(super) fn judge_remote_server(
     Err(remote_server_compatibility_error(
         target,
         version.as_deref(),
-        build_id.as_deref(),
+        build_id.map(|identity| identity.to_string()).as_deref(),
     ))
 }
 
@@ -111,7 +102,7 @@ pub(super) fn remote_server_status(
 /// install. A server that listens but does not answer fails the check: the
 /// bridge could neither use nor replace it.
 pub(super) fn parse_remote_server_status_json(status: &str) -> io::Result<RemoteServerStatus> {
-    use shepr_api::schema::ServerPresenceJson;
+    use shepr_api::schema::ServerStatus;
     let parsed: shepr_api::schema::ServerStatusJson =
         serde_json::from_str(status).map_err(|err| {
             io::Error::new(
@@ -121,19 +112,17 @@ pub(super) fn parse_remote_server_status_json(status: &str) -> io::Result<Remote
                 )),
             )
         })?;
-    match parsed.presence {
-        ServerPresenceJson::Gone | ServerPresenceJson::Stopping => {
-            Ok(RemoteServerStatus::NotRunning)
-        }
-        ServerPresenceJson::Starting | ServerPresenceJson::Running => {
+    match parsed.state {
+        ServerStatus::Gone | ServerStatus::Stopping(_) => Ok(RemoteServerStatus::NotRunning),
+        ServerStatus::Starting(identity) | ServerStatus::Running(identity) => {
             Ok(RemoteServerStatus::Running {
-                version: parsed.version,
-                build_id: parsed.build_id,
-                boot_id: parsed.boot_id,
+                version: Some(identity.version),
+                build_id: Some(identity.build_id),
+                boot_id: Some(identity.boot_id),
             })
         }
         // Not a link failure kind: SSH answered, the remote server did not.
-        ServerPresenceJson::Unresponsive => Err(io::Error::other(format!(
+        ServerStatus::Unresponsive => Err(io::Error::other(format!(
             "the remote shepr server at {} is not answering status requests",
             remote_display_value(Some(&parsed.socket))
         ))),
@@ -165,17 +154,6 @@ pub(super) fn remote_display_value(value: Option<&str>) -> crate::RemoteText {
     crate::RemoteText::from_untrusted(value)
 }
 
-/// A remote-reported identifier such as a build id: a non-empty run of
-/// printable ASCII with no spaces, or `None`. It is safe to show and to hand back
-/// to the remote as one argument.
-/// Keep this distinct from `RemoteText`, which allows whitespace for readable
-/// diagnostics and does not promise that a value is one safe argument.
-pub(super) fn printable_remote_token(value: Option<&str>) -> Option<String> {
-    value
-        .filter(|value| !value.is_empty() && value.chars().all(|ch| ch.is_ascii_graphic()))
-        .map(str::to_owned)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -187,8 +165,8 @@ mod tests {
     ) -> RemoteServerStatus {
         RemoteServerStatus::Running {
             version,
-            build_id: build_id.map(str::to_owned),
-            boot_id: boot_id.map(str::to_owned),
+            build_id: build_id.and_then(|id| id.parse().ok()),
+            boot_id: boot_id.and_then(|id| id.parse().ok()),
         }
     }
 
@@ -237,8 +215,8 @@ mod tests {
             judge(&stale).expect("restartable"),
             MachineSshCheck::DifferentBuild(DifferentBuildServer {
                 executable: executable(),
-                build_id: other_build().into(),
-                boot_id: "17-23".into(),
+                build_id: other_build().parse().expect("build identity"),
+                boot_id: "17-23".parse().expect("boot identity"),
             })
         );
     }

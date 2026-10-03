@@ -1,10 +1,11 @@
 use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 
 use tracing::{error, warn};
 
 use crate::pane::PaneRuntime;
 use crate::pane::PaneState;
-use crate::terminal::{RestoreFailure, TerminalState};
+use crate::terminal::{PaneStartFailure, TerminalState};
 use crate::workspace::Workspace;
 use shepr_agent::detect::AgentState;
 use shepr_core::layout::{Direction, Node, PaneId, TileLayout};
@@ -58,7 +59,9 @@ struct RestoredLaunch {
     public_id: shepr_protocol::PublicPaneId,
     terminal_id: TerminalId,
     geometry: shepr_core::geometry::PaneGeometry,
-    saved: super::snapshot::PaneSnapshot,
+    saved_cwd: PathBuf,
+    saved_label: Option<String>,
+    saved_agent_session: Option<PaneAgentSessionSnapshot>,
     initial_history: Option<String>,
 }
 
@@ -70,7 +73,7 @@ impl SessionRestorePlan {
                 pane_id: launch.pane_id,
                 public_id: launch.public_id.clone(),
                 geometry: launch.geometry,
-                cwd: &launch.saved.cwd,
+                cwd: &launch.saved_cwd,
                 kind: crate::pane::LaunchKind::Restored,
                 initial_history: launch.initial_history.as_deref(),
                 presentation: crate::pane::LaunchPresentation::Saved(self.theme),
@@ -93,9 +96,11 @@ impl SessionRestorePlan {
                     // no launch here, so the resumed-session set needs no
                     // rollback.
                     let terminal = restored_terminal(
-                        &launch.saved,
+                        &launch.saved_cwd,
+                        launch.saved_label.as_deref(),
+                        launch.saved_agent_session.as_ref(),
                         launch.terminal_id.clone(),
-                        RestoredPaneStart::Unavailable(RestoreFailure::shell_start_failed(&err)),
+                        RestoredPaneStart::Unavailable(PaneStartFailure::shell_start_failed(&err)),
                         self.now,
                     );
                     self.terminals.insert(launch.terminal_id, terminal);
@@ -108,8 +113,7 @@ impl SessionRestorePlan {
             terminal_runtimes,
             active: self.active,
             history_carry: self.history_carry,
-            restore_damage: self.restore_damage,
-            dropped_workspaces: self.dropped_workspaces,
+            restore_loss: RestoreLoss::from_damage(self.dropped_workspaces, self.restore_damage),
         }
     }
 }
@@ -130,16 +134,60 @@ pub struct RestoredSession {
     /// session's persister takes it; every later history capture of this
     /// session is resolved against it.
     pub history_carry: HistoryCarry,
-    /// Restore discarded pane data or layout leaves, or replaced a malformed
-    /// or repeated workspace ID. This is separate from `dropped_workspaces`:
-    /// the caller must also preserve the source file when a workspace only
-    /// partly came back.
-    pub restore_damage: bool,
-    /// Saved workspaces restore dropped (invalid layout, or no pane
-    /// survived). The first save of this session overwrites the file those
-    /// workspaces are still in, so a nonzero count tells the caller to back
-    /// the file up first.
-    pub dropped_workspaces: usize,
+    /// What saved data restore discarded, if anything. The caller preserves
+    /// the source session file whenever this value is present.
+    pub restore_loss: Option<RestoreLoss>,
+}
+
+/// Saved workspace and pane data discarded while restoring a parsed session.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RestoreLoss {
+    /// Saved workspaces were dropped; some surviving workspaces may also have lost panes.
+    Workspaces {
+        dropped: std::num::NonZeroUsize,
+        panes_pruned: bool,
+    },
+    /// No workspace was dropped, but pane or layout data was pruned.
+    Panes,
+}
+
+impl RestoreLoss {
+    fn from_damage(dropped_workspaces: usize, panes_pruned: bool) -> Option<Self> {
+        match std::num::NonZeroUsize::new(dropped_workspaces) {
+            Some(dropped) => Some(Self::Workspaces {
+                dropped,
+                panes_pruned,
+            }),
+            None => panes_pruned.then_some(Self::Panes),
+        }
+    }
+
+    pub fn dropped_workspaces(self) -> usize {
+        match self {
+            Self::Workspaces { dropped, .. } => dropped.get(),
+            Self::Panes => 0,
+        }
+    }
+
+    pub fn panes_pruned(self) -> bool {
+        match self {
+            Self::Workspaces { panes_pruned, .. } => panes_pruned,
+            Self::Panes => true,
+        }
+    }
+
+    pub fn into_notice_loss(self) -> shepr_protocol::SessionRestoreLoss {
+        match self {
+            Self::Workspaces {
+                dropped,
+                panes_pruned,
+            } => shepr_protocol::SessionRestoreLoss::Workspaces {
+                dropped,
+                panes_pruned,
+            },
+            Self::Panes => shepr_protocol::SessionRestoreLoss::Panes,
+        }
+    }
 }
 
 /// How a restored pane comes back. Every saved field is carried forward the
@@ -155,7 +203,7 @@ enum RestoredPaneStart {
     PendingResume(shepr_agent::agent::resume::AgentResumePlan),
     /// Nothing could be started (the reason is shown in the pane). The pane
     /// keeps its saved state verbatim so the next start can try again.
-    Unavailable(RestoreFailure),
+    Unavailable(PaneStartFailure),
 }
 
 type RestoredWorkspace = (Workspace, Vec<TerminalState>, Vec<RestoredLaunch>);
@@ -305,14 +353,16 @@ fn restored_workspace_id(
 /// - agent session: always kept, except by a running duplicate whose session
 ///   an earlier pane of this restore resumes.
 fn restored_terminal(
-    pane: &super::snapshot::PaneSnapshot,
+    cwd: &Path,
+    label: Option<&str>,
+    agent_session: Option<&PaneAgentSessionSnapshot>,
     terminal_id: TerminalId,
     start: RestoredPaneStart,
     now: std::time::Instant,
 ) -> TerminalState {
-    let mut terminal = TerminalState::new(terminal_id, pane.cwd.clone());
-    if let Some(label) = pane.label.clone() {
-        terminal.set_manual_label(label);
+    let mut terminal = TerminalState::new(terminal_id, cwd.to_path_buf());
+    if let Some(label) = label {
+        terminal.set_manual_label(label.to_owned());
     }
     let duplicate_agent_session = matches!(
         start,
@@ -320,9 +370,7 @@ fn restored_terminal(
             duplicate_agent_session: true
         }
     );
-    if let Some(session) =
-        restored_terminal_agent_session(pane.agent_session.as_ref(), duplicate_agent_session)
-    {
+    if let Some(session) = restored_terminal_agent_session(agent_session, duplicate_agent_session) {
         terminal
             .ownership_mut()
             .set_persisted_agent_session(session);
@@ -354,7 +402,7 @@ fn restored_terminal(
         }
         RestoredPaneStart::Unavailable(reason) => {
             warn!(
-                cwd = %pane.cwd.display(),
+                cwd = %cwd.display(),
                 reason = ?reason,
                 "preserving unavailable restored pane"
             );
@@ -412,8 +460,8 @@ fn plan_workspace(original: &WorkspaceSnapshot) -> Option<WorkspaceRestorePlan> 
     // like every other below, rather than refusing the whole session (which
     // would lose every healthy workspace for one bad value) or repairing it
     // (which silently rewrites a corrupt file). The workspace is not lost on
-    // disk: a nonzero `RestoredSession::dropped_workspaces` makes the first
-    // save back the original file up before overwriting it.
+    // disk: the workspace-drop case in `RestoredSession::restore_loss` makes
+    // the first save back the original file up before overwriting it.
     // Pane IDs are allocated here, before any shell starts; a workspace
     // dropped later only leaves gaps in the ID space.
     let (node, id_map) = match restore_node_remapped(&snap.layout) {
@@ -613,7 +661,9 @@ fn restore_workspace(
         };
         if let Some(plan) = restore_plan {
             let terminal = restored_terminal(
-                saved_pane,
+                &saved_pane.cwd,
+                saved_pane.label.as_deref(),
+                saved_pane.agent_session.as_ref(),
                 TerminalId::alloc(),
                 RestoredPaneStart::PendingResume(plan),
                 plan_context.now,
@@ -642,7 +692,9 @@ fn restore_workspace(
         // deferred branch above, so this shell has no agent until detection
         // or a hook reports one.
         let terminal = restored_terminal(
-            saved_pane,
+            &saved_pane.cwd,
+            saved_pane.label.as_deref(),
+            saved_pane.agent_session.as_ref(),
             TerminalId::alloc(),
             RestoredPaneStart::Running {
                 duplicate_agent_session,
@@ -661,7 +713,9 @@ fn restore_workspace(
             public_id: pane_id,
             terminal_id: terminal.id.clone(),
             geometry: crate::workspace::spawn_geometry(rows, cols, None),
-            saved: saved_pane.clone(),
+            saved_cwd: saved_pane.cwd.clone(),
+            saved_label: saved_pane.label.clone(),
+            saved_agent_session: saved_pane.agent_session.clone(),
             initial_history: initial_history_ansi.map(str::to_owned),
         });
         terminals.push(terminal);
@@ -952,7 +1006,7 @@ mod tests {
         assert_eq!(plan.terminals.len(), 1);
         assert_eq!(plan.launches.len(), 1);
         let launch = &plan.launches[0];
-        assert_eq!(launch.saved.cwd, cwd);
+        assert_eq!(launch.saved_cwd, cwd);
         assert_eq!(
             launch.geometry,
             crate::workspace::spawn_geometry(12, 40, None)
@@ -1434,7 +1488,13 @@ mod tests {
 
         let restored = restore_runtimeless(&snapshot);
 
-        assert_eq!(restored.dropped_workspaces, 2);
+        assert_eq!(
+            restored
+                .restore_loss
+                .expect("workspaces were dropped")
+                .dropped_workspaces(),
+            2
+        );
         assert_eq!(restored.workspaces.len(), 1);
         let workspace = &restored.workspaces[0];
         assert_eq!(workspace.custom_name.as_deref(), Some("healthy"));
@@ -1473,7 +1533,13 @@ mod tests {
 
         let restored = restore_runtimeless(&snapshot);
 
-        assert_eq!(restored.dropped_workspaces, 1);
+        assert_eq!(
+            restored
+                .restore_loss
+                .expect("a workspace was dropped")
+                .dropped_workspaces(),
+            1
+        );
         let names: Vec<_> = restored
             .workspaces
             .iter()
@@ -1505,7 +1571,13 @@ mod tests {
             .map(|ws| ws.custom_name.as_deref())
             .collect();
         assert_eq!(names, vec![Some("kept"), Some("active")]);
-        assert_eq!(restored.dropped_workspaces, 2);
+        assert_eq!(
+            restored
+                .restore_loss
+                .expect("workspaces were dropped")
+                .dropped_workspaces(),
+            2
+        );
         assert_eq!(restored.active, Some(1));
     }
 
@@ -1603,7 +1675,7 @@ mod tests {
             4,
             "an unusable saved ID is replaced, not dropped"
         );
-        assert!(restored.restore_damage);
+        assert!(restored.restore_loss.is_some());
         assert_eq!(ids[0], taken, "the first owner of a saved ID keeps it");
         assert_ne!(ids[1], taken, "a duplicate saved ID is replaced");
         assert_ne!(ids[3], "ws_1", "a non-canonical saved ID is replaced");
@@ -1940,7 +2012,7 @@ mod tests {
                     crate::pane::LaunchSettlement {
                         kind: crate::pane::LaunchKind::Restored,
                         outcome: crate::pane::LaunchOutcome::Failed(
-                            RestoreFailure::DirectoryUnavailable { ref path }
+                            PaneStartFailure::DirectoryUnavailable { ref path, .. }
                         ),
                     } if *path == missing
                 ));

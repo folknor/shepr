@@ -481,8 +481,8 @@ mod tests {
     fn server(boot_id: &str) -> DifferentBuildServer {
         DifferentBuildServer {
             executable: RemoteExecutable::parse("/usr/bin/shepr").expect("test precondition"),
-            build_id: "ffffffffffffffff".into(),
-            boot_id: boot_id.into(),
+            build_id: "ffffffffffffffff".parse().expect("build identity"),
+            boot_id: boot_id.parse().expect("boot identity"),
         }
     }
 
@@ -527,7 +527,7 @@ mod tests {
                 needs_authentication: needs_authentication.to_vec(),
                 failing_authentication: Vec::new(),
                 authenticated: Mutex::new(Vec::new()),
-                current_boot: Mutex::new("boot-1".into()),
+                current_boot: Mutex::new("17-1".into()),
                 ready_now: Mutex::new(false),
                 stops: Mutex::new(VecDeque::new()),
                 check_counts: Mutex::new(HashMap::new()),
@@ -719,7 +719,7 @@ mod tests {
         assert!(matches!(outcomes[1].check, MachineCheck::Ready));
         // What the first check could not see is found by the second.
         assert!(
-            matches!(&outcomes[2].check, MachineCheck::DifferentBuild(found) if found.boot_id == "boot-1")
+            matches!(&outcomes[2].check, MachineCheck::DifferentBuild(found) if found.boot_id == "17-1")
         );
     }
 
@@ -853,7 +853,7 @@ mod tests {
             ));
         }
         assert!(matches!(
-            classify_check(Ok(MachineSshCheck::DifferentBuild(server("boot-1")))),
+            classify_check(Ok(MachineSshCheck::DifferentBuild(server("17-1")))),
             MachineCheck::DifferentBuild(_)
         ));
     }
@@ -916,8 +916,8 @@ mod tests {
         let (outcomes, asked) = run_restarts(&machines, &ssh, true, &[RestartDecision::Restart]);
         // Only the machine running another build is asked, and the stop names
         // the boot that was observed.
-        assert_eq!(asked, ["stale boot-1"]);
-        assert_eq!(ssh.entries(), ["stop stale boot-1"]);
+        assert_eq!(asked, ["stale 17-1"]);
+        assert_eq!(ssh.entries(), ["stop stale 17-1"]);
         assert_eq!(outcomes[0].restart, None);
         assert_eq!(outcomes[1].restart, Some(RestartResult::Stopped));
         assert!(matches!(outcomes[1].check, MachineCheck::Ready));
@@ -928,7 +928,7 @@ mod tests {
         let machines = [machine("stale")];
         let ssh = FakeSsh::new(&[]);
         let (outcomes, asked) = run_restarts(&machines, &ssh, true, &[RestartDecision::Keep]);
-        assert_eq!(asked, ["stale boot-1"]);
+        assert_eq!(asked, ["stale 17-1"]);
         assert!(ssh.entries().is_empty(), "nothing was stopped");
         assert_eq!(outcomes[0].restart, Some(RestartResult::Declined));
         assert!(matches!(outcomes[0].check, MachineCheck::DifferentBuild(_)));
@@ -949,7 +949,7 @@ mod tests {
     fn a_changed_occupant_is_rediscovered_and_offered_again() {
         let machines = [machine("stale")];
         let ssh =
-            FakeSsh::new(&[]).with_stops([StopScript::ChangedTo("boot-2"), StopScript::Stopped]);
+            FakeSsh::new(&[]).with_stops([StopScript::ChangedTo("17-2"), StopScript::Stopped]);
         let (outcomes, asked) = run_restarts(
             &machines,
             &ssh,
@@ -958,26 +958,26 @@ mod tests {
         );
         // The second offer is for the instance the fresh check found, and the
         // second stop names that boot, not the first.
-        assert_eq!(asked, ["stale boot-1", "stale boot-2"]);
-        assert_eq!(ssh.entries(), ["stop stale boot-1", "stop stale boot-2"]);
+        assert_eq!(asked, ["stale 17-1", "stale 17-2"]);
+        assert_eq!(ssh.entries(), ["stop stale 17-1", "stop stale 17-2"]);
         assert_eq!(outcomes[0].restart, Some(RestartResult::Stopped));
     }
 
     #[test]
     fn a_new_occupant_can_be_declined() {
         let machines = [machine("stale")];
-        let ssh = FakeSsh::new(&[]).with_stops([StopScript::ChangedTo("boot-2")]);
+        let ssh = FakeSsh::new(&[]).with_stops([StopScript::ChangedTo("17-2")]);
         let (outcomes, asked) = run_restarts(
             &machines,
             &ssh,
             true,
             &[RestartDecision::Restart, RestartDecision::Keep],
         );
-        assert_eq!(asked, ["stale boot-1", "stale boot-2"]);
-        assert_eq!(ssh.entries(), ["stop stale boot-1"]);
+        assert_eq!(asked, ["stale 17-1", "stale 17-2"]);
+        assert_eq!(ssh.entries(), ["stop stale 17-1"]);
         assert_eq!(outcomes[0].restart, Some(RestartResult::Declined));
         assert!(
-            matches!(&outcomes[0].check, MachineCheck::DifferentBuild(now) if now.boot_id == "boot-2")
+            matches!(&outcomes[0].check, MachineCheck::DifferentBuild(now) if now.boot_id == "17-2")
         );
     }
 
@@ -986,7 +986,7 @@ mod tests {
         let machines = [machine("stale")];
         let ssh = FakeSsh::new(&[]).with_stops([StopScript::ChangedToReady]);
         let (outcomes, asked) = run_restarts(&machines, &ssh, true, &[RestartDecision::Restart]);
-        assert_eq!(asked, ["stale boot-1"]);
+        assert_eq!(asked, ["stale 17-1"]);
         assert_eq!(outcomes[0].restart, Some(RestartResult::OccupantChanged));
         assert!(matches!(outcomes[0].check, MachineCheck::Ready));
     }
@@ -996,8 +996,8 @@ mod tests {
         let machines = [machine("stale")];
         let ssh = FakeSsh::new(&[]).with_stops([StopScript::NoServer]);
         let (outcomes, asked) = run_restarts(&machines, &ssh, true, &[RestartDecision::Restart]);
-        assert_eq!(asked, ["stale boot-1"]);
-        assert_eq!(ssh.entries(), ["stop stale boot-1"]);
+        assert_eq!(asked, ["stale 17-1"]);
+        assert_eq!(ssh.entries(), ["stop stale 17-1"]);
         assert_eq!(outcomes[0].restart, Some(RestartResult::NoServer));
         assert!(matches!(outcomes[0].check, MachineCheck::Ready));
     }
@@ -1005,10 +1005,8 @@ mod tests {
     #[test]
     fn a_machine_that_keeps_changing_is_offered_only_a_bounded_number_of_times() {
         let machines = [machine("stale")];
-        let ssh = FakeSsh::new(&[]).with_stops([
-            StopScript::ChangedTo("boot-2"),
-            StopScript::ChangedTo("boot-3"),
-        ]);
+        let ssh = FakeSsh::new(&[])
+            .with_stops([StopScript::ChangedTo("17-2"), StopScript::ChangedTo("17-3")]);
         let (outcomes, asked) = run_restarts(
             &machines,
             &ssh,
@@ -1018,7 +1016,7 @@ mod tests {
         assert_eq!(asked.len(), MAX_RESTART_OFFERS);
         assert_eq!(outcomes[0].restart, Some(RestartResult::OccupantChanged));
         assert!(
-            matches!(&outcomes[0].check, MachineCheck::DifferentBuild(now) if now.boot_id == "boot-3")
+            matches!(&outcomes[0].check, MachineCheck::DifferentBuild(now) if now.boot_id == "17-3")
         );
     }
 
@@ -1040,8 +1038,8 @@ mod tests {
         let machines = [machine("authstale")];
         let ssh = FakeSsh::new(&["authstale"]).with_stops([StopScript::Stopped]);
         let (outcomes, asked) = run_restarts(&machines, &ssh, true, &[RestartDecision::Restart]);
-        assert_eq!(ssh.entries(), ["prompt authstale", "stop authstale boot-1"]);
-        assert_eq!(asked, ["authstale boot-1"]);
+        assert_eq!(ssh.entries(), ["prompt authstale", "stop authstale 17-1"]);
+        assert_eq!(asked, ["authstale 17-1"]);
         assert_eq!(outcomes[0].restart, Some(RestartResult::Stopped));
     }
 

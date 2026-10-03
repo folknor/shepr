@@ -446,7 +446,10 @@ mod tests {
         let msg = ClientShellSnapshot {
             boot_id: "1-1".into(),
             restore_notice: Some(SessionRestoreNotice {
-                loss: crate::SessionRestoreLoss::partial(2, true).ok_or("a partial loss")?,
+                loss: crate::SessionRestoreLoss::Workspaces {
+                    dropped: std::num::NonZeroUsize::new(2).ok_or("nonzero dropped count")?,
+                    panes_pruned: true,
+                },
                 backup_dir: "/state/session-backups".into(),
             }),
             session_saves_stopped: true,
@@ -1028,7 +1031,7 @@ mod tests {
         u32::try_from(len).expect("test precondition")
     }
 
-    // Clipboard is one variant-index byte followed by a varint item count.
+    // Clipboard is one variant-index byte followed by a varint byte count.
     // Data sizes just below a frame use a three-byte count; the two-frame case
     // uses four bytes and subtracts one extra byte below.
     const CLIPBOARD_ENVELOPE: usize = 4;

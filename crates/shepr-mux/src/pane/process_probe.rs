@@ -19,7 +19,7 @@ use super::terminal::PaneTerminal;
 use crate::UsableCwd;
 use crate::events::AppEvent;
 use shepr_agent::detect::{Agent, AgentState, Detection};
-use shepr_core::layout::PaneId;
+use shepr_platform::{Pgid, Pid};
 
 #[derive(Debug, Clone, Copy)]
 pub(super) struct StateChangedUpdate {
@@ -34,13 +34,13 @@ pub(super) struct StateChangedUpdate {
 
 pub(super) async fn publish_state_changed_event(
     state_events: crate::events::EventSender,
-    pane_id: PaneId,
     update: StateChangedUpdate,
 ) {
     // This runs on the async detector task, not the PTY reader thread.
     // Waiting for queue space here preserves correctness-critical state transitions
     // without blocking pane I/O. The application event exposes only the state
     // and blocker evidence it arbitrates; derive both from the same verdict.
+    let pane_id = state_events.pane_id();
     if let Err(e) = state_events
         .send(AppEvent::StateChanged {
             pane_id,
@@ -62,10 +62,10 @@ pub(super) async fn publish_state_changed_event(
 
 pub(super) async fn publish_agent_process_detected_event(
     state_events: crate::events::EventSender,
-    pane_id: PaneId,
     agent: Agent,
     observed_at: std::time::Instant,
 ) {
+    let pane_id = state_events.pane_id();
     if let Err(e) = state_events
         .send(AppEvent::AgentProcessDetected {
             pane_id,
@@ -97,7 +97,7 @@ pub(super) enum ProcessCwd {
 }
 
 impl ProcessCwd {
-    pub(super) fn read(pid: u32) -> Self {
+    pub(super) fn read(pid: Pid) -> Self {
         match shepr_agent::detect::process_cwd(pid) {
             Some(path) if crate::workspace::process_cwd_is_deleted(&path) => Self::Deleted,
             Some(path) if path.is_absolute() => Self::Live(path),
@@ -114,17 +114,17 @@ impl ProcessCwd {
 }
 
 /// Event-loop reads never stat: a hung mount must not stall other panes.
-pub(super) fn readlink_process_cwd(pid: u32) -> Option<std::path::PathBuf> {
+pub(super) fn readlink_process_cwd(pid: Pid) -> Option<std::path::PathBuf> {
     ProcessCwd::read(pid).live()
 }
 
 /// Only background save work checks directory usability.
-pub(super) fn usable_process_cwd(pid: u32) -> Option<UsableCwd> {
+pub(super) fn usable_process_cwd(pid: Pid) -> Option<UsableCwd> {
     readlink_process_cwd(pid).and_then(UsableCwd::new)
 }
 
 pub(super) fn foreground_member_cwd_different_from_shell(
-    shell_pid: u32,
+    shell_pid: Pid,
     shell_cwd: Option<&std::path::PathBuf>,
 ) -> Option<std::path::PathBuf> {
     let job = shepr_agent::detect::foreground_job(shell_pid)?;
@@ -200,8 +200,8 @@ pub(super) fn clear_osc_evidence_for_agent_transition(terminal: &PaneTerminal) {
 }
 
 pub(super) fn foreground_group_changed(
-    foreground_pgid: Option<u32>,
-    last_foreground_pgid: Option<u32>,
+    foreground_pgid: Option<Pgid>,
+    last_foreground_pgid: Option<Pgid>,
 ) -> bool {
     foreground_pgid != last_foreground_pgid
         && (foreground_pgid.is_some() || last_foreground_pgid.is_some())
@@ -210,9 +210,9 @@ pub(super) fn foreground_group_changed(
 // Only kernel-observed foreground groups drive change detection. Remembering an
 // inferred group would look like a change on every tick while the kernel stays silent.
 pub(super) fn process_group_for_change_tracking(
-    observed_foreground_pgid: Option<u32>,
-    probed_process_group_id: Option<u32>,
-) -> Option<u32> {
+    observed_foreground_pgid: Option<Pgid>,
+    probed_process_group_id: Option<Pgid>,
+) -> Option<Pgid> {
     observed_foreground_pgid?;
     probed_process_group_id.or(observed_foreground_pgid)
 }
@@ -220,7 +220,7 @@ pub(super) fn process_group_for_change_tracking(
 #[derive(Debug, Clone, Copy)]
 pub(super) struct ProcessProbeRequest {
     pub(super) now: std::time::Instant,
-    pub(super) observed_foreground_group: Option<u32>,
+    pub(super) observed_foreground_group: Option<Pgid>,
     pub(super) lifecycle_authority_active: bool,
 }
 
@@ -228,7 +228,7 @@ pub(super) struct ProcessProbeRequest {
 pub(super) struct ProcessProbeScheduleInput {
     now: std::time::Instant,
     agent: Option<Agent>,
-    observed_foreground_group: Option<u32>,
+    observed_foreground_group: Option<Pgid>,
     lifecycle_authority_active: bool,
     shell_clear_pending: bool,
 }
@@ -267,7 +267,7 @@ impl ProbeScheduleDecision {
 #[derive(Debug)]
 pub(super) struct ProcessProbeScheduler {
     last_check: std::time::Instant,
-    last_foreground_group: Option<u32>,
+    last_foreground_group: Option<Pgid>,
     has_probe: bool,
     acquisition_started_at: Option<std::time::Instant>,
     last_content_change_at: Option<std::time::Instant>,
@@ -291,7 +291,7 @@ impl ProcessProbeScheduler {
         self.last_content_change_at = None;
     }
 
-    pub(super) fn foreground_group_changed(&self, observed: Option<u32>) -> bool {
+    pub(super) fn foreground_group_changed(&self, observed: Option<Pgid>) -> bool {
         foreground_group_changed(observed, self.last_foreground_group)
     }
 
@@ -427,8 +427,8 @@ enum ProcessProbeIdentity {
 }
 
 impl ProcessProbeResult {
-    pub(super) fn process_group_id(&self) -> Option<u32> {
-        self.process_group_id.map(shepr_platform::Pgid::get)
+    pub(super) fn process_group_id(&self) -> Option<Pgid> {
+        self.process_group_id
     }
 
     pub(super) fn foreground_is_pane_shell(&self) -> bool {
@@ -481,8 +481,8 @@ pub(super) struct ScreenPublishContext {
 #[derive(Debug, Clone, Copy)]
 struct ProcessProbeCompletion {
     now: std::time::Instant,
-    observed_foreground_group: Option<u32>,
-    probed_process_group: Option<u32>,
+    observed_foreground_group: Option<Pgid>,
+    probed_process_group: Option<Pgid>,
     identified_agent: Option<Agent>,
     current_agent: Option<Agent>,
     foreground_group_changed: bool,
@@ -494,7 +494,7 @@ pub(super) struct AgentProcessChange {
     pub(super) previous_agent: Option<Agent>,
     pub(super) agent: Option<Agent>,
     pub(super) process_name: Option<String>,
-    pub(super) process_group_id: Option<u32>,
+    pub(super) process_group_id: Option<Pgid>,
     pub(super) agent_changed: bool,
     pub(super) should_clear_osc_evidence: bool,
     pub(super) process_detected: Option<Agent>,
@@ -513,7 +513,7 @@ pub(super) enum TickObservation {
 
 pub(super) struct DetectorObservations {
     pub(super) now: std::time::Instant,
-    pub(super) foreground_group: Option<u32>,
+    pub(super) foreground_group: Option<Pgid>,
     pub(super) content_seq: u64,
     pub(super) lifecycle_authority_active: bool,
     pub(super) theme_restore_candidate: bool,
@@ -831,7 +831,7 @@ impl DetectorState {
         &mut self,
         probe: &ProcessProbeResult,
         now: std::time::Instant,
-        observed_foreground_group: Option<u32>,
+        observed_foreground_group: Option<Pgid>,
         schedule: ProbeScheduleDecision,
     ) -> AgentProcessChange {
         let process_name = probe.process_name().map(str::to_owned);
@@ -1089,12 +1089,12 @@ impl DetectorState {
 
 fn process_probe_result(
     job: &shepr_agent::detect::ForegroundJob,
-    pid: u32,
+    pid: Pid,
     agent: Agent,
     process_name: String,
 ) -> ProcessProbeResult {
     ProcessProbeResult {
-        process_group_id: shepr_platform::Pgid::new(job.process_group_id),
+        process_group_id: Some(job.process_group_id),
         foreground_is_pane_shell: job.processes.iter().any(|process| process.pid == pid),
         suspended_agents: Vec::new(),
         identity: ProcessProbeIdentity::Agent {
@@ -1105,8 +1105,8 @@ fn process_probe_result(
 }
 
 pub(super) fn probe_foreground_process_from_jobs(
-    pid: u32,
-    foreground_pgid: Option<u32>,
+    pid: Pid,
+    foreground_pgid: Option<Pgid>,
     leader_job: Option<&shepr_agent::detect::ForegroundJob>,
     foreground_job: impl FnOnce() -> Option<shepr_agent::detect::ForegroundJob>,
 ) -> ProcessProbeResult {
@@ -1120,7 +1120,7 @@ pub(super) fn probe_foreground_process_from_jobs(
     if let Some(job) = foreground_job.as_ref() {
         let identified = shepr_agent::detect::identify_agent_in_job(job);
         return ProcessProbeResult {
-            process_group_id: shepr_platform::Pgid::new(job.process_group_id),
+            process_group_id: Some(job.process_group_id),
             foreground_is_pane_shell: job.processes.iter().any(|process| process.pid == pid),
             suspended_agents: Vec::new(),
             identity: identified.map_or(
@@ -1134,7 +1134,7 @@ pub(super) fn probe_foreground_process_from_jobs(
     }
 
     ProcessProbeResult {
-        process_group_id: foreground_pgid.and_then(shepr_platform::Pgid::new),
+        process_group_id: foreground_pgid,
         foreground_is_pane_shell: false,
         suspended_agents: Vec::new(),
         identity: ProcessProbeIdentity::Unidentified,
@@ -1142,8 +1142,8 @@ pub(super) fn probe_foreground_process_from_jobs(
 }
 
 pub(super) fn probe_foreground_process(
-    pid: u32,
-    foreground_pgid: Option<u32>,
+    pid: Pid,
+    foreground_pgid: Option<Pgid>,
 ) -> ProcessProbeResult {
     let mut probe = probe_foreground_process_from_jobs(
         pid,
@@ -1221,10 +1221,14 @@ pub(super) fn foreground_shell_agent_action(
 mod tests {
     use super::*;
 
+    fn pgid(value: u32) -> Pgid {
+        Pgid::new(value).expect("test process group")
+    }
+
     fn tick_input(now: std::time::Instant, observation: TickObservation) -> DetectorObservations {
         DetectorObservations {
             now,
-            foreground_group: Some(25),
+            foreground_group: Some(pgid(25)),
             content_seq: 1,
             lifecycle_authority_active: false,
             theme_restore_candidate: false,
@@ -1365,7 +1369,7 @@ mod tests {
     fn schedule_input(
         now: std::time::Instant,
         agent: Option<Agent>,
-        observed_foreground_group: Option<u32>,
+        observed_foreground_group: Option<Pgid>,
         lifecycle_authority_active: bool,
         shell_clear_pending: bool,
     ) -> ProcessProbeScheduleInput {
@@ -1421,13 +1425,13 @@ mod tests {
         let now = std::time::Instant::now();
         let mut scheduler = ProcessProbeScheduler::new(now);
         scheduler.probe_started(now);
-        scheduler.last_foreground_group = Some(42);
+        scheduler.last_foreground_group = Some(pgid(42));
 
         assert!(matches!(
             scheduler.schedule(schedule_input(
                 now + std::time::Duration::from_millis(300),
                 Some(Agent::Pi),
-                Some(42),
+                Some(pgid(42)),
                 true,
                 false,
             )),
@@ -1440,7 +1444,7 @@ mod tests {
                 .schedule(schedule_input(
                     now + std::time::Duration::from_millis(300),
                     Some(Agent::Pi),
-                    Some(43),
+                    Some(pgid(43)),
                     true,
                     false,
                 ))
@@ -1451,7 +1455,7 @@ mod tests {
                 .schedule(schedule_input(
                     now + std::time::Duration::from_millis(300),
                     Some(Agent::Pi),
-                    Some(42),
+                    Some(pgid(42)),
                     true,
                     true,
                 ))
@@ -1494,14 +1498,14 @@ mod tests {
         let now = std::time::Instant::now();
         let mut scheduler = ProcessProbeScheduler::new(now);
         scheduler.probe_started(now);
-        scheduler.last_foreground_group = Some(42);
+        scheduler.last_foreground_group = Some(pgid(42));
 
         assert!(
             !scheduler
                 .schedule(schedule_input(
                     now + PROCESS_RECHECK_IDENTIFIED - std::time::Duration::from_millis(1),
                     Some(Agent::Pi),
-                    Some(42),
+                    Some(pgid(42)),
                     true,
                     false,
                 ))
@@ -1512,7 +1516,7 @@ mod tests {
                 .schedule(schedule_input(
                     now + PROCESS_RECHECK_IDENTIFIED,
                     Some(Agent::Pi),
-                    Some(42),
+                    Some(pgid(42)),
                     true,
                     false,
                 ))
@@ -1527,7 +1531,7 @@ mod tests {
                     reacquisition_started + PROCESS_RECHECK_IDENTIFIED
                         - std::time::Duration::from_millis(1),
                     None,
-                    Some(42),
+                    Some(pgid(42)),
                     true,
                     false,
                 ))
@@ -1538,7 +1542,7 @@ mod tests {
                 .schedule(schedule_input(
                     reacquisition_started + PROCESS_RECHECK_IDENTIFIED,
                     None,
-                    Some(42),
+                    Some(pgid(42)),
                     true,
                     false,
                 ))
@@ -1645,7 +1649,7 @@ mod tests {
         let mut detector = DetectorState::new(now, LaunchKind::Fresh);
         let request = ProcessProbeRequest {
             now,
-            observed_foreground_group: Some(25),
+            observed_foreground_group: Some(pgid(25)),
             lifecycle_authority_active: false,
         };
         let schedule = detector.schedule_process_probe(&request);
@@ -1661,7 +1665,7 @@ mod tests {
                 process_name: "claude".to_string(),
             },
         };
-        let change = detector.observe_process_probe(&probe, now, Some(25), schedule);
+        let change = detector.observe_process_probe(&probe, now, Some(pgid(25)), schedule);
 
         assert_eq!(change.agent, Some(Agent::Claude));
         assert_eq!(change.process_detected, Some(Agent::Claude));
@@ -1693,7 +1697,7 @@ mod tests {
             detector
                 .schedule_process_probe(&ProcessProbeRequest {
                     now,
-                    observed_foreground_group: Some(42),
+                    observed_foreground_group: Some(pgid(42)),
                     lifecycle_authority_active: true,
                 })
                 .should_probe()
@@ -1726,7 +1730,7 @@ mod tests {
         detector.observe_process_probe(
             &probe,
             now + std::time::Duration::from_secs(1),
-            Some(25),
+            Some(pgid(25)),
             ProbeScheduleDecision::Probe {
                 foreground_group_changed: false,
                 had_previous_probe: true,
@@ -1751,7 +1755,7 @@ mod tests {
             let change = detector.observe_process_probe(
                 &probe,
                 now + std::time::Duration::from_secs(u64::from(attempt)),
-                Some(25),
+                Some(pgid(25)),
                 ProbeScheduleDecision::Probe {
                     foreground_group_changed: false,
                     had_previous_probe: true,
@@ -1785,11 +1789,11 @@ mod tests {
             had_previous_probe: true,
         };
         for _ in 0..AGENT_MISS_CONFIRMATION_ATTEMPTS {
-            detector.observe_process_probe(&command, now, Some(25), schedule);
+            detector.observe_process_probe(&command, now, Some(pgid(25)), schedule);
         }
         assert!(detector.process_exited());
         command.process_group_id = shepr_platform::Pgid::new(26);
-        let owed = detector.observe_process_probe(&command, now, Some(26), schedule);
+        let owed = detector.observe_process_probe(&command, now, Some(pgid(26)), schedule);
         assert!(!owed.agent_changed);
         assert_eq!(owed.agent, Some(Agent::Pi));
         assert!(detector.process_exited());
@@ -1809,7 +1813,7 @@ mod tests {
         assert_eq!(update.agent, Some(Agent::Pi));
         assert!(update.process_exited);
         assert_eq!(update.detection.state(), AgentState::Idle);
-        let cleared = detector.observe_process_probe(&command, now, Some(26), schedule);
+        let cleared = detector.observe_process_probe(&command, now, Some(pgid(26)), schedule);
         assert!(cleared.agent_changed);
         assert_eq!(cleared.agent, None);
         assert!(!detector.process_exited());
@@ -1830,7 +1834,7 @@ mod tests {
         let change = detector.observe_process_probe(
             &suspended_probe,
             now,
-            Some(25),
+            Some(pgid(25)),
             ProbeScheduleDecision::Probe {
                 foreground_group_changed: true,
                 had_previous_probe: true,
@@ -1854,7 +1858,7 @@ mod tests {
         let resumed = detector.observe_process_probe(
             &resumed_probe,
             now + std::time::Duration::from_secs(1),
-            Some(27),
+            Some(pgid(27)),
             ProbeScheduleDecision::Probe {
                 foreground_group_changed: true,
                 had_previous_probe: true,

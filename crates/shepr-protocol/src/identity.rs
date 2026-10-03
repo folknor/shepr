@@ -16,10 +16,13 @@ use std::{
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Deserialize)]
 #[serde(try_from = "String")]
 pub struct BootId {
-    text: String,
+    text: Box<str>,
     process_id: u32,
     before_epoch: bool,
-    nanos: u128,
+    // Split in two words so the identity keeps 8-byte alignment: a 16-byte
+    // aligned field would push every error that carries two boot ids past
+    // clippy's large-error threshold.
+    nanos: [u64; 2],
 }
 
 impl BootId {
@@ -59,7 +62,7 @@ impl BootId {
     }
 
     pub fn clock_nanos(&self) -> u128 {
-        self.nanos
+        (u128::from(self.nanos[0]) << 64) | u128::from(self.nanos[1])
     }
 
     pub fn is_before_epoch(&self) -> bool {
@@ -83,10 +86,13 @@ impl BootId {
             format!("{process_id}-{nanos}")
         };
         Self {
-            text,
+            text: text.into_boxed_str(),
             process_id,
             before_epoch,
-            nanos,
+            nanos: [
+                u64::try_from(nanos >> 64).unwrap_or_default(),
+                u64::try_from(nanos & u128::from(u64::MAX)).unwrap_or_default(),
+            ],
         }
     }
 }
@@ -118,7 +124,7 @@ impl std::str::FromStr for BootId {
         // The number parsers accept signs and leading zeros; re-encoding and
         // comparing refuses every spelling `for_this_process` never writes.
         Some(Self::from_parts(process_id, before_epoch, nanos))
-            .filter(|id| id.text == value)
+            .filter(|id| &*id.text == value)
             .ok_or(BootIdParseError)
     }
 }
@@ -142,7 +148,7 @@ impl serde::Serialize for BootId {
 
 impl From<BootId> for String {
     fn from(value: BootId) -> Self {
-        value.text
+        value.text.into_string()
     }
 }
 

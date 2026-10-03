@@ -37,13 +37,13 @@ impl PaneCwdProbe {
     /// child is gone or its cwd cannot be used, retain the saved observation
     /// rather than replacing it with an unavailable process path.
     pub fn read(&self) -> Option<std::path::PathBuf> {
-        let Some(pid) = self.child_liveness.live_pid() else {
+        let Some(pid) = self.child_liveness.live_process_id() else {
             return self.remembered_cwd();
         };
         let Some(shell_cwd) = super::process_probe::usable_process_cwd(pid) else {
             return self.remembered_cwd();
         };
-        if self.child_liveness.live_pid() != Some(pid) {
+        if self.child_liveness.live_process_id() != Some(pid) {
             return self.remembered_cwd();
         }
         let reported = shepr_vt::lock_auxiliary(&self.cwd.reported).clone();
@@ -152,9 +152,9 @@ pub(super) fn publish_reported_cwd(
         return;
     };
     // One readlink per OSC 7, sampled before taking the lock.
-    let shell_cwd_at_report = child_liveness.live_pid().and_then(|pid| {
+    let shell_cwd_at_report = child_liveness.live_process_id().and_then(|pid| {
         let shell_cwd = readlink_process_cwd(pid);
-        (child_liveness.live_pid() == Some(pid))
+        (child_liveness.live_process_id() == Some(pid))
             .then_some(shell_cwd)
             .flatten()
     });
@@ -206,9 +206,9 @@ impl PaneRuntime {
     /// its /proc cwd wins. One /proc readlink per call and no stat
     /// (`readlink_process_cwd`): this runs on the event loop.
     pub fn cwd(&self) -> Option<std::path::PathBuf> {
-        let shell_cwd = self.child_liveness.live_pid().and_then(|pid| {
+        let shell_cwd = self.child_liveness.live_process_id().and_then(|pid| {
             let cwd = super::process_probe::readlink_process_cwd(pid);
-            (self.child_liveness.live_pid() == Some(pid))
+            (self.child_liveness.live_process_id() == Some(pid))
                 .then_some(cwd)
                 .flatten()
         });
@@ -249,7 +249,7 @@ impl PaneRuntime {
             shell_pid,
             foreground_pgid,
             || self.cwd(),
-            |group| readlink_process_cwd(group.leader_pid().get()),
+            |group| readlink_process_cwd(group.leader_pid()),
         );
         if shell_pid.is_some_and(|pid| self.child_liveness.live_process_id() != Some(pid)) {
             None
@@ -260,12 +260,12 @@ impl PaneRuntime {
 
     /// Get the current working directory of the process group controlling the pane PTY.
     pub fn foreground_cwd(&self) -> Option<std::path::PathBuf> {
-        let pid = self.child_liveness.live_pid()?;
+        let pid = self.child_liveness.live_process_id()?;
         let foreground_pgid = shepr_agent::detect::foreground_process_group_id(pid);
-        if self.child_liveness.live_pid() != Some(pid) {
+        if self.child_liveness.live_process_id() != Some(pid) {
             return None;
         }
-        let leader_cwd = foreground_pgid.and_then(readlink_process_cwd);
+        let leader_cwd = foreground_pgid.and_then(|group| readlink_process_cwd(group.leader_pid()));
 
         // The group leader's cwd is authoritative: a helper
         // process that chdirs elsewhere inside the same foreground group
@@ -275,7 +275,7 @@ impl PaneRuntime {
             let shell_cwd = readlink_process_cwd(pid);
             foreground_member_cwd_different_from_shell(pid, shell_cwd.as_ref())
         });
-        (self.child_liveness.live_pid() == Some(pid))
+        (self.child_liveness.live_process_id() == Some(pid))
             .then_some(cwd)
             .flatten()
     }

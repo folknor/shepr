@@ -54,19 +54,23 @@ impl AppState {
     }
 
     /// Focuses `pane_id` within workspace `ws_idx`. Pane focus is shared by
-    /// every client that views the workspace. False when the pane is not
+    /// every client that views the workspace. Unchanged when the pane is not
     /// there or already holds focus.
-    pub(crate) fn focus_pane_in_workspace(&mut self, ws_idx: usize, pane_id: PaneId) -> bool {
+    pub(crate) fn focus_pane_in_workspace(
+        &mut self,
+        ws_idx: usize,
+        pane_id: PaneId,
+    ) -> ViewMutation {
         let Some(ws) = self.workspaces.get_mut(ws_idx) else {
-            return false;
+            return ViewMutation::Unchanged;
         };
         if !ws.contains_pane(pane_id) || ws.focused_pane_id() == pane_id {
-            return false;
+            return ViewMutation::Unchanged;
         }
         if ws.focus_pane(pane_id) {
             self.mark_session_dirty();
-            return true;
+            return ViewMutation::Focus;
         }
-        false
+        ViewMutation::Unchanged
     }
 }

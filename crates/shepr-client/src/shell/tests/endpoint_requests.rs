@@ -155,8 +155,9 @@ impl crate::endpoint::EndpointTransport for TestTransport {
 fn a_pick_is_applied_at_once_without_an_event_round_trip() {
     let mut endpoints = EndpointRegistry::new(TestTransport { fail: false }, 1);
     let mut commands = EndpointCommands::default();
-    let mut choice = EndpointChoice::waiting_for(ClientEndpointId::Local);
+    let choice = EndpointChoice::waiting_for(ClientEndpointId::Local);
     let mut shell = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
+    shell.endpoints.choice = choice;
     crate::shell_runtime::dispatch_client_shell_actions(
         vec![ClientShellAction::ActivateEndpoint {
             endpoint_id: ClientEndpointId::Local,
@@ -166,17 +167,21 @@ fn a_pick_is_applied_at_once_without_an_event_round_trip() {
         }],
         &mut commands,
         &mut endpoints,
-        &mut choice,
         &mut std::io::sink(),
         false,
         &mut shell,
         std::time::Instant::now(),
     );
     assert_eq!(
-        choice.pending_start().expect("waiting pick").to,
+        shell
+            .endpoints
+            .choice
+            .pending_start()
+            .expect("waiting pick")
+            .to,
         &ClientEndpointId::Local
     );
-    assert!(choice.shown().is_none());
+    assert!(shell.endpoints.choice.live().is_none());
 }
 
 #[test]
@@ -184,7 +189,7 @@ fn selecting_the_shown_endpoint_is_a_noop_but_with_nothing_shown_it_reproves() {
     for shown in [false, true] {
         let mut endpoints = EndpointRegistry::new(TestTransport { fail: false }, 1);
         let mut commands = EndpointCommands::default();
-        let mut choice = if shown {
+        let choice = if shown {
             EndpointChoice::showing(ClientEndpointId::Local)
         } else {
             // Nothing shown, and a proof of Local already failed on this generation: only an
@@ -213,6 +218,7 @@ fn selecting_the_shown_endpoint_is_a_noop_but_with_nothing_shown_it_reproves() {
         };
         let mut shell =
             ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
+        shell.endpoints.choice = choice;
         crate::shell_runtime::dispatch_client_shell_actions(
             vec![ClientShellAction::ActivateEndpoint {
                 endpoint_id: ClientEndpointId::Local,
@@ -220,18 +226,22 @@ fn selecting_the_shown_endpoint_is_a_noop_but_with_nothing_shown_it_reproves() {
             }],
             &mut commands,
             &mut endpoints,
-            &mut choice,
             &mut std::io::sink(),
             false,
             &mut shell,
             std::time::Instant::now(),
         );
         if shown {
-            assert!(choice.pending_start().is_none());
-            assert_eq!(choice.shown(), Some(&ClientEndpointId::Local));
+            assert!(shell.endpoints.choice.pending_start().is_none());
+            assert_eq!(
+                shell.endpoints.choice.live(),
+                Some(&ClientEndpointId::Local)
+            );
         } else {
             assert_eq!(
-                choice
+                shell
+                    .endpoints
+                    .choice
                     .pending_start()
                     .expect("rearmed proof")
                     .failed_generation,
@@ -251,12 +261,10 @@ fn dispatcher_cancels_pending_requests_on_an_unviewed_endpoint_or_failed_send() 
         let mut endpoints = EndpointRegistry::new(TestTransport { fail: fail_send }, 1);
         endpoints.set_viewed(&ClientEndpointId::Local, fail_send);
         let mut commands = EndpointCommands::default();
-        let mut choice = crate::endpoint::EndpointChoice::showing(ClientEndpointId::Local);
         let repaint = crate::shell_runtime::dispatch_client_shell_actions(
             actions,
             &mut commands,
             &mut endpoints,
-            &mut choice,
             &mut std::io::sink(),
             false,
             &mut state,

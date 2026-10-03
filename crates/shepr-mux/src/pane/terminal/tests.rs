@@ -992,7 +992,8 @@ fn host_terminal_theme_restore_probe_skips_when_host_theme_unknown() {
     let pane = PaneTerminal::new(terminal);
     {
         let mut core = shepr_vt::lock_terminal_core(&pane.core).expect("test precondition");
-        core.transient_default_color_owner_pgid = Some(42);
+        core.transient_default_color_owner_pgid =
+            Some(shepr_platform::Pgid::new(42).expect("test group"));
     }
     let core = shepr_vt::lock_terminal_core(&pane.core).expect("test precondition");
 
@@ -1006,7 +1007,8 @@ fn host_terminal_theme_restore_probe_skips_on_alternate_screen() {
     let pane = PaneTerminal::new(terminal);
     {
         let mut core = shepr_vt::lock_terminal_core(&pane.core).expect("test precondition");
-        core.transient_default_color_owner_pgid = Some(42);
+        core.transient_default_color_owner_pgid =
+            Some(shepr_platform::Pgid::new(42).expect("test group"));
         core.host_terminal_theme = shepr_termio::host_term::theme::TerminalTheme {
             foreground: Some(shepr_termio::host_term::theme::RgbColor {
                 r: 0xaa,
@@ -1032,7 +1034,8 @@ fn host_terminal_theme_restore_probe_runs_when_restore_is_pending() {
     let pane = PaneTerminal::new(terminal);
     {
         let mut core = shepr_vt::lock_terminal_core(&pane.core).expect("test precondition");
-        core.transient_default_color_owner_pgid = Some(42);
+        core.transient_default_color_owner_pgid =
+            Some(shepr_platform::Pgid::new(42).expect("test group"));
         core.host_terminal_theme = shepr_termio::host_term::theme::TerminalTheme {
             foreground: Some(shepr_termio::host_term::theme::RgbColor {
                 r: 0xaa,
@@ -3978,7 +3981,8 @@ fn default_color_changes_ask_for_an_owner_only_while_an_override_stands() {
     let no_new_set = core.terminal.take_effects().default_color_set;
     assert_eq!(note_default_color_change(&mut core, no_new_set), None);
 
-    core.transient_default_color_owner_pgid = Some(42);
+    core.transient_default_color_owner_pgid =
+        Some(shepr_platform::Pgid::new(42).expect("test group"));
     core.terminal.write(b"\x1b]111\x07");
     let reset_set = core.terminal.take_effects().default_color_set;
     assert_eq!(note_default_color_change(&mut core, reset_set), None);

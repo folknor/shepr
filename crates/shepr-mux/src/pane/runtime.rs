@@ -149,6 +149,14 @@ impl PaneRuntime {
         }
     }
 
+    /// Run `hook` during the next dirty-patch collection attempt, including
+    /// when collection falls back for synchronized output or a full render.
+    /// The hook runs while the terminal core lock is held, so it must not call
+    /// methods that acquire that lock. A poisoned core prevents it from running.
+    pub fn on_next_dirty_collection(&self, hook: Box<dyn FnOnce() + Send>) {
+        self.terminal.on_next_dirty_collection(hook);
+    }
+
     pub fn generation(&self) -> crate::events::RuntimeGeneration {
         self.generation
     }
@@ -190,7 +198,7 @@ impl PaneRuntime {
             terminal: Arc::new(PaneTerminal::new(terminal)),
             io,
             current_size: shepr_core::geometry::PaneGeometry::new(cols, rows, 0, 0),
-            child_liveness: Arc::new(ChildLiveness::absent()),
+            child_liveness: Arc::new(ChildLiveness::launched_without_child()),
             // No child, so no teardown is ever started through this tracker.
             teardown_tracker: Arc::default(),
             exit_arbiter: Arc::default(),
@@ -299,8 +307,9 @@ impl PaneRuntime {
         self.terminal.core_poisoned()
     }
 
-    pub fn child_pid(&self) -> Option<u32> {
-        self.child_liveness.live_pid()
+    /// The shell's process id while it is launched and unreaped.
+    pub fn child_pid(&self) -> Option<shepr_platform::Pid> {
+        self.child_liveness.live_process_id()
     }
 
     /// Whether the pane's shell exec committed. Before that the pane has a PTY
@@ -894,14 +903,14 @@ mod tests {
             .current_dir(&cwd)
             .spawn()
             .expect("spawn process in cwd");
-        let expected_cwd = shepr_agent::detect::process_cwd(child.id())
+        let pid = shepr_platform::Pid::new(child.id()).expect("fixture pid");
+        let expected_cwd = shepr_agent::detect::process_cwd(pid)
             .expect("resolve process cwd before restricting traversal");
         std::fs::set_permissions(&private, std::fs::Permissions::from_mode(0o000))
             .expect("make cwd path untraversable");
 
         // The probe thread cannot bypass the mode-000 directory, whoever runs
         // the test, so the stat below is always refused.
-        let pid = child.id();
         let probe_cwd = cwd.clone();
         let probe = std::thread::spawn(move || {
             shepr_test_support::drop_dac_capabilities_on_this_thread();
@@ -1029,15 +1038,18 @@ mod tests {
             Box::new(drop),
         )
         .expect("spawn session");
-        let leader_pid = spawned.child.id();
+        let leader_pid = spawned.child.process_id();
         let leader = spawned.child.handle();
-        let child_liveness = Arc::new(ChildLiveness::new(leader_pid, Some(leader)));
+        let child_liveness = Arc::new(ChildLiveness::running_with_handle(leader));
         spawned.child.wait().expect("reap the leader");
         assert!(child_liveness.has_exited());
         assert!(child_liveness.is_reaped());
         child_liveness.mark_wait_completed();
 
-        let members = shepr_platform::session_member_handles(leader_pid, || true);
+        let members = shepr_platform::session_member_handles(
+            shepr_platform::SessionId::of_leader(leader_pid),
+            || true,
+        );
         assert_eq!(members.len(), 1, "the background job survives its leader");
 
         let tracker = Arc::new(PaneTeardownTracker::default());
@@ -1288,8 +1300,8 @@ mod tests {
             Box::new(drop),
         )
         .expect("spawn test shell");
-        let command_line = exec_command_line(spawned.child.id(), b"-shepr-login-shell");
-        let shell_env = std::fs::read(format!("/proc/{}/environ", spawned.child.id()));
+        let command_line = exec_command_line(spawned.child.process_id(), b"-shepr-login-shell");
+        let shell_env = std::fs::read(format!("/proc/{}/environ", spawned.child.process_id()));
         spawned
             .child
             .kill()
@@ -1331,8 +1343,8 @@ mod tests {
             Box::new(drop),
         )
         .expect("spawn test shell");
-        let command_line = exec_command_line(spawned.child.id(), shell.as_bytes());
-        let shell_env = std::fs::read(format!("/proc/{}/environ", spawned.child.id()));
+        let command_line = exec_command_line(spawned.child.process_id(), shell.as_bytes());
+        let shell_env = std::fs::read(format!("/proc/{}/environ", spawned.child.process_id()));
         spawned
             .child
             .kill()
@@ -1374,7 +1386,7 @@ mod tests {
     /// The child's command line once it exec'd a program whose argv0 is
     /// `argv0`: the fork returns before the exec, and until then /proc
     /// describes a copy of the test binary.
-    fn exec_command_line(pid: u32, argv0: &[u8]) -> Vec<u8> {
+    fn exec_command_line(pid: shepr_platform::Pid, argv0: &[u8]) -> Vec<u8> {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
         loop {
             let command_line =
@@ -1413,7 +1425,9 @@ mod tests {
             report_generation: None,
         });
         // A different live process now owns the exited shell's numeric PID.
-        runtime.child_liveness.set_pid_for_test(std::process::id());
+        runtime
+            .child_liveness
+            .set_pid_for_test(shepr_platform::Pid::new(std::process::id()).expect("test pid"));
         runtime.child_liveness.mark_wait_completed();
         assert_eq!(runtime.cwd_probe().read(), Some(saved.clone()));
         assert_eq!(runtime.remembered_cwd(), Some(saved));
@@ -1447,7 +1461,7 @@ mod tests {
                 .spawn()
                 .expect("spawn process in cwd"),
         );
-        let pid = child.0.id();
+        let pid = shepr_platform::Pid::new(child.0.id()).expect("fixture pid");
         assert_eq!(
             shepr_agent::detect::process_cwd(pid),
             Some(deleted.clone()),
@@ -1538,7 +1552,7 @@ mod tests {
                 .spawn()
                 .expect("spawn process in cwd"),
         );
-        let pid = child.0.id();
+        let pid = shepr_platform::Pid::new(child.0.id()).expect("fixture pid");
         let shell_cwd = shepr_agent::detect::process_cwd(pid).expect("read shell cwd");
         assert_eq!(shell_cwd, physical);
         runtime.child_liveness.set_pid_for_test(pid);
@@ -1728,23 +1742,34 @@ mod tests {
 
     fn foreground_process(pid: u32, name: &str) -> shepr_agent::detect::ForegroundProcess {
         shepr_agent::detect::ForegroundProcess {
-            pid,
+            pid: test_pid(pid),
             name: name.to_string(),
             argv: None,
         }
     }
 
+    fn test_pid(value: u32) -> shepr_platform::Pid {
+        shepr_platform::Pid::new(value).expect("test process id")
+    }
+
+    fn test_pgid(value: u32) -> shepr_platform::Pgid {
+        shepr_platform::Pgid::new(value).expect("test process group")
+    }
+
     #[test]
     fn identifiable_foreground_leader_wins_over_other_job_members() {
         let job = shepr_agent::detect::ForegroundJob {
-            process_group_id: 99,
+            process_group_id: test_pgid(99),
             processes: vec![
                 foreground_process(99, "codex"),
                 foreground_process(100, "claude"),
             ],
         };
 
-        let result = probe_foreground_process_from_jobs(42, Some(99), None, || Some(job));
+        let result =
+            probe_foreground_process_from_jobs(test_pid(42), Some(test_pgid(99)), None, || {
+                Some(job)
+            });
 
         assert_eq!(result.agent(), Some(Agent::Codex));
         assert_eq!(result.process_name(), Some("codex"));
@@ -1753,20 +1778,23 @@ mod tests {
     #[test]
     fn unidentified_leader_job_falls_through_to_foreground_job() {
         let leader_job = shepr_agent::detect::ForegroundJob {
-            process_group_id: 99,
+            process_group_id: test_pgid(99),
             processes: vec![foreground_process(99, "some_vm")],
         };
         let foreground_job = shepr_agent::detect::ForegroundJob {
-            process_group_id: 99,
+            process_group_id: test_pgid(99),
             processes: vec![
                 foreground_process(99, "some_vm"),
                 foreground_process(100, "codex"),
             ],
         };
 
-        let result = probe_foreground_process_from_jobs(42, Some(99), Some(&leader_job), || {
-            Some(foreground_job)
-        });
+        let result = probe_foreground_process_from_jobs(
+            test_pid(42),
+            Some(test_pgid(99)),
+            Some(&leader_job),
+            || Some(foreground_job),
+        );
 
         assert_eq!(result.agent(), Some(Agent::Codex));
         assert_eq!(result.process_name(), Some("codex"));
@@ -1861,7 +1889,6 @@ mod tests {
                 pane_id,
                 crate::events::RuntimeGeneration::alloc(),
             ),
-            pane_id,
             StateChangedUpdate {
                 agent: Some(Agent::Pi),
                 detection: shepr_agent::detect::Detection::Idle { visible: false },

@@ -37,7 +37,7 @@ impl ClientShellState {
         let pending_workspace_highlight =
             self.pending_workspace_highlight.as_ref().filter(|pending| {
                 self.mode != ClientShellMode::Navigate
-                    && pending.target.endpoint_id == self.active_endpoint_id
+                    && pending.target.endpoint_id == *self.endpoints.presented()
                     && self.navigation_target_valid(&pending.target)
             });
         // Only the exact snapshot pair is drawn. With nothing presented the placeholder
@@ -81,7 +81,7 @@ impl ClientShellState {
             render::ShellRenderState {
                 machine_diagnostics: &self.machine_diagnostics,
                 endpoints: &self.endpoints,
-                active_endpoint_id: &self.active_endpoint_id,
+                active_endpoint_id: self.endpoints.presented(),
                 agent_panel_model: &self.agent_panel_model,
                 collapsed_endpoints: &self.collapsed_endpoints,
                 workspace_scroll: &mut self.workspace_scroll,
@@ -102,24 +102,24 @@ impl ClientShellState {
         let active_lifecycle = self
             .endpoints
             .iter()
-            .find(|endpoint| endpoint.endpoint_id == self.active_endpoint_id)
-            .filter(|endpoint| endpoint.status != ClientEndpointStatus::Online)
+            .find(|endpoint| endpoint.endpoint_id == *self.endpoints.presented())
+            .filter(|endpoint| endpoint.state.stale())
             .map(|endpoint| {
                 (
                     endpoint.endpoint_id.display_label().to_owned(),
-                    endpoint.status,
+                    endpoint.state.status(),
                 )
             });
         let healthy_local_chrome = self.snapshot.is_some()
             && self.endpoints.len() == 1
             && !self.chrome.collapsed()
             && layout.sidebar.width > 0
-            && self.endpoint_status(&self.active_endpoint_id) == Some(ClientEndpointStatus::Online);
+            && self.endpoint_usable(self.endpoints.presented());
         if !has_surface {
             let message = self.endpoint_error.message().map_or_else(
                 || {
                     let status = self
-                        .endpoint_status(&self.active_endpoint_id)
+                        .endpoint_status(self.endpoints.presented())
                         .unwrap_or(ClientEndpointStatus::Connecting);
                     let (_, label, _) = endpoint_status_presentation(status, &self.config.palette);
                     if self.endpoints.len() == 1 {
@@ -355,7 +355,7 @@ impl ClientShellState {
                 layout.pane_surface
             }
         };
-        if self.endpoint_status(&self.active_endpoint_id) != Some(ClientEndpointStatus::Online) {
+        if !self.endpoint_usable(self.endpoints.presented()) {
             frame.cursor = None;
             self.hits.panes.clear();
             self.hits.pane_splits.clear();
@@ -419,7 +419,7 @@ impl ClientShellState {
                     &mut scratch,
                     overlay,
                     &self.navigator_index,
-                    &self.active_endpoint_id,
+                    self.endpoints.presented(),
                     &self.config.keybinds,
                     &self.config.palette,
                 ),

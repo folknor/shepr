@@ -12,10 +12,10 @@ impl App {
             return Err(pane_missing(&target.pane_id).into());
         };
         match runtime.clear_screen() {
-            Ok(change) => Handled::done_with_effects(EndpointEffects {
-                pane_surface_changed: change.is_changed(),
-                ..EndpointEffects::default()
-            }),
+            Ok(change) => Handled::done_with_effects(EndpointEffects::pane_viewers(
+                pane_id,
+                change.is_changed(),
+            )),
             Err(shepr_mux::pane::PaneClearError::AlternateScreenActive) => {
                 rejected("the pane is on the alternate screen")
             }
@@ -37,20 +37,14 @@ impl App {
         let Some(pane) = self.pane_info(ws_idx, pane_id) else {
             return Err(HandlerError {
                 error: pane_missing(&params.pane_id),
-                effects: EndpointEffects {
-                    pane_surface_changed: scroll_changed,
-                    ..EndpointEffects::default()
-                },
+                effects: EndpointEffects::pane_viewers(pane_id, scroll_changed),
             });
         };
         Handled::reply_with_effects(
             EndpointReply::PaneInfo {
                 pane: Box::new(pane),
             },
-            EndpointEffects {
-                pane_surface_changed: scroll_changed,
-                ..EndpointEffects::default()
-            },
+            EndpointEffects::pane_viewers(pane_id, scroll_changed),
         )
     }
 

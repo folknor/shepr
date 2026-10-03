@@ -278,7 +278,7 @@ fn accept_running(
     status: RuntimeStatus,
     build_check: BuildCheck,
 ) -> io::Result<RuntimeStatus> {
-    if shepr_protocol::is_this_build(&status.build_id) {
+    if status.build_id.is_this_build() {
         return Ok(status);
     }
     match build_check {
@@ -403,9 +403,7 @@ pub fn sibling_server_status() -> SiblingServerJson {
         Err(error) => {
             return SiblingServerJson {
                 binary: None,
-                version: None,
-                build_id: None,
-                error: Some(format!(
+                identity: Err(format!(
                     "failed to determine the shepr executable path: {error}"
                 )),
             };
@@ -425,25 +423,21 @@ pub fn sibling_server_status() -> SiblingServerJson {
     match identity {
         Ok((version, build_id)) => SiblingServerJson {
             binary: Some(binary.display().to_string()),
-            version: Some(version),
-            build_id: Some(build_id),
-            error: None,
+            identity: Ok(shepr_protocol::BuildVersion { version, build_id }),
         },
         Err(error) => SiblingServerJson {
             binary: Some(binary.display().to_string()),
-            version: None,
-            build_id: None,
-            error: Some(error.to_string()),
+            identity: Err(error.to_string()),
         },
     }
 }
 
 /// Splits the `shepr-server <version>+<build id>` line that `--version` prints
 /// into the version and the build id. `None` for any other text.
-fn parse_server_version_line(line: &str) -> Option<(String, String)> {
+fn parse_server_version_line(line: &str) -> Option<(String, shepr_protocol::BuildIdentity)> {
     let identity = line.trim().strip_prefix(SERVER_BINARY_NAME)?.trim();
     let identity = identity.parse::<shepr_protocol::BuildVersion>().ok()?;
-    Some((identity.version, identity.build_id.to_string()))
+    Some((identity.version, identity.build_id))
 }
 
 /// Runs `server --version` under a deadline and returns its first output line.
@@ -718,7 +712,7 @@ fn launch_with(
         };
         let nothing_listens = matches!(probed, Probed::NoServer);
         if let Probed::Running(status) = probed {
-            if shepr_protocol::is_this_build(&status.build_id) {
+            if status.build_id.is_this_build() {
                 // Nothing in the boot log matters once the daemon is up, and
                 // the daemon keeps the descriptor for its whole life.
                 if let Err(error) = boot_log_handle.set_len(0) {
@@ -729,7 +723,7 @@ fn launch_with(
             }
             if exited.is_none() {
                 if daemon
-                    .id()
+                    .process_id()
                     .is_some_and(|pid| boot_id_process_id(&status.boot_id) == Some(pid))
                 {
                     return Err(sibling_build_mismatch(files, &status));
@@ -782,10 +776,10 @@ fn launch_with(
     }
 }
 
-/// The pid in a server's reported boot identity; `None` when it is not a boot
-/// id in the canonical form.
-fn boot_id_process_id(boot_id: &str) -> Option<u32> {
-    boot_id.parse::<shepr_protocol::BootId>().ok()?.process_id()
+/// The Linux process id in a canonical boot identity; `None` when its number
+/// is outside the valid Linux pid range.
+fn boot_id_process_id(boot_id: &shepr_protocol::BootId) -> Option<shepr_platform::Pid> {
+    shepr_platform::Pid::new(boot_id.process_id()?)
 }
 
 /// The daemon exited during boot: how, and what it printed.

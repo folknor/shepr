@@ -153,15 +153,6 @@ impl PaneRead<'_> {
             .collect_dirty_patch_snapshot(area_width, area_height)
     }
 
-    /// Run `hook` during the next dirty-patch collection attempt, including
-    /// when it falls back for synchronized output or a full render. The hook
-    /// runs while the terminal core lock is held, so it
-    /// must not call methods that acquire that lock. A poisoned core
-    /// prevents the hook from running.
-    pub fn on_next_dirty_collection(&self, hook: Box<dyn FnOnce() + Send>) {
-        self.terminal.on_next_dirty_collection(hook);
-    }
-
     /// Odd means unavailable or torn; it must never certify a stable surface.
     pub fn content_seq(&self) -> u64 {
         shepr_vt::lock_terminal_core(&self.terminal.core).map_or(1, |core| core.content_revision)

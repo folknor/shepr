@@ -443,14 +443,6 @@ maps `TextCommit` to `Unsupported` and has an unused `Mouse` arm. A direct
 the unreachable error. `apply_scroll` round-trips modifiers through `u8`, and
 `lines.max(1)` is applied by both caller and callee. (server-serving)
 
-## STR-038 - `client_shell.rs` is misnamed and does two jobs
-
-`snapshot_from_session` is the shell projection and belongs with
-`ShellSessionCache` in `render.rs`; `render_pane_surface` and `split_hit_rect`
-are the surface build, and the split hit-rect geometry (borders and gaps) is
-layout policy that arguably belongs next to the border rules that draw splits.
-(server-serving)
-
 ## Client core
 
 ## STR-039 - `lib.rs` is the loop, the launch, the finalization and the dispatcher

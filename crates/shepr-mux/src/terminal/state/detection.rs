@@ -40,7 +40,7 @@ impl TerminalState {
     // transition: Unknown and Idle have the same sidebar presentation.
     pub fn abandon_agent_resume(
         &mut self,
-        error: super::RestoreFailure,
+        error: super::PaneStartFailure,
         now: Instant,
     ) -> shepr_agent::ownership::AgentOwnershipMutation {
         self.agent_resume = AgentResumeState::None;

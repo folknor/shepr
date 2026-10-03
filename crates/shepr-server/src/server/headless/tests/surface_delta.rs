@@ -338,7 +338,7 @@ async fn a_changed_deferral_owes_its_client_without_a_view_change() {
         &plan,
         &HashSet::new(),
         render::SurfaceBoundary {
-            render: |_, _, _, _| Err(crate::server::client_shell::SurfaceRenderDeferred::Changed),
+            render: |_, _, _, _| Err(crate::server::pane_surface::SurfaceRenderDeferred::Changed),
             ..render::SurfaceBoundary::default()
         },
     );
@@ -677,4 +677,59 @@ async fn scrolling_preserves_concurrent_shared_projection_changes() {
         pair.pass(false).full,
         vec![ClientId::test_new(7), ClientId::test_new(8)]
     );
+}
+
+#[tokio::test]
+async fn cjk_cursor_reveal_keeps_retained_rendering_and_matches_full_surfaces() {
+    for allow_shell in [true, false] {
+        let mut pair = Pair::new();
+        pair.server
+            .app
+            .state
+            .settings
+            .reveal_hidden_cursor_for_cjk_ime = true;
+        pair.server.app.state.settings.cjk_ime_agents = if allow_shell {
+            Vec::new()
+        } else {
+            vec![
+                shepr_config::ConfigAgent::all()
+                    .next()
+                    .expect("bundled agent"),
+            ]
+        };
+        pair.damage(b"\x1b[?25l\rIME");
+
+        let report = pair.pass(true);
+        assert_eq!(
+            report.patched,
+            vec![ClientId::test_new(7), ClientId::test_new(8)]
+        );
+        assert!(report.full.is_empty());
+        assert_eq!(report.surface_renders, 0);
+
+        for id in [7, 8] {
+            let surface = pair.server.clients[&id]
+                .render_state
+                .last_pane_surface()
+                .expect("retained baseline");
+            let cursor = surface.frame.cursor.as_ref().expect("cursor");
+            assert_eq!(cursor.visible, allow_shell);
+            if allow_shell {
+                assert_eq!(
+                    cursor.shape,
+                    pair.server.app.state.settings.cjk_ime_cursor_shape
+                );
+            }
+            let target = &pair.server.app.state.workspaces[0].id;
+            let full = crate::server::pane_surface::render_pane_surface(
+                &pair.server.app,
+                Some(target),
+                Rect::new(0, 0, surface.frame.width, surface.frame.height),
+                shepr_termio::host_term::cell_size::HostCellSize::default(),
+            )
+            .expect("complete surface");
+            assert_eq!(full.frame.cursor, surface.frame.cursor);
+            assert_eq!(full.panes, surface.panes);
+        }
+    }
 }

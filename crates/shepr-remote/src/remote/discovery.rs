@@ -400,7 +400,7 @@ pub(super) fn parse_client_status_json(
         .rev()
         .filter(|line| !line.trim().is_empty())
         .filter_map(|line| serde_json::from_str::<shepr_api::schema::ClientStatusJson>(line).ok())
-        .find(|status| status.version.is_some() || status.build_id.is_some())
+        .find(|status| status.identity.is_some())
 }
 
 fn ensure_remote_client_build(
@@ -408,9 +408,9 @@ fn ensure_remote_client_build(
     status: &shepr_api::schema::ClientStatusJson,
 ) -> io::Result<()> {
     if status
-        .build_id
-        .as_deref()
-        .is_some_and(shepr_protocol::is_this_build)
+        .identity
+        .as_ref()
+        .is_some_and(|identity| identity.build_id.is_this_build())
     {
         Ok(())
     } else {
@@ -432,24 +432,23 @@ fn ensure_remote_sibling_build(
             "remote Shepr installation error on {target}: shepr did not report a shepr-server beside it. {install_hint}"
         )));
     };
-    if let Some(error) = sibling.error.as_deref() {
-        let binary = sibling
-            .binary
-            .as_deref()
-            .map_or_else(String::new, |binary| format!(" ({binary})"));
-        return Err(remote_candidate_mismatch(format!(
-            "remote Shepr installation error on {target}: shepr-server{binary} is unusable: {error}. {install_hint}"
-        )));
-    }
-    if sibling
-        .build_id
-        .as_deref()
-        .is_some_and(shepr_protocol::is_this_build)
-    {
+    let identity = match &sibling.identity {
+        Ok(identity) => identity,
+        Err(error) => {
+            let binary = sibling
+                .binary
+                .as_deref()
+                .map_or_else(String::new, |binary| format!(" ({binary})"));
+            return Err(remote_candidate_mismatch(format!(
+                "remote Shepr installation error on {target}: shepr-server{binary} is unusable: {error}. {install_hint}"
+            )));
+        }
+    };
+    if identity.build_id.is_this_build() {
         return Ok(());
     }
-    let version = super::server_lifecycle::remote_display_value(sibling.version.as_deref());
-    let build_id = super::server_lifecycle::remote_display_value(sibling.build_id.as_deref());
+    let version = super::server_lifecycle::remote_display_value(Some(&identity.version));
+    let build_id = identity.build_id;
     Err(remote_candidate_mismatch(format!(
         "remote Shepr installation error on {target}: the shepr-server beside shepr is version {version} build {build_id}; this client is version {} build {}. {install_hint}",
         shepr_protocol::build_version(),
@@ -461,8 +460,14 @@ fn remote_compatibility_error(
     target: &SshTarget,
     status: &shepr_api::schema::ClientStatusJson,
 ) -> io::Error {
-    let version = super::server_lifecycle::remote_display_value(status.version.as_deref());
-    let build_id = super::server_lifecycle::remote_display_value(status.build_id.as_deref());
+    let identity = status.identity.as_ref();
+    let version = super::server_lifecycle::remote_display_value(
+        identity.map(|identity| identity.version.as_str()),
+    );
+    let build_id = identity.map_or_else(
+        || "unknown".into(),
+        |identity| identity.build_id.to_string(),
+    );
     let advice = if shepr_config::BuildProfile::current() == shepr_config::BuildProfile::Dev {
         "This is a dev client, which needs a dev build of shepr on the remote host; discovery only finds installed builds (normally release), so install a dev build there and retry"
     } else {

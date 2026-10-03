@@ -209,6 +209,59 @@ pub fn from_slice_exact<'de, T: Deserialize<'de>>(input: &'de [u8]) -> Result<T,
     }
 }
 
+/// Serializes a byte vector through serde's byte-buffer path instead of one
+/// sequence visitor call per byte.
+pub fn serialize_byte_vec<S>(values: &[u8], serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: ser::Serializer,
+{
+    serializer.serialize_bytes(values)
+}
+
+/// Deserializes a byte vector from a borrowed byte slice with one allocation.
+pub fn deserialize_byte_vec<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
+where
+    D: de::Deserializer<'de>,
+{
+    struct ByteVecVisitor;
+
+    impl<'de> Visitor<'de> for ByteVecVisitor {
+        type Value = Vec<u8>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("a byte buffer")
+        }
+
+        fn visit_bytes<E: de::Error>(self, value: &[u8]) -> Result<Self::Value, E> {
+            Ok(value.to_vec())
+        }
+
+        fn visit_borrowed_bytes<E: de::Error>(self, value: &'de [u8]) -> Result<Self::Value, E> {
+            self.visit_bytes(value)
+        }
+
+        fn visit_byte_buf<E: de::Error>(self, value: Vec<u8>) -> Result<Self::Value, E> {
+            Ok(value)
+        }
+
+        fn visit_seq<A: de::SeqAccess<'de>>(
+            self,
+            mut sequence: A,
+        ) -> Result<Self::Value, A::Error> {
+            // A size hint is the peer's claim; reserve no more than the
+            // codec's own collection cap ahead of the bytes arriving.
+            let mut values =
+                Vec::with_capacity(sequence.size_hint().unwrap_or(0).min(MAX_COLLECTION_ITEMS));
+            while let Some(value) = sequence.next_element()? {
+                values.push(value);
+            }
+            Ok(values)
+        }
+    }
+
+    deserializer.deserialize_byte_buf(ByteVecVisitor)
+}
+
 /// Serializes a vector after checking its field-specific logical item limit.
 ///
 /// The codec applies its own general collection limit too; this adapter keeps

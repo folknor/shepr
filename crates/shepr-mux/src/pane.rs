@@ -25,8 +25,8 @@ pub use terminal::AgentDetectionInputs;
 pub use terminal::{HistoryPiece, PaneHistoryCache, PaneHistorySource};
 pub use terminal::{PaneClearError, ScrollMetrics, TerminalCursorState, WheelRouting};
 pub use terminal::{
-    TerminalDirtyPatch, TerminalDirtyPatchOutcome, TerminalSearchDirection, TerminalSearchWindow,
-    TerminalTextPoint, TerminalWordMotion,
+    TerminalDirtyPatch, TerminalDirtyPatchOutcome, TerminalDirtyPatchSnapshot,
+    TerminalSearchDirection, TerminalSearchWindow, TerminalTextPoint, TerminalWordMotion,
 };
 
 #[cfg(test)]

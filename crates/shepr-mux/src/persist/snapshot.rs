@@ -1027,12 +1027,16 @@ pub(super) fn capture_node(node: &Node) -> LayoutSnapshot {
 
 /// Parses one on-disk session file. The serde types are the whole schema, so
 /// a missing key, a wrong type or an unknown field is a parse error here.
-pub fn parse_session_file(content: &str) -> Result<SessionFile<SessionSnapshot>, String> {
-    serde_json::from_str(content).map_err(|error| error.to_string())
+pub fn parse_session_file(
+    content: &str,
+) -> Result<SessionFile<SessionSnapshot>, serde_json::Error> {
+    serde_json::from_str(content)
 }
 
-pub(super) fn parse_history_snapshot(content: &str) -> Result<SessionHistorySnapshot, String> {
-    serde_json::from_str(content).map_err(|e| e.to_string())
+pub(super) fn parse_history_snapshot(
+    content: &str,
+) -> Result<SessionHistorySnapshot, serde_json::Error> {
+    serde_json::from_str(content)
 }
 
 /// Both halves of a history capture in one call. Saves split them across the

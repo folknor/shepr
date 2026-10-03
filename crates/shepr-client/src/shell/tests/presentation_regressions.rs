@@ -80,7 +80,7 @@ fn client_presentation_regression_removed_navigator_target_accepts_visible_fallb
     state.set_snapshot(Box::new(snapshot()));
     state.open_navigator_overlay();
     let removed_target = ClientNavigatorTarget::Pane {
-        endpoint_id: state.active_endpoint_id.clone(),
+        endpoint_id: state.active_endpoint_id().clone(),
         pane_id: test_pane_id("w1:p1"),
     };
     let Some(ClientShellOverlay::Navigator(navigator)) = state.overlay.as_mut() else {
@@ -98,7 +98,7 @@ fn client_presentation_regression_removed_navigator_target_accepts_visible_fallb
     };
     let rows = crate::shell::presentation::render::client_navigator_rows(
         &state.endpoints,
-        &state.active_endpoint_id,
+        state.active_endpoint_id(),
         navigator,
     );
     assert_eq!(
@@ -121,7 +121,7 @@ fn client_presentation_regression_removed_navigator_target_accepts_visible_fallb
     assert_eq!(
         expected,
         ClientNavigatorTarget::Workspace {
-            endpoint_id: state.active_endpoint_id.clone(),
+            endpoint_id: state.active_endpoint_id().clone(),
             workspace_id: test_workspace_id("w1"),
         }
     );

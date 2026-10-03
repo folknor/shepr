@@ -239,7 +239,17 @@ pub fn read_message_limited<R: Read, M: for<'de> Deserialize<'de>>(
     reader: &mut R,
     max_message: usize,
 ) -> Result<M, FramingError> {
-    read_frames(reader, MAX_FRAME_SIZE.min(max_message), max_message, true)
+    read_frames(reader, message_frame_limit(max_message), max_message, true)
+}
+
+/// The bound on one frame of a message capped at `max_message`: the frame
+/// size, or the message cap when that is smaller, named as what it is.
+fn message_frame_limit(max_message: usize) -> crate::Limit {
+    if max_message < MAX_FRAME_SIZE {
+        crate::Limit::new(crate::LimitKind::MessageBytes, max_message)
+    } else {
+        crate::Limit::new(crate::LimitKind::FrameBytes, MAX_FRAME_SIZE)
+    }
 }
 
 /// Like [`read_message_limited`], but requires the message to fit in one frame.
@@ -250,22 +260,29 @@ pub fn read_message_single_frame_limited<R: Read, M: for<'de> Deserialize<'de>>(
     reader: &mut R,
     max_message: usize,
 ) -> Result<M, FramingError> {
-    read_frames(reader, MAX_FRAME_SIZE.min(max_message), max_message, false)
+    read_frames(reader, message_frame_limit(max_message), max_message, false)
 }
 
 /// Reads a client hello in one frame with the smaller fixed handshake limit.
 pub fn read_handshake_message<R: Read, M: for<'de> Deserialize<'de>>(
     reader: &mut R,
 ) -> Result<M, FramingError> {
-    read_frames(reader, HANDSHAKE_FRAME_SIZE, HANDSHAKE_FRAME_SIZE, false)
+    read_frames(
+        reader,
+        crate::Limit::new(crate::LimitKind::FrameBytes, HANDSHAKE_FRAME_SIZE),
+        HANDSHAKE_FRAME_SIZE,
+        false,
+    )
 }
 
+/// `frame_limit` bounds each frame and is the limit a refused frame reports.
 fn read_frames<R: Read, M: for<'de> Deserialize<'de>>(
     reader: &mut R,
-    max_frame: usize,
+    frame_limit: crate::Limit,
     max_message: usize,
     allow_continuation: bool,
 ) -> Result<M, FramingError> {
+    let max_frame = frame_limit.max();
     let mut payload = Vec::new();
     loop {
         // Read the 4-byte length prefix, reassembling partial reads.
@@ -279,13 +296,8 @@ fn read_frames<R: Read, M: for<'de> Deserialize<'de>>(
             return Err(FramingError::UnexpectedContinuation);
         }
         if claimed_len > max_frame {
-            let (kind, max) = if max_frame == MAX_FRAME_SIZE {
-                (crate::LimitKind::FrameBytes, max_frame)
-            } else {
-                (crate::LimitKind::MessageBytes, max_message)
-            };
             return Err(FramingError::LimitExceeded(crate::LimitExceeded::new(
-                crate::Limit::new(kind, max),
+                frame_limit,
                 claimed_len,
             )));
         }

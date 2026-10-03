@@ -7,15 +7,22 @@ use crate::client::{ApiClient, ApiClientDeadlineError, ApiClientError};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeStatus {
     pub version: String,
-    pub build_id: String,
+    pub build_id: shepr_protocol::BuildIdentity,
     /// The server process's boot identity: what a conditional stop names to
     /// stop this instance and no other.
-    pub boot_id: String,
-    /// The server has begun stopping and will not accept a new client.
-    pub stopping: bool,
-    /// The server has bound its socket but is still restoring panes, and does
-    /// not accept a TUI connection yet.
-    pub starting: bool,
+    pub boot_id: shepr_protocol::BootId,
+    pub lifecycle: RuntimeLifecycle,
+}
+
+/// Readiness reported by ping. Stopping takes precedence over starting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimeLifecycle {
+    /// The server is restoring panes and does not accept TUI connections yet.
+    Starting,
+    /// The server accepts TUI connections.
+    Running,
+    /// The server is stopping and accepts no new clients.
+    Stopping,
 }
 
 pub(crate) fn read_runtime_status_at(
@@ -131,8 +138,12 @@ pub fn read_server_presence_at(socket: &Path, timeout: Duration) -> io::Result<S
         )
     })?;
     match status {
-        Some(status) if status.stopping => Ok(ServerPresence::Stopping(status)),
-        Some(status) if status.starting => Ok(ServerPresence::Starting(status)),
+        Some(status) if status.lifecycle == RuntimeLifecycle::Stopping => {
+            Ok(ServerPresence::Stopping(status))
+        }
+        Some(status) if status.lifecycle == RuntimeLifecycle::Starting => {
+            Ok(ServerPresence::Starting(status))
+        }
         Some(status) => Ok(ServerPresence::Running(status)),
         None if !live()? => Ok(ServerPresence::Gone),
         None => Ok(ServerPresence::Unresponsive),
@@ -159,7 +170,7 @@ mod tests {
                 if line.is_empty() {
                     continue;
                 }
-                let response = serde_json::json!({"id":"api-client:status","result":{"type":"pong","version":"0.1.0","build_id":"0123456789abcdef","boot_id":"test","stopping":stopping,"starting":starting}});
+                let response = serde_json::json!({"id":"api-client:status","result":{"type":"pong","version":"0.1.0","build_id":"0123456789abcdef","boot_id":"17-23","stopping":stopping,"starting":starting}});
                 writeln!(stream, "{response}").expect("pong");
                 break;
             }
@@ -188,7 +199,7 @@ mod tests {
     fn a_starting_pong_is_starting() {
         assert!(matches!(
             pong_presence(false, true),
-            ServerPresence::Starting(status) if status.build_id == "0123456789abcdef"
+            ServerPresence::Starting(status) if status.build_id.to_string() == "0123456789abcdef"
         ));
     }
 

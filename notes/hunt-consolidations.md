@@ -376,32 +376,6 @@ server-serving.
 
 ## App and server loop
 
-## CON-070 - Did the view change, and what must be invalidated?
-
-Sites diffing `shell_projection_revision` around a call:
-`handle_api_request_with_render`, `handle_endpoint_command_with_render`,
-`handle_internal_event_inner`, three places in `internal_events.rs` (two return
-points of `handle_internal_event_with_forwarding`) and one in
-`endpoint_requests.rs`. "Changed" is also declared as
-`effects.shell_projection_changed` and reconciled against the counter in
-`app/api.rs`, and `handle_client_shell_command` special-cases
-`EndpointCommand::PaneScroll` by variant (whether a change is viewer-local is
-decided in the server by matching the command). Sites picking their own
-invalidation triple (`mark_shell_projection_dirty`,
-`render_dirty.request_generic`, `render_notify.notify_one`):
-`set_host_terminal_theme` (no projection mark), `handle_git_status_refreshed`
-(all three), the cwd branch (render, notify, git refresh),
-`handle_pane_launch_settled`'s failure arm, `sync_pending_terminal_titles`,
-`set_host_terminal_appearance_state` (none; filed as a bug). Every endpoint
-handler hand-writes its six-bool `EndpointEffects` while the truth lives in the
-mutators (`handle_pane_close` re-derives `focus_changed` by snapshotting focus;
-`handle_pane_resize` decides a resize does not change the projection;
-`handle_workspace_create` and `handle_workspace_close` write the same four
-flags). Owner: mutators return outcomes (`impl From<Outcome> for
-EndpointEffects`) and an `Invalidation` value folded once per call, carrying
-`Invalidate::PaneViewers(pane)` for viewer-local changes. Reported by server-app
-and server-serving.
-
 ## CON-071 - Geometry claims are decided by scattered handlers
 
 The PTY size rule is now one function in
@@ -417,25 +391,6 @@ answered twice: settlement (`settle_workspace_geometry_before_plan`,
 `apply_all_workspace_geometry`) uses `location.focused_workspace_id()` while
 render uses `shell_target_for_client`, which also checks the workspace still
 exists. (server-serving, wave-2 review)
-
-## CON-074 - What cursor does a client see?
-
-`ui::surface_cursor` (full render: synchronized output, scrollback hiding, the
-CJK IME reveal with its agent filter and shape) and
-`retained_surface::retained_cursor` (patch path: synchronized output and
-scrollback only). They disagree on the CJK reveal, hidden by a third site:
-`render_pass_with_boundary` sends every patch candidate to the full step when
-`reveal_hidden_cursor_for_cjk_ime` is set, so with that setting every client loses
-retained rendering. Owner: one cursor function both paths call, after which the
-routing special case goes. Reported by server-app and server-serving.
-
-## CON-075 - Wire pane metadata is built twice
-
-`client_shell::render_pane_surface` builds the content revision (with the parity
-trick), mouse flags, alternate screen, scroll metrics with `as u64` casts and
-pixel size; `retained_surface::render_patches` rebuilds the same metadata from the
-dirty patch snapshot with its own scroll metrics conversion and without the
-parity rule. Owner: one builder from a runtime snapshot. (server-serving)
 
 ## CON-076 - Does a projection need recomputing?
 
@@ -502,33 +457,6 @@ and `server_stop` (or clap derive); printed commands render the same value.
 Reported by edges and contracts.
 
 ## Client
-
-## CON-097 - Which endpoint is shown, and what is its status?
-
-Shown: `EndpointChoice::shown()` ("the only owner of that fact") and
-`ClientShellState::active_endpoint_id`, read by core through `endpoint_is_active`
-in `handle_endpoint_supervisor`, the `Connected` failure branch,
-`handle_server_message`, `handle_timer`, and inside the shell by
-`mark_endpoint_disconnected`; kept in step only by `commit_move` calling
-`activate_endpoint_projection`. They disagree after `Lost::Shown`: `shown()` is
-`None` while the shell still names the lost endpoint. Status: the supervisor's
-`ReconnectState` and the shell's `ClientShellEndpoint::status`, written from
-`run_client_loop`, the `Status` arm, the `Connected` arm (twice), the reader-spawn
-failure branch, `install_client_shell_snapshot` (Online on every snapshot, any
-role), `commit_move` and `mark_endpoint_disconnected`; the shell's Local default
-is Online and is overridden when Local is absent. In the shell,
-`endpoint_projection_available` and `endpoint_is_online` are the same predicate
-(Online and snapshot present); `navigation_target_valid` adds generation and boot;
-`CachedEndpointSnapshot::stale`, `handle_endpoint_navigation`,
-`move_navigate_workspace`, the navigator and both sidebars test `status ==
-Online` directly; `handle_endpoint_machine_click`, `activate_endpoint` and
-`focus_or_activate` add "or it is Local"; "Online with no snapshot" is
-representable. The Attention label is `"attention"` in
-`endpoint_status_presentation` and `"! error"` in `render_endpoint_row`. Owner:
-one `Endpoints` owner (id, connection, generation, supervisor state, status,
-snapshot, role) with the shell reading a projection, and an endpoint state enum
-(`Connecting`, `Online { snapshot, generation }`, `Stale { last }`, `Attention {
-last }`) with `usable()`/`stale()`. Reported by client-core and client-shell.
 
 ## CON-103 - Is a host terminal write failure fatal?
 

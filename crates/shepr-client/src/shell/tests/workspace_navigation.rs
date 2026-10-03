@@ -264,7 +264,7 @@ fn navigation_highlights_only_the_preview_and_activates_on_enter() {
                 endpoint_id, target: Some(ClientEndpointFocusTarget::Workspace(id)),
             }] if endpoint_id == &remote && id == "w2")
             );
-            assert_eq!(state.active_endpoint_id, ClientEndpointId::Local);
+            assert_eq!(*state.active_endpoint_id(), ClientEndpointId::Local);
             assert_eq!(state.mode, ClientShellMode::Terminal);
             assert!(state.navigate_workspace_id.is_none());
         }
@@ -313,7 +313,7 @@ fn foreign_preview_blocks_keyboard_actions_but_keeps_active_action_context() {
     );
     preview_key(&mut state, b"\x1b");
     assert!(state.navigate_workspace_id.is_none());
-    assert_eq!(state.active_endpoint_id, ClientEndpointId::Local);
+    assert_eq!(*state.active_endpoint_id(), ClientEndpointId::Local);
     assert!(state.activate_endpoint_projection(&remote));
     enter_navigation(&mut state);
     preview_key(&mut state, b"W");
@@ -485,7 +485,7 @@ fn foreign_preview_survives_local_updates_and_rejects_stale_enter() {
             _ => unreachable!(),
         }
         preview_key(&mut state, b"\r");
-        assert_eq!(state.active_endpoint_id, ClientEndpointId::Local);
+        assert_eq!(*state.active_endpoint_id(), ClientEndpointId::Local);
         assert_eq!(state.mode, ClientShellMode::Navigate);
         assert!(state.notices.visible().is_some());
         assert!(

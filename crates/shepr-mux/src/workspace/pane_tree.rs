@@ -43,19 +43,17 @@ impl WorkspacePane {
 
 /// A split planned on a cloned layout: plain data, no child. The caller
 /// launches the pane from `geometry`, `public_id` and the terminal's cwd, then
-/// commits the rest with `commit_new_pane` in the same synchronous handler.
+/// commits the reserved public number from `public_id` with
+/// `commit_new_pane` in the same synchronous handler.
 pub struct PreparedSplit {
     pub pane_id: PaneId,
     pub terminal: TerminalState,
     /// The new pane's PTY size in the tiled layout, since a split unzooms.
     pub geometry: shepr_core::geometry::PaneGeometry,
-    /// The id exported to the child as `SHEPR_PANE_ID`, built from
-    /// `public_number`.
+    /// The id exported to the child as `SHEPR_PANE_ID`; its number is also
+    /// registered when the split is committed.
     pub public_id: shepr_protocol::PublicPaneId,
     pub prepared_layout: TileLayout,
-    /// The public pane number reserved at prepare time; the commit registers
-    /// the pane under it.
-    pub public_number: usize,
 }
 
 impl Workspace {
@@ -229,7 +227,6 @@ impl Workspace {
             geometry,
             public_id: shepr_protocol::PublicPaneId::new(&self.id, self.next_public_pane_number),
             prepared_layout,
-            public_number: self.next_public_pane_number,
         })
     }
 

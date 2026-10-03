@@ -32,14 +32,14 @@ use std::os::fd::OwnedFd;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use shepr_pty::launch::{LaunchRecord, RecordRead, Registration};
+use shepr_pty::launch::{LaunchStatusEvent, LaunchStatusReader, Registration};
 use tokio::io::unix::AsyncFd;
 use tokio::sync::{oneshot, watch};
 
 use super::exit_arbiter::{PaneEnding, PaneExitArbiter};
 use super::teardown::ChildLiveness;
 use crate::events::{AppEvent, EventSender};
-use crate::terminal::RestoreFailure;
+use crate::terminal::PaneStartFailure;
 use shepr_core::layout::PaneId;
 
 /// How a pane launch ended, as the app is told.
@@ -48,7 +48,7 @@ pub enum LaunchOutcome {
     /// Exec committed in `cwd`, the candidate the child entered.
     Launched { cwd: crate::UsableCwd },
     /// The child reported why it could not start the shell.
-    Failed(RestoreFailure),
+    Failed(PaneStartFailure),
     /// Exec was not confirmed: the child is gone without a report, or the
     /// pane ended before the launch settled. The pane's death follows and is
     /// an ordinary one.
@@ -62,23 +62,25 @@ pub struct LaunchSettlement {
     pub outcome: LaunchOutcome,
 }
 
-/// What a launch has reached.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(super) struct LaunchProgress {
-    /// `Some(true)` once exec committed, `Some(false)` for any other end.
-    pub(super) launched: Option<bool>,
+/// The watch is a wakeup only. ChildLiveness owns the commitment decision.
+#[derive(Debug, Clone, Copy, Default)]
+pub(super) struct LaunchProgress;
+
+pub(super) struct LaunchWatch {
+    wake: watch::Receiver<LaunchProgress>,
+    child: Arc<ChildLiveness>,
 }
 
-pub(super) struct LaunchWatch(watch::Receiver<LaunchProgress>);
-
 impl LaunchWatch {
-    /// Waits until the launch settled; whether exec committed. A coordinator
-    /// that ended without settling (a teardown) reads as not launched.
     pub(super) async fn launched(&mut self) -> bool {
-        self.0
-            .wait_for(|progress| progress.launched.is_some())
-            .await
-            .is_ok_and(|progress| progress.launched == Some(true))
+        loop {
+            if let Some(committed) = self.child.launch_committed() {
+                return committed;
+            }
+            if self.wake.changed().await.is_err() {
+                return false;
+            }
+        }
     }
 }
 
@@ -99,7 +101,8 @@ pub(super) fn spawn(
     arbiter: Arc<PaneExitArbiter>,
     events: EventSender,
 ) -> LaunchWatch {
-    let (progress, watch) = watch::channel(LaunchProgress::default());
+    let (progress, watch) = watch::channel(LaunchProgress);
+    let watch_child = Arc::clone(&child_liveness);
     tokio::spawn(async move {
         let LaunchStatus {
             channel,
@@ -107,7 +110,7 @@ pub(super) fn spawn(
             cwd_candidates,
             program,
         } = status;
-        let settling = settle(channel, &cwd_candidates, &program, &child_liveness);
+        let settling = settle(channel, cwd_candidates, &program, &child_liveness);
         coordinate(
             Coordinator {
                 pane_id,
@@ -122,7 +125,10 @@ pub(super) fn spawn(
         )
         .await;
     });
-    LaunchWatch(watch)
+    LaunchWatch {
+        wake: watch,
+        child: watch_child,
+    }
 }
 
 struct Coordinator<'a> {
@@ -182,10 +188,8 @@ async fn coordinate<Claim>(
         return;
     }
     let launched = matches!(settlement, LaunchOutcome::Launched { .. });
-    if launched {
-        child_liveness.mark_launched();
-    }
-    progress.send_modify(|progress| progress.launched = Some(launched));
+    child_liveness.settle_launch(launched);
+    progress.send_replace(LaunchProgress);
     if let LaunchOutcome::Failed(failure) = &settlement {
         tracing::warn!(pane = pane_id.raw(), %failure, "pane launch failed");
     }
@@ -223,7 +227,7 @@ async fn coordinate<Claim>(
 
 async fn settle(
     mut channel: oneshot::Receiver<OwnedFd>,
-    cwd_candidates: &[PathBuf],
+    cwd_candidates: Vec<PathBuf>,
     program: &str,
     child_liveness: &ChildLiveness,
 ) -> LaunchOutcome {
@@ -270,7 +274,7 @@ async fn settle(
             return LaunchOutcome::Unconfirmed;
         }
     };
-    let mut selected: Option<usize> = None;
+    let mut reader = LaunchStatusReader::new(cwd_candidates);
     loop {
         let mut ready = match channel.readable().await {
             Ok(ready) => ready,
@@ -279,54 +283,28 @@ async fn settle(
                 return LaunchOutcome::Unconfirmed;
             }
         };
-        let read = shepr_pty::launch::read_record(ready.get_inner());
-        match read {
-            Ok(RecordRead::WouldBlock) => ready.clear_ready(),
-            Ok(RecordRead::Record(LaunchRecord::ChdirOk(index))) if selected.is_none() => {
-                match usize::try_from(index)
-                    .ok()
-                    .filter(|index| *index < cwd_candidates.len())
-                {
-                    Some(index) => selected = Some(index),
-                    None => {
-                        tracing::warn!(index, "pane launch reported an unknown cwd candidate");
-                        return LaunchOutcome::Unconfirmed;
-                    }
-                }
+        match reader.read(ready.get_inner()) {
+            Ok(LaunchStatusEvent::WouldBlock) => ready.clear_ready(),
+            Ok(LaunchStatusEvent::Entered(_)) => {}
+            Ok(LaunchStatusEvent::DirectoryFailed { path, error }) => {
+                return LaunchOutcome::Failed(directory_failure(path, error));
             }
-            Ok(RecordRead::Record(LaunchRecord::ChdirFailed(errno))) if selected.is_none() => {
-                // The failure names the first candidate, the directory the
-                // pane was meant to open in (the requested one, or HOME when
-                // none was requested), with its own errno: that is what the
-                // placeholder tells the user to restore. Every fallback failed
-                // too, which needs `/` itself to be unenterable; that is too
-                // exotic to spell out.
-                let Some(path) = cwd_candidates.first().cloned() else {
-                    tracing::warn!("pane launch reported a cwd failure with no candidates");
-                    return LaunchOutcome::Unconfirmed;
-                };
-                return LaunchOutcome::Failed(directory_failure(path, errno));
-            }
-            Ok(RecordRead::Record(LaunchRecord::ExecFailed(errno))) if selected.is_some() => {
-                let error = std::io::Error::from_raw_os_error(errno);
-                return LaunchOutcome::Failed(RestoreFailure::ShellStartFailed {
-                    error: format!("{program}: {error}"),
+            Ok(LaunchStatusEvent::ExecFailed(error)) => {
+                return LaunchOutcome::Failed(PaneStartFailure::ShellStartFailed {
+                    program: Some(PathBuf::from(program)),
+                    error,
                 });
             }
-            Ok(RecordRead::Record(record)) => {
-                tracing::warn!(?record, "pane launch reported out of order");
-                return LaunchOutcome::Unconfirmed;
-            }
-            Ok(RecordRead::Eof) => {
-                // The child's end is close-on-exec and nothing else closes it
-                // before exec, so EOF while the child lives is exec committed.
-                return match selected {
-                    Some(index) if !child_liveness.has_exited() => LaunchOutcome::Launched {
-                        cwd: crate::UsableCwd::entered(cwd_candidates[index].clone()),
-                    },
-                    _ => LaunchOutcome::Unconfirmed,
+            Ok(LaunchStatusEvent::CommitCandidate(path)) => {
+                return if child_liveness.has_exited() {
+                    LaunchOutcome::Unconfirmed
+                } else {
+                    LaunchOutcome::Launched {
+                        cwd: crate::UsableCwd::entered(path),
+                    }
                 };
             }
+            Ok(LaunchStatusEvent::Unconfirmed) => return LaunchOutcome::Unconfirmed,
             Err(error) => {
                 tracing::warn!(%error, "pane launch status channel failed");
                 return LaunchOutcome::Unconfirmed;
@@ -335,15 +313,14 @@ async fn settle(
     }
 }
 
-fn directory_failure(path: PathBuf, errno: i32) -> RestoreFailure {
-    let error = std::io::Error::from_raw_os_error(errno);
+fn directory_failure(path: PathBuf, error: std::io::Error) -> PaneStartFailure {
     if matches!(
         error.kind(),
         std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
     ) {
-        RestoreFailure::DirectoryUnavailable { path }
+        PaneStartFailure::DirectoryUnavailable { path, error }
     } else {
-        RestoreFailure::directory_unreadable(path, &error)
+        PaneStartFailure::directory_unreadable(path, &error)
     }
 }
 
@@ -392,8 +369,8 @@ mod tests {
             shepr_test_fixtures::fixed_pane_id(1),
             crate::events::RuntimeGeneration::alloc(),
         );
-        let (progress, _watch) = watch::channel(LaunchProgress::default());
-        let child_liveness = ChildLiveness::new(std::process::id(), None);
+        let (progress, _watch) = watch::channel(LaunchProgress);
+        let child_liveness = ChildLiveness::absent();
         coordinate(
             Coordinator {
                 pane_id: shepr_test_fixtures::fixed_pane_id(1),
@@ -410,9 +387,58 @@ mod tests {
         told(&mut rx)
     }
 
+    #[tokio::test]
+    async fn watch_reads_commitment_from_child_state() {
+        let child = Arc::new(ChildLiveness::absent());
+        let (wake, receiver) = watch::channel(LaunchProgress);
+        let mut watch = LaunchWatch {
+            wake: receiver,
+            child: Arc::clone(&child),
+        };
+        child.settle_launch(true);
+        wake.send_replace(LaunchProgress);
+        assert!(watch.launched().await);
+        child.mark_wait_completed();
+        assert!(watch.launched().await);
+        assert!(child.live_process_id().is_none());
+    }
+
+    #[tokio::test]
+    async fn cancelled_coordinator_never_reports_commitment() {
+        let child = Arc::new(ChildLiveness::absent());
+        let (wake, receiver) = watch::channel(LaunchProgress);
+        let mut watch = LaunchWatch {
+            wake: receiver,
+            child,
+        };
+        drop(wake);
+        assert!(!watch.launched().await);
+    }
+
+    #[test]
+    fn directory_failures_retain_errno_and_classification() {
+        for (errno, unavailable) in [
+            (libc::ENOENT, true),
+            (libc::ENOTDIR, true),
+            (libc::EACCES, false),
+        ] {
+            let failure = directory_failure(
+                "/requested".into(),
+                std::io::Error::from_raw_os_error(errno),
+            );
+            let error = match &failure {
+                PaneStartFailure::DirectoryUnavailable { error, .. } if unavailable => error,
+                PaneStartFailure::DirectoryUnreadable { error, .. } if !unavailable => error,
+                _ => panic!("wrong directory failure classification"),
+            };
+            assert_eq!(error.raw_os_error(), Some(errno));
+        }
+    }
+
     fn failed() -> LaunchOutcome {
-        LaunchOutcome::Failed(RestoreFailure::ShellStartFailed {
-            error: "no shell".into(),
+        LaunchOutcome::Failed(PaneStartFailure::ShellStartFailed {
+            program: None,
+            error: std::io::Error::from_raw_os_error(libc::ENOENT),
         })
     }
 
@@ -513,8 +539,8 @@ mod tests {
             shepr_test_fixtures::fixed_pane_id(1),
             crate::events::RuntimeGeneration::alloc(),
         );
-        let (progress, _watch) = watch::channel(LaunchProgress::default());
-        let child_liveness = ChildLiveness::new(std::process::id(), None);
+        let (progress, _watch) = watch::channel(LaunchProgress);
+        let child_liveness = ChildLiveness::absent();
         let coordinating = coordinate(
             Coordinator {
                 pane_id: shepr_test_fixtures::fixed_pane_id(1),

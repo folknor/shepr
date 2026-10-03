@@ -94,6 +94,18 @@ pub(crate) fn surface_cursor(
     let ws_idx = app.workspace_index(surface.target?)?;
     let info = surface.pane_infos.iter().find(|info| info.is_focused)?;
     let runtime = app.runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, info.id)?;
+    pane_cursor(app, runtime, ws_idx, info.id, info.inner_rect)
+}
+
+/// Cursor policy shared by complete surfaces and retained updates. Geometry
+/// belongs to the viewing client, while agent identity belongs to the pane.
+pub(crate) fn pane_cursor(
+    app: &AppState,
+    runtime: &shepr_mux::pane::PaneRuntime,
+    ws_idx: usize,
+    pane_id: shepr_core::layout::PaneId,
+    area: Rect,
+) -> Option<CursorState> {
     if runtime.read().synchronized_output_active() {
         return None;
     }
@@ -103,7 +115,7 @@ pub(crate) fn surface_cursor(
             let detected = app
                 .workspaces
                 .get(ws_idx)
-                .and_then(|ws| ws.terminal_id(info.id))
+                .and_then(|ws| ws.terminal_id(pane_id))
                 .and_then(|terminal_id| app.terminals.get(terminal_id))
                 .and_then(|terminal| terminal.ownership().detected_agent());
             detected.is_some_and(|agent| {
@@ -114,7 +126,7 @@ pub(crate) fn surface_cursor(
             })
         });
 
-    if let Some(cursor) = runtime.read().cursor_state(info.inner_rect) {
+    if let Some(cursor) = runtime.read().cursor_state(area) {
         let visible = if reveal {
             !scrolled_back
         } else {
@@ -132,8 +144,8 @@ pub(crate) fn surface_cursor(
         })
     } else if reveal && !scrolled_back {
         Some(CursorState {
-            x: info.inner_rect.x,
-            y: info.inner_rect.y,
+            x: area.x,
+            y: area.y,
             visible: true,
             shape: app.settings.cjk_ime_cursor_shape,
         })

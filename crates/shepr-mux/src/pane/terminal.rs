@@ -225,7 +225,7 @@ pub(crate) struct PaneTerminalCore {
     /// Process group of the foreground program that last overrode a default
     /// colour (OSC 10/11); its overrides are dropped once the shell is back
     /// in the foreground. `None` while no override is in effect.
-    pub transient_default_color_owner_pgid: Option<u32>,
+    pub transient_default_color_owner_pgid: Option<shepr_platform::Pgid>,
     // Raw only inside the core; effects carry DefaultColorGeneration so an
     // owner probe cannot be mistaken for another kind of generation.
     default_color_generation: u64,

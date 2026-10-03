@@ -48,8 +48,8 @@ use tracing::info;
 
 use shepr_mux::events::AppEvent;
 
-pub(crate) use api::EndpointContext;
 pub(crate) use api::session::SessionSnapshot;
+pub(crate) use api::{EndpointContext, Invalidation};
 pub use state::AppState;
 pub(crate) use state::SpawnGeometry;
 
@@ -203,13 +203,12 @@ impl App {
             restore_notice,
             restore_summary,
         } = opened;
-        if let Some((workspaces, outcome)) = restore_summary {
+        if let Some(summary) = restore_summary {
             crate::logging::session_restored(
                 &paths
                     .data_dir()
                     .join(shepr_mux::persist::SessionWriter::SESSION_FILE_NAME),
-                workspaces,
-                outcome,
+                summary,
             );
         }
         let restored_host_theme = restored_host_theme.unwrap_or_default();

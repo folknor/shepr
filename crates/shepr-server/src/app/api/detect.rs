@@ -332,7 +332,7 @@ mod tests {
             .get_mut(&terminal_id)
             .expect("test precondition");
         terminal.set_detected_state(Some(Agent::Codex), AgentState::Idle);
-        terminal.record_start_failure(shepr_mux::terminal::RestoreFailure::shell_start_failed(
+        terminal.record_start_failure(shepr_mux::terminal::PaneStartFailure::shell_start_failed(
             &std::io::Error::from(std::io::ErrorKind::NotFound),
         ));
         let pane = app
@@ -356,7 +356,7 @@ mod tests {
             let message = response["error"]["message"].as_str().unwrap_or_default();
             assert!(message.contains(&pane), "{response}");
             assert!(
-                message.contains("Could not start the saved shell"),
+                message.contains("Could not start the pane shell"),
                 "{response}"
             );
         }

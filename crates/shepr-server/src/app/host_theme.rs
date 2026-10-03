@@ -47,8 +47,7 @@ impl App {
         for runtime in self.terminal_runtimes.values() {
             runtime.apply_host_terminal_theme(theme);
         }
-        self.render_dirty.request_generic();
-        self.render_notify.notify_one();
+        self.invalidate_shared_view(false);
         true
     }
 }

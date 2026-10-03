@@ -256,7 +256,7 @@ fn resolve_default_shell(configured: &str, paths: &AppPaths) -> Result<ResolvedS
             |error| {
                 format!(
                     "{error}; no shell was configured, so panes use SHELL={}. \
-                     Configure a shell shepr recognizes, or fix SHELL",
+                     Set it to a shell shepr recognizes, or fix SHELL",
                     inherited.to_string_lossy()
                 )
             },
@@ -545,7 +545,7 @@ pub(crate) fn parse_client_config(
                 mouse_scroll_lines,
             ),
         }),
-        _ => Err(vec![super::ConfigDiagnostic::path(
+        _ => Err(vec![super::ConfigDiagnostic::internal(
             "configuration resolution could not produce validated client values",
         )]),
     }
@@ -700,7 +700,7 @@ pub(crate) fn parse_server_config(
                 },
             })
         }
-        _ => Err(vec![super::ConfigDiagnostic::path(
+        _ => Err(vec![super::ConfigDiagnostic::internal(
             "configuration resolution could not produce validated server values",
         )]),
     }
@@ -1087,7 +1087,7 @@ mod tests {
                         && message.to_string().contains(&format!("SHELL={shell}"))
                         && message
                             .to_string()
-                            .contains("Configure a shell shepr recognizes")
+                            .contains("Set it to a shell shepr recognizes")
                 }),
                 "expected a SHELL diagnostic with {expected:?} in {errors:?}"
             );
