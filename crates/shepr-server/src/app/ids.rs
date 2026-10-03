@@ -15,7 +15,7 @@ impl App {
     /// Public id of the workspace at `ws_idx`, or `None` when that index no
     /// longer names a workspace.
     pub(crate) fn public_workspace_id(&self, ws_idx: usize) -> Option<shepr_protocol::WorkspaceId> {
-        self.state.workspaces.get(ws_idx).map(|ws| ws.id.clone())
+        self.state.workspaces.get(ws_idx).map(|ws| ws.id)
     }
 
     pub(crate) fn public_pane_id(
@@ -47,9 +47,9 @@ impl App {
     /// Resolves a public pane id (`<workspace_id>:p<n>`) to (workspace index,
     /// pane).
     ///
-    /// Raw internal pane ids (`p_<raw>`) are not accepted: they restart every
-    /// process, so after a server restart they name a different pane. The
-    /// `<workspace>-N` form is gone too; nothing emits it.
+    /// Only the canonical text parses. Raw internal pane ids (`p_<raw>`) are
+    /// not accepted: they restart every process, so after a server restart
+    /// they would name a different pane.
     pub(crate) fn parse_pane_id(&self, id: &str) -> Option<(usize, shepr_core::layout::PaneId)> {
         let public_id = id.parse::<shepr_protocol::PublicPaneId>().ok()?;
         self.resolve_pane_id(&public_id)
@@ -89,11 +89,11 @@ mod tests {
         let mut app = test_app_with_workspaces(&["a", "b"]);
         let second = app.state.workspaces[1].test_split(shepr_core::layout::Direction::Horizontal);
         app.state.ensure_test_terminals();
-        let ws_id = app.state.workspaces[1].id.clone();
+        let ws_id = app.state.workspaces[1].id;
 
         assert_eq!(app.resolve_workspace_id(&ws_id), Some(1));
         let pane_id = app.public_pane_id(1, second).expect("public pane id");
-        assert_eq!(app.parse_pane_id(&pane_id), Some((1, second)));
+        assert_eq!(app.resolve_pane_id(&pane_id), Some((1, second)));
     }
 
     #[test]
@@ -106,15 +106,18 @@ mod tests {
     #[test]
     fn unknown_public_pane_id_does_not_resolve() {
         let app = test_app_with_workspaces(&["a", "b"]);
-        let retired_id = shepr_protocol::PublicPaneId::new(&retired_workspace_id(), 9);
+        let retired_id = shepr_protocol::PublicPaneId::new(
+            &retired_workspace_id(),
+            shepr_protocol::PanePublicNumber::new(9).expect("number"),
+        );
 
-        assert_eq!(app.parse_pane_id(&retired_id), None);
+        assert_eq!(app.resolve_pane_id(&retired_id), None);
     }
 
     #[test]
     fn positional_and_raw_ids_are_rejected() {
         let app = test_app_with_workspaces(&["a", "b"]);
-        let ws_id = app.state.workspaces[0].id.clone();
+        let ws_id = app.state.workspaces[0].id;
         let root = app.state.workspaces[0].root_pane();
 
         for id in ["1", "2", "w_1", "w_2"] {

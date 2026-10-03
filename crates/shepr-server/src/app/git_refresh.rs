@@ -73,7 +73,7 @@ fn refresh_deadline_after(now: Instant) -> Instant {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct WorkspaceGitRefreshItem {
-    workspace_id: String,
+    workspace_id: shepr_protocol::WorkspaceId,
     resolved_identity_cwd: PathBuf,
     // The workspace/AppState cache boundary currently carries a path without
     // recording whether it came from a checkout or an outside-repo cwd.
@@ -82,7 +82,7 @@ struct WorkspaceGitRefreshItem {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct WorkspaceGitRefreshTarget {
-    workspace_id: String,
+    workspace_id: shepr_protocol::WorkspaceId,
     resolved_identity_cwd: PathBuf,
 }
 
@@ -194,7 +194,7 @@ impl App {
                     ws.git_status_key_for_cwd(&cwd).map(PathBuf::from)
                 };
                 Some(WorkspaceGitRefreshItem {
-                    workspace_id: ws.id.to_string(),
+                    workspace_id: ws.id,
                     resolved_identity_cwd: cwd,
                     cache_key_hint,
                 })
@@ -309,7 +309,7 @@ mod tests {
 
     fn admit_cached_identity(ws: &mut Workspace, cwd: PathBuf, key: PathBuf) {
         let status = WorkspaceGitStatus {
-            workspace_id: ws.id.to_string(),
+            workspace_id: ws.id,
             resolved_identity_cwd: cwd,
             status_cache_key: key,
             auto_label: "test".into(),
@@ -339,12 +339,12 @@ mod tests {
         let output = refresh_workspace_git_statuses(
             vec![
                 WorkspaceGitRefreshItem {
-                    workspace_id: "one".into(),
+                    workspace_id: shepr_protocol::WorkspaceId::from_number(1).expect("id"),
                     resolved_identity_cwd: nested.clone(),
                     cache_key_hint: None,
                 },
                 WorkspaceGitRefreshItem {
-                    workspace_id: "two".into(),
+                    workspace_id: shepr_protocol::WorkspaceId::from_number(2).expect("id"),
                     resolved_identity_cwd: other.clone(),
                     cache_key_hint: None,
                 },
@@ -358,9 +358,15 @@ mod tests {
             std::fs::canonicalize(&repo).expect("canonical repo path")
         );
         assert_eq!(output.results.len(), 2);
-        assert_eq!(output.results[0].workspace_id, "one");
+        assert_eq!(
+            output.results[0].workspace_id,
+            shepr_protocol::WorkspaceId::from_number(1).expect("id")
+        );
         assert_eq!(output.results[0].resolved_identity_cwd, nested);
-        assert_eq!(output.results[1].workspace_id, "two");
+        assert_eq!(
+            output.results[1].workspace_id,
+            shepr_protocol::WorkspaceId::from_number(2).expect("id")
+        );
         assert_eq!(output.results[1].resolved_identity_cwd, other);
     }
 
@@ -395,8 +401,9 @@ mod tests {
         };
         let items = ["alpha", "beta"]
             .into_iter()
-            .map(|name| WorkspaceGitRefreshItem {
-                workspace_id: name.into(),
+            .enumerate()
+            .map(|(index, name)| WorkspaceGitRefreshItem {
+                workspace_id: shepr_protocol::WorkspaceId::from_number(index + 1).expect("id"),
                 resolved_identity_cwd: cache_key.join(name),
                 cache_key_hint: Some(cache_key.clone()),
             })

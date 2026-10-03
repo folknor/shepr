@@ -173,15 +173,33 @@ impl WorkspaceFixture for Workspace {
             Some(name.to_string()),
             &identity_cwd,
             PaneId::alloc(),
-            WorkspacePane::new(PaneState::new(TerminalId::alloc())),
+            WorkspacePane::new(
+                PaneState::new(TerminalId::alloc()),
+                shepr_protocol::PanePublicNumber::FIRST,
+            ),
         )
     }
 
     fn test_split(&mut self, direction: Direction) -> PaneId {
-        let mut layout = self.layout().clone();
-        let new_id = layout.split_focused(direction);
-        let number = self.next_public_pane_number();
-        self.commit_new_pane(new_id, layout, TerminalId::alloc(), number, false)
+        let geometry = shepr_mux::workspace::PaneGeometry {
+            area: ratatui::layout::Rect::new(0, 0, 80, 24),
+            pane_borders: shepr_config::PaneBordersConfig::Off,
+            pane_gaps: false,
+            pane_outer_borders: false,
+            pane_scrollbars: false,
+        };
+        let prepared = self
+            .prepare_split(
+                self.focused_pane_id(),
+                direction,
+                &geometry,
+                None,
+                PathBuf::from("/"),
+                true,
+            )
+            .expect("test split prepares");
+        let new_id = prepared.pane_id();
+        self.commit_new_pane(prepared, false)
             .expect("test split commits");
         new_id
     }
@@ -200,7 +218,8 @@ impl WorkspaceFixture for Workspace {
         assert_ne!(
             later_pane.raw() as usize,
             ws.public_pane_number(later_pane)
-                .expect("test pane has a public pane number"),
+                .expect("test pane has a public pane number")
+                .get(),
             "adversarial pane must distinguish raw pane id from public pane number"
         );
         ws
@@ -245,19 +264,13 @@ impl WorkspaceFixture for Workspace {
 
         for (pane_id, pane) in self.panes() {
             assert!(
-                pane.public_number > 0,
-                "workspace {} pane {:?} has invalid public pane number 0",
-                self.id,
-                pane_id
-            );
-            assert!(
                 pane_numbers.insert(pane.public_number),
                 "workspace {} duplicate public pane number {} for pane {:?}",
                 self.id,
                 pane.public_number,
                 pane_id
             );
-            max_pane_number = max_pane_number.max(pane.public_number);
+            max_pane_number = max_pane_number.max(pane.public_number.get());
             assert!(
                 terminal_ids.insert(pane.attached_terminal_id.clone()),
                 "workspace {} terminal {} is attached to multiple panes",
@@ -267,12 +280,7 @@ impl WorkspaceFixture for Workspace {
         }
 
         assert!(
-            self.next_public_pane_number > 0,
-            "workspace {} next_public_pane_number must be greater than 0",
-            self.id
-        );
-        assert!(
-            self.next_public_pane_number > max_pane_number,
+            self.next_public_pane_number.get() > max_pane_number,
             "workspace {} next_public_pane_number {} must be greater than max live public pane number {}",
             self.id,
             self.next_public_pane_number,

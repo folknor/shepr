@@ -17,7 +17,7 @@ impl ClientShellState {
                 hit.endpoint_id == *self.endpoints.presented()
                     && crate::shell::input::hit_test::contains(hit.rect, point)
             })
-            .map(|hit| hit.workspace_id.clone())
+            .map(|hit| hit.workspace_id)
     }
 
     pub(in crate::shell) fn endpoint_workspace_is_draggable(
@@ -97,13 +97,13 @@ impl ClientShellState {
             .endpoint_agents
             .iter()
             .find(|(rect, _, _)| crate::shell::input::hit_test::contains(*rect, point))
-            .map(|(_, endpoint_id, pane_id)| (endpoint_id.clone(), pane_id.clone()))
+            .map(|(_, endpoint_id, pane_id)| (endpoint_id.clone(), pane_id))
         else {
             return false;
         };
         self.focus_or_activate(
             endpoint_id,
-            ClientEndpointFocusTarget::Pane(pane_id),
+            ClientEndpointFocusTarget::Pane(*pane_id),
             outcome,
         );
         true
@@ -152,7 +152,7 @@ impl ClientShellState {
             let target = &workspaces[next];
             self.focus_or_activate(
                 target.endpoint_id.clone(),
-                ClientEndpointFocusTarget::Workspace(target.workspace_id.clone()),
+                ClientEndpointFocusTarget::Workspace(target.workspace_id),
                 outcome,
             );
             return true;
@@ -168,7 +168,7 @@ impl ClientShellState {
             let focused = self
                 .snapshot
                 .as_deref()
-                .and_then(|snapshot| snapshot.focused_pane_id.as_deref());
+                .and_then(|snapshot| snapshot.focused_pane_id.as_ref());
             let Some(next) = crate::shell::navigation::aggregate_navigation::agent_target_index(
                 agents,
                 self.endpoints.presented(),
@@ -178,10 +178,10 @@ impl ClientShellState {
                 return true;
             };
             let target_endpoint_id = agents[next].endpoint_id.clone();
-            let target_pane_id = agents[next].pane_id.clone();
+            let target_pane_id = agents[next].pane_id;
             if self.focus_or_activate(
                 target_endpoint_id.clone(),
-                ClientEndpointFocusTarget::Pane(target_pane_id.clone()),
+                ClientEndpointFocusTarget::Pane(target_pane_id),
                 outcome,
             ) {
                 if target_endpoint_id == *self.endpoints.presented() {

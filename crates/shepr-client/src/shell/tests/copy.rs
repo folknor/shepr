@@ -249,7 +249,7 @@ fn client_mouse_selection_highlights_and_copies_through_endpoint_extraction() {
         [ClientShellAction::Endpoint { request, .. }]
             if matches!(
                 &request.command,
-                EndpointCommand::PaneFocus(target) if target.pane_id == "w1:p1"
+                EndpointCommand::PaneFocus(target) if target.pane_id == crate::tests::test_pane_id("w1:p1")
             )
     ));
     assert!(
@@ -297,7 +297,7 @@ fn client_mouse_selection_highlights_and_copies_through_endpoint_extraction() {
     assert!(matches!(
         &request.command,
         EndpointCommand::PaneSelectionRead(params)
-            if params.pane_id == "w1:p1"
+            if params.pane_id == crate::tests::test_pane_id("w1:p1")
                 && params.anchor == shepr_protocol::command::PaneTextPoint {
                     row: shepr_vt::AbsRow(0),
                     col: 0,
@@ -582,7 +582,7 @@ fn keyboard_copy_mode_owns_cursor_selection_copy_and_scroll_restore() {
     assert!(matches!(
         &request.command,
         EndpointCommand::PaneScroll(params)
-            if params.pane_id == "w1:p1" && params.offset_from_bottom == 20
+            if params.pane_id == crate::tests::test_pane_id("w1:p1") && params.offset_from_bottom == 20
     ));
     let top_request_id = request.id.clone();
     state.handle_endpoint_result(
@@ -909,7 +909,7 @@ fn keys_after_an_exit_key_reach_the_pane_once_an_in_flight_copy_motion_replays()
         replayed.requests.iter().any(|request| matches!(
             request,
             ClientShellRequest::Shown(ClientMessage::ClientShellPaneInput { pane_id, events })
-                if pane_id == "w1:p1"
+                if pane_id == &crate::tests::test_pane_id("w1:p1")
                     && events.iter().any(|event| matches!(
                         event,
                         ClientPaneInputEvent::Key {
@@ -991,7 +991,7 @@ fn copy_search_owns_prompt_repeat_highlights_selection_and_restore() {
     assert!(matches!(
         &request.command,
         EndpointCommand::PaneCopySearch(params)
-            if params.pane_id == "w1:p1"
+            if params.pane_id == crate::tests::test_pane_id("w1:p1")
                 && params.query == "needle"
                 && params.direction == shepr_protocol::command::PaneCopySearchDirection::Forward
                 && params.cursor == origin
@@ -1222,7 +1222,8 @@ fn navigator_renders_every_terminal_in_workspace_sections() {
         let mut pane = snapshot.panes[0].clone();
         pane.pane_id = shepr_protocol::PublicPaneId::new(
             &crate::tests::test_workspace_id("w1"),
-            snapshot.panes.len() + 1,
+            shepr_protocol::PanePublicNumber::new(snapshot.panes.len() + 1)
+                .expect("nonzero test number"),
         );
         pane.label = Some(label.into());
         snapshot.panes.push(pane);
@@ -1230,7 +1231,6 @@ fn navigator_renders_every_terminal_in_workspace_sections() {
     let mut workspace = snapshot.workspaces[0].clone();
     workspace.workspace_id = test_workspace_id("w2");
     workspace.label = "second".into();
-    workspace.number = 2;
     let mut pane = snapshot.panes[0].clone();
     pane.pane_id = test_pane_id("w2:p1");
     snapshot.workspaces.push(workspace);
@@ -1396,7 +1396,7 @@ fn navigator_searches_ancestor_context_and_keeps_split_agents_individually_actio
         let pane_ids = rows
             .iter()
             .filter_map(|row| match &row.target {
-                ClientNavigatorTarget::Pane { pane_id, .. } => Some(pane_id.as_str()),
+                ClientNavigatorTarget::Pane { pane_id, .. } => Some(pane_id.to_string()),
                 _ => None,
             })
             .collect::<Vec<_>>();
@@ -1456,7 +1456,7 @@ fn navigator_searches_ancestor_context_and_keeps_split_agents_individually_actio
         [ClientShellAction::ActivateEndpoint {
             endpoint_id: ClientEndpointId::Local,
             target: Some(ClientEndpointFocusTarget::Pane(pane_id)),
-        }] if pane_id == "w1:p2"
+        }] if pane_id == &crate::tests::test_pane_id("w1:p2")
     ));
 }
 
@@ -1465,8 +1465,10 @@ fn navigator_distinguishes_unnamed_terminals_in_one_workspace() {
     let mut projected = snapshot();
     for number in [2, 3] {
         let mut pane = projected.panes[0].clone();
-        pane.pane_id =
-            shepr_protocol::PublicPaneId::new(&crate::tests::test_workspace_id("w1"), number);
+        pane.pane_id = shepr_protocol::PublicPaneId::new(
+            &crate::tests::test_workspace_id("w1"),
+            shepr_protocol::PanePublicNumber::new(number).expect("nonzero test number"),
+        );
         projected.panes.push(pane);
     }
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
@@ -1616,8 +1618,10 @@ fn navigator_scrollbar_click_and_drag_scroll_without_opening_a_destination() {
     let mut projected = snapshot();
     for index in 2..=60 {
         let mut pane = projected.panes[0].clone();
-        pane.pane_id =
-            shepr_protocol::PublicPaneId::new(&crate::tests::test_workspace_id("w1"), index);
+        pane.pane_id = shepr_protocol::PublicPaneId::new(
+            &crate::tests::test_workspace_id("w1"),
+            shepr_protocol::PanePublicNumber::new(index).expect("nonzero test number"),
+        );
         pane.label = Some(format!("agent {index}"));
         projected.panes.push(pane);
     }
@@ -1671,7 +1675,10 @@ fn navigator_scrollbar_click_and_drag_scroll_without_opening_a_destination() {
             .start(),
         metrics.max_start()
     );
-    let last_pane = shepr_protocol::PublicPaneId::new(&crate::tests::test_workspace_id("w1"), 60);
+    let last_pane = shepr_protocol::PublicPaneId::new(
+        &crate::tests::test_workspace_id("w1"),
+        shepr_protocol::PanePublicNumber::new(60).expect("nonzero literal"),
+    );
     assert!(state.hits.navigator_rows.iter().any(|(_, target)| matches!(target, ClientNavigatorTarget::Pane { pane_id, .. } if *pane_id == last_pane)));
     mouse(&mut state, MouseEventKind::Down(MouseButton::Left), track.y);
     state.compose(106, 24).expect("jump back to top");
@@ -1744,7 +1751,7 @@ fn navigator_scrollbar_click_and_drag_scroll_without_opening_a_destination() {
         panic!("navigator");
     };
     // The last pane's id is the only text that matches it alone.
-    navigator.query = last_pane.as_str().into();
+    navigator.query = last_pane.to_string().as_str().into();
     navigator.selected = None;
     state.compose(106, 24).expect("filtered navigator");
     assert!(state.hits.navigator_scrollbar.is_empty());
@@ -1787,18 +1794,20 @@ fn navigator_scale_snapshot(workspaces: usize, panes: usize) -> ClientShellSnaps
         let mut workspace = workspace_template.clone();
         workspace.workspace_id =
             shepr_protocol::WorkspaceId::from_number(w + 1).expect("one-based workspace number");
-        workspace.number = w + 1;
         workspace.label = format!("workspace {w}");
         for p in 0..panes {
             let mut pane = pane_template.clone();
-            pane.pane_id = shepr_protocol::PublicPaneId::new(&workspace.workspace_id, p + 1);
+            pane.pane_id = shepr_protocol::PublicPaneId::new(
+                &workspace.workspace_id,
+                shepr_protocol::PanePublicNumber::new(p + 1).expect("nonzero test number"),
+            );
             pane.label = Some(format!("terminal {p}"));
             result.panes.push(pane);
         }
         result.workspaces.push(workspace);
     }
-    result.focused_workspace_id = Some(result.workspaces[0].workspace_id.clone());
-    result.focused_pane_id = Some(result.panes[0].pane_id.clone());
+    result.focused_workspace_id = Some(result.workspaces[0].workspace_id);
+    result.focused_pane_id = Some(result.panes[0].pane_id);
     result
 }
 
@@ -1814,7 +1823,7 @@ fn navigator_grouping_keeps_snapshot_order_with_interleaved_panes() {
                 .panes
                 .iter()
                 .filter(|pane| pane.pane_id.workspace_id() == &workspace.workspace_id)
-                .map(|pane| pane.pane_id.clone())
+                .map(|pane| pane.pane_id)
         })
         .collect::<Vec<_>>();
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
@@ -1840,18 +1849,14 @@ fn navigator_grouping_keeps_snapshot_order_with_interleaved_panes() {
                 pane_id,
             } => {
                 assert!(endpoint_id == state.endpoints.presented() || endpoint_id == &remote_id);
-                Some((endpoint_id.clone(), pane_id.clone()))
+                Some((endpoint_id.clone(), pane_id))
             }
             _ => None,
         })
         .collect::<Vec<_>>();
     let expected = [state.endpoints.presented().clone(), remote_id]
         .into_iter()
-        .flat_map(|endpoint| {
-            expected
-                .iter()
-                .map(move |pane| (endpoint.clone(), pane.clone()))
-        })
+        .flat_map(|endpoint| expected.iter().map(move |pane| (endpoint.clone(), pane)))
         .collect::<Vec<_>>();
     assert_eq!(actual, expected);
 }
@@ -1953,13 +1958,13 @@ fn navigator_owns_search_mouse_selection_and_stable_target_focus() {
     else {
         panic!("navigator pane click should be an explicit local pick");
     };
-    let focus = state.focus_endpoint_target(target.clone());
+    let focus = state.focus_endpoint_target(*target);
     let [ClientShellAction::Endpoint { request, .. }] = &focus[..] else {
         panic!("navigator pane click should use endpoint API");
     };
     assert!(matches!(
         &request.command,
-        EndpointCommand::PaneFocus(target) if target.pane_id == "w1:p1"
+        EndpointCommand::PaneFocus(target) if target.pane_id == crate::tests::test_pane_id("w1:p1")
     ));
     assert!(state.overlay.is_none());
 }
@@ -2040,7 +2045,7 @@ fn copy_mode_survives_mouse_motion_and_parks_across_focus_changes() {
             .mouse_selection
             .selection
             .as_ref()
-            .is_some_and(|selection| selection.pane_id == "w1:p2")
+            .is_some_and(|selection| selection.pane_id == crate::tests::test_pane_id("w1:p2"))
     );
 
     let mut other_surface = surface();
@@ -2060,7 +2065,7 @@ fn copy_mode_survives_mouse_motion_and_parks_across_focus_changes() {
     assert!(
         matches!(&copy.actions[..], [ClientShellAction::Endpoint { request, .. }]
         if matches!(&request.command, EndpointCommand::PaneSelectionRead(params)
-            if params.pane_id == "w1:p2"))
+            if params.pane_id == crate::tests::test_pane_id("w1:p2")))
     );
 
     state.set_snapshot(Box::new(snapshot()));
@@ -2071,7 +2076,7 @@ fn copy_mode_survives_mouse_motion_and_parks_across_focus_changes() {
             .mouse_selection
             .selection
             .as_ref()
-            .is_some_and(|selection| selection.pane_id == "w1:p1")
+            .is_some_and(|selection| selection.pane_id == crate::tests::test_pane_id("w1:p1"))
     );
     state.handle_raw_events(vec![RawInputEvent::Paste("ignored".into())]);
     assert!(
@@ -2079,7 +2084,7 @@ fn copy_mode_survives_mouse_motion_and_parks_across_focus_changes() {
             .mouse_selection
             .selection
             .as_ref()
-            .is_some_and(|selection| selection.pane_id == "w1:p1")
+            .is_some_and(|selection| selection.pane_id == crate::tests::test_pane_id("w1:p1"))
     );
 
     state.mode = ClientShellMode::Navigate;
@@ -2092,7 +2097,7 @@ fn copy_mode_survives_mouse_motion_and_parks_across_focus_changes() {
             .mouse_selection
             .selection
             .as_ref()
-            .is_some_and(|selection| selection.pane_id == "w1:p1")
+            .is_some_and(|selection| selection.pane_id == crate::tests::test_pane_id("w1:p1"))
     );
     state.mode = ClientShellMode::Resize;
     state.handle_raw_events(vec![RawInputEvent::Key(
@@ -2104,7 +2109,7 @@ fn copy_mode_survives_mouse_motion_and_parks_across_focus_changes() {
             .mouse_selection
             .selection
             .as_ref()
-            .is_some_and(|selection| selection.pane_id == "w1:p1")
+            .is_some_and(|selection| selection.pane_id == crate::tests::test_pane_id("w1:p1"))
     );
 }
 
@@ -2652,7 +2657,7 @@ fn copy_operation_does_not_capture_input_after_focus_moves() {
     assert!(input.requests.iter().any(|request| matches!(
         request,
         ClientShellRequest::Shown(ClientMessage::ClientShellPaneInput { pane_id, .. })
-            if pane_id == "w1:p2"
+            if pane_id == &crate::tests::test_pane_id("w1:p2")
     )));
 
     let failed = state.handle_endpoint_result(
@@ -2950,7 +2955,7 @@ fn copy_mode_repeat_during_projection_gap_stays_active() {
             action,
             ClientShellAction::Endpoint { request, .. }
                 if matches!(&request.command, EndpointCommand::PaneScroll(params)
-                    if params.pane_id == "w1:p1" && params.offset_from_bottom == 1)
+                    if params.pane_id == crate::tests::test_pane_id("w1:p1") && params.offset_from_bottom == 1)
         )));
         if selection_before_gap.is_some() {
             assert_eq!(

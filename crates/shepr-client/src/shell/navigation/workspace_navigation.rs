@@ -45,7 +45,7 @@ pub(in crate::shell) fn workspace_navigation_targets(
         for workspace in &snapshot.workspaces {
             targets.push(WorkspaceNavigationTarget {
                 endpoint_id: endpoint.endpoint_id.clone(),
-                workspace_id: workspace.workspace_id.clone(),
+                workspace_id: workspace.workspace_id,
                 boot_id: snapshot.boot_id.clone(),
                 generation: endpoint.snapshot_generation(),
             });
@@ -95,8 +95,7 @@ impl ClientShellState {
                 pending.target.endpoint_id != *self.endpoints.presented()
                     || !self.navigation_target_valid(&pending.target)
                     || self.snapshot.as_deref().is_some_and(|snapshot| {
-                        snapshot.focused_workspace_id.as_deref()
-                            == Some(pending.target.workspace_id.as_str())
+                        snapshot.focused_workspace_id.as_ref() == Some(&pending.target.workspace_id)
                     })
             })
         {
@@ -116,7 +115,7 @@ impl ClientShellState {
         let snapshot = endpoint.snapshot()?;
         Some(WorkspaceNavigationTarget {
             endpoint_id: endpoint_id.clone(),
-            workspace_id: workspace_id.clone(),
+            workspace_id: *workspace_id,
             boot_id: snapshot.boot_id.clone(),
             generation: endpoint.snapshot_generation(),
         })
@@ -199,7 +198,7 @@ impl ClientShellState {
         // direct focus request, `focus_endpoint_target` records the pending highlight there.
         if self.focus_or_activate(
             target.endpoint_id.clone(),
-            ClientEndpointFocusTarget::Workspace(target.workspace_id.clone()),
+            ClientEndpointFocusTarget::Workspace(target.workspace_id),
             outcome,
         ) {
             self.mode = ClientShellMode::Terminal;

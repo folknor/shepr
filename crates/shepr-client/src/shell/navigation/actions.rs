@@ -154,7 +154,7 @@ impl ClientShellState {
         let Some(selection) = self.mouse_selection.selection.as_ref() else {
             return;
         };
-        let pane_id = selection.pane_id.clone();
+        let pane_id = selection.pane_id;
         let (anchor, cursor) = match selection.shape() {
             shepr_vt::selection::SelectionShape::Range => selection.ordered_cells(),
             shepr_vt::selection::SelectionShape::Lines => {
@@ -321,7 +321,7 @@ impl ClientShellState {
         target: ClientEndpointFocusTarget,
     ) -> Vec<ClientShellAction> {
         let workspace_id = match &target {
-            ClientEndpointFocusTarget::Workspace(workspace_id) => Some(workspace_id.clone()),
+            ClientEndpointFocusTarget::Workspace(workspace_id) => Some(*workspace_id),
             ClientEndpointFocusTarget::Pane(_) => None,
         };
         let command = match target {
@@ -356,7 +356,7 @@ impl ClientShellState {
 
         let snapshot = self.snapshot.as_deref()?;
         let focused_workspace = snapshot.focused_workspace_id.as_ref();
-        let focused_pane = snapshot.focused_pane_id.clone();
+        let focused_pane = snapshot.focused_pane_id;
         let direction = |action| match action {
             KeybindAction::FocusPaneLeft
             | KeybindAction::SwapPaneLeft
@@ -381,7 +381,7 @@ impl ClientShellState {
                 let index = crate::shell::navigation::aggregate_navigation::agent_target_index(
                     agents,
                     self.endpoints.presented(),
-                    snapshot.focused_pane_id.as_deref(),
+                    snapshot.focused_pane_id.as_ref(),
                     action,
                 )?;
                 let target = agents.get(index)?;
@@ -389,7 +389,7 @@ impl ClientShellState {
                     return None;
                 }
                 let target_endpoint_id = target.endpoint_id.clone();
-                let pane_id = target.pane_id.clone();
+                let pane_id = target.pane_id;
                 // Relative moves can land on a row scrolled out of the sidebar;
                 // bring it into view, as a numbered pick already names a shown one.
                 if matches!(
@@ -407,7 +407,7 @@ impl ClientShellState {
                 Some(EndpointCommand::PaneFocus(PaneTarget { pane_id }))
             }
             KeybindAction::SwitchWorkspace(index) => {
-                let workspace_id = snapshot.workspaces.get(index)?.workspace_id.clone();
+                let workspace_id = snapshot.workspaces.get(index)?.workspace_id;
                 self.reveal_workspace(&workspace_id);
                 Some(EndpointCommand::WorkspaceFocus(WorkspaceTarget {
                     workspace_id,
@@ -431,7 +431,7 @@ impl ClientShellState {
                     current,
                     delta,
                 )?;
-                let workspace_id = workspaces[next].workspace_id.clone();
+                let workspace_id = workspaces[next].workspace_id;
                 self.reveal_workspace(&workspace_id);
                 Some(EndpointCommand::WorkspaceFocus(WorkspaceTarget {
                     workspace_id,
@@ -442,7 +442,7 @@ impl ClientShellState {
             | KeybindAction::FocusPaneUp
             | KeybindAction::FocusPaneRight => Some(EndpointCommand::PaneFocusDirection(
                 PaneFocusDirectionParams {
-                    pane_id: focused_pane.clone()?,
+                    pane_id: focused_pane?,
                     direction: direction(action)?,
                 },
             )),
@@ -451,13 +451,13 @@ impl ClientShellState {
             | KeybindAction::SwapPaneUp
             | KeybindAction::SwapPaneRight => {
                 Some(EndpointCommand::PaneSwap(PaneSwapParams::Direction {
-                    pane_id: focused_pane.clone()?,
+                    pane_id: focused_pane?,
                     direction: direction(action)?,
                 }))
             }
             KeybindAction::SplitVertical | KeybindAction::SplitHorizontal => {
                 Some(EndpointCommand::PaneSplit(PaneSplitParams {
-                    pane_id: focused_pane.clone()?,
+                    pane_id: focused_pane?,
                     direction: if action == KeybindAction::SplitVertical {
                         SplitDirection::Right
                     } else {
@@ -466,7 +466,7 @@ impl ClientShellState {
                 }))
             }
             KeybindAction::ClosePane => Some(EndpointCommand::PaneClose(PaneTarget {
-                pane_id: focused_pane.clone()?,
+                pane_id: focused_pane?,
             })),
             KeybindAction::CyclePaneNext | KeybindAction::CyclePanePrevious => {
                 let panes = snapshot
@@ -493,19 +493,17 @@ impl ClientShellState {
                     delta,
                 )?;
                 Some(EndpointCommand::PaneFocus(PaneTarget {
-                    pane_id: panes[next].pane_id.clone(),
+                    pane_id: panes[next].pane_id,
                 }))
             }
             KeybindAction::LastPane => {
                 let pane_id = self.previous_pane_id.as_ref()?;
-                if Some(pane_id.as_str()) == focused_pane.as_deref()
+                if Some(pane_id) == focused_pane.as_ref()
                     || !snapshot.panes.iter().any(|pane| &pane.pane_id == pane_id)
                 {
                     return None;
                 }
-                Some(EndpointCommand::PaneFocus(PaneTarget {
-                    pane_id: pane_id.clone(),
-                }))
+                Some(EndpointCommand::PaneFocus(PaneTarget { pane_id: *pane_id }))
             }
             KeybindAction::Zoom => Some(EndpointCommand::PaneZoom(PaneZoomParams {
                 pane_id: focused_pane?,

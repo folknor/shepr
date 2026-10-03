@@ -245,6 +245,7 @@ pub enum LaunchPresentation {
     Saved(shepr_termio::host_term::theme::TerminalTheme),
 }
 
+#[derive(Clone, Copy)]
 pub struct PaneLaunchRequest<'a> {
     pub pane_id: PaneId,
     pub public_id: shepr_protocol::PublicPaneId,

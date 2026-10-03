@@ -412,7 +412,7 @@ fn pixel_host_reports_use_cells_without_target_pixel_mode_and_release_outside() 
     assert!(matches!(
         &release.requests[..],
         [ClientShellRequest::Shown(ClientMessage::ClientShellPaneInput { pane_id, events })]
-            if pane_id == "w1:p1"
+            if pane_id == &crate::tests::test_pane_id("w1:p1")
                 && matches!(
                     &events[..],
                     [ClientPaneInputEvent::Mouse {
@@ -440,7 +440,7 @@ fn shell_targets_unconsumed_input_and_keeps_prefix_local() {
     else {
         panic!("expected targeted pane input");
     };
-    assert_eq!(pane_id, "w1:p1");
+    assert_eq!(pane_id.to_string(), "w1:p1");
     assert_eq!(events.len(), 5);
     assert!(matches!(
         &events[0],
@@ -532,7 +532,7 @@ fn text_key_release_follows_its_press_only_while_the_host_reports_all_keys() {
     assert!(matches!(
         &press.requests[..],
         [ClientShellRequest::Shown(ClientMessage::ClientShellPaneInput { pane_id, events })]
-            if pane_id == "w1:p1"
+            if pane_id == &crate::tests::test_pane_id("w1:p1")
                 && matches!(
                     &events[..],
                     [ClientPaneInputEvent::Key { generated_text: Some(text), .. }] if text == "h"
@@ -543,7 +543,7 @@ fn text_key_release_follows_its_press_only_while_the_host_reports_all_keys() {
         matches!(
             &release.requests[..],
             [ClientShellRequest::Shown(ClientMessage::ClientShellPaneInput { pane_id, events })]
-                if pane_id == "w1:p1"
+                if pane_id == &crate::tests::test_pane_id("w1:p1")
                     && matches!(
                         &events[..],
                         [ClientPaneInputEvent::Key {
@@ -651,7 +651,6 @@ fn collapsed_sidebar_scrolls_to_workspaces_past_its_height() {
     many.workspaces = (1..=30)
         .map(|number| ClientShellWorkspace {
             workspace_id: test_workspace_id(&format!("w{number}")),
-            number,
             ..template.clone()
         })
         .collect();
@@ -668,14 +667,14 @@ fn collapsed_sidebar_scrolls_to_workspaces_past_its_height() {
             .hits
             .workspaces
             .iter()
-            .any(|hit| hit.workspace_id == "w30")
+            .any(|hit| hit.workspace_id == crate::tests::test_workspace_id("w30"))
     );
     assert!(
         !state
             .hits
             .workspaces
             .iter()
-            .any(|hit| hit.workspace_id == "w1")
+            .any(|hit| hit.workspace_id == crate::tests::test_workspace_id("w1"))
     );
 
     // The wheel scrolls the list back up.
@@ -698,7 +697,7 @@ fn collapsed_sidebar_scrolls_to_workspaces_past_its_height() {
             .hits
             .workspaces
             .iter()
-            .any(|hit| hit.workspace_id == "w1")
+            .any(|hit| hit.workspace_id == crate::tests::test_workspace_id("w1"))
     );
 }
 
@@ -759,7 +758,7 @@ fn rename_pane_empty_value_is_sent_as_a_clear_request() {
     assert!(matches!(
         &request.command,
         EndpointCommand::PaneRename(params)
-            if params.pane_id == "w1:p1" && params.label.is_none()
+            if params.pane_id == crate::tests::test_pane_id("w1:p1") && params.label.is_none()
     ));
 }
 

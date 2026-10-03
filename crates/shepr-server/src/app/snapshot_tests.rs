@@ -164,7 +164,7 @@ fn round_trip_full_workspace_snapshot() {
         0,
         PaneSnapshot {
             cwd: PathBuf::from("/home/can/Projects/shepr"),
-            public_number: 1,
+            public_number: shepr_protocol::PanePublicNumber::new(1).expect("nonzero literal"),
             label: None,
             agent_session: None,
         },
@@ -173,7 +173,7 @@ fn round_trip_full_workspace_snapshot() {
         1,
         PaneSnapshot {
             cwd: PathBuf::from("/home/can/Projects/website"),
-            public_number: 2,
+            public_number: shepr_protocol::PanePublicNumber::new(2).expect("nonzero literal"),
             label: Some("website".into()),
             agent_session: None,
         },
@@ -182,9 +182,10 @@ fn round_trip_full_workspace_snapshot() {
     let snap = SessionSnapshot {
         host_theme: Default::default(),
         workspaces: vec![WorkspaceSnapshot {
-            id: "wproj".to_string(),
+            id: "w1".parse().expect("id"),
             custom_name: Some("pi-mono".to_string()),
-            next_public_pane_number: 3,
+            next_public_pane_number: shepr_protocol::PanePublicNumber::new(3)
+                .expect("nonzero literal"),
             layout: LayoutSnapshot::Split {
                 direction: DirectionSnapshot::Horizontal,
                 ratio: SavedSplitRatio::from_raw(0.5),
@@ -204,7 +205,7 @@ fn round_trip_full_workspace_snapshot() {
     let restored: SessionSnapshot = serde_json::from_str(&json).expect("test precondition");
 
     assert_eq!(restored.workspaces.len(), 1);
-    assert_eq!(restored.workspaces[0].id, "wproj");
+    assert_eq!(restored.workspaces[0].id, "w1".parse().expect("id"));
     assert_eq!(
         restored.workspaces[0].custom_name.as_deref(),
         Some("pi-mono")
@@ -228,8 +229,8 @@ fn capture_contract_tracks_workspace_order_and_the_bookmark() {
     state.move_workspace(1, 0);
 
     let snapshot = capture_from_state(&state);
-    let ids: Vec<_> = state.workspaces.iter().map(|ws| ws.id.clone()).collect();
-    let captured_ids: Vec<_> = snapshot.workspaces.iter().map(|ws| ws.id.clone()).collect();
+    let ids: Vec<_> = state.workspaces.iter().map(|ws| ws.id).collect();
+    let captured_ids: Vec<_> = snapshot.workspaces.iter().map(|ws| ws.id).collect();
     assert_eq!(captured_ids, ids);
     assert_eq!(snapshot.active, state.bookmark_index());
 }
@@ -369,7 +370,7 @@ fn capture_contract_tracks_public_id_counters() {
     let numbers: HashMap<u32, usize> = workspace
         .panes
         .iter()
-        .map(|(id, pane)| (*id, pane.public_number))
+        .map(|(id, pane)| (*id, pane.public_number.get()))
         .collect();
     assert_eq!(
         numbers,
@@ -379,7 +380,7 @@ fn capture_contract_tracks_public_id_counters() {
             (fourth.raw(), 4),
         ])
     );
-    assert_eq!(workspace.next_public_pane_number, 5);
+    assert_eq!(workspace.next_public_pane_number.get(), 5);
 }
 
 #[tokio::test]
@@ -431,7 +432,10 @@ async fn capture_follows_live_cwd_arbitration_and_keeps_it_after_exit() {
     let runtime = launcher
         .launch(shepr_mux::pane::PaneLaunchRequest {
             pane_id,
-            public_id: shepr_protocol::PublicPaneId::new(&state.workspaces[0].id, 1),
+            public_id: shepr_protocol::PublicPaneId::new(
+                &state.workspaces[0].id,
+                shepr_protocol::PanePublicNumber::new(1).expect("nonzero literal"),
+            ),
             geometry: shepr_core::geometry::PaneGeometry::new(80, 24, 0, 0),
             cwd: &old,
             kind: shepr_mux::pane::LaunchKind::Fresh,
@@ -860,7 +864,7 @@ fn snapshot_parsing_preserves_missing_cwd() {
         0,
         PaneSnapshot {
             cwd: missing_cwd.clone(),
-            public_number: 1,
+            public_number: shepr_protocol::PanePublicNumber::new(1).expect("nonzero literal"),
             label: None,
             agent_session: None,
         },
@@ -869,7 +873,7 @@ fn snapshot_parsing_preserves_missing_cwd() {
         1,
         PaneSnapshot {
             cwd: existing_cwd.clone(),
-            public_number: 2,
+            public_number: shepr_protocol::PanePublicNumber::new(2).expect("nonzero literal"),
             label: None,
             agent_session: None,
         },
@@ -879,9 +883,10 @@ fn snapshot_parsing_preserves_missing_cwd() {
         version: SNAPSHOT_VERSION,
         host_theme: Default::default(),
         workspaces: vec![WorkspaceSnapshot {
-            id: "test-ws".to_string(),
+            id: "w1".parse().expect("id"),
             custom_name: Some("fallback test".to_string()),
-            next_public_pane_number: 3,
+            next_public_pane_number: shepr_protocol::PanePublicNumber::new(3)
+                .expect("nonzero literal"),
             layout: LayoutSnapshot::Split {
                 direction: DirectionSnapshot::Horizontal,
                 ratio: SavedSplitRatio::from_raw(0.5),

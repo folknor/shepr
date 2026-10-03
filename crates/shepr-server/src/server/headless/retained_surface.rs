@@ -2,6 +2,7 @@ use super::*;
 use crate::server::ClientId;
 use crate::server::clients::ClientPaneIdentity;
 use crate::server::pane_surface::PaneSurfaceMetadata;
+use shepr_protocol::WorkspaceId;
 use tracing::trace;
 
 fn rect_fits_frame(rect: shepr_protocol::SurfaceRect, frame: &FrameData) -> bool {
@@ -285,12 +286,12 @@ fn resolve_retained_panes<'a>(
 
 fn retained_pane_layout<'a>(
     app: &app::App,
-    cache: &'a mut HashMap<(usize, u16, u16), Option<RetainedPaneLayout>>,
+    cache: &'a mut HashMap<(WorkspaceId, u16, u16), Option<RetainedPaneLayout>>,
     workspace_id: &shepr_protocol::WorkspaceId,
     width: u16,
     height: u16,
 ) -> Option<&'a RetainedPaneLayout> {
-    let key = (workspace_id.number(), width, height);
+    let key = (*workspace_id, width, height);
     cache
         .entry(key)
         .or_insert_with(|| {
@@ -675,7 +676,7 @@ mod tests {
         let workspace = shepr_mux::workspace::Workspace::test_new("typed-baseline");
         let pane_id = workspace.root_pane();
         app.state.workspaces.push(workspace);
-        let workspace_id = app.state.workspaces[0].id.clone();
+        let workspace_id = app.state.workspaces[0].id;
         let wire_workspace_id =
             shepr_protocol::WorkspaceId::from_number(999).expect("test workspace id");
         let surface = shepr_protocol::PaneSurfaceFrame {
@@ -684,7 +685,10 @@ mod tests {
             surface_revision: shepr_protocol::SurfaceRevision::new(1),
             frame: FrameData::blank(1, 1),
             panes: vec![shepr_protocol::PaneSurfacePane {
-                pane_id: shepr_protocol::PublicPaneId::new(&wire_workspace_id, 1),
+                pane_id: shepr_protocol::PublicPaneId::new(
+                    &wire_workspace_id,
+                    shepr_protocol::PanePublicNumber::new(1).expect("nonzero literal"),
+                ),
                 content_revision: 0,
                 rect: shepr_protocol::SurfaceRect {
                     x: 0,
@@ -738,7 +742,7 @@ mod tests {
         app.state.settings.pane_scrollbars = true;
         app.state.settings.pane_outer_borders = true;
         let workspace = shepr_mux::workspace::Workspace::test_new("narrow-scrollbar");
-        let workspace_id = workspace.id.clone();
+        let workspace_id = workspace.id;
         let pane_id = workspace.root_pane();
         app.state.workspaces.push(workspace);
         let area = Rect::new(0, 0, 6, 5);
@@ -809,7 +813,7 @@ mod tests {
     fn retained_layout_is_reused_for_recipients_with_the_same_workspace_and_size() {
         let mut app = app::App::new(&shepr_config::ServerConfig::default(), app::AppPolicy::Test);
         let workspace = shepr_mux::workspace::Workspace::test_new("retained-layout-cache");
-        let workspace_id = workspace.id.clone();
+        let workspace_id = workspace.id;
         app.state.workspaces.push(workspace);
         let mut cache = HashMap::new();
 

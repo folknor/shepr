@@ -136,7 +136,7 @@ impl WorkspaceBranch {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkspaceGitStatus {
-    pub workspace_id: String,
+    pub workspace_id: shepr_protocol::WorkspaceId,
     pub resolved_identity_cwd: PathBuf,
     pub status_cache_key: PathBuf,
     pub auto_label: String,
@@ -154,7 +154,7 @@ pub struct WorkspaceGitStatusSnapshot {
 impl WorkspaceGitStatusSnapshot {
     pub fn into_workspace_status(
         self,
-        workspace_id: String,
+        workspace_id: shepr_protocol::WorkspaceId,
         resolved_identity_cwd: PathBuf,
         status_cache_key: PathBuf,
     ) -> WorkspaceGitStatus {

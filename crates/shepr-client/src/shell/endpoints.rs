@@ -161,7 +161,7 @@ pub(in crate::shell) struct MachineHit {
     pub(in crate::shell) endpoint_id: ClientEndpointId,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ClientEndpointFocusTarget {
     Workspace(shepr_protocol::WorkspaceId),
     Pane(shepr_protocol::PublicPaneId),
@@ -447,7 +447,7 @@ impl ClientShellState {
         let previous_sequences = previous
             .into_iter()
             .flat_map(|snapshot| snapshot.agents.iter())
-            .map(|agent| (agent.pane_id.as_str(), agent.state_change_seq))
+            .map(|agent| (agent.pane_id, agent.state_change_seq))
             .collect::<HashMap<_, _>>();
         let mut next_recency = self
             .endpoints
@@ -461,11 +461,11 @@ impl ClientShellState {
         let mut recency = self.endpoints[index].agent_recency.clone();
         for agent in agents {
             let changed = previous_sequences
-                .get(agent.pane_id.as_str())
+                .get(&agent.pane_id)
                 .is_none_or(|previous_seq| *previous_seq != agent.state_change_seq);
             if changed {
                 next_recency = next_recency.saturating_add(1);
-                recency.insert(agent.pane_id.clone(), next_recency);
+                recency.insert(agent.pane_id, next_recency);
             }
         }
         let live_agent_ids = snapshot

@@ -191,8 +191,8 @@ pub(in crate::shell) fn agent_rows(
 /// Snapshot-local joins used while building the shared agent panel model.
 struct AgentRowIndex<'a> {
     agents: &'a [ClientShellAgent],
-    workspaces: HashMap<&'a shepr_protocol::WorkspaceId, &'a ClientShellWorkspace>,
-    panes: HashMap<&'a str, &'a ClientShellPane>,
+    workspaces: HashMap<shepr_protocol::WorkspaceId, &'a ClientShellWorkspace>,
+    panes: HashMap<PublicPaneId, &'a ClientShellPane>,
     focused_pane_id: Option<&'a PublicPaneId>,
 }
 
@@ -201,12 +201,12 @@ impl<'a> AgentRowIndex<'a> {
         let workspaces = snapshot
             .workspaces
             .iter()
-            .map(|workspace| (&workspace.workspace_id, workspace))
+            .map(|workspace| (workspace.workspace_id, workspace))
             .collect();
         let panes = snapshot
             .panes
             .iter()
-            .map(|pane| (pane.pane_id.as_str(), pane))
+            .map(|pane| (pane.pane_id, pane))
             .collect();
         Self {
             agents: &snapshot.agents,
@@ -220,11 +220,11 @@ impl<'a> AgentRowIndex<'a> {
         &self,
         workspace_id: &shepr_protocol::WorkspaceId,
     ) -> Option<&'a ClientShellWorkspace> {
-        self.workspaces.get(&workspace_id).copied()
+        self.workspaces.get(workspace_id).copied()
     }
 
     fn pane(&self, pane_id: &PublicPaneId) -> Option<&'a ClientShellPane> {
-        self.panes.get(pane_id.as_str()).copied()
+        self.panes.get(pane_id).copied()
     }
 
     fn agent_row(
@@ -252,7 +252,7 @@ impl<'a> AgentRowIndex<'a> {
             state_text,
         );
         Some(AgentRow {
-            pane_id: agent.pane_id.clone(),
+            pane_id: agent.pane_id,
             status: agent.agent_status,
             focused: self.focused_pane_id == Some(&agent.pane_id),
             rows,

@@ -91,7 +91,6 @@ impl ClientShellState {
         };
         let source_pane_id = snapshot
             .focused_pane_id
-            .clone()
             .filter(|focused| focused != &pane_id);
         self.overlay = Some(ClientShellOverlay::ContextMenu(ClientContextMenuOverlay {
             target: ClientContextMenuTarget::Pane {
@@ -234,7 +233,7 @@ impl ClientShellState {
                 if let Some(source_pane_id) = source_pane_id {
                     self.push_endpoint_command(
                         EndpointCommand::PaneSwap(PaneSwapParams::Panes {
-                            source: source_pane_id.clone(),
+                            source: source_pane_id,
                             target: pane_id,
                         }),
                         outcome,

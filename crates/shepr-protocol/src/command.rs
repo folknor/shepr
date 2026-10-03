@@ -80,7 +80,6 @@ pub struct WorkspaceMoveParams {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkspaceInfo {
     pub workspace_id: WorkspaceId,
-    pub number: usize,
     pub label: String,
     pub pane_count: usize,
     pub agent_status: AgentStatus,
@@ -177,7 +176,7 @@ pub struct PaneTextRange {
     pub end: PaneTextPoint,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaneSelectionReadParams {
     pub pane_id: PublicPaneId,
     pub anchor: PaneTextPoint,
@@ -213,7 +212,7 @@ pub enum PaneCopyMotion {
     Paragraph(PaneParagraphMotion),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaneCopyMotionParams {
     pub pane_id: PublicPaneId,
     pub cursor: PaneTextPoint,

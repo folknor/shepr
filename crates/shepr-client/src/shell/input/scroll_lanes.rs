@@ -28,7 +28,7 @@ pub(in crate::shell) enum ScrollAnswer {
 impl ScrollLanes {
     /// Records `offset` as the target; queues it (latest wins) behind a flight.
     pub(in crate::shell) fn want(&mut self, pane: &PublicPaneId, offset: usize) -> ScrollWant {
-        let lane = self.0.entry(pane.clone()).or_default();
+        let lane = self.0.entry(*pane).or_default();
         lane.target = Some(offset);
         if let Some(flight) = lane.flight.as_mut() {
             flight.queued = Some(offset);

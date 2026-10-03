@@ -73,7 +73,10 @@ impl PreparedPaneExit {
 }
 
 impl App {
-    fn live_workspace_identity_cwd(&self, workspace_id: &str) -> Option<std::path::PathBuf> {
+    fn live_workspace_identity_cwd(
+        &self,
+        workspace_id: &shepr_protocol::WorkspaceId,
+    ) -> Option<std::path::PathBuf> {
         let workspace = self
             .state
             .workspaces

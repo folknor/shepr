@@ -24,7 +24,6 @@ fn focused_workspace_change_reveals_new_workspace_in_full_sidebar() {
     initial.workspaces = (1..=12)
         .map(|number| ClientShellWorkspace {
             workspace_id: test_workspace_id(&format!("w{number}")),
-            number,
             label: format!("space-{number}"),
             branch: None,
             ..template.clone()
@@ -41,7 +40,7 @@ fn focused_workspace_change_reveals_new_workspace_in_full_sidebar() {
             .hits
             .workspaces
             .iter()
-            .all(|hit| hit.workspace_id != "w12")
+            .all(|hit| hit.workspace_id != crate::tests::test_workspace_id("w12"))
     );
 
     let mut update = state.snapshot.as_deref().expect("snapshot").clone();
@@ -60,7 +59,7 @@ fn focused_workspace_change_reveals_new_workspace_in_full_sidebar() {
             .hits
             .workspaces
             .iter()
-            .any(|hit| hit.workspace_id == "w12")
+            .any(|hit| hit.workspace_id == crate::tests::test_workspace_id("w12"))
     );
 }
 
@@ -122,7 +121,7 @@ fn client_owned_sidebar_dividers_resize_live() {
     assert!(!state.hits.panes.is_empty());
     assert!(state.hits.machines.is_empty());
     assert_eq!(state.hits.sidebar_divider.x, 31);
-    assert_eq!(state.hits.workspaces[0].workspace_id, "w1");
+    assert_eq!(state.hits.workspaces[0].workspace_id.to_string(), "w1");
 
     let next_resize =
         state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
@@ -193,7 +192,7 @@ fn context_menus_capture_stable_targets_and_route_actions() {
         Some(ClientShellOverlay::ContextMenu(ClientContextMenuOverlay {
             target: ClientContextMenuTarget::Workspace { ref workspace_id, .. },
             ..
-        })) if workspace_id == "w1"
+        })) if workspace_id == &crate::tests::test_workspace_id("w1")
     ));
     let workspace_items = match state.overlay.as_ref() {
         Some(ClientShellOverlay::ContextMenu(menu)) => menu.items(),
@@ -217,7 +216,7 @@ fn context_menus_capture_stable_targets_and_route_actions() {
         Some(ClientShellOverlay::Rename(ClientRenameOverlay {
             target: ClientRenameTarget::Workspace { ref workspace_id },
             ..
-        })) if workspace_id == "w1"
+        })) if workspace_id == &crate::tests::test_workspace_id("w1")
     ));
 
     state.overlay = None;
@@ -252,7 +251,7 @@ fn context_menus_capture_stable_targets_and_route_actions() {
     assert!(matches!(
         &request.command,
         EndpointCommand::PaneSplit(params)
-            if params.pane_id == "w1:p1"
+            if params.pane_id == crate::tests::test_pane_id("w1:p1")
                 && params.direction == shepr_protocol::command::SplitDirection::Right
     ));
 }
@@ -442,7 +441,7 @@ fn oversized_retained_surface_is_clipped_with_its_hits() {
         "a pane with no visible cell has no hit"
     );
     let hit = &state.hits.panes[0];
-    assert_eq!(hit.pane_id, "w1:p1");
+    assert_eq!(hit.pane_id.to_string(), "w1:p1");
     assert_eq!(hit.inner_rect, area);
     assert_eq!((hit.pixel_width, hit.pixel_height), (0, 0));
     assert!(state.hits.pane_splits.is_empty());

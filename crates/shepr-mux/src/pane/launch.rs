@@ -334,21 +334,27 @@ mod tests {
     fn pane_id_is_not_inherited_but_an_assigned_id_is_exported() {
         let _env = shepr_test_support::IsolatedEnv::new();
         let workspace_id = "w1".parse().expect("test workspace id");
-        let inherited = PublicPaneId::new(&workspace_id, 17);
+        let inherited = PublicPaneId::new(
+            &workspace_id,
+            shepr_protocol::PanePublicNumber::new(17).expect("nonzero literal"),
+        );
         let mut command = PtyCommand::interactive_shell(&test_shell("/shell"), false);
         command.env(EnvVar::SheprPaneId, inherited.to_string());
 
         apply_pane_launch_env(&mut command, &PaneLaunchEnv::new("/run/shepr.sock".into()));
         assert!(command.get_env(EnvVar::SheprPaneId).is_none());
 
-        let assigned = PublicPaneId::new(&"w2".parse().expect("test workspace id"), 3);
+        let assigned = PublicPaneId::new(
+            &"w2".parse().expect("test workspace id"),
+            shepr_protocol::PanePublicNumber::new(3).expect("nonzero literal"),
+        );
         apply_pane_launch_env(
             &mut command,
-            &PaneLaunchEnv::new("/run/shepr.sock".into()).with_pane_id(assigned.clone()),
+            &PaneLaunchEnv::new("/run/shepr.sock".into()).with_pane_id(assigned),
         );
         assert_eq!(
             command.get_env(EnvVar::SheprPaneId),
-            Some(std::ffi::OsStr::new(assigned.as_str()))
+            Some(std::ffi::OsStr::new(assigned.to_string().as_str()))
         );
     }
 

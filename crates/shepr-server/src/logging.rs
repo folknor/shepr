@@ -21,43 +21,43 @@ pub(crate) fn shutdown(role: &'static str) {
     );
 }
 
-pub(crate) fn workspace_created(workspace_id: &str, root_pane_id: u32) {
+pub(crate) fn workspace_created(workspace_id: &shepr_protocol::WorkspaceId, root_pane_id: u32) {
     tracing::info!(
         event = "workspace.create",
         subsystem = "workspace",
         outcome = "ok",
-        workspace_id,
+        %workspace_id,
         pane_id = root_pane_id,
         "workspace created"
     );
 }
 
-pub(crate) fn workspace_focused(workspace_id: &str) {
+pub(crate) fn workspace_focused(workspace_id: &shepr_protocol::WorkspaceId) {
     tracing::info!(
         event = "workspace.focus",
         subsystem = "workspace",
         outcome = "ok",
-        workspace_id,
+        %workspace_id,
         "workspace focused"
     );
 }
 
-pub(crate) fn workspace_closed(workspace_id: &str) {
+pub(crate) fn workspace_closed(workspace_id: &shepr_protocol::WorkspaceId) {
     tracing::info!(
         event = "workspace.close",
         subsystem = "workspace",
         outcome = "ok",
-        workspace_id,
+        %workspace_id,
         "workspace closed"
     );
 }
 
-pub(crate) fn workspace_renamed(workspace_id: &str) {
+pub(crate) fn workspace_renamed(workspace_id: &shepr_protocol::WorkspaceId) {
     tracing::info!(
         event = "workspace.rename",
         subsystem = "workspace",
         outcome = "ok",
-        workspace_id,
+        %workspace_id,
         "workspace renamed"
     );
 }

@@ -170,13 +170,11 @@ impl ClientShellState {
         let request = self.submit(
             shepr_protocol::command::EndpointCommand::PaneScroll(
                 shepr_protocol::command::PaneScrollParams {
-                    pane_id: pane_id.clone(),
+                    pane_id,
                     offset_from_bottom: offset,
                 },
             ),
-            Work::PaneScroll {
-                pane_id: pane_id.clone(),
-            },
+            Work::PaneScroll { pane_id },
             outcome,
         );
         if let Some(id) = request {
@@ -202,7 +200,7 @@ impl ClientShellState {
                     request,
                     pane.scroll.map(|s| s.offset_from_bottom),
                 ) {
-                    self.dispatch_pane_scroll(pane_id.clone(), offset, outcome);
+                    self.dispatch_pane_scroll(*pane_id, offset, outcome);
                 }
                 Repaint::Unchanged
             }
@@ -423,10 +421,10 @@ impl ClientShellState {
                 outcome,
                 now,
             );
-            self.push_pane_scroll_offset(hit.pane_id.clone(), offset_from_bottom, outcome);
+            self.push_pane_scroll_offset(hit.pane_id, offset_from_bottom, outcome);
         }
         self.mouse_selection.autoscroll = Some(ClientSelectionAutoscroll {
-            pane_id: hit.pane_id.clone(),
+            pane_id: hit.pane_id,
             direction,
             last_mouse_column: column,
             last_mouse_row: row,
@@ -577,7 +575,7 @@ impl ClientShellState {
             &mut outcome,
             now,
         );
-        self.push_pane_scroll_offset(autoscroll.pane_id.clone(), next_offset, &mut outcome);
+        self.push_pane_scroll_offset(autoscroll.pane_id, next_offset, &mut outcome);
         self.mouse_selection.autoscroll = Some(autoscroll);
         self.mouse_selection.autoscroll_deadline =
             Some(now + crate::limits::SELECTION_AUTOSCROLL_INTERVAL);
@@ -585,23 +583,31 @@ impl ClientShellState {
         outcome
     }
 
-    fn pane_split_target_is_current(&self, hit: &PaneSplitHit, workspace_id: &str) -> Option<bool> {
+    fn pane_split_target_is_current(
+        &self,
+        hit: &PaneSplitHit,
+        workspace_id: &shepr_protocol::WorkspaceId,
+    ) -> Option<bool> {
         let snapshot = self.snapshot.as_deref()?;
         let surface = self.pane_surface()?;
         if snapshot.revision != surface.projection_revision {
             return None;
         }
         Some(
-            snapshot.focused_workspace_id.as_deref() == Some(workspace_id)
+            snapshot.focused_workspace_id.as_ref() == Some(workspace_id)
                 && pane_surface_topology_signature(surface) == hit.topology_signature,
         )
     }
 
-    fn pane_split_topology_matches_hit(&self, hit: &PaneSplitHit, workspace_id: &str) -> bool {
+    fn pane_split_topology_matches_hit(
+        &self,
+        hit: &PaneSplitHit,
+        workspace_id: &shepr_protocol::WorkspaceId,
+    ) -> bool {
         let Some(snapshot) = self.snapshot.as_deref() else {
             return false;
         };
-        if snapshot.focused_workspace_id.as_deref() != Some(workspace_id) {
+        if snapshot.focused_workspace_id.as_ref() != Some(workspace_id) {
             return false;
         }
 
@@ -654,9 +660,9 @@ impl ClientShellState {
                 shepr_protocol::PaneSurfaceSplitDirection::Vertical => rect.y < split.pos,
             };
             if in_first {
-                first.push(pane.pane_id.clone());
+                first.push(pane.pane_id);
             } else {
-                second.push(pane.pane_id.clone());
+                second.push(pane.pane_id);
             }
         }
         (!first.is_empty() && !second.is_empty()).then_some((first, second))
@@ -704,7 +710,7 @@ impl ClientShellState {
             .workspaces
             .iter()
             .filter(|hit| hit.endpoint_id == *self.endpoints.presented())
-            .map(|hit| (Some(hit.workspace_id.clone()), hit.rect.y.saturating_sub(1)))
+            .map(|hit| (Some(hit.workspace_id), hit.rect.y.saturating_sub(1)))
             .collect::<Vec<_>>();
         let snapshot = self.snapshot.as_deref()?;
         let last_hit = self
@@ -720,7 +726,7 @@ impl ClientShellState {
         let before = snapshot
             .workspaces
             .get(last_position + 1)
-            .map(|workspace| workspace.workspace_id.clone());
+            .map(|workspace| workspace.workspace_id);
         let row = last_hit.rect.bottom();
         if row < drop_bottom {
             slots.push((before, row));
@@ -766,8 +772,8 @@ impl ClientShellState {
 
         Some(shepr_protocol::command::EndpointCommand::WorkspaceMove(
             shepr_protocol::command::WorkspaceMoveParams {
-                workspace_id: source.workspace_id.clone(),
-                before_workspace_id: before_workspace_id.cloned(),
+                workspace_id: source.workspace_id,
+                before_workspace_id: before_workspace_id.copied(),
             },
         ))
     }
@@ -961,7 +967,7 @@ impl ClientShellState {
                     let first_panes = first_panes.clone();
                     let second_panes = second_panes.clone();
                     let hit = hit.clone();
-                    let workspace_id = workspace_id.clone();
+                    let workspace_id = *workspace_id;
                     let grab_offset = *grab_offset;
                     let mut next_throttle = *throttle;
                     match self.pane_split_target_is_current(&hit, &workspace_id) {
@@ -988,7 +994,7 @@ impl ClientShellState {
                         self.push_endpoint_command(
                             shepr_protocol::command::EndpointCommand::LayoutSetSplitRatio(
                                 shepr_protocol::command::LayoutSetSplitRatioParams {
-                                    workspace_id: workspace_id.clone(),
+                                    workspace_id,
                                     first_panes,
                                     second_panes,
                                     ratio,
@@ -1018,7 +1024,7 @@ impl ClientShellState {
                     .abs_diff(press.start_column)
                     .max(mouse.row.abs_diff(press.start_row));
                 if delta >= 1 {
-                    let source_workspace_id = press.workspace_id.clone();
+                    let source_workspace_id = press.workspace_id;
                     let draggable = self.endpoint_workspace_is_draggable(press);
                     if draggable && let Some(target) = self.workspace_drop_target_at(point) {
                         self.chrome_drag = Some(ClientChromeDrag::Workspace {
@@ -1087,7 +1093,7 @@ impl ClientShellState {
                             self.push_endpoint_command(
                                 shepr_protocol::command::EndpointCommand::LayoutSetSplitRatio(
                                     shepr_protocol::command::LayoutSetSplitRatioParams {
-                                        workspace_id: workspace_id.clone(),
+                                        workspace_id,
                                         first_panes,
                                         second_panes,
                                         ratio,
@@ -1437,7 +1443,7 @@ impl ClientShellState {
                         self.push_endpoint_command(
                             shepr_protocol::command::EndpointCommand::PaneFocus(
                                 shepr_protocol::command::PaneTarget {
-                                    pane_id: hit.pane_id.clone(),
+                                    pane_id: hit.pane_id,
                                 },
                             ),
                             outcome,
@@ -1468,7 +1474,7 @@ impl ClientShellState {
                     .panes
                     .iter()
                     .find(|hit| crate::shell::input::hit_test::contains(hit.rect, point))
-                    .map(|hit| hit.pane_id.clone());
+                    .map(|hit| hit.pane_id);
                 if let Some(pane_id) = pane_id {
                     self.open_pane_context_menu(pane_id, mouse.column, mouse.row);
                     outcome.repaint = true;
@@ -1649,7 +1655,7 @@ impl ClientShellState {
                     .find(|hit| crate::shell::input::hit_test::contains(hit.rect, point))
                     .map(|hit| ClientWorkspacePress {
                         endpoint_id: hit.endpoint_id.clone(),
-                        workspace_id: hit.workspace_id.clone(),
+                        workspace_id: hit.workspace_id,
                         start_column: mouse.column,
                         start_row: mouse.row,
                     });
@@ -1665,13 +1671,11 @@ impl ClientShellState {
                     .agents
                     .iter()
                     .find(|(rect, _)| crate::shell::input::hit_test::contains(*rect, point))
-                    .map(|(_, pane_id)| pane_id.clone());
+                    .map(|(_, pane_id)| pane_id);
                 if let Some(pane_id) = agent_pane_id {
                     self.push_endpoint_command(
                         shepr_protocol::command::EndpointCommand::PaneFocus(
-                            shepr_protocol::command::PaneTarget {
-                                pane_id: pane_id.clone(),
-                            },
+                            shepr_protocol::command::PaneTarget { pane_id: *pane_id },
                         ),
                         outcome,
                     );
@@ -1693,7 +1697,7 @@ impl ClientShellState {
                     // The focused copy pane derives Copy mode from its parked session.
                     self.mode = if self.copy_mode.as_ref().is_some_and(|copy_mode| {
                         copy_mode.pane_id == hit.pane_id
-                            && copy_mode.pane_is_focused(self.focused_pane_id().as_deref())
+                            && copy_mode.pane_is_focused(self.focused_pane_id().as_ref())
                     }) {
                         ClientShellMode::Copy
                     } else {
@@ -1703,7 +1707,7 @@ impl ClientShellState {
                     self.push_endpoint_command(
                         shepr_protocol::command::EndpointCommand::PaneFocus(
                             shepr_protocol::command::PaneTarget {
-                                pane_id: hit.pane_id.clone(),
+                                pane_id: hit.pane_id,
                             },
                         ),
                         outcome,
@@ -1736,7 +1740,7 @@ impl ClientShellState {
                     let Some(workspace_id) = self
                         .snapshot
                         .as_deref()
-                        .and_then(|snapshot| snapshot.focused_workspace_id.clone())
+                        .and_then(|snapshot| snapshot.focused_workspace_id)
                     else {
                         return;
                     };
@@ -1785,7 +1789,7 @@ impl ClientShellState {
                         });
                     } else if crate::shell::input::hit_test::contains(hit.inner_rect, point) {
                         let click = ClientPaneClick {
-                            pane_id: hit.pane_id.clone(),
+                            pane_id: hit.pane_id,
                             viewport_row: mouse.row.saturating_sub(hit.inner_rect.y),
                             col: mouse.column.saturating_sub(hit.inner_rect.x),
                             at: now,
@@ -1808,15 +1812,14 @@ impl ClientShellState {
                                     self.mouse_selection.last_pane_click = Some(click);
                                 }
                                 self.mouse_selection.focus_pending =
-                                    (self.focused_pane_id().as_deref()
-                                        != Some(hit.pane_id.as_str()))
-                                    .then(|| hit.pane_id.clone());
+                                    (self.focused_pane_id().as_ref() != Some(&hit.pane_id))
+                                        .then_some(hit.pane_id);
                                 let (viewport_row, col) =
                                     selection_cell(mouse.column, mouse.row, hit.inner_rect);
                                 let absolute_row = metrics.absolute_row_at_viewport(viewport_row);
                                 self.mouse_selection.selection =
                                     Some(shepr_vt::selection::Selection::anchor(
-                                        hit.pane_id.clone(),
+                                        hit.pane_id,
                                         shepr_vt::Point::new(absolute_row, col),
                                     ));
                             }
@@ -1830,7 +1833,7 @@ impl ClientShellState {
                     self.push_endpoint_command(
                         shepr_protocol::command::EndpointCommand::PaneFocus(
                             shepr_protocol::command::PaneTarget {
-                                pane_id: hit.pane_id.clone(),
+                                pane_id: hit.pane_id,
                             },
                         ),
                         outcome,
@@ -1883,11 +1886,11 @@ impl ClientShellState {
                     .find(|hit| crate::shell::input::hit_test::contains(hit.inner_rect, point))
                     .cloned()
                 {
-                    if self.focused_pane_id().as_deref() != Some(hit.pane_id.as_str()) {
+                    if self.focused_pane_id().as_ref() != Some(&hit.pane_id) {
                         self.push_endpoint_command(
                             shepr_protocol::command::EndpointCommand::PaneFocus(
                                 shepr_protocol::command::PaneTarget {
-                                    pane_id: hit.pane_id.clone(),
+                                    pane_id: hit.pane_id,
                                 },
                             ),
                             outcome,
@@ -1949,7 +1952,7 @@ impl ClientShellState {
             },
         );
         push_target_event(
-            hit.pane_id.clone(),
+            hit.pane_id,
             ClientPaneInputEvent::Mouse {
                 kind,
                 position,

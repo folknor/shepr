@@ -765,7 +765,8 @@ impl HeadlessServer {
     ) {
         for held in held_inputs {
             let pane_id = held.target;
-            let Some((workspace_index, runtime_pane_id)) = self.app.parse_pane_id(&pane_id) else {
+            let Some((workspace_index, runtime_pane_id)) = self.app.resolve_pane_id(&pane_id)
+            else {
                 continue;
             };
             let Some(runtime) = self.app.state.runtime_for_pane_in_workspace(
@@ -802,7 +803,7 @@ impl HeadlessServer {
             client_id,
             &ServerMessage::ClientShellError {
                 kind: shepr_protocol::NoticeKind::PaneInputDropped {
-                    pane_id: pane_id.clone(),
+                    pane_id: *pane_id,
                     events: dropped,
                 },
             },
@@ -1372,7 +1373,7 @@ impl HeadlessServer {
                     .get(&client_id)
                     .is_some_and(|client| client.pixel_mouse && client.outbox.told_sgr_pixels());
                 let mut events = events;
-                let Some((workspace_index, runtime_pane_id)) = self.app.parse_pane_id(&pane_id)
+                let Some((workspace_index, runtime_pane_id)) = self.app.resolve_pane_id(&pane_id)
                 else {
                     return;
                 };

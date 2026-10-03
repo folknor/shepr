@@ -12,7 +12,7 @@ impl AppState {
         workspace: shepr_mux::workspace::Workspace,
         terminal: shepr_mux::terminal::TerminalState,
     ) -> WorkspaceCreationOutcome {
-        let workspace_id = workspace.id.clone();
+        let workspace_id = workspace.id;
         let root_pane = workspace.root_pane();
         self.terminals.insert(terminal.id.clone(), terminal);
         self.index_workspace_terminals(&workspace);
@@ -30,19 +30,14 @@ impl AppState {
     pub(crate) fn commit_pane_split(
         &mut self,
         workspace_index: usize,
-        pane_id: PaneId,
-        prepared_layout: shepr_core::layout::TileLayout,
-        terminal: shepr_mux::terminal::TerminalState,
-        public_number: usize,
+        prepared: shepr_mux::workspace::PreparedSplit,
     ) -> Option<PaneCreationOutcome> {
-        let terminal_id = terminal.id.clone();
-        self.workspaces.get_mut(workspace_index)?.commit_new_pane(
-            pane_id,
-            prepared_layout,
-            terminal_id.clone(),
-            public_number,
-            true,
-        )?;
+        let pane_id = prepared.pane_id();
+        let terminal_id = prepared.terminal().id.clone();
+        let terminal = self
+            .workspaces
+            .get_mut(workspace_index)?
+            .commit_new_pane(prepared, true)?;
         self.pane_terminal_ids.insert(pane_id, terminal_id.clone());
         self.terminals.insert(terminal_id.clone(), terminal);
         self.mark_session_dirty();

@@ -74,7 +74,7 @@ impl AgentPanelModel {
             .iter()
             .map(|row| AggregateAgentTarget {
                 endpoint_id: row.endpoint_id.clone(),
-                pane_id: row.agent.pane_id.clone(),
+                pane_id: row.agent.pane_id,
             })
             .collect();
         Self { rows, targets }
@@ -112,7 +112,7 @@ pub(in crate::shell) fn cycle_index(
 pub(in crate::shell) fn agent_target_index(
     targets: &[AggregateAgentTarget],
     active_endpoint_id: &ClientEndpointId,
-    focused_pane_id: Option<&str>,
+    focused_pane_id: Option<&shepr_protocol::PublicPaneId>,
     action: shepr_termio::input::KeybindAction,
 ) -> Option<usize> {
     use shepr_termio::input::KeybindAction;
@@ -122,7 +122,7 @@ pub(in crate::shell) fn agent_target_index(
         KeybindAction::PreviousAgent | KeybindAction::NextAgent => {
             let current = targets.iter().position(|target| {
                 &target.endpoint_id == active_endpoint_id
-                    && Some(target.pane_id.as_str()) == focused_pane_id
+                    && Some(&target.pane_id) == focused_pane_id
             });
             let delta = if action == KeybindAction::PreviousAgent {
                 -1
@@ -178,27 +178,27 @@ impl NavigatorIndex {
                 indexed_endpoints.push(indexed);
                 continue;
             };
-            indexed.focused_pane_id = snapshot.focused_pane_id.clone();
+            indexed.focused_pane_id = snapshot.focused_pane_id;
             let agents = snapshot
                 .agents
                 .iter()
-                .map(|agent| (agent.pane_id.as_str(), agent))
+                .map(|agent| (agent.pane_id, agent))
                 .collect::<HashMap<_, _>>();
             let mut panes_by_workspace = HashMap::new();
             for pane in &snapshot.panes {
                 panes_by_workspace
-                    .entry(pane.pane_id.workspace_id())
+                    .entry(*pane.pane_id.workspace_id())
                     .or_insert_with(Vec::new)
                     .push(pane);
             }
             indexed.workspaces.reserve(snapshot.workspaces.len());
             for workspace in &snapshot.workspaces {
                 let workspace_panes = panes_by_workspace
-                    .get(&&workspace.workspace_id)
+                    .get(&workspace.workspace_id)
                     .map_or_default(Vec::as_slice);
                 let mut panes = Vec::with_capacity(workspace_panes.len());
                 for (index, pane) in workspace_panes.iter().enumerate() {
-                    let agent = agents.get(pane.pane_id.as_str()).copied();
+                    let agent = agents.get(&pane.pane_id).copied();
                     let status = agent.map_or(shepr_protocol::AgentStatus::Idle, |agent| {
                         agent.agent_status
                     });
@@ -235,14 +235,13 @@ impl NavigatorIndex {
                         current: false,
                         target: ClientNavigatorTarget::Pane {
                             endpoint_id: endpoint.endpoint_id.clone(),
-                            pane_id: pane.pane_id.clone(),
+                            pane_id: pane.pane_id,
                         },
                     };
-                    let mut search_fields = vec![
-                        label.to_lowercase(),
-                        meta.to_lowercase(),
-                        pane.pane_id.as_str().to_lowercase(),
-                    ];
+                    let mut pane_id_text = pane.pane_id.to_string();
+                    pane_id_text.make_ascii_lowercase();
+                    let mut search_fields =
+                        vec![label.to_lowercase(), meta.to_lowercase(), pane_id_text];
                     if let Some(cwd) = pane.cwd.as_deref() {
                         search_fields.push(cwd.to_lowercase());
                     }
@@ -270,7 +269,7 @@ impl NavigatorIndex {
                         current: false,
                         target: ClientNavigatorTarget::Workspace {
                             endpoint_id: endpoint.endpoint_id.clone(),
-                            workspace_id: workspace.workspace_id.clone(),
+                            workspace_id: workspace.workspace_id,
                         },
                     },
                     search_fields,

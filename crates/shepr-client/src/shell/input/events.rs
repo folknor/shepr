@@ -81,7 +81,7 @@ mod tests {
         let mut outcome = ClientShellInput::default();
         let mut accounting = PaneInputBatchAccounting::default();
         for event in events {
-            push_target_event(pane.clone(), event, &mut outcome, &mut accounting);
+            push_target_event(pane, event, &mut outcome, &mut accounting);
         }
         outcome
             .requests

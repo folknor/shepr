@@ -347,7 +347,10 @@ mod tests {
             workspace_missing(&workspace).to_string(),
             "workspace w9 not found"
         );
-        let pane = PublicPaneId::new(&workspace, 2);
+        let pane = PublicPaneId::new(
+            &workspace,
+            shepr_protocol::PanePublicNumber::new(2).expect("nonzero literal"),
+        );
         assert_eq!(pane_missing(&pane).to_string(), "pane w9:p2 not found");
         assert!(matches!(
             rejected::<()>("no"),

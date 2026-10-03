@@ -179,21 +179,21 @@ mod tests {
         let pane: PublicPaneId = "w1:p1".parse()?;
         for command in [
             EndpointCommand::PaneSplit(PaneSplitParams {
-                pane_id: pane.clone(),
+                pane_id: pane,
                 direction: SplitDirection::Down,
             }),
             EndpointCommand::LayoutSetSplitRatio(LayoutSetSplitRatioParams {
-                workspace_id: workspace.clone(),
-                first_panes: vec![pane.clone()],
+                workspace_id: workspace,
+                first_panes: vec![pane],
                 second_panes: vec!["w1:p2".parse()?],
                 ratio: shepr_core::layout::SplitRatio::new(0.6).expect("wire test ratio is valid"),
             }),
             EndpointCommand::WorkspaceMove(WorkspaceMoveParams {
-                workspace_id: workspace.clone(),
+                workspace_id: workspace,
                 before_workspace_id: Some("w2".parse()?),
             }),
             EndpointCommand::WorkspaceMove(WorkspaceMoveParams {
-                workspace_id: workspace.clone(),
+                workspace_id: workspace,
                 before_workspace_id: None,
             }),
             EndpointCommand::WorkspaceCreate(WorkspaceCreateParams {
@@ -201,7 +201,7 @@ mod tests {
                 label: Some("x".into()),
             }),
             EndpointCommand::WorkspaceCreate(WorkspaceCreateParams {
-                source: WorkspaceCreateSource::Follow(workspace.clone()),
+                source: WorkspaceCreateSource::Follow(workspace),
                 label: None,
             }),
             EndpointCommand::WorkspaceCreate(WorkspaceCreateParams {
@@ -209,15 +209,15 @@ mod tests {
                 label: None,
             }),
             EndpointCommand::PaneSwap(PaneSwapParams::Direction {
-                pane_id: pane.clone(),
+                pane_id: pane,
                 direction: PaneDirection::Left,
             }),
             EndpointCommand::PaneSwap(PaneSwapParams::Panes {
-                source: pane.clone(),
+                source: pane,
                 target: "w1:p2".parse()?,
             }),
             EndpointCommand::PaneCopyMotion(PaneCopyMotionParams {
-                pane_id: pane.clone(),
+                pane_id: pane,
                 cursor: PaneTextPoint {
                     row: shepr_vt::AbsRow(1),
                     col: 2,
@@ -225,7 +225,7 @@ mod tests {
                 motion: PaneCopyMotion::Line(PaneLineMotion::End),
             }),
             EndpointCommand::PaneCopyMotion(PaneCopyMotionParams {
-                pane_id: pane.clone(),
+                pane_id: pane,
                 cursor: PaneTextPoint {
                     row: shepr_vt::AbsRow(1),
                     col: 2,
@@ -248,7 +248,7 @@ mod tests {
         for result in [
             Ok(EndpointReply::Done),
             Ok(EndpointReply::PaneCopySearch {
-                pane_id: pane.clone(),
+                pane_id: pane,
                 search: PaneCopySearch {
                     matches: vec![PaneTextRange {
                         start: point(3, 1),
@@ -464,7 +464,6 @@ mod tests {
             workspaces: vec![ClientShellWorkspace {
                 workspace_id: "w1".into(),
                 new_workspace_cwd: "/tmp".into(),
-                number: 1,
                 label: "shell".into(),
                 branch: Some("main".into()),
                 git_ahead_behind: None,

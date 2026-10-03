@@ -222,7 +222,7 @@ fn pane_split_drag_uses_projected_handle_and_stable_child_identities() {
     assert!(matches!(
         &request.command,
         EndpointCommand::LayoutSetSplitRatio(params)
-            if params.workspace_id == "w1"
+            if params.workspace_id == crate::tests::test_workspace_id("w1")
                 && params.first_panes == vec![test_pane_id("w1:p1")]
                 && params.second_panes == vec![test_pane_id("w1:p2")]
                 && (params.ratio.get() - 0.6).abs() < f32::EPSILON
@@ -636,7 +636,7 @@ fn drag_in_unfocused_pane_survives_snapshots_until_focus_moves_after_landing() {
     state.receive_pane_surface(surface());
     state.compose(106, 20).expect("pane frame");
     let pane = state.hits.panes[0].clone();
-    assert_eq!(pane.pane_id, "w1:p1");
+    assert_eq!(pane.pane_id.to_string(), "w1:p1");
     let mouse = |kind, column| {
         RawInputEvent::Mouse(crossterm::event::MouseEvent {
             kind,
@@ -1015,7 +1015,7 @@ fn pane_mouse_input_keeps_stable_target_and_endpoint_encoding() {
     else {
         panic!("pane application click should use targeted canonical input");
     };
-    assert_eq!(pane_id, "w1:p1");
+    assert_eq!(pane_id.to_string(), "w1:p1");
     assert!(matches!(
         &events[..],
         [ClientPaneInputEvent::Mouse {
@@ -1046,7 +1046,7 @@ fn pane_mouse_input_keeps_stable_target_and_endpoint_encoding() {
     assert!(matches!(
         &release.requests[..],
         [ClientShellRequest::Shown(ClientMessage::ClientShellPaneInput { pane_id, events })]
-            if pane_id == "w1:p1"
+            if pane_id == &crate::tests::test_pane_id("w1:p1")
                 && matches!(
                     &events[..],
                     [ClientPaneInputEvent::Mouse {
@@ -1093,7 +1093,7 @@ fn pane_pixel_mouse_preserves_pane_relative_pixel_coordinates() {
     assert!(matches!(
         &outcome.requests[..],
         [ClientShellRequest::Shown(ClientMessage::ClientShellPaneInput { pane_id, events })]
-            if pane_id == "w1:p1"
+            if pane_id == &crate::tests::test_pane_id("w1:p1")
                 && matches!(
                     &events[..],
                     [ClientPaneInputEvent::Mouse {
@@ -1112,7 +1112,7 @@ fn pane_pixel_mouse_preserves_pane_relative_pixel_coordinates() {
         [
             ClientShellRequest::Shown(ClientMessage::ClientShellPaneInput { pane_id, events }),
             ClientShellRequest::Shown(ClientMessage::ClientShellFocus { focused: false })
-        ] if pane_id == "w1:p1" && matches!(
+        ] if pane_id == &crate::tests::test_pane_id("w1:p1") && matches!(
             &events[..],
             [ClientPaneInputEvent::Mouse {
                 kind: shepr_protocol::ClientMouseKind::Up(
@@ -1146,7 +1146,7 @@ fn pane_owned_right_click_forwards_the_complete_gesture() {
     assert!(matches!(
         &down.requests[..],
         [ClientShellRequest::Shown(ClientMessage::ClientShellPaneInput { pane_id, .. })]
-            if pane_id == "w1:p1"
+            if pane_id == &crate::tests::test_pane_id("w1:p1")
     ));
     assert!(state.overlay.is_none());
     assert!(state.pane_mouse_gesture.is_some());
@@ -1160,7 +1160,7 @@ fn pane_owned_right_click_forwards_the_complete_gesture() {
     assert!(matches!(
         &up.requests[..],
         [ClientShellRequest::Shown(ClientMessage::ClientShellPaneInput { pane_id, events })]
-            if pane_id == "w1:p1"
+            if pane_id == &crate::tests::test_pane_id("w1:p1")
                 && matches!(
                     &events[..],
                     [ClientPaneInputEvent::Mouse {

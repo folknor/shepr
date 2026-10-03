@@ -67,7 +67,10 @@ impl AgentReportHarness {
             Some("agent-report-contract".to_owned()),
             root,
             pane,
-            WorkspacePane::new(PaneState::new(terminal_id.clone())),
+            WorkspacePane::new(
+                PaneState::new(terminal_id.clone()),
+                shepr_protocol::PanePublicNumber::FIRST,
+            ),
         ));
         let pane_id = app
             .public_pane_id(0, pane)

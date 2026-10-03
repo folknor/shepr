@@ -22,8 +22,11 @@ use std::collections::VecDeque;
 impl ClientCopyModeState {
     /// Whether this stored copy session's pane currently owns focus.
     /// The caller still decides whether a focused session is active input mode.
-    pub(in crate::shell) fn pane_is_focused(&self, focused_pane_id: Option<&str>) -> bool {
-        focused_pane_id == Some(self.pane_id.as_str())
+    pub(in crate::shell) fn pane_is_focused(
+        &self,
+        focused_pane_id: Option<&shepr_protocol::PublicPaneId>,
+    ) -> bool {
+        focused_pane_id == Some(&self.pane_id)
     }
 
     /// The row at the top of the pane's viewport.
@@ -128,7 +131,7 @@ impl ClientShellState {
         request: &shepr_protocol::RequestId,
         pane_id: &shepr_protocol::PublicPaneId,
         origin: shepr_protocol::command::PaneTextPoint,
-        result: Result<shepr_protocol::command::EndpointReply, ClientShellEndpointError>,
+        result: &Result<shepr_protocol::command::EndpointReply, ClientShellEndpointError>,
         now: std::time::Instant,
         outcome: &mut ClientShellInput,
     ) -> Repaint {
@@ -140,8 +143,8 @@ impl ClientShellState {
             Ok(EndpointReply::PaneCopyMotion {
                 pane_id: returned_pane_id,
                 cursor,
-            }) if &returned_pane_id == pane_id => {
-                let applied = self.apply_copy_motion_target(pane_id, origin, cursor, outcome);
+            }) if returned_pane_id == pane_id => {
+                let applied = self.apply_copy_motion_target(pane_id, origin, *cursor, outcome);
                 (
                     if applied {
                         Repaint::Needed
@@ -257,9 +260,10 @@ impl ClientShellState {
     pub(in crate::shell) fn copy_mode_owns_input(&self) -> bool {
         self.mode == ClientShellMode::Copy
             && self.overlay.is_none()
-            && self.copy_mode.as_ref().is_some_and(|copy_mode| {
-                copy_mode.pane_is_focused(self.focused_pane_id().as_deref())
-            })
+            && self
+                .copy_mode
+                .as_ref()
+                .is_some_and(|copy_mode| copy_mode.pane_is_focused(self.focused_pane_id().as_ref()))
     }
 
     /// Keys that leave copy mode or hand input to the prefix: Esc always, and outside
@@ -681,7 +685,7 @@ impl ClientShellState {
         let Some(copy_mode) = self.copy_mode.as_ref() else {
             return false;
         };
-        let pane_id = copy_mode.pane_id.clone();
+        let pane_id = copy_mode.pane_id;
         let generation = copy_mode.operation_generation;
         // Only the awaited request counts: a search an earlier session abandoned is still
         // in the ledger, but its answer will be ignored.
@@ -736,7 +740,7 @@ impl ClientShellState {
 
     pub(in crate::shell) fn apply_copy_search_result(
         &mut self,
-        pane_id: &str,
+        pane_id: &shepr_protocol::PublicPaneId,
         origin: shepr_protocol::command::PaneTextPoint,
         query: TypedText,
         direction: shepr_protocol::command::PaneCopySearchDirection,
@@ -749,7 +753,7 @@ impl ClientShellState {
         let Some(copy_mode) = self.copy_mode.as_mut() else {
             return false;
         };
-        if copy_mode.pane_id != pane_id
+        if copy_mode.pane_id != *pane_id
             || copy_mode.cursor != origin
             || copy_mode.operation_generation != generation
         {
@@ -842,11 +846,11 @@ impl ClientShellState {
     }
 
     pub(in crate::shell) fn copy_hit(&self) -> Option<PaneHit> {
-        let pane_id = self.copy_mode.as_ref()?.pane_id.as_str();
+        let pane_id = &self.copy_mode.as_ref()?.pane_id;
         self.hits
             .panes
             .iter()
-            .find(|hit| hit.pane_id == pane_id)
+            .find(|hit| hit.pane_id == *pane_id)
             .cloned()
     }
 
@@ -900,10 +904,7 @@ impl ClientShellState {
                     .scroll
                     .with_offset(copy_mode.scroll.offset_from_bottom.saturating_sub(lines));
             }
-            (
-                copy_mode.pane_id.clone(),
-                copy_mode.scroll.offset_from_bottom,
-            )
+            (copy_mode.pane_id, copy_mode.scroll.offset_from_bottom)
         }) else {
             return;
         };
@@ -926,10 +927,7 @@ impl ClientShellState {
                 copy_mode.cursor.row = copy_mode.last_row();
                 copy_mode.scroll = copy_mode.scroll.with_offset(0);
             }
-            (
-                copy_mode.pane_id.clone(),
-                copy_mode.scroll.offset_from_bottom,
-            )
+            (copy_mode.pane_id, copy_mode.scroll.offset_from_bottom)
         }) else {
             return;
         };
@@ -981,7 +979,7 @@ impl ClientShellState {
                 return None;
             }
             copy_mode.scroll = copy_mode.scroll.with_offset(offset);
-            Some((copy_mode.pane_id.clone(), offset))
+            Some((copy_mode.pane_id, offset))
         });
         if let Some((pane_id, offset)) = request {
             self.push_pane_scroll_offset(pane_id, offset, outcome);
@@ -996,7 +994,7 @@ impl ClientShellState {
         if linewise {
             copy_mode.selection = Some(ClientCopySelection::Linewise { anchor_row: row });
             self.mouse_selection.selection = Some(shepr_vt::selection::Selection::line_range(
-                copy_mode.pane_id.clone(),
+                copy_mode.pane_id,
                 row,
                 row,
             ));
@@ -1005,7 +1003,7 @@ impl ClientShellState {
                 anchor: shepr_vt::Point::new(row, copy_mode.cursor.col),
             });
             self.mouse_selection.selection = Some(shepr_vt::selection::Selection::anchor(
-                copy_mode.pane_id.clone(),
+                copy_mode.pane_id,
                 shepr_vt::Point::new(row, copy_mode.cursor.col),
             ));
         }
@@ -1022,13 +1020,13 @@ impl ClientShellState {
         };
         self.mouse_selection.selection = Some(match selection {
             ClientCopySelection::Character { anchor } => shepr_vt::selection::Selection::range(
-                copy_mode.pane_id.clone(),
+                copy_mode.pane_id,
                 anchor,
                 shepr_vt::Point::new(copy_mode.cursor.row, copy_mode.cursor.col),
             ),
             ClientCopySelection::Linewise { anchor_row } => {
                 shepr_vt::selection::Selection::line_range(
-                    copy_mode.pane_id.clone(),
+                    copy_mode.pane_id,
                     anchor_row,
                     copy_mode.cursor.row,
                 )
@@ -1061,13 +1059,13 @@ impl ClientShellState {
                 self.copy_pipeline.reset();
                 return;
             };
-            let pane_id = copy_mode.pane_id.clone();
+            let pane_id = copy_mode.pane_id;
             let origin = copy_mode.cursor;
             let (command, kind) = match operation {
                 ClientCopyOperation::Motion(motion) => (
                     shepr_protocol::command::EndpointCommand::PaneCopyMotion(
                         shepr_protocol::command::PaneCopyMotionParams {
-                            pane_id: pane_id.clone(),
+                            pane_id,
                             cursor: origin,
                             motion,
                         },
@@ -1099,7 +1097,7 @@ impl ClientShellState {
                     (
                         shepr_protocol::command::EndpointCommand::PaneCopySearch(
                             shepr_protocol::command::PaneCopySearchParams {
-                                pane_id: pane_id.clone(),
+                                pane_id,
                                 query: query.as_str().to_owned(),
                                 direction,
                                 cursor: origin,
@@ -1135,7 +1133,7 @@ impl ClientShellState {
 
     pub(in crate::shell) fn apply_copy_motion_target(
         &mut self,
-        pane_id: &str,
+        pane_id: &shepr_protocol::PublicPaneId,
         origin: shepr_protocol::command::PaneTextPoint,
         cursor: shepr_protocol::command::PaneTextPoint,
         outcome: &mut ClientShellInput,
@@ -1143,7 +1141,7 @@ impl ClientShellState {
         let Some(copy_mode) = self.copy_mode.as_mut() else {
             return false;
         };
-        if copy_mode.pane_id != pane_id || copy_mode.cursor != origin {
+        if copy_mode.pane_id != *pane_id || copy_mode.cursor != origin {
             return false;
         }
         copy_mode.cursor = cursor;
@@ -1170,7 +1168,7 @@ impl ClientShellState {
                             .current
                             .and_then(|index| search.matches.get(index).copied())
                     })
-                    .map(|text_match| (copy_mode.pane_id.clone(), text_match))
+                    .map(|text_match| (copy_mode.pane_id, text_match))
             })
         {
             self.mouse_selection.selection = Some(shepr_vt::selection::Selection::range(

@@ -202,10 +202,10 @@ async fn a_scroll_renders_only_the_viewers_of_the_scrolled_pane() {
         pair.pane,
         shepr_mux::pane::PaneRuntime::test_with_scrollback_bytes(80, 23, 10_000, b"BASE"),
     );
-    let workspace_id = pair.server.app.state.workspaces[0].id.clone();
+    let workspace_id = pair.server.app.state.workspaces[0].id;
     pair.server.apply_workspace_geometry(&workspace_id);
     let other = shepr_mux::workspace::Workspace::test_new("other");
-    let other_id = other.id.clone();
+    let other_id = other.id;
     pair.server.app.state.workspaces.push(other);
     pair.server
         .place_test_client_on_workspace(ClientId::test_new(8), &other_id);
@@ -227,9 +227,7 @@ async fn a_scroll_renders_only_the_viewers_of_the_scrolled_pane() {
         .server
         .app
         .public_pane_id(0, pair.pane)
-        .expect("pane id")
-        .parse()
-        .expect("typed id");
+        .expect("pane id");
     pair.server
         .handle_client_shell_command(
             ClientId::test_new(7),
@@ -247,7 +245,7 @@ async fn a_scroll_renders_only_the_viewers_of_the_scrolled_pane() {
 async fn a_navigation_renders_only_the_client_that_moved() {
     let mut pair = Pair::new();
     let other = shepr_mux::workspace::Workspace::test_new("destination");
-    let other_id = other.id.clone();
+    let other_id = other.id;
     pair.server.app.state.workspaces.push(other);
     let epoch = pair.server.view_epoch;
     assert!(
@@ -422,7 +420,7 @@ async fn a_retained_check_failure_promotes_only_its_client() {
 async fn a_failed_source_collection_promotes_only_clients_viewing_that_pane() {
     let mut pair = Pair::new();
     let other = shepr_mux::workspace::Workspace::test_new("other");
-    let other_id = other.id.clone();
+    let other_id = other.id;
     pair.server.app.state.workspaces.push(other);
     pair.server
         .place_test_client_on_workspace(ClientId::test_new(8), &other_id);
@@ -504,7 +502,7 @@ async fn mode_geometry_includes_all_viewers_in_the_same_plan() {
 #[tokio::test]
 async fn a_geometry_application_that_resizes_nothing_invalidates_nobody() {
     let mut pair = Pair::new();
-    let workspace_id = pair.server.app.state.workspaces[0].id.clone();
+    let workspace_id = pair.server.app.state.workspaces[0].id;
     let Some(crate::server::headless::client_views::GeometrySource::Client(source)) =
         pair.server.workspace_geometry_source(&workspace_id)
     else {
@@ -538,7 +536,7 @@ async fn a_geometry_application_that_resizes_nothing_invalidates_nobody() {
 async fn replies_follow_the_snapshot_when_a_pass_renders_a_subset() {
     let mut pair = Pair::new();
     let other = shepr_mux::workspace::Workspace::test_new("destination");
-    let other_id = other.id.clone();
+    let other_id = other.id;
     pair.server.app.state.workspaces.push(other);
     pair.server
         .navigate_shell_client(ClientId::test_new(8), &other_id);
@@ -660,9 +658,7 @@ async fn scrolling_preserves_concurrent_shared_projection_changes() {
         .server
         .app
         .public_pane_id(0, pair.pane)
-        .expect("pane id")
-        .parse()
-        .expect("typed id");
+        .expect("pane id");
     pair.server
         .handle_client_shell_command(
             ClientId::test_new(7),

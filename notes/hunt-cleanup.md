@@ -65,7 +65,13 @@ raw reports are in the commit that precedes this file's.
   `ReportedAgent::Custom` would make the server agree with the TUI; it cuts
   across shepr-agent ownership, mux persistence and their tests.
 
-(wave-7 review and adjudication)
+- `SavedSplitRatio` (`crates/shepr-mux/src/persist/snapshot.rs`) keeps the raw
+  float so an out-of-range saved ratio drops one workspace, while zero pane
+  numbers and non-canonical workspace ids are now typed decodes that refuse the
+  whole file. No shepr save writes an out-of-range ratio either; by the same
+  rule it could decode as `SplitRatio` and `SavedSplitRatio` could go.
+
+(wave-7 review and adjudication, wave-8 adjudication)
 
 ## Test-only twins and test seams in production
 

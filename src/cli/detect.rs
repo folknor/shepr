@@ -363,7 +363,7 @@ mod tests {
         };
         assert!(matches!(
             args.source,
-            ExplainSource::Pane(ref pane) if pane.as_str() == "w1:p1"
+            ExplainSource::Pane(ref pane) if pane.to_string() == "w1:p1"
         ));
         assert!(!args.json && !args.verbose);
 

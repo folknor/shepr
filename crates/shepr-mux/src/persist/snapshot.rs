@@ -242,12 +242,12 @@ where
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorkspaceSnapshot {
-    /// A non-canonical value is restore's to replace, with a fresh ID.
-    pub id: String,
+    /// Canonical identity; restore assigns a fresh identity to duplicates.
+    pub id: shepr_protocol::WorkspaceId,
     #[serde(deserialize_with = "required_nullable")]
     pub custom_name: Option<String>,
     /// Restore checks it against the panes' numbers.
-    pub next_public_pane_number: usize,
+    pub next_public_pane_number: shepr_protocol::PanePublicNumber,
     pub layout: LayoutSnapshot,
     pub panes: HashMap<u32, PaneSnapshot>,
     pub zoomed: bool,
@@ -265,8 +265,8 @@ pub struct PaneSnapshot {
     // Saved paths may disappear between capture and restore. Keep the path
     // observation; restore and the child's required chdir own admission.
     pub cwd: PathBuf,
-    /// Restore rejects zero and repeats within a workspace.
-    pub public_number: usize,
+    /// Decoding refuses zero; restore refuses repeats within a workspace.
+    pub public_number: shepr_protocol::PanePublicNumber,
     #[serde(deserialize_with = "required_nullable")]
     pub label: Option<String>,
     #[serde(
@@ -492,7 +492,7 @@ fn capture_workspace(
         );
     }
     WorkspaceSnapshot {
-        id: ws.id.to_string(),
+        id: ws.id,
         custom_name: ws.custom_name.clone(),
         next_public_pane_number: ws.next_public_pane_number,
         layout: capture_node(ws.layout.root()),
@@ -1097,15 +1097,17 @@ mod tests {
             version: super::SNAPSHOT_VERSION,
             host_theme: super::SavedHostTheme::default(),
             workspaces: vec![super::WorkspaceSnapshot {
-                id: "w1".into(),
+                id: "w1".parse().expect("id"),
                 custom_name: None,
-                next_public_pane_number: 2,
+                next_public_pane_number: shepr_protocol::PanePublicNumber::new(2)
+                    .expect("nonzero literal"),
                 layout: super::LayoutSnapshot::Pane(0),
                 panes: HashMap::from([(
                     0,
                     super::PaneSnapshot {
                         cwd: PathBuf::from("/"),
-                        public_number: 1,
+                        public_number: shepr_protocol::PanePublicNumber::new(1)
+                            .expect("nonzero literal"),
                         label: None,
                         agent_session: None,
                     },
@@ -1160,6 +1162,26 @@ mod tests {
             assert!(
                 super::parse_session_file(&damaged.to_string()).is_err(),
                 "{parent}/{key} missing"
+            );
+        }
+
+        for (pointer, invalid) in [
+            ("/snapshot/workspaces/0/id", serde_json::json!("ws_1")),
+            ("/snapshot/workspaces/0/id", serde_json::json!(0)),
+            (
+                "/snapshot/workspaces/0/next_public_pane_number",
+                serde_json::json!(0),
+            ),
+            (
+                "/snapshot/workspaces/0/panes/0/public_number",
+                serde_json::json!(0),
+            ),
+        ] {
+            let mut damaged = saved.clone();
+            *damaged.pointer_mut(pointer).expect("identity field") = invalid;
+            assert!(
+                super::parse_session_file(&damaged.to_string()).is_err(),
+                "{pointer}"
             );
         }
 

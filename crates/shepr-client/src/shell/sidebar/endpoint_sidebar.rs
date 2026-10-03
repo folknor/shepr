@@ -147,7 +147,7 @@ pub(in crate::shell) fn render_collapsed(
         let Some(snapshot) = endpoint.snapshot() else {
             continue;
         };
-        for workspace in &snapshot.workspaces {
+        for (workspace_index, workspace) in snapshot.workspaces.iter().enumerate() {
             if skip > 0 {
                 skip -= 1;
                 continue;
@@ -182,9 +182,9 @@ pub(in crate::shell) fn render_collapsed(
                 stale,
             );
             let number = if single_endpoint {
-                format!("{:<2}", workspace.number)
+                format!("{:<2}", workspace_index + 1)
             } else {
-                format!(" {}", workspace.number)
+                format!(" {}", workspace_index + 1)
             };
             let number_width =
                 crate::shell::presentation::render::display_width(&number).min(rect.width);
@@ -218,7 +218,7 @@ pub(in crate::shell) fn render_collapsed(
             hits.workspaces.push(WorkspaceHit {
                 rect,
                 endpoint_id: endpoint.endpoint_id.clone(),
-                workspace_id: workspace.workspace_id.clone(),
+                workspace_id: workspace.workspace_id,
             });
             y = y.saturating_add(1);
         }
@@ -378,8 +378,8 @@ pub(in crate::shell) fn render_expanded(
                         } else {
                             &endpoint.endpoint_id == state.active_endpoint_id
                                 && active_snapshot.is_some_and(|snapshot| {
-                                    snapshot.focused_workspace_id.as_deref()
-                                        == Some(workspace.workspace_id.as_str())
+                                    snapshot.focused_workspace_id.as_ref()
+                                        == Some(&workspace.workspace_id)
                                 })
                         }
                     })
@@ -478,11 +478,11 @@ pub(in crate::shell) fn render_expanded(
                 let dragged = endpoint_active
                     && state
                         .dragged_workspace_id
-                        .is_some_and(|id| id.as_str() == workspace.workspace_id.as_str());
+                        .is_some_and(|id| id == &workspace.workspace_id);
                 crate::shell::sidebar::render_workspace_rows(
                     buffer,
                     nested,
-                    workspace.number,
+                    *entry + 1,
                     status,
                     config.status_indicators,
                     &tokens,
@@ -504,7 +504,7 @@ pub(in crate::shell) fn render_expanded(
                 hits.workspaces.push(WorkspaceHit {
                     rect,
                     endpoint_id: endpoint.endpoint_id.clone(),
-                    workspace_id: workspace.workspace_id.clone(),
+                    workspace_id: workspace.workspace_id,
                 });
                 y = y
                     .saturating_add(height)

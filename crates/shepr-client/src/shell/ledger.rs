@@ -193,7 +193,7 @@ impl Work {
                 shell.complete_word_selection_row(request, &pane_id, row, result, now, outcome)
             }
             Self::CopyMotion { pane_id, origin } => {
-                shell.complete_copy_motion(request, &pane_id, origin, result, now, outcome)
+                shell.complete_copy_motion(request, &pane_id, origin, &result, now, outcome)
             }
             Self::CopySearch {
                 pane_id,

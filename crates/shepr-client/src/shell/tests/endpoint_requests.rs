@@ -56,10 +56,10 @@ fn cancelled_scroll_rolls_back_queued_target_even_without_a_presented_snapshot()
         state.receive_pane_surface(surface());
         let pane_id = test_pane_id("w1:p1");
         let mut first = ClientShellInput::default();
-        state.push_pane_scroll_offset(pane_id.clone(), 3, &mut first);
+        state.push_pane_scroll_offset(pane_id, 3, &mut first);
         let id = request_id(&first.actions).to_owned();
         let mut queued = ClientShellInput::default();
-        state.push_pane_scroll_offset(pane_id.clone(), 7, &mut queued);
+        state.push_pane_scroll_offset(pane_id, 7, &mut queued);
         assert!(queued.actions.is_empty());
         assert_eq!(state.scroll_lanes.queued(&pane_id), Some(7));
         if missing_snapshot {
@@ -75,7 +75,7 @@ fn cancelled_scroll_rolls_back_queued_target_even_without_a_presented_snapshot()
         assert!(state.notices.visible().is_none());
         state.set_snapshot(Box::new(snapshot()));
         let mut next = ClientShellInput::default();
-        state.push_pane_scroll_offset(pane_id.clone(), 2, &mut next);
+        state.push_pane_scroll_offset(pane_id, 2, &mut next);
         assert!(matches!(
             next.actions.as_slice(),
             [ClientShellAction::Endpoint { .. }]
@@ -91,10 +91,10 @@ fn mismatched_boot_scroll_result_rolls_back_queued_scroll_state() {
     state.receive_pane_surface(surface());
     let pane_id = test_pane_id("w1:p1");
     let mut first = ClientShellInput::default();
-    state.push_pane_scroll_offset(pane_id.clone(), 3, &mut first);
+    state.push_pane_scroll_offset(pane_id, 3, &mut first);
     let id = request_id(&first.actions).to_owned();
     let mut queued = ClientShellInput::default();
-    state.push_pane_scroll_offset(pane_id.clone(), 7, &mut queued);
+    state.push_pane_scroll_offset(pane_id, 7, &mut queued);
     assert!(state.scroll_lanes.queued(&pane_id).is_some());
 
     let outcome = state.answer_request(
@@ -119,9 +119,9 @@ fn disconnecting_a_pending_scroll_does_not_show_an_interrupted_action_notice() {
     state.receive_pane_surface(surface());
     let pane_id = test_pane_id("w1:p1");
     let mut first = ClientShellInput::default();
-    state.push_pane_scroll_offset(pane_id.clone(), 3, &mut first);
+    state.push_pane_scroll_offset(pane_id, 3, &mut first);
     let mut queued = ClientShellInput::default();
-    state.push_pane_scroll_offset(pane_id.clone(), 7, &mut queued);
+    state.push_pane_scroll_offset(pane_id, 7, &mut queued);
 
     state.mark_endpoint_disconnected(&ClientEndpointId::Local);
 
@@ -834,7 +834,6 @@ fn a_failed_focus_releases_only_its_own_highlight() {
     for number in [2, 3] {
         let mut w = snap.workspaces[0].clone();
         w.workspace_id = test_workspace_id(&format!("w{number}"));
-        w.number = number;
         snap.workspaces.push(w);
     }
     s.set_snapshot(Box::new(snap));

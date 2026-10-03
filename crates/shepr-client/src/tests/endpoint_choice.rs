@@ -77,7 +77,6 @@ pub(crate) fn snapshot(id: &ClientEndpointId, revision: u64) -> Box<ClientShellS
         workspaces: vec![shepr_protocol::ClientShellWorkspace {
             workspace_id: test_workspace_id("w1"),
             new_workspace_cwd: "/repo".into(),
-            number: 1,
             label: id.display_label().into(),
             branch: None,
             git_ahead_behind: None,
@@ -1116,7 +1115,6 @@ fn navigation_is_acknowledged_and_in_the_first_committed_projection() {
             result: Ok(EndpointReply::WorkspaceInfo {
                 workspace: shepr_protocol::command::WorkspaceInfo {
                     workspace_id: test_workspace_id("w1"),
-                    number: 1,
                     label: "target".into(),
                     pane_count: 1,
                     agent_status: shepr_protocol::AgentStatus::Idle,

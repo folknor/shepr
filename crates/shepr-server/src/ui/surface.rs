@@ -187,8 +187,7 @@ mod tests {
 
         let full_area = Rect::new(0, 0, 106, 20);
         let area = full_area;
-        let surface =
-            compute_surface_for(&app, &runtimes, Some(app.workspaces[0].id.clone()), area);
+        let surface = compute_surface_for(&app, &runtimes, Some(app.workspaces[0].id), area);
         assert_eq!(surface.pane_infos.len(), 2);
         assert!(!surface.split_borders.is_empty());
 

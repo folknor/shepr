@@ -49,8 +49,8 @@ impl ViewEvidence {
             .is_none_or(|current| snapshot.revision >= current)
         {
             self.snapshot_revision = Some(snapshot.revision.get());
-            self.focused_workspace_id = snapshot.focused_workspace_id.clone();
-            self.focused_pane_id = snapshot.focused_pane_id.clone();
+            self.focused_workspace_id = snapshot.focused_workspace_id;
+            self.focused_pane_id = snapshot.focused_pane_id;
         }
     }
 

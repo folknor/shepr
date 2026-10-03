@@ -173,7 +173,7 @@ impl AppState {
     /// it moves to the workspace now at its index; every client location is
     /// settled by the server loop.
     pub(crate) fn close_workspace_at(&mut self, ws_idx: usize) -> Option<WorkspaceRemovalOutcome> {
-        let workspace_id = self.workspaces.get(ws_idx).map(|ws| ws.id.clone())?;
+        let workspace_id = self.workspaces.get(ws_idx).map(|ws| ws.id)?;
         self.mark_session_dirty();
         crate::logging::workspace_closed(&workspace_id);
 

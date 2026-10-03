@@ -60,7 +60,7 @@ impl App {
         };
         Handled::navigating(
             EndpointReply::WorkspaceInfo { workspace },
-            target.workspace_id.clone(),
+            target.workspace_id,
         )
     }
 
@@ -147,7 +147,7 @@ mod tests {
         let mut app = app();
         app.state.workspaces = vec![Workspace::test_new("spaces")];
         app.state.ensure_test_terminals();
-        let followed = app.state.workspaces[0].id.clone();
+        let followed = app.state.workspaces[0].id;
 
         // The split pane becomes the focused pane, away from the root pane.
         let root_public = app
@@ -321,7 +321,7 @@ mod tests {
 
         let handled = app
             .handle_workspace_move(&WorkspaceMoveParams {
-                workspace_id: moved_id.clone(),
+                workspace_id: moved_id,
                 before_workspace_id: None,
             })
             .expect("the move succeeds");
@@ -342,7 +342,7 @@ mod tests {
         let moved_id = app.public_workspace_id(0).expect("test precondition");
 
         app.handle_workspace_move(&WorkspaceMoveParams {
-            workspace_id: moved_id.clone(),
+            workspace_id: moved_id,
             before_workspace_id: app.public_workspace_id(1),
         })
         .expect("a no-op move succeeds");
@@ -427,7 +427,7 @@ mod tests {
 
         let handled = app
             .handle_workspace_focus(&WorkspaceTarget {
-                workspace_id: target.clone(),
+                workspace_id: target,
             })
             .expect("the workspace is focused");
 
@@ -441,7 +441,7 @@ mod tests {
         // The same again, as when the requester already views it.
         let again = app
             .handle_workspace_focus(&WorkspaceTarget {
-                workspace_id: target.clone(),
+                workspace_id: target,
             })
             .expect("focusing again succeeds");
         assert_eq!(again.navigate.as_ref(), Some(&target));
@@ -459,16 +459,14 @@ mod tests {
         let refusal = EndpointError::Rejected(format!("workspace {gone} not found"));
 
         assert_eq!(
-            app.handle_workspace_focus(&WorkspaceTarget {
-                workspace_id: gone.clone()
-            })
-            .expect_err("the workspace is gone")
-            .error,
+            app.handle_workspace_focus(&WorkspaceTarget { workspace_id: gone })
+                .expect_err("the workspace is gone")
+                .error,
             refusal
         );
         assert_eq!(
             app.handle_workspace_rename(WorkspaceRenameParams {
-                workspace_id: gone.clone(),
+                workspace_id: gone,
                 label: Some("x".into()),
             })
             .expect_err("the workspace is gone")
@@ -477,7 +475,7 @@ mod tests {
         );
         assert_eq!(
             app.handle_workspace_move(&WorkspaceMoveParams {
-                workspace_id: gone.clone(),
+                workspace_id: gone,
                 before_workspace_id: None,
             })
             .expect_err("the workspace is gone")

@@ -16,6 +16,8 @@ pub struct ClientShellSnapshot {
     pub session_saves_stopped: bool,
     pub focused_workspace_id: Option<WorkspaceId>,
     pub focused_pane_id: Option<PublicPaneId>,
+    /// Ordered workspaces. The client derives one-based display positions
+    /// from this order; the stable ID's allocator number is unrelated.
     pub workspaces: Vec<ClientShellWorkspace>,
     pub panes: Vec<ClientShellPane>,
     pub agents: Vec<ClientShellAgent>,
@@ -25,7 +27,6 @@ pub struct ClientShellSnapshot {
 pub struct ClientShellWorkspace {
     pub workspace_id: WorkspaceId,
     pub new_workspace_cwd: String,
-    pub number: usize,
     pub label: String,
     pub branch: Option<String>,
     pub git_ahead_behind: Option<(usize, usize)>,

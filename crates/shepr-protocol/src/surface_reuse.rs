@@ -252,7 +252,7 @@ impl SurfaceDecodeSubject {
             boot_id: boot_id.clone(),
             projection_revision,
             surface_revision,
-            pane_ids: panes.iter().map(|pane| pane.pane_id.clone()).collect(),
+            pane_ids: panes.iter().map(|pane| pane.pane_id).collect(),
         }
     }
 

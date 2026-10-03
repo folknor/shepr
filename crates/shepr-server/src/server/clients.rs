@@ -597,7 +597,7 @@ impl ClientShellLocation {
                 .bookmark_index
                 .or_else(|| (!topology.workspace_ids.is_empty()).then_some(0)),
         };
-        self.set(landed.map(|index| (topology.workspace_ids[index].clone(), index)))
+        self.set(landed.map(|index| (topology.workspace_ids[index], index)))
     }
 }
 
@@ -687,9 +687,9 @@ impl ClientConnection {
                     ..
                 } => {
                     shell.held_inputs.insert(
-                        (target.clone(), ClientShellPressId::Key(code.clone())),
+                        (*target, ClientShellPressId::Key(code.clone())),
                         ClientShellHeldInput {
-                            target: target.to_owned(),
+                            target: *target,
                             release: ClientPaneInputEvent::Key {
                                 code: code.clone(),
                                 modifiers: *modifiers,
@@ -708,7 +708,7 @@ impl ClientConnection {
                 } => {
                     shell
                         .held_inputs
-                        .remove(&(target.clone(), ClientShellPressId::Key(code.clone())));
+                        .remove(&(*target, ClientShellPressId::Key(code.clone())));
                 }
                 ClientPaneInputEvent::Mouse {
                     kind: ClientMouseKind::Down(button),
@@ -724,7 +724,7 @@ impl ClientConnection {
                     modifiers,
                     ..
                 } => {
-                    let id = (target.clone(), ClientShellPressId::Mouse(*button));
+                    let id = (*target, ClientShellPressId::Mouse(*button));
                     if matches!(
                         event,
                         ClientPaneInputEvent::Mouse {
@@ -736,7 +736,7 @@ impl ClientConnection {
                         shell.held_inputs.insert(
                             id,
                             ClientShellHeldInput {
-                                target: target.to_owned(),
+                                target: *target,
                                 release: ClientPaneInputEvent::Mouse {
                                     kind: ClientMouseKind::Up(*button),
                                     position: *position,
@@ -754,7 +754,7 @@ impl ClientConnection {
                 } => {
                     shell
                         .held_inputs
-                        .remove(&(target.clone(), ClientShellPressId::Mouse(*button)));
+                        .remove(&(*target, ClientShellPressId::Mouse(*button)));
                 }
                 ClientPaneInputEvent::Key {
                     kind: ClientKeyKind::Press | ClientKeyKind::Repeat,
@@ -936,8 +936,8 @@ mod tests {
         assert_eq!(registry.foreground_client_id(), Some(first_id));
         assert!(!registry.promote_to_foreground(second_id));
         let workspace_id: WorkspaceId = shepr_test_fixtures::id("w1");
-        assert!(registry.claim_geometry(workspace_id.clone(), first_id));
-        assert!(!registry.claim_unowned_geometry(workspace_id.clone(), first_id));
+        assert!(registry.claim_geometry(workspace_id, first_id));
+        assert!(!registry.claim_unowned_geometry(workspace_id, first_id));
         assert_eq!(registry.geometry_controller(&workspace_id), Some(first_id));
 
         let Some(ClientSurfaceChange {
@@ -1014,7 +1014,10 @@ mod tests {
     fn semantic_text_press_does_not_create_a_server_release_lease() {
         let mut client = shell_client();
         client.track_shell_input(
-            &shepr_protocol::PublicPaneId::new(&crate::test_support::test_workspace_id("w1"), 1),
+            &shepr_protocol::PublicPaneId::new(
+                &crate::test_support::test_workspace_id("w1"),
+                shepr_protocol::PanePublicNumber::new(1).expect("nonzero literal"),
+            ),
             &[ClientPaneInputEvent::Key {
                 code: shepr_protocol::ClientKeyCode::Char('x'),
                 modifiers: shepr_protocol::WireModifiers::NONE,
@@ -1040,7 +1043,10 @@ mod tests {
             generated_text: None,
         };
         client.track_shell_input(
-            &shepr_protocol::PublicPaneId::new(&crate::test_support::test_workspace_id("w1"), 1),
+            &shepr_protocol::PublicPaneId::new(
+                &crate::test_support::test_workspace_id("w1"),
+                shepr_protocol::PanePublicNumber::new(1).expect("nonzero literal"),
+            ),
             &[
                 key(shepr_protocol::ClientKeyCode::Enter, ClientKeyKind::Press),
                 key(shepr_protocol::ClientKeyCode::Enter, ClientKeyKind::Press),
@@ -1051,7 +1057,7 @@ mod tests {
 
         let held = client.drain_shell_held_inputs();
         assert_eq!(held.len(), 1);
-        assert_eq!(held[0].target, "w1:p1");
+        assert_eq!(held[0].target.to_string(), "w1:p1");
         assert_eq!(
             held[0].release,
             key(shepr_protocol::ClientKeyCode::Enter, ClientKeyKind::Release)
@@ -1075,7 +1081,7 @@ mod tests {
     #[test]
     fn a_location_moves_its_generation_only_when_the_viewed_workspace_changes() {
         let ids = workspace_ids(&[1, 2, 3]);
-        let mut location = ClientShellLocation::initial(Some((ids[0].clone(), 0)));
+        let mut location = ClientShellLocation::initial(Some((ids[0], 0)));
         assert_eq!(
             location.generation(),
             ClientShellLocationGeneration(1),
@@ -1084,34 +1090,34 @@ mod tests {
 
         // The same workspace at a new index (a reorder) refreshes the index
         // and leaves the projection valid.
-        assert!(!location.navigate(ids[0].clone(), 2));
+        assert!(!location.navigate(ids[0], 2));
         assert_eq!(location.index(), 2);
         assert_eq!(location.generation(), ClientShellLocationGeneration(1));
 
-        assert!(location.navigate(ids[1].clone(), 1));
+        assert!(location.navigate(ids[1], 1));
         assert_eq!(location.generation(), ClientShellLocationGeneration(2));
     }
 
     #[test]
     fn a_vanished_workspace_lands_on_the_one_now_at_its_remembered_index() {
         let ids = workspace_ids(&[1, 2, 3, 4]);
-        let mut location = ClientShellLocation::initial(Some((ids[1].clone(), 1)));
+        let mut location = ClientShellLocation::initial(Some((ids[1], 1)));
 
         // The workspace at index 1 closed: the next one slides into its slot.
-        let after_close = [ids[0].clone(), ids[2].clone(), ids[3].clone()];
+        let after_close = [ids[0], ids[2], ids[3]];
         assert!(location.reconcile(&topology(&after_close, Some(0))));
         assert_eq!(location.focused_workspace_id.as_ref(), Some(&ids[2]));
         assert_eq!(location.index(), 1);
 
         // A survivor keeps its workspace when others move around it.
-        let reordered = [ids[3].clone(), ids[2].clone(), ids[0].clone()];
+        let reordered = [ids[3], ids[2], ids[0]];
         assert!(!location.reconcile(&topology(&reordered, Some(0))));
         assert_eq!(location.focused_workspace_id.as_ref(), Some(&ids[2]));
         assert_eq!(location.index(), 1);
 
         // Past the end it clamps to the last workspace.
-        let mut at_end = ClientShellLocation::initial(Some((ids[3].clone(), 3)));
-        let shrunk = [ids[0].clone(), ids[1].clone()];
+        let mut at_end = ClientShellLocation::initial(Some((ids[3], 3)));
+        let shrunk = [ids[0], ids[1]];
         assert!(at_end.reconcile(&topology(&shrunk, None)));
         assert_eq!(at_end.focused_workspace_id.as_ref(), Some(&ids[1]));
 

@@ -177,7 +177,6 @@ impl App {
         let agg_state = ws.aggregate_state(&self.state.terminals);
         Some(shepr_protocol::command::WorkspaceInfo {
             workspace_id: self.public_workspace_id(index)?,
-            number: index + 1,
             label: ws.display_name(),
             pane_count: ws.pane_count(),
             agent_status: presented_agent_status(agg_state),

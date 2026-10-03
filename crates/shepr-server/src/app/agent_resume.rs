@@ -915,12 +915,12 @@ mod tests {
         app.state.test_record_all_workspace_areas(area);
         app.state.set_bookmark_index(Some(0));
         app.state.ensure_test_terminals();
-        let target = app.state.workspaces[0].id.clone();
+        let target = app.state.workspaces[0].id;
         let content_rect = |app: &App| {
             let layout = crate::ui::compute_surface_for(
                 &app.state,
                 &app.terminal_runtimes,
-                Some(target.clone()),
+                Some(target),
                 area,
             );
             let info = layout

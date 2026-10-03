@@ -80,32 +80,37 @@ fn pane_removal_command_returns_the_removed_container_scope() {
 fn pane_split_state_command_commits_prepared_geometry_and_terminal() {
     let mut state = app_with_workspaces(&["one"]);
     let root_pane = state.workspaces[0].root_pane();
-    let mut prepared_layout = state.workspaces[0].layout().clone();
-    let new_pane = prepared_layout
-        .split_pane(
+    assert_eq!(state.workspaces[0].pane_count(), 1);
+    let chrome = state.pane_geometry_in(ratatui::layout::Rect::new(0, 0, 80, 24));
+    let prepared = state.workspaces[0]
+        .prepare_split(
             root_pane,
             Direction::Horizontal,
-            shepr_core::layout::SplitRatio::EVEN,
+            &chrome,
+            None,
+            std::path::PathBuf::from("/shepr-test/cwd"),
+            true,
         )
         .expect("test precondition");
-    assert_eq!(state.workspaces[0].pane_count(), 1);
-    let terminal_id = shepr_protocol::TerminalId::alloc();
-    let terminal = shepr_mux::terminal::TerminalState::new(
-        terminal_id.clone(),
-        std::path::PathBuf::from("/shepr-test/cwd"),
-    );
-
-    // The number reserved at prepare time is the one the pane is registered
-    // under, whatever the workspace's counter holds when the commit runs: a
-    // number the counter does not hold shows the commit did not re-read it.
-    let reserved = state.workspaces[0].next_public_pane_number() + 7;
+    let new_pane = prepared.pane_id();
+    let terminal_id = prepared.terminal().id.clone();
+    // The public ID a launch would export is the one the pane is registered
+    // under.
+    let reserved = prepared.public_id().number();
     let outcome = state
-        .commit_pane_split(0, new_pane, prepared_layout, terminal, reserved)
+        .commit_pane_split(0, prepared)
         .expect("prepared pane split commits");
 
     assert_eq!(
         state.workspaces[0].public_pane_number(new_pane),
         Some(reserved)
+    );
+    assert_eq!(
+        state
+            .terminals
+            .get(&terminal_id)
+            .map(|terminal| terminal.cwd().to_path_buf()),
+        Some(std::path::PathBuf::from("/shepr-test/cwd"))
     );
     assert_eq!(outcome.pane_id, new_pane);
     assert_eq!(outcome.terminal_id, terminal_id);
@@ -149,11 +154,11 @@ fn workspace_creation_state_command_commits_spawned_values() {
 #[test]
 fn apply_workspace_git_statuses_updates_matching_workspace() {
     let mut state = app_with_workspaces(&["one", "two"]);
-    let first_id = state.workspaces[0].id.to_string();
+    let first_id = state.workspaces[0].id;
     let first_cwd = state.workspaces[0]
         .resolved_identity_cwd()
         .expect("test precondition");
-    let second_id = state.workspaces[1].id.to_string();
+    let second_id = state.workspaces[1].id;
 
     let changed = state.apply_workspace_git_statuses(vec![(
         WorkspaceGitStatus {
@@ -186,11 +191,11 @@ fn apply_workspace_git_statuses_updates_matching_workspace() {
 #[test]
 fn apply_workspace_git_statuses_ignores_stale_cwd() {
     let mut state = app_with_workspaces(&["one"]);
-    let workspace_id = state.workspaces[0].id.to_string();
+    let workspace_id = state.workspaces[0].id;
     let cwd = state.workspaces[0].identity_cwd.clone();
     state.workspaces[0].admit_git_status(
         WorkspaceGitStatus {
-            workspace_id: workspace_id.clone(),
+            workspace_id,
             resolved_identity_cwd: cwd.clone(),
             status_cache_key: cwd.clone(),
             auto_label: "one".into(),
@@ -235,13 +240,13 @@ fn apply_workspace_git_statuses_ignores_stale_cwd() {
 #[test]
 fn apply_workspace_git_statuses_clears_missing_git_status() {
     let mut state = app_with_workspaces(&["one"]);
-    let workspace_id = state.workspaces[0].id.to_string();
+    let workspace_id = state.workspaces[0].id;
     let cwd = state.workspaces[0]
         .resolved_identity_cwd()
         .expect("test precondition");
     state.workspaces[0].admit_git_status(
         WorkspaceGitStatus {
-            workspace_id: workspace_id.clone(),
+            workspace_id,
             resolved_identity_cwd: cwd.clone(),
             status_cache_key: cwd.clone(),
             auto_label: "one".into(),
@@ -275,7 +280,7 @@ fn apply_workspace_git_statuses_clears_missing_git_status() {
 fn set_bookmark_moves_it_and_saves_only_when_it_moved() {
     let mut state = app_with_workspaces(&["a", "b", "c"]);
     state.session_dirty = false;
-    let third = state.workspaces[2].id.clone();
+    let third = state.workspaces[2].id;
 
     assert!(state.set_bookmark(&third));
     assert_eq!(state.bookmark_index(), Some(2));
@@ -298,7 +303,7 @@ fn set_bookmark_of_a_workspace_that_is_gone_is_a_noop() {
 #[test]
 fn move_workspace_reorders_and_the_bookmark_follows_its_workspace() {
     let mut state = app_with_workspaces(&["a", "b", "c"]);
-    let bookmarked_id = state.workspaces[1].id.clone();
+    let bookmarked_id = state.workspaces[1].id;
     state.set_bookmark_index(Some(1));
 
     state.move_workspace(1, 0);
@@ -318,7 +323,7 @@ fn move_workspace_reorders_and_the_bookmark_follows_its_workspace() {
 fn the_bookmark_survives_reorder_and_removal_of_other_workspaces() {
     let mut state = app_with_workspaces(&["a", "b", "c"]);
     state.set_bookmark_index(Some(1));
-    let bookmarked_id = state.bookmark.clone();
+    let bookmarked_id = state.bookmark;
 
     assert!(state.move_workspace(1, 0));
     assert_eq!(state.bookmark, bookmarked_id);
@@ -941,7 +946,7 @@ fn close_pane_removes_unattached_terminal_state() {
 #[test]
 fn close_workspace_at_keeps_the_bookmarked_workspace() {
     let mut state = app_with_workspaces(&["a", "b", "c", "d"]);
-    let bookmarked_id = state.workspaces[3].id.clone();
+    let bookmarked_id = state.workspaces[3].id;
     state.set_bookmark_index(Some(3));
 
     state.close_workspace_at(0);

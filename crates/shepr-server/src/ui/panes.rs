@@ -642,12 +642,8 @@ mod tests {
             });
         let runtimes = PaneRuntimeRegistry::new();
         let area = Rect::new(0, 0, 80, 24);
-        let layout = crate::ui::compute_surface_for(
-            &app,
-            &runtimes,
-            Some(app.workspaces[0].id.clone()),
-            area,
-        );
+        let layout =
+            crate::ui::compute_surface_for(&app, &runtimes, Some(app.workspaces[0].id), area);
         let surface = crate::ui::SurfaceView {
             target: layout.target.as_ref(),
             pane_infos: &layout.pane_infos,

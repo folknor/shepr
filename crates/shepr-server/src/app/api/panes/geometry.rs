@@ -22,7 +22,7 @@ impl App {
             .into();
         Handled::navigating_with_effects(
             EndpointReply::Done,
-            params.pane_id.workspace_id().clone(),
+            *params.pane_id.workspace_id(),
             effects,
         )
     }
@@ -96,7 +96,7 @@ impl App {
         };
         Handled::navigating_with_effects(
             EndpointReply::Done,
-            params.pane_id.workspace_id().clone(),
+            *params.pane_id.workspace_id(),
             outcome.into(),
         )
     }

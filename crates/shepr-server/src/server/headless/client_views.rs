@@ -109,7 +109,7 @@ impl HeadlessServer {
             .shell_state()
             .location
             .focused_workspace_id()
-            .cloned()
+            .copied()
             .filter(|workspace_id| self.app.state.workspace_index(workspace_id).is_some())
     }
 
@@ -137,7 +137,7 @@ impl HeadlessServer {
             .state
             .workspaces
             .iter()
-            .map(|workspace| workspace.id.clone())
+            .map(|workspace| workspace.id)
             .collect()
     }
 
@@ -188,7 +188,7 @@ impl HeadlessServer {
         let moved = client
             .shell_state_mut()
             .location
-            .navigate(workspace_id.clone(), index);
+            .navigate(*workspace_id, index);
         if moved {
             crate::logging::workspace_focused(workspace_id);
             self.refresh_client_view_keys();
@@ -264,7 +264,7 @@ impl HeadlessServer {
         self.immediate_pty_sources_dirty = true;
         if let (Some(client_id), Some(workspace)) = (source, self.app.state.workspaces.last()) {
             self.clients
-                .set_geometry_controller(workspace.id.clone(), client_id);
+                .set_geometry_controller(workspace.id, client_id);
         }
         self.reconcile_client_shell_locations();
         self.reapply_controlled_shell_workspace_geometry(false);
@@ -556,7 +556,7 @@ impl HeadlessServer {
             .state
             .workspaces
             .iter()
-            .map(|workspace| workspace.id.clone())
+            .map(|workspace| workspace.id)
             .collect();
         let mut changed = false;
         for workspace_id in &workspace_ids {
@@ -711,7 +711,7 @@ mod tests {
         first_client
             .shell_state_mut()
             .location
-            .navigate(workspace_id.clone(), 0);
+            .navigate(workspace_id, 0);
         clients.insert(first, first_client);
         assert_eq!(
             workspace_geometry_source(&clients, &workspace_id),
@@ -724,7 +724,7 @@ mod tests {
         second_client
             .shell_state_mut()
             .location
-            .navigate(workspace_id.clone(), 0);
+            .navigate(workspace_id, 0);
         second_client.shell_state_mut().outer_terminal_focus = Some(true);
         clients.insert(second, second_client);
         assert_eq!(
@@ -732,7 +732,7 @@ mod tests {
             Some(GeometrySource::Client(second)),
             "an outer-focused viewer wins the fallback over a lower-id viewer"
         );
-        assert!(clients.claim_geometry(workspace_id.clone(), first));
+        assert!(clients.claim_geometry(workspace_id, first));
         assert_eq!(
             workspace_geometry_source(&clients, &workspace_id),
             Some(GeometrySource::Client(first)),

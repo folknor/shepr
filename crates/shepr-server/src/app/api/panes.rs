@@ -34,7 +34,7 @@ impl App {
         ctx: &EndpointContext,
     ) -> HandlerResult {
         let (ws_idx, target_pane_id) = self.endpoint_pane(&params.pane_id)?;
-        let workspace_id = params.pane_id.workspace_id().clone();
+        let workspace_id = params.pane_id.workspace_id();
         let geometry = self
             .state
             .workspace_spawn_geometry(ws_idx)
@@ -64,28 +64,18 @@ impl App {
         ) else {
             return Err(pane_missing(&params.pane_id).into());
         };
-        let public_number = prepared.public_id.number();
         let runtime = match self.launch_pane(
-            prepared.pane_id,
-            prepared.public_id,
-            prepared.geometry,
-            prepared.terminal.cwd(),
+            prepared.pane_id(),
+            prepared.public_id(),
+            prepared.geometry(),
+            prepared.terminal().cwd(),
             shepr_mux::pane::LaunchKind::Fresh,
         ) {
             Ok(runtime) => runtime,
             Err(err) => return rejected(format!("the pane could not be split: {err}")),
         };
-        let shepr_mux::workspace::PreparedSplit {
-            pane_id,
-            terminal,
-            prepared_layout,
-            ..
-        } = prepared;
-        let terminal_id = terminal.id.clone();
-        let Some(outcome) =
-            self.state
-                .commit_pane_split(ws_idx, pane_id, prepared_layout, terminal, public_number)
-        else {
+        let terminal_id = prepared.terminal().id.clone();
+        let Some(outcome) = self.state.commit_pane_split(ws_idx, prepared) else {
             drop(runtime);
             return rejected("the split target is no longer available");
         };
@@ -99,7 +89,7 @@ impl App {
             EndpointReply::PaneInfo {
                 pane: Box::new(pane),
             },
-            workspace_id,
+            *workspace_id,
             effects,
         )
     }
@@ -120,7 +110,7 @@ impl App {
             EndpointReply::PaneInfo {
                 pane: Box::new(pane),
             },
-            target.pane_id.workspace_id().clone(),
+            *target.pane_id.workspace_id(),
             effects,
         )
     }

@@ -593,9 +593,10 @@ mod tests {
             version: shepr_mux::persist::snapshot::SNAPSHOT_VERSION,
             host_theme: Default::default(),
             workspaces: vec![WorkspaceSnapshot {
-                id: "w1".into(),
+                id: "w1".parse().expect("id"),
                 custom_name: Some("surviving workspace".into()),
-                next_public_pane_number: 3,
+                next_public_pane_number: shepr_protocol::PanePublicNumber::new(3)
+                    .expect("nonzero literal"),
                 layout: LayoutSnapshot::Split {
                     direction: DirectionSnapshot::Horizontal,
                     ratio: SavedSplitRatio::from_raw(0.5),
@@ -603,8 +604,20 @@ mod tests {
                     second: Box::new(LayoutSnapshot::Pane(2)),
                 },
                 panes: std::collections::HashMap::from([
-                    (1, pane("relative-cwd".into(), 1)),
-                    (2, pane(scratch.join("missing-cwd"), 2)),
+                    (
+                        1,
+                        pane(
+                            "relative-cwd".into(),
+                            shepr_protocol::PanePublicNumber::FIRST,
+                        ),
+                    ),
+                    (
+                        2,
+                        pane(
+                            scratch.join("missing-cwd"),
+                            shepr_protocol::PanePublicNumber::new(2).expect("number"),
+                        ),
+                    ),
                 ]),
                 zoomed: false,
                 focused: 2,
@@ -683,7 +696,7 @@ mod tests {
         let mut app = test_app();
         app.state.workspaces.push(Workspace::test_new("one"));
         let _ = app.render_dirty.take();
-        let workspace_id = app.state.workspaces[0].id.to_string();
+        let workspace_id = app.state.workspaces[0].id;
         let resolved_identity_cwd = app.state.workspaces[0]
             .resolved_identity_cwd()
             .expect("test precondition");
@@ -925,7 +938,7 @@ mod tests {
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        assert_eq!(child_pane_id.trim_end(), pane.pane_id.as_str());
+        assert_eq!(child_pane_id.trim_end(), pane.pane_id.to_string());
         let (ws_idx, pane_id) = app
             .resolve_pane_id(&pane.pane_id)
             .expect("the reply names a live pane");
@@ -994,7 +1007,7 @@ mod tests {
                 height_px: 18,
             },
         };
-        let first_id = app.state.workspaces[0].id.clone();
+        let first_id = app.state.workspaces[0].id;
         app.state.record_workspace_geometry(&first_id, recorded);
         let ctx = EndpointContext {
             requester_geometry: Some(requester),

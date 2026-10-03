@@ -152,7 +152,7 @@ impl App {
                 self.handle_pane_selection_read(params)
             }
             EndpointAppCommand::PaneCopyMotion(params) => self.handle_pane_copy_motion(params),
-            EndpointAppCommand::PaneCopySearch(params) => self.handle_pane_copy_search(params),
+            EndpointAppCommand::PaneCopySearch(params) => self.handle_pane_copy_search(&params),
             EndpointAppCommand::PaneFocus(target) => self.handle_pane_focus(&target),
             EndpointAppCommand::PaneInputSet(params) => self.handle_pane_input_set(&params),
             EndpointAppCommand::PaneRename(params) => self.handle_pane_rename(params),
@@ -287,7 +287,10 @@ mod tests {
         );
         let read = app.handle_endpoint_command_with_render(
             EndpointCommand::PaneSelectionRead(shepr_protocol::command::PaneSelectionReadParams {
-                pane_id: PublicPaneId::new(&WorkspaceId::from_number(1).expect("number"), 1),
+                pane_id: PublicPaneId::new(
+                    &WorkspaceId::from_number(1).expect("number"),
+                    shepr_protocol::PanePublicNumber::new(1).expect("nonzero literal"),
+                ),
                 anchor: shepr_protocol::command::PaneTextPoint {
                     row: shepr_vt::AbsRow(0),
                     col: 0,
@@ -303,7 +306,10 @@ mod tests {
 
         let rename = app.handle_endpoint_command_with_render(
             EndpointCommand::PaneRename(shepr_protocol::command::PaneRenameParams {
-                pane_id: PublicPaneId::new(&WorkspaceId::from_number(1).expect("number"), 1),
+                pane_id: PublicPaneId::new(
+                    &WorkspaceId::from_number(1).expect("number"),
+                    shepr_protocol::PanePublicNumber::new(1).expect("nonzero literal"),
+                ),
                 label: Some("logs".into()),
             }),
             &EndpointContext::without_geometry(),
@@ -319,12 +325,12 @@ mod tests {
             crate::app::AppPolicy::Test,
         );
         app.state.workspaces = vec![shepr_mux::workspace::Workspace::test_new("rename")];
-        let workspace_id = app.state.workspaces[0].id.clone();
+        let workspace_id = app.state.workspaces[0].id;
         let mut rename = |label: &str| {
             let before = app.state.shell_projection_revision;
             let outcome = app.handle_endpoint_command_with_render(
                 EndpointCommand::WorkspaceRename(shepr_protocol::command::WorkspaceRenameParams {
-                    workspace_id: workspace_id.clone(),
+                    workspace_id,
                     label: Some(label.into()),
                 }),
                 &EndpointContext::without_geometry(),

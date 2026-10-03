@@ -1039,8 +1039,11 @@ mod tests {
             crate::git::test_support::create_repo_with_linked_worktree("linked-refresh-label");
 
         let (snapshot, _) = git_status_snapshot_for_cwd(&checkout, None);
-        let status =
-            snapshot.into_workspace_status("workspace".into(), checkout.clone(), PathBuf::new());
+        let status = snapshot.into_workspace_status(
+            shepr_protocol::WorkspaceId::from_number(1).expect("id"),
+            checkout.clone(),
+            PathBuf::new(),
+        );
 
         assert_eq!(
             status.auto_label,

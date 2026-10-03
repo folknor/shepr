@@ -69,7 +69,8 @@ fn unavailable_view_respects_a_collapsed_single_endpoint_sidebar() {
             .hits
             .workspaces
             .iter()
-            .any(|hit| hit.endpoint_id.is_local() && hit.workspace_id == "w1")
+            .any(|hit| hit.endpoint_id.is_local()
+                && hit.workspace_id == crate::tests::test_workspace_id("w1"))
     );
     assert!(state.hits.machines.is_empty());
 }
@@ -116,7 +117,7 @@ fn client_presentation_regression_removed_navigator_target_accepts_visible_fallb
         [ClientShellAction::ActivateEndpoint {
             endpoint_id: ClientEndpointId::Local,
             target: Some(ClientEndpointFocusTarget::Workspace(workspace_id)),
-        }] if workspace_id == "w1"
+        }] if workspace_id == &crate::tests::test_workspace_id("w1")
     ));
     assert_eq!(
         expected,

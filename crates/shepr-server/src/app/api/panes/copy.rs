@@ -121,7 +121,7 @@ impl App {
 
     pub(crate) fn handle_pane_copy_search(
         &mut self,
-        params: PaneCopySearchParams,
+        params: &PaneCopySearchParams,
     ) -> HandlerResult {
         let (ws_idx, pane_id) = self.endpoint_pane(&params.pane_id)?;
         let Some(runtime) =

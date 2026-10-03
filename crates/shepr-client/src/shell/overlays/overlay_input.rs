@@ -162,11 +162,11 @@ impl ClientShellState {
                 target.endpoint_id == *self.endpoints.presented()
                     && self.navigation_target_valid(target)
             })
-            .map(|target| target.workspace_id.clone())
+            .map(|target| target.workspace_id)
             .or_else(|| {
                 self.snapshot
                     .as_deref()
-                    .and_then(|snapshot| snapshot.focused_workspace_id.clone())
+                    .and_then(|snapshot| snapshot.focused_workspace_id)
             })
     }
 
@@ -287,10 +287,10 @@ impl ClientShellState {
         let Some(snapshot) = self.snapshot.as_deref() else {
             return;
         };
-        let Some(pane_id) = snapshot.focused_pane_id.as_deref() else {
+        let Some(pane_id) = snapshot.focused_pane_id.as_ref() else {
             return;
         };
-        let Some(pane) = snapshot.panes.iter().find(|pane| pane.pane_id == pane_id) else {
+        let Some(pane) = snapshot.panes.iter().find(|pane| pane.pane_id == *pane_id) else {
             return;
         };
         self.overlay = Some(ClientShellOverlay::Rename(ClientRenameOverlay {
@@ -300,7 +300,7 @@ impl ClientShellState {
                 pane.label.is_none(),
             ),
             target: ClientRenameTarget::Pane {
-                pane_id: pane.pane_id.clone(),
+                pane_id: pane.pane_id,
             },
         }));
     }

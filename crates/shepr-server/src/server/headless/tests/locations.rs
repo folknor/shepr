@@ -88,7 +88,7 @@ async fn a_location_change_invalidates_only_that_clients_projection() {
         &mut server,
         7,
         EndpointCommand::WorkspaceFocus(WorkspaceTarget {
-            workspace_id: second.clone(),
+            workspace_id: second,
         }),
     );
     assert!(outcome.is_ok());
@@ -98,7 +98,7 @@ async fn a_location_change_invalidates_only_that_clients_projection() {
     let (generation_7, projected_7) = projected(&server, 7);
     assert!(generation_7 > projected_7);
     assert_eq!(projected(&server, 8), (generation_8, projected_8));
-    assert_eq!(location_of(&server, 7), Some(second.clone()));
+    assert_eq!(location_of(&server, 7), Some(second));
     assert_eq!(location_of(&server, 8), Some(workspace_id(&server, 0)));
 
     server.render_now();
@@ -123,7 +123,7 @@ async fn a_rejected_focus_command_moves_nobody() {
     let (_control, _render) = connect(&mut server, 7);
     let before = server.clients[&7].shell_state().location.clone();
     let gone = WorkspaceId::from_number(9_999).expect("nonzero number");
-    let bookmark = server.app.state.bookmark.clone();
+    let bookmark = server.app.state.bookmark;
 
     let result = run(
         &mut server,
@@ -152,13 +152,13 @@ async fn navigation_moves_the_requester_and_the_bookmark_only_from_an_active_cli
             &mut server,
             7,
             EndpointCommand::WorkspaceFocus(WorkspaceTarget {
-                workspace_id: second.clone(),
+                workspace_id: second,
             }),
         )
         .is_ok()
     );
-    assert_eq!(location_of(&server, 7), Some(second.clone()));
-    assert_eq!(location_of(&server, 8), Some(first.clone()));
+    assert_eq!(location_of(&server, 7), Some(second));
+    assert_eq!(location_of(&server, 8), Some(first));
     assert_eq!(server.app.state.bookmark.as_ref(), Some(&second));
     assert!(server.app.state.session_dirty, "the bookmark is saved");
 
@@ -169,7 +169,7 @@ async fn navigation_moves_the_requester_and_the_bookmark_only_from_an_active_cli
             .is_some_and(|(changed, _)| changed)
     );
     assert!(server.navigate_shell_client(ClientId::test_new(8), &second));
-    assert_eq!(location_of(&server, 8), Some(second.clone()));
+    assert_eq!(location_of(&server, 8), Some(second));
     assert!(server.navigate_shell_client(ClientId::test_new(8), &first));
     assert_eq!(server.app.state.bookmark.as_ref(), Some(&second));
     shutdown_test_runtimes(&mut server);
@@ -207,16 +207,13 @@ async fn a_client_whose_workspace_vanished_lands_by_remembered_index_across_a_mo
             &mut server,
             8,
             EndpointCommand::WorkspaceMove(WorkspaceMoveParams {
-                workspace_id: a.clone(),
+                workspace_id: a,
                 before_workspace_id: None,
             }),
         )
         .is_ok()
     );
-    assert_eq!(
-        server.workspace_order(),
-        vec![b.clone(), c.clone(), a.clone()]
-    );
+    assert_eq!(server.workspace_order(), vec![b, c, a]);
     let location = &server.clients[&7].shell_state().location;
     assert_eq!(location.focused_workspace_id(), Some(&b));
     assert_eq!(
@@ -233,13 +230,11 @@ async fn a_client_whose_workspace_vanished_lands_by_remembered_index_across_a_mo
         run(
             &mut server,
             8,
-            EndpointCommand::WorkspaceClose(WorkspaceCloseParams {
-                workspace_id: b.clone(),
-            }),
+            EndpointCommand::WorkspaceClose(WorkspaceCloseParams { workspace_id: b }),
         )
         .is_ok()
     );
-    assert_eq!(location_of(&server, 7), Some(c.clone()));
+    assert_eq!(location_of(&server, 7), Some(c));
     assert_eq!(server.app.state.bookmark.as_ref(), Some(&c));
     assert!(
         server.app.state.session_dirty,
@@ -272,7 +267,7 @@ async fn the_last_workspace_closing_leaves_a_fresh_one_for_the_requester() {
     assert_eq!(server.app.state.workspaces.len(), 1);
     let replacement = workspace_id(&server, 0);
     assert_ne!(replacement, closing);
-    assert_eq!(location_of(&server, 7), Some(replacement.clone()));
+    assert_eq!(location_of(&server, 7), Some(replacement));
     assert_eq!(
         server.clients.geometry_controller(&replacement),
         Some(ClientId::test_new(7))
@@ -333,8 +328,8 @@ async fn automatic_creation_is_controlled_by_the_trigger_when_it_presents_a_surf
     );
     // Both clients land on the new workspace; the geometry stays with the
     // trigger through the settlement that follows.
-    assert_eq!(location_of(&server, 1), Some(created.clone()));
-    assert_eq!(location_of(&server, 2), Some(created.clone()));
+    assert_eq!(location_of(&server, 1), Some(created));
+    assert_eq!(location_of(&server, 2), Some(created));
     assert_eq!(
         server.clients.geometry_controller(&created),
         Some(ClientId::test_new(2))
@@ -455,7 +450,7 @@ async fn workspace_create_sizes_the_first_pty_for_the_requester_and_navigates_it
         )),
         "the first window size carries the requester's cell size"
     );
-    assert_eq!(location_of(&server, 7), Some(created.clone()));
+    assert_eq!(location_of(&server, 7), Some(created));
     assert_eq!(server.app.state.bookmark.as_ref(), Some(&created));
     assert_eq!(
         server.clients.geometry_controller(&created),
@@ -484,7 +479,7 @@ async fn pane_replies_name_the_requested_target() {
         &mut server,
         7,
         EndpointCommand::PaneFocus(PaneTarget {
-            pane_id: second_pane.clone(),
+            pane_id: second_pane,
         }),
     ) else {
         panic!("expected pane info");
@@ -492,7 +487,7 @@ async fn pane_replies_name_the_requested_target() {
     assert_eq!(pane.pane_id, second_pane);
     assert_eq!(
         server.shell_target_for_client(ClientId::test_new(7)),
-        Some(second_pane.workspace_id().clone())
+        Some(*second_pane.workspace_id())
     );
 
     // A pane info reply names its target; focus remains in the shell snapshot.
@@ -500,7 +495,7 @@ async fn pane_replies_name_the_requested_target() {
         &mut server,
         7,
         EndpointCommand::PaneRename(PaneRenameParams {
-            pane_id: first_pane.clone(),
+            pane_id: first_pane,
             label: Some("elsewhere".into()),
         }),
     ) else {
@@ -509,7 +504,7 @@ async fn pane_replies_name_the_requested_target() {
     assert_eq!(pane.pane_id, first_pane);
     assert_eq!(
         server.shell_target_for_client(ClientId::test_new(7)),
-        Some(second_pane.workspace_id().clone())
+        Some(*second_pane.workspace_id())
     );
     shutdown_test_runtimes(&mut server);
 }

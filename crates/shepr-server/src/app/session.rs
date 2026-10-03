@@ -1563,15 +1563,21 @@ mod tests {
         };
         let workspace =
             |id: &str, name: &str, layout: LayoutSnapshot, ids: &[u32]| WorkspaceSnapshot {
-                id: id.into(),
+                id: id.parse().expect("workspace id"),
                 custom_name: Some(name.into()),
                 layout,
                 panes: ids
                     .iter()
                     .enumerate()
-                    .map(|(index, id)| (*id, pane(index + 1)))
+                    .map(|(index, id)| {
+                        (
+                            *id,
+                            pane(shepr_protocol::PanePublicNumber::new(index + 1).expect("number")),
+                        )
+                    })
                     .collect(),
-                next_public_pane_number: ids.len() + 1,
+                next_public_pane_number: shepr_protocol::PanePublicNumber::new(ids.len() + 1)
+                    .expect("next number"),
                 zoomed: false,
                 focused: ids[0],
                 root_pane: ids[0],

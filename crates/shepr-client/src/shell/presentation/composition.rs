@@ -192,7 +192,7 @@ impl ClientShellState {
                             )
                         }),
                         scroll: pane.scroll,
-                        pane_id: pane.pane_id.clone(),
+                        pane_id: pane.pane_id,
                         mouse_reporting: pane.mouse_reporting,
                         sgr_pixel_mouse: pane.sgr_pixel_mouse,
                         pixel_width: pane.pixel_width,

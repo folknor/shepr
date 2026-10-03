@@ -18,7 +18,10 @@ fn app_with_test_workspace() -> (App, PublicPaneId) {
 
 /// A pane id in a workspace that does not exist.
 fn missing_pane() -> PublicPaneId {
-    PublicPaneId::new(&WorkspaceId::from_number(9_999).expect("nonzero number"), 1)
+    PublicPaneId::new(
+        &WorkspaceId::from_number(9_999).expect("nonzero number"),
+        shepr_protocol::PanePublicNumber::new(1).expect("nonzero literal"),
+    )
 }
 
 fn ctx() -> EndpointContext {
@@ -149,7 +152,7 @@ async fn pane_selection_read_uses_endpoint_terminal_text() {
         .expect("test precondition");
     runtime.test_process_pty_bytes(b"\r\nagent is still working");
     let params = PaneSelectionReadParams {
-        pane_id: public_pane_id.clone(),
+        pane_id: public_pane_id,
         anchor: PaneTextPoint {
             row: shepr_vt::AbsRow(0),
             col: 0,
@@ -183,7 +186,7 @@ async fn copy_motion_uses_endpoint_terminal_word_semantics() {
 
     let handled = app
         .handle_pane_copy_motion(PaneCopyMotionParams {
-            pane_id: public_pane_id.clone(),
+            pane_id: public_pane_id,
             cursor: PaneTextPoint {
                 row: shepr_vt::AbsRow(0),
                 col: 0,
@@ -216,7 +219,7 @@ async fn line_motions_land_on_the_ends_of_the_row() {
     for (motion, col) in [(PaneLineMotion::FirstNonBlank, 2), (PaneLineMotion::End, 6)] {
         let handled = app
             .handle_pane_copy_motion(PaneCopyMotionParams {
-                pane_id: public_pane_id.clone(),
+                pane_id: public_pane_id,
                 cursor: PaneTextPoint {
                     row: shepr_vt::AbsRow(0),
                     col: 0,
@@ -227,7 +230,7 @@ async fn line_motions_land_on_the_ends_of_the_row() {
         assert_eq!(
             handled.reply,
             EndpointReply::PaneCopyMotion {
-                pane_id: public_pane_id.clone(),
+                pane_id: public_pane_id,
                 cursor: PaneTextPoint {
                     row: shepr_vt::AbsRow(0),
                     col
@@ -253,8 +256,8 @@ async fn copy_motion_and_search_keep_their_line_across_eviction() {
     );
     let search = |app: &mut App| {
         let handled = app
-            .handle_pane_copy_search(PaneCopySearchParams {
-                pane_id: public_pane_id.clone(),
+            .handle_pane_copy_search(&PaneCopySearchParams {
+                pane_id: public_pane_id,
                 query: "001099".into(),
                 direction: PaneCopySearchDirection::Forward,
                 cursor: PaneTextPoint {
@@ -297,7 +300,7 @@ async fn copy_motion_and_search_keep_their_line_across_eviction() {
     assert_eq!(search(&mut app)[0].start, line);
     let handled = app
         .handle_pane_copy_motion(PaneCopyMotionParams {
-            pane_id: public_pane_id.clone(),
+            pane_id: public_pane_id,
             cursor: line,
             motion: PaneCopyMotion::Word(PaneWordMotion::NextEnd),
         })
@@ -305,7 +308,7 @@ async fn copy_motion_and_search_keep_their_line_across_eviction() {
     assert_eq!(
         handled.reply,
         EndpointReply::PaneCopyMotion {
-            pane_id: public_pane_id.clone(),
+            pane_id: public_pane_id,
             cursor: PaneTextPoint {
                 row: line.row,
                 col: 5
@@ -339,7 +342,7 @@ async fn paragraph_motion_preserves_the_copy_cursor_column() {
     );
     let handled = app
         .handle_pane_copy_motion(PaneCopyMotionParams {
-            pane_id: public_pane_id.clone(),
+            pane_id: public_pane_id,
             cursor: PaneTextPoint {
                 row: shepr_vt::AbsRow(0),
                 col: 2,
@@ -369,8 +372,8 @@ async fn copy_search_uses_endpoint_terminal_matches_and_wraps() {
     );
 
     let handled = app
-        .handle_pane_copy_search(PaneCopySearchParams {
-            pane_id: public_pane_id.clone(),
+        .handle_pane_copy_search(&PaneCopySearchParams {
+            pane_id: public_pane_id,
             query: "alpha".into(),
             direction: PaneCopySearchDirection::Forward,
             cursor: PaneTextPoint {
@@ -420,7 +423,7 @@ async fn copy_search_bounds_returned_matches_but_keeps_exact_total() {
         shepr_mux::pane::PaneRuntime::test_with_scrollback_bytes(200, 20, 4000, text.as_bytes()),
     );
     let handled = app
-        .handle_pane_copy_search(PaneCopySearchParams {
+        .handle_pane_copy_search(&PaneCopySearchParams {
             pane_id: public_pane_id,
             query: "a".into(),
             direction: PaneCopySearchDirection::Forward,
@@ -444,7 +447,7 @@ fn pane_rename_returns_the_renamed_pane() {
 
     let handled = app
         .handle_pane_rename(PaneRenameParams {
-            pane_id: public_pane_id.clone(),
+            pane_id: public_pane_id,
             label: Some("build".into()),
         })
         .expect("the pane is renamed");
@@ -477,7 +480,7 @@ fn pane_rename_sets_and_clears_the_manual_label() {
         .clone();
 
     app.handle_pane_rename(PaneRenameParams {
-        pane_id: public_pane_id.clone(),
+        pane_id: public_pane_id,
         label: Some("reviewer".into()),
     })
     .expect("the pane is renamed");
@@ -545,7 +548,7 @@ fn pane_close_keeps_the_workspace_when_other_panes_remain() {
 /// Lays the first workspace out in a 100x20 area, as the server does when it
 /// applies PTY geometry.
 fn lay_out_first_workspace(app: &mut App) {
-    let id = app.state.workspaces[0].id.clone();
+    let id = app.state.workspaces[0].id;
     app.state.record_workspace_geometry(
         &id,
         SpawnGeometry {
@@ -646,10 +649,7 @@ fn pane_swap_with_an_unknown_pane_is_refused_by_direction_and_a_noop_by_id() {
     ));
 
     // Stale explicit ids are a successful no-op, whichever one is stale.
-    for (source, target) in [
-        (missing_pane(), root_public.clone()),
-        (root_public.clone(), missing_pane()),
-    ] {
+    for (source, target) in [(missing_pane(), root_public), (root_public, missing_pane())] {
         let handled = app
             .handle_pane_swap(&PaneSwapParams::Panes { source, target })
             .expect("a stale swap is a no-op");
@@ -661,7 +661,7 @@ fn pane_swap_with_an_unknown_pane_is_refused_by_direction_and_a_noop_by_id() {
     // The same pane twice swaps nothing either.
     let handled = app
         .handle_pane_swap(&PaneSwapParams::Panes {
-            source: root_public.clone(),
+            source: root_public,
             target: root_public,
         })
         .expect("an identical swap is a no-op");
@@ -840,7 +840,7 @@ fn pane_focus_focuses_the_target_and_navigates_across_workspaces() {
 
     let handled = app
         .handle_pane_focus(&PaneTarget {
-            pane_id: target_public.clone(),
+            pane_id: target_public,
         })
         .expect("the pane is focused");
 
@@ -864,7 +864,7 @@ fn pane_focus_on_the_focused_pane_still_navigates() {
 
     let handled = app
         .handle_pane_focus(&PaneTarget {
-            pane_id: public_pane_id.clone(),
+            pane_id: public_pane_id,
         })
         .expect("the pane is focused");
 
@@ -924,23 +924,23 @@ fn commands_that_only_change_state_in_place_navigate_nobody() {
     let workspace_id = app.public_workspace_id(0).expect("test precondition");
     let commands = [
         EndpointCommand::PaneInputSet(PaneInputSetParams {
-            pane_id: root_public.clone(),
+            pane_id: root_public,
             right_click: shepr_protocol::command::PaneRightClickTarget::Pane,
         }),
         EndpointCommand::PaneRename(PaneRenameParams {
-            pane_id: root_public.clone(),
+            pane_id: root_public,
             label: Some("x".into()),
         }),
         EndpointCommand::PaneResize(PaneResizeParams {
-            pane_id: root_public.clone(),
+            pane_id: root_public,
             direction: PaneDirection::Right,
         }),
         EndpointCommand::WorkspaceRename(shepr_protocol::command::WorkspaceRenameParams {
-            workspace_id: workspace_id.clone(),
+            workspace_id,
             label: Some("renamed".into()),
         }),
         EndpointCommand::LayoutSetSplitRatio(shepr_protocol::command::LayoutSetSplitRatioParams {
-            workspace_id: workspace_id.clone(),
+            workspace_id,
             first_panes: vec![root_public],
             second_panes: vec![right_public],
             ratio: shepr_core::layout::SplitRatio::new(0.4).expect("test split ratio is valid"),

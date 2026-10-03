@@ -180,7 +180,7 @@ pub struct Workspace {
     /// Fallback workspace identity source for tests or missing runtimes.
     pub identity_cwd: PathBuf,
     git_identity: GitIdentity,
-    pub next_public_pane_number: usize,
+    pub next_public_pane_number: shepr_protocol::PanePublicNumber,
     // Persistence reads the pane tree for snapshots and fills it during
     // restore; other crates use the accessors and workspace mutators.
     /// Identity source for the pane tree.
@@ -205,7 +205,7 @@ impl Workspace {
         root_pane: PaneId,
         layout: TileLayout,
         panes: HashMap<PaneId, WorkspacePane>,
-        next_public_pane_number: usize,
+        next_public_pane_number: shepr_protocol::PanePublicNumber,
     ) -> Self {
         let git_identity = GitIdentity::Undiscovered {
             fallback_label: fallback_label_from_cwd(&identity_cwd),
@@ -242,13 +242,13 @@ impl Workspace {
     }
 
     pub(crate) fn valid_public_numbers(
-        numbers: impl IntoIterator<Item = usize>,
-        next: usize,
+        numbers: impl IntoIterator<Item = shepr_protocol::PanePublicNumber>,
+        next: shepr_protocol::PanePublicNumber,
     ) -> bool {
         let mut used = HashSet::new();
         numbers
             .into_iter()
-            .all(|number| number != 0 && number < next && used.insert(number))
+            .all(|number| number < next && used.insert(number))
     }
 
     /// A workspace rebuilt from a saved pane tree. `None` when the tree is
@@ -262,7 +262,7 @@ impl Workspace {
         layout: TileLayout,
         panes: HashMap<PaneId, WorkspacePane>,
         zoomed: bool,
-        next_public_pane_number: usize,
+        next_public_pane_number: shepr_protocol::PanePublicNumber,
     ) -> Option<Self> {
         let mut workspace = Self::assemble(
             id,
@@ -289,7 +289,7 @@ impl Workspace {
         pane_id: PaneId,
         mut pane: WorkspacePane,
     ) -> Self {
-        pane.public_number = 1;
+        pane.public_number = shepr_protocol::PanePublicNumber::FIRST;
         Self::assemble(
             generate_workspace_id(),
             label,
@@ -297,7 +297,7 @@ impl Workspace {
             pane_id,
             TileLayout::from_live_pane(pane_id),
             HashMap::from([(pane_id, pane)]),
-            2,
+            shepr_protocol::PanePublicNumber::SECOND,
         )
     }
 
@@ -358,8 +358,10 @@ impl Workspace {
         let (layout, root_pane) = TileLayout::new();
         let terminal_id = TerminalId::alloc();
         let terminal = TerminalState::new(terminal_id.clone(), initial_cwd.to_path_buf());
-        let mut pane = WorkspacePane::new(PaneState::new(terminal_id));
-        pane.public_number = 1;
+        let pane = WorkspacePane::new(
+            PaneState::new(terminal_id),
+            shepr_protocol::PanePublicNumber::FIRST,
+        );
         let root_public_id = PublicPaneId::new(&id, pane.public_number);
         let workspace = Self::assemble(
             id,
@@ -368,29 +370,43 @@ impl Workspace {
             root_pane,
             layout,
             HashMap::from([(root_pane, pane)]),
-            2,
+            shepr_protocol::PanePublicNumber::SECOND,
         );
         (workspace, terminal, root_public_id)
     }
 
+    /// Commits the split plan whose public ID the launched child was given:
+    /// the pane takes that number and the counter moves past it. A plan for
+    /// another workspace, or whose number the counter has already passed, is
+    /// refused, as is one whose number has no successor.
     pub fn commit_new_pane(
         &mut self,
-        pane_id: PaneId,
-        prepared_layout: TileLayout,
-        terminal_id: TerminalId,
-        public_number: usize,
+        prepared: PreparedSplit,
         focus: bool,
-    ) -> Option<()> {
-        self.commit_prepared_split(pane_id, prepared_layout, terminal_id, public_number)
-            .then_some(())?;
-        if focus && !self.focus_pane(pane_id) {
-            tracing::error!(workspace = %self.id, ?pane_id, "refused to focus a pane after admitting its split");
+    ) -> Option<TerminalState> {
+        if prepared.public_id.workspace_id() != &self.id {
+            return None;
         }
-        self.advance_next_public_pane_number(public_number);
-        Some(())
+        let public_number = prepared.public_id.number();
+        let next = public_number.checked_next()?;
+        self.commit_prepared_split(
+            prepared.pane_id,
+            prepared.prepared_layout,
+            prepared.terminal.id.clone(),
+            public_number,
+        )
+        .then_some(())?;
+        if focus && !self.focus_pane(prepared.pane_id) {
+            tracing::error!(workspace = %self.id, pane = ?prepared.pane_id,
+                "refused to focus a pane after admitting its split");
+        }
+        // `commit_prepared_split` refused a number below the counter, so
+        // `next` is never behind it.
+        self.next_public_pane_number = next;
+        Some(prepared.terminal)
     }
 
-    pub fn next_public_pane_number(&self) -> usize {
+    pub fn next_public_pane_number(&self) -> shepr_protocol::PanePublicNumber {
         self.next_public_pane_number
     }
 
@@ -468,7 +484,7 @@ impl Workspace {
             PaneRemovalScope::Workspace
         };
         Some(PaneRemovalPlan {
-            workspace_id: self.id.clone(),
+            workspace_id: self.id,
             pane_id,
             scope,
         })
@@ -504,7 +520,7 @@ impl Workspace {
         }
 
         Some(PaneRemoval {
-            workspace_id: self.id.clone(),
+            workspace_id: self.id,
             pane_id: plan.pane_id,
             scope: plan.scope,
             pane_ids,
@@ -512,8 +528,13 @@ impl Workspace {
         })
     }
 
-    fn advance_next_public_pane_number(&mut self, number: usize) {
-        self.next_public_pane_number = self.next_public_pane_number.max(number.saturating_add(1));
+    #[cfg(test)]
+    fn advance_next_public_pane_number(&mut self, number: shepr_protocol::PanePublicNumber) {
+        self.next_public_pane_number = self.next_public_pane_number.max(
+            number
+                .checked_next()
+                .expect("committed number has a successor"),
+        );
     }
 }
 
@@ -553,8 +574,10 @@ impl Workspace {
         let identity_cwd = TEST_WORKSPACE_CWD.with(|cwd| cwd.to_path_buf());
         let (layout, root_id) = TileLayout::new();
         let terminal_id = TerminalId::alloc();
-        let mut pane = WorkspacePane::new(PaneState::new(terminal_id));
-        pane.public_number = 1;
+        let pane = WorkspacePane::new(
+            PaneState::new(terminal_id),
+            shepr_protocol::PanePublicNumber::FIRST,
+        );
         Self::assemble(
             generate_workspace_id(),
             Some(name.to_string()),
@@ -562,7 +585,7 @@ impl Workspace {
             root_id,
             layout,
             HashMap::from([(root_id, pane)]),
-            2,
+            shepr_protocol::PanePublicNumber::SECOND,
         )
     }
 
@@ -570,7 +593,10 @@ impl Workspace {
         let new_id = self.layout.split_focused(direction);
         self.panes.insert(
             new_id,
-            WorkspacePane::new(PaneState::new(TerminalId::alloc())),
+            WorkspacePane::new(
+                PaneState::new(TerminalId::alloc()),
+                shepr_protocol::PanePublicNumber::FIRST,
+            ),
         );
         self.set_zoomed(false);
         self.register_new_pane(new_id);
@@ -591,7 +617,8 @@ impl Workspace {
         assert_ne!(
             later_pane.raw() as usize,
             ws.public_pane_number(later_pane)
-                .expect("test pane has a public pane number"),
+                .expect("test pane has a public pane number")
+                .get(),
             "adversarial pane must distinguish raw pane id from public pane number"
         );
         ws
@@ -638,19 +665,13 @@ impl Workspace {
 
         for (pane_id, pane) in &self.panes {
             assert!(
-                pane.public_number > 0,
-                "workspace {} pane {:?} has invalid public pane number 0",
-                self.id,
-                pane_id
-            );
-            assert!(
                 pane_numbers.insert(pane.public_number),
                 "workspace {} duplicate public pane number {} for pane {:?}",
                 self.id,
                 pane.public_number,
                 pane_id
             );
-            max_pane_number = max_pane_number.max(pane.public_number);
+            max_pane_number = max_pane_number.max(pane.public_number.get());
             assert!(
                 terminal_ids.insert(pane.attached_terminal_id.clone()),
                 "workspace {} terminal {} is attached to multiple panes",
@@ -660,12 +681,7 @@ impl Workspace {
         }
 
         assert!(
-            self.next_public_pane_number > 0,
-            "workspace {} next_public_pane_number must be greater than 0",
-            self.id
-        );
-        assert!(
-            self.next_public_pane_number > max_pane_number,
+            self.next_public_pane_number.get() > max_pane_number,
             "workspace {} next_public_pane_number {} must be greater than max live public pane number {}",
             self.id,
             self.next_public_pane_number,
@@ -683,7 +699,13 @@ mod tests {
     fn preparing_a_split_is_pure_and_commits_its_reserved_identity() {
         let cwd = Path::new("/__shepr_split_missing_directory__");
         let (mut workspace, _, root_public_id) = Workspace::prepare(cwd);
-        assert_eq!(root_public_id, PublicPaneId::new(&workspace.id, 1));
+        assert_eq!(
+            root_public_id,
+            PublicPaneId::new(
+                &workspace.id,
+                shepr_protocol::PanePublicNumber::new(1).expect("nonzero literal")
+            )
+        );
         let root = workspace.root_pane();
         let geometry = PaneGeometry {
             area: ratatui::layout::Rect::new(0, 0, 80, 24),
@@ -704,31 +726,46 @@ mod tests {
             .expect("split plan");
         assert_eq!(workspace.pane_count(), 1);
         assert_eq!(workspace.focused_pane_id(), root);
-        assert_eq!(workspace.next_public_pane_number(), 2);
+        assert_eq!(workspace.next_public_pane_number().get(), 2);
         assert_eq!(split.terminal.cwd(), cwd);
         assert_eq!(split.geometry, spawn_geometry(24, 40, None));
-        assert_eq!(split.public_id, PublicPaneId::new(&workspace.id, 2));
-        let public_number = split.public_id.number();
+        assert_eq!(
+            split.public_id,
+            PublicPaneId::new(
+                &workspace.id,
+                shepr_protocol::PanePublicNumber::new(2).expect("nonzero literal")
+            )
+        );
         assert_eq!(split.prepared_layout.focused(), split.pane_id);
+        assert!(workspace.commit_new_pane(split, true).is_some());
+        assert_eq!(workspace.pane_count(), 2);
+        assert_eq!(workspace.next_public_pane_number().get(), 3);
+
+        // No child should be launched when there is no successor to commit.
+        workspace.next_public_pane_number =
+            shepr_protocol::PanePublicNumber::new(usize::MAX).expect("max number");
         assert!(
             workspace
-                .commit_new_pane(
-                    split.pane_id,
-                    split.prepared_layout,
-                    split.terminal.id,
-                    public_number,
-                    true
+                .prepare_split(
+                    root,
+                    Direction::Horizontal,
+                    &geometry,
+                    None,
+                    cwd.to_path_buf(),
+                    true,
                 )
-                .is_some()
+                .is_none()
         );
         assert_eq!(workspace.pane_count(), 2);
-        assert_eq!(workspace.next_public_pane_number(), 3);
     }
 
     #[test]
     fn public_pane_ids_use_the_canonical_format() {
         let workspace_id: WorkspaceId = "wA".parse().expect("canonical workspace id");
-        let pane_id = PublicPaneId::new(&workspace_id, 33);
+        let pane_id = PublicPaneId::new(
+            &workspace_id,
+            shepr_protocol::PanePublicNumber::new(33).expect("nonzero literal"),
+        );
 
         assert_eq!(pane_id.to_string(), "wA:p11");
         assert_eq!("wA:p11".parse::<PublicPaneId>(), Ok(pane_id));
@@ -744,12 +781,12 @@ mod tests {
         let counter = AtomicUsize::new(FIRST_WORKSPACE_NUMBER);
         let first = allocate_workspace_id(&counter).expect("first number");
         let second = allocate_workspace_id(&counter).expect("second number");
-        assert_eq!(first, "w1");
-        assert_eq!(second, "w2");
+        assert_eq!(first.to_string(), "w1");
+        assert_eq!(second.to_string(), "w2");
 
         let counter = AtomicUsize::new(32 * 32);
         let thousandth = allocate_workspace_id(&counter).expect("1024th number");
-        assert_eq!(thousandth, "wZ0");
+        assert_eq!(thousandth.to_string(), "wZ0");
     }
 
     #[test]
@@ -786,7 +823,7 @@ mod tests {
         reserve_workspace_ids([&restored]);
 
         let generated = generate_workspace_id();
-        assert_ne!(generated, "wZ");
+        assert_ne!(generated.to_string(), "wZ");
         assert!(generated.number() > 31);
     }
 
@@ -827,21 +864,49 @@ mod tests {
         let second = ws.test_split(Direction::Horizontal);
         let third = ws.test_split(Direction::Vertical);
 
-        assert_eq!(ws.public_pane_number(root), Some(1));
-        assert_eq!(ws.public_pane_number(second), Some(2));
-        assert_eq!(ws.public_pane_number(third), Some(3));
+        assert_eq!(
+            ws.public_pane_number(root)
+                .map(shepr_protocol::PanePublicNumber::get),
+            Some(1)
+        );
+        assert_eq!(
+            ws.public_pane_number(second)
+                .map(shepr_protocol::PanePublicNumber::get),
+            Some(2)
+        );
+        assert_eq!(
+            ws.public_pane_number(third)
+                .map(shepr_protocol::PanePublicNumber::get),
+            Some(3)
+        );
 
         assert_eq!(
             ws.close_pane(second).map(|removal| removal.scope),
             Some(PaneRemovalScope::Pane)
         );
 
-        assert_eq!(ws.public_pane_number(root), Some(1));
-        assert_eq!(ws.public_pane_number(second), None);
-        assert_eq!(ws.public_pane_number(third), Some(3));
+        assert_eq!(
+            ws.public_pane_number(root)
+                .map(shepr_protocol::PanePublicNumber::get),
+            Some(1)
+        );
+        assert_eq!(
+            ws.public_pane_number(second)
+                .map(shepr_protocol::PanePublicNumber::get),
+            None
+        );
+        assert_eq!(
+            ws.public_pane_number(third)
+                .map(shepr_protocol::PanePublicNumber::get),
+            Some(3)
+        );
 
         let fourth = ws.test_split(Direction::Horizontal);
-        assert_eq!(ws.public_pane_number(fourth), Some(4));
+        assert_eq!(
+            ws.public_pane_number(fourth)
+                .map(shepr_protocol::PanePublicNumber::get),
+            Some(4)
+        );
     }
 
     #[test]
@@ -917,9 +982,17 @@ mod tests {
             ..
         } = one;
 
-        let restored =
-            Workspace::from_restored(id, None, identity_cwd, root_pane, layout, panes, true, 2)
-                .expect("valid pane tree");
+        let restored = Workspace::from_restored(
+            id,
+            None,
+            identity_cwd,
+            root_pane,
+            layout,
+            panes,
+            true,
+            shepr_protocol::PanePublicNumber::new(2).expect("number"),
+        )
+        .expect("valid pane tree");
 
         assert!(!restored.zoomed());
         restored.assert_invariants_for_test();
@@ -956,13 +1029,14 @@ mod tests {
             .panes
             .iter()
             .find_map(|(pane_id, pane)| {
-                (pane_id.raw() as usize != pane.public_number).then_some(*pane_id)
+                (pane_id.raw() as usize != pane.public_number.get()).then_some(*pane_id)
             })
             .expect("adversarial state should contain raw/public pane divergence");
         assert_ne!(
             divergent_pane.raw() as usize,
             ws.public_pane_number(divergent_pane)
                 .expect("test precondition")
+                .get()
         );
 
         let new_pane = ws.test_split(Direction::Vertical);
@@ -977,8 +1051,11 @@ mod tests {
             crate::git::test_support::create_repo_with_linked_worktree("linked-auto-label");
 
         let (snapshot, _) = crate::git::git_status_snapshot_for_cwd(&checkout, None);
-        let status =
-            snapshot.into_workspace_status("workspace".into(), checkout.clone(), PathBuf::new());
+        let status = snapshot.into_workspace_status(
+            shepr_protocol::WorkspaceId::from_number(1).expect("id"),
+            checkout.clone(),
+            PathBuf::new(),
+        );
 
         assert_eq!(
             status.auto_label,
@@ -1004,7 +1081,7 @@ mod tests {
             branch: WorkspaceBranch::Detached,
             ahead_behind: None,
         }
-        .into_workspace_status(ws.id.to_string(), cwd.clone(), cwd.clone());
+        .into_workspace_status(ws.id, cwd.clone(), cwd.clone());
         ws.admit_git_status(status, Some(&cwd));
 
         std::fs::remove_dir_all(root).expect("remove cwd after cache admission");
@@ -1032,7 +1109,7 @@ mod tests {
             branch: WorkspaceBranch::Detached,
             ahead_behind: None,
         }
-        .into_workspace_status(ws.id.to_string(), cwd.clone(), cwd.clone());
+        .into_workspace_status(ws.id, cwd.clone(), cwd.clone());
         ws.admit_git_status(status, Some(&cwd));
         let terminals = HashMap::from([(
             terminal_id.clone(),
@@ -1118,7 +1195,7 @@ mod tests {
         let mut ws = Workspace::test_new("custom");
         let cwd = ws.identity_cwd.clone();
         let status = WorkspaceGitStatus {
-            workspace_id: ws.id.to_string(),
+            workspace_id: ws.id,
             resolved_identity_cwd: cwd.clone(),
             status_cache_key: PathBuf::from("/checkout"),
             auto_label: "automatic".into(),
@@ -1146,7 +1223,7 @@ mod tests {
         let mut ws = Workspace::test_new("custom");
         let cwd = ws.identity_cwd.clone();
         let mut status = WorkspaceGitStatus {
-            workspace_id: ws.id.to_string(),
+            workspace_id: ws.id,
             resolved_identity_cwd: cwd.clone(),
             status_cache_key: cwd.clone(),
             auto_label: "automatic".into(),
@@ -1171,7 +1248,7 @@ mod tests {
         ws.identity_cwd = PathBuf::from("/shepr-test/repo/sub");
         let cwd = ws.identity_cwd.clone();
         let status = WorkspaceGitStatus {
-            workspace_id: ws.id.to_string(),
+            workspace_id: ws.id,
             resolved_identity_cwd: cwd.clone(),
             status_cache_key: cwd.clone(),
             auto_label: "repo".into(),
@@ -1199,13 +1276,20 @@ mod tests {
             None,
             &cwd,
             pane,
-            WorkspacePane::new(PaneState::new(TerminalId::alloc())),
+            WorkspacePane::new(
+                PaneState::new(TerminalId::alloc()),
+                shepr_protocol::PanePublicNumber::FIRST,
+            ),
         );
 
         assert_eq!(ws.display_name(), "sub");
         assert!(!ws.matches_identity_cwd(&ws.identity_cwd));
         assert_eq!(ws.pane_count(), 1);
-        assert_eq!(ws.public_pane_number(pane), Some(1));
+        assert_eq!(
+            ws.public_pane_number(pane)
+                .map(shepr_protocol::PanePublicNumber::get),
+            Some(1)
+        );
         ws.assert_invariants_for_test();
     }
 }

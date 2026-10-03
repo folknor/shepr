@@ -18,6 +18,11 @@ impl Fnv64 {
         }
     }
 
+    fn write_pane_id(&mut self, id: shepr_protocol::PublicPaneId) {
+        self.write(&id.workspace_id().number().to_le_bytes());
+        self.write(&id.number().get().to_le_bytes());
+    }
+
     fn finish(self) -> u64 {
         self.0
     }
@@ -36,10 +41,10 @@ pub(in crate::shell) fn pane_surface_topology_signature(surface: &PaneSurfaceFra
     }
 
     let mut panes = surface.panes.iter().collect::<Vec<_>>();
-    panes.sort_by(|left, right| left.pane_id.as_bytes().cmp(right.pane_id.as_bytes()));
+    panes.sort_by_key(|pane| pane.pane_id);
     let mut hash = Fnv64::new();
     for pane in &panes {
-        write_delimited(&mut hash, pane.pane_id.as_bytes());
+        hash.write_pane_id(pane.pane_id);
     }
     let mut splits = surface.splits.iter().collect::<Vec<_>>();
     splits.sort_by(|left, right| left.path.cmp(&right.path));
@@ -59,7 +64,7 @@ pub(in crate::shell) fn pane_surface_topology_signature(surface: &PaneSurfaceFra
         hash.write_byte(0xff);
         // Ratio movement changes pane rectangles but should preserve child membership.
         for pane in &panes {
-            write_delimited(&mut hash, pane.pane_id.as_bytes());
+            hash.write_pane_id(pane.pane_id);
             let rect = pane.rect;
             let area = split.area;
             let inside = rect.x >= area.x

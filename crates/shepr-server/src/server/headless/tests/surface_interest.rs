@@ -64,7 +64,7 @@ async fn metadata_only_shell_is_isolated_until_surface_activation() {
     assert!(
         !server.test_handle_server_event(ServerEvent::ShellPaneInput {
             client_id,
-            pane_id: pane_id.parse().expect("test precondition"),
+            pane_id,
             events: vec![shepr_protocol::ClientPaneInputEvent::Paste(
                 "blocked".into()
             )],
@@ -79,9 +79,7 @@ async fn metadata_only_shell_is_isolated_until_surface_activation() {
             boot_id: boot_id.clone(),
             request_id: "inactive-mutation".into(),
             command: Box::new(EndpointCommand::WorkspaceFocus(
-                shepr_protocol::command::WorkspaceTarget {
-                    workspace_id: workspace_id.clone(),
-                },
+                shepr_protocol::command::WorkspaceTarget { workspace_id },
             )),
         })
     );
@@ -100,10 +98,7 @@ async fn metadata_only_shell_is_isolated_until_surface_activation() {
     assert!(server.send_to_client(
         client_id,
         &ServerMessage::ClientShellError {
-            kind: shepr_protocol::NoticeKind::PaneInputDropped {
-                pane_id: pane_id.parse().expect("test precondition"),
-                events: 1
-            },
+            kind: shepr_protocol::NoticeKind::PaneInputDropped { pane_id, events: 1 },
         }
     ));
     assert!(matches!(
@@ -162,7 +157,7 @@ async fn metadata_only_shell_is_isolated_until_surface_activation() {
     assert!(server.clients.contains_key(&client_id));
     let (_, runtime_pane_id) = server
         .app
-        .parse_pane_id(&surface.panes[0].pane_id)
+        .resolve_pane_id(&surface.panes[0].pane_id)
         .expect("test precondition");
     server
         .app
@@ -258,7 +253,7 @@ async fn background_surface_activation_preserves_focused_viewer_geometry() {
         .expect("background surface activation response");
     assert_eq!(
         server.shell_target_for_client(ClientId::test_new(8)),
-        Some(shared_workspace_id.clone())
+        Some(shared_workspace_id)
     );
     assert_eq!(
         server.clients[&7].shell_state().outer_terminal_focus,
@@ -384,7 +379,7 @@ async fn navigation_reapplies_geometry_for_the_workspace_left_behind() {
         let result = server.handle_client_shell_command(
             ClientId::test_new(7),
             EndpointCommand::WorkspaceFocus(shepr_protocol::command::WorkspaceTarget {
-                workspace_id: workspace_id.clone(),
+                workspace_id: *workspace_id,
             }),
         );
         assert!(result.is_ok());

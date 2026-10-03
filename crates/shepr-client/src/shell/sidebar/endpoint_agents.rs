@@ -54,7 +54,7 @@ pub(in crate::shell) fn render_collapsed(
                 glyph.text,
                 glyph.style,
             );
-            hits.agents.push((rect, row.agent.pane_id.clone()));
+            hits.agents.push((rect, row.agent.pane_id));
         } else {
             let initial = row.machine_label.chars().next().unwrap_or('?');
             put_text(
@@ -66,7 +66,7 @@ pub(in crate::shell) fn render_collapsed(
                 glyph.style,
             );
             hits.endpoint_agents
-                .push((rect, row.endpoint_id.clone(), row.agent.pane_id.clone()));
+                .push((rect, row.endpoint_id.clone(), row.agent.pane_id));
         }
     }
 }
@@ -108,13 +108,10 @@ pub(in crate::shell) fn render_expanded(
                 );
             }
             if single_endpoint {
-                hits.agents.push((rect, row.agent.pane_id.clone()));
+                hits.agents.push((rect, row.agent.pane_id));
             } else {
-                hits.endpoint_agents.push((
-                    rect,
-                    row.endpoint_id.clone(),
-                    row.agent.pane_id.clone(),
-                ));
+                hits.endpoint_agents
+                    .push((rect, row.endpoint_id.clone(), row.agent.pane_id));
             }
         },
     );
@@ -124,16 +121,17 @@ impl ClientShellState {
     pub(in crate::shell) fn reveal_endpoint_agent(
         &mut self,
         endpoint_id: &ClientEndpointId,
-        pane_id: &str,
+        pane_id: &shepr_protocol::PublicPaneId,
         body_height: u16,
     ) {
         if body_height == 0 {
             return;
         }
         let rows = &self.agent_panel_model.rows;
-        let Some(target) = rows.iter().position(|row| {
-            &row.endpoint_id == endpoint_id && row.agent.pane_id.as_str() == pane_id
-        }) else {
+        let Some(target) = rows
+            .iter()
+            .position(|row| &row.endpoint_id == endpoint_id && &row.agent.pane_id == pane_id)
+        else {
             return;
         };
         let heights = rows

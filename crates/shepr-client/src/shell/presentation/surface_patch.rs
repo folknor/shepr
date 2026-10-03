@@ -254,12 +254,12 @@ mod tests {
             ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
         state.last_composed_size = Some((80, 24));
         let mut snapshot = crate::shell::tests::snapshot();
-        let copy_pane_id = snapshot.panes[0].pane_id.clone();
+        let copy_pane_id = snapshot.panes[0].pane_id;
         let other_pane_id = crate::tests::test_pane_id("w1:p2");
         if !copy_pane_focused {
-            snapshot.focused_pane_id = Some(other_pane_id.clone());
+            snapshot.focused_pane_id = Some(other_pane_id);
             let mut other_pane = snapshot.panes[0].clone();
-            other_pane.pane_id = other_pane_id.clone();
+            other_pane.pane_id = other_pane_id;
             snapshot.panes.push(other_pane);
         }
         state.set_snapshot(Box::new(snapshot));
@@ -275,7 +275,7 @@ mod tests {
             height: area.height,
         };
         let panes = if copy_pane_focused {
-            vec![test_surface_pane(copy_pane_id.clone(), true, copy_rect)]
+            vec![test_surface_pane(copy_pane_id, true, copy_rect)]
         } else {
             let other_rect = shepr_protocol::SurfaceRect {
                 x: copy_rect.width,
@@ -284,7 +284,7 @@ mod tests {
                 height: area.height,
             };
             vec![
-                test_surface_pane(copy_pane_id.clone(), false, copy_rect),
+                test_surface_pane(copy_pane_id, false, copy_rect),
                 test_surface_pane(other_pane_id, true, other_rect),
             ]
         };

@@ -31,7 +31,6 @@ fn workspaces(count: usize) -> ClientShellSnapshot {
         .map(|number| {
             let mut workspace = projected.workspaces[0].clone();
             workspace.workspace_id = test_workspace_id(&format!("w{number}"));
-            workspace.number = number;
             workspace
         })
         .collect();
@@ -81,7 +80,10 @@ fn pane_scrollbar_click_clears_a_workspace_preview_when_leaving_navigation() {
 
     assert_eq!(state.mode, ClientShellMode::Terminal);
     assert!(state.navigate_workspace_id.is_none());
-    assert_eq!(state.workspace_action_id().as_deref(), Some("w1"));
+    assert_eq!(
+        state.workspace_action_id().as_ref(),
+        Some(&crate::tests::test_workspace_id("w1"))
+    );
 }
 
 fn preview_key(state: &mut ClientShellState, bytes: &[u8]) {
@@ -109,7 +111,7 @@ fn workspace_rect(state: &ClientShellState, endpoint: &ClientEndpointId, workspa
         .hits
         .workspaces
         .iter()
-        .find(|hit| &hit.endpoint_id == endpoint && hit.workspace_id == workspace)
+        .find(|hit| &hit.endpoint_id == endpoint && hit.workspace_id.to_string() == workspace)
         .map(|hit| hit.rect)
         .expect("visible workspace")
 }
@@ -170,8 +172,8 @@ fn local_navigation_highlight_stays_visible_with_terminal_theme() {
                     .as_ref()
                     .expect("test precondition")
                     .focused_workspace_id
-                    .as_deref(),
-                Some("w1")
+                    .as_ref(),
+                Some(&crate::tests::test_workspace_id("w1"))
             );
             preview_key(&mut state, b"\x1b");
             let frame = state.compose(100, 28).expect("test precondition");
@@ -250,8 +252,8 @@ fn navigation_highlights_only_the_preview_and_activates_on_enter() {
                     .as_ref()
                     .expect("test precondition")
                     .focused_workspace_id
-                    .as_deref(),
-                Some("w1")
+                    .as_ref(),
+                Some(&crate::tests::test_workspace_id("w1"))
             );
             assert_eq!(
                 state.pane_surface().expect("test precondition").boot_id,
@@ -262,7 +264,7 @@ fn navigation_highlights_only_the_preview_and_activates_on_enter() {
             assert!(
                 matches!(enter.actions.as_slice(), [ClientShellAction::ActivateEndpoint {
                 endpoint_id, target: Some(ClientEndpointFocusTarget::Workspace(id)),
-            }] if endpoint_id == &remote && id == "w2")
+            }] if endpoint_id == &remote && id == &test_workspace_id("w2"))
             );
             assert_eq!(*state.active_endpoint_id(), ClientEndpointId::Local);
             assert_eq!(state.mode, ClientShellMode::Terminal);
@@ -301,7 +303,10 @@ fn foreign_preview_blocks_keyboard_actions_but_keeps_active_action_context() {
     state.set_endpoint_snapshot_for_generation(&remote, 1, Box::new(remote_snapshot));
     preview_key(&mut state, b"\x1b[B");
     assert_selected(&state, &remote, "w2");
-    assert_eq!(state.workspace_action_id().as_deref(), Some("w1"));
+    assert_eq!(
+        state.workspace_action_id().as_ref(),
+        Some(&crate::tests::test_workspace_id("w1"))
+    );
     state.config.prompt_new_workspace_name = false;
     let mut create = ClientShellInput::default();
     state.record_binding(
@@ -310,7 +315,7 @@ fn foreign_preview_blocks_keyboard_actions_but_keeps_active_action_context() {
     );
     assert!(
         matches!(create.actions.as_slice(), [ClientShellAction::Endpoint { endpoint_id: ClientEndpointId::Local, request, .. }]
-        if matches!(&request.command, EndpointCommand::WorkspaceCreate(params) if matches!(&params.source, shepr_protocol::command::WorkspaceCreateSource::Follow(id) if id == "w1")))
+        if matches!(&request.command, EndpointCommand::WorkspaceCreate(params) if matches!(&params.source, shepr_protocol::command::WorkspaceCreateSource::Follow(id) if id == &test_workspace_id("w1"))))
     );
     preview_key(&mut state, b"\x1b");
     assert!(state.navigate_workspace_id.is_none());
@@ -551,7 +556,10 @@ fn active_preview_is_not_retargeted_by_deletion_or_reboot() {
             assert!(state.overlay.is_none());
             assert_eq!(state.mode, ClientShellMode::Navigate);
         }
-        assert_eq!(state.workspace_action_id().as_deref(), Some("w1"));
+        assert_eq!(
+            state.workspace_action_id().as_ref(),
+            Some(&crate::tests::test_workspace_id("w1"))
+        );
     }
 }
 
@@ -585,6 +593,68 @@ fn aggregate_navigation_reveals_overflow_and_preserves_order() {
     }
 }
 
+/// Workspace numbers are list positions: the sidebar shows a workspace's
+/// place in the snapshot and the number keys index that list, whatever
+/// number its ID was allocated with.
+#[test]
+fn workspace_numbers_and_switching_follow_list_position_not_the_id() {
+    let mut projected = snapshot();
+    let template = projected.workspaces[0].clone();
+    projected.workspaces = [("w5", "first"), ("w2", "second")]
+        .into_iter()
+        .map(|(id, label)| {
+            let mut workspace = template.clone();
+            workspace.workspace_id = test_workspace_id(id);
+            workspace.label = label.into();
+            workspace
+        })
+        .collect();
+    projected.focused_workspace_id = Some(test_workspace_id("w5"));
+    projected.panes[0].pane_id = crate::tests::test_pane_id("w5:p1");
+    projected.focused_pane_id = Some(crate::tests::test_pane_id("w5:p1"));
+
+    for compact in [false, true] {
+        let mut state =
+            ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
+        state.chrome.set_collapsed(compact);
+        state.set_snapshot(Box::new(projected.clone()));
+        let frame = state.compose(100, 28).expect("test precondition");
+        let rows = super::frame_rows(&frame);
+        for (workspace, number) in [("w5", "1"), ("w2", "2")] {
+            let rect = workspace_rect(&state, &ClientEndpointId::Local, workspace);
+            let text = rows[usize::from(rect.y)]
+                .chars()
+                .skip(usize::from(rect.x))
+                .take(usize::from(rect.width))
+                .collect::<String>();
+            assert!(
+                text.trim_start().starts_with(number),
+                "compact={compact}: {workspace} should be numbered {number}, row is {text:?}"
+            );
+        }
+
+        for (index, workspace) in [(0, "w5"), (1, "w2")] {
+            let mut input = ClientShellInput::default();
+            state.record_binding(
+                &shepr_termio::input::KeybindAction::SwitchWorkspace(index),
+                &mut input,
+            );
+            assert!(
+                matches!(
+                    input.actions.as_slice(),
+                    [ClientShellAction::Endpoint { request, .. }]
+                        if matches!(
+                            &request.command,
+                            EndpointCommand::WorkspaceFocus(target)
+                                if target.workspace_id == test_workspace_id(workspace)
+                        )
+                ),
+                "compact={compact}: switching to {index} should focus {workspace}"
+            );
+        }
+    }
+}
+
 fn local_navigation_state(compact: bool) -> ClientShellState {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.config.palette = Palette::terminal();
@@ -610,7 +680,7 @@ fn request_local_navigation(state: &mut ClientShellState, down: usize) -> String
     else {
         panic!("expected a local activation request");
     };
-    let actions = state.focus_endpoint_target((*target).clone());
+    let actions = state.focus_endpoint_target(*target);
     let [ClientShellAction::Endpoint { request, .. }] = actions.as_slice() else {
         panic!("expected a local workspace focus request");
     };
@@ -658,10 +728,13 @@ fn accepted_local_navigation_keeps_highlight_until_authoritative_focus() {
                     .as_ref()
                     .expect("test precondition")
                     .focused_workspace_id
-                    .as_deref(),
-                Some("w1")
+                    .as_ref(),
+                Some(&crate::tests::test_workspace_id("w1"))
             );
-            assert_eq!(state.focused_pane_id().as_deref(), Some("w1:p1"));
+            assert_eq!(
+                state.focused_pane_id().as_ref(),
+                Some(&crate::tests::test_pane_id("w1:p1"))
+            );
             assert_local_highlight(&mut state, "w3");
             state.invalidate_pane_surface();
             assert_local_highlight(&mut state, "w3");
@@ -846,7 +919,7 @@ fn directional_pane_focus_releases_an_accepted_workspace_highlight() {
                 panic!("expected PaneFocusDirection");
             };
             assert_eq!(params.direction, direction);
-            assert_eq!(params.pane_id, "w1:p1");
+            assert_eq!(params.pane_id.to_string(), "w1:p1");
             assert!(state.pending_workspace_highlight.is_none());
             assert_local_highlight(&mut state, "w1");
             let result = if rejected {
@@ -893,7 +966,7 @@ fn direct_agent_focus_repaints_when_releasing_a_workspace_highlight() {
         assert!(
             matches!(outcome.actions.as_slice(), [ClientShellAction::Endpoint { request, .. }]
             if matches!(&request.command, EndpointCommand::PaneFocus(params)
-                if params.pane_id == "w1:p1"))
+                if params.pane_id == crate::tests::test_pane_id("w1:p1")))
         );
         assert!(state.pending_workspace_highlight.is_none());
         assert_eq!(outcome.repaint, pending);

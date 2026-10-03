@@ -863,14 +863,14 @@ impl ClientShellState {
                 .panes
                 .iter()
                 .filter(|pane| pane.focused)
-                .map(|pane| pane.pane_id.clone())
+                .map(|pane| pane.pane_id)
                 .collect()
         });
         if pane_ids.is_empty()
             && let Some(pane_id) = self
                 .snapshot
                 .as_deref()
-                .and_then(|snapshot| snapshot.focused_pane_id.clone())
+                .and_then(|snapshot| snapshot.focused_pane_id)
         {
             pane_ids.push(pane_id);
         }
@@ -901,8 +901,8 @@ impl ClientShellState {
             if self
                 .snapshot
                 .as_deref()
-                .and_then(|snapshot| snapshot.focused_workspace_id.as_deref())
-                == Some(workspace_id.as_str())
+                .and_then(|snapshot| snapshot.focused_workspace_id.as_ref())
+                == Some(workspace_id)
             {
                 self.reveal_focused_workspace = true;
             }
@@ -1058,39 +1058,38 @@ impl ClientShellState {
             .snapshot
             .as_deref()
             .and_then(|current| current.focused_pane_id.as_ref())
-            .filter(|previous| Some(previous.as_str()) != snapshot.focused_pane_id.as_deref())
+            .filter(|previous| Some(*previous) != snapshot.focused_pane_id.as_ref())
         {
-            self.previous_pane_id = Some(previous.clone());
+            self.previous_pane_id = Some(*previous);
         }
         if self
             .snapshot
             .as_deref()
-            .and_then(|current| current.focused_workspace_id.as_deref())
-            != snapshot.focused_workspace_id.as_deref()
+            .and_then(|current| current.focused_workspace_id.as_ref())
+            != snapshot.focused_workspace_id.as_ref()
         {
             self.reveal_focused_workspace = true;
         }
         let selection_focus_lost = if let Some(gesture) = self.mouse_selection.word_gesture.as_mut()
         {
-            let focused_pane = snapshot.focused_pane_id.as_deref();
+            let focused_pane = snapshot.focused_pane_id.as_ref();
             // Remember confirmed focus across intermediate snapshots with no
             // focused pane, without rejecting the gesture's in-flight focus request.
-            gesture.focus_confirmed |= focused_pane == Some(gesture.pane_id.as_str());
+            gesture.focus_confirmed |= focused_pane == Some(&gesture.pane_id);
             !snapshot
                 .panes
                 .iter()
                 .any(|pane| pane.pane_id == gesture.pane_id)
                 || (gesture.focus_confirmed
-                    && focused_pane.is_some_and(|pane_id| pane_id != gesture.pane_id.as_str()))
+                    && focused_pane.is_some_and(|pane_id| pane_id != &gesture.pane_id))
         } else if let Some(selection) = self.mouse_selection.selection.as_ref() {
-            let focused_pane = snapshot.focused_pane_id.as_deref();
-            let focused_here = focused_pane == Some(selection.pane_id.as_str());
+            let focused_pane = snapshot.focused_pane_id.as_ref();
+            let focused_here = focused_pane == Some(&selection.pane_id);
             // Like the word-gesture guard above: a selection started in an
             // unfocused pane survives snapshots that predate its focus
             // request, and only a focus change after that ends it.
             let awaiting_focus = !focused_here
-                && self.mouse_selection.focus_pending.as_deref()
-                    == Some(selection.pane_id.as_str());
+                && self.mouse_selection.focus_pending.as_ref() == Some(&selection.pane_id);
             if focused_here {
                 self.mouse_selection.focus_pending = None;
             }
@@ -1108,17 +1107,13 @@ impl ClientShellState {
         // Snapshot reconciliation reactivates or parks the session as focus settles. A session
         // can also be parked explicitly while its pane remains focused, so this is not derived
         // from focus alone.
-        if let Some(copy_pane_id) = self
-            .copy_mode
-            .as_ref()
-            .map(|copy_mode| copy_mode.pane_id.clone())
-        {
+        if let Some(copy_pane_id) = self.copy_mode.as_ref().map(|copy_mode| copy_mode.pane_id) {
             let pane_exists = snapshot
                 .panes
                 .iter()
                 .any(|pane| pane.pane_id == copy_pane_id);
             let pane_focused = self.copy_mode.as_ref().is_some_and(|copy_mode| {
-                copy_mode.pane_is_focused(snapshot.focused_pane_id.as_deref())
+                copy_mode.pane_is_focused(snapshot.focused_pane_id.as_ref())
             });
             if !pane_exists {
                 // Queued copy-mode keys belonged to this removed pane. Replaying
@@ -1328,7 +1323,7 @@ impl ClientShellState {
                 copy_mode.geometry = geometry;
                 copy_mode.alternate_screen_active = pane.alternate_screen_active;
                 copy_mode.selection = None;
-                invalidated_copy_pane = Some(copy_mode.pane_id.clone());
+                invalidated_copy_pane = Some(copy_mode.pane_id);
                 if let Some(search) = copy_mode.search.as_mut() {
                     search.clear_results();
                 }

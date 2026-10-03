@@ -37,7 +37,7 @@ impl FocusLane {
         if self.in_flight.is_some() || self.settled() {
             return None;
         }
-        let target = self.desired.clone()?;
+        let target = self.desired?;
         self.serial = self.serial.saturating_add(1);
         // `client-shell-focus:{view serial}:{n}`: the view serial (from the move's
         // `client-shell-view:{serial}:on`) is unique per move, `n` per request within it.
@@ -48,12 +48,12 @@ impl FocusLane {
         )
         .into();
         let command = match &target {
-            ClientEndpointFocusTarget::Pane(pane_id) => EndpointCommand::PaneFocus(PaneTarget {
-                pane_id: pane_id.clone(),
-            }),
+            ClientEndpointFocusTarget::Pane(pane_id) => {
+                EndpointCommand::PaneFocus(PaneTarget { pane_id: *pane_id })
+            }
             ClientEndpointFocusTarget::Workspace(workspace_id) => {
                 EndpointCommand::WorkspaceFocus(WorkspaceTarget {
-                    workspace_id: workspace_id.clone(),
+                    workspace_id: *workspace_id,
                 })
             }
         };
@@ -98,7 +98,6 @@ mod tests {
         EndpointReply::WorkspaceInfo {
             workspace: shepr_protocol::command::WorkspaceInfo {
                 workspace_id: crate::tests::test_workspace_id(id),
-                number: 1,
                 label: id.into(),
                 pane_count: 1,
                 agent_status: shepr_protocol::AgentStatus::Idle,
@@ -122,7 +121,7 @@ mod tests {
         let next = request(&mut lane).expect("latest focus");
         assert_ne!(first, next);
         assert!(
-            matches!(next, ClientMessage::ClientShellEndpointRequest { command: EndpointCommand::WorkspaceFocus(WorkspaceTarget { workspace_id }), .. } if workspace_id == "w2")
+            matches!(next, ClientMessage::ClientShellEndpointRequest { command: EndpointCommand::WorkspaceFocus(WorkspaceTarget { workspace_id }), .. } if workspace_id == crate::tests::test_workspace_id("w2"))
         );
         lane.receive(&reply("w2")).expect("latest reply");
         assert!(lane.settled());

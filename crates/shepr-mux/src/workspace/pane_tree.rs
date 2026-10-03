@@ -15,7 +15,7 @@ use shepr_protocol::TerminalId;
 /// record makes its pane map the source of pane identity metadata.
 pub struct WorkspacePane {
     pub pane_state: PaneState,
-    pub public_number: usize,
+    pub public_number: shepr_protocol::PanePublicNumber,
 }
 
 impl Deref for WorkspacePane {
@@ -33,27 +33,51 @@ impl DerefMut for WorkspacePane {
 }
 
 impl WorkspacePane {
-    pub fn new(pane_state: PaneState) -> Self {
+    pub fn new(pane_state: PaneState, public_number: shepr_protocol::PanePublicNumber) -> Self {
         Self {
             pane_state,
-            public_number: 0,
+            public_number,
         }
     }
 }
 
 /// A split planned on a cloned layout: plain data, no child. The caller
 /// launches the pane from `geometry`, `public_id` and the terminal's cwd, then
-/// commits the reserved public number from `public_id` with
-/// `commit_new_pane` in the same synchronous handler.
+/// commits this same plan with `commit_new_pane` in the same synchronous handler.
+///
+/// Only `prepare_split` builds one and its fields are read-only outside the
+/// workspace module, so the plan a commit installs is the one a launch read:
+/// nothing can pair a launched child with another geometry, cwd or number.
 pub struct PreparedSplit {
-    pub pane_id: PaneId,
-    pub terminal: TerminalState,
+    pub(super) pane_id: PaneId,
+    pub(super) terminal: TerminalState,
     /// The new pane's PTY size in the tiled layout, since a split unzooms.
-    pub geometry: shepr_core::geometry::PaneGeometry,
+    pub(super) geometry: shepr_core::geometry::PaneGeometry,
     /// The id exported to the child as `SHEPR_PANE_ID`; its number is also
     /// registered when the split is committed.
-    pub public_id: shepr_protocol::PublicPaneId,
-    pub prepared_layout: TileLayout,
+    pub(super) public_id: shepr_protocol::PublicPaneId,
+    pub(super) prepared_layout: TileLayout,
+}
+
+impl PreparedSplit {
+    pub fn pane_id(&self) -> PaneId {
+        self.pane_id
+    }
+
+    /// The new pane's terminal state; its cwd is where the child starts.
+    pub fn terminal(&self) -> &TerminalState {
+        &self.terminal
+    }
+
+    /// The new pane's PTY size in the tiled layout, since a split unzooms.
+    pub fn geometry(&self) -> shepr_core::geometry::PaneGeometry {
+        self.geometry
+    }
+
+    /// The id to export to the child as `SHEPR_PANE_ID`.
+    pub fn public_id(&self) -> shepr_protocol::PublicPaneId {
+        self.public_id
+    }
 }
 
 impl Workspace {
@@ -124,11 +148,14 @@ impl Workspace {
             .map(|pane| &pane.attached_terminal_id)
     }
 
-    pub fn public_pane_number(&self, pane_id: PaneId) -> Option<usize> {
+    pub fn public_pane_number(&self, pane_id: PaneId) -> Option<shepr_protocol::PanePublicNumber> {
         self.panes.get(&pane_id).map(|pane| pane.public_number)
     }
 
-    pub fn pane_id_for_public_number(&self, number: usize) -> Option<PaneId> {
+    pub fn pane_id_for_public_number(
+        &self,
+        number: shepr_protocol::PanePublicNumber,
+    ) -> Option<PaneId> {
         self.panes
             .iter()
             .find_map(|(pane_id, pane)| (pane.public_number == number).then_some(*pane_id))
@@ -196,6 +223,9 @@ impl Workspace {
     }
 
     /// Prepare a split without launching a child or changing this workspace.
+    /// `None` when `target` is not laid out here, or when the next public
+    /// number has no successor, so an exhausted workspace never launches a
+    /// child its commit would refuse.
     pub fn prepare_split(
         &self,
         target: PaneId,
@@ -205,7 +235,7 @@ impl Workspace {
         cwd: PathBuf,
         focus_new_pane: bool,
     ) -> Option<PreparedSplit> {
-        if !self.contains_pane(target) {
+        if self.next_public_pane_number.checked_next().is_none() || !self.contains_pane(target) {
             return None;
         }
         let mut prepared_layout = self.layout.clone();
@@ -235,9 +265,10 @@ impl Workspace {
     /// prepared layout is not this layout plus exactly `pane_id`.
     ///
     /// Only the pane-id set (and that the prepared focus is in it) is
-    /// verified, not ratios or ordering, and the public number is not checked
-    /// for reuse: prepare and commit run in one synchronous handler on the app
-    /// thread, so nothing can edit the layout or take a number between them.
+    /// verified, not ratios or ordering, and the public number is checked
+    /// against the live counter to refuse reuse. Prepare and commit run in one
+    /// synchronous handler on the app thread, so nothing can edit the layout
+    /// or take a number between them.
     /// Do not add a layout generation; if the two phases ever span an await,
     /// collapse them or add one then.
     pub(super) fn commit_prepared_split(
@@ -245,12 +276,12 @@ impl Workspace {
         pane_id: PaneId,
         prepared_layout: TileLayout,
         terminal_id: TerminalId,
-        public_number: usize,
+        public_number: shepr_protocol::PanePublicNumber,
     ) -> bool {
         let current_ids = self.layout.pane_ids();
         let prepared_ids = prepared_layout.pane_ids();
-        if public_number == 0
-            || public_number.checked_add(1).is_none()
+        if public_number < self.next_public_pane_number
+            || public_number.checked_next().is_none()
             || !self.has_consistent_panes()
             || self.panes.contains_key(&pane_id)
             || !prepared_ids.contains(&pane_id)
@@ -263,8 +294,7 @@ impl Workspace {
 
         self.layout = prepared_layout;
         self.set_zoomed(false);
-        let mut pane = WorkspacePane::new(PaneState::new(terminal_id));
-        pane.public_number = public_number;
+        let pane = WorkspacePane::new(PaneState::new(terminal_id), public_number);
         self.panes.insert(pane_id, pane);
         true
     }

@@ -22,44 +22,24 @@ reports are in the commit that precedes this file's.
 
 ## Identities
 
-## TYP-001 - `WorkspaceId` and `PublicPaneId` deref to `str` and compare with strings
+## TYP-003 - WorkspacePane still derefs to PaneState with public fields
 
-Both implement `Deref<Target = str>` and `PartialEq<str | &str | String>`;
-`WorkspaceId` also has `From<WorkspaceId> for String`; `PublicPaneId` has string
-equality and `number() -> usize`. Uses of the hatches:
+Pane public numbers are a nonzero `PanePublicNumber`, commit consumes the same
+`PreparedSplit` used for launch, and `PublicPaneId::new` cannot panic. Still
+open: `WorkspacePane` keeps its `Deref` to `PaneState` and public
+`pane_state` and `public_number` fields, and the workspace next-number field
+is public (typed). (mux-state)
 
-- Git refresh stringifies the id (`workspace_git_refresh_items` does
-  `ws.id.to_string()` into `WorkspaceGitRefreshItem::workspace_id: String`, mux
-  `WorkspaceGitStatus::workspace_id: String`) and compares it back with
-  `PartialEq<str>` in `apply_workspace_git_statuses` and
-  `live_workspace_identity_cwd(&str)`; the tests use ids (`"one"`, `"two"`) the
-  allocator can never issue.
-- `WorkspaceSnapshot::id: Option<String>` is written `Some(ws.id.to_string())`
-  and read with `.parse::<WorkspaceId>().ok()` though `WorkspaceId` derives
-  `Deserialize`.
-- `AppState::workspace_geometry` and the server's retained layout cache are
-  keyed by `WorkspaceId::number()` as a bare `usize` (a test inserts
-  `usize::MAX`).
-- The server passes typed `PublicPaneId`s to `App::parse_pane_id(&str)` through
-  `Deref` and re-parses them (`release_client_shell_inputs`, the
-  `ClientShellPaneInput` arm, `handle_client_shell_command` for `PaneScroll`),
-  although `App::resolve_pane_id` exists to avoid exactly that.
-- The client shell drops to `&str` in `pane_split_target_is_current`,
-  `pane_split_topology_matches_hit`, `apply_copy_search_result`,
-  `apply_copy_motion_target`, `complete_word_selection_row`,
-  `reveal_endpoint_agent`, `agent_target_index`, `AgentRowIndex::workspace`,
-  compares `x.as_deref() == Some(y.as_str())` in several places, and keys
-  `HashMap`s by `pane_id.to_string()`.
-- Logging relies on deref (`logging::workspace_created(&outcome.workspace_id,
-  ..)` takes `&str`).
-- `PublicPaneId::new` panics on a zero number in production.
+## TYP-004 - App handlers still carry workspace positions as usize
 
-Proposal: drop `Deref` and the `PartialEq<str>` family; make both `Copy`
-(`WorkspaceId` over `NonZeroUsize`, `PublicPaneId { workspace, number:
-NonZeroUsize }`) with `Display` and `tracing::Value`; carry the number rather
-than the text on the positional wire; key maps by the id. contracts suggests a
-helper such as `Option<&PublicPaneId>::is(&PublicPaneId)` for callers.
-Reported by contracts, mux-state, server-app, server-serving and client-shell.
+The duplicated display-number fields are gone from replies and projections; the
+sidebar derives positions from list order. Still open: workspace lookup APIs
+and outcome structs in shepr-server (`pane_info`, `workspace_info`,
+`lookup_runtime`, `PaneRemovalPlan`, `WorkspaceCreationOutcome` and others)
+resolve a `WorkspaceId` to a `usize` index and re-check it with `.get(ws_idx)`;
+an `AppState::workspace(&WorkspaceId) -> Option<WorkspaceRef>` would keep the
+id. The distinction is documented in `crates/shepr-server/src/app/state.rs`.
+(contracts, server-app)
 
 ## TYP-002 - `PaneId::raw()` and saved pane keys share `u32`
 
@@ -89,50 +69,6 @@ allocating live ids itself. `raw` then becomes crate-private to `shepr-core`.
 `PaneId` and its process-global allocator live in `shepr_core::layout`, and pty
 imports it from there only for log lines and thread names; an `ids` module would
 read better. Reported by foundation, mux-state and server-app.
-
-## TYP-003 - Public pane numbers are `usize` with zero as "none"
-
-`WorkspacePane::public_number: usize` (pub, and `WorkspacePane::new` sets 0),
-`Workspace::next_public_pane_number` (pub), `NewPane::public_number`,
-`commit_new_pane(.., public_number: usize, ..)`, `commit_prepared_split`
-(rejects 0), `pane_id_for_public_number(usize)`, `public_pane_number() ->
-Option<usize>`, `PaneSnapshot::public_number: Option<usize>` (where `Some(0)`
-also means none), `WorkspaceSnapshot::next_public_pane_number` defaulting to 0,
-and `PublicPaneId::new(&WorkspaceId, usize)`, which panics on 0. Every
-constructor must remember to overwrite the zero (`Workspace::spawn`,
-`test_from_pane` and `test_new` write `public_number = 1` and pass `next = 2` by
-hand). Allocation and validation are decided in `valid_public_numbers`,
-`commit_prepared_split`, `advance_next_public_pane_number` (saturating),
-`restore::assign_public_pane_numbers`, `plan_workspace` (`next = max(max + 1,
-saved next, 1)` with its own exhaustion check), the hard-coded constructors and
-the `PublicPaneId::new` assertion. `WorkspacePane` also `Deref`s to
-`PaneState` with `pane_state` and `public_number` public.
-
-Proposal: `PanePublicNumber(NonZeroUsize)` beside `PublicPaneId`, and a
-`PaneNumbering` allocator in the workspace that hands out a reserved number at
-prepare time consumed by commit, so "the number the child's id was built from is
-the one commit registers" is a type fact. (mux-state)
-
-## TYP-004 - Two different "workspace numbers" share a name and a type
-
-`WorkspaceId::number()` is the allocator's public number; `WorkspaceInfo::number`
-and `ClientShellWorkspace::number` are the 1-based display position
-(`App::workspace_info` writes `index + 1`). Both are `usize` and reachable from
-one `ClientShellWorkspace`. The client then uses position for
-`SwitchWorkspace(index)` and the server's `number` for display, agreeing only
-because the server keeps them aligned. Meanwhile `ws_idx: usize` is the currency
-of most of `App` (`pane_info`, `workspace_info`, `public_pane_id`,
-`pane_launch_env`, `lookup_runtime`, `window_title_for`,
-`workspace_spawn_geometry`, `runtime_for_pane_in_workspace`, and the
-`workspace_index` fields of `PaneRemovalPlan`/`Outcome`,
-`WorkspaceCreationOutcome`, `PaneCreationOutcome`), resolved from a
-`WorkspaceId` and then re-checked with `.get(ws_idx)` because it may have gone
-stale.
-
-Proposal: `WorkspacePosition(NonZeroUsize)`, or drop the number from the wire
-and derive it from list order; `AppState::workspace(&WorkspaceId) ->
-Option<WorkspaceRef>` so handlers keep the id and positional indices exist only
-for ordering. Reported by contracts, server-app and client-shell.
 
 ## TYP-007 - `RequestId` is any string, and the client encodes structure in it
 

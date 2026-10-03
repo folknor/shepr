@@ -32,7 +32,7 @@ fn pane_surface_render_key(
 ) -> PaneSurfaceRenderKey {
     let cell_size = cell_size.or_default();
     (
-        target.cloned(),
+        target.copied(),
         area.width,
         area.height,
         cell_size.width_px,
@@ -414,7 +414,7 @@ impl HeadlessServer {
             return true;
         };
         !*held
-            .entry(workspace.clone())
+            .entry(workspace)
             .or_insert_with(|| self.workspace_surface_held(&workspace))
     }
 
@@ -811,7 +811,7 @@ impl HeadlessServer {
         // with no workspace has no focus, never the session's bookmark.
         let focused_workspace_id = location
             .focused_workspace_id()
-            .cloned()
+            .copied()
             .filter(|workspace_id| app.resolve_workspace_id(workspace_id).is_some());
         let focused_pane_id = focused_workspace_id
             .as_ref()
@@ -845,9 +845,8 @@ impl HeadlessServer {
                         .to_string()
                 });
                 shepr_protocol::ClientShellWorkspace {
-                    workspace_id: workspace_id.clone(),
+                    workspace_id: *workspace_id,
                     new_workspace_cwd,
-                    number: workspace.number,
                     label: workspace.label.clone(),
                     branch: state.and_then(shepr_mux::workspace::Workspace::branch),
                     git_ahead_behind: state
@@ -871,7 +870,7 @@ impl HeadlessServer {
                     })
                     .is_some_and(|pane| pane.right_click_passthrough);
                 shepr_protocol::ClientShellPane {
-                    pane_id: pane.pane_id.clone(),
+                    pane_id: pane.pane_id,
                     label: pane.label.clone(),
                     cwd: pane.cwd.clone(),
                     foreground_cwd: pane.foreground_cwd.clone(),
@@ -883,7 +882,7 @@ impl HeadlessServer {
             .agents
             .iter()
             .map(|agent| shepr_protocol::ClientShellAgent {
-                pane_id: agent.pane_id.clone(),
+                pane_id: agent.pane_id,
                 agent: agent.agent,
                 terminal_title: agent.terminal_title.clone(),
                 terminal_title_stripped: agent.terminal_title_stripped.clone(),

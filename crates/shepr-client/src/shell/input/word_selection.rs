@@ -36,12 +36,12 @@ impl ClientShellState {
     ) {
         let row = metrics.absolute_row_at_viewport(shepr_vt::ViewportRow(viewport_row));
         self.mouse_selection.word_gesture = Some(ClientWordSelection {
-            pane_id: hit.pane_id.clone(),
+            pane_id: hit.pane_id,
             focus_confirmed: self
                 .snapshot
                 .as_deref()
-                .and_then(|snapshot| snapshot.focused_pane_id.as_deref())
-                == Some(hit.pane_id.as_str()),
+                .and_then(|snapshot| snapshot.focused_pane_id.as_ref())
+                == Some(&hit.pane_id),
             anchor: shepr_vt::Point::new(row, col),
             anchor_bounds: None,
             cursor: shepr_vt::Point::new(row, col),
@@ -69,9 +69,9 @@ impl ClientShellState {
         if gesture.pending.is_some() {
             return;
         }
-        let pane_id = gesture.pane_id.clone();
+        let pane_id = gesture.pane_id;
         let params = shepr_protocol::command::PaneSelectionReadParams {
-            pane_id: pane_id.clone(),
+            pane_id,
             anchor: shepr_protocol::command::PaneTextPoint { row, col: 0 },
             cursor: shepr_protocol::command::PaneTextPoint {
                 row,
@@ -144,7 +144,7 @@ impl ClientShellState {
         let end = shepr_vt::Point::new(gesture.anchor.row, anchor_end)
             .max(shepr_vt::Point::new(gesture.cursor.row, end_col));
         self.mouse_selection.selection = Some(shepr_vt::selection::Selection::range(
-            gesture.pane_id.clone(),
+            gesture.pane_id,
             start,
             end,
         ));
@@ -192,7 +192,7 @@ impl ClientShellState {
     pub(in crate::shell) fn complete_word_selection_row(
         &mut self,
         request: &shepr_protocol::RequestId,
-        pane_id: &str,
+        pane_id: &shepr_protocol::PublicPaneId,
         absolute_row: shepr_vt::AbsRow,
         result: Result<shepr_protocol::command::EndpointReply, ClientShellEndpointError>,
         now: std::time::Instant,
@@ -209,7 +209,7 @@ impl ClientShellState {
         if self
             .snapshot
             .as_deref()
-            .is_none_or(|snapshot| !snapshot.panes.iter().any(|pane| pane.pane_id == pane_id))
+            .is_none_or(|snapshot| !snapshot.panes.iter().any(|pane| pane.pane_id == *pane_id))
         {
             self.cancel_word_selection();
             return Repaint::Needed;
@@ -218,7 +218,7 @@ impl ClientShellState {
             Ok(shepr_protocol::command::EndpointReply::PaneSelection {
                 pane_id: returned_pane_id,
                 text,
-            }) if returned_pane_id == pane_id => text,
+            }) if returned_pane_id == *pane_id => text,
             other => {
                 if matches!(other, Ok(value) if !matches!(value, shepr_protocol::command::EndpointReply::PaneSelection { .. }))
                 {

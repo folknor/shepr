@@ -1,5 +1,6 @@
 use ratatui::layout::Rect;
 use shepr_config::NewTerminalCwd;
+use shepr_protocol::WorkspaceId;
 
 use shepr_mux::workspace::Workspace;
 use shepr_termio::host_term::cell_size::HostCellSize;
@@ -49,15 +50,15 @@ pub struct AppState {
     /// current on every change of workspace order. When the bookmarked
     /// workspace vanishes, the workspace now at this index takes its place.
     pub(super) bookmark_position: usize,
-    /// The geometry each workspace was last laid out in, keyed by
-    /// `WorkspaceId::number()` (no allocation on lookup): the area and cell
+    /// The geometry each workspace was last laid out in, keyed by its stable
+    /// ID: the area and cell
     /// size the server last applied to that workspace's PTYs, or spawned its
     /// first pane at. A pane has one PTY size whichever client set it, so this
     /// is session data, not any client's view. Spawn sizing and API geometry
     /// (directional focus, resize steps, layout snapshots) read it, so they
     /// agree with the sizes the panes actually have. Only creation and the
     /// server's geometry path write it (`record_workspace_geometry`).
-    pub(crate) workspace_geometry: std::collections::HashMap<usize, SpawnGeometry>,
+    pub(crate) workspace_geometry: std::collections::HashMap<WorkspaceId, SpawnGeometry>,
     /// Immutable settings resolved from the launch configuration.
     pub(crate) settings: AppSettings,
     pub next_agent_state_change_seq: u64,
@@ -162,11 +163,8 @@ impl AppState {
     /// Bookmarks the workspace at `index` (or nothing), without marking the
     /// session changed: startup and tests seed it this way.
     pub(crate) fn set_bookmark_index(&mut self, index: Option<usize>) {
-        self.bookmark = index.and_then(|index| {
-            self.workspaces
-                .get(index)
-                .map(|workspace| workspace.id.clone())
-        });
+        self.bookmark =
+            index.and_then(|index| self.workspaces.get(index).map(|workspace| workspace.id));
         self.bookmark_position = index.filter(|_| self.bookmark.is_some()).unwrap_or(0);
     }
 
@@ -178,7 +176,7 @@ impl AppState {
             return false;
         };
         let moved = self.bookmark.as_ref() != Some(id);
-        self.bookmark = Some(id.clone());
+        self.bookmark = Some(*id);
         self.bookmark_position = index;
         if moved {
             self.mark_session_dirty();
@@ -192,7 +190,7 @@ impl AppState {
     /// index, clamped to the last one, or by nothing when none is left; that
     /// repair schedules a save. Returns whether the bookmark moved.
     pub(crate) fn reconcile_bookmark(&mut self) -> bool {
-        let Some(id) = self.bookmark.clone() else {
+        let Some(id) = self.bookmark else {
             return false;
         };
         if let Some(index) = self.workspace_index(&id) {
@@ -209,7 +207,10 @@ impl AppState {
         true
     }
 
-    /// Position of the workspace with `id`.
+    /// Position of the workspace with `id` in the current ordered list.
+    /// This index is local to synchronous state access, not an identity to
+    /// retain across events. Commands and geometry caches keep the stable ID;
+    /// an index still makes ordering operations and Vec access direct.
     pub(crate) fn workspace_index(&self, id: &shepr_protocol::WorkspaceId) -> Option<usize> {
         self.workspaces
             .iter()
@@ -236,7 +237,7 @@ impl AppState {
     /// The recorded geometry of workspace `ws_idx`, if one was recorded.
     pub(crate) fn workspace_spawn_geometry(&self, ws_idx: usize) -> Option<SpawnGeometry> {
         let workspace = self.workspaces.get(ws_idx)?;
-        self.workspace_geometry.get(&workspace.id.number()).copied()
+        self.workspace_geometry.get(&workspace.id).copied()
     }
 
     /// The recorded layout area of workspace `ws_idx`, if the server has
@@ -253,7 +254,7 @@ impl AppState {
         id: &shepr_protocol::WorkspaceId,
         geometry: SpawnGeometry,
     ) {
-        self.workspace_geometry.insert(id.number(), geometry);
+        self.workspace_geometry.insert(*id, geometry);
     }
 
     /// Drops the recorded geometry of workspaces that no longer exist.
@@ -261,10 +262,9 @@ impl AppState {
         let live = self
             .workspaces
             .iter()
-            .map(|workspace| workspace.id.number())
+            .map(|workspace| workspace.id)
             .collect::<std::collections::HashSet<_>>();
-        self.workspace_geometry
-            .retain(|number, _| live.contains(number));
+        self.workspace_geometry.retain(|id, _| live.contains(id));
     }
 
     /// The configured pane chrome applied to a workspace laid out in `area`.
@@ -392,7 +392,7 @@ impl AppState {
         let ids = self
             .workspaces
             .iter()
-            .map(|workspace| workspace.id.clone())
+            .map(|workspace| workspace.id)
             .collect::<Vec<_>>();
         for id in ids {
             self.record_workspace_geometry(&id, geometry);
@@ -448,7 +448,7 @@ impl AppState {
         let mut attached_terminal_ids = std::collections::HashSet::new();
         for (ws_idx, ws) in self.workspaces.iter().enumerate() {
             assert!(
-                workspace_ids.insert(ws.id.clone()),
+                workspace_ids.insert(ws.id),
                 "duplicate workspace id {} at workspace index {}",
                 ws.id,
                 ws_idx
@@ -512,7 +512,7 @@ mod tests {
             width_px: 9,
             height_px: 18,
         };
-        let first_id = state.workspaces[0].id.clone();
+        let first_id = state.workspaces[0].id;
         state.record_workspace_geometry(
             &first_id,
             SpawnGeometry {
@@ -538,7 +538,7 @@ mod tests {
         // Closed workspaces drop their geometry.
         state.workspaces.truncate(1);
         state.workspace_geometry.insert(
-            usize::MAX,
+            WorkspaceId::from_number(usize::MAX).expect("nonzero id"),
             SpawnGeometry {
                 area: Rect::new(0, 0, 61, 17),
                 cell_size: HostCellSize::default(),
@@ -556,7 +556,7 @@ mod tests {
             .into_iter()
             .map(shepr_mux::workspace::Workspace::test_new)
             .collect();
-        let ids: Vec<_> = state.workspaces.iter().map(|w| w.id.clone()).collect();
+        let ids: Vec<_> = state.workspaces.iter().map(|w| w.id).collect();
 
         assert!(state.set_bookmark(&ids[2]));
         assert!(!state.set_bookmark(&ids[2]), "already bookmarked");

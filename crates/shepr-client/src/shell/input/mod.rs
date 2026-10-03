@@ -476,7 +476,7 @@ impl ClientShellState {
                 let initial_context = self.input_context();
                 let target = self.route_key_press(&key, outcome);
                 if let Some(target) = target.as_ref() {
-                    self.push_pane_key(target.clone(), key.clone(), outcome, accounting);
+                    self.push_pane_key(*target, key.clone(), outcome, accounting);
                 }
                 let resulting_context = self.input_context();
                 let plan = self.input_leases.complete_press(
@@ -697,7 +697,7 @@ impl ClientShellState {
             }
             ClientShellMode::Prefix => {
                 let return_mode = if self.copy_mode.as_ref().is_some_and(|copy_mode| {
-                    copy_mode.pane_is_focused(self.focused_pane_id().as_deref())
+                    copy_mode.pane_is_focused(self.focused_pane_id().as_ref())
                 }) {
                     ClientShellMode::Copy
                 } else {
@@ -757,7 +757,7 @@ impl ClientShellState {
         if self
             .copy_mode
             .as_ref()
-            .is_some_and(|copy_mode| copy_mode.pane_is_focused(self.focused_pane_id().as_deref()))
+            .is_some_and(|copy_mode| copy_mode.pane_is_focused(self.focused_pane_id().as_ref()))
         {
             ClientShellMode::Copy
         } else {
@@ -1003,7 +1003,7 @@ impl ClientShellState {
     pub(in crate::shell) fn focused_pane_id(&self) -> Option<shepr_protocol::PublicPaneId> {
         self.snapshot
             .as_deref()
-            .and_then(|snapshot| snapshot.focused_pane_id.clone())
+            .and_then(|snapshot| snapshot.focused_pane_id)
     }
 
     fn push_pane_key(
@@ -1158,7 +1158,10 @@ mod tests {
     fn test_pane_id() -> shepr_protocol::PublicPaneId {
         let workspace =
             shepr_protocol::WorkspaceId::from_number(1).expect("one-based workspace number");
-        shepr_protocol::PublicPaneId::new(&workspace, 1)
+        shepr_protocol::PublicPaneId::new(
+            &workspace,
+            shepr_protocol::PanePublicNumber::new(1).expect("nonzero literal"),
+        )
     }
 
     fn copy_mode_state() -> ClientCopyModeState {

@@ -84,7 +84,7 @@ pub(super) fn render_pane_surface(
     cell_size: shepr_termio::host_term::cell_size::HostCellSize,
 ) -> Result<RenderedPaneSurface, SurfaceRenderDeferred> {
     let layout =
-        crate::ui::compute_surface_for(&app.state, &app.terminal_runtimes, target.cloned(), area);
+        crate::ui::compute_surface_for(&app.state, &app.terminal_runtimes, target.copied(), area);
     let mut content_revisions_before = std::collections::HashMap::new();
     if let Some(target) = &target {
         let Some(workspace_index) = app.state.workspace_index(target) else {
@@ -161,7 +161,7 @@ pub(super) fn render_pane_surface(
             metadata.apply(&mut surface_pane);
             panes.push(surface_pane);
             pane_identities.push(ClientPaneIdentity {
-                workspace_id: workspace_id.clone(),
+                workspace_id,
                 pane_id: pane.id,
             });
         }

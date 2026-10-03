@@ -200,7 +200,7 @@ impl HeadlessServer {
         let moved = client
             .shell_state_mut()
             .location
-            .navigate(workspace_id.clone(), index);
+            .navigate(*workspace_id, index);
         if moved {
             self.refresh_client_view_keys();
         }
@@ -246,7 +246,7 @@ fn server_message_encoding_splits_payloads_over_the_frame_cap() {
         kind: shepr_protocol::NoticeKind::PaneInputDropped {
             pane_id: shepr_protocol::PublicPaneId::new(
                 &crate::test_support::test_workspace_id("w1"),
-                1,
+                shepr_protocol::PanePublicNumber::new(1).expect("nonzero test number"),
             ),
             events: 1,
         },
@@ -254,7 +254,7 @@ fn server_message_encoding_splits_payloads_over_the_frame_cap() {
     .expect("small message frames");
     assert!(matches!(
         read_server_message(small),
-        ServerMessage::ClientShellError { kind: shepr_protocol::NoticeKind::PaneInputDropped { pane_id, events: 1 } } if pane_id == "w1:p1"
+        ServerMessage::ClientShellError { kind: shepr_protocol::NoticeKind::PaneInputDropped { pane_id, events: 1 } } if pane_id == "w1:p1".parse::<shepr_protocol::PublicPaneId>().expect("id")
     ));
 
     // Clipboard data past one frame crosses as a continued frame and a final
@@ -1191,7 +1191,7 @@ async fn promoted_client_window_title_uses_its_own_view() {
         .expect("client 1")
         .shell_state_mut()
         .location
-        .navigate(survivor_workspace_id.clone(), 0);
+        .navigate(survivor_workspace_id, 0);
     server.promote_client_to_foreground(ClientId::test_new(2));
     drain_window_titles(&survivor_control);
     drain_window_titles(&disconnected_control);
@@ -1285,7 +1285,7 @@ async fn client_shell_attach_seeds_workspace() {
     // The connecting client is the automatic creation's trigger: the workspace
     // is sized for it and it controls it, and the client views it. No
     // navigation effect ran, so the session's bookmark is untouched.
-    let created = server.app.state.workspaces[0].id.clone();
+    let created = server.app.state.workspaces[0].id;
     let client_id = ClientId::test_new(6);
     assert_eq!(
         server
@@ -1376,14 +1376,14 @@ async fn client_shell_endpoint_request_uses_the_selected_connection() {
     );
     let _initial_snapshot = client_shell_snapshot(&control_rx);
     let boot_id = server.client_shell_boot_id.clone();
-    let workspace_id = server.app.state.workspaces[0].id.clone();
+    let workspace_id = server.app.state.workspaces[0].id;
     // A rename is a UI mutation, so each accepted request asks for a render.
     // The second arrives before the first was answered and simply runs
     // after it.
     for (request_id, label) in [("client-shell:1", "first"), ("client-shell:2", "renamed")] {
         let command = Box::new(EndpointCommand::WorkspaceRename(
             shepr_protocol::command::WorkspaceRenameParams {
-                workspace_id: workspace_id.clone(),
+                workspace_id,
                 label: Some(label.into()),
             },
         ));
@@ -1447,7 +1447,7 @@ async fn immediate_endpoint_replies_stay_after_earlier_commands() {
     let _initial_snapshot = client_shell_snapshot(&control);
     let client_id = ClientId::test_new(40);
     let current_boot = server.client_shell_boot_id.clone();
-    let workspace_id = server.app.state.workspaces[0].id.clone();
+    let workspace_id = server.app.state.workspaces[0].id;
 
     server.test_handle_server_event(ServerEvent::ShellEndpointRequest {
         client_id,
@@ -1575,7 +1575,7 @@ async fn endpoint_requests_dirty_immediate_sources_for_view_changes_only() {
         "pane scrolling changes its surface but not the set of immediate PTY sources"
     );
 
-    let second_workspace = server.app.state.workspaces[1].id.clone();
+    let second_workspace = server.app.state.workspaces[1].id;
     server.test_handle_server_event(ServerEvent::ShellEndpointRequest {
         client_id,
         boot_id,
@@ -1651,15 +1651,13 @@ async fn slow_checkout_root_worker_does_not_hold_other_clients() {
         .recv_timeout(Duration::from_secs(1))
         .expect("checkout worker should have started");
 
-    let workspace_id = server.app.state.workspaces[0].id.clone();
+    let workspace_id = server.app.state.workspaces[0].id;
     server.test_handle_server_event(ServerEvent::ShellEndpointRequest {
         client_id: client_a,
         boot_id: boot_id.clone(),
         request_id: "after-slow".into(),
         command: Box::new(EndpointCommand::WorkspaceFocus(
-            shepr_protocol::command::WorkspaceTarget {
-                workspace_id: workspace_id.clone(),
-            },
+            shepr_protocol::command::WorkspaceTarget { workspace_id },
         )),
     });
     server.test_handle_server_event(ServerEvent::ShellEndpointRequest {
@@ -1903,7 +1901,7 @@ async fn an_endpoint_reply_for_a_departed_client_is_dropped() {
         })
     );
     let _initial_snapshot = client_shell_snapshot(&control_rx);
-    let workspace_id = server.app.state.workspaces[0].id.clone();
+    let workspace_id = server.app.state.workspaces[0].id;
     server.test_handle_server_event(ServerEvent::ShellEndpointRequest {
         client_id,
         boot_id: server.client_shell_boot_id.clone(),
@@ -2200,7 +2198,7 @@ async fn unchanged_shell_render_reuses_session_and_sends_no_snapshot() {
         &mut server,
         7,
         EndpointCommand::PaneScroll(shepr_protocol::command::PaneScrollParams {
-            pane_id: pane_id.clone(),
+            pane_id,
             offset_from_bottom: 0,
         }),
     ));
@@ -2256,7 +2254,7 @@ async fn workspace_rename_reprojects_without_copying_connection_config() {
 
     let outcome = server.app.handle_endpoint_command_with_render(
         EndpointCommand::WorkspaceRename(shepr_protocol::command::WorkspaceRenameParams {
-            workspace_id: first.workspaces[0].workspace_id.clone(),
+            workspace_id: first.workspaces[0].workspace_id,
             label: Some("renamed".into()),
         }),
         &crate::app::EndpointContext::without_geometry(),
@@ -2372,7 +2370,7 @@ async fn each_kind_of_change_sends_a_new_projection_through_its_real_path() {
         snapshot
             .panes
             .iter()
-            .find(|pane| pane.pane_id.as_str() == public_pane_id.as_str())
+            .find(|pane| pane.pane_id == public_pane_id)
             .cloned()
             .expect("projected pane")
     };
@@ -2386,7 +2384,7 @@ async fn each_kind_of_change_sends_a_new_projection_through_its_real_path() {
         &mut server,
         7,
         EndpointCommand::PaneRename(PaneRenameParams {
-            pane_id: public_pane_id.clone(),
+            pane_id: public_pane_id,
             label: Some("manual".into()),
         }),
     ));
@@ -2397,7 +2395,7 @@ async fn each_kind_of_change_sends_a_new_projection_through_its_real_path() {
         &mut server,
         7,
         EndpointCommand::WorkspaceRename(WorkspaceRenameParams {
-            workspace_id: workspace_id.clone(),
+            workspace_id,
             label: Some("named-workspace".into()),
         }),
     ));
@@ -2408,7 +2406,7 @@ async fn each_kind_of_change_sends_a_new_projection_through_its_real_path() {
         &mut server,
         7,
         EndpointCommand::PaneInputSet(PaneInputSetParams {
-            pane_id: public_pane_id.clone(),
+            pane_id: public_pane_id,
             right_click: PaneRightClickTarget::Pane,
         }),
     ));
@@ -2443,7 +2441,7 @@ async fn each_kind_of_change_sends_a_new_projection_through_its_real_path() {
         Some("compiling")
     );
 
-    let workspace_state_id = server.app.state.workspaces[0].id.to_string();
+    let workspace_state_id = server.app.state.workspaces[0].id;
     let cwd = server.app.state.workspaces[0].identity_cwd.clone();
     assert!(
         server.handle_internal_event_with_forwarding(AppEvent::GitStatusRefreshed {
@@ -2489,7 +2487,7 @@ async fn a_reconnecting_shell_is_seeded_again_and_gets_later_changes() {
         &mut server,
         8,
         EndpointCommand::WorkspaceRename(shepr_protocol::command::WorkspaceRenameParams {
-            workspace_id: seed.workspaces[0].workspace_id.clone(),
+            workspace_id: seed.workspaces[0].workspace_id,
             label: Some("after-reconnect".into()),
         }),
     ));
@@ -2541,7 +2539,7 @@ async fn a_new_shell_seed_uses_the_shared_session_cache_for_cwd() {
     let first = shepr_mux::workspace::Workspace::test_new("cached-cwd-first");
     let first_pane = first.root_pane();
     let second = shepr_mux::workspace::Workspace::test_new("cached-cwd-second");
-    let second_workspace_id = second.id.clone();
+    let second_workspace_id = second.id;
     server.app.state.workspaces = vec![first, second];
     server.app.state.ensure_test_terminals();
     server.app.state.set_bookmark_index(Some(0));
@@ -2574,7 +2572,7 @@ async fn a_new_shell_seed_uses_the_shared_session_cache_for_cwd() {
         first_seed
             .panes
             .iter()
-            .find(|pane| pane.pane_id.as_str() == public_pane_id.as_str())
+            .find(|pane| pane.pane_id == public_pane_id)
             .expect("first pane snapshot")
             .cwd
             .as_deref(),
@@ -2624,7 +2622,7 @@ async fn a_new_shell_seed_uses_the_shared_session_cache_for_cwd() {
     assert_eq!(
         seed.panes
             .iter()
-            .find(|pane| pane.pane_id.as_str() == public_pane_id.as_str())
+            .find(|pane| pane.pane_id == public_pane_id)
             .expect("seed pane snapshot")
             .cwd
             .as_deref(),
@@ -2638,7 +2636,7 @@ async fn a_new_shell_seed_uses_the_shared_session_cache_for_cwd() {
         location_projection
             .panes
             .iter()
-            .find(|pane| pane.pane_id.as_str() == public_pane_id.as_str())
+            .find(|pane| pane.pane_id == public_pane_id)
             .expect("projected pane snapshot")
             .cwd
             .as_deref(),
@@ -2653,7 +2651,7 @@ async fn a_new_shell_seed_uses_the_shared_session_cache_for_cwd() {
         refreshed
             .panes
             .iter()
-            .find(|pane| pane.pane_id.as_str() == public_pane_id.as_str())
+            .find(|pane| pane.pane_id == public_pane_id)
             .expect("refreshed pane snapshot")
             .cwd
             .as_deref(),
@@ -3346,7 +3344,7 @@ async fn a_client_command_neither_drags_the_bookmark_nor_moves_the_clients_locat
     server.render_now();
     assert_eq!(
         server.shell_target_for_client(ClientId::test_new(70)),
-        Some(first_workspace_id.clone())
+        Some(first_workspace_id)
     );
     assert_eq!(
         server.app.state.bookmark.as_ref(),
@@ -3357,7 +3355,7 @@ async fn a_client_command_neither_drags_the_bookmark_nor_moves_the_clients_locat
     let result = server.handle_client_shell_command(
         ClientId::test_new(70),
         EndpointCommand::PaneSelectionRead(PaneSelectionReadParams {
-            pane_id: first_pane_id.clone(),
+            pane_id: first_pane_id,
             anchor: PaneTextPoint {
                 row: shepr_vt::AbsRow(0),
                 col: 0,
@@ -3384,7 +3382,7 @@ async fn a_client_command_neither_drags_the_bookmark_nor_moves_the_clients_locat
     );
     assert_eq!(
         server.shell_target_for_client(ClientId::test_new(70)),
-        Some(first_workspace_id.clone())
+        Some(first_workspace_id)
     );
 
     server.render_now();
@@ -3470,7 +3468,7 @@ async fn client_local_navigation_does_not_emit_global_focus_transitions() {
         ClientId::test_new(62),
         shepr_protocol::command::EndpointCommand::WorkspaceFocus(
             shepr_protocol::command::WorkspaceTarget {
-                workspace_id: second_workspace_id.clone(),
+                workspace_id: second_workspace_id,
             },
         ),
     );
@@ -3515,10 +3513,10 @@ async fn client_local_navigation_leaves_the_other_clients_focus_alone() {
     let _ = second_control.recv().expect("second snapshot");
 
     let first_target = WorkspaceTarget {
-        workspace_id: first_workspace_id.clone(),
+        workspace_id: first_workspace_id,
     };
     let second_target = WorkspaceTarget {
-        workspace_id: second_workspace_id.clone(),
+        workspace_id: second_workspace_id,
     };
     let cases = [
         (61, EndpointCommand::WorkspaceFocus(second_target.clone())),
@@ -3528,13 +3526,13 @@ async fn client_local_navigation_leaves_the_other_clients_focus_alone() {
         (
             62,
             EndpointCommand::PaneFocus(PaneTarget {
-                pane_id: second_pane_id.clone(),
+                pane_id: second_pane_id,
             }),
         ),
         (
             62,
             EndpointCommand::PaneFocus(PaneTarget {
-                pane_id: first_pane_id.clone(),
+                pane_id: first_pane_id,
             }),
         ),
         (61, EndpointCommand::WorkspaceFocus(second_target.clone())),
@@ -3624,7 +3622,7 @@ async fn navigation_moves_pane_focus_between_workspaces_once() {
         ClientId::test_new(63),
         shepr_protocol::command::EndpointCommand::WorkspaceFocus(
             shepr_protocol::command::WorkspaceTarget {
-                workspace_id: second_workspace_id.clone(),
+                workspace_id: second_workspace_id,
             },
         ),
     );
@@ -3683,7 +3681,7 @@ async fn repeated_layout_action_reapplies_controller_geometry() {
         ClientId::test_new(65),
         shepr_protocol::command::EndpointCommand::LayoutSetSplitRatio(
             shepr_protocol::command::LayoutSetSplitRatioParams {
-                workspace_id: workspace_id.clone(),
+                workspace_id,
                 first_panes: vec![first_public],
                 second_panes: vec![second_public],
                 ratio: shepr_core::layout::SplitRatio::new(0.8).expect("test split ratio is valid"),
@@ -3730,7 +3728,7 @@ async fn pane_close_reapplies_controller_geometry() {
         &mut server,
         66,
         EndpointCommand::PaneClose(shepr_protocol::command::PaneTarget {
-            pane_id: second_pane_id.clone(),
+            pane_id: second_pane_id,
         }),
     ));
 
@@ -3928,7 +3926,7 @@ async fn client_shell_workspaces_render_accept_input_and_resize_independently() 
 
     server.test_handle_server_event(ServerEvent::ShellPaneInput {
         client_id: ClientId::test_new(22),
-        pane_id: second_pane_id.parse().expect("test precondition"),
+        pane_id: second_pane_id,
         events: vec![shepr_protocol::ClientPaneInputEvent::TextCommit(
             "typed".into(),
         )],
@@ -3988,7 +3986,7 @@ async fn workspace_focus_moves_only_its_client() {
     server.app.state.workspaces = vec![first, second];
     server.app.state.ensure_test_terminals();
     server.app.state.set_bookmark_index(Some(0));
-    let first_workspace_id = server.app.state.workspaces[0].id.clone();
+    let first_workspace_id = server.app.state.workspaces[0].id;
     let second_workspace_id = server
         .app
         .public_workspace_id(1)
@@ -4003,7 +4001,7 @@ async fn workspace_focus_moves_only_its_client() {
         &mut server,
         41,
         EndpointCommand::WorkspaceFocus(shepr_protocol::command::WorkspaceTarget {
-            workspace_id: second_workspace_id.clone(),
+            workspace_id: second_workspace_id,
         }),
     ));
 
@@ -4067,14 +4065,8 @@ async fn pane_focus_replaces_a_diverged_client_shell_projection() {
     server.render_now();
     let diverged = client_shell_snapshot(&control_rx);
     assert_eq!(
-        diverged.focused_workspace_id.as_deref(),
-        Some(
-            server
-                .app
-                .public_workspace_id(1)
-                .expect("test precondition")
-                .as_str()
-        )
+        diverged.focused_workspace_id.as_ref(),
+        server.app.public_workspace_id(1).as_ref()
     );
     let diverged_surface = recv_pane_surface(&mut render_rx, "diverged surface");
     assert!(frame_text(&diverged_surface.frame).contains("SECOND_WORKSPACE"));
@@ -4082,7 +4074,7 @@ async fn pane_focus_replaces_a_diverged_client_shell_projection() {
     let result = server.handle_client_shell_command(
         ClientId::test_new(9),
         EndpointCommand::PaneFocus(shepr_protocol::command::PaneTarget {
-            pane_id: first_pane_id.clone(),
+            pane_id: first_pane_id,
         }),
     );
     let Ok(shepr_protocol::command::EndpointReply::PaneInfo { pane }) = result else {
@@ -4096,8 +4088,8 @@ async fn pane_focus_replaces_a_diverged_client_shell_projection() {
     server.render_now();
     let replacement = client_shell_snapshot(&control_rx);
     assert_eq!(
-        replacement.focused_workspace_id.as_deref(),
-        Some(first_workspace_id.as_str())
+        replacement.focused_workspace_id.as_ref(),
+        Some(&first_workspace_id)
     );
     let replacement_surface = recv_pane_surface(&mut render_rx, "pane focus replacement surface");
     assert!(frame_text(&replacement_surface.frame).contains("FIRST_AGENT"));
@@ -4113,9 +4105,7 @@ async fn workspace_focus_replaces_the_client_shell_projection() {
     server.app.state.workspaces = vec![first, second];
     server.app.state.ensure_test_terminals();
     server.app.state.set_bookmark_index(Some(0));
-    let second_id = server.app.session_snapshot().workspaces[1]
-        .workspace_id
-        .clone();
+    let second_id = server.app.session_snapshot().workspaces[1].workspace_id;
 
     let (writer, control_rx, render_rx) = test_client_writer();
     assert!(
@@ -4137,7 +4127,7 @@ async fn workspace_focus_replaces_the_client_shell_projection() {
         &mut server,
         9,
         EndpointCommand::WorkspaceFocus(shepr_protocol::command::WorkspaceTarget {
-            workspace_id: second_id.clone(),
+            workspace_id: second_id,
         }),
     ));
     assert_eq!(server.app.state.bookmark_index(), Some(1));
@@ -4145,10 +4135,7 @@ async fn workspace_focus_replaces_the_client_shell_projection() {
 
     let replacement = client_shell_snapshot(&control_rx);
     assert!(replacement.revision > initial_revision);
-    assert_eq!(
-        replacement.focused_workspace_id.as_deref(),
-        Some(second_id.as_str())
-    );
+    assert_eq!(replacement.focused_workspace_id.as_ref(), Some(&second_id));
     match read_server_message(render_rx.recv().expect("replacement pane surface")) {
         ServerMessage::PaneSurface(surface) => {
             assert_eq!(surface.projection_revision, replacement.revision);
@@ -4178,7 +4165,7 @@ async fn client_shell_input_targets_runtime_without_server_shell_classification(
     assert!(
         server.test_handle_server_event(ServerEvent::ShellPaneInput {
             client_id: ClientId::test_new(11),
-            pane_id: pane_id.parse().expect("test precondition"),
+            pane_id,
             events: vec![
                 shepr_protocol::ClientPaneInputEvent::Key {
                     code: shepr_protocol::ClientKeyCode::Char('c'),
@@ -4236,7 +4223,7 @@ async fn client_shell_input_targets_runtime_without_server_shell_classification(
 
     let (workspace_index, runtime_pane_id) = server
         .app
-        .parse_pane_id(&pane_id)
+        .resolve_pane_id(&pane_id)
         .expect("runtime pane target");
     let runtime = server
         .app
@@ -4296,7 +4283,7 @@ async fn client_shell_hidden_pane_rejects_presses_but_accepts_releases() {
     assert!(
         !server.test_handle_server_event(ServerEvent::ShellPaneInput {
             client_id: ClientId::test_new(11),
-            pane_id: pane_id.parse().expect("test precondition"),
+            pane_id,
             events: vec![key(shepr_protocol::ClientKeyKind::Press)],
         })
     );
@@ -4304,7 +4291,7 @@ async fn client_shell_hidden_pane_rejects_presses_but_accepts_releases() {
     assert!(
         !server.test_handle_server_event(ServerEvent::ShellPaneInput {
             client_id: ClientId::test_new(11),
-            pane_id: pane_id.parse().expect("test precondition"),
+            pane_id,
             events: vec![key(shepr_protocol::ClientKeyKind::Release)],
         })
     );
@@ -4358,7 +4345,7 @@ async fn client_shell_text_input_renders_only_when_resetting_scrollback() {
 
     let render_impact = server.test_handle_server_event(ServerEvent::ShellPaneInput {
         client_id: ClientId::test_new(11),
-        pane_id: public_pane_id.parse().expect("test precondition"),
+        pane_id: public_pane_id,
         events: vec![shepr_protocol::ClientPaneInputEvent::TextCommit(
             "x".to_owned(),
         )],
@@ -4381,7 +4368,7 @@ async fn client_shell_text_input_renders_only_when_resetting_scrollback() {
 
     let render_impact = server.test_handle_server_event(ServerEvent::ShellPaneInput {
         client_id: ClientId::test_new(11),
-        pane_id: public_pane_id.parse().expect("test precondition"),
+        pane_id: public_pane_id,
         events: vec![shepr_protocol::ClientPaneInputEvent::TextCommit(
             "y".to_owned(),
         )],
@@ -4417,7 +4404,7 @@ async fn client_shell_mouse_motion_delivers_without_render_when_foreground() {
 
     let render_impact = server.test_handle_server_event(ServerEvent::ShellPaneInput {
         client_id: ClientId::test_new(11),
-        pane_id: pane_id.parse().expect("test precondition"),
+        pane_id,
         events: vec![shepr_protocol::ClientPaneInputEvent::Mouse {
             kind: shepr_protocol::ClientMouseKind::Moved,
             position: shepr_protocol::ClientMousePosition::Cell { column: 2, row: 1 },
@@ -4454,7 +4441,7 @@ async fn client_shell_mouse_motion_promotes_and_requests_render() {
 
     let render_impact = server.test_handle_server_event(ServerEvent::ShellPaneInput {
         client_id: ClientId::test_new(11),
-        pane_id: pane_id.parse().expect("test precondition"),
+        pane_id,
         events: vec![shepr_protocol::ClientPaneInputEvent::Mouse {
             kind: shepr_protocol::ClientMouseKind::Moved,
             position: shepr_protocol::ClientMousePosition::Cell { column: 2, row: 1 },
@@ -4502,7 +4489,7 @@ async fn client_shell_input_dropped_on_a_full_pty_queue_is_reported_to_the_clien
         .collect();
     server.test_handle_server_event(ServerEvent::ShellPaneInput {
         client_id: ClientId::test_new(11),
-        pane_id: pane_id.parse().expect("test precondition"),
+        pane_id,
         events,
     });
 
@@ -4521,7 +4508,7 @@ async fn client_shell_input_dropped_on_a_full_pty_queue_is_reported_to_the_clien
             break kind.to_string();
         }
     };
-    assert!(message.contains(pane_id.as_str()), "message: {message}");
+    assert!(message.contains(&pane_id.to_string()), "message: {message}");
     assert!(message.contains("2 events"), "message: {message}");
     shutdown_test_runtimes(&mut server);
 }
@@ -4845,11 +4832,11 @@ fn unchanged_git_refresh_does_not_request_headless_render() {
     let mut server = test_headless_server();
     server.app.git_refresh.git_refresh_in_flight = true;
     let mut workspace = shepr_mux::workspace::Workspace::test_new("one");
-    let workspace_id = workspace.id.to_string();
+    let workspace_id = workspace.id;
     let cwd = workspace.identity_cwd.clone();
     workspace.admit_git_status(
         shepr_mux::git::WorkspaceGitStatus {
-            workspace_id: workspace_id.clone(),
+            workspace_id,
             resolved_identity_cwd: cwd.clone(),
             status_cache_key: cwd.clone(),
             auto_label: "cached".into(),
@@ -4880,7 +4867,7 @@ fn unchanged_git_refresh_does_not_request_headless_render() {
 fn changed_git_refresh_requests_headless_render() {
     let mut server = test_headless_server();
     let workspace = shepr_mux::workspace::Workspace::test_new("one");
-    let workspace_id = workspace.id.to_string();
+    let workspace_id = workspace.id;
     let cwd = workspace.identity_cwd.clone();
     server.app.state.workspaces.push(workspace);
 
@@ -5112,11 +5099,11 @@ async fn pane_death_reconciles_each_client_view_and_focus() {
 
     assert_eq!(
         server.shell_target_for_client(ClientId::test_new(71)),
-        Some(second_workspace_id.clone())
+        Some(second_workspace_id)
     );
     assert_eq!(
         server.shell_target_for_client(ClientId::test_new(72)),
-        Some(second_workspace_id.clone())
+        Some(second_workspace_id)
     );
     assert_eq!(
         second_input
@@ -5776,7 +5763,7 @@ async fn client_shell_release_cleanup_does_not_promote_and_survives_disconnect()
     assert!(
         server.test_handle_server_event(ServerEvent::ShellPaneInput {
             client_id: ClientId::test_new(1),
-            pane_id: pane_id.parse().expect("test precondition"),
+            pane_id,
             events: vec![key(shepr_protocol::ClientKeyKind::Press)],
         })
     );
@@ -5786,7 +5773,7 @@ async fn client_shell_release_cleanup_does_not_promote_and_survives_disconnect()
     assert!(
         !server.test_handle_server_event(ServerEvent::ShellPaneInput {
             client_id: ClientId::test_new(1),
-            pane_id: pane_id.parse().expect("test precondition"),
+            pane_id,
             events: vec![key(shepr_protocol::ClientKeyKind::Release)],
         })
     );
@@ -5802,7 +5789,7 @@ async fn client_shell_release_cleanup_does_not_promote_and_survives_disconnect()
     assert!(
         !server.test_handle_server_event(ServerEvent::ShellPaneInput {
             client_id: ClientId::test_new(1),
-            pane_id: pane_id.parse().expect("test precondition"),
+            pane_id,
             events: vec![key(shepr_protocol::ClientKeyKind::Press)],
         })
     );
@@ -6242,7 +6229,7 @@ async fn a_failed_health_pong_leaves_no_ghost_client() {
     let reader = outbox.control_sender();
     let client_id = ClientId::test_new(1);
     let workspace = shepr_mux::workspace::Workspace::test_new("health");
-    let workspace_id = workspace.id.clone();
+    let workspace_id = workspace.id;
     server.app.state.workspaces = vec![workspace];
     server.app.state.ensure_test_terminals();
     server.insert_test_client(
@@ -6257,7 +6244,7 @@ async fn a_failed_health_pong_leaves_no_ghost_client() {
     server.clients.set_foreground_client_id(Some(client_id));
     server
         .clients
-        .set_geometry_controller(workspace_id.clone(), client_id);
+        .set_geometry_controller(workspace_id, client_id);
     assert_eq!(reader.send(&ServerMessage::HealthPong), Delivery::Closed);
     tokio::time::timeout(Duration::from_millis(100), server.outbox_wake.notified())
         .await
