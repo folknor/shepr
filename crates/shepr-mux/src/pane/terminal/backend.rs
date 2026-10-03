@@ -9,16 +9,27 @@ impl PaneTerminal {
     /// Construct a terminal that belongs to no pane: for tests, and for the
     /// `PaneRuntime::with_child_io` seam, whose runtime has no real pane.
     /// A spawned pane uses [`Self::new_with_pane_id`].
+    /// It knows no local host name, so only an empty host or `localhost` in
+    /// an OSC 7 `file://` report counts as this machine.
     pub(crate) fn new(terminal: shepr_vt::Terminal) -> Self {
-        Self::new_inner(None, terminal)
+        Self::new_inner(None, terminal, None)
     }
 
-    /// Construct a pane terminal with the id needed by later mutation reports.
-    pub(crate) fn new_with_pane_id(pane_id: PaneId, terminal: shepr_vt::Terminal) -> Self {
-        Self::new_inner(Some(pane_id), terminal)
+    /// Construct a pane terminal with the id needed by later mutation reports
+    /// and the server's local host name for OSC 7 cwd reports.
+    pub(crate) fn new_with_pane_id(
+        pane_id: PaneId,
+        terminal: shepr_vt::Terminal,
+        local_host: Option<std::sync::Arc<str>>,
+    ) -> Self {
+        Self::new_inner(Some(pane_id), terminal, local_host)
     }
 
-    fn new_inner(pane_id: Option<PaneId>, mut terminal: shepr_vt::Terminal) -> Self {
+    fn new_inner(
+        pane_id: Option<PaneId>,
+        mut terminal: shepr_vt::Terminal,
+        local_host: Option<std::sync::Arc<str>>,
+    ) -> Self {
         // Replies to anything written before the pane existed have no reader.
         let _ = terminal.take_pty_responses();
 
@@ -38,6 +49,7 @@ impl PaneTerminal {
                 default_color_generation: 0,
                 osc_debug_tracker: OscDebugTracker::default(),
                 agent_osc_state: AgentOscStateTracker::default(),
+                local_host,
             }),
             pane_id,
             render_queued: std::sync::Arc::new(AtomicBool::new(false)),

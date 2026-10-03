@@ -121,8 +121,10 @@ pub struct App {
     /// focus-in report for the ones that hold focus.
     pub(crate) runtimes_replaced_panes: Vec<shepr_core::layout::PaneId>,
     pub(crate) session_saver: session::SessionSaver,
-    /// Host name resolved once for the window title.
-    hostname: String,
+    /// Host name resolved once at startup, `None` when it could not be: the
+    /// one answer for the window title and, through the pane launcher, for
+    /// matching OSC 7 cwd reports.
+    hostname: Option<Arc<str>>,
     /// Parsed `ui.window_title`.
     window_title_template: Option<shepr_config::WindowTitleTemplate>,
     pub(crate) persist_pane_history: bool,
@@ -159,7 +161,7 @@ impl App {
         let pane_teardowns = Arc::new(shepr_mux::pane::PaneTeardownTracker::default());
         let render_dirty = Arc::new(shepr_mux::render_signal::RenderSignal::new());
         let settings = state::AppSettings::from_config(config);
-        let hostname = shepr_platform::hostname().unwrap_or_default();
+        let hostname: Option<Arc<str>> = shepr_platform::hostname().map(Arc::from);
 
         let paths = paths.clone();
         let save_finished = std::sync::Arc::new(tokio::sync::Notify::new());
@@ -179,6 +181,7 @@ impl App {
                 config.terminal().login_shell,
             ),
             pane_scrollback_limit_bytes,
+            hostname.clone(),
         );
         // The session's one workspace ID allocator. Restore moves it past
         // every saved ID before it issues any, and the state then owns it.

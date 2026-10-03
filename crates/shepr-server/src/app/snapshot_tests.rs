@@ -433,6 +433,7 @@ async fn capture_follows_live_cwd_arbitration_and_keeps_it_after_exit() {
             false,
         ),
         0,
+        None,
     );
     let runtime = launcher
         .launch(shepr_mux::pane::PaneLaunchRequest {

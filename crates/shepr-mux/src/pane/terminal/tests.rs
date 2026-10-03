@@ -622,6 +622,27 @@ fn process_pty_bytes_reports_latest_working_directory_report() {
     );
 }
 
+/// A pane matches `file://` hosts against the local host it was built with,
+/// the server's startup answer, and nothing else.
+#[test]
+fn process_pty_bytes_matches_working_directory_host_against_the_pane_local_host() {
+    let pane_id = shepr_test_fixtures::fixed_pane_id(1);
+    let report = b"\x1b]7;file://buildbox/tmp/here\x07";
+
+    let pane = PaneTerminal::new_with_pane_id(
+        pane_id,
+        shepr_vt::Terminal::new(80, 24, 100),
+        Some("buildbox".into()),
+    );
+    assert_eq!(
+        pane.process_pty_bytes(pane_id, report).reported_cwd,
+        Some(std::path::PathBuf::from("/tmp/here"))
+    );
+
+    let pane = PaneTerminal::new_with_pane_id(pane_id, shepr_vt::Terminal::new(80, 24, 100), None);
+    assert_eq!(pane.process_pty_bytes(pane_id, report).reported_cwd, None);
+}
+
 #[test]
 fn process_pty_bytes_flags_only_an_actual_screen_flip() {
     let pane = PaneTerminal::new(shepr_vt::Terminal::new(80, 24, 100));

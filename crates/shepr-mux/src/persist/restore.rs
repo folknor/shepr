@@ -891,6 +891,7 @@ fn restore(
         },
         shell_config,
         scrollback_limit_bytes,
+        None,
     );
     plan_restore(
         snapshot,

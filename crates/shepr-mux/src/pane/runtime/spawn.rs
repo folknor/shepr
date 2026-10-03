@@ -50,11 +50,12 @@ pub(super) fn prepare_terminal(
     host_terminal_theme: shepr_term::host::TerminalTheme,
     host_terminal_appearance: Option<shepr_term::host::HostAppearance>,
     initial_history_ansi: Option<&str>,
+    local_host: Option<Arc<str>>,
 ) -> Arc<PaneTerminal> {
     let cols = geometry.cols();
     let rows = geometry.rows();
     let terminal = shepr_vt::Terminal::new(cols, rows, scrollback_limit_bytes);
-    let pane_terminal = PaneTerminal::new_with_pane_id(pane_id, terminal);
+    let pane_terminal = PaneTerminal::new_with_pane_id(pane_id, terminal, local_host);
     // The cached size below claims the cell size, so the terminal learns it
     // now: a later `resize` to the same geometry is a no-op and would never
     // tell it. Nothing has enabled in-band size reports on a fresh
@@ -224,6 +225,10 @@ pub struct PaneLauncher {
     shell: shepr_core::shell::ResolvedShell,
     login_shell: bool,
     scrollback_limit_bytes: usize,
+    /// The server's host name, resolved once at its startup (`None` when it
+    /// could not be), which every pane matches OSC 7 `file://` reports
+    /// against.
+    local_host: Option<Arc<str>>,
 }
 
 #[derive(Clone)]
@@ -263,12 +268,14 @@ impl PaneLauncher {
         handles: PaneSpawnHandles,
         shell: PaneShellConfig<'_>,
         scrollback_limit_bytes: usize,
+        local_host: Option<Arc<str>>,
     ) -> Self {
         Self {
             handles,
             shell: shell.default_shell.clone(),
             login_shell: shell.login_shell,
             scrollback_limit_bytes,
+            local_host,
         }
     }
 
@@ -327,6 +334,7 @@ impl PaneLauncher {
             host_terminal_theme,
             host_terminal_appearance,
             initial_history,
+            self.local_host.clone(),
         );
 
         let generation = crate::events::RuntimeGeneration::alloc();

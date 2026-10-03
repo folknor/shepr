@@ -8,7 +8,13 @@ use shepr_vt::WorkingDirectoryReport;
 
 use super::terminal::PaneTerminalCore;
 
-pub(super) fn parse_reported_cwd(report: &WorkingDirectoryReport) -> Option<PathBuf> {
+/// Parses an OSC 7 cwd report. `local_host` is the host name the server
+/// resolved at startup (`None` when it could not), the one the pane's
+/// `file://` reports are matched against.
+pub(super) fn parse_reported_cwd(
+    report: &WorkingDirectoryReport,
+    local_host: Option<&str>,
+) -> Option<PathBuf> {
     let payload = match report {
         WorkingDirectoryReport::Uri(payload) | WorkingDirectoryReport::Path(payload) => payload,
     };
@@ -16,7 +22,9 @@ pub(super) fn parse_reported_cwd(report: &WorkingDirectoryReport) -> Option<Path
     match report {
         // A hand-rolled prompt may send a bare absolute path in OSC 7; any
         // other scheme (kitty's `kitty-shell-cwd://`, say) is not a cwd.
-        WorkingDirectoryReport::Uri(_) if !value.starts_with('/') => parse_file_uri_cwd(value),
+        WorkingDirectoryReport::Uri(_) if !value.starts_with('/') => {
+            parse_file_uri_cwd(value, local_host)
+        }
         WorkingDirectoryReport::Uri(_) | WorkingDirectoryReport::Path(_) => {
             let path = value.trim_matches('"');
             (!path.is_empty()).then(|| PathBuf::from(path))
@@ -252,8 +260,8 @@ impl Default for OscDebugTracker {
 /// policy (exactly `1`, `0`, `true` or `false`). Pane construction has no
 /// error path, so this optional debug-only capture flag warns and fails closed
 /// when refused; it cannot affect pane behavior.
-/// Pane runtime construction takes no launch-resolved settings from the
-/// server, so this is read at the first pane rather than at server startup.
+/// The flag is not among the settings pane construction takes from the
+/// server, so it is read at the first pane rather than at server startup.
 /// Pane children never see the variable (`pane::launch` scrubs it).
 fn osc_debug_enabled_from_env() -> bool {
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
@@ -293,24 +301,12 @@ fn sanitized_osc_debug_payload(payload: &[u8]) -> String {
     sanitized
 }
 
-fn parse_file_uri_cwd(uri: &str) -> Option<PathBuf> {
-    if !uri.starts_with("file://") {
-        return None;
-    }
-    // Standard shell integrations (vte.sh for bash/zsh, fish) report
-    // `file://$HOSTNAME/path`, so the machine's own name must be accepted.
-    // Cache the local name because OSC 7 can arrive on every prompt.
-    static LOCAL_HOST: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
-    parse_file_uri_cwd_for_host(
-        uri,
-        LOCAL_HOST.get_or_init(shepr_platform::hostname).as_deref(),
-    )
-}
-
 /// Parse a `file://` cwd report, accepting an empty host, `localhost`, or
-/// `local_host`. Any other host is a different machine (for example a shell
+/// `local_host`: standard shell integrations (vte.sh for bash/zsh, fish)
+/// report `file://$HOSTNAME/path`, so the machine's own name must be
+/// accepted. Any other host is a different machine (for example a shell
 /// reached over SSH inside the pane), whose path means nothing here.
-fn parse_file_uri_cwd_for_host(uri: &str, local_host: Option<&str>) -> Option<PathBuf> {
+fn parse_file_uri_cwd(uri: &str, local_host: Option<&str>) -> Option<PathBuf> {
     let rest = uri.strip_prefix("file://")?;
     let path = if rest.starts_with('/') {
         rest
@@ -568,17 +564,18 @@ mod tests {
     #[test]
     fn reported_cwd_parses_file_uri_and_bare_paths() {
         assert_eq!(
-            parse_reported_cwd(&WorkingDirectoryReport::Uri(
-                b"file:///tmp/shepr%20repo".to_vec()
-            )),
+            parse_reported_cwd(
+                &WorkingDirectoryReport::Uri(b"file:///tmp/shepr%20repo".to_vec()),
+                None
+            ),
             Some(std::path::PathBuf::from("/tmp/shepr repo"))
         );
         assert_eq!(
-            parse_reported_cwd(&WorkingDirectoryReport::Uri(b"/tmp/bare".to_vec())),
+            parse_reported_cwd(&WorkingDirectoryReport::Uri(b"/tmp/bare".to_vec()), None),
             Some(std::path::PathBuf::from("/tmp/bare"))
         );
         assert_eq!(
-            parse_reported_cwd(&WorkingDirectoryReport::Path(b"/tmp/path".to_vec())),
+            parse_reported_cwd(&WorkingDirectoryReport::Path(b"/tmp/path".to_vec()), None),
             Some(std::path::PathBuf::from("/tmp/path"))
         );
     }
@@ -586,9 +583,10 @@ mod tests {
     #[test]
     fn reported_cwd_rejects_other_uri_schemes() {
         assert_eq!(
-            parse_reported_cwd(&WorkingDirectoryReport::Uri(
-                b"kitty-shell-cwd://host/tmp".to_vec()
-            )),
+            parse_reported_cwd(
+                &WorkingDirectoryReport::Uri(b"kitty-shell-cwd://host/tmp".to_vec()),
+                Some("host")
+            ),
             None
         );
     }
@@ -596,18 +594,18 @@ mod tests {
     #[test]
     fn reported_cwd_rejects_invalid_or_empty_values() {
         assert_eq!(
-            parse_reported_cwd(&WorkingDirectoryReport::Path(Vec::new())),
+            parse_reported_cwd(&WorkingDirectoryReport::Path(Vec::new()), None),
             None
         );
         assert_eq!(
-            parse_reported_cwd(&WorkingDirectoryReport::Path(vec![0xff])),
+            parse_reported_cwd(&WorkingDirectoryReport::Path(vec![0xff]), None),
             None
         );
         assert_eq!(
-            parse_file_uri_cwd_for_host("file://remote/tmp", Some("workstation")),
+            parse_file_uri_cwd("file://remote/tmp", Some("workstation")),
             None
         );
-        assert_eq!(parse_file_uri_cwd_for_host("file://remote/tmp", None), None);
+        assert_eq!(parse_file_uri_cwd("file://remote/tmp", None), None);
     }
 
     #[test]
@@ -620,40 +618,46 @@ mod tests {
             ("file://localhost/home/me/src", "workstation"),
         ] {
             assert_eq!(
-                parse_file_uri_cwd_for_host(uri, Some(local)),
+                parse_file_uri_cwd(uri, Some(local)),
                 expected,
                 "{uri} on {local}"
             );
         }
         assert_eq!(
-            parse_file_uri_cwd_for_host(
+            parse_file_uri_cwd(
                 "file://workstation.other/home/me/src",
                 Some("workstation.lan")
             ),
             None
         );
         assert_eq!(
-            parse_file_uri_cwd_for_host(
-                "file://workstation.other/home/me/src",
-                Some("workstation")
-            ),
+            parse_file_uri_cwd("file://workstation.other/home/me/src", Some("workstation")),
             None
         );
         assert_eq!(
-            parse_file_uri_cwd_for_host("file://workstation.lan/home/me/src", Some("workstation")),
+            parse_file_uri_cwd("file://workstation.lan/home/me/src", Some("workstation")),
             None
         );
     }
 
+    /// The report is matched against the host it is given, never one the
+    /// parser looks up itself: with no known local name, only an empty host
+    /// or `localhost` is this machine.
     #[test]
-    fn reported_cwd_uses_the_live_hostname() {
-        let Some(hostname) = shepr_platform::hostname() else {
-            return;
-        };
-        let uri = format!("file://{hostname}/tmp/shepr%20repo");
+    fn reported_cwd_matches_only_the_given_local_host() {
+        let report = WorkingDirectoryReport::Uri(b"file://workstation/tmp/shepr%20repo".to_vec());
         assert_eq!(
-            parse_reported_cwd(&WorkingDirectoryReport::Uri(uri.into_bytes())),
+            parse_reported_cwd(&report, Some("workstation")),
             Some(std::path::PathBuf::from("/tmp/shepr repo"))
+        );
+        assert_eq!(parse_reported_cwd(&report, Some("buildbox")), None);
+        assert_eq!(parse_reported_cwd(&report, None), None);
+        assert_eq!(
+            parse_reported_cwd(
+                &WorkingDirectoryReport::Uri(b"file://localhost/tmp".to_vec()),
+                None
+            ),
+            Some(std::path::PathBuf::from("/tmp"))
         );
     }
 

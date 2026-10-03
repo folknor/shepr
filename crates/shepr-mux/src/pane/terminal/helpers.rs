@@ -24,10 +24,11 @@ pub(super) fn collect_core_effects(core: &mut PaneTerminalCore) -> CoreEffects {
     let terminal_responses = drain_terminal_responses(terminal_effects.pty_responses);
     let clipboard_writes = terminal_effects.clipboard_writes;
     let dropped_clipboard_store_bytes = terminal_effects.dropped_clipboard_store_bytes;
+    let local_host = core.local_host.as_deref();
     let reported_cwd = terminal_effects
         .pwd_changes
         .into_iter()
-        .filter_map(|report| parse_reported_cwd(&report))
+        .filter_map(|report| parse_reported_cwd(&report, local_host))
         .next_back();
     let default_color_generation =
         note_default_color_change(core, terminal_effects.default_color_set);

@@ -62,7 +62,9 @@ impl App {
             match part {
                 WindowTitlePart::Literal(literal) => title.push_str(literal),
                 WindowTitlePart::Token(WindowTitleToken::Hostname) => {
-                    title.push_str(&self.hostname);
+                    if let Some(hostname) = &self.hostname {
+                        title.push_str(hostname);
+                    }
                 }
                 WindowTitlePart::Token(WindowTitleToken::Workspace) => {
                     if let Some(workspace) = workspace {
@@ -170,6 +172,18 @@ mod tests {
     #[test]
     fn invalid_template_is_rejected_before_it_reaches_the_app() {
         assert!(shepr_config::WindowTitleTemplate::parse("{nope}").is_err());
+    }
+
+    #[test]
+    fn renders_the_startup_hostname_and_nothing_when_unknown() {
+        let mut app = test_app();
+        app.configure_window_title("{hostname}|x");
+
+        app.hostname = Some("buildbox".into());
+        assert_eq!(app.window_title_for(0).as_deref(), Some("buildbox|x"));
+
+        app.hostname = None;
+        assert_eq!(app.window_title_for(0).as_deref(), Some("|x"));
     }
 
     #[test]

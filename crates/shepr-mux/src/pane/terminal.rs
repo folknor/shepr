@@ -368,6 +368,10 @@ pub(crate) struct PaneTerminalCore {
     default_color_generation: u64,
     pub(super) osc_debug_tracker: OscDebugTracker,
     pub(super) agent_osc_state: AgentOscStateTracker,
+    /// The server's host name as resolved at its startup, `None` when it
+    /// could not be: OSC 7 `file://` reports naming it are this machine's.
+    /// Shared by every pane, so construction clones only the `Arc`.
+    pub(super) local_host: Option<std::sync::Arc<str>>,
 }
 
 /// Record the meaning of a mutation once, rather than choosing counters at
