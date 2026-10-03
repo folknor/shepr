@@ -8,10 +8,17 @@ mod tests {
     use super::*;
 
     use super::codec::{self, CodecError};
-    use ratatui::style::{Color, Modifier};
     use serde::de::DeserializeOwned;
 
     type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    /// A style with `flags` and no underline.
+    fn flagged(flags: WireStyleFlags) -> WireStyle {
+        WireStyle {
+            flags,
+            underline: shepr_term::UnderlineStyle::None,
+        }
+    }
 
     /// The client-side string-carrying message the framing tests use as a vehicle.
     fn paste(text: String) -> ClientMessage {
@@ -316,26 +323,26 @@ mod tests {
                 CellData {
                     symbol: "H".into(),
                     grid_width: GridCellWidth::Grapheme,
-                    fg: WireColor::from_ratatui(Color::Red),
-                    bg: WireColor::from_ratatui(Color::Black),
-                    style: WireStyle::from_ratatui_modifier(Modifier::BOLD),
+                    fg: WireColor::Red,
+                    bg: WireColor::Black,
+                    style: flagged(WireStyleFlags::BOLD),
                     skip: false,
                     hyperlink: None,
                 },
                 CellData {
                     symbol: "i".into(),
                     grid_width: GridCellWidth::Grapheme,
-                    fg: WireColor::from_ratatui(Color::Green),
-                    bg: WireColor::from_ratatui(Color::Reset),
-                    style: WireStyle::from_ratatui_modifier(Modifier::ITALIC),
+                    fg: WireColor::Green,
+                    bg: WireColor::Reset,
+                    style: flagged(WireStyleFlags::ITALIC),
                     skip: false,
                     hyperlink: None,
                 },
                 CellData {
                     symbol: "!".into(),
                     grid_width: GridCellWidth::Grapheme,
-                    fg: WireColor::from_ratatui(Color::Rgb(255, 128, 0)),
-                    bg: WireColor::from_ratatui(Color::Indexed(220)),
+                    fg: WireColor::Rgb(255, 128, 0),
+                    bg: WireColor::Indexed(220),
                     style: WireStyle {
                         flags: WireStyleFlags::BOLD,
                         underline: shepr_term::UnderlineStyle::Curly,
@@ -346,8 +353,8 @@ mod tests {
                 CellData {
                     symbol: " ".into(),
                     grid_width: GridCellWidth::Grapheme,
-                    fg: WireColor::from_ratatui(Color::Reset),
-                    bg: WireColor::from_ratatui(Color::Reset),
+                    fg: WireColor::Reset,
+                    bg: WireColor::Reset,
                     style: WireStyle::default(),
                     skip: true,
                     hyperlink: None,
@@ -355,17 +362,17 @@ mod tests {
                 CellData {
                     symbol: "→".into(), // multi-byte grapheme
                     grid_width: GridCellWidth::One,
-                    fg: WireColor::from_ratatui(Color::Cyan),
-                    bg: WireColor::from_ratatui(Color::Blue),
-                    style: WireStyle::from_ratatui_modifier(Modifier::REVERSED),
+                    fg: WireColor::Cyan,
+                    bg: WireColor::Blue,
+                    style: flagged(WireStyleFlags::REVERSED),
                     skip: false,
                     hyperlink: None,
                 },
                 CellData {
                     symbol: "\u{1F980}".into(), // emoji, wide grapheme cluster
                     grid_width: GridCellWidth::Two,
-                    fg: WireColor::from_ratatui(Color::Yellow),
-                    bg: WireColor::from_ratatui(Color::Magenta),
+                    fg: WireColor::Yellow,
+                    bg: WireColor::Magenta,
                     style: WireStyle::default(),
                     skip: false,
                     hyperlink: None,
@@ -437,7 +444,7 @@ mod tests {
                     grid_width: GridCellWidth::One,
                     fg: WireColor::Indexed(1),
                     bg: WireColor::Rgb(0, 0, 2),
-                    style: WireStyle::from_ratatui_modifier(Modifier::BOLD | Modifier::ITALIC),
+                    style: flagged(WireStyleFlags::BOLD.union(WireStyleFlags::ITALIC)),
                     skip: false,
                     hyperlink: None,
                 }],
@@ -577,17 +584,17 @@ mod tests {
                     format!("{:03}", i % 1000)
                 },
                 grid_width: GridCellWidth::Grapheme,
-                fg: WireColor::from_ratatui(Color::Rgb(
+                fg: WireColor::Rgb(
                     u8::try_from(i % 256).unwrap_or(u8::MAX),
                     u8::try_from((i / 256) % 256).unwrap_or(u8::MAX),
                     128,
-                )),
-                bg: WireColor::from_ratatui(Color::Indexed(
-                    u8::try_from(i % 256).unwrap_or(u8::MAX),
-                )),
-                style: WireStyle::from_ratatui_modifier(Modifier::from_bits_retain(
-                    u16::try_from(i % 256).unwrap_or(u16::MAX),
-                )),
+                ),
+                bg: WireColor::Indexed(u8::try_from(i % 256).unwrap_or(u8::MAX)),
+                style: flagged(if i % 2 == 0 {
+                    WireStyleFlags::BOLD
+                } else {
+                    WireStyleFlags::ITALIC.union(WireStyleFlags::DIM)
+                }),
                 skip: i % 100 == 0,
                 hyperlink: None,
             })
@@ -787,165 +794,6 @@ mod tests {
             Err(FramingError::LimitExceeded(error))
                 if error.actual == claimed && error.limit.max() == 64 * 1024
         ));
-    }
-
-    // ---- FrameData from a ratatui Buffer ----
-
-    #[test]
-    fn frame_data_from_ratatui_buffer_keeps_cells_and_cursor() {
-        let area = ratatui::layout::Rect::new(0, 0, 5, 3);
-        let mut buffer = ratatui::buffer::Buffer::filled(area, ratatui::buffer::Cell::new(" "));
-
-        // Write some styled content.
-        buffer
-            .cell_mut((0, 0))
-            .expect("test precondition")
-            .set_symbol("H");
-        buffer.cell_mut((0, 0)).expect("test precondition").fg = Color::Red;
-        buffer.cell_mut((0, 0)).expect("test precondition").modifier = Modifier::BOLD;
-
-        buffer
-            .cell_mut((1, 0))
-            .expect("test precondition")
-            .set_symbol("i");
-        buffer.cell_mut((1, 0)).expect("test precondition").fg = Color::Green;
-        buffer.cell_mut((1, 0)).expect("test precondition").modifier = Modifier::ITALIC;
-
-        buffer
-            .cell_mut((2, 0))
-            .expect("test precondition")
-            .set_symbol("!");
-        buffer.cell_mut((2, 0)).expect("test precondition").fg = Color::Rgb(255, 128, 0);
-        buffer.cell_mut((2, 0)).expect("test precondition").bg = Color::Indexed(220);
-
-        let cursor = CursorState {
-            x: 1,
-            y: 0,
-            visible: true,
-            shape: crate::CursorShapeParam::Default,
-        };
-        let frame = FrameData::from_ratatui_buffer(&buffer, Some(cursor.clone()));
-
-        // Verify frame dimensions.
-        assert_eq!(frame.width, 5);
-        assert_eq!(frame.height, 3);
-        assert_eq!(frame.cells.len(), 15);
-        assert_eq!(frame.cursor, Some(cursor));
-
-        // Verify specific cells survived the conversion.
-        assert_eq!(frame.cells[0].symbol, "H");
-        assert_eq!(frame.cells[0].fg, WireColor::from_ratatui(Color::Red));
-        assert!(frame.cells[0].style.flags.contains(WireStyleFlags::BOLD));
-
-        assert_eq!(frame.cells[1].symbol, "i");
-        assert_eq!(frame.cells[1].fg, WireColor::from_ratatui(Color::Green));
-        assert!(frame.cells[1].style.flags.contains(WireStyleFlags::ITALIC));
-
-        assert_eq!(frame.cells[2].symbol, "!");
-        assert_eq!(
-            frame.cells[2].fg,
-            WireColor::from_ratatui(Color::Rgb(255, 128, 0))
-        );
-        assert_eq!(
-            frame.cells[2].bg,
-            WireColor::from_ratatui(Color::Indexed(220))
-        );
-
-        let with_links = FrameData::from_ratatui_buffer_with_hyperlinks(
-            &buffer,
-            None,
-            &[((1, 0), "i".to_owned(), "https://example.com".to_owned())],
-        );
-        assert_eq!(with_links.cells[1].hyperlink, Some(0));
-        assert_eq!(
-            with_links.hyperlinks,
-            vec!["https://example.com".to_owned()]
-        );
-    }
-
-    // ---- Color conversion coverage ----
-
-    #[test]
-    fn color_roundtrip_all_named_colors() {
-        let named = [
-            Color::Reset,
-            Color::Black,
-            Color::Red,
-            Color::Green,
-            Color::Yellow,
-            Color::Blue,
-            Color::Magenta,
-            Color::Cyan,
-            Color::Gray,
-            Color::DarkGray,
-            Color::LightRed,
-            Color::LightGreen,
-            Color::LightYellow,
-            Color::LightBlue,
-            Color::LightMagenta,
-            Color::LightCyan,
-            Color::White,
-        ];
-        for c in named {
-            assert_eq!(
-                WireColor::from_ratatui(c).to_ratatui(),
-                c,
-                "roundtrip failed for {c:?}"
-            );
-        }
-    }
-
-    #[test]
-    fn color_roundtrip_indexed() {
-        for i in 0..=255u8 {
-            let c = Color::Indexed(i);
-            assert_eq!(
-                WireColor::from_ratatui(c).to_ratatui(),
-                c,
-                "roundtrip failed for Indexed({i})"
-            );
-        }
-    }
-
-    #[test]
-    fn color_roundtrip_rgb() {
-        let c = Color::Rgb(0xAB, 0xCD, 0xEF);
-        assert_eq!(WireColor::from_ratatui(c).to_ratatui(), c);
-
-        let c = Color::Rgb(0, 0, 0);
-        assert_eq!(WireColor::from_ratatui(c).to_ratatui(), c);
-
-        let c = Color::Rgb(255, 255, 255);
-        assert_eq!(WireColor::from_ratatui(c).to_ratatui(), c);
-    }
-
-    // ---- Style conversion ----
-
-    #[test]
-    fn wire_style_from_ratatui_modifier_maps_flags_and_a_single_underline() {
-        let cases = [
-            (Modifier::BOLD, WireStyleFlags::BOLD),
-            (Modifier::ITALIC, WireStyleFlags::ITALIC),
-            (Modifier::REVERSED, WireStyleFlags::REVERSED),
-            (Modifier::DIM, WireStyleFlags::DIM),
-            (Modifier::SLOW_BLINK, WireStyleFlags::SLOW_BLINK),
-            (Modifier::RAPID_BLINK, WireStyleFlags::RAPID_BLINK),
-            (Modifier::HIDDEN, WireStyleFlags::HIDDEN),
-            (Modifier::CROSSED_OUT, WireStyleFlags::CROSSED_OUT),
-            (
-                Modifier::BOLD | Modifier::ITALIC,
-                WireStyleFlags::BOLD.union(WireStyleFlags::ITALIC),
-            ),
-            (Modifier::empty(), WireStyleFlags::default()),
-        ];
-        for (modifier, flags) in cases {
-            let style = WireStyle::from_ratatui_modifier(modifier);
-            assert_eq!(style.flags, flags, "{modifier:?}");
-            assert_eq!(style.underline, shepr_term::UnderlineStyle::None);
-        }
-        let underlined = WireStyle::from_ratatui_modifier(Modifier::UNDERLINED | Modifier::BOLD);
-        assert_eq!(underlined.underline, shepr_term::UnderlineStyle::Single);
-        assert_eq!(underlined.flags, WireStyleFlags::BOLD);
     }
 
     #[test]

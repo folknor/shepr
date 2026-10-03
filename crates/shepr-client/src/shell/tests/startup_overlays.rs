@@ -1,9 +1,9 @@
 use crate::shell::overlays::notices::{ClientEndpointNoticeKind, NoticeCode};
-use crate::shell::overlays::text_editor::TextEditor;
 use crate::shell::state::{
     ClientShellConfig, ClientShellInput, ClientShellOverlay, ClientShellState,
 };
 use shepr_config::ClientConfig;
+use shepr_termio::text_editor::TextEditor;
 
 use crate::shell::state::ClientHelpOverlay;
 

@@ -1,18 +1,14 @@
-use std::{
-    fmt,
-    ops::Deref,
-    sync::OnceLock,
-    time::{Duration, SystemTime, UNIX_EPOCH},
-};
+use std::{fmt, ops::Deref, time::Duration};
 
-/// Identifies one server process lifetime in shell and surface messages.
+/// Identifies one server lifetime in shell and surface messages.
 ///
-/// A value comes from [`BootId::for_this_process`], from
-/// [`BootId::from_process_clock`] (the same encoding with the process id and
-/// clock passed in), or from parsing text in exactly the form those write
-/// (`<pid>-<nanos>` or `<pid>-before-<nanos>`); deserialization goes through
-/// the same parse. Clients only echo a boot id they were sent, so there is no
-/// empty or placeholder boot id.
+/// A value comes from [`BootId::from_process_clock`], which the server calls
+/// once when it constructs its lifetime and hands to everything that reports
+/// the boot (the client shell lane, the API's `ping` and the
+/// `server.stop_if_boot` guard), or from parsing text in exactly the form it
+/// writes (`<pid>-<nanos>` or `<pid>-before-<nanos>`); deserialization goes
+/// through the same parse. Clients only echo a boot id they were sent, so
+/// there is no empty or placeholder boot id.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Deserialize)]
 #[serde(try_from = "String")]
 pub struct BootId {
@@ -26,32 +22,6 @@ pub struct BootId {
 }
 
 impl BootId {
-    /// The boot identity of this server process, built on first use and the
-    /// same value on every later call, so every place that reports the boot
-    /// (the client shell lane and the API's `ping`) reports one identity.
-    ///
-    /// It is process-global on purpose, not a shortcut for a per-server id:
-    /// `ping` and the `server.stop_if_boot` guard in `shepr-api` answer from
-    /// the socket listener without reaching any server instance, the launcher
-    /// reads the server's pid back out of it, and a stale-boot refusal on the
-    /// client shell lane must match what `ping` reported. One process runs one
-    /// server, so the process boot is the server boot. A test that builds two
-    /// servers in one process therefore gives both the same boot id and cannot
-    /// observe a stale-boot refusal between them; such a test supplies a
-    /// distinct id itself ([`BootId::from_process_clock`]).
-    pub fn for_this_process() -> Self {
-        static THIS_PROCESS: OnceLock<BootId> = OnceLock::new();
-        THIS_PROCESS
-            .get_or_init(|| {
-                let since_epoch = match SystemTime::now().duration_since(UNIX_EPOCH) {
-                    Ok(duration) => Ok(duration),
-                    Err(error) => Err(error.duration()),
-                };
-                Self::from_process_clock(std::process::id(), since_epoch)
-            })
-            .clone()
-    }
-
     pub fn as_str(&self) -> &str {
         &self.text
     }
@@ -71,7 +41,8 @@ impl BootId {
 
     /// The boot identity of process `process_id` whose clock read
     /// `since_epoch` (`Err` for a clock before the epoch, holding how far
-    /// before). Tests use it to build distinct canonical boot ids.
+    /// before). The server mints its boot with this; tests use it to build
+    /// distinct canonical boot ids.
     pub fn from_process_clock(process_id: u32, since_epoch: Result<Duration, Duration>) -> Self {
         match since_epoch {
             Ok(duration) => Self::from_parts(process_id, false, duration.as_nanos()),
@@ -97,7 +68,7 @@ impl BootId {
     }
 }
 
-/// Text that is not a boot id in the form [`BootId::for_this_process`]
+/// Text that is not a boot id in the form [`BootId::from_process_clock`]
 /// writes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BootIdParseError;
@@ -122,7 +93,7 @@ impl std::str::FromStr for BootId {
         let process_id = process_id.parse().map_err(|_| BootIdParseError)?;
         let nanos = nanos.parse().map_err(|_| BootIdParseError)?;
         // The number parsers accept signs and leading zeros; re-encoding and
-        // comparing refuses every spelling `for_this_process` never writes.
+        // comparing refuses every spelling `from_process_clock` never writes.
         Some(Self::from_parts(process_id, before_epoch, nanos))
             .filter(|id| &*id.text == value)
             .ok_or(BootIdParseError)
@@ -292,11 +263,6 @@ mod tests {
     use super::BootId;
 
     #[test]
-    fn a_process_has_one_boot_id() {
-        assert_eq!(BootId::for_this_process(), BootId::for_this_process());
-    }
-
-    #[test]
     fn process_clock_before_epoch_keeps_its_offset() {
         let boot_id = BootId::from_process_clock(17, Err(Duration::from_nanos(23)));
 
@@ -316,7 +282,6 @@ mod tests {
     #[test]
     fn boot_ids_parse_back_and_keep_their_wire_encoding() {
         for boot_id in [
-            BootId::for_this_process(),
             BootId::from_process_clock(17, Err(Duration::from_nanos(23))),
             BootId::from_process_clock(0, Ok(Duration::ZERO)),
             BootId::from_process_clock(u32::MAX, Ok(Duration::MAX)),

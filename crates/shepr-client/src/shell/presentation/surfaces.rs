@@ -297,7 +297,7 @@ impl PaneSurfaces {
             surface: &mut PaneSurfaceFrame,
             patch: &PaneSurfacePatch,
         ) -> Result<(), PatchRejection> {
-            shepr_protocol::surface_reuse::apply_patch_to_surface(surface, patch)
+            shepr_surface::decode::apply_patch_to_surface(surface, patch)
                 .map_err(|_| PatchRejection::DoesNotFollow)
         }
         match std::mem::take(self) {

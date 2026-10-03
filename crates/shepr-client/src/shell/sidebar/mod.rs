@@ -3,6 +3,7 @@ use ratatui::style::{Modifier, Style};
 pub(in crate::shell) mod agent_sidebar;
 pub(in crate::shell) mod endpoint_agents;
 pub(in crate::shell) mod endpoint_sidebar;
+pub(in crate::shell) mod preferences;
 pub(in crate::shell) mod sidebar_tokens;
 mod token_definitions;
 

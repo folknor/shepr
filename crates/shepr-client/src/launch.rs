@@ -52,7 +52,8 @@ impl Launched {
         let settings = ClientSettings::resolve(config).map_err(io::Error::from)?;
         let socket_path = paths.server_address().socket().to_path_buf();
         let shell_config = shell::ClientShellConfig::from_validated_config(config)
-            .with_local_endpoint(paths.state_dir(), &socket_path)?;
+            .with_local_endpoint(paths.state_dir(), &socket_path)
+            .map_err(io::Error::from)?;
         let mismatch_guidance: Arc<str> =
             shepr_launch::guidance::build_mismatch_guidance(paths.server_address()).into();
 

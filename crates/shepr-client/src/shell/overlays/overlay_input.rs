@@ -4,11 +4,11 @@
 
 use crate::shell::ledger::Work;
 use crate::shell::navigation::location::LocationTarget;
-use crate::shell::overlays::text_editor::TextEditor;
 use crate::shell::state::{
     ClientNavigatorFilter, ClientRenameTarget, ClientShellMode, ClientShellOverlay,
 };
 use crossterm::event::KeyCode;
+use shepr_termio::text_editor::TextEditor;
 
 use crate::shell::state::{
     ClientConfirmCloseOverlay, ClientHelpOverlay, ClientNavigatorOverlay, ClientRenameOverlay,

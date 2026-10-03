@@ -173,7 +173,7 @@ impl ClientRenderState {
         };
         surface.surface_revision = next_revision;
         let plan = last_surface.as_deref().and_then(|last| {
-            match shepr_protocol::surface_delta::message(last, &surface) {
+            match shepr_surface::delta::message(last, &surface) {
                 Ok(plan) => Some(plan),
                 Err(error) => {
                     warn_surface_encoding_failure("delta", &error, last, &surface);
@@ -182,20 +182,20 @@ impl ClientRenderState {
             }
         });
         let (message, committed_surface) = match plan {
-            Some(shepr_protocol::surface_delta::SurfaceDeltaPlan::Unchanged(_message))
+            Some(shepr_surface::delta::SurfaceDeltaPlan::Unchanged(_message))
                 if !*recompute_pending =>
             {
                 return PreparedSurface::Unchanged;
             }
             Some(
-                shepr_protocol::surface_delta::SurfaceDeltaPlan::Unchanged(message)
-                | shepr_protocol::surface_delta::SurfaceDeltaPlan::Compact(message),
+                shepr_surface::delta::SurfaceDeltaPlan::Unchanged(message)
+                | shepr_surface::delta::SurfaceDeltaPlan::Compact(message),
             ) => {
                 // Compact messages need the complete newly rendered grid for
                 // the next baseline. Full messages carry that grid themselves.
                 (message, Some(Box::new(surface)))
             }
-            Some(shepr_protocol::surface_delta::SurfaceDeltaPlan::Full) | None => {
+            Some(shepr_surface::delta::SurfaceDeltaPlan::Full) | None => {
                 (ServerMessage::PaneSurface(surface), None)
             }
         };
@@ -224,7 +224,7 @@ impl ClientRenderState {
             .checked_next()
             .ok_or(PatchPreparationFailure::RevisionExhausted)?;
         patch.surface_revision = next_revision;
-        shepr_protocol::surface_reuse::SurfaceBaseline::new(last)
+        shepr_surface::decode::SurfaceBaseline::new(last)
             .admits(&patch)
             .map_err(|reason| {
                 tracing::debug!(%reason, "retained surface patch failed baseline admission");
@@ -276,7 +276,7 @@ impl ClientRenderState {
                 // full surface rather than diffing against a wrong grid.
                 let applied = match self.last_surface.as_deref_mut() {
                     Some(surface) => apply_pane_surface_patch(surface, &patch),
-                    None => Err(shepr_protocol::surface_reuse::SurfaceDecodeError::MissingBaseline),
+                    None => Err(shepr_surface::decode::SurfaceDecodeError::MissingBaseline),
                 };
                 if let Err(reason) = applied {
                     tracing::warn!(%reason, "sent surface patch did not apply to its baseline");
@@ -294,8 +294,8 @@ impl ClientRenderState {
 pub(super) fn apply_pane_surface_patch(
     surface: &mut PaneSurfaceFrame,
     patch: &PaneSurfacePatch,
-) -> Result<(), shepr_protocol::surface_reuse::SurfaceDecodeError> {
-    shepr_protocol::surface_reuse::apply_patch_to_surface(surface, patch)
+) -> Result<(), shepr_surface::decode::SurfaceDecodeError> {
+    shepr_surface::decode::apply_patch_to_surface(surface, patch)
 }
 
 /// A prepared client render message plus any baseline state needed after send.
@@ -370,7 +370,8 @@ impl ClientRenderState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use shepr_protocol::surface_reuse::DecodedServerMessage;
+    use shepr_surface::decode::DecodedServerMessage;
+    use shepr_surface::ratatui_conversion::FrameDataExt as _;
 
     fn test_surface(content: &str) -> PaneSurfaceFrame {
         let pane = ratatui::buffer::Buffer::with_lines([content]);
@@ -469,7 +470,7 @@ mod tests {
     #[test]
     fn surface_encodings_preserve_projection_and_patch_baselines() {
         let mut state = ClientRenderState::new();
-        let mut decoder = shepr_protocol::surface_reuse::Decoder::default();
+        let mut decoder = shepr_surface::decode::Decoder::default();
         let mut surface = test_surface("popup");
         let buffer = ratatui::buffer::Buffer::empty(Rect::new(0, 0, 240, 100));
         surface.frame = FrameData::from_ratatui_buffer_with_hyperlinks(&buffer, None, &[]);
@@ -587,7 +588,7 @@ mod tests {
         // Metadata alone past one frame: the update still carries it, split
         // across frames, and the client decodes it against its baseline.
         surface.frame.hyperlinks = vec!["\"".repeat(shepr_protocol::MAX_FRAME_SIZE + 1)];
-        let mut decoder = shepr_protocol::surface_reuse::Decoder::default();
+        let mut decoder = shepr_surface::decode::Decoder::default();
         let initial = state
             .prepare_pane_surface(surface.clone())
             .expect("test precondition");
@@ -726,7 +727,7 @@ mod tests {
         let mut first = test_surface("abc");
         first.frame.hyperlinks = vec!["https://example.test/".repeat(4096)];
         let initial = state.prepare_pane_surface(first.clone()).expect("initial");
-        let mut decoder = shepr_protocol::surface_reuse::Decoder::default();
+        let mut decoder = shepr_surface::decode::Decoder::default();
         decoder.decode(initial.message().clone()).expect("baseline");
         state.commit_sent_frame(initial);
         let mut changed = first.frame.cells[0].clone();

@@ -1,4 +1,4 @@
-use crate::shell::overlays::preferences;
+use crate::shell::sidebar::preferences;
 use crate::shell::state::{
     ClientContextMenuAction, ClientContextMenuTarget, ClientRenameTarget, ClientShellAction,
     ClientShellConfig, ClientShellOverlay, ClientShellState,
@@ -13,6 +13,7 @@ use shepr_termio::input::raw_input::RawInputEvent;
 
 use crate::shell::state::{ClientContextMenuOverlay, ClientGlobalMenuOverlay, ClientRenameOverlay};
 use shepr_protocol::{ClientShellWorkspace, SurfaceRect};
+use shepr_surface::ratatui_conversion::FrameDataExt as _;
 
 use crate::shell::tests::{snapshot, surface};
 use crate::tests::{test_pane_id, test_workspace_id};

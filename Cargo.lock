@@ -1310,6 +1310,7 @@ dependencies = [
  "shepr-platform",
  "shepr-protocol",
  "shepr-remote",
+ "shepr-surface",
  "shepr-term",
  "shepr-termio",
  "shepr-test-fixtures",
@@ -1424,6 +1425,7 @@ dependencies = [
  "shepr-platform",
  "shepr-protocol",
  "shepr-pty",
+ "shepr-surface",
  "shepr-term",
  "shepr-termio",
  "shepr-test-fixtures",
@@ -1459,7 +1461,7 @@ dependencies = [
 name = "shepr-protocol"
 version = "0.1.0"
 dependencies = [
- "ratatui",
+ "crossterm",
  "serde",
  "shepr-agent",
  "shepr-core",
@@ -1521,6 +1523,7 @@ dependencies = [
  "shepr-platform",
  "shepr-protocol",
  "shepr-pty",
+ "shepr-surface",
  "shepr-term",
  "shepr-test-fixtures",
  "shepr-test-support",
@@ -1530,6 +1533,15 @@ dependencies = [
  "tracing",
  "unicode-width",
  "zbus",
+]
+
+[[package]]
+name = "shepr-surface"
+version = "0.1.0"
+dependencies = [
+ "ratatui",
+ "shepr-protocol",
+ "shepr-term",
 ]
 
 [[package]]
@@ -1558,6 +1570,7 @@ dependencies = [
  "shepr-vt",
  "toml",
  "tracing",
+ "unicode-segmentation",
 ]
 
 [[package]]

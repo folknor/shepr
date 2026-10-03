@@ -6,7 +6,7 @@ use tokio::sync::Notify;
 use crate::pane::{PaneLauncher, PaneRuntime};
 use crate::terminal::TerminalState;
 use crate::workspace::PaneGeometry;
-use crate::workspace::Workspace;
+use crate::workspace::{Workspace, WorkspaceIdAllocator};
 use shepr_protocol::TerminalId;
 
 use super::actor::SessionPersister;
@@ -80,10 +80,14 @@ pub struct OpenedRestore {
 
 /// Reads and restores a session, decides whether its source needs a recovery
 /// copy before the first write, and transfers the lease to its persister.
+/// Restored workspaces keep their saved IDs, and `workspace_ids` (the
+/// allocator of the state they join) is moved past them before it issues
+/// any replacement.
 pub fn open_session(
     lease: DataDirLease,
     options: &SessionOpenOptions<'_>,
     save_finished: Arc<Notify>,
+    workspace_ids: &mut WorkspaceIdAllocator,
 ) -> OpenedSession {
     let mut backup_policy = SessionBackupPolicy::PreserveExisting;
     let mut restored_host_theme = None;
@@ -119,6 +123,7 @@ pub fn open_session(
                     options.geometry,
                     options.resume_agents_on_restore,
                     options.now,
+                    workspace_ids,
                 )
                 .launch(options.launcher);
                 let RestoredSession {

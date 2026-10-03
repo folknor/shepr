@@ -7,6 +7,7 @@ use crate::tests::{test_pane_id, test_workspace_id};
 use shepr_protocol::AgentStatus;
 use shepr_protocol::command::EndpointReply;
 use shepr_protocol::{ClientShellPane, PaneSurfacePane, SurfaceRect};
+use shepr_surface::ratatui_conversion::{FrameDataExt as _, WireColorExt as _};
 mod text_editing;
 
 pub(in crate::shell) fn snapshot() -> ClientShellSnapshot {

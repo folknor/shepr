@@ -6,12 +6,12 @@ use crate::endpoint::ClientEndpointId;
 use crate::shell::endpoints::ClientEndpointFocusTarget;
 use crate::shell::ledger::Work;
 use crate::shell::overlays::notices::{ClientEndpointNoticeKind, NoticeCode};
-use crate::shell::overlays::text_editor::TextEditor;
 use crate::shell::state::{
     ClientHelpOverlay, ClientShellAction, ClientShellInput, ClientShellState,
 };
 use crate::shell::state::{ClientShellMode, ClientShellOverlay};
 use crate::shell::{EndpointNotice, EndpointNoticeKind};
+use shepr_termio::text_editor::TextEditor;
 
 use shepr_protocol::command::EndpointCommand;
 

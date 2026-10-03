@@ -707,6 +707,7 @@ packages = [
     "shepr-protocol",
     "shepr-remote",
     "shepr-server",
+    "shepr-surface",
     "shepr-test-fixtures",
     "shepr-test-support",
     "shepr-term",
@@ -828,15 +829,15 @@ forbid = "alacritty_terminal"
 except = ["shepr-vt"]
 
 # ratatui is a drawing library, taken only by the crates that draw or carry
-# its values: protocol converts drawn buffers to wire frames, config resolves
-# theme colors, termio maps host mouse pixels into pane rects, mux renders
-# panes, and server and client compose the screen. The pane layout model below them
-# computes in `shepr_core`'s own `Rect` and `Direction`.
+# its values: surface converts drawn buffers to wire frames and composes them,
+# config resolves theme colors, termio maps host mouse pixels into pane rects,
+# mux renders panes, and server and client compose the screen. The pane layout
+# model below them computes in `shepr_core`'s own `Rect` and `Direction`.
 [[dependency_rule]]
 name = "ratatui-only-in-drawing-crates"
 from = "*"
 forbid = "ratatui"
-except = ["shepr-client", "shepr-config", "shepr-mux", "shepr-protocol", "shepr-server", "shepr-termio"]
+except = ["shepr-client", "shepr-config", "shepr-mux", "shepr-server", "shepr-surface", "shepr-termio"]
 
 [[dependency_rule]]
 name = "shepr-agent-layer"
@@ -888,7 +889,19 @@ kinds = ["normal"]
 [[dependency_rule]]
 name = "shepr-protocol-layer"
 from = "shepr-protocol"
-allow = ["ratatui", "serde", "shepr-agent", "shepr-core", "shepr-term", "tracing"]
+allow = ["crossterm", "serde", "shepr-agent", "shepr-core", "shepr-term", "tracing"]
+kinds = ["normal"]
+
+# What a pane surface means above the wire: the server's delta planner, the
+# client's decoder baseline, ratatui conversion, the wide-glyph rule, the
+# repair of glyphs that laid-over chrome splits, and the client's frame
+# composition. Protocol keeps only the wire, so the planner and
+# decoder cannot reach back into it; mux takes the wide-glyph rule, and the
+# server and client take the rest.
+[[dependency_rule]]
+name = "shepr-surface-layer"
+from = "shepr-surface"
+allow = ["ratatui", "shepr-protocol", "shepr-term"]
 kinds = ["normal"]
 
 [[dependency_rule]]
@@ -912,7 +925,7 @@ kinds = ["normal"]
 [[dependency_rule]]
 name = "shepr-termio-layer"
 from = "shepr-termio"
-allow = ["base64", "crossterm", "ratatui", "shepr-config", "shepr-core", "shepr-platform", "shepr-protocol", "shepr-term", "tracing"]
+allow = ["base64", "crossterm", "ratatui", "shepr-config", "shepr-core", "shepr-platform", "shepr-protocol", "shepr-term", "tracing", "unicode-segmentation"]
 kinds = ["normal"]
 
 [[dependency_rule]]
@@ -927,7 +940,7 @@ kinds = ["normal"]
 [[dependency_rule]]
 name = "shepr-client-layer"
 from = "shepr-client"
-allow = ["base64", "crossterm", "ctrlc", "ratatui", "serde", "serde_json", "shepr-config", "shepr-core", "shepr-launch", "shepr-paths", "shepr-platform", "shepr-protocol", "shepr-remote", "shepr-term", "shepr-termio", "tokio", "toml", "tracing", "unicode-segmentation", "unicode-width"]
+allow = ["base64", "crossterm", "ctrlc", "ratatui", "serde", "serde_json", "shepr-config", "shepr-core", "shepr-launch", "shepr-paths", "shepr-platform", "shepr-protocol", "shepr-remote", "shepr-surface", "shepr-term", "shepr-termio", "tokio", "toml", "tracing", "unicode-segmentation", "unicode-width"]
 kinds = ["normal"]
 
 # Git command environment and deadline policy are owned by mux, which uses the
@@ -935,7 +948,7 @@ kinds = ["normal"]
 [[dependency_rule]]
 name = "shepr-mux-layer"
 from = "shepr-mux"
-allow = ["bytes", "crossterm", "ratatui", "regex", "serde", "serde_json", "sha2", "shepr-agent", "shepr-config", "shepr-core", "shepr-detect", "shepr-paths", "shepr-platform", "shepr-protocol", "shepr-pty", "shepr-term", "shepr-vt", "tokio", "tracing", "unicode-width"]
+allow = ["bytes", "crossterm", "ratatui", "regex", "serde", "serde_json", "sha2", "shepr-agent", "shepr-config", "shepr-core", "shepr-detect", "shepr-paths", "shepr-platform", "shepr-protocol", "shepr-pty", "shepr-surface", "shepr-term", "shepr-vt", "tokio", "tracing", "unicode-width"]
 kinds = ["normal"]
 
 # The client binary launches the server executable as a sibling process and
@@ -959,5 +972,5 @@ kinds = ["normal"]
 [[dependency_rule]]
 name = "shepr-server-layer"
 from = "shepr-server"
-allow = ["base64", "bytes", "crossterm", "ctrlc", "futures-util", "libc", "ratatui", "serde", "serde_json", "shepr-agent", "shepr-api", "shepr-config", "shepr-core", "shepr-detect", "shepr-integration", "shepr-mux", "shepr-paths", "shepr-platform", "shepr-protocol", "shepr-pty", "shepr-term", "shepr-vt", "tokio", "tracing", "unicode-width", "zbus"]
+allow = ["base64", "bytes", "crossterm", "ctrlc", "futures-util", "libc", "ratatui", "serde", "serde_json", "shepr-agent", "shepr-api", "shepr-config", "shepr-core", "shepr-detect", "shepr-integration", "shepr-mux", "shepr-paths", "shepr-platform", "shepr-protocol", "shepr-pty", "shepr-surface", "shepr-term", "shepr-vt", "tokio", "tracing", "unicode-width", "zbus"]
 kinds = ["normal"]

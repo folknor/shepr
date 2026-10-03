@@ -1,5 +1,5 @@
 use super::ConnectionRole;
-use shepr_protocol::surface_reuse::{DecodedClientServerMessage, DecodedWireServerMessage};
+use shepr_surface::decode::{DecodedClientServerMessage, DecodedWireServerMessage};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PresentationDecision {
     Apply,

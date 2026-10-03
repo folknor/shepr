@@ -109,7 +109,7 @@ impl ViewEvidence {
         let Some(surface) = self.surface.as_mut() else {
             return;
         };
-        if shepr_protocol::surface_reuse::apply_patch_to_surface(surface, patch).is_err() {
+        if shepr_surface::decode::apply_patch_to_surface(surface, patch).is_err() {
             // A move can commit only from a full baseline that stayed in lockstep with
             // the connection decoder. A mismatch must wait for another full surface.
             self.surface = None;

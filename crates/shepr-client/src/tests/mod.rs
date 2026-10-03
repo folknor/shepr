@@ -1,6 +1,6 @@
 use super::*;
 use crate::events::{ClientLoopEvent, ParsedHostInput};
-use shepr_protocol::surface_reuse::DecodedClientServerMessage;
+use shepr_surface::decode::DecodedClientServerMessage;
 use shepr_test_fixtures::*;
 use shepr_test_support::IsolatedEnv;
 use std::sync::atomic::{AtomicBool, Ordering};

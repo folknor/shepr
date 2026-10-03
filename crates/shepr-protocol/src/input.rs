@@ -35,20 +35,20 @@ pub enum ClientKeyKind {
 
 impl ClientKeyKind {
     /// Converts this wire key kind to the host terminal event kind.
-    pub fn to_host(self) -> ratatui::crossterm::event::KeyEventKind {
+    pub fn to_host(self) -> crossterm::event::KeyEventKind {
         match self {
-            Self::Press => ratatui::crossterm::event::KeyEventKind::Press,
-            Self::Repeat => ratatui::crossterm::event::KeyEventKind::Repeat,
-            Self::Release => ratatui::crossterm::event::KeyEventKind::Release,
+            Self::Press => crossterm::event::KeyEventKind::Press,
+            Self::Repeat => crossterm::event::KeyEventKind::Repeat,
+            Self::Release => crossterm::event::KeyEventKind::Release,
         }
     }
 
     /// Converts a host terminal event kind to its wire representation.
-    pub fn from_host(kind: ratatui::crossterm::event::KeyEventKind) -> Self {
+    pub fn from_host(kind: crossterm::event::KeyEventKind) -> Self {
         match kind {
-            ratatui::crossterm::event::KeyEventKind::Press => Self::Press,
-            ratatui::crossterm::event::KeyEventKind::Repeat => Self::Repeat,
-            ratatui::crossterm::event::KeyEventKind::Release => Self::Release,
+            crossterm::event::KeyEventKind::Press => Self::Press,
+            crossterm::event::KeyEventKind::Repeat => Self::Repeat,
+            crossterm::event::KeyEventKind::Release => Self::Release,
         }
     }
 }
@@ -81,8 +81,8 @@ pub enum ClientKeyCode {
 
 impl ClientKeyCode {
     /// Converts this wire key code to the host terminal key code.
-    pub fn to_host(&self) -> ratatui::crossterm::event::KeyCode {
-        use ratatui::crossterm::event::KeyCode;
+    pub fn to_host(&self) -> crossterm::event::KeyCode {
+        use crossterm::event::KeyCode;
         match self {
             Self::Backspace => KeyCode::Backspace,
             Self::Enter => KeyCode::Enter,
@@ -106,8 +106,8 @@ impl ClientKeyCode {
     }
 
     /// Converts a host terminal key code when the wire model represents it.
-    pub fn from_host(code: ratatui::crossterm::event::KeyCode) -> Option<Self> {
-        use ratatui::crossterm::event::KeyCode;
+    pub fn from_host(code: crossterm::event::KeyCode) -> Option<Self> {
+        use crossterm::event::KeyCode;
         Some(match code {
             KeyCode::Backspace => Self::Backspace,
             KeyCode::Enter => Self::Enter,
@@ -141,20 +141,20 @@ pub enum ClientMouseButton {
 
 impl ClientMouseButton {
     /// Converts this wire mouse button to the host terminal button.
-    pub fn to_host(self) -> ratatui::crossterm::event::MouseButton {
+    pub fn to_host(self) -> crossterm::event::MouseButton {
         match self {
-            Self::Left => ratatui::crossterm::event::MouseButton::Left,
-            Self::Right => ratatui::crossterm::event::MouseButton::Right,
-            Self::Middle => ratatui::crossterm::event::MouseButton::Middle,
+            Self::Left => crossterm::event::MouseButton::Left,
+            Self::Right => crossterm::event::MouseButton::Right,
+            Self::Middle => crossterm::event::MouseButton::Middle,
         }
     }
 
     /// Converts a host terminal mouse button to its wire representation.
-    pub fn from_host(button: ratatui::crossterm::event::MouseButton) -> Self {
+    pub fn from_host(button: crossterm::event::MouseButton) -> Self {
         match button {
-            ratatui::crossterm::event::MouseButton::Left => Self::Left,
-            ratatui::crossterm::event::MouseButton::Right => Self::Right,
-            ratatui::crossterm::event::MouseButton::Middle => Self::Middle,
+            crossterm::event::MouseButton::Left => Self::Left,
+            crossterm::event::MouseButton::Right => Self::Right,
+            crossterm::event::MouseButton::Middle => Self::Middle,
         }
     }
 }
@@ -173,8 +173,8 @@ pub enum ClientMouseKind {
 
 impl ClientMouseKind {
     /// Converts this wire mouse kind to the host terminal event kind.
-    pub fn to_host(self) -> ratatui::crossterm::event::MouseEventKind {
-        use ratatui::crossterm::event::MouseEventKind;
+    pub fn to_host(self) -> crossterm::event::MouseEventKind {
+        use crossterm::event::MouseEventKind;
         match self {
             Self::Down(button) => MouseEventKind::Down(button.to_host()),
             Self::Up(button) => MouseEventKind::Up(button.to_host()),
@@ -188,8 +188,8 @@ impl ClientMouseKind {
     }
 
     /// Converts a host terminal mouse kind to its wire representation.
-    pub fn from_host(kind: ratatui::crossterm::event::MouseEventKind) -> Self {
-        use ratatui::crossterm::event::MouseEventKind;
+    pub fn from_host(kind: crossterm::event::MouseEventKind) -> Self {
+        use crossterm::event::MouseEventKind;
         match kind {
             MouseEventKind::Down(button) => Self::Down(ClientMouseButton::from_host(button)),
             MouseEventKind::Up(button) => Self::Up(ClientMouseButton::from_host(button)),
@@ -256,12 +256,12 @@ impl WireModifiers {
     }
 
     /// Converts to host modifiers while preserving bits unknown to this build.
-    pub fn to_host(self) -> ratatui::crossterm::event::KeyModifiers {
-        ratatui::crossterm::event::KeyModifiers::from_bits_retain(self.bits())
+    pub fn to_host(self) -> crossterm::event::KeyModifiers {
+        crossterm::event::KeyModifiers::from_bits_retain(self.bits())
     }
 
     /// Converts host modifiers while preserving bits unknown to this build.
-    pub fn from_host(modifiers: ratatui::crossterm::event::KeyModifiers) -> Self {
+    pub fn from_host(modifiers: crossterm::event::KeyModifiers) -> Self {
         Self::from_bits_retain(modifiers.bits())
     }
 }
@@ -389,9 +389,7 @@ pub enum ClientHostThemeUpdate {
 #[cfg(test)]
 mod host_mapping_tests {
     use super::*;
-    use ratatui::crossterm::event::{
-        KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
-    };
+    use crossterm::event::{KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind};
 
     #[test]
     fn every_wire_key_code_round_trips_through_the_host_model() {

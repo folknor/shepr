@@ -7,7 +7,7 @@ use crate::server::outbox::{ClientOutbox, RenderLaneReceiver};
 use bytes::Bytes;
 use shepr_protocol::MAX_FRAME_SIZE;
 use shepr_protocol::command::EndpointCommand;
-use shepr_protocol::surface_reuse::DecodedServerMessage;
+use shepr_surface::decode::DecodedServerMessage;
 
 /// The pane entries a surface update's metadata carries, whichever variant it is.
 fn meta_panes(meta: &Option<shepr_protocol::SurfaceMeta>) -> &[shepr_protocol::PaneSurfacePane] {
@@ -2702,14 +2702,14 @@ async fn create_default_workspace_invalidates_the_shell_projection() {
 /// running baseline a real endpoint client would keep.
 struct PaneSurfaceReceiver {
     receiver: RenderLaneReceiver,
-    decoder: shepr_protocol::surface_reuse::Decoder,
+    decoder: shepr_surface::decode::Decoder,
 }
 
 impl PaneSurfaceReceiver {
     fn new(receiver: RenderLaneReceiver) -> Self {
         Self {
             receiver,
-            decoder: shepr_protocol::surface_reuse::Decoder::default(),
+            decoder: shepr_surface::decode::Decoder::default(),
         }
     }
 

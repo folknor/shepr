@@ -17,7 +17,7 @@ use crate::shell::state::{
 use crossterm::event::{KeyCode, KeyModifiers};
 use shepr_protocol::command::EndpointReply;
 
-use crate::shell::overlays::text_editor::TextEditor;
+use shepr_termio::text_editor::TextEditor;
 
 use crate::shell::tests::{snapshot, surface};
 use crate::tests::test_pane_id;

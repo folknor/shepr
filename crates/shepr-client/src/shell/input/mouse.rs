@@ -1988,6 +1988,7 @@ mod tests {
     use crossterm::event::MouseEventKind;
     use shepr_config::ClientConfig;
     use shepr_protocol::FrameData;
+    use shepr_surface::ratatui_conversion::FrameDataExt as _;
 
     use crate::shell::state::{ClientChromeDrag, ClientShellInput, ClientShellState, PaneSplitHit};
 

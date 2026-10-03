@@ -30,6 +30,20 @@ status and are retried as ordinary failures. (edges)
 
 ## Latent defects
 
+## BUG-066 - Server overlay glyph repair is weaker than the client compositor's
+
+`shepr_surface::glyph_repair` holds two repair operations that share the blank
+cell and the width rule but decide differently. `split_glyph_cells` (the
+client compositor) repairs the whole covered region; `put_run` and
+`overlay_buffer` (server chrome overlays) repair only each run's edges, and
+only when the neighbour is an empty-symbol tail. So the server leaves an
+orphaned empty tail after a narrow cell, keeps a wide lead whose tail is a
+space continuation (the form chrome itself writes), and copies a scratch
+continuation at the left edge where the client blanks it. The likely visible
+effect is a wide glyph spilling over a neighbouring column next to an overlay.
+One repair rule would settle it, at the cost of changing server output.
+(wave-7 review)
+
 ## Hot-path costs
 
 ## BUG-053 - Two answers to this machine's name

@@ -180,6 +180,9 @@ impl App {
             ),
             pane_scrollback_limit_bytes,
         );
+        // The session's one workspace ID allocator. Restore moves it past
+        // every saved ID before it issues any, and the state then owns it.
+        let mut workspace_ids = shepr_mux::workspace::WorkspaceIdAllocator::new();
         let opened = shepr_mux::persist::open_session(
             lease,
             &shepr_mux::persist::SessionOpenOptions {
@@ -195,6 +198,7 @@ impl App {
                 now: clock.now,
             },
             std::sync::Arc::clone(&save_finished),
+            &mut workspace_ids,
         );
         let shepr_mux::persist::OpenedSession {
             policy: session_policy,
@@ -246,6 +250,7 @@ impl App {
             clock_now: clock.now,
             terminals: std::collections::HashMap::new(),
             workspaces,
+            workspace_ids,
             pane_terminal_ids,
             bookmark: None,
             bookmark_position: 0,

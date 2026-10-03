@@ -4,121 +4,22 @@
 //! Pane cells are written straight into the `FrameData`; they never pass
 //! through a ratatui `Buffer`. The chrome the server still draws with ratatui
 //! widgets goes into a scratch buffer of its own and is laid over the frame
-//! here, so the frame is only ever written through `put_run`, which cannot
-//! leave half a glyph of what it replaces. Chrome cells only ever carry what
-//! ratatui can express (colours, flags, a single underline), which
-//! `CellData::from_ratatui_cell` converts without loss.
+//! with `overlay_buffer`, so the frame is only ever written through
+//! `put_run`, which cannot leave half a glyph of what it replaces. Both are
+//! `shepr_surface::glyph_repair`'s, which owns the repair the client's
+//! compositor shares. Chrome cells only ever carry what ratatui can express
+//! (colours, flags, a single underline), which `CellData::from_ratatui_cell`
+//! converts without loss.
 
-use ratatui::buffer::Buffer;
-use ratatui::layout::Rect;
-use shepr_protocol::{CellData, FrameData, GridCellWidth};
-use shepr_term::width::text_width;
-
-/// Blanks `cell` in place: a space in its own style, no skip, no link. The
-/// space is one column wide whatever the cell held, so a blanked wide pane
-/// lead no longer claims the column after it. Unlike
-/// `shepr_protocol::blank_pane_cell` (the blank for a pane glyph cut by a crop
-/// or broken by the emulator) it keeps underline and strikethrough, so a pane
-/// glyph half that chrome overwrites can look different from one a crop cut.
-/// Visual only; both are one column and draw nothing over a neighbour.
-fn blank(cell: &mut CellData) {
-    cell.symbol.clear();
-    cell.symbol.push(' ');
-    cell.grid_width = GridCellWidth::Grapheme;
-    cell.skip = false;
-    cell.hyperlink = None;
-}
-
-/// Whether `cell` occupies two columns: a pane cell by the grid width its
-/// terminal reported (a narrow VS16 cell is one column whatever its glyph),
-/// a chrome cell by its glyph.
-fn is_wide(cell: &CellData) -> bool {
-    match cell.grid_width {
-        GridCellWidth::Grapheme => text_width(&cell.symbol) > 1,
-        GridCellWidth::One => false,
-        GridCellWidth::Two => true,
-    }
-}
-
-/// Replaces the frame cells from `(x, y)` rightwards with `cells`, clipped to
-/// the frame, and repairs the glyphs the span's edges split: the lead of a wide
-/// glyph whose tail is replaced, and the tail of a wide glyph whose lead is
-/// replaced, become blanks in their own style (no skip, no link). Wide tails
-/// are the empty-symbol cells pane rendering writes.
-pub(super) fn put_run(frame: &mut FrameData, x: u16, y: u16, cells: &[CellData]) {
-    let width = usize::from(frame.width);
-    if y >= frame.height
-        || x >= frame.width
-        || frame.cells.len() != width * usize::from(frame.height)
-    {
-        return;
-    }
-    let start = usize::from(y) * width + usize::from(x);
-    let count = cells.len().min(width - usize::from(x));
-    if count == 0 {
-        return;
-    }
-    let end = start + count;
-    let row_start = usize::from(y) * width;
-    let row_end = row_start + width;
-
-    if start > row_start && frame.cells[start].symbol.is_empty() && is_wide(&frame.cells[start - 1])
-    {
-        blank(&mut frame.cells[start - 1]);
-    }
-    let last_was_wide = is_wide(&frame.cells[end - 1]);
-    for (slot, cell) in frame.cells[start..end].iter_mut().zip(cells) {
-        slot.clone_from(cell);
-    }
-    if end < row_end && last_was_wide && frame.cells[end].symbol.is_empty() {
-        blank(&mut frame.cells[end]);
-    }
-}
-
-/// Replaces the frame cells in `covered` with what a ratatui renderer drew
-/// into `scratch` there. Both are in frame coordinates, and `covered` is
-/// clipped to the scratch area and the frame. Every covered cell is replaced,
-/// drawn or not: a scratch cell's value cannot say whether it was drawn (a
-/// deliberately drawn default-style space looks exactly like an untouched
-/// one), so the caller states the extent it owns. Each replacement takes the
-/// scratch cell's symbol, colours, flags and skip, and no link: a link belongs
-/// to the text it was on.
-///
-/// A wide glyph in the scratch owns the cell after it, which becomes a blank.
-/// One whose second column falls outside the covered area or the frame would
-/// show half a glyph, so it is drawn as a blank.
-pub(super) fn overlay_buffer(frame: &mut FrameData, scratch: &Buffer, covered: Rect) {
-    let area = covered.intersection(scratch.area);
-    let right = area.right().min(frame.width);
-    let bottom = area.bottom().min(frame.height);
-    for y in area.top()..bottom {
-        let mut x = area.left();
-        while x < right {
-            let Some(source) = scratch.cell((x, y)) else {
-                break;
-            };
-            let mut cell = CellData::from_ratatui_cell(source);
-            let glyph_width = text_width(&cell.symbol).max(1);
-            let columns = u16::try_from(glyph_width).unwrap_or(u16::MAX);
-            let mut run = Vec::with_capacity(glyph_width);
-            if x.saturating_add(columns) > right {
-                blank(&mut cell);
-                run.push(cell);
-            } else {
-                run.push(cell);
-                run.resize(glyph_width, CellData::blank());
-            }
-            put_run(frame, x, y, &run);
-            x = x.saturating_add(columns.max(1));
-        }
-    }
-}
+pub(super) use shepr_surface::glyph_repair::{overlay_buffer, put_run};
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
     use ratatui::style::{Color, Modifier, Style};
-    use shepr_protocol::{WireColor, WireStyleFlags};
+    use shepr_protocol::{CellData, FrameData, GridCellWidth, WireColor, WireStyleFlags};
 
     fn cell(symbol: &str) -> CellData {
         CellData {

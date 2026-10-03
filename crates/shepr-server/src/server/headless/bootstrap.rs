@@ -123,6 +123,9 @@ pub fn run_server(
 
     let (api_tx, api_rx) = tokio::sync::mpsc::channel(crate::limits::API_REQUEST_CHANNEL_CAPACITY);
     let stop_signal = Arc::new(shepr_api::ServerStopSignal::default());
+    // The one boot identity of this server lifetime: the listener's `ping`
+    // and stop guard and the client shell lane all report this value.
+    let boot_id = mint_boot_id(super::sample_app_clock().wall_now);
 
     // Field order releases the lease before the socket on startup failure.
     struct Reserved {
@@ -154,8 +157,8 @@ pub fn run_server(
     // binary's path), done before any pane is restored or created.
     shepr_mux::pane::init_pane_launches().map_err(RunServerError::PaneLaunch)?;
     spawn_integration_install();
-    let api =
-        shepr_api::start_server(api_tx, Arc::clone(&stop_signal), paths).map_err(startup_error)?;
+    let api = shepr_api::start_server(api_tx, Arc::clone(&stop_signal), paths, boot_id.clone())
+        .map_err(startup_error)?;
     let reserved = Reserved {
         lease,
         api,
@@ -181,7 +184,7 @@ pub fn run_server(
             super::sample_app_clock(),
         );
         seed_startup_workspace_if_empty(&mut app, startup_cwd);
-        let mut server = HeadlessServer::new(app, api_rx, api, stop_signal);
+        let mut server = HeadlessServer::new(app, api_rx, api, stop_signal, boot_id);
         server.open_client_protocol();
         let ready = ServerReady {
             socket,
@@ -201,6 +204,17 @@ pub fn run_server(
     rt.shutdown_timeout(crate::limits::TOKIO_RUNTIME_SHUTDOWN_TIMEOUT);
     crate::logging::shutdown();
     result
+}
+
+/// The boot identity of a server lifetime starting at `wall_now` in this
+/// process. The launcher reads the server's pid back out of it, and its clock
+/// part tells this lifetime from an earlier server that had the same pid.
+fn mint_boot_id(wall_now: std::time::SystemTime) -> shepr_protocol::BootId {
+    let since_epoch = match wall_now.duration_since(std::time::UNIX_EPOCH) {
+        Ok(duration) => Ok(duration),
+        Err(error) => Err(error.duration()),
+    };
+    shepr_protocol::BootId::from_process_clock(std::process::id(), since_epoch)
 }
 
 /// Makes every panic reach the server log through `tracing`, then runs the
@@ -327,8 +341,9 @@ mod startup_tests {
         let lease = shepr_mux::persist::DataDirLease::acquire(paths.data_dir()).expect("lease");
         let (tx, rx) = mpsc::channel(crate::limits::API_REQUEST_CHANNEL_CAPACITY);
         let stop = Arc::new(shepr_api::ServerStopSignal::default());
-        let api =
-            shepr_api::start_server(tx, Arc::clone(&stop), &paths).expect("socket before restore");
+        let boot_id = mint_boot_id(super::super::sample_app_clock().wall_now);
+        let api = shepr_api::start_server(tx, Arc::clone(&stop), &paths, boot_id.clone())
+            .expect("socket before restore");
         let client = shepr_api::client::ApiClient::for_socket(paths.server_address().socket());
         assert!(client.ping().expect("starting pong").starting);
         let app = app::App::with_paths(
@@ -344,8 +359,13 @@ mod startup_tests {
                 .expect("restore alone leaves gate closed")
                 .starting
         );
-        let server = HeadlessServer::new(app, rx, api, stop);
-        assert!(client.ping().expect("constructed pong").starting);
+        let server = HeadlessServer::new(app, rx, api, stop, boot_id.clone());
+        let constructed = client.ping().expect("constructed pong");
+        assert!(constructed.starting);
+        assert_eq!(
+            constructed.boot_id, boot_id,
+            "ping reports the boot the server lifetime was built with"
+        );
         server.open_client_protocol();
         let ready = client.ping().expect("ready pong");
         assert!(!ready.starting && !ready.stopping);

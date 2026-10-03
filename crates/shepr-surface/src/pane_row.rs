@@ -11,7 +11,7 @@
 //! cells at some width normalizes the row at that width, so both halves of a
 //! broken pair become one-column blanks.
 
-use crate::{CellData, GridCellWidth, WireStyleFlags};
+use shepr_protocol::{CellData, GridCellWidth, WireStyleFlags};
 
 fn is_lead(cell: &CellData) -> bool {
     cell.grid_width == GridCellWidth::Two && !cell.symbol.is_empty()
@@ -82,7 +82,7 @@ pub fn normalize_pane_row(row: &mut [CellData]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{WireColor, WireStyle};
+    use shepr_protocol::{WireColor, WireStyle};
 
     /// One pane row: `W` is a wide lead, `~` an empty tail, other chars narrow.
     fn row(text: &str) -> Vec<CellData> {

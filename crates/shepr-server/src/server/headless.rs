@@ -117,11 +117,9 @@ pub struct HeadlessServer {
     /// host input modes when a connection's view changes.
     client_view_keys: HashMap<ClientId, ClientViewKey>,
     /// Identity used to reject shell replacements from an earlier server boot.
-    /// Production takes the process boot (`BootId::for_this_process`), the same
-    /// value `ping` reports and the stop guard compares, since one process runs
-    /// one server; it is held here so unit tests can set a fixed one. Two
-    /// servers built in one test process share the process boot and cannot
-    /// tell each other's boot apart.
+    /// `run_server` mints it once for the server lifetime and hands the same
+    /// value to the socket listener, so it is what `ping` reports and the stop
+    /// guard compares.
     client_shell_boot_id: shepr_protocol::BootId,
     /// Shared session source for shell projections; `None` until a shell
     /// connection or render needs it.
@@ -190,11 +188,13 @@ pub struct HeadlessServer {
 impl HeadlessServer {
     /// Builds the event-loop coordinator without admitting TUI clients.
     /// Startup opens the client protocol explicitly after pane restore.
+    /// `boot_id` is the boot `api_server` was started with.
     pub(super) fn new(
         app: app::App,
         api_request_rx: mpsc::Receiver<shepr_api::ApiRequestMessage>,
         api_server: shepr_api::ServerHandle,
         stop_signal: Arc<shepr_api::ServerStopSignal>,
+        boot_id: shepr_protocol::BootId,
     ) -> Self {
         // Channel for server events from client threads.
         let (server_event_tx, server_event_rx) = mpsc::channel(SERVER_EVENT_CHANNEL_CAPACITY);
@@ -207,7 +207,7 @@ impl HeadlessServer {
             api_server: Some(api_server),
             clients: ClientRegistry::default(),
             client_view_keys: HashMap::new(),
-            client_shell_boot_id: shepr_protocol::BootId::for_this_process(),
+            client_shell_boot_id: boot_id,
             shell_session_cache: None,
             shell_session_generation: ShellSessionGeneration::default(),
             focused_panes: HashSet::new(),

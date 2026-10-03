@@ -5,6 +5,7 @@ use shepr_config::{ClientConfig, SidebarCollapsedModeConfig};
 use shepr_protocol::AgentStatus;
 use shepr_protocol::ClientMessage;
 use shepr_protocol::command::EndpointCommand;
+use shepr_surface::ratatui_conversion::WireColorExt as _;
 use shepr_termio::input::raw_input::RawInputEvent;
 
 use crate::endpoint::{ClientEndpointStatus, EndpointFailureStatus};

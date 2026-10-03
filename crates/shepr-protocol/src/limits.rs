@@ -220,12 +220,6 @@ pub fn surface_grid_size(width: u16, height: u16) -> Option<usize> {
 /// claims that would make pixel calculations unreasonable.
 pub const MAX_CELL_SIZE_PX: u32 = shepr_core::geometry::CellPx::MAX_DIMENSION;
 
-/// Smallest divisor used to translate row-major buffer positions to cells.
-///
-/// Empty or malformed zero-width buffers still need a nonzero row length for
-/// position arithmetic, so this is the safe floor.
-pub(crate) const MIN_BUFFER_ROW_LEN: usize = 1;
-
 /// Default maximum nesting depth accepted by the positional codec.
 ///
 /// The depth leaves ample room for ordinary config and protocol values while

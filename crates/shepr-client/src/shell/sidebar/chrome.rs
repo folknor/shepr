@@ -1,7 +1,7 @@
 //! Sidebar choices keep their value and persistence origin together.
 
 use super::sidebar_tokens::SectionSplit;
-use crate::shell::overlays::preferences::ClientChromePreferences;
+use crate::shell::sidebar::preferences::ClientChromePreferences;
 use crate::shell::state::ClientShellConfig;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

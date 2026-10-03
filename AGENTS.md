@@ -177,9 +177,17 @@ orientation, and nothing checks them:
 - `shepr-config`: configuration parsing and validation: one validate step per
   file, on the launch's `shepr-paths` layout, into validated types that hold
   only validated values.
-- `shepr-protocol`: compact wire types and codec; it uses `shepr-core` for
-  shared grid and input-batch resource budgets that config also borrows, and
-  `shepr-agent` for the agent identity the client projection carries.
+- `shepr-protocol`: compact wire types, codec, framing and preamble, and the
+  canonical construction and parsing of the identities they carry (it
+  allocates none); it uses `shepr-core` for shared grid and input-batch
+  resource budgets that config also borrows, and `shepr-agent` for the agent
+  identity the client projection carries.
+- `shepr-surface`: what a pane surface means above the wire: the server's
+  delta planner, the client's decoder and its baseline, ratatui conversion,
+  the wide-glyph rule for pane rows, the repair of glyphs that chrome laid
+  over a frame splits (for the server's pane chrome and the client's
+  compositor alike), and the client's frame composition over a shape-checked
+  canvas.
 - `shepr-api`: JSON API schema and client, and the server socket: its listener
   tells JSON requests from TUI connections, admits each kind, and hands JSON
   connections to the JSON service and TUI ones to the server's client
@@ -195,8 +203,8 @@ orientation, and nothing checks them:
   failure vocabulary with its one disposition table, for every endpoint.
 - `shepr-termio`: host terminal I/O: host input framing and parsing, the
   fixed and configured key tables the client's modes and overlays route by,
-  copy-mode keys, frame blitting and host terminal modes,
-  title, clipboard and theme queries.
+  copy-mode keys, the one-line text editor prompts edit with, frame blitting
+  and host terminal modes, title, clipboard and theme queries.
 - `shepr-remote`: configured machines and SSH connections, startup preflight,
   and the remote-host side of the SSH bridge, which ensures its local server
   through `shepr-launch`. It classifies OpenSSH output into launch's failure

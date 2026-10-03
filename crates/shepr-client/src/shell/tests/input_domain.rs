@@ -1,4 +1,3 @@
-use crate::shell::overlays::text_editor::TextEditor;
 use crate::shell::state::{
     ClientRenameTarget, ClientShellAction, ClientShellConfig, ClientShellInput, ClientShellMode,
     ClientShellOverlay, ClientShellRequest,
@@ -9,9 +8,11 @@ use shepr_config::{ClientConfig, SidebarCollapsedModeConfig};
 use shepr_protocol::command::{EndpointCommand, EndpointReply};
 use shepr_protocol::{ClientMessage, ClientMousePosition, ClientPaneInputEvent};
 use shepr_termio::input::raw_input::RawInputEvent;
+use shepr_termio::text_editor::TextEditor;
 
 use crate::shell::state::{ClientRenameOverlay, ClientShellState};
 use shepr_protocol::{ClientShellWorkspace, FrameData};
+use shepr_surface::ratatui_conversion::FrameDataExt as _;
 
 use crossterm::event::MouseEvent;
 

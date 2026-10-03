@@ -118,7 +118,8 @@ impl App {
         geometry: SpawnGeometry,
     ) -> std::io::Result<super::actions::WorkspaceCreationOutcome> {
         let chrome = self.state.pane_geometry_in(geometry.area);
-        let (ws, terminal, root_public_id) = Workspace::prepare(initial_cwd);
+        let (ws, terminal, root_public_id) =
+            Workspace::prepare(&mut self.state.workspace_ids, initial_cwd);
         let runtime = self.launch_pane(
             ws.root_pane(),
             root_public_id,

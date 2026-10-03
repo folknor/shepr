@@ -4,6 +4,7 @@ use shepr_protocol::{
     ClientShellSnapshot, ClientSurfaceSize, PaneSurfaceFrame, ServerMessage,
     command::{EndpointCommand, EndpointReply},
 };
+use shepr_surface::ratatui_conversion::FrameDataExt as _;
 use std::sync::Mutex;
 use std::time::Instant;
 
@@ -214,7 +215,7 @@ impl Fixture {
         self.reconcile();
     }
     pub(crate) fn inbound(&mut self, id: &ClientEndpointId, message: ServerMessage) {
-        let message = shepr_protocol::surface_reuse::Decoder::default()
+        let message = shepr_surface::decode::Decoder::default()
             .decode_client(message)
             .expect("test message is valid");
         let generation = self

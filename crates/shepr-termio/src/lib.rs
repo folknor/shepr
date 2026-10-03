@@ -1,14 +1,16 @@
 //! Host terminal I/O for the client: framing and parsing the host's input
 //! bytes, the fixed and configured key tables the client routes by, copy-mode
-//! keys, host terminal modes, title and clipboard writes, theme queries, and
-//! blitting frames to the host. Terminal vocabulary and child-facing encoding
-//! shared with the emulator live in `shepr-term`.
+//! keys, the one-line text editor its prompts edit with, host terminal modes,
+//! title and clipboard writes, theme queries, and blitting frames to the host.
+//! Terminal vocabulary and child-facing encoding shared with the emulator live
+//! in `shepr-term`.
 
 pub mod blit;
 pub mod copy_mode;
 pub mod host_term;
 pub mod input;
 pub mod limits;
+pub mod text_editor;
 
 pub use input::raw_input;
 

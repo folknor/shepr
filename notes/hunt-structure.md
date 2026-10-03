@@ -54,32 +54,6 @@ exit classification there); platform stays flat; `config_file.rs`'s
 ownership, permission and xattr primitives stay in platform. Last of the crate
 waves.
 
-## STR-011 - shepr-protocol mixes the wire with policy and state
-
-Wire types, codec, framing and preamble are its job. Allocators are not:
-`TerminalId::alloc` (a process-global counter and clock stamp) and
-`BootId::for_this_process` mint identities in the wire crate; mux and server own
-that policy. The surface delta planner (`surface_delta::message`, including the
-"six bytes per cell" heuristic) is server-side policy and the decoder
-(`surface_reuse::Decoder`) client-side state; `ratatui_conversion.rs` and
-`pane_row.rs` (wide-glyph normalization) are rendering rules. Proposal: protocol
-keeps types, codec, framing and preamble; a `shepr-surface` crate (or a clearly
-separate module) owns grid validation, the baseline, planning and decoding;
-allocators move up. Workspace ids are similarly allocated from a process-global
-`NEXT_WORKSPACE_NUMBER` while uniqueness is owned by `AppState::workspaces`, and
-restore must call `reserve_workspace_ids` before any allocation (an ordering
-enforced by a comment); an allocator owned by the app state and passed to restore
-makes it structural. Reported by contracts and mux-state.
-
-Decided: the workspace allocator is owned by `AppState` and passed to restore;
-terminal ids are allocated with terminal creation and the boot id with server
-lifetime construction; protocol keeps canonical construction and parsing. A
-surface component above protocol owns delta planning, the decoder baseline,
-ratatui conversion, wide-glyph normalization and, from STR-046, frame
-composition. `FramingError` must stop embedding `SurfaceDecodeError`, or the
-extraction cycles. Shared validated grid types that move below protocol must not
-import protocol envelopes; the compositor takes styles as arguments.
-
 ## Terminal emulation
 
 ## STR-017 - `Terminal` is a god struct whose handler borrows twelve fields
@@ -346,28 +320,6 @@ per-feature token (a session generation the feature bumps on reset), features
 would check the token, and the `opened_since` orphan guard in `dropped_entry`
 (which exists because "the types cannot rule that out") could become a type rule:
 `dropped` takes a context without `submit`. (client-shell)
-
-## STR-046 - Client-shell code that belongs in another crate
-
-- `wire_cells.rs` and `compose_pane_surface.rs` are frame composition over
-  `FrameData`; with its "length must equal width * height" invariant they belong
-  where a validated `FrameData` lives.
-- `word_bounds.rs` is pure pane-text logic; it belongs with mux's word logic or in
-  termio, where the two word definitions should be reconciled.
-- `TextEditor` is a generic line editor that fits termio beside `TerminalKey`.
-- `preferences.rs` is persistence (atomic write, probe) under `overlays/`; it
-  belongs with chrome state, and `store` returns `Result<(), String>` while
-  `probe_writable` returns a formatted `io::Error`, the string then shown as the
-  endpoint error banner.
-
-(client-shell)
-
-Decided: frame composition (wide-glyph repair, clipping, hyperlink remapping)
-moves into STR-011's surface component; `TextEditor` to host-side input;
-preferences with chrome state, keeping typed errors until presentation.
-Declined: unifying the word definitions. Double-click deliberately prefers URLs
-and quoted paths while mux word motion distinguishes word and big-word, and
-that distinction stays explicit (CON-038 covers saying so at the code).
 
 ## STR-039 - The client move protocol has no owner, and ClientLoop is open
 

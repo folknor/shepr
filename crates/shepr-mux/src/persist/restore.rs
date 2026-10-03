@@ -219,12 +219,16 @@ struct WorkspaceRestorePlan {
 }
 
 /// Plan the complete saved session before any child is launched.
+/// `workspace_ids` is the allocator of the state the restored workspaces
+/// join: it is moved past every saved ID first, and a repeated saved ID takes
+/// a fresh one from it.
 pub fn plan_restore(
     snapshot: &SessionSnapshot,
     history: Option<&SessionHistorySnapshot>,
     geometry: crate::workspace::PaneGeometry,
     resume_agents_on_restore: bool,
     now: std::time::Instant,
+    workspace_ids: &mut crate::workspace::WorkspaceIdAllocator,
 ) -> SessionRestorePlan {
     // `history` is the one `load_history` found to be the history this
     // layout's own save serialized (its digest), so its keys are this
@@ -241,7 +245,7 @@ pub fn plan_restore(
     let mut restore_damage = plans.iter().flatten().any(|plan| plan.restore_damage);
     // Before any allocation below, so a fresh ID is never one a saved
     // workspace owns.
-    crate::workspace::reserve_workspace_ids(snapshot.workspaces.iter().map(|ws| &ws.id));
+    workspace_ids.reserve(snapshot.workspaces.iter().map(|ws| &ws.id));
     let mut used_ids = HashSet::new();
     let mut seen_saved_ids = HashSet::new();
     let mut dropped_workspaces = 0;
@@ -255,7 +259,7 @@ pub fn plan_restore(
             restored_index.push(None);
             continue;
         };
-        let workspace_id = restored_workspace_id(saved_id, &mut used_ids);
+        let workspace_id = restored_workspace_id(saved_id, &mut used_ids, workspace_ids);
         let plan_context = RestorePlanContext {
             geometry,
             now,
@@ -318,11 +322,15 @@ fn remap_saved_index(saved: usize, restored: &[Option<usize>]) -> Option<usize> 
 /// canonical ones), unless an earlier workspace of the same file already took
 /// it, in which case a fresh one. The caller reserved every saved ID before
 /// restoring, so a fresh ID is past all of them.
-fn restored_workspace_id(saved: WorkspaceId, used_ids: &mut HashSet<WorkspaceId>) -> WorkspaceId {
+fn restored_workspace_id(
+    saved: WorkspaceId,
+    used_ids: &mut HashSet<WorkspaceId>,
+    workspace_ids: &mut crate::workspace::WorkspaceIdAllocator,
+) -> WorkspaceId {
     if used_ids.insert(saved) {
         return saved;
     }
-    crate::workspace::generate_workspace_id()
+    workspace_ids.allocate()
 }
 
 /// The terminal state of one restored pane. Every saved `PaneSnapshot` field
@@ -634,7 +642,7 @@ fn restore_workspace(
                 &saved_pane.cwd,
                 saved_pane.label.as_ref(),
                 saved_pane.agent_session.as_ref(),
-                TerminalId::alloc(),
+                crate::terminal::allocate_terminal_id(),
                 RestoredPaneStart::PendingResume(plan),
                 plan_context.now,
             );
@@ -668,7 +676,7 @@ fn restore_workspace(
             &saved_pane.cwd,
             saved_pane.label.as_ref(),
             saved_pane.agent_session.as_ref(),
-            TerminalId::alloc(),
+            crate::terminal::allocate_terminal_id(),
             RestoredPaneStart::Running {
                 duplicate_agent_session,
             },
@@ -884,7 +892,15 @@ fn restore(
         shell_config,
         scrollback_limit_bytes,
     );
-    plan_restore(snapshot, history, geometry, resume_agents_on_restore, now).launch(&launcher)
+    plan_restore(
+        snapshot,
+        history,
+        geometry,
+        resume_agents_on_restore,
+        now,
+        &mut crate::workspace::WorkspaceIdAllocator::new(),
+    )
+    .launch(&launcher)
 }
 
 #[cfg(test)]
@@ -967,6 +983,7 @@ mod tests {
             test_geometry(12, 40),
             false,
             test_restore_now(),
+            &mut crate::workspace::WorkspaceIdAllocator::new(),
         );
         assert_eq!(plan.workspaces.len(), 1);
         assert_eq!(plan.terminals.len(), 1);
@@ -1017,6 +1034,7 @@ mod tests {
             test_geometry(12, 40),
             true,
             test_restore_now(),
+            &mut crate::workspace::WorkspaceIdAllocator::new(),
         );
         assert_eq!(plan.terminals.len(), 2);
         assert_eq!(
@@ -1544,11 +1562,11 @@ mod tests {
 
     #[test]
     fn restored_workspace_ids_are_unique() {
-        // The ID the counter would hand out next is also saved on a later
-        // workspace; a third workspace repeats that saved ID.
-        let probe = crate::workspace::generate_workspace_id();
-        let taken = WorkspaceId::from_number(probe.number() + 1)
-            .expect("test precondition")
+        // The ID the state's allocator would hand out next is also saved on
+        // a workspace; a second workspace repeats that saved ID.
+        let mut workspace_ids = crate::workspace::WorkspaceIdAllocator::new();
+        let taken = crate::workspace::WorkspaceIdAllocator::new()
+            .allocate()
             .to_string();
         let workspace = |id: &str, name: &str, pane: u32| {
             workspace_snapshot(id, name, LayoutSnapshot::Pane(pane), &[pane])
@@ -1563,7 +1581,14 @@ mod tests {
             active: Some(0),
         };
 
-        let restored = restore_runtimeless(&snapshot);
+        let restored = plan_restore(
+            &snapshot,
+            None,
+            test_geometry(5, 40),
+            false,
+            test_restore_now(),
+            &mut workspace_ids,
+        );
 
         let ids: Vec<_> = restored.workspaces.iter().map(|ws| ws.id).collect();
         assert_eq!(
@@ -1571,7 +1596,7 @@ mod tests {
             2,
             "a duplicate saved ID is replaced, not dropped"
         );
-        assert!(restored.restore_loss.is_some());
+        assert!(restored.restore_damage);
         assert_eq!(
             ids[0].to_string(),
             taken,
@@ -1585,7 +1610,7 @@ mod tests {
         let unique: HashSet<_> = ids.iter().collect();
         assert_eq!(unique.len(), ids.len(), "{ids:?}");
         // A later new workspace does not reuse any restored ID either.
-        let fresh = crate::workspace::generate_workspace_id();
+        let fresh = workspace_ids.allocate();
         assert!(!ids.contains(&fresh), "fresh workspace id reused: {ids:?}");
     }
 

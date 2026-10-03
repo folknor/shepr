@@ -1,4 +1,3 @@
-pub(in crate::shell) mod compose_pane_surface;
 pub(in crate::shell) mod composition;
 mod config;
 pub(in crate::shell) mod render;
@@ -7,4 +6,3 @@ pub(in crate::shell) mod status;
 pub(in crate::shell) mod surface_patch;
 pub(in crate::shell) mod surfaces;
 pub(in crate::shell) mod topology;
-pub(in crate::shell) mod wire_cells;

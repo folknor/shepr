@@ -1,6 +1,5 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::git::{AheadBehind, WorkspaceBranch, WorkspaceGitStatus, fallback_label_from_cwd};
 use crate::limits::FIRST_WORKSPACE_NUMBER;
@@ -92,52 +91,61 @@ pub struct PaneRemoval {
     pub terminal_ids: Vec<TerminalId>,
 }
 
-/// The public number the next allocated workspace ID spells.
-///
-/// This stays a process global rather than an allocator owned by the
-/// server's app state, as the pane id counter in `shepr-core` does. One
-/// process serves one session, so unique per process is unique per session;
-/// an owned allocator would have to be threaded into every workspace
-/// constructor and restore for no change in behaviour. Restore moves the
-/// counter past every saved ID with `reserve_workspace_ids` before it allocates
-/// any, and the counter never wraps, so a live ID is never handed out twice.
-static NEXT_WORKSPACE_NUMBER: AtomicUsize = AtomicUsize::new(FIRST_WORKSPACE_NUMBER);
+/// Hands out the workspace IDs of one session. The server's app state owns
+/// the one allocator its workspaces come from, and session restore takes it
+/// by `&mut` and moves it past every saved ID before it allocates any, so a
+/// fresh ID is never one a restored workspace owns. The counter never wraps,
+/// so a live ID is never handed out twice by the allocator that issued it. It
+/// is not `Clone`: a copy would issue the same IDs again.
+#[derive(Debug, PartialEq, Eq)]
+pub struct WorkspaceIdAllocator {
+    /// The public number the next allocated ID spells.
+    next: usize,
+}
 
-pub(crate) fn generate_workspace_id() -> WorkspaceId {
-    match allocate_workspace_id(&NEXT_WORKSPACE_NUMBER) {
-        Some(id) => id,
-        // Continuing would have to reuse a live ID; there is no safe value.
-        None => panic!("workspace id space exhausted"),
+impl Default for WorkspaceIdAllocator {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
-/// Hands out the counter's number and advances it. `None` once the counter
-/// is exhausted: advancing refuses to pass `usize::MAX` rather than wrap, so
-/// that last number is never handed out and marks the space as used up.
-fn allocate_workspace_id(counter: &AtomicUsize) -> Option<WorkspaceId> {
-    counter
-        .try_update(Ordering::Relaxed, Ordering::Relaxed, |next| {
-            next.checked_add(1)
-        })
-        .ok()
-        .and_then(WorkspaceId::from_number)
-}
+impl WorkspaceIdAllocator {
+    /// An allocator whose first ID is the first public number.
+    pub const fn new() -> Self {
+        Self {
+            next: FIRST_WORKSPACE_NUMBER,
+        }
+    }
 
-/// Moves `counter` past every ID in `ids`. An ID at the top of the number
-/// space leaves nothing to allocate, so the counter is exhausted rather than
-/// left where it could reach that ID again.
-fn reserve_workspace_numbers<'a>(
-    counter: &AtomicUsize,
-    ids: impl IntoIterator<Item = &'a WorkspaceId>,
-) {
-    let Some(max) = ids.into_iter().map(WorkspaceId::number).max() else {
-        return;
-    };
-    counter.fetch_max(max.saturating_add(1), Ordering::Relaxed);
-}
+    /// The next ID. Panics once the number space is exhausted: continuing
+    /// would have to reuse a live ID, and there is no safe value.
+    pub fn allocate(&mut self) -> WorkspaceId {
+        match self.try_allocate() {
+            Some(id) => id,
+            None => panic!("workspace id space exhausted"),
+        }
+    }
 
-pub(crate) fn reserve_workspace_ids<'a>(ids: impl IntoIterator<Item = &'a WorkspaceId>) {
-    reserve_workspace_numbers(&NEXT_WORKSPACE_NUMBER, ids);
+    /// Hands out the counter's number and advances it. `None` once the
+    /// counter is exhausted: advancing refuses to pass `usize::MAX` rather
+    /// than wrap, so that last number is never handed out and marks the space
+    /// as used up.
+    fn try_allocate(&mut self) -> Option<WorkspaceId> {
+        let number = self.next;
+        self.next = number.checked_add(1)?;
+        WorkspaceId::from_number(number)
+    }
+
+    /// Moves the counter past every ID in `ids`. An ID at the top of the
+    /// number space leaves nothing to allocate, so the counter is exhausted
+    /// rather than left where it could reach that ID again. It never moves
+    /// back.
+    pub fn reserve<'a>(&mut self, ids: impl IntoIterator<Item = &'a WorkspaceId>) {
+        let Some(max) = ids.into_iter().map(WorkspaceId::number).max() else {
+            return;
+        };
+        self.next = self.next.max(max.saturating_add(1));
+    }
 }
 
 /// Only admitted identities can supply a refresh cache hint. The fallback
@@ -282,8 +290,10 @@ impl Workspace {
     /// real workspace with no spawned process, and this crate's `cfg(test)`
     /// does not reach a dependent crate's tests, so this constructor seam is
     /// public. The test fixture crate cannot own it: mux's own tests depend on
-    /// that crate, so it cannot depend on mux.
+    /// that crate, so it cannot depend on mux. The caller supplies the ID, so
+    /// the fixture keeps its IDs unique the way it chooses.
     pub fn test_from_pane(
+        id: WorkspaceId,
         label: Option<String>,
         identity_cwd: &Path,
         pane_id: PaneId,
@@ -291,7 +301,7 @@ impl Workspace {
     ) -> Self {
         pane.public_number = shepr_protocol::PanePublicNumber::FIRST;
         Self::assemble(
-            generate_workspace_id(),
+            id,
             label,
             identity_cwd.to_path_buf(),
             pane_id,
@@ -352,11 +362,16 @@ impl Workspace {
         }
     }
 
-    /// Prepare one pane, its terminal state and public id without starting a child.
-    pub fn prepare(initial_cwd: &Path) -> (Self, TerminalState, PublicPaneId) {
-        let id = generate_workspace_id();
+    /// Prepare one pane, its terminal state and public id without starting a
+    /// child. The workspace ID comes from `ids`, the allocator of the state the
+    /// workspace joins.
+    pub fn prepare(
+        ids: &mut WorkspaceIdAllocator,
+        initial_cwd: &Path,
+    ) -> (Self, TerminalState, PublicPaneId) {
+        let id = ids.allocate();
         let (layout, root_pane) = TileLayout::new();
-        let terminal_id = TerminalId::alloc();
+        let terminal_id = crate::terminal::allocate_terminal_id();
         let terminal = TerminalState::new(terminal_id.clone(), initial_cwd.to_path_buf());
         let pane = WorkspacePane::new(
             PaneState::new(terminal_id),
@@ -568,18 +583,30 @@ std::thread_local! {
         crate::test_support::ScratchDir::new("workspace-test-cwd");
 }
 
+/// The allocator this crate's fixture workspaces share, so every fixture in a
+/// test binary has its own ID, as workspaces of one session do.
+#[cfg(test)]
+pub(crate) fn test_workspace_id() -> WorkspaceId {
+    static TEST_WORKSPACE_IDS: std::sync::Mutex<WorkspaceIdAllocator> =
+        std::sync::Mutex::new(WorkspaceIdAllocator::new());
+    TEST_WORKSPACE_IDS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .allocate()
+}
+
 #[cfg(test)]
 impl Workspace {
     pub fn test_new(name: &str) -> Self {
         let identity_cwd = TEST_WORKSPACE_CWD.with(|cwd| cwd.to_path_buf());
         let (layout, root_id) = TileLayout::new();
-        let terminal_id = TerminalId::alloc();
+        let terminal_id = crate::terminal::allocate_terminal_id();
         let pane = WorkspacePane::new(
             PaneState::new(terminal_id),
             shepr_protocol::PanePublicNumber::FIRST,
         );
         Self::assemble(
-            generate_workspace_id(),
+            test_workspace_id(),
             Some(name.to_string()),
             identity_cwd,
             root_id,
@@ -594,7 +621,7 @@ impl Workspace {
         self.panes.insert(
             new_id,
             WorkspacePane::new(
-                PaneState::new(TerminalId::alloc()),
+                PaneState::new(crate::terminal::allocate_terminal_id()),
                 shepr_protocol::PanePublicNumber::FIRST,
             ),
         );
@@ -698,7 +725,8 @@ mod tests {
     #[test]
     fn preparing_a_split_is_pure_and_commits_its_reserved_identity() {
         let cwd = Path::new("/__shepr_split_missing_directory__");
-        let (mut workspace, _, root_public_id) = Workspace::prepare(cwd);
+        let (mut workspace, _, root_public_id) =
+            Workspace::prepare(&mut WorkspaceIdAllocator::new(), cwd);
         assert_eq!(
             root_public_id,
             PublicPaneId::new(
@@ -774,19 +802,25 @@ mod tests {
         assert!("wA:1".parse::<PublicPaneId>().is_err());
     }
 
-    /// A counter of its own, so the numbers do not depend on how many IDs
-    /// other tests in this binary took from the process-wide one.
     #[test]
     fn allocated_workspace_ids_are_short_base32_handles() {
-        let counter = AtomicUsize::new(FIRST_WORKSPACE_NUMBER);
-        let first = allocate_workspace_id(&counter).expect("first number");
-        let second = allocate_workspace_id(&counter).expect("second number");
+        let mut ids = WorkspaceIdAllocator::new();
+        let first = ids.try_allocate().expect("first number");
+        let second = ids.try_allocate().expect("second number");
         assert_eq!(first.to_string(), "w1");
         assert_eq!(second.to_string(), "w2");
 
-        let counter = AtomicUsize::new(32 * 32);
-        let thousandth = allocate_workspace_id(&counter).expect("1024th number");
+        let mut ids = WorkspaceIdAllocator { next: 32 * 32 };
+        let thousandth = ids.try_allocate().expect("1024th number");
         assert_eq!(thousandth.to_string(), "wZ0");
+    }
+
+    #[test]
+    fn separate_allocators_issue_independent_ids() {
+        let mut first = WorkspaceIdAllocator::new();
+        let mut second = WorkspaceIdAllocator::new();
+        assert_eq!(first.allocate(), second.allocate());
+        assert_ne!(first.allocate(), first.allocate());
     }
 
     #[test]
@@ -819,41 +853,44 @@ mod tests {
     #[test]
     fn reserving_restored_workspace_ids_prevents_reuse() {
         let restored: WorkspaceId = "wZ".parse().expect("canonical workspace id");
+        let mut ids = WorkspaceIdAllocator::new();
 
-        reserve_workspace_ids([&restored]);
+        ids.reserve([&restored]);
 
-        let generated = generate_workspace_id();
+        let generated = ids.allocate();
         assert_ne!(generated.to_string(), "wZ");
         assert!(generated.number() > 31);
     }
 
     #[test]
     fn workspace_id_allocation_refuses_to_wrap() {
-        let counter = AtomicUsize::new(usize::MAX - 1);
-        let last = allocate_workspace_id(&counter).expect("one number left");
+        let mut ids = WorkspaceIdAllocator {
+            next: usize::MAX - 1,
+        };
+        let last = ids.try_allocate().expect("one number left");
         assert_eq!(last.number(), usize::MAX - 1);
-        assert_eq!(allocate_workspace_id(&counter), None);
-        assert_eq!(allocate_workspace_id(&counter), None);
+        assert_eq!(ids.try_allocate(), None);
+        assert_eq!(ids.try_allocate(), None);
     }
 
     #[test]
     fn reserving_an_id_at_the_top_of_the_space_exhausts_allocation() {
         let restored = WorkspaceId::from_number(usize::MAX).expect("nonzero number");
-        let counter = AtomicUsize::new(FIRST_WORKSPACE_NUMBER);
+        let mut ids = WorkspaceIdAllocator::new();
 
-        reserve_workspace_numbers(&counter, [&restored]);
+        ids.reserve([&restored]);
 
-        assert_eq!(allocate_workspace_id(&counter), None);
+        assert_eq!(ids.try_allocate(), None);
     }
 
     #[test]
     fn reserving_never_moves_the_counter_back() {
         let restored = WorkspaceId::from_number(3).expect("nonzero number");
-        let counter = AtomicUsize::new(10);
+        let mut ids = WorkspaceIdAllocator { next: 10 };
 
-        reserve_workspace_numbers(&counter, [&restored]);
+        ids.reserve([&restored]);
 
-        let next = allocate_workspace_id(&counter).expect("numbers left");
+        let next = ids.try_allocate().expect("numbers left");
         assert_eq!(next.number(), 10);
     }
 
@@ -1134,7 +1171,7 @@ mod tests {
     #[test]
     fn cwd_purposes_preserve_missing_absolute_state_without_filesystem_checks() {
         let terminal = TerminalState::new(
-            TerminalId::alloc(),
+            crate::terminal::allocate_terminal_id(),
             PathBuf::from("/shepr-test-missing-cwd/agent"),
         );
         for purpose in [
@@ -1152,7 +1189,8 @@ mod tests {
     #[test]
     fn cwd_query_rejects_relative_and_deleted_state() {
         for path in ["relative", "/gone (deleted)"] {
-            let terminal = TerminalState::new(TerminalId::alloc(), PathBuf::from(path));
+            let terminal =
+                TerminalState::new(crate::terminal::allocate_terminal_id(), PathBuf::from(path));
             assert_eq!(
                 super::terminal_cwd(None, Some(&terminal), super::CwdPurpose::Save),
                 None,
@@ -1283,11 +1321,12 @@ mod tests {
         let cwd = PathBuf::from("/shepr-test-nonexistent/repo/sub");
 
         let ws = Workspace::test_from_pane(
+            test_workspace_id(),
             None,
             &cwd,
             pane,
             WorkspacePane::new(
-                PaneState::new(TerminalId::alloc()),
+                PaneState::new(crate::terminal::allocate_terminal_id()),
                 shepr_protocol::PanePublicNumber::FIRST,
             ),
         );

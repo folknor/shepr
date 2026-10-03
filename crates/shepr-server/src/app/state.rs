@@ -42,6 +42,10 @@ pub struct AppState {
     pub terminals:
         std::collections::HashMap<shepr_protocol::TerminalId, shepr_mux::terminal::TerminalState>,
     pub workspaces: Vec<Workspace>,
+    /// The allocator every workspace of this session takes its ID from.
+    /// Session restore moves it past the saved IDs before anything is
+    /// allocated from it, so IDs are unique among this state's workspaces.
+    pub(crate) workspace_ids: shepr_mux::workspace::WorkspaceIdAllocator,
     /// The pane's attached terminal, kept in sync by restore, workspace
     /// creation, split and removal (see `terminal_of`). This lets pane-originated events reach terminal
     /// metadata and runtimes without searching the workspace list.
@@ -384,6 +388,7 @@ impl AppState {
             clock_now: super::tests::test_clock().now,
             terminals: std::collections::HashMap::new(),
             workspaces: Vec::new(),
+            workspace_ids: shepr_mux::workspace::WorkspaceIdAllocator::new(),
             pane_terminal_ids: std::collections::HashMap::new(),
             bookmark: None,
             bookmark_position: 0,
@@ -421,14 +426,20 @@ impl AppState {
         }
     }
 
-    /// Replace the fixture workspace set and its pane index together.
+    /// Replace the fixture workspace set and its pane index together. The
+    /// state's allocator moves past the fixtures' IDs, so a workspace the
+    /// state creates later never repeats one.
     pub(crate) fn test_set_workspaces(&mut self, workspaces: Vec<Workspace>) {
+        self.workspace_ids
+            .reserve(workspaces.iter().map(|workspace| &workspace.id));
         self.workspaces = workspaces;
         self.test_reindex_panes();
     }
 
-    /// Add a fixture workspace with the same index update as live creation.
+    /// Add a fixture workspace with the same index update as live creation,
+    /// moving the state's allocator past its ID.
     pub(crate) fn test_push_workspace(&mut self, workspace: Workspace) {
+        self.workspace_ids.reserve([&workspace.id]);
         self.index_workspace_terminals(&workspace);
         self.workspaces.push(workspace);
     }

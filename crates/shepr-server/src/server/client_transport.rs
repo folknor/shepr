@@ -926,7 +926,13 @@ mod tests {
         let paths = shepr_paths::AppPaths::test_at(&scratch);
         let (tx, _rx) = mpsc::channel(crate::limits::API_REQUEST_CHANNEL_CAPACITY);
         let stop = Arc::new(shepr_api::ServerStopSignal::default());
-        let api = shepr_api::start_server(tx, Arc::clone(&stop), &paths).expect("shared socket");
+        let api = shepr_api::start_server(
+            tx,
+            Arc::clone(&stop),
+            &paths,
+            shepr_test_fixtures::fixed_boot_id(1),
+        )
+        .expect("shared socket");
         let (server_event_tx, mut events) = mpsc::channel(4);
         api.client_gate().open(Arc::new(ClientTransportHandler {
             server_event_tx,

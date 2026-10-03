@@ -94,11 +94,11 @@ fn changed_rows(
         // end with a lead whose other half is unchanged in the baseline,
         // which is valid once applied, so spans must never go through it.
         let recut;
-        let desired = if shepr_protocol::pane_row_is_normalized(&cells[..width]) {
+        let desired = if shepr_surface::pane_row::pane_row_is_normalized(&cells[..width]) {
             &cells[..width]
         } else {
             let mut row = cells[..width].to_vec();
-            shepr_protocol::normalize_pane_row(&mut row);
+            shepr_surface::pane_row::normalize_pane_row(&mut row);
             recut = row;
             &recut[..]
         };
@@ -168,7 +168,7 @@ fn retained_scrollbar_patch(
     let cells = buffer
         .content
         .iter()
-        .map(shepr_protocol::CellData::from_ratatui_cell)
+        .map(<shepr_protocol::CellData as shepr_surface::ratatui_conversion::CellDataExt>::from_ratatui_cell)
         .collect::<Vec<_>>();
     let mut rows = Vec::new();
     for (offset, cell) in cells.into_iter().enumerate() {
@@ -790,8 +790,8 @@ mod tests {
         let mut pane = shepr_protocol::PaneSurfacePane {
             pane_id: shepr_test_fixtures::id("w1:p1"),
             content_revision: 0,
-            rect: pane_layout.rect.into(),
-            inner_rect: content.into(),
+            rect: shepr_surface::ratatui_conversion::surface_rect(pane_layout.rect),
+            inner_rect: shepr_surface::ratatui_conversion::surface_rect(content),
             scrollbar_rect: None,
             scroll: None,
             focused: true,
@@ -996,7 +996,9 @@ mod tests {
         assert_eq!(applied.cells[0].symbol, "a");
         assert_eq!(applied.cells[1].symbol, " ");
         assert_eq!(applied.cells[1].grid_width, one);
-        assert!(shepr_protocol::pane_row_is_normalized(&applied.cells));
+        assert!(shepr_surface::pane_row::pane_row_is_normalized(
+            &applied.cells
+        ));
         // The shared row is untouched for the wider recipient.
         assert_eq!(patch.rows[0].cells[1].grid_width, two);
     }

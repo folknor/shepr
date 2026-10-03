@@ -247,7 +247,7 @@ impl Workspace {
         let geometry = geometry
             .pane_spawn_geometry(&prepared_layout, false, new_id, cell)
             .unwrap_or_else(|| geometry.sole_pane_spawn_geometry(cell));
-        let terminal = TerminalState::new(TerminalId::alloc(), cwd);
+        let terminal = TerminalState::new(crate::terminal::allocate_terminal_id(), cwd);
         if focus_new_pane {
             prepared_layout.focus_pane(new_id);
         }

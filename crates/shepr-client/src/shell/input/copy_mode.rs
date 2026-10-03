@@ -3,9 +3,9 @@
 //! (log lengths or content-free kinds instead).
 
 use crate::shell::ledger::Work;
-use crate::shell::overlays::text_editor::TextEditor;
 use crate::shell::state::{ClientCopySearch, ClientCopySelection, ClientShellMode};
 use crossterm::event::KeyCode;
+use shepr_termio::text_editor::TextEditor;
 
 use crate::shell::input::events::PaneInputBatchAccounting;
 use crate::shell::state::{

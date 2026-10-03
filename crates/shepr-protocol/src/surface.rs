@@ -188,6 +188,20 @@ pub struct SurfaceFrameMeta {
     pub(crate) hyperlinks: Vec<String>,
 }
 
+impl SurfaceFrameMeta {
+    pub fn width(&self) -> u16 {
+        self.width
+    }
+
+    pub fn height(&self) -> u16 {
+        self.height
+    }
+
+    pub fn hyperlinks(&self) -> &[String] {
+        &self.hyperlinks
+    }
+}
+
 impl From<&PaneSurfaceFrame> for SurfaceProjectionMeta {
     fn from(surface: &PaneSurfaceFrame) -> Self {
         Self {
@@ -214,7 +228,8 @@ impl SurfaceProjectionMeta {
         }
     }
 
-    pub(crate) fn into_surface(
+    /// The complete surface this metadata describes, with `cells` as its grid.
+    pub fn into_surface(
         self,
         boot_id: BootId,
         projection_revision: ProjectionRevision,

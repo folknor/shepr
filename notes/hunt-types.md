@@ -232,7 +232,7 @@ In the client shell, surface-local coordinates (from `PaneSurfacePane`,
 `PaneSurfaceSplit`, patch rows, the cursor) and screen coordinates (hits, frame
 cells) are both `Rect`/`(u16, u16)`, and the
 `layout.pane_surface.x.saturating_add(..)` translation is written in `compose`
-(twice), `apply_tagged_pane_surface_patch` and `compose_pane_surface`. Proposal:
+(twice), `apply_tagged_pane_surface_patch` and `shepr_surface::compose::Canvas::compose_pane`. Proposal:
 `LiveRow` or a `ScreenRow` from the cursor accessor, typed scrollbar fields,
 `RowView::y() -> ViewportRow`, private `AbsRow` with `checked_offset_from` and
 an `AbsRange`, row iterators and `Rect::viewport_row_at`, `Selection::range()`
@@ -300,11 +300,14 @@ Reported by terminal, foundation, client-core and contracts.
 
 ## TYP-064 - Wire grid cells: the wide-glyph tail is a sentinel and `FrameData` has no invariant
 
-A `FrameGrid` view with private fields now owns the shape, budget and
-hyperlink validation, reused by protocol and composition code. Still open:
-`FrameData` itself keeps public mutable fields (so a frame is valid only once
-checked, not by construction), a wide tail is still "`symbol` empty and
-`grid_width == One`" (`pane_row.rs::is_tail`), and `CellData::skip: bool` is a
+A `FrameGrid` view with private fields owns the shape, budget and hyperlink
+validation, and the client's composition target is `shepr_surface::compose::Canvas`,
+whose private frame keeps its cell count and link indices valid through every
+operation. Still open: `FrameData` itself keeps public mutable fields, so the
+wire value, the mux and server renderers that build it and the retained
+surfaces the client and server keep are valid only once checked, not by
+construction; a wide tail is still "`symbol` empty and `grid_width == One`"
+(`shepr-surface`'s `pane_row.rs::is_tail`), and `CellData::skip: bool` is a
 ratatui diff hint on the wire. Proposal: `GridCellWidth::{Grapheme, One,
 WideLead, WideTail}` and `try_from` deserialization into the validated grid.
 Reported by contracts and client-shell.

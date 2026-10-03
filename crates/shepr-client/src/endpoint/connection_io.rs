@@ -164,11 +164,32 @@ fn spawn_endpoint_reader(
                 &read_activity,
                 &endpoint_id,
                 generation,
-                shepr_protocol::surface_reuse::Decoder::default(),
+                shepr_surface::decode::Decoder::default(),
             );
         })?;
     Ok(())
 }
+
+/// Why the endpoint reader stopped: the framing layer failed to deliver a
+/// message, or a delivered message did not decode against the connection's
+/// surface baseline.
+#[derive(Debug)]
+enum EndpointReadError {
+    Framing(shepr_protocol::FramingError),
+    SurfaceDecode(shepr_surface::decode::SurfaceDecodeError),
+}
+
+impl std::fmt::Display for EndpointReadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Framing(error) => write!(f, "{error}"),
+            Self::SurfaceDecode(error) => write!(f, "surface decode error: {error}"),
+        }
+    }
+}
+
+// Display includes nested causes, so leave the source chain empty to avoid repeating them.
+impl std::error::Error for EndpointReadError {}
 
 /// Reads complete frames while retaining partial-read progress across nonblocking polls.
 fn server_reader_thread(
@@ -178,7 +199,7 @@ fn server_reader_thread(
     read_activity: &EndpointReadActivity,
     endpoint_id: &endpoint::ClientEndpointId,
     generation: u64,
-    mut surface_decoder: shepr_protocol::surface_reuse::Decoder,
+    mut surface_decoder: shepr_surface::decode::Decoder,
 ) {
     // The reader is a clone of the writer's stream, sharing one file description, which
     // the writer set nonblocking during assembly; no setup remains here.
@@ -191,8 +212,9 @@ fn server_reader_thread(
             break;
         }
 
-        let message =
-            shepr_protocol::read_message::<_, ServerMessage>(&mut stream).and_then(|message| {
+        let message = shepr_protocol::read_message::<_, ServerMessage>(&mut stream)
+            .map_err(EndpointReadError::Framing)
+            .and_then(|message| {
                 // clock-io-ok: stamps when this frame came off the transport, for health.
                 read_activity.record(
                     std::time::Instant::now(),
@@ -200,7 +222,7 @@ fn server_reader_thread(
                 );
                 surface_decoder
                     .decode_client(message)
-                    .map_err(shepr_protocol::FramingError::SurfaceDecode)
+                    .map_err(EndpointReadError::SurfaceDecode)
             });
         match message {
             Ok(msg) => {
@@ -215,7 +237,7 @@ fn server_reader_thread(
                     break;
                 }
             }
-            Err(shepr_protocol::FramingError::UnexpectedEof) => {
+            Err(EndpointReadError::Framing(shepr_protocol::FramingError::UnexpectedEof)) => {
                 debug!(
                     endpoint = %endpoint_id,
                     generation,
@@ -226,8 +248,8 @@ fn server_reader_thread(
                     ClientLoopEvent::ServerDisconnected {
                         endpoint_id: endpoint_id.clone(),
                         generation,
-                        error: framing_error_to_io(
-                            shepr_protocol::FramingError::UnexpectedEof,
+                        error: read_error_to_io(
+                            EndpointReadError::Framing(shepr_protocol::FramingError::UnexpectedEof),
                             endpoint_id.clone(),
                         ),
                     },
@@ -247,7 +269,7 @@ fn server_reader_thread(
                     ClientLoopEvent::ServerDisconnected {
                         endpoint_id: endpoint_id.clone(),
                         generation,
-                        error: framing_error_to_io(err, endpoint_id.clone()),
+                        error: read_error_to_io(err, endpoint_id.clone()),
                     },
                 );
                 break;
@@ -266,26 +288,34 @@ fn report_disconnect(
     event_tx.blocking_send(disconnect).ok();
 }
 
-fn framing_error_to_io(
-    error: shepr_protocol::FramingError,
+fn read_error_to_io(
+    error: EndpointReadError,
     endpoint_id: endpoint::ClientEndpointId,
 ) -> io::Error {
     let kind = match &error {
-        shepr_protocol::FramingError::UnexpectedEof => io::ErrorKind::UnexpectedEof,
-        shepr_protocol::FramingError::Io(error) => error.kind(),
-        _ => io::ErrorKind::InvalidData,
+        EndpointReadError::Framing(shepr_protocol::FramingError::UnexpectedEof) => {
+            io::ErrorKind::UnexpectedEof
+        }
+        EndpointReadError::Framing(shepr_protocol::FramingError::Io(error)) => error.kind(),
+        EndpointReadError::Framing(_) | EndpointReadError::SurfaceDecode(_) => {
+            io::ErrorKind::InvalidData
+        }
     };
     let framed = EndpointFramingError {
         endpoint_id,
         source: error,
     };
     let failure = match &framed.source {
-        shepr_protocol::FramingError::Io(error) => shepr_launch::EndpointFailure::from_error(error)
-            .with_context(&format!("endpoint {}", framed.endpoint_id)),
-        shepr_protocol::FramingError::UnexpectedEof => {
+        EndpointReadError::Framing(shepr_protocol::FramingError::Io(error)) => {
+            shepr_launch::EndpointFailure::from_error(error)
+                .with_context(&format!("endpoint {}", framed.endpoint_id))
+        }
+        EndpointReadError::Framing(shepr_protocol::FramingError::UnexpectedEof) => {
             shepr_launch::EndpointFailure::from_error(&io::Error::new(kind, framed))
         }
-        _ => shepr_launch::EndpointFailure::incompatible(framed.to_string()),
+        EndpointReadError::Framing(_) | EndpointReadError::SurfaceDecode(_) => {
+            shepr_launch::EndpointFailure::incompatible(framed.to_string())
+        }
     };
     io::Error::new(kind, failure)
 }
@@ -293,13 +323,16 @@ fn framing_error_to_io(
 #[derive(Debug)]
 struct EndpointFramingError {
     endpoint_id: endpoint::ClientEndpointId,
-    source: shepr_protocol::FramingError,
+    source: EndpointReadError,
 }
 
 impl std::fmt::Display for EndpointFramingError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(formatter, "endpoint {}: ", self.endpoint_id)?;
-        if matches!(&self.source, shepr_protocol::FramingError::UnexpectedEof) {
+        if matches!(
+            &self.source,
+            EndpointReadError::Framing(shepr_protocol::FramingError::UnexpectedEof)
+        ) {
             formatter.write_str("server closed connection")
         } else {
             write!(formatter, "{}", self.source)
@@ -341,8 +374,8 @@ mod tests {
     #[test]
     fn server_reader_errors_keep_eof_io_and_decode_causes() {
         let endpoint_id = endpoint::ClientEndpointId::Local;
-        let eof = framing_error_to_io(
-            shepr_protocol::FramingError::UnexpectedEof,
+        let eof = read_error_to_io(
+            EndpointReadError::Framing(shepr_protocol::FramingError::UnexpectedEof),
             endpoint_id.clone(),
         );
         assert_eq!(eof.kind(), io::ErrorKind::UnexpectedEof);
@@ -350,20 +383,22 @@ mod tests {
         assert!(eof.to_string().contains("endpoint local"));
         assert!(!eof.to_string().contains("generation"));
 
-        let io_error = framing_error_to_io(
-            shepr_protocol::FramingError::Io(io::Error::new(
+        let io_error = read_error_to_io(
+            EndpointReadError::Framing(shepr_protocol::FramingError::Io(io::Error::new(
                 io::ErrorKind::BrokenPipe,
                 "peer reset",
-            )),
+            ))),
             endpoint_id.clone(),
         );
         assert_eq!(io_error.kind(), io::ErrorKind::BrokenPipe);
         assert!(io_error.to_string().contains("peer reset"));
 
-        let decode_error = framing_error_to_io(
-            shepr_protocol::FramingError::LimitExceeded(shepr_protocol::LimitExceeded::new(
-                shepr_protocol::Limit::new(shepr_protocol::LimitKind::MessageBytes, 16),
-                32,
+        let decode_error = read_error_to_io(
+            EndpointReadError::Framing(shepr_protocol::FramingError::LimitExceeded(
+                shepr_protocol::LimitExceeded::new(
+                    shepr_protocol::Limit::new(shepr_protocol::LimitKind::MessageBytes, 16),
+                    32,
+                ),
             )),
             endpoint_id.clone(),
         );
@@ -374,13 +409,11 @@ mod tests {
                 .contains("message of 32 bytes exceeds its limit of 16 bytes")
         );
 
-        let surface_error = framing_error_to_io(
-            shepr_protocol::FramingError::SurfaceDecode(
-                shepr_protocol::surface_reuse::SurfaceDecodeError::WithSubject {
-                    source: Box::new(
-                        shepr_protocol::surface_reuse::SurfaceDecodeError::BaselineMismatch,
-                    ),
-                    subject: Box::new(shepr_protocol::surface_reuse::SurfaceDecodeSubject {
+        let surface_error = read_error_to_io(
+            EndpointReadError::SurfaceDecode(
+                shepr_surface::decode::SurfaceDecodeError::WithSubject {
+                    source: Box::new(shepr_surface::decode::SurfaceDecodeError::BaselineMismatch),
+                    subject: Box::new(shepr_surface::decode::SurfaceDecodeSubject {
                         boot_id: crate::tests::test_boot_id("boot"),
                         projection_revision: shepr_protocol::ProjectionRevision::new(2),
                         surface_revision: shepr_protocol::SurfaceRevision::new(3),
@@ -406,6 +439,7 @@ mod tests {
                 .contains(&format!("boot {}", crate::tests::test_boot_id("boot")))
         );
         assert!(surface_error.to_string().contains("projection revision 2"));
+        assert!(surface_error.to_string().contains("surface decode error: "));
     }
 
     #[tokio::test]

@@ -107,6 +107,7 @@ pub(super) fn handle_connection(
     app_requests: &ConnectionAdmission,
     api_tx: &ApiRequestSender,
     server_stop: &crate::ServerStopSignal,
+    boot_id: &shepr_protocol::BootId,
     gate: &ClientGate,
 ) -> std::io::Result<()> {
     // Every answer is a bounded write, so a stalled peer cannot hold a slot;
@@ -149,7 +150,7 @@ pub(super) fn handle_connection(
     let method_traits = request.method.traits();
     crate::logging::api_request_started(&request_id, method_traits);
 
-    let response = match route_request(request, server_stop, gate) {
+    let response = match route_request(request, server_stop, boot_id, gate) {
         Route::Immediate(response) => response,
         Route::App(request) => {
             let Ok(app_slot) = app_requests.try_acquire() else {
@@ -209,6 +210,7 @@ enum Route {
 fn route_request(
     request: Request,
     server_stop: &crate::ServerStopSignal,
+    boot_id: &shepr_protocol::BootId,
     gate: &ClientGate,
 ) -> Route {
     let Request { id, method } = request;
@@ -221,7 +223,7 @@ fn route_request(
                     // the separate machine-comparison field in this response.
                     version: shepr_protocol::build_version(),
                     build_id: shepr_protocol::BuildIdentity::for_this_build(),
-                    boot_id: shepr_protocol::BootId::for_this_process(),
+                    boot_id: boot_id.clone(),
                     stopping: server_stop.is_requested(),
                     starting: !gate.is_open(),
                 },
@@ -231,12 +233,13 @@ fn route_request(
             ));
         }
         MethodRoute::Socket(SocketMethod::ServerStop(_)) => {
-            return Route::Immediate(stop_server(&id, None, server_stop));
+            return Route::Immediate(stop_server(&id, None, boot_id, server_stop));
         }
         MethodRoute::Socket(SocketMethod::ServerStopIfBoot(params)) => {
             return Route::Immediate(stop_server(
                 &id,
                 Some(&params.expected_boot_id),
+                boot_id,
                 server_stop,
             ));
         }
@@ -257,6 +260,7 @@ fn route_request(
 fn stop_server(
     id: &str,
     expected_boot_id: Option<&shepr_protocol::BootId>,
+    actual: &shepr_protocol::BootId,
     server_stop: &crate::ServerStopSignal,
 ) -> crate::error::EncodedApiResponse {
     // The conditional operation has its own method name because this request
@@ -270,8 +274,7 @@ fn stop_server(
     if let Some(expected) = expected_boot_id {
         // A stop aimed at one boot must not stop another: the caller observed
         // that instance, and the occupant may have been replaced since.
-        let actual = shepr_protocol::BootId::for_this_process();
-        if &actual != expected {
+        if actual != expected {
             return error_response_json(
                 id,
                 crate::error::ApiErrorCode::ServerBootMismatch,
@@ -460,6 +463,11 @@ mod tests {
         crate::ServerStopSignal::default()
     }
 
+    /// The boot of the server these tests stand in for.
+    fn this_boot() -> shepr_protocol::BootId {
+        shepr_protocol::BootId::from_process_clock(1, Ok(Duration::ZERO))
+    }
+
     /// Routes a request as a connection does, dispatching an app-bound one.
     fn handle_request(
         request: Request,
@@ -467,7 +475,7 @@ mod tests {
         server_stop: &crate::ServerStopSignal,
         gate: &ClientGate,
     ) -> crate::error::EncodedApiResponse {
-        match route_request(request, server_stop, gate) {
+        match route_request(request, server_stop, &this_boot(), gate) {
             Route::Immediate(response) => response,
             Route::App(request) => dispatch_to_app(request, api_tx),
         }
@@ -494,6 +502,7 @@ mod tests {
             app_requests,
             api_tx,
             &running(),
+            &this_boot(),
             &ClientGate::default(),
         )
     }
@@ -844,6 +853,7 @@ mod tests {
         let ResponseResult::Pong { boot_id, .. } = ping.result else {
             panic!("ping did not answer with a pong");
         };
+        assert_eq!(boot_id, this_boot(), "ping reports the boot it was given");
         let stop_with = |expected_boot_id: Option<shepr_protocol::BootId>,
                          stop: &crate::ServerStopSignal| {
             let method = match expected_boot_id {
@@ -868,7 +878,10 @@ mod tests {
 
         let other_boot = running();
         let refused = stop_with(
-            Some(format!("{boot_id}0").parse().expect("other boot identity")),
+            Some(shepr_protocol::BootId::from_process_clock(
+                boot_id.process_id().unwrap_or_default().wrapping_add(1),
+                Ok(Duration::ZERO),
+            )),
             &other_boot,
         );
         assert_eq!(refused["error"]["code"], "server_boot_mismatch");

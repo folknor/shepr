@@ -16,6 +16,7 @@ use crate::shell::state::{
 };
 
 use shepr_protocol::{PaneSurfaceSplit, SurfaceRect};
+use shepr_surface::ratatui_conversion::FrameDataExt as _;
 
 use crossterm::event::{MouseEvent, MouseEventKind};
 

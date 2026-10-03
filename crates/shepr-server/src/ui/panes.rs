@@ -15,6 +15,7 @@ use shepr_mux::pane::{PaneRuntime, PaneRuntimeRegistry};
 use shepr_mux::terminal::{Label, PaneStartFailure};
 use shepr_mux::workspace::PaneChromeInfo as PaneInfo;
 use shepr_protocol::{CellData, FrameData, WireColor};
+use shepr_surface::ratatui_conversion::WireColorExt as _;
 
 pub(crate) fn pane_is_scrolled_back(rt: &PaneRuntime) -> bool {
     rt.read()

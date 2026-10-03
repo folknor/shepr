@@ -9,13 +9,13 @@ fn receive_message(receiver: &RenderLaneReceiver) -> (Vec<u8>, ServerMessage) {
 }
 
 fn decode_surface_message(
-    decoder: &mut shepr_protocol::surface_reuse::Decoder,
+    decoder: &mut shepr_surface::decode::Decoder,
     message: ServerMessage,
 ) -> shepr_protocol::PaneSurfaceFrame {
     match decoder.decode(message).expect("decode surface message") {
-        shepr_protocol::surface_reuse::DecodedServerMessage::Wire(ServerMessage::PaneSurface(
-            surface,
-        )) => surface,
+        shepr_surface::decode::DecodedServerMessage::Wire(ServerMessage::PaneSurface(surface)) => {
+            surface
+        }
         other => panic!("expected decoded pane surface, got {other:?}"),
     }
 }
@@ -26,7 +26,7 @@ async fn surface_delta_reconstructs_metadata_text_and_hyperlinks() {
         retained_test_server_with_control(b"initial text");
     server.render_now();
     let (initial_bytes, initial_message) = receive_message(&render_rx);
-    let mut decoder = shepr_protocol::surface_reuse::Decoder::default();
+    let mut decoder = shepr_surface::decode::Decoder::default();
     let initial = decode_surface_message(&mut decoder, initial_message);
     assert_eq!(
         &initial,

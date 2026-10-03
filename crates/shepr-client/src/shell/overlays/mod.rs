@@ -11,7 +11,6 @@ pub(in crate::shell) mod global_menu;
 pub(in crate::shell) mod machine_diagnostics;
 pub(in crate::shell) mod notices;
 mod overlay_input;
-pub(in crate::shell) mod preferences;
 pub(in crate::shell) mod text_editor;
 pub(in crate::shell) mod transient_error;
 

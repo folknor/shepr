@@ -1,9 +1,7 @@
 use std::fmt;
-use std::num::NonZeroUsize;
+use std::num::{NonZeroU64, NonZeroUsize};
 use std::str::FromStr;
-use std::sync::OnceLock;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 const PUBLIC_ID_ALPHABET: &[u8; 32] = b"123456789ABCDEFGHJKMNPQRSTVWXYZ0";
 
@@ -246,47 +244,26 @@ impl<'de> serde::Deserialize<'de> for PublicPaneId {
 ///
 /// A pane refers to its terminal by this identity, but callers must not derive
 /// it from a pane id or layout position. A value comes from
-/// [`TerminalId::alloc`] or from parsing text in the exact form `alloc` writes
-/// (`term_<stamp>_<counter>`), and deserialization goes through the same parse.
+/// [`TerminalId::from_clock_and_counter`], which the layer that creates
+/// terminals calls with its own stamp and counter, or from parsing text in the
+/// exact form that writes (`term_<stamp>_<counter>`), and deserialization goes
+/// through the same parse.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(try_from = "String")]
 pub struct TerminalId(String);
 
-// Starting at one keeps generated terminal ID suffixes nonzero.
-static NEXT_TERMINAL_ID: AtomicU64 = AtomicU64::new(1);
-
-/// The stamp every terminal ID of this process carries, taken at the first
-/// allocation. It only has to tell one server lifetime from another (the
-/// counter restarts with each process), so an id remembered from an earlier
-/// server never names a new terminal. It is identity, not a time any
-/// decision reads, which is why it is sampled here once rather than passed in
-/// through the clock seam.
-static TERMINAL_ID_STAMP: OnceLock<Result<Duration, Duration>> = OnceLock::new();
-
 impl TerminalId {
-    pub fn alloc() -> Self {
-        let stamp =
-            *TERMINAL_ID_STAMP.get_or_init(|| match SystemTime::now().duration_since(UNIX_EPOCH) {
-                Ok(duration) => Ok(duration),
-                Err(error) => Err(error.duration()),
-            });
-        // One allocation per terminal never exhausts a u64; wrapping would
-        // repeat an earlier id, so exhaustion is refused rather than wrapped.
-        let counter =
-            match NEXT_TERMINAL_ID.try_update(Ordering::Relaxed, Ordering::Relaxed, |counter| {
-                counter.checked_add(1)
-            }) {
-                Ok(counter) => counter,
-                Err(_) => panic!("terminal id allocation counter exhausted"),
-            };
-        Self::from_clock_and_counter(stamp, counter)
-    }
-
     pub fn as_str(&self) -> &str {
         &self.0
     }
 
-    fn from_clock_and_counter(since_epoch: Result<Duration, Duration>, counter: u64) -> Self {
+    /// The terminal ID with `stamp` `since_epoch` (`Err` for a clock before
+    /// the epoch, holding how far before) and `counter`, which is nonzero
+    /// because parsing refuses a zero one.
+    pub fn from_clock_and_counter(
+        since_epoch: Result<Duration, Duration>,
+        counter: NonZeroU64,
+    ) -> Self {
         let micros = match since_epoch {
             Ok(duration) => duration.as_micros().to_string(),
             Err(duration) => {
@@ -298,7 +275,8 @@ impl TerminalId {
     }
 }
 
-/// Text that is not a terminal ID in the form [`TerminalId::alloc`] writes.
+/// Text that is not a terminal ID in the form
+/// [`TerminalId::from_clock_and_counter`] writes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TerminalIdParseError;
 
@@ -323,7 +301,7 @@ impl FromStr for TerminalId {
         let micros = Duration::from_micros(micros.parse().map_err(|_| TerminalIdParseError)?);
         let counter = u64::from_str_radix(counter, 16)
             .ok()
-            .filter(|counter| *counter > 0)
+            .and_then(NonZeroU64::new)
             .ok_or(TerminalIdParseError)?;
         let stamp = if before_epoch {
             Err(micros)
@@ -331,7 +309,7 @@ impl FromStr for TerminalId {
             Ok(micros)
         };
         // The number parsers accept signs, leading zeros and upper-case hex;
-        // re-encoding and comparing refuses every spelling `alloc` never writes.
+        // re-encoding and comparing refuses every other spelling.
         Some(Self::from_clock_and_counter(stamp, counter))
             .filter(|id| id.0 == value)
             .ok_or(TerminalIdParseError)
@@ -459,14 +437,20 @@ mod public_pane_id_tests {
 
 #[cfg(test)]
 mod terminal_id_tests {
+    use std::num::NonZeroU64;
     use std::time::Duration;
 
     use super::TerminalId;
 
+    fn counter(value: u64) -> NonZeroU64 {
+        NonZeroU64::new(value).expect("nonzero test counter")
+    }
+
     #[test]
     fn terminal_id_clock_encoding_distinguishes_before_epoch_from_epoch() {
-        let before_epoch = TerminalId::from_clock_and_counter(Err(Duration::from_micros(7)), 1);
-        let at_epoch = TerminalId::from_clock_and_counter(Ok(Duration::ZERO), 2);
+        let before_epoch =
+            TerminalId::from_clock_and_counter(Err(Duration::from_micros(7)), counter(1));
+        let at_epoch = TerminalId::from_clock_and_counter(Ok(Duration::ZERO), counter(2));
 
         assert_eq!(before_epoch.as_str(), "term_before_7_1");
         assert_eq!(at_epoch.as_str(), "term_0_2");
@@ -475,8 +459,9 @@ mod terminal_id_tests {
 
     #[test]
     fn terminal_id_clock_and_counter_fields_have_unambiguous_boundaries() {
-        let first = TerminalId::from_clock_and_counter(Ok(Duration::from_micros(1)), 0x11);
-        let second = TerminalId::from_clock_and_counter(Ok(Duration::from_micros(0x11)), 1);
+        let first = TerminalId::from_clock_and_counter(Ok(Duration::from_micros(1)), counter(0x11));
+        let second =
+            TerminalId::from_clock_and_counter(Ok(Duration::from_micros(0x11)), counter(1));
 
         assert_eq!(first.as_str(), "term_1_11");
         assert_eq!(second.as_str(), "term_17_1");
@@ -484,9 +469,9 @@ mod terminal_id_tests {
     }
 
     #[test]
-    fn allocated_terminal_ids_parse_back_and_differ() {
-        let first = TerminalId::alloc();
-        let second = TerminalId::alloc();
+    fn terminal_ids_parse_back_and_keep_their_wire_encoding() {
+        let first = TerminalId::from_clock_and_counter(Ok(Duration::from_micros(40)), counter(1));
+        let second = TerminalId::from_clock_and_counter(Ok(Duration::from_micros(40)), counter(2));
 
         assert_ne!(first, second);
         assert_eq!(first.as_str().parse::<TerminalId>(), Ok(first.clone()));
@@ -502,7 +487,22 @@ mod terminal_id_tests {
     }
 
     #[test]
-    fn terminal_ids_refuse_every_spelling_alloc_never_writes() {
+    fn constructed_terminal_ids_round_trip_through_parsing() {
+        let stamps = [
+            Ok(Duration::ZERO),
+            Ok(Duration::from_micros(1_700_000_000_000_000)),
+            Err(Duration::from_micros(7)),
+        ];
+        for stamp in stamps {
+            for value in [1, 0xff, u64::MAX] {
+                let id = TerminalId::from_clock_and_counter(stamp, counter(value));
+                assert_eq!(id.as_str().parse::<TerminalId>(), Ok(id.clone()), "{id}");
+            }
+        }
+    }
+
+    #[test]
+    fn terminal_ids_refuse_every_noncanonical_spelling() {
         for canonical in ["term_0_1", "term_before_7_1", "term_17_ff"] {
             assert!(canonical.parse::<TerminalId>().is_ok(), "{canonical}");
         }

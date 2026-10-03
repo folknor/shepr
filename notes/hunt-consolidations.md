@@ -134,7 +134,7 @@ filters controls and caps at `AGENT_OSC_MAX_CHARS` (chars), termio
 has a reason, but nothing owns the rule. Word: mux `text_class`
 (`COPY_MODE_WORD_SEPARATORS`) for copy-mode motions, client
 `word_bounds::is_word_separator` (including CJK punctuation) for double-click,
-and `TextEditor::word_boundary`. The first two apply to the same pane text and
+and termio's `TextEditor::word_boundary`. The first two apply to the same pane text and
 differ; whether that is intended is written nowhere. Reported by terminal,
 client-shell and contracts.
 

@@ -168,15 +168,29 @@ pub(crate) trait WorkspaceFixture: Sized {
     fn resolved_identity_cwd(&self) -> Option<PathBuf>;
 }
 
+/// The allocator this crate's fixture workspaces share, so every fixture in
+/// the test binary has its own ID, as workspaces of one session do. A state
+/// that takes a fixture moves its own allocator past the fixture's ID
+/// (`AppState::test_push_workspace`, `test_set_workspaces`).
+fn next_fixture_workspace_id() -> shepr_protocol::WorkspaceId {
+    static TEST_WORKSPACE_IDS: std::sync::Mutex<shepr_mux::workspace::WorkspaceIdAllocator> =
+        std::sync::Mutex::new(shepr_mux::workspace::WorkspaceIdAllocator::new());
+    TEST_WORKSPACE_IDS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .allocate()
+}
+
 impl WorkspaceFixture for Workspace {
     fn test_new(name: &str) -> Self {
         let identity_cwd = PathBuf::from("/");
         Self::test_from_pane(
+            next_fixture_workspace_id(),
             Some(name.to_string()),
             &identity_cwd,
             PaneId::alloc(),
             WorkspacePane::new(
-                PaneState::new(TerminalId::alloc()),
+                PaneState::new(shepr_mux::terminal::allocate_terminal_id()),
                 shepr_protocol::PanePublicNumber::FIRST,
             ),
         )
@@ -329,9 +343,9 @@ impl TerminalStateFixture for TerminalState {
 }
 
 /// A canonical workspace ID that no live test workspace holds, for public
-/// pane IDs a pane kept from a workspace it has left. Workspace IDs come from
-/// a process-wide counter that tests never drive to the top of the number
-/// space, so this one is never allocated.
+/// pane IDs a pane kept from a workspace it has left. It spells `usize::MAX`,
+/// the number a `WorkspaceIdAllocator` keeps as its exhaustion mark and never
+/// hands out, so no allocator issues it to a workspace.
 pub(crate) fn retired_workspace_id() -> shepr_protocol::WorkspaceId {
     shepr_protocol::WorkspaceId::from_number(usize::MAX).expect("nonzero public number")
 }

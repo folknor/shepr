@@ -58,13 +58,15 @@ impl AgentReportHarness {
         let mut app = App::with_paths(&config, &paths, lease, AppPolicy::Suspended, app_clock(at));
 
         let pane = shepr_core::layout::PaneId::alloc();
-        let terminal_id = shepr_protocol::TerminalId::alloc();
+        let terminal_id = shepr_mux::terminal::allocate_terminal_id();
         let mut terminal = TerminalState::new(terminal_id.clone(), root.to_path_buf());
         terminal
             .ownership_mut()
             .set_detected_agent_process_at(agent, at.monotonic);
         app.state.terminals.insert(terminal_id.clone(), terminal);
+        let workspace_id = app.state.workspace_ids.allocate();
         app.state.test_push_workspace(Workspace::test_from_pane(
+            workspace_id,
             Some("agent-report-contract".to_owned()),
             root,
             pane,

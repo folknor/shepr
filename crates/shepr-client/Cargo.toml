@@ -21,6 +21,7 @@ shepr-paths = { path = "../shepr-paths" }
 shepr-platform = { path = "../shepr-platform" }
 shepr-protocol = { path = "../shepr-protocol" }
 shepr-remote = { path = "../shepr-remote" }
+shepr-surface = { path = "../shepr-surface" }
 shepr-term = { path = "../shepr-term" }
 shepr-termio = { path = "../shepr-termio" }
 

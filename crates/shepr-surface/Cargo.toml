@@ -1,0 +1,13 @@
+[package]
+name = "shepr-surface"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+ratatui = { workspace = true }
+shepr-protocol = { path = "../shepr-protocol" }
+shepr-term = { path = "../shepr-term" }
+
+[lints]
+workspace = true

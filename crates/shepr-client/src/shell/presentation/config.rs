@@ -7,7 +7,7 @@ use crate::shell::state::{
 };
 use shepr_protocol::ClientSurfaceSize;
 
-use crate::shell::overlays::preferences;
+use crate::shell::sidebar::preferences;
 
 impl ClientShellState {
     pub(in crate::shell) fn persist_chrome_preferences(&mut self, outcome: &mut ClientShellInput) {
@@ -22,7 +22,7 @@ impl ClientShellState {
         // bring it back if the key were later removed from the config.
         .without_configured(self.config.preferences.configured);
         if let Err(error) = preferences::store(path, &preferences) {
-            self.set_endpoint_error(error, self.now);
+            self.set_endpoint_error(error.to_string(), self.now);
             outcome.repaint = true;
         }
     }
@@ -73,7 +73,7 @@ impl ClientShellConfig {
         self,
         state_dir: &std::path::Path,
         socket_path: &std::path::Path,
-    ) -> std::io::Result<Self> {
+    ) -> Result<Self, preferences::PreferencesProbeError> {
         let path = preferences::path_for_local_endpoint(state_dir, socket_path);
         preferences::probe_writable(&path)?;
         Ok(self.with_preferences_path(path))

@@ -4,6 +4,7 @@ use std::sync::Arc;
 use crate::app;
 use crate::server::clients::ClientPaneIdentity;
 use shepr_protocol::FrameData;
+use shepr_surface::ratatui_conversion::surface_rect;
 
 #[derive(Clone)]
 pub(super) struct RenderedPaneSurface {
@@ -147,9 +148,9 @@ pub(super) fn render_pane_surface(
             let mut surface_pane = shepr_protocol::PaneSurfacePane {
                 pane_id,
                 content_revision: 0,
-                rect: pane.rect.into(),
-                inner_rect: pane.inner_rect.into(),
-                scrollbar_rect: pane.scrollbar_rect.map(Into::into),
+                rect: surface_rect(pane.rect),
+                inner_rect: surface_rect(pane.inner_rect),
+                scrollbar_rect: pane.scrollbar_rect.map(surface_rect),
                 scroll: None,
                 focused: pane.is_focused,
                 mouse_reporting: false,
@@ -185,7 +186,7 @@ pub(super) fn render_pane_surface(
                 direction: split.direction.into(),
                 pos: split.pos,
                 area: split.area.into(),
-                hit_rect: hit_rect.into(),
+                hit_rect: surface_rect(hit_rect),
                 path: split.path.clone(),
             })
         })

@@ -5,7 +5,7 @@ use crate::shell_runtime::{
     ShellInputDisposition, finish_client_shell_input, install_client_shell_snapshot,
 };
 use crate::{endpoint, shell, state};
-use shepr_protocol::surface_reuse::{DecodedClientServerMessage, DecodedWireServerMessage};
+use shepr_surface::decode::{DecodedClientServerMessage, DecodedWireServerMessage};
 use std::io;
 use tracing::warn;
 

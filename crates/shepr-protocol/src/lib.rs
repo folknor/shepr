@@ -1,4 +1,7 @@
-//! Shared wire protocol and presentation encoding code.
+//! The wire between shepr processes: its types, the positional codec, frame
+//! framing and the connection preamble. What a surface means (delta planning,
+//! the client's decoder baseline, ratatui conversion, wide-glyph repair and
+//! frame composition) lives in `shepr-surface`, above this crate.
 
 mod build;
 pub use build::{BuildIdentity, BuildIdentityParseError, BuildVersion, PACKAGE_VERSION};
@@ -14,18 +17,14 @@ mod input;
 mod limit;
 mod limits;
 mod message;
-mod pane_row;
 pub mod preamble;
 mod projection;
-mod ratatui_conversion;
 mod remote_path;
 mod revision;
 pub use remote_path::RemotePath;
 mod status;
 mod style;
 mod surface;
-pub mod surface_delta;
-pub mod surface_reuse;
 mod theme_conversion;
 pub use limits::{
     BUILD_ID, InputBatchCharge, MAX_CELL_SIZE_PX, MAX_CLIENT_MESSAGE_SIZE,
@@ -46,7 +45,6 @@ pub use ids::{TerminalId, TerminalIdParseError, WorkspaceId, WorkspaceIdParseErr
 pub use input::*;
 pub use limit::{Limit, LimitExceeded, LimitKind};
 pub use message::*;
-pub use pane_row::{blank_pane_cell, normalize_pane_row, pane_row_is_normalized};
 pub use projection::*;
 pub use revision::*;
 pub use status::*;

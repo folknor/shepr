@@ -1,19 +1,21 @@
-//! Sparse changed-cell planning for typed surface updates.
+//! Sparse changed-cell planning for typed surface updates: the server's choice
+//! between sending a full surface and an update against a client's committed
+//! baseline.
 
-use serde::Serialize;
-
-use super::{
+use shepr_protocol::{
     CellData, MAX_SURFACE_HYPERLINKS, MAX_SURFACE_PANES, MAX_SURFACE_PATCH_SPANS,
     MAX_SURFACE_SPLIT_PATH, MAX_SURFACE_SPLITS, PaneSurfaceFrame, PaneSurfacePatchRow,
     ServerMessage,
 };
+
+use crate::decode::Baseline;
 
 #[derive(Debug)]
 pub enum SurfaceDeltaError {
     InvalidGrid,
     InvalidRows(&'static str),
     SpanOutOfBounds,
-    Encoding(super::codec::CodecError),
+    Encoding(shepr_protocol::codec::CodecError),
 }
 
 impl std::fmt::Display for SurfaceDeltaError {
@@ -45,7 +47,7 @@ fn metadata_fits(surface: &PaneSurfaceFrame) -> bool {
 fn unchanged_plan(
     last: &PaneSurfaceFrame,
     surface: &PaneSurfaceFrame,
-    baseline: &super::surface_reuse::Baseline<'_>,
+    baseline: &Baseline<'_>,
 ) -> Option<SurfaceDeltaPlan> {
     if !baseline.accepts_surface(surface)
         || surface.projection_revision != last.projection_revision
@@ -64,7 +66,7 @@ fn unchanged_plan(
 fn unchanged_message(
     last: &PaneSurfaceFrame,
     surface: &PaneSurfaceFrame,
-    baseline: &super::surface_reuse::Baseline<'_>,
+    baseline: &Baseline<'_>,
 ) -> SurfaceDeltaPlan {
     // This path and unchanged_plan both require equal projection metadata at
     // the same projection revision, so Baseline::update emits Patch metadata
@@ -94,8 +96,10 @@ pub(crate) fn apply_rows(
     height: u16,
     rows: &[PaneSurfacePatchRow],
 ) -> Result<(), SurfaceDeltaError> {
-    super::FrameGrid::new(cells, width, height).map_err(|_| SurfaceDeltaError::InvalidGrid)?;
-    crate::validate_patch_rows(width, height, rows).map_err(SurfaceDeltaError::InvalidRows)?;
+    shepr_protocol::FrameGrid::new(cells, width, height)
+        .map_err(|_| SurfaceDeltaError::InvalidGrid)?;
+    shepr_protocol::validate_patch_rows(width, height, rows)
+        .map_err(SurfaceDeltaError::InvalidRows)?;
     for row in rows {
         let start = usize::from(row.y) * usize::from(width) + usize::from(row.x);
         let end = start + row.cells.len();
@@ -156,8 +160,8 @@ fn changed_rows<'a>(
     Some(rows)
 }
 
-fn encoded_size(value: &impl Serialize) -> Result<usize, SurfaceDeltaError> {
-    super::codec::encoded_len(value).map_err(SurfaceDeltaError::Encoding)
+fn encoded_size(message: &ServerMessage) -> Result<usize, SurfaceDeltaError> {
+    shepr_protocol::codec::encoded_len(message).map_err(SurfaceDeltaError::Encoding)
 }
 
 /// Result of comparing a full candidate with its committed surface baseline.
@@ -174,12 +178,13 @@ pub fn message(
     last: &PaneSurfaceFrame,
     surface: &PaneSurfaceFrame,
 ) -> Result<SurfaceDeltaPlan, SurfaceDeltaError> {
-    let baseline = super::surface_reuse::Baseline::new(
+    let baseline = Baseline::new(
         &last.boot_id,
         last.projection_revision,
         last.surface_revision,
     );
-    let Some(expected_cells) = super::surface_grid_size(surface.frame.width, surface.frame.height)
+    let Some(expected_cells) =
+        shepr_protocol::surface_grid_size(surface.frame.width, surface.frame.height)
     else {
         return Ok(unchanged_plan(last, surface, &baseline).unwrap_or(SurfaceDeltaPlan::Full));
     };
@@ -191,13 +196,12 @@ pub fn message(
     {
         return Ok(unchanged_plan(last, surface, &baseline).unwrap_or(SurfaceDeltaPlan::Full));
     }
-    // Every cell has a string length prefix, a grid-width discriminant, two
-    // color discriminants, a skip byte and a hyperlink option tag: at least six
-    // bytes, even ignoring its symbol and style. This lower bound avoids another
-    // full-grid serialization pass on this per-client path while guaranteeing
-    // any chosen cell delta is smaller. It may miss useful deltas on small grids
-    // or when most of the full message consists of metadata.
-    let full_size = expected_cells.saturating_mul(6);
+    // A lower bound on the full message's size from the smallest encoded cell.
+    // This avoids another full-grid serialization pass on this per-client path
+    // while guaranteeing any chosen cell delta is smaller. It may miss useful
+    // deltas on small grids or when most of the full message consists of
+    // metadata.
+    let full_size = expected_cells.saturating_mul(crate::limits::MIN_ENCODED_CELL_BYTES);
     let Some(rows) = changed_rows(&last.frame.cells, &surface.frame.cells, surface.frame.width)
     else {
         return Ok(SurfaceDeltaPlan::Full);
@@ -240,10 +244,10 @@ mod tests {
 
     fn surface() -> PaneSurfaceFrame {
         PaneSurfaceFrame {
-            boot_id: "1-1".into(),
-            projection_revision: super::super::ProjectionRevision::new(1),
-            surface_revision: super::super::SurfaceRevision::new(1),
-            frame: super::super::FrameData::blank(200, 100),
+            boot_id: "1-1".parse().expect("canonical test boot id"),
+            projection_revision: shepr_protocol::ProjectionRevision::new(1),
+            surface_revision: shepr_protocol::SurfaceRevision::new(1),
+            frame: shepr_protocol::FrameData::blank(200, 100),
             panes: Vec::new(),
             splits: Vec::new(),
         }
@@ -253,7 +257,7 @@ mod tests {
     fn truncated_candidate_cannot_be_reported_as_an_unchanged_grid() {
         let last = surface();
         let mut next = last.clone();
-        next.surface_revision = super::super::SurfaceRevision::new(2);
+        next.surface_revision = shepr_protocol::SurfaceRevision::new(2);
         next.frame.cells.pop();
         assert!(matches!(
             message(&last, &next).expect("planning"),
@@ -266,7 +270,7 @@ mod tests {
         let mut last = surface();
         last.frame.hyperlinks = vec!["https://example.test/".repeat(4096)];
         let mut next = last.clone();
-        next.surface_revision = super::super::SurfaceRevision::new(2);
+        next.surface_revision = shepr_protocol::SurfaceRevision::new(2);
         next.frame.cells[0].symbol = "z".into();
         let delta = match message(&last, &next).expect("planning") {
             SurfaceDeltaPlan::Compact(delta) => delta,
@@ -275,7 +279,7 @@ mod tests {
         let full = ServerMessage::PaneSurface(next.clone());
         assert!(encoded_size(&delta).expect("size") < encoded_size(&full).expect("size"));
         assert!(encoded_size(&delta).expect("size") < 1024);
-        let mut decoder = super::super::surface_reuse::Decoder::default();
+        let mut decoder = crate::decode::Decoder::default();
         decoder
             .decode(ServerMessage::PaneSurface(last))
             .expect("baseline");
@@ -287,7 +291,7 @@ mod tests {
     fn dense_changes_use_the_full_surface() {
         let last = surface();
         let mut next = last.clone();
-        next.surface_revision = super::super::SurfaceRevision::new(2);
+        next.surface_revision = shepr_protocol::SurfaceRevision::new(2);
         for cell in &mut next.frame.cells {
             cell.symbol = "z".into();
         }
@@ -301,7 +305,7 @@ mod tests {
     fn unchanged_surface_is_reported_after_the_cell_scan() {
         let last = surface();
         let mut next = last.clone();
-        next.surface_revision = super::super::SurfaceRevision::new(2);
+        next.surface_revision = shepr_protocol::SurfaceRevision::new(2);
         assert!(matches!(
             message(&last, &next).expect("planning"),
             SurfaceDeltaPlan::Unchanged(ServerMessage::SurfaceUpdate(_))
@@ -313,7 +317,7 @@ mod tests {
         let mut last = surface();
         last.frame.hyperlinks = vec![String::new(); MAX_SURFACE_HYPERLINKS + 1];
         let mut next = last.clone();
-        next.surface_revision = super::super::SurfaceRevision::new(2);
+        next.surface_revision = shepr_protocol::SurfaceRevision::new(2);
 
         assert_unchanged_update_is_compact(message(&last, &next).expect("planning"));
     }
@@ -323,7 +327,7 @@ mod tests {
         let mut last = surface();
         last.frame.hyperlinks = vec![String::new(); MAX_SURFACE_HYPERLINKS + 1];
         let mut next = last.clone();
-        next.surface_revision = super::super::SurfaceRevision::new(2);
+        next.surface_revision = shepr_protocol::SurfaceRevision::new(2);
         next.frame.cells[0].symbol = "x".into();
 
         assert!(matches!(
@@ -339,7 +343,7 @@ mod tests {
         last.frame.height = 1;
         last.frame.cells.clear();
         let mut next = last.clone();
-        next.surface_revision = super::super::SurfaceRevision::new(2);
+        next.surface_revision = shepr_protocol::SurfaceRevision::new(2);
 
         assert_unchanged_update_is_compact(message(&last, &next).expect("planning"));
     }
@@ -351,10 +355,10 @@ mod tests {
         assert!(update.spans.is_empty());
         assert!(matches!(
             &update.meta,
-            Some(super::super::SurfaceMeta::Patch(meta)) if meta.panes.is_empty()
+            Some(shepr_protocol::SurfaceMeta::Patch(meta)) if meta.panes.is_empty()
         ));
         let mut bytes = Vec::new();
-        super::super::write_message(&mut bytes, &ServerMessage::SurfaceUpdate(update))
+        shepr_protocol::write_message(&mut bytes, &ServerMessage::SurfaceUpdate(update))
             .expect("compact unchanged update encodes");
     }
 }

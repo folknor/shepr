@@ -1,5 +1,5 @@
 use crate::endpoint;
-use shepr_protocol::surface_reuse::DecodedClientServerMessage;
+use shepr_surface::decode::DecodedClientServerMessage;
 use std::io;
 
 /// Internal events for the client event loop.

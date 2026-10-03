@@ -570,6 +570,7 @@ mod phase_tests {
                 tx,
                 Arc::clone(server.lifecycle.stop_signal()),
                 &server.app.paths,
+                server.client_shell_boot_id.clone(),
             )
             .expect("real server socket"),
         );

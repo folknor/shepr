@@ -2,7 +2,6 @@ use crate::endpoint::{ClientEndpointId, EndpointFailureStatus};
 use crate::shell::endpoints::ClientEndpointFocusTarget;
 use crate::shell::ledger::DropReason;
 use crate::shell::navigation::location::{Location, LocationTarget};
-use crate::shell::overlays::text_editor::TextEditor;
 use crate::shell::presentation::render;
 use crate::shell::state::{
     ClientChromeDrag, ClientCopyOperation, ClientCopySelection, ClientNavigatorFilter,
@@ -16,9 +15,11 @@ use shepr_config::theme::Palette;
 use shepr_protocol::command::{EndpointCommand, EndpointReply};
 use shepr_protocol::{AgentStatus, ClientMessage, ClientPaneInputEvent, FrameData};
 use shepr_protocol::{ClientShellAgent, ClientShellPane, ClientShellSnapshot, SurfaceRect};
+use shepr_surface::ratatui_conversion::{FrameDataExt as _, WireColorExt as _};
 use shepr_term::host::DefaultColorKind;
 use shepr_term::host::HostAppearance;
 use shepr_termio::input::raw_input::RawInputEvent;
+use shepr_termio::text_editor::TextEditor;
 
 use crate::shell::state::{
     ClientCopyModeState, ClientCopySearch, ClientCopySearchPrompt, ClientHelpOverlay,

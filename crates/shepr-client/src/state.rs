@@ -462,6 +462,7 @@ mod tests {
     use super::*;
     use ratatui::buffer::Buffer;
     use shepr_protocol::{CellData, PaneSurfacePatchRow, WireColor, WireStyle};
+    use shepr_surface::ratatui_conversion::FrameDataExt as _;
     use std::sync::{Arc, Mutex};
 
     #[derive(Clone)]

@@ -49,13 +49,14 @@ fn kind(byte: u8) -> Kind {
 }
 
 /// What every connection thread needs to admit and serve a classified
-/// connection: the API's request channel and stop signal, the TUI gate, one
-/// admission counter per kind, and the API's second counter for requests
-/// that wait on the app loop.
+/// connection: the API's request channel, stop signal and server boot, the
+/// TUI gate, one admission counter per kind, and the API's second counter for
+/// requests that wait on the app loop.
 #[derive(Clone)]
 struct Dispatch {
     api_tx: crate::ApiRequestSender,
     stop: Arc<crate::ServerStopSignal>,
+    boot_id: shepr_protocol::BootId,
     gate: ClientGate,
     api: ConnectionAdmission,
     api_app: ConnectionAdmission,
@@ -111,6 +112,7 @@ impl Dispatch {
                     &self.api_app,
                     &self.api_tx,
                     &self.stop,
+                    &self.boot_id,
                     &self.gate,
                 ) {
                     debug!(%error, "api connection failed");
@@ -209,11 +211,13 @@ pub(super) fn start_listener(
     running: Arc<AtomicBool>,
     api_tx: crate::ApiRequestSender,
     stop: Arc<crate::ServerStopSignal>,
+    boot_id: shepr_protocol::BootId,
     gate: ClientGate,
 ) -> io::Result<std::thread::JoinHandle<()>> {
     let dispatch = Dispatch {
         api_tx,
         stop,
+        boot_id,
         gate,
         api: connection_admission(MAX_API_INGRESS_CONNECTIONS),
         api_app: connection_admission(MAX_APP_REQUESTS_IN_FLIGHT),
@@ -355,6 +359,7 @@ mod tests {
         Dispatch {
             api_tx,
             stop: Arc::default(),
+            boot_id: shepr_protocol::BootId::from_process_clock(1, Ok(Duration::ZERO)),
             gate: ClientGate::default(),
             api: connection_admission(MAX_API_INGRESS_CONNECTIONS),
             api_app: connection_admission(MAX_APP_REQUESTS_IN_FLIGHT),
@@ -762,6 +767,7 @@ mod tests {
             &dispatch.api_app,
             &dispatch.api_tx,
             &dispatch.stop,
+            &dispatch.boot_id,
             &dispatch.gate,
         )
         .expect_err("no renewed deadline after classification");

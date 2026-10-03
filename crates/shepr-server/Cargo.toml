@@ -24,6 +24,7 @@ shepr-paths = { path = "../shepr-paths" }
 shepr-platform = { path = "../shepr-platform" }
 shepr-protocol = { path = "../shepr-protocol" }
 shepr-pty = { path = "../shepr-pty" }
+shepr-surface = { path = "../shepr-surface" }
 shepr-term = { path = "../shepr-term" }
 shepr-vt = { path = "../shepr-vt" }
 # `net` provides `AsyncFd`, which the headless loop waits on its listeners with.

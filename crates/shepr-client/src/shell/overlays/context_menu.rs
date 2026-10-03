@@ -2,13 +2,13 @@ use shepr_protocol::command::PaneRightClickTarget;
 use shepr_protocol::command::PaneSwapParams;
 use shepr_protocol::command::SplitDirection;
 
-use crate::shell::overlays::text_editor::TextEditor;
 use crate::shell::state::{
     ClientContextMenuAction, ClientContextMenuItem, ClientContextMenuOverlay, ClientRenameOverlay,
     ClientShellInput, ClientShellState,
 };
 use crate::shell::state::{ClientContextMenuTarget, ClientRenameTarget, ClientShellOverlay};
 use shepr_protocol::command::EndpointCommand;
+use shepr_termio::text_editor::TextEditor;
 
 impl ClientContextMenuOverlay {
     pub(in crate::shell) fn items(&self) -> Vec<ClientContextMenuItem> {

@@ -6,7 +6,7 @@ publish = false
 build = "build.rs"
 
 [dependencies]
-ratatui = { workspace = true }
+crossterm = { workspace = true }
 serde = { workspace = true }
 shepr-agent = { path = "../shepr-agent" }
 shepr-core = { path = "../shepr-core" }

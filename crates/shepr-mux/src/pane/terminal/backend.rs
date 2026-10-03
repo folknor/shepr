@@ -755,7 +755,7 @@ impl PaneTerminal {
             // half leaves this row. A blanked cell's link was already interned
             // above, so the frame's link table can keep an entry no cell
             // names; that costs one table slot and draws nothing.
-            shepr_protocol::normalize_pane_row(
+            shepr_surface::pane_row::normalize_pane_row(
                 &mut frame.cells[row_start..row_start + usize::from(area.width)],
             );
             rows_drawn += 1;

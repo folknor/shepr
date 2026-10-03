@@ -104,6 +104,7 @@ pub(in crate::shell) fn pane_surface_topology_signature(surface: &PaneSurfaceFra
 mod tests {
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
+    use shepr_surface::ratatui_conversion::FrameDataExt as _;
 
     use super::pane_surface_topology_signature;
 

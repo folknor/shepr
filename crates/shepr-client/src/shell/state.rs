@@ -17,15 +17,15 @@ use std::sync::Arc;
 use crate::shell::input::scroll_lanes::ScrollLanes;
 use crate::shell::navigation::location::{Location, PinnedLocation};
 use crate::shell::navigation::workspace_navigation::PendingWorkspaceHighlight;
-use crate::shell::overlays::text_editor::TextEditor;
 use crate::shell::presentation::surfaces::PaneSurfaces;
 use ratatui::layout::Rect;
 use shepr_config::theme::Palette;
 use shepr_config::{LiveKeybindConfig, SidebarCollapsedModeConfig, SpacesSidebarConfig};
+use shepr_termio::text_editor::TextEditor;
 
 use crate::shell::presentation::surfaces;
 
-use crate::shell::overlays::preferences;
+use crate::shell::sidebar::preferences;
 
 /// User-entered text stored in shell state, with redacted debug output.
 #[derive(Clone, Default, PartialEq, Eq)]

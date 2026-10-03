@@ -87,10 +87,15 @@ impl ServerHandle {
     }
 }
 
+/// Binds the server socket and starts its listener. `boot_id` is the boot of
+/// the server lifetime this socket belongs to: `ping` reports it and
+/// `server.stop_if_boot` compares against it, answered on the connection
+/// thread without reaching the server loop.
 pub fn start_server(
     api_tx: ApiRequestSender,
     server_stop: Arc<crate::ServerStopSignal>,
     paths: &shepr_paths::AppPaths,
+    boot_id: shepr_protocol::BootId,
 ) -> Result<ServerHandle, shepr_platform::ipc::BindError> {
     let path = paths.server_address().socket().to_path_buf();
     let (listener, socket_file, startup_lock) =
@@ -107,6 +112,7 @@ pub fn start_server(
         Arc::clone(&running),
         api_tx,
         server_stop,
+        boot_id,
         gate.clone(),
     )?;
     Ok(ServerHandle {
@@ -142,6 +148,7 @@ mod tests {
             Arc::clone(&running),
             tx,
             Arc::default(),
+            shepr_protocol::BootId::from_process_clock(1, Ok(std::time::Duration::ZERO)),
             gate.clone(),
         )
         .expect("listener thread");

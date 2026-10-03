@@ -1,13 +1,13 @@
 use crate::endpoint::ClientEndpointId;
 use crate::shell::endpoints::ClientEndpointFocusTarget;
 use crate::shell::overlays::notices::ClientEndpointNoticeKind;
-use crate::shell::overlays::text_editor::TextEditor;
 use crate::shell::state::{
     ClientShellAction, ClientShellConfig, ClientShellInput, ClientShellOverlay, ClientShellState,
 };
 use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use shepr_config::{ClientConfig, SidebarCollapsedModeConfig};
 use shepr_termio::input::raw_input::RawInputEvent;
+use shepr_termio::text_editor::TextEditor;
 
 use crate::shell::state::ClientHelpOverlay;
 

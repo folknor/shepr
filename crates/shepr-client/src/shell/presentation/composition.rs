@@ -1,4 +1,3 @@
-use super::compose_pane_surface::compose_pane_surface;
 use crate::shell::overlays::endpoint_notices;
 
 use crate::endpoint::ClientEndpointStatus;
@@ -7,7 +6,7 @@ use crate::shell::state::{ClientChromeDrag, ClientShellMode, ClientShellOverlay}
 use ratatui::buffer::Buffer;
 use ratatui::style::{Modifier, Style};
 
-use super::wire_cells::StylePatch;
+use shepr_surface::compose::{Canvas, StylePatch};
 
 use crate::shell::state::{ClientCopyModeState, ClientShellState, PaneHit, PaneSplitHit};
 
@@ -20,8 +19,6 @@ use crate::shell::endpoints::endpoint_status_presentation;
 
 use crate::shell::presentation::status::panel_contrast_fg;
 use crate::shell::presentation::topology::pane_surface_topology_signature;
-
-use super::wire_cells::{overwrite, patch_cell, patch_rect, patch_style};
 
 impl ClientShellState {
     pub(crate) fn compose(&mut self, cols: u16, rows: u16) -> Option<FrameData> {
@@ -158,11 +155,13 @@ impl ClientShellState {
         // Pane cells and their local decorations are one optional layer. Everything above
         // them (lifecycle, notices, overlays and the mode bar) follows the same pipeline
         // when the pane area contains only a connection placeholder.
-        let mut frame = FrameData::from_ratatui_buffer_with_hyperlinks(&buffer, None, &[]);
+        // `buffer` came from `Buffer::empty` and was only drawn into, so its cells match its
+        // area; a refusal keeps the last frame on screen like an unpaired surface does.
+        let mut frame = Canvas::from_buffer(&buffer).ok()?;
         if let Some(surface) = self.surfaces.paired().filter(|_| has_surface) {
             // The surface may have been produced for another layout: a resize or sidebar toggle
             // keeps the retained surface until the resized one arrives, a resize can race a surface
-            // already in flight. `compose_pane_surface` clips the cells; the hits are clipped to
+            // already in flight. `Canvas::compose_pane` clips the cells; the hits are clipped to
             // match through `PaneHit::from_wire`, so mouse input and the copy cursor never target rows or
             // columns that are not on screen. Later draws that use these rects still go through
             // `Buffer::cell_mut`, never `buffer[(x, y)]`.
@@ -215,10 +214,10 @@ impl ClientShellState {
             if !self.config.mouse_capture {
                 self.hits.pane_splits.clear();
             }
-            // Chrome is the only thing drawn through ratatui here; from this point the frame's
+            // Chrome is the only thing drawn through ratatui here; from this point the canvas's
             // wire cells are the composition target and every later stage patches or overwrites
-            // them in place (see `wire_cells`).
-            compose_pane_surface(&mut frame, &surface.frame, layout.pane_surface);
+            // them in place (see `shepr_surface::compose`).
+            frame.compose_pane(&surface.frame, layout.pane_surface);
             let has_selection = self
                 .mouse_selection
                 .selection
@@ -265,7 +264,7 @@ impl ClientShellState {
                                 ..Default::default()
                             },
                             &mut |x, y, style| {
-                                patch_cell(&mut frame, x, y, StylePatch::from_style(style));
+                                frame.patch_cell(x, y, StylePatch::from_style(style));
                             },
                         );
                     }
@@ -282,16 +281,15 @@ impl ClientShellState {
             }
             if self.mode == ClientShellMode::Copy {
                 composition.pane_cursor_overridden = true;
-                frame.cursor = None;
+                frame.set_cursor(None);
                 if let Some((x, y)) = self
                     .copy_mode
                     .as_ref()
                     .and_then(|copy_mode| client_copy_cursor_cell(copy_mode, &self.hits.panes))
-                    && x < frame.width
-                    && y < frame.height
+                    && x < frame.width()
+                    && y < frame.height()
                 {
-                    patch_cell(
-                        &mut frame,
+                    frame.patch_cell(
                         x,
                         y,
                         StylePatch::from_style(
@@ -332,7 +330,7 @@ impl ClientShellState {
         };
         if !self.endpoint_usable(self.endpoints.presented()) {
             composition.pane_cursor_overridden = true;
-            frame.cursor = None;
+            frame.set_cursor(None);
             self.hits.panes.clear();
             self.hits.pane_splits.clear();
         }
@@ -378,7 +376,7 @@ impl ClientShellState {
                 opaque.push(self.hits.notification_toast);
             }
             composition.pane_cells_occluded |= opaque.iter().any(|rect| !rect.is_empty());
-            overwrite(&mut frame, &opaque, &scratch);
+            frame.overwrite(&opaque, &scratch);
         }
         if let Some(overlay) = self.overlay.as_ref() {
             composition.pane_cells_occluded = true;
@@ -405,12 +403,11 @@ impl ClientShellState {
             };
             if let Some(rendered) = rendered {
                 if rendered.backdrop {
-                    patch_style(
-                        &mut frame.cells,
-                        StylePatch::from_style(Style::default().add_modifier(Modifier::DIM)),
-                    );
+                    frame.patch_all(StylePatch::from_style(
+                        Style::default().add_modifier(Modifier::DIM),
+                    ));
                 }
-                overwrite(&mut frame, &rendered.opaque, &scratch);
+                frame.overwrite(&rendered.opaque, &scratch);
                 match overlay {
                     ClientShellOverlay::ContextMenu(_) => {
                         self.hits.context_menu_rows = rendered.menu_rows;
@@ -432,7 +429,7 @@ impl ClientShellState {
                 self.hits.help_scrollbar = rendered.help_scrollbar;
                 self.hits.help_scroll_metrics = rendered.help_scroll_metrics;
                 self.hits.help_max_scroll = rendered.help_max_scroll;
-                frame.cursor = rendered.cursor;
+                frame.set_cursor(rendered.cursor);
             } else {
                 // The overlay does not fit this terminal, and nothing it drew was committed:
                 // the frame without the overlay is presented, so pane output keeps flowing,
@@ -449,8 +446,7 @@ impl ClientShellState {
                     // The whole row takes the hint's style; the text replaces the prefix
                     // the shared text writer placed, whose extent is the overwritten rect
                     // (a wide glyph the text boundary splits is blanked).
-                    patch_rect(
-                        &mut frame,
+                    frame.patch_rect(
                         Rect::new(0, hint_row, cols, 1),
                         StylePatch::from_style(hint_style),
                     );
@@ -463,13 +459,9 @@ impl ClientShellState {
                         " window too small for this popup · esc closes",
                         hint_style,
                     );
-                    overwrite(
-                        &mut frame,
-                        &[Rect::new(0, hint_row, written_to, 1)],
-                        &scratch,
-                    );
+                    frame.overwrite(&[Rect::new(0, hint_row, written_to, 1)], &scratch);
                 }
-                frame.cursor = None;
+                frame.set_cursor(None);
             }
         }
         // The mode bar is drawn last, after banners and notices, and only when no overlay is
@@ -489,13 +481,9 @@ impl ClientShellState {
                 &self.config.palette,
             ) {
                 composition.pane_cells_occluded = true;
-                overwrite(&mut frame, &[bar], &scratch);
-                if frame
-                    .cursor
-                    .as_ref()
-                    .is_some_and(|cursor| cursor.y == bar.y)
-                {
-                    frame.cursor = None;
+                frame.overwrite(&[bar], &scratch);
+                if frame.cursor().is_some_and(|cursor| cursor.y == bar.y) {
+                    frame.set_cursor(None);
                 }
             }
         }
@@ -506,7 +494,7 @@ impl ClientShellState {
         self.notices.drawn(self.now);
         self.last_composition = composition;
         self.record_composed_frame();
-        Some(frame)
+        Some(frame.into_frame())
     }
 
     fn record_composed_frame(&mut self) {
@@ -561,7 +549,7 @@ fn client_copy_cursor_cell(
 }
 
 fn render_client_copy_search_highlights(
-    frame: &mut FrameData,
+    frame: &mut Canvas,
     copy_mode: Option<&ClientCopyModeState>,
     hit: &PaneHit,
     palette: &Palette,
@@ -615,7 +603,7 @@ fn render_client_copy_search_highlights(
             let end_col = end_col.min(hit.inner_rect.width.saturating_sub(1));
             // The hit comes from the pane surface, whose geometry may have been produced for
             // a different layout than this frame (see where `compose` builds pane hits).
-            // `patch_cell` skips positions outside the frame.
+            // `Canvas::patch_cell` skips positions outside the frame.
             for col in start_col..=end_col {
                 let (Some(x), Some(y)) = (
                     hit.inner_rect.x.checked_add(col),
@@ -623,7 +611,7 @@ fn render_client_copy_search_highlights(
                 ) else {
                     continue;
                 };
-                patch_cell(frame, x, y, patch);
+                frame.patch_cell(x, y, patch);
             }
         }
     }
@@ -645,6 +633,7 @@ mod tests {
     use ratatui::layout::Rect;
     use shepr_config::theme::Palette;
     use shepr_protocol::FrameData;
+    use shepr_surface::ratatui_conversion::WireColorExt as _;
 
     use shepr_protocol::command::{PaneTextPoint, PaneTextRange};
 
@@ -716,11 +705,9 @@ mod tests {
             operation_generation: 0,
         };
         let palette = Palette::catppuccin();
-        let mut frame = FrameData::from_ratatui_buffer_with_hyperlinks(
-            &Buffer::empty(Rect::new(0, 0, 6, 3)),
-            None,
-            &[],
-        );
+        let mut frame =
+            shepr_surface::compose::Canvas::from_buffer(&Buffer::empty(Rect::new(0, 0, 6, 3)))
+                .expect("a fresh buffer is a valid canvas");
 
         for current_only in [false, true] {
             render_client_copy_search_highlights(
@@ -732,7 +719,7 @@ mod tests {
             );
         }
 
-        let bg = |x: usize, y: usize| frame.cells[y * 6 + x].bg;
+        let bg = |x: usize, y: usize| frame.cells()[y * 6 + x].bg;
         let surface1 = shepr_protocol::WireColor::from_ratatui(palette.surface1);
         assert_eq!(bg(0, 2), surface1);
         assert_eq!(bg(1, 2), surface1);
