@@ -152,6 +152,12 @@ pub(crate) struct EndpointSupervisors {
 }
 
 impl EndpointSupervisors {
+    /// Reserves the first generation for the foreground Local attempt at launch.
+    /// Background attempts start at its successor, including when Local failed.
+    pub(crate) const fn initial_local_generation() -> shepr_protocol::ConnectionGeneration {
+        shepr_protocol::ConnectionGeneration::new(1)
+    }
+
     pub(crate) fn new(
         paths: &shepr_config::AppPaths,
         machines: &[shepr_config::MachineConfig],
@@ -159,7 +165,9 @@ impl EndpointSupervisors {
     ) -> io::Result<Self> {
         let mut supervisors = Self {
             endpoints: HashMap::new(),
-            next_generation: shepr_protocol::ConnectionGeneration::new(2),
+            next_generation: Self::initial_local_generation()
+                .checked_next()
+                .expect("initial connection generation has a successor"),
             shutdown: Arc::new(AtomicBool::new(false)),
         };
         for machine in machines {

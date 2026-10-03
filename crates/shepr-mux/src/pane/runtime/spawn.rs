@@ -125,6 +125,8 @@ impl PtySetup<'_> {
             channel: status_channel,
             registration: spawned.status,
             cwd_candidates: spawned.cwd_candidates,
+            // Launch status stores this as text and rebuilds the failure path;
+            // preserving non-UTF-8 bytes needs a path type through that payload.
             program: cmd.program().to_string_lossy().into_owned(),
         };
         let pid = child.process_id();

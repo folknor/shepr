@@ -4,6 +4,7 @@ pub mod env;
 pub mod geometry;
 pub mod layout;
 pub mod limits;
+pub mod locks;
 pub mod pathutil;
 pub mod shell;
 pub mod shell_quote;

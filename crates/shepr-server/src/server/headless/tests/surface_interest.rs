@@ -37,11 +37,7 @@ async fn metadata_only_shell_is_isolated_until_surface_activation() {
     assert!(
         server.test_handle_server_event(ServerEvent::ShellConnected {
             client_id,
-            surface_cols: 101,
-            surface_rows: 37,
-            cell_width_px: 9,
-            cell_height_px: 18,
-            pixel_mouse: true,
+            geometry: shepr_core::geometry::HostGeometry::new(101, 37, 9, 18, true),
             mouse_capture: true,
             surface_active: false,
             outbox: writer,
@@ -140,7 +136,10 @@ async fn metadata_only_shell_is_isolated_until_surface_activation() {
     };
     assert_eq!((surface.frame.width, surface.frame.height), (101, 37));
     assert!(surface.projection_revision >= activation_floor);
-    assert_eq!(surface.surface_revision, 1);
+    assert_eq!(
+        surface.surface_revision,
+        shepr_protocol::SurfaceRevision::new(1)
+    );
 
     assert!(
         server.test_handle_server_event(ServerEvent::ShellEndpointRequest {
@@ -205,7 +204,10 @@ async fn metadata_only_shell_is_isolated_until_surface_activation() {
     };
     assert!(frame_text(&surface.frame).contains("REACTIVATED"));
     assert!(surface.projection_revision >= reactivation_floor);
-    assert_eq!(surface.surface_revision, 2);
+    assert_eq!(
+        surface.surface_revision,
+        shepr_protocol::SurfaceRevision::new(2)
+    );
     shutdown_test_runtimes(&mut server);
 }
 
@@ -233,11 +235,7 @@ async fn background_surface_activation_preserves_focused_viewer_geometry() {
     assert!(
         server.test_handle_server_event(ServerEvent::ShellConnected {
             client_id: ClientId::test_new(8),
-            surface_cols: 100,
-            surface_rows: 35,
-            cell_width_px: 0,
-            cell_height_px: 0,
-            pixel_mouse: false,
+            geometry: shepr_core::geometry::HostGeometry::new(100, 35, 0, 0, false),
             mouse_capture: false,
             surface_active: false,
             outbox: writer,
@@ -426,11 +424,7 @@ async fn replay_host_effects_replays_modes_and_title() {
     assert!(
         server.test_handle_server_event(ServerEvent::ShellConnected {
             client_id,
-            surface_cols: 80,
-            surface_rows: 24,
-            cell_width_px: 8,
-            cell_height_px: 16,
-            pixel_mouse: false,
+            geometry: shepr_core::geometry::HostGeometry::new(80, 24, 8, 16, false),
             mouse_capture: true,
             surface_active: true,
             outbox: writer,
@@ -503,11 +497,7 @@ async fn replay_host_effects_is_ignored_by_a_non_viewed_connection() {
     let client_id = ClientId::test_new(64);
     server.test_handle_server_event(ServerEvent::ShellConnected {
         client_id,
-        surface_cols: 80,
-        surface_rows: 24,
-        cell_width_px: 8,
-        cell_height_px: 16,
-        pixel_mouse: false,
+        geometry: shepr_core::geometry::HostGeometry::new(80, 24, 8, 16, false),
         mouse_capture: true,
         surface_active: false,
         outbox: writer,

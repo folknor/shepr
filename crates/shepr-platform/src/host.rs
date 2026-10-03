@@ -3,16 +3,14 @@ use std::{
     process::Command,
 };
 
-pub fn terminal_grid_size() -> std::io::Result<(u16, u16)> {
+pub fn terminal_grid_size() -> std::io::Result<shepr_core::geometry::GridSize> {
     let size = crossterm::terminal::window_size()?;
-    let (cols, rows) = (size.columns, size.rows);
-    if cols == 0 || rows == 0 {
-        return Err(std::io::Error::new(
+    shepr_core::geometry::GridSize::new(size.columns, size.rows).ok_or_else(|| {
+        std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             "terminal reported a zero-sized grid",
-        ));
-    }
-    Ok((cols, rows))
+        )
+    })
 }
 
 /// Raised by the SIGWINCH handler, consumed by the host resize watcher.

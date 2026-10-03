@@ -30,13 +30,6 @@ status and are retried as ordinary failures. (edges)
 
 ## Latent defects
 
-## BUG-071 - Parked hook starts have no expiry or process attribution
-
-Comments in the hook arbitration (`crates/shepr-mux/src/terminal/state/`)
-already admit that a parked start never expires and is not tied to a process,
-and that a replayed pane exit can consume a parked start. Neither is handled.
-(wave-2 fixer)
-
 ## Hot-path costs
 
 ## BUG-053 - Two answers to this machine's name

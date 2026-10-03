@@ -31,15 +31,7 @@ pub(super) fn presented_agent_status(
 /// automatic label returns. Every rename and create path goes through this, so
 /// no store ever holds an empty or padded label.
 pub(super) fn normalized_user_label(label: Option<String>) -> Option<String> {
-    let label = label?;
-    let trimmed = label.trim();
-    if trimmed.is_empty() {
-        None
-    } else if trimmed.len() == label.len() {
-        Some(label)
-    } else {
-        Some(trimmed.to_owned())
-    }
+    shepr_mux::terminal::Label::new(label?).map(shepr_mux::terminal::Label::into_string)
 }
 
 #[cfg(test)]

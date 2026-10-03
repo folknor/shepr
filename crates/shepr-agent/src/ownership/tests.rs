@@ -614,12 +614,15 @@ fn pi_startup_adopts_persisted_session_without_live_authority() {
     let old_session = test_session_path("pi-startup-old.jsonl");
     let new_session = test_session_path("pi-startup-new.jsonl");
     terminal.set_detected_state(Some(Agent::Pi), AgentState::Idle);
-    terminal.set_persisted_agent_session(crate::agent::resume::PersistedAgentSession {
-        source: AgentSource::parse("shepr:pi"),
-        agent: crate::agent::Agent::Pi,
-        session_ref: crate::agent::resume::AgentSessionRef::path(old_session)
-            .expect("test session path should be valid"),
-    });
+    terminal.set_persisted_agent_session(
+        crate::agent::resume::PersistedAgentSession::new(
+            AgentSource::parse("shepr:pi"),
+            crate::agent::Agent::Pi,
+            crate::agent::resume::AgentSessionRef::path(old_session)
+                .expect("test session path should be valid"),
+        )
+        .expect("test session should be valid"),
+    );
 
     let startup = terminal.set_agent_session_ref_for_session_start(
         "shepr:pi",
@@ -2823,12 +2826,14 @@ fn different_owner_session_ref_does_not_replace_existing_session_ref() {
 #[test]
 fn grok_new_session_does_not_replace_a_different_owner() {
     let mut terminal = test_terminal();
-    terminal.set_persisted_agent_session(crate::agent::resume::PersistedAgentSession {
-        source: AgentSource::parse("shepr:claude"),
-        agent: crate::agent::Agent::Claude,
-        session_ref: crate::agent::resume::AgentSessionRef::id("claude-session")
-            .expect("test precondition"),
-    });
+    terminal.set_persisted_agent_session(
+        crate::agent::resume::PersistedAgentSession::new(
+            AgentSource::parse("shepr:claude"),
+            crate::agent::Agent::Claude,
+            crate::agent::resume::AgentSessionRef::id("claude-session").expect("test precondition"),
+        )
+        .expect("test session should be valid"),
+    );
     terminal.set_detected_state(Some(Agent::Grok), AgentState::Idle);
 
     let mutation = terminal.set_agent_session_ref_for_session_start(
@@ -2854,12 +2859,15 @@ fn grok_new_session_does_not_replace_a_different_owner() {
 fn foreground_agent_session_replaces_stale_different_owner_session_ref() {
     for session_start_source in ["resume", "startup"] {
         let mut terminal = test_terminal();
-        terminal.set_persisted_agent_session(crate::agent::resume::PersistedAgentSession {
-            source: AgentSource::parse("shepr:codex"),
-            agent: crate::agent::Agent::Codex,
-            session_ref: crate::agent::resume::AgentSessionRef::id("codex-session")
-                .expect("test precondition"),
-        });
+        terminal.set_persisted_agent_session(
+            crate::agent::resume::PersistedAgentSession::new(
+                AgentSource::parse("shepr:codex"),
+                crate::agent::Agent::Codex,
+                crate::agent::resume::AgentSessionRef::id("codex-session")
+                    .expect("test precondition"),
+            )
+            .expect("test session should be valid"),
+        );
         terminal.set_detected_state(Some(Agent::Claude), AgentState::Idle);
 
         let mutation = terminal
@@ -2889,12 +2897,15 @@ fn foreground_agent_session_replaces_stale_different_owner_session_ref() {
 fn foreground_agent_session_requires_lifecycle_source_to_replace_different_owner() {
     for session_start_source in [None, Some("other")] {
         let mut terminal = test_terminal();
-        terminal.set_persisted_agent_session(crate::agent::resume::PersistedAgentSession {
-            source: AgentSource::parse("shepr:codex"),
-            agent: crate::agent::Agent::Codex,
-            session_ref: crate::agent::resume::AgentSessionRef::id("codex-session")
-                .expect("test precondition"),
-        });
+        terminal.set_persisted_agent_session(
+            crate::agent::resume::PersistedAgentSession::new(
+                AgentSource::parse("shepr:codex"),
+                crate::agent::Agent::Codex,
+                crate::agent::resume::AgentSessionRef::id("codex-session")
+                    .expect("test precondition"),
+            )
+            .expect("test session should be valid"),
+        );
         terminal.set_detected_state(Some(Agent::Claude), AgentState::Idle);
 
         let mutation = terminal.set_agent_session_ref_for_session_start(
@@ -2925,12 +2936,15 @@ fn different_owner_session_ref_requires_matching_detected_agent() {
     for session_start_source in ["startup", "resume"] {
         for detected_agent in [None, Some(Agent::Codex)] {
             let mut terminal = test_terminal();
-            terminal.set_persisted_agent_session(crate::agent::resume::PersistedAgentSession {
-                source: AgentSource::parse("shepr:codex"),
-                agent: crate::agent::Agent::Codex,
-                session_ref: crate::agent::resume::AgentSessionRef::id("codex-session")
-                    .expect("test precondition"),
-            });
+            terminal.set_persisted_agent_session(
+                crate::agent::resume::PersistedAgentSession::new(
+                    AgentSource::parse("shepr:codex"),
+                    crate::agent::Agent::Codex,
+                    crate::agent::resume::AgentSessionRef::id("codex-session")
+                        .expect("test precondition"),
+                )
+                .expect("test session should be valid"),
+            );
             terminal.set_detected_state(detected_agent, AgentState::Idle);
 
             let mutation = terminal.set_agent_session_ref_for_session_start(
@@ -2960,12 +2974,14 @@ fn different_owner_session_ref_requires_matching_detected_agent() {
 #[test]
 fn custom_session_report_does_not_replace_different_owner_session_ref() {
     let mut terminal = test_terminal();
-    terminal.set_persisted_agent_session(crate::agent::resume::PersistedAgentSession {
-        source: AgentSource::parse("shepr:codex"),
-        agent: crate::agent::Agent::Codex,
-        session_ref: crate::agent::resume::AgentSessionRef::id("codex-session")
-            .expect("test precondition"),
-    });
+    terminal.set_persisted_agent_session(
+        crate::agent::resume::PersistedAgentSession::new(
+            AgentSource::parse("shepr:codex"),
+            crate::agent::Agent::Codex,
+            crate::agent::resume::AgentSessionRef::id("codex-session").expect("test precondition"),
+        )
+        .expect("test session should be valid"),
+    );
     terminal.set_detected_state(Some(Agent::Claude), AgentState::Idle);
 
     let mutation = terminal.set_agent_session_ref_for_session_start(
@@ -2990,7 +3006,6 @@ fn custom_session_report_does_not_replace_different_owner_session_ref() {
 #[test]
 fn foreground_agent_session_replaces_stale_different_owner_hook_authority() {
     let mut terminal = test_terminal();
-    let now = std::time::Instant::now();
     anchor_full_lifecycle_session(
         &mut terminal,
         Agent::OpenCode,
@@ -2998,6 +3013,9 @@ fn foreground_agent_session_replaces_stale_different_owner_hook_authority() {
         "opencode",
         crate::agent::resume::AgentSessionRef::id("opencode-session").expect("test precondition"),
     );
+    // Taken after the anchor's own detector observation: an observation
+    // older than the last one is refused as stale.
+    let now = std::time::Instant::now();
     terminal
         .set_hook_authority_at(
             "shepr:opencode",
@@ -3204,11 +3222,14 @@ fn process_exit_clears_matching_persisted_session_ref() {
     let mut terminal = test_terminal();
     let session_ref = crate::agent::resume::AgentSessionRef::path(test_session_path("pi.jsonl"))
         .expect("test precondition");
-    terminal.set_persisted_agent_session(crate::agent::resume::PersistedAgentSession {
-        source: AgentSource::parse("shepr:pi"),
-        agent: crate::agent::Agent::Pi,
-        session_ref: session_ref.clone(),
-    });
+    terminal.set_persisted_agent_session(
+        crate::agent::resume::PersistedAgentSession::new(
+            AgentSource::parse("shepr:pi"),
+            crate::agent::Agent::Pi,
+            session_ref.clone(),
+        )
+        .expect("test session should be valid"),
+    );
     terminal.set_detected_state(Some(Agent::Pi), AgentState::Working);
 
     let mutation = terminal.confirmed_detection_for_test(
@@ -3230,12 +3251,14 @@ fn process_exit_clears_matching_persisted_session_ref() {
 #[test]
 fn process_exit_preserves_foreign_persisted_session_ref() {
     let mut terminal = test_terminal();
-    terminal.set_persisted_agent_session(crate::agent::resume::PersistedAgentSession {
-        source: AgentSource::parse("shepr:claude"),
-        agent: crate::agent::Agent::Claude,
-        session_ref: crate::agent::resume::AgentSessionRef::id("claude-session")
-            .expect("test precondition"),
-    });
+    terminal.set_persisted_agent_session(
+        crate::agent::resume::PersistedAgentSession::new(
+            AgentSource::parse("shepr:claude"),
+            crate::agent::Agent::Claude,
+            crate::agent::resume::AgentSessionRef::id("claude-session").expect("test precondition"),
+        )
+        .expect("test session should be valid"),
+    );
     terminal.set_detected_state(Some(Agent::Pi), AgentState::Working);
 
     let mutation = terminal.confirmed_detection_for_test(
@@ -3312,12 +3335,15 @@ fn detected_agent_disappearance_does_not_clear_full_lifecycle_hook_session_ref()
 #[test]
 fn detected_agent_disappearance_preserves_matching_persisted_session_ref() {
     let mut terminal = test_terminal();
-    terminal.set_persisted_agent_session(crate::agent::resume::PersistedAgentSession {
-        source: AgentSource::parse("shepr:opencode"),
-        agent: crate::agent::Agent::OpenCode,
-        session_ref: crate::agent::resume::AgentSessionRef::id("opencode-session")
-            .expect("test precondition"),
-    });
+    terminal.set_persisted_agent_session(
+        crate::agent::resume::PersistedAgentSession::new(
+            AgentSource::parse("shepr:opencode"),
+            crate::agent::Agent::OpenCode,
+            crate::agent::resume::AgentSessionRef::id("opencode-session")
+                .expect("test precondition"),
+        )
+        .expect("test session should be valid"),
+    );
 
     let first = terminal.set_detected_state_with_mutation(Some(Agent::OpenCode), AgentState::Idle);
     assert!(!first.session_ref_changed);
@@ -3331,12 +3357,14 @@ fn detected_agent_disappearance_preserves_matching_persisted_session_ref() {
 #[test]
 fn initial_unknown_detection_preserves_restored_session_ref() {
     let mut terminal = test_terminal();
-    terminal.set_persisted_agent_session(crate::agent::resume::PersistedAgentSession {
-        source: AgentSource::parse("shepr:codex"),
-        agent: crate::agent::Agent::Codex,
-        session_ref: crate::agent::resume::AgentSessionRef::id("codex-session")
-            .expect("test precondition"),
-    });
+    terminal.set_persisted_agent_session(
+        crate::agent::resume::PersistedAgentSession::new(
+            AgentSource::parse("shepr:codex"),
+            crate::agent::Agent::Codex,
+            crate::agent::resume::AgentSessionRef::id("codex-session").expect("test precondition"),
+        )
+        .expect("test session should be valid"),
+    );
 
     let mutation = terminal.set_detected_state_with_mutation(None, AgentState::Unknown);
     assert!(!mutation.session_ref_changed);

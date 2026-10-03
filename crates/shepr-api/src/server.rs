@@ -134,16 +134,18 @@ pub fn start_server(
 }
 
 /// Reads the bounded initial request line so server errors can preserve its ID.
-fn request_id_from_line(line: &str) -> String {
+fn request_id_from_line(line: &str) -> Option<String> {
     #[derive(serde::Deserialize)]
     struct RequestId {
         id: String,
     }
 
     if line.starts_with('{') {
-        serde_json::from_str::<RequestId>(line).map_or_default(|request| request.id)
+        serde_json::from_str::<RequestId>(line)
+            .ok()
+            .map(|request| request.id)
     } else {
-        String::new()
+        None
     }
 }
 
@@ -155,31 +157,39 @@ fn reject_busy_connection(mut stream: LocalStream, admission: &ConnectionAdmissi
     let deadline = Instant::now() + BUSY_REQUEST_ID_TIMEOUT;
     let request_id = match read_request_line_until(&mut stream, deadline) {
         Ok(Some(line)) => request_id_from_line(line.trim()),
-        Ok(None) => String::new(),
+        Ok(None) => None,
         Err(error) => {
             debug!(%error, "could not read api request id for connection limit refusal");
-            String::new()
+            None
         }
     };
-    send_busy_refusal(stream, &request_id, admission);
+    send_busy_refusal(stream, request_id.as_deref(), admission);
 }
 
-fn send_busy_refusal(mut stream: LocalStream, request_id: &str, admission: &ConnectionAdmission) {
+fn send_busy_refusal(
+    mut stream: LocalStream,
+    request_id: Option<&str>,
+    admission: &ConnectionAdmission,
+) {
     // The refuser serves every refused peer in turn; an unbounded write to a
     // stalled one would hold all the others.
     if let Err(err) = stream.set_write_timeout(Some(STREAM_WRITE_TIMEOUT)) {
         debug!(error = %err, "api refusal write timeout unavailable; closing unanswered");
         return;
     }
-    let response = error_response_json(
-        request_id,
-        crate::error::ApiErrorCode::EndpointBusy,
-        format!(
-            "API server is at its limit of {} connections reading requests",
-            admission.limit().max()
-        ),
-    );
-    if let Err(err) = write_text_line_allow_disconnect(&mut stream, &response.body) {
+    let response = ErrorResponse {
+        id: request_id.map(str::to_owned),
+        error: crate::error::ApiError::new(
+            crate::error::ApiErrorCode::EndpointBusy,
+            format!(
+                "API server is at its limit of {} connections reading requests",
+                admission.limit().max()
+            ),
+        )
+        .into_body(),
+    };
+    let body = crate::serialize_response_or_error(request_id.unwrap_or_default(), &response);
+    if let Err(err) = write_text_line_allow_disconnect(&mut stream, &body) {
         debug!(error = %err, "failed to send API connection limit refusal");
     }
 }
@@ -232,19 +242,18 @@ fn handle_connection(
                 )
                 .into_body(),
             };
-            write_api_json_line_allow_disconnect(&mut stream, &response.id, &response)?;
+            write_api_json_line_allow_disconnect(
+                &mut stream,
+                response.id.as_deref().unwrap_or_default(),
+                &response,
+            )?;
             return Ok(());
         }
     };
 
     let request_id = request.id.clone();
     let method_traits = request.method.traits();
-    crate::logging::api_request_started(
-        &request_id,
-        method_traits.name,
-        method_traits.mutates_ui,
-        method_traits.routine,
-    );
+    crate::logging::api_request_started(&request_id, method_traits);
 
     let response = match route_request(request, server_stop, gate) {
         Route::Immediate(response) => response,
@@ -279,22 +288,16 @@ fn finish_api_response(
     // A client that hung up before its answer is not a server failure, but
     // the log must not claim the response's outcome for an answer nobody got.
     let outcome = match write_text_line(stream, &response.body) {
-        Ok(()) => response.outcome.as_str(),
+        Ok(()) => response.outcome,
         Err(err) if matches!(classify_stream_error(err.kind()), StreamFailure::PeerGone) => {
-            "client_disconnected"
+            crate::error::ApiLogOutcome::ClientDisconnected
         }
         Err(err) => {
             crate::logging::api_request_failed(request_id, method.name, &err.to_string());
             return Err(err);
         }
     };
-    crate::logging::api_request_completed(
-        request_id,
-        method.name,
-        method.mutates_ui,
-        method.routine,
-        outcome,
-    );
+    crate::logging::api_request_completed(request_id, method, outcome);
     Ok(())
 }
 
@@ -665,7 +668,7 @@ mod tests {
 
         let response: ErrorResponse =
             serde_json::from_str(&read_line(&mut client)).expect("valid refusal response");
-        assert_eq!(response.id, "busy-request");
+        assert_eq!(response.id.as_deref(), Some("busy-request"));
         assert_eq!(
             response.error.code,
             crate::error::ApiErrorCode::EndpointBusy
@@ -1097,24 +1100,28 @@ mod tests {
         let cases = [
             (
                 r#"{"id":"mine","method":"pane.report_agent","params":{"pane_id":"w1:p1","status":"working","source":"x"}}"#,
-                "mine",
+                Some("mine"),
             ),
-            (r#"{"id":"escaped\"id","method":"unknown"}"#, "escaped\"id"),
-            (r#"{"method":"unknown","params":{"id":"nested"}}"#, ""),
-            (r#"{"id":123,"method":"unknown"}"#, ""),
+            (
+                r#"{"id":"escaped\"id","method":"unknown"}"#,
+                Some("escaped\"id"),
+            ),
+            (r#"{"method":"unknown","params":{"id":"nested"}}"#, None),
+            (r#"{"id":123,"method":"unknown"}"#, None),
             (
                 r#"{"id":"first","id":"second","method":"ping","params":{}}"#,
-                "",
+                None,
             ),
             (
                 concat!(
                     r#"{"id":"bad-boot","method":"server.stop_if_boot","params":{"#,
                     r#""expected_boot_id":"old-boot"}}"#
                 ),
-                "bad-boot",
+                Some("bad-boot"),
             ),
-            (r#"{"id":"truncated","method":"ping""#, ""),
-            (r#"["not-an-object"]"#, ""),
+            (r#"{"id":"truncated","method":"ping""#, None),
+            (r#"["not-an-object"]"#, None),
+            (r#"{"id":"","method":"unknown"}"#, Some("")),
         ];
         for (request, expected_id) in cases {
             let (api_tx, mut api_rx) = mpsc::channel(1);
@@ -1129,7 +1136,7 @@ mod tests {
                 .expect("test precondition");
             let response: ErrorResponse =
                 serde_json::from_str(&response).expect("test precondition");
-            assert_eq!(response.id, expected_id, "{request}");
+            assert_eq!(response.id.as_deref(), expected_id, "{request}");
             assert_eq!(
                 response.error.code,
                 crate::error::ApiErrorCode::InvalidRequest

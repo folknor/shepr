@@ -927,7 +927,7 @@ fn terminal_and_render_state_smoke_test() {
     assert!(found_hello);
     assert!(found_world);
 
-    render_state.set_dirty(Dirty::Clean);
+    render_state.take_dirty_rows(u16::MAX).commit();
     assert_eq!(render_state.dirty(), Dirty::Clean);
 }
 
@@ -1142,37 +1142,35 @@ fn screen_row_readers_preserve_wrap_and_grapheme_cells() {
 }
 
 #[test]
-fn render_state_row_dirty_can_be_cleared_independently() {
+fn render_state_dirty_rows_commit_atomically() {
     let mut terminal = Terminal::new(8, 3, 100);
     let mut render_state = RenderState::new();
-
     render_state.update(&terminal);
-    for row in render_state.iter_rows() {
-        row.clear_dirty();
-        assert!(!row.is_dirty());
+    {
+        let pending = render_state.take_dirty_rows(1);
+        assert_eq!(pending.rows().count(), 1);
     }
+    assert_eq!(render_state.dirty_rows().count(), 3);
+    render_state.take_dirty_rows(1).commit();
+    assert_eq!(render_state.dirty(), Dirty::Partial);
     assert_eq!(
         render_state
             .dirty_rows()
             .map(|row| row.y())
             .collect::<Vec<_>>(),
-        vec![0, 1, 2]
+        vec![1, 2]
     );
-    render_state.set_dirty(Dirty::Clean);
-    assert_eq!(render_state.dirty_rows().count(), 0);
-
+    render_state.take_dirty_rows(u16::MAX).commit();
+    assert_eq!(render_state.dirty(), Dirty::Clean);
     terminal.write(b"A");
     render_state.update(&terminal);
-    assert_eq!(render_state.dirty(), Dirty::Partial);
-    let dirty: Vec<_> = render_state.dirty_rows().map(|row| row.y()).collect();
-    assert_eq!(dirty, vec![0]);
-    let row = render_state.dirty_rows().next().expect("row zero is dirty");
-    row.clear_dirty();
-    assert!(!row.is_dirty());
-    assert_eq!(render_state.dirty(), Dirty::Partial);
-
-    render_state.set_dirty(Dirty::Clean);
-    assert_eq!(render_state.dirty(), Dirty::Clean);
+    assert_eq!(
+        render_state
+            .dirty_rows()
+            .map(|row| row.y())
+            .collect::<Vec<_>>(),
+        vec![0]
+    );
 }
 
 #[test]

@@ -13,7 +13,7 @@ use shepr_protocol::{BootId, RequestId};
 use std::collections::HashMap;
 use std::time::Instant;
 
-/// The sole owner of issued request identities. Only answer and drop paths take entries.
+/// Owns shell request work. Only answer and drop paths take entries.
 pub(in crate::shell) struct Ledger {
     next: u64,
     entries: HashMap<RequestId, Entry>,
@@ -27,24 +27,27 @@ impl Default for Ledger {
     }
 }
 pub(in crate::shell) struct Entry {
+    issued_at: u64,
     pub(in crate::shell) boot_id: BootId,
     pub(in crate::shell) command: CommandKind,
     pub(in crate::shell) work: Work,
 }
 impl Ledger {
-    /// Issues `client-shell:{n}` and records the entry.
+    /// Allocates a request identity and records its shell work.
     pub(in crate::shell) fn open(
         &mut self,
         boot_id: BootId,
         command: CommandKind,
         work: Work,
     ) -> RequestId {
-        let id = Self::id_for(self.next);
+        let id = RequestId::allocate();
+        let issued_at = self.next;
         // A u64 counter of user requests does not run out in practice.
         self.next = self.next.saturating_add(1);
         self.entries.insert(
             id.clone(),
             Entry {
+                issued_at,
                 boot_id,
                 command,
                 work,
@@ -55,20 +58,21 @@ impl Ledger {
     pub(in crate::shell) fn work(&self, id: &RequestId) -> Option<&Work> {
         self.entries.get(id).map(|e| &e.work)
     }
-    fn id_for(serial: u64) -> RequestId {
-        format!("client-shell:{serial}").into()
-    }
     /// The serial the next `open` issues. Serials only grow, so comparing two marks
     /// tells whether anything was opened between them, even if it was removed since.
     pub(in crate::shell) fn mark(&self) -> u64 {
         self.next
     }
-    /// The entries still held that were opened at or after `mark`.
+    /// The entries still held that were opened at or after `mark`, in issue order.
     fn opened_since(&self, mark: u64) -> Vec<RequestId> {
-        (mark..self.next)
-            .map(Self::id_for)
-            .filter(|id| self.entries.contains_key(id))
-            .collect()
+        let mut opened: Vec<_> = self
+            .entries
+            .iter()
+            .filter(|(_, entry)| entry.issued_at >= mark)
+            .map(|(id, entry)| (entry.issued_at, id.clone()))
+            .collect();
+        opened.sort_unstable_by_key(|(issued_at, _)| *issued_at);
+        opened.into_iter().map(|(_, id)| id).collect()
     }
     pub(in crate::shell) fn is_empty(&self) -> bool {
         self.entries.is_empty()
@@ -76,7 +80,7 @@ impl Ledger {
     pub(in crate::shell) fn ids(&self) -> Vec<RequestId> {
         self.entries.keys().cloned().collect()
     }
-    fn take(&mut self, id: &str) -> Option<Entry> {
+    fn take(&mut self, id: &RequestId) -> Option<Entry> {
         self.entries.remove(id)
     }
 }
@@ -241,7 +245,7 @@ impl ClientShellState {
             endpoint_id: self.endpoints.presented().clone(),
             boot_id: snapshot.boot_id.clone(),
             request: Box::new(ClientShellEndpointRequest {
-                id: request_id.to_string(),
+                id: request_id.clone(),
                 command,
             }),
         });
@@ -255,11 +259,11 @@ impl ClientShellState {
     ) {
         self.submit(command, Work::Plain, outcome);
     }
-    fn release_highlight(&mut self, request: &str) -> Repaint {
+    fn release_highlight(&mut self, request: &RequestId) -> Repaint {
         if self
             .pending_workspace_highlight
             .as_ref()
-            .is_some_and(|h| h.request_id == request)
+            .is_some_and(|h| &h.request_id == request)
         {
             self.pending_workspace_highlight = None;
             Repaint::Needed
@@ -271,7 +275,7 @@ impl ClientShellState {
     pub(crate) fn answer_request(
         &mut self,
         boot_id: &shepr_protocol::BootId,
-        request_id: &str,
+        request_id: &RequestId,
         result: Result<EndpointReply, ClientShellEndpointError>,
         now: Instant,
     ) -> ClientShellInput {
@@ -279,7 +283,7 @@ impl ClientShellState {
         let Some(entry) = self.ledger.take(request_id) else {
             return outcome;
         };
-        let request: RequestId = request_id.into();
+        let request = request_id.clone();
         if entry.boot_id != *boot_id
             || self
                 .snapshot
@@ -361,11 +365,11 @@ impl ClientShellState {
     }
     /// Ends a request without an answer: releases its highlight, shows the interruption
     /// notice where `reason` calls for it and runs its rollback. Returns a repaint decision.
-    pub(crate) fn drop_request(&mut self, request_id: &str, reason: DropReason) -> Repaint {
+    pub(crate) fn drop_request(&mut self, request_id: &RequestId, reason: DropReason) -> Repaint {
         let Some(entry) = self.ledger.take(request_id) else {
             return Repaint::Unchanged;
         };
-        self.dropped_entry(entry, &request_id.into(), reason)
+        self.dropped_entry(entry, request_id, reason)
     }
     pub(in crate::shell) fn drop_all_requests(&mut self, reason: DropReason) -> Repaint {
         if self.ledger.is_empty() {
@@ -394,7 +398,12 @@ impl ClientShellState {
         result: Result<EndpointReply, ClientShellEndpointError>,
     ) -> ClientShellInput {
         // clock-io-ok: this test-only wrapper stands in for the client loop.
-        self.answer_request(boot_id, request_id, result, std::time::Instant::now())
+        self.answer_request(
+            boot_id,
+            &request_id.into(),
+            result,
+            std::time::Instant::now(),
+        )
     }
 }
 

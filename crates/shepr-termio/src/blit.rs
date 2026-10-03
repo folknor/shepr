@@ -34,8 +34,6 @@
 use std::cmp;
 use std::io::{self, Write};
 
-use unicode_width::UnicodeWidthStr;
-
 use shepr_protocol::{
     CellData, CursorState, FrameData, GridCellWidth, PaneSurfacePatchRow, WireColor, WireStyle,
     WireStyleFlags,
@@ -541,11 +539,7 @@ fn blit_frame_to_with_cursor_memory_and_clear_policy(
 /// Terminal column width of text under Ratatui's grapheme width rule, including the
 /// halfwidth voiced marks terminals display in their own cells.
 pub fn text_width(text: &str) -> usize {
-    text.width().saturating_add(
-        text.chars()
-            .filter(|character| matches!(character, '\u{ff9e}' | '\u{ff9f}'))
-            .count(),
-    )
+    shepr_vt::width::unicode_grapheme_width(text)
 }
 
 /// Grapheme width of a cell's symbol. Client composition uses [`text_width`]

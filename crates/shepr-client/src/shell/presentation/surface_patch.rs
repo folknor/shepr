@@ -1,9 +1,6 @@
-use crate::shell::state::ClientShellMode;
-
 use crate::shell::state::ClientShellState;
 
 use crate::shell::presentation::surfaces::PatchRejection;
-use ratatui::layout::Rect;
 
 use crate::shell::presentation::surfaces;
 
@@ -54,29 +51,23 @@ fn copy_mode_cursor_changed_on_owner(
 fn fast_path_blocker(
     state: &ClientShellState,
     patch: &shepr_protocol::PaneSurfacePatch,
-    area: Rect,
-) -> Option<&'static str> {
+    area: ratatui::layout::Rect,
+) -> bool {
+    // The last composition drew over pane cells (notices, banners, overlays, the mode
+    // bar, a clipped surface) or replaced the pane cursor (copy mode, an overlay, an
+    // unusable endpoint). Patch rows would overwrite those effects, so they compose.
+    let composition_covers_panes =
+        state.last_composition.pane_cells_occluded || state.last_composition.pane_cursor_overridden;
+    // A surface produced for a larger pane area (before a resize or sidebar toggle took
+    // effect) is drawn clipped by `compose`. Its patch rows, offset into this layout, could
+    // land on the mode bar or past the frame, so they go through compose too. The layout
+    // can change after the last composition, so this reads the current area.
+    let surface_overflows = state.pane_surface().is_some_and(|surface| {
+        crate::shell::presentation::composition::surface_overflows_area(surface, area)
+    });
     // Selection and copy mode affect pane cells only when their owner is patched. A parked
     // copy session must not send unrelated pane output through full-frame composition.
-    if state.pane_surface().is_some_and(|surface| {
-        crate::shell::presentation::composition::surface_overflows_area(surface, area)
-    }) {
-        // A surface produced for a larger pane area (before a resize or sidebar toggle took
-        // effect) is drawn clipped by `compose`. Its patch rows, offset into this layout, could
-        // land on the mode bar or past the frame, so they go through compose too.
-        Some("client_surface_patch.fallback.geometry")
-    } else if state.mode != ClientShellMode::Terminal {
-        Some("client_surface_patch.fallback.mode")
-    } else if state.overlay.is_some() {
-        Some("client_surface_patch.fallback.overlay")
-    } else if state.endpoint_error.message().is_some() {
-        Some("client_surface_patch.fallback.endpoint_error")
-    } else if state.notices.visible().is_some() {
-        // Notices are drawn over the panes; while one is up, pane updates go through a full
-        // compose. Notices expire (see `tick_transient_banners`), so this only costs for as
-        // long as one is on screen.
-        Some("client_surface_patch.fallback.endpoint_notice")
-    } else if state
+    let selection_patched = state
         .mouse_selection
         .selection
         .as_ref()
@@ -86,30 +77,27 @@ fn fast_path_blocker(
                     patch.panes.iter().map(|pane| &pane.pane_id),
                     &selection.pane_id,
                 )
-        })
-    {
-        Some("client_surface_patch.fallback.selection")
-    } else if state.copy_mode.as_ref().is_some_and(|copy_mode| {
+        });
+    // The cursor is sampled independently of the changed pane list, so a patch can move it
+    // without naming its owner in metadata. Recompose only when that owner has copy state.
+    let copy_mode_patched = state.copy_mode.as_ref().is_some_and(|copy_mode| {
         patch_updates_pane(
             patch.panes.iter().map(|pane| &pane.pane_id),
             &copy_mode.pane_id,
         )
-    }) || copy_mode_cursor_changed_on_owner(state, patch)
-    {
-        // The cursor is sampled independently of the changed pane list, so a patch can move it
-        // without naming its owner in metadata. Recompose only when that owner has copy state.
-        Some("client_surface_patch.fallback.copy_mode")
-    } else if patch.panes.iter().any(|pane| {
+    }) || copy_mode_cursor_changed_on_owner(state, patch);
+    let unknown_pane = patch.panes.iter().any(|pane| {
         !state
             .hits
             .panes
             .iter()
             .any(|hit| hit.pane_id == pane.pane_id)
-    }) {
-        Some("client_surface_patch.fallback.pane_hits")
-    } else {
-        None
-    }
+    });
+    composition_covers_panes
+        || surface_overflows
+        || selection_patched
+        || copy_mode_patched
+        || unknown_pane
 }
 
 impl ClientShellState {
@@ -140,7 +128,7 @@ impl ClientShellState {
         let (cols, rows) = self.last_composed_size.unwrap_or_default();
         let area = self.layout(cols, rows).pane_surface;
         let fast_path_blocker = fast_path_blocker(self, patch, area);
-        let fast_path_area = fast_path_blocker.is_none().then_some(area);
+        let fast_path_area = (!fast_path_blocker).then_some(area);
         let composed_patch = fast_path_area.map(|area| ClientComposedSurfacePatch {
             rows: patch
                 .rows
@@ -174,19 +162,11 @@ impl ClientShellState {
                 else {
                     continue;
                 };
-                hit.scrollbar_rect = updated.scrollbar_rect.map(|rect| {
-                    Rect::new(
-                        area.x.saturating_add(rect.x),
-                        area.y.saturating_add(rect.y),
-                        rect.width,
-                        rect.height,
-                    )
-                });
-                hit.scroll = updated.scroll;
-                hit.mouse_reporting = updated.mouse_reporting;
-                hit.sgr_pixel_mouse = updated.sgr_pixel_mouse;
-                hit.pixel_width = updated.pixel_width;
-                hit.pixel_height = updated.pixel_height;
+                if let Some(updated_hit) =
+                    crate::shell::state::PaneHit::from_wire(updated, (area.x, area.y), area)
+                {
+                    *hit = updated_hit;
+                }
                 self.scroll_target_shown(&updated.pane_id, updated.scroll);
             }
         } else {
@@ -337,6 +317,15 @@ mod tests {
     }
 
     #[test]
+    fn composed_cursor_suppression_blocks_cursor_only_patches() {
+        let (mut state, area) = state_with_copy_pane_focus(false);
+        let patch = cursor_patch(&state, Some(cursor(2)));
+        assert!(!fast_path_blocker(&state, &patch, area));
+        state.last_composition.pane_cursor_overridden = true;
+        assert!(fast_path_blocker(&state, &patch, area));
+    }
+
+    #[test]
     fn pane_patch_matching_is_limited_to_the_updated_pane_ids() {
         let updated = [
             crate::tests::test_pane_id("w1:p1"),
@@ -353,16 +342,13 @@ mod tests {
     fn cursor_only_copy_blocker_is_limited_to_a_changed_cursor_on_its_owner() {
         let (focused, area) = state_with_copy_pane_focus(true);
         let changed_cursor = cursor_patch(&focused, Some(cursor(2)));
-        assert_eq!(
-            fast_path_blocker(&focused, &changed_cursor, area),
-            Some("client_surface_patch.fallback.copy_mode")
-        );
+        assert!(fast_path_blocker(&focused, &changed_cursor, area));
 
         let unchanged_cursor = cursor_patch(&focused, Some(cursor(1)));
-        assert_eq!(fast_path_blocker(&focused, &unchanged_cursor, area), None);
+        assert!(!fast_path_blocker(&focused, &unchanged_cursor, area));
 
         let (parked, area) = state_with_copy_pane_focus(false);
         let unrelated_cursor = cursor_patch(&parked, Some(cursor(2)));
-        assert_eq!(fast_path_blocker(&parked, &unrelated_cursor, area), None);
+        assert!(!fast_path_blocker(&parked, &unrelated_cursor, area));
     }
 }

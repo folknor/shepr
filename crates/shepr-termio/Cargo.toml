@@ -15,7 +15,6 @@ shepr-platform = { path = "../shepr-platform" }
 shepr-protocol = { path = "../shepr-protocol" }
 shepr-vt = { path = "../shepr-vt" }
 tracing = { workspace = true }
-unicode-width = { workspace = true }
 
 [dev-dependencies]
 toml = { workspace = true }

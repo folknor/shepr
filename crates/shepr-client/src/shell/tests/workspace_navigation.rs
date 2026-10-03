@@ -665,7 +665,10 @@ fn local_navigation_state(compact: bool) -> ClientShellState {
     state
 }
 
-fn request_local_navigation(state: &mut ClientShellState, down: usize) -> String {
+fn request_local_navigation(
+    state: &mut ClientShellState,
+    down: usize,
+) -> shepr_protocol::RequestId {
     enter_navigation(state);
     for _ in 0..down {
         preview_key(state, b"\x1b[B");
@@ -778,7 +781,7 @@ fn failed_local_navigation_releases_only_its_own_highlight() {
         } else {
             state.handle_endpoint_result(
                 &crate::tests::test_boot_id("boot-1"),
-                &request_id,
+                request_id.as_str(),
                 Err(if failure == "timeout" {
                     ClientShellEndpointError::Timeout
                 } else {
@@ -791,7 +794,7 @@ fn failed_local_navigation_releases_only_its_own_highlight() {
         assert_local_highlight(&mut state, "w1");
         state.handle_endpoint_result(
             &crate::tests::test_boot_id("boot-1"),
-            &request_id,
+            request_id.as_str(),
             Ok(EndpointReply::Done),
         );
         assert_local_highlight(&mut state, "w1");
@@ -814,7 +817,7 @@ fn pending_navigation_highlight_does_not_survive_identity_changes() {
         let request_id = request_local_navigation(&mut state, 2);
         state.handle_endpoint_result(
             &crate::tests::test_boot_id("boot-1"),
-            &request_id,
+            request_id.as_str(),
             Ok(EndpointReply::Done),
         );
         assert_local_highlight(&mut state, "w3");

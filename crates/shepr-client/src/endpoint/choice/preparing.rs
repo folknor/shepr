@@ -14,7 +14,7 @@ pub struct ViewLease {
     pub generation: u64,
     pub boot_id: BootId,
     /// The revision of the snapshot the move started from; older snapshots are stale.
-    pub minimum_revision: u64,
+    pub minimum_revision: shepr_protocol::ProjectionRevision,
 }
 
 /// What one inbound message did to a `Preparing`. Never "ready": the reconcile asks
@@ -31,7 +31,7 @@ pub enum PrepareProgress {
 /// The target's latest snapshot and surface, from which a coherent pair is judged.
 #[derive(Clone, Debug, Default)]
 pub(super) struct ViewEvidence {
-    snapshot_revision: Option<u64>,
+    snapshot_revision: Option<shepr_protocol::ProjectionRevision>,
     focused_workspace_id: Option<shepr_protocol::WorkspaceId>,
     focused_pane_id: Option<shepr_protocol::PublicPaneId>,
     // Preparation receives decoded events, not the connection decoder. Its evidence
@@ -48,7 +48,7 @@ impl ViewEvidence {
             .snapshot_revision
             .is_none_or(|current| snapshot.revision >= current)
         {
-            self.snapshot_revision = Some(snapshot.revision.get());
+            self.snapshot_revision = Some(snapshot.revision);
             self.focused_workspace_id = snapshot.focused_workspace_id;
             self.focused_pane_id = snapshot.focused_pane_id;
         }
@@ -85,12 +85,12 @@ impl ViewEvidence {
     /// revision, at or above `minimum_revision`, and is sized for `size`.
     fn coherent_surface(
         &self,
-        minimum_revision: u64,
+        minimum_revision: shepr_protocol::ProjectionRevision,
         size: ClientSurfaceSize,
     ) -> Option<&PaneSurfaceFrame> {
         self.surface.as_ref().filter(|surface| {
-            self.snapshot_revision == Some(surface.projection_revision.get())
-                && surface.projection_revision.get() >= minimum_revision
+            self.snapshot_revision == Some(surface.projection_revision)
+                && surface.projection_revision >= minimum_revision
                 && surface.is_sized_for(size)
         })
     }
@@ -102,7 +102,7 @@ impl ViewEvidence {
 pub struct Preparing {
     lease: ViewLease,
     view_request: RequestId,
-    floor: Option<u64>,
+    floor: Option<shepr_protocol::ProjectionRevision>,
     geometry: TerminalGeometry,
     focus_lane: FocusLane,
     evidence: ViewEvidence,
@@ -279,8 +279,7 @@ impl Preparing {
     /// The next navigation request for the target, marked in flight, when the lane wants one
     /// and has none in flight.
     pub fn focus_request(&mut self) -> Option<ClientMessage> {
-        self.focus_lane
-            .request(&self.lease.boot_id, &self.view_request)
+        self.focus_lane.request(&self.lease.boot_id)
     }
 }
 
@@ -326,7 +325,7 @@ mod tests {
                 &"client-shell-view:1:on".into(),
                 Ok(EndpointReply::ClientShellSurfaceSet {
                     active: true,
-                    projection_revision: floor
+                    projection_revision: floor.into()
                 })
             ),
             PrepareProgress::Pending
@@ -435,7 +434,7 @@ mod tests {
             &"client-shell-view:1:on".into(),
             Ok(EndpointReply::ClientShellSurfaceSet {
                 active: true,
-                projection_revision: 2,
+                projection_revision: 2.into(),
             }),
         );
     }

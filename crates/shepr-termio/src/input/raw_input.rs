@@ -49,8 +49,7 @@ pub enum RawInputEvent {
     },
     HostColorSchemeChanged(HostAppearance),
     HostCellSizeReport {
-        width_px: u32,
-        height_px: u32,
+        cell: shepr_core::geometry::CellPx,
     },
     Unsupported,
 }
@@ -1069,14 +1068,8 @@ fn extract_one_event(buffer: &[u8]) -> Option<(RawInputEvent, usize)> {
             return Some((RawInputEvent::HostColorSchemeChanged(appearance), seq_len));
         }
 
-        if let Some((width_px, height_px)) = parse_host_cell_size_report(&buffer[..seq_len]) {
-            return Some((
-                RawInputEvent::HostCellSizeReport {
-                    width_px,
-                    height_px,
-                },
-                seq_len,
-            ));
+        if let Some(cell) = parse_host_cell_size_report(&buffer[..seq_len]) {
+            return Some((RawInputEvent::HostCellSizeReport { cell }, seq_len));
         }
 
         if let Some(mouse) = parse_sgr_mouse(seq) {
@@ -1185,7 +1178,7 @@ fn parse_host_color_scheme_report(buffer: &[u8]) -> Option<HostAppearance> {
 
 /// Parses an XTWINOPS cell size report (`CSI 6 ; height ; width t`) into
 /// `(width_px, height_px)`; note the reply orders height first.
-fn parse_host_cell_size_report(buffer: &[u8]) -> Option<(u32, u32)> {
+fn parse_host_cell_size_report(buffer: &[u8]) -> Option<shepr_core::geometry::CellPx> {
     let body = buffer.strip_prefix(b"\x1b[")?.strip_suffix(b"t")?;
     let text = std::str::from_utf8(body).ok()?;
     let mut params = text.split(';');
@@ -1198,7 +1191,6 @@ fn parse_host_cell_size_report(buffer: &[u8]) -> Option<(u32, u32)> {
         return None;
     }
     shepr_core::geometry::CellPx::new(width_px, height_px)
-        .map(|cell| (cell.width.get(), cell.height.get()))
 }
 
 fn parse_host_keyboard_probe_response(buffer: &[u8]) -> Option<HostKeyboardProbeResponse> {
@@ -2144,10 +2136,8 @@ mod tests {
         assert_eq!(events.len(), 1);
         assert!(matches!(
             events[0],
-            RawInputEvent::HostCellSizeReport {
-                width_px: 10,
-                height_px: 21,
-            }
+            RawInputEvent::HostCellSizeReport { cell }
+                if cell == shepr_core::geometry::CellPx::new(10, 21).expect("nonzero test cell")
         ));
     }
 
@@ -3733,10 +3723,8 @@ mod tests {
         let (event, _) = extract_one_event(&chunks[0]).expect("test precondition");
         assert!(matches!(
             event,
-            RawInputEvent::HostCellSizeReport {
-                width_px: 10,
-                height_px: 21,
-            }
+            RawInputEvent::HostCellSizeReport { cell }
+                if cell == shepr_core::geometry::CellPx::new(10, 21).expect("nonzero test cell")
         ));
     }
 

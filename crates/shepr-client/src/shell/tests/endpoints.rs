@@ -1775,7 +1775,7 @@ fn new_connection_generation_accepts_a_lower_same_boot_projection_revision() {
             .as_ref()
             .expect("test precondition")
             .revision,
-        1
+        shepr_protocol::ProjectionRevision::new(1)
     );
     assert_eq!(
         endpoint
@@ -1819,14 +1819,14 @@ fn reconnect_same_endpoint_accepts_new_generation_surface_revision() {
         state.cache_endpoint_snapshot_for_generation(&endpoint_id, 5, Box::new(reconnected));
         assert_eq!(
             state.snapshot.as_ref().expect("test precondition").revision,
-            previous_revision
+            shepr_protocol::ProjectionRevision::new(previous_revision)
         );
         assert_eq!(
             state
                 .pane_surface()
                 .expect("test precondition")
                 .surface_revision,
-            9
+            shepr_protocol::SurfaceRevision::new(9)
         );
 
         assert!(state.activate_endpoint_projection(&endpoint_id));
@@ -1839,21 +1839,21 @@ fn reconnect_same_endpoint_accepts_new_generation_surface_revision() {
 
         assert_eq!(
             state.snapshot.as_ref().expect("test precondition").revision,
-            1
+            shepr_protocol::ProjectionRevision::new(1)
         );
         assert_eq!(
             state
                 .pane_surface()
                 .expect("test precondition")
                 .projection_revision,
-            1
+            shepr_protocol::ProjectionRevision::new(1)
         );
         assert_eq!(
             state
                 .pane_surface()
                 .expect("test precondition")
                 .surface_revision,
-            1
+            shepr_protocol::SurfaceRevision::new(1)
         );
         assert!(state.surfaces.waiting_baseline().is_none());
         assert_eq!(state.agent_scroll, 7);
@@ -2370,7 +2370,10 @@ mod surface_baseline {
             s.apply_pane_surface_patch(&p),
             ClientPaneSurfacePatchOutcome::Applied(PatchPresentation::Held)
         ));
-        assert_eq!(s.pane_surface().expect("held").projection_revision, 1);
+        assert_eq!(
+            s.pane_surface().expect("held").projection_revision,
+            shepr_protocol::ProjectionRevision::new(1)
+        );
         assert_ne!(s.pane_surface().expect("held").frame.cells[0].symbol, "X");
         let mut next = snapshot();
         next.revision = 2.into();
@@ -2551,7 +2554,10 @@ mod surface_baseline {
         future.projection_revision = 3.into();
         s.receive_pane_surface(future);
         assert_eq!(s.hits.panes.len(), count);
-        assert_eq!(s.pane_surface().expect("held").projection_revision, 1);
+        assert_eq!(
+            s.pane_surface().expect("held").projection_revision,
+            shepr_protocol::ProjectionRevision::new(1)
+        );
     }
     #[test]
     fn compose_holds_the_last_frame_while_unpaired_and_draws_the_placeholder_when_nothing_was_presented()

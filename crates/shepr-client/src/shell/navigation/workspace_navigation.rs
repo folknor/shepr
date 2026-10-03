@@ -58,12 +58,12 @@ impl ClientShellState {
     pub(in crate::shell) fn keep_workspace_highlight_until_snapshot(
         &mut self,
         target: WorkspaceNavigationTarget,
-        request_id: &str,
+        request_id: &shepr_protocol::RequestId,
         now: std::time::Instant,
     ) {
         self.pending_workspace_highlight = Some(PendingWorkspaceHighlight {
             target,
-            request_id: request_id.to_owned().into(),
+            request_id: request_id.clone(),
             expires_at: now + crate::limits::WORKSPACE_HIGHLIGHT_TIMEOUT,
         });
         self.reconcile_pending_workspace_highlight();

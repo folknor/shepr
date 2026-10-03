@@ -176,6 +176,52 @@ pub(in crate::shell) struct PaneHit {
     pub(in crate::shell) pixel_height: u32,
 }
 
+impl PaneHit {
+    pub(in crate::shell) fn from_wire(
+        pane: &shepr_protocol::PaneSurfacePane,
+        origin: (u16, u16),
+        clip: Rect,
+    ) -> Option<Self> {
+        let offset = |rect: shepr_protocol::SurfaceRect| {
+            Rect::new(
+                origin.0.saturating_add(rect.x),
+                origin.1.saturating_add(rect.y),
+                rect.width,
+                rect.height,
+            )
+        };
+        let inner_rect = offset(pane.inner_rect);
+        let visible_inner = inner_rect.intersection(clip);
+        if visible_inner.is_empty() {
+            return None;
+        }
+        let clipped = inner_rect != visible_inner;
+        Some(Self {
+            rect: offset(pane.rect).intersection(clip),
+            inner_rect: visible_inner,
+            scrollbar_rect: pane
+                .scrollbar_rect
+                .map(offset)
+                .map(|rect| rect.intersection(clip))
+                .filter(|rect| !rect.is_empty()),
+            scroll: pane.scroll,
+            pane_id: pane.pane_id,
+            mouse_reporting: pane.mouse_reporting,
+            sgr_pixel_mouse: pane.sgr_pixel_mouse,
+            pixel_width: if clipped { 0 } else { pane.pixel_width },
+            pixel_height: if clipped { 0 } else { pane.pixel_height },
+        })
+    }
+}
+
+/// Effects committed by the last successful composition. Patches must preserve both
+/// the cells painted over pane output and compose's replacement of the pane cursor.
+#[derive(Default)]
+pub(in crate::shell) struct LastComposition {
+    pub(in crate::shell) pane_cells_occluded: bool,
+    pub(in crate::shell) pane_cursor_overridden: bool,
+}
+
 #[derive(Clone)]
 pub(in crate::shell) struct PaneSplitHit {
     pub(in crate::shell) direction: shepr_protocol::PaneSurfaceSplitDirection,
@@ -251,7 +297,7 @@ pub(in crate::shell) struct WorkspaceHit {
 /// One command bound for the active endpoint, with the id its answer comes
 /// back under.
 pub(crate) struct ClientShellEndpointRequest {
-    pub(crate) id: String,
+    pub(crate) id: shepr_protocol::RequestId,
     pub(crate) command: shepr_protocol::command::EndpointCommand,
 }
 
@@ -723,6 +769,7 @@ pub struct ClientShellState {
     pub(in crate::shell) pending_agent_reveal:
         Option<(ClientEndpointId, shepr_protocol::PublicPaneId)>,
     pub(in crate::shell) reveal_focused_workspace: bool,
+    pub(in crate::shell) last_composition: LastComposition,
     pub(in crate::shell) last_composed_size: Option<(u16, u16)>,
     pub(in crate::shell) last_composed_at: Option<std::time::Instant>,
     pub(in crate::shell) mouse_selection: MouseSelection,
@@ -832,6 +879,7 @@ impl ClientShellState {
             agent_scroll: 0,
             pending_agent_reveal: None,
             reveal_focused_workspace: true,
+            last_composition: LastComposition::default(),
             last_composed_size: None,
             last_composed_at: None,
             mouse_selection: MouseSelection::default(),
@@ -983,6 +1031,7 @@ impl ClientShellState {
         self.workspace_scroll = 0;
         self.agent_scroll = 0;
         self.reveal_focused_workspace = true;
+        self.last_composition = LastComposition::default();
         self.last_composed_size = None;
         self.last_composed_at = None;
         self.mouse_selection.clear();

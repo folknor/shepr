@@ -12,7 +12,9 @@ pub struct SuccessResponse {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ErrorResponse {
-    pub id: String,
+    /// Absent when a refused or malformed request supplied no unambiguous text ID.
+    /// An empty string is a caller-supplied ID and remains `Some`.
+    pub id: Option<String>,
     pub error: ErrorBody,
 }
 

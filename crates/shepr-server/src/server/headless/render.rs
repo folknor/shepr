@@ -8,7 +8,7 @@ pub(super) use crate::limits::SHELL_CWD_REFRESH_INTERVAL;
 /// shared by all shell clients.
 pub(super) struct ShellSessionCache {
     /// `AppState::shell_projection_revision` this snapshot was built at.
-    pub(super) revision: u64,
+    pub(super) revision: shepr_protocol::ProjectionRevision,
     /// When the snapshot last read the `/proc`-derived fields.
     pub(super) built_at: Instant,
     pub(super) session: crate::app::SessionSnapshot,
@@ -19,7 +19,7 @@ pub(super) struct ShellSessionCache {
 
 pub(super) struct CachedShellProjection {
     location_generation: crate::server::clients::ClientShellLocationGeneration,
-    projection_revision: u64,
+    projection_revision: shepr_protocol::ProjectionRevision,
     snapshot: shepr_protocol::ClientShellSnapshot,
 }
 
@@ -180,7 +180,7 @@ impl HeadlessServer {
                 &self.app,
                 &cache.session,
                 &self.client_shell_boot_id,
-                shell.projection_revision.get(),
+                shell.projection_revision,
                 &shell.location,
             );
             let client_changed = shell
@@ -191,7 +191,7 @@ impl HeadlessServer {
                 client_id,
                 CachedShellProjection {
                     location_generation: shell.location.generation(),
-                    projection_revision: shell.projection_revision.get(),
+                    projection_revision: shell.projection_revision,
                     snapshot: candidate,
                 },
             );
@@ -491,12 +491,7 @@ impl HeadlessServer {
             {
                 continue;
             }
-            let area = Rect::new(
-                0,
-                0,
-                target.terminal_size.cols.get(),
-                target.terminal_size.rows.get(),
-            );
+            let area = target.geometry().area;
             let shell_target = self.shell_target_for_client(target.client_id);
             let key = pane_surface_render_key(shell_target.as_ref(), area, target.cell_size);
             *shared.remaining.entry(key).or_insert(0usize) += 1;
@@ -555,12 +550,9 @@ impl HeadlessServer {
         shared: &mut SharedSurfaces,
     ) -> ClientPassOutcome {
         let client_id = target.client_id;
-        let (cols, rows) = (
-            target.terminal_size.cols.get(),
-            target.terminal_size.rows.get(),
-        );
-        let cell_size = target.cell_size;
-        let area = Rect::new(0, 0, cols, rows);
+        let geometry = target.geometry();
+        let cell_size = geometry.cell_size;
+        let area = geometry.area;
         let shell_target = self.shell_target_for_client(client_id);
         let Some(client) = self.clients.get_mut(&client_id) else {
             return ClientPassOutcome::Closed;
@@ -577,7 +569,7 @@ impl HeadlessServer {
         if needs_projection {
             let (location_generation, projection_revision) = {
                 let shell = client.shell_state();
-                (shell.location.generation(), shell.projection_revision.get())
+                (shell.location.generation(), shell.projection_revision)
             };
             let cached_projection = self
                 .shell_session_cache
@@ -804,7 +796,7 @@ impl HeadlessServer {
         app: &app::App,
         snapshot: &crate::app::SessionSnapshot,
         boot_id: &shepr_protocol::BootId,
-        revision: u64,
+        revision: shepr_protocol::ProjectionRevision,
         location: &crate::server::clients::ClientShellLocation,
     ) -> shepr_protocol::ClientShellSnapshot {
         // The client views what its own location names and nothing else: a client
@@ -893,7 +885,7 @@ impl HeadlessServer {
 
         shepr_protocol::ClientShellSnapshot {
             boot_id: boot_id.clone(),
-            revision: revision.into(),
+            revision,
             restore_notice: app.restore_notice.clone(),
             session_saves_stopped: app.session_saves_stopped(),
             focused_workspace_id,

@@ -25,7 +25,7 @@ impl PaneTerminal {
         let mut render_state = shepr_vt::RenderState::new();
         render_state.update(&terminal);
         Self {
-            core: Mutex::new(PaneTerminalCore {
+            core: TerminalCore::new(PaneTerminalCore {
                 content_revision: 0,
                 detection_content_seq: 0,
                 dirty_collection_hook: None,
@@ -55,8 +55,8 @@ impl PaneTerminal {
         &self,
         theme: shepr_termio::host_term::theme::TerminalTheme,
     ) {
-        let Ok(mut core) = shepr_vt::lock_terminal_core(&self.core) else {
-            self.report_terminal_mutation_failure("host theme update");
+        let Ok(mut core) = self.core.lock() else {
+            self.report_terminal_mutation_failure(TerminalMutation::HostThemeUpdate);
             return;
         };
         // The server filters identical host themes before dispatching this
@@ -82,10 +82,10 @@ impl PaneTerminal {
         &self,
         appearance: Option<shepr_termio::host_term::theme::HostAppearance>,
     ) -> Option<Bytes> {
-        let mut core = match shepr_vt::lock_terminal_core(&self.core) {
+        let mut core = match self.core.lock() {
             Ok(core) => core,
             Err(_) => {
-                self.report_terminal_mutation_failure("host appearance update");
+                self.report_terminal_mutation_failure(TerminalMutation::HostAppearanceUpdate);
                 return None;
             }
         };
@@ -110,7 +110,7 @@ impl PaneTerminal {
     /// Whether a transient override can eventually be restored to a known
     /// host theme. Alternate-screen state may delay the restore probe.
     pub(crate) fn has_theme_restore_candidate(&self) -> bool {
-        shepr_vt::lock_terminal_core(&self.core).is_ok_and(|core| {
+        self.core.lock().is_ok_and(|core| {
             core.transient_default_color_owner_pgid.is_some()
                 && !core.host_terminal_theme.is_empty()
         })
@@ -124,7 +124,7 @@ impl PaneTerminal {
         {
             // A read stays silent: the PTY actor reports a poisoned core and
             // closes the pane. Only the mutating lock below reports.
-            let Ok(core) = shepr_vt::lock_terminal_core(&self.core) else {
+            let Ok(core) = self.core.lock() else {
                 return false;
             };
             if !should_probe_host_terminal_theme_restore(&core) {
@@ -137,8 +137,8 @@ impl PaneTerminal {
         else {
             return false;
         };
-        let Ok(mut core) = shepr_vt::lock_terminal_core(&self.core) else {
-            self.report_terminal_mutation_failure("host theme restore");
+        let Ok(mut core) = self.core.lock() else {
+            self.report_terminal_mutation_failure(TerminalMutation::HostThemeRestore);
             return false;
         };
 
@@ -157,7 +157,8 @@ impl PaneTerminal {
     }
 
     pub(crate) fn terminal_title(&self) -> Option<String> {
-        shepr_vt::lock_terminal_core(&self.core)
+        self.core
+            .lock()
             .ok()
             .and_then(|core| core.agent_osc_state.terminal_title().map(str::to_string))
     }
@@ -167,7 +168,7 @@ impl PaneTerminal {
     /// is the latest OSC 0/2 title retained for detection and the progress the
     /// latest OSC 9;4 payload; each is `""` when none was seen or it was cleared.
     pub(crate) fn agent_detection_inputs(&self) -> AgentDetectionInputs {
-        let Ok(core) = shepr_vt::lock_terminal_core(&self.core) else {
+        let Ok(core) = self.core.lock() else {
             // A read stays silent: the PTY actor reports a poisoned core and
             // closes the pane, and a read is not a skipped mutation.
             return AgentDetectionInputs::default();
@@ -182,8 +183,8 @@ impl PaneTerminal {
     /// Clears retained OSC title/progress evidence when the pane's foreground
     /// agent changes, so a new agent process starts from a blank OSC slate.
     pub(crate) fn clear_agent_osc_state(&self) {
-        let Ok(mut core) = shepr_vt::lock_terminal_core(&self.core) else {
-            self.report_terminal_mutation_failure("agent OSC state clear");
+        let Ok(mut core) = self.core.lock() else {
+            self.report_terminal_mutation_failure(TerminalMutation::AgentOscStateClear);
             return;
         };
         core.agent_osc_state.clear_retained();
@@ -277,8 +278,8 @@ impl PaneTerminal {
         else {
             return;
         };
-        let Ok(mut core) = shepr_vt::lock_terminal_core(&self.core) else {
-            self.report_terminal_mutation_failure("default color owner update");
+        let Ok(mut core) = self.core.lock() else {
+            self.report_terminal_mutation_failure(TerminalMutation::DefaultColorOwnerUpdate);
             return;
         };
         if core.default_color_generation == generation.0
@@ -300,11 +301,11 @@ impl PaneTerminal {
     /// Readers and render paths only inspect the terminal. The render request
     /// is immediate when a frame was flushed.
     pub(crate) fn tick(&self, now: Instant) -> ProcessBytesResult {
-        let Ok(mut core) = shepr_vt::lock_terminal_core(&self.core) else {
+        let Ok(mut core) = self.core.lock() else {
             // A poisoned core is noticed by the PTY actor (its per-loop
             // `core_poisoned` check, or its next read), which ends the pane;
             // this timer has no loop to stop.
-            return Err(shepr_vt::TerminalCorePoisoned);
+            return Err(crate::pane::terminal::TerminalCorePoisoned);
         };
         let screen_before = core.terminal.active_screen();
         let flushed = core.terminal.tick(now);
@@ -343,8 +344,8 @@ impl PaneTerminal {
         // Production calls happen during pane construction, before this fresh
         // core is shared with runtime tasks. Keep a diagnostic if that
         // invariant ever changes and restored history cannot be seeded.
-        let Ok(mut core) = shepr_vt::lock_terminal_core(&self.core) else {
-            self.report_terminal_mutation_failure("history seed");
+        let Ok(mut core) = self.core.lock() else {
+            self.report_terminal_mutation_failure(TerminalMutation::HistorySeed);
             return;
         };
         core.record_mutation(CoreMutation::Presentation);
@@ -369,10 +370,10 @@ impl PaneTerminal {
 
     pub(crate) fn resize(&self, geometry: shepr_core::geometry::PaneGeometry) -> Vec<Bytes> {
         let rows = geometry.rows();
-        let mut core = match shepr_vt::lock_terminal_core(&self.core) {
+        let mut core = match self.core.lock() {
             Ok(core) => core,
             Err(_) => {
-                self.report_terminal_mutation_failure("resize");
+                self.report_terminal_mutation_failure(TerminalMutation::Resize);
                 return Vec::new();
             }
         };
@@ -438,10 +439,10 @@ impl PaneTerminal {
 
     fn update_scroll_position(
         &self,
-        operation: &'static str,
+        operation: TerminalMutation,
         update: impl FnOnce(&mut shepr_vt::Terminal),
     ) -> SurfaceChange {
-        let Ok(mut core) = shepr_vt::lock_terminal_core(&self.core) else {
+        let Ok(mut core) = self.core.lock() else {
             self.report_terminal_mutation_failure(operation);
             return SurfaceChange::Unchanged;
         };
@@ -456,25 +457,27 @@ impl PaneTerminal {
     }
 
     pub(crate) fn scroll_up(&self, lines: usize) -> SurfaceChange {
-        self.update_scroll_position("scroll up", |terminal| {
+        self.update_scroll_position(TerminalMutation::ScrollUp, |terminal| {
             terminal.scroll_viewport_delta(shepr_vt::ScrollTowards::Older(lines));
         })
     }
 
     pub(crate) fn scroll_down(&self, lines: usize) -> SurfaceChange {
-        self.update_scroll_position("scroll down", |terminal| {
+        self.update_scroll_position(TerminalMutation::ScrollDown, |terminal| {
             terminal.scroll_viewport_delta(shepr_vt::ScrollTowards::Newer(lines));
         })
     }
 
     pub(crate) fn scroll_reset(&self) -> SurfaceChange {
-        self.update_scroll_position("scroll reset", |terminal| {
+        self.update_scroll_position(TerminalMutation::ScrollReset, |terminal| {
             terminal.scroll_viewport_bottom();
         })
     }
 
     pub(crate) fn clear_screen(&self) -> Result<SurfaceChange, PaneClearError> {
-        let mut core = shepr_vt::lock_terminal_core(&self.core)
+        let mut core = self
+            .core
+            .lock()
             .map_err(|_| PaneClearError::TerminalLockPoisoned)?;
         match core.terminal.clear_screen() {
             shepr_vt::ClearScreenOutcome::Cleared => {
@@ -488,13 +491,13 @@ impl PaneTerminal {
     }
 
     pub(crate) fn set_scroll_offset_from_bottom(&self, lines: usize) -> SurfaceChange {
-        self.update_scroll_position("set scroll offset", |terminal| {
+        self.update_scroll_position(TerminalMutation::SetScrollOffset, |terminal| {
             terminal_set_scroll_offset_from_bottom(terminal, lines);
         })
     }
 
     pub(crate) fn scroll_metrics(&self) -> Option<ScrollMetrics> {
-        let Ok(core) = shepr_vt::lock_terminal_core(&self.core) else {
+        let Ok(core) = self.core.lock() else {
             return None;
         };
         Some(terminal_scroll_metrics(&core.terminal))
@@ -514,7 +517,7 @@ impl PaneTerminal {
         let mut next = None;
         let mut scan = None;
         loop {
-            let Ok(core) = shepr_vt::lock_terminal_core(&self.core) else {
+            let Ok(core) = self.core.lock() else {
                 break;
             };
             let terminal = &core.terminal;
@@ -570,14 +573,14 @@ impl PaneTerminal {
     pub(crate) fn negotiated_keyboard_protocol(
         &self,
     ) -> Option<shepr_termio::input::KeyboardProtocol> {
-        let core = shepr_vt::lock_terminal_core(&self.core).ok()?;
+        let core = self.core.lock().ok()?;
         Some(shepr_termio::input::KeyboardProtocol::from_flags(
             core.terminal.kitty_keyboard_flags(),
         ))
     }
 
     pub(crate) fn input_modes(&self) -> Option<shepr_vt::InputModes> {
-        let core = shepr_vt::lock_terminal_core(&self.core).ok()?;
+        let core = self.core.lock().ok()?;
         Some(core.terminal.input_modes())
     }
 
@@ -590,12 +593,14 @@ impl PaneTerminal {
     }
 
     pub(crate) fn mouse_reporting_enabled(&self) -> bool {
-        shepr_vt::lock_terminal_core(&self.core)
+        self.core
+            .lock()
             .is_ok_and(|core| core.terminal.mouse_tracking_enabled())
     }
 
     pub(crate) fn modify_other_keys_mode(&self) -> shepr_vt::ModifyOtherKeysLevel {
-        shepr_vt::lock_terminal_core(&self.core)
+        self.core
+            .lock()
             .map_or(shepr_vt::ModifyOtherKeysLevel::Off, |core| {
                 core.terminal.modify_other_keys_level()
             })
@@ -611,7 +616,9 @@ impl PaneTerminal {
     }
 
     fn mode_enabled(&self, mode: shepr_vt::DecMode) -> bool {
-        shepr_vt::lock_terminal_core(&self.core).is_ok_and(|core| core.terminal.mode_get(mode))
+        self.core
+            .lock()
+            .is_ok_and(|core| core.terminal.mode_get(mode))
     }
 
     pub(crate) fn plain_page_keys_use_host_scrollback(&self) -> Option<bool> {
@@ -620,26 +627,25 @@ impl PaneTerminal {
     }
 
     pub(crate) fn alternate_screen_active(&self) -> bool {
-        shepr_vt::lock_terminal_core(&self.core)
+        self.core
+            .lock()
             .is_ok_and(|core| core.terminal.active_screen() == shepr_vt::ActiveScreen::Alternate)
     }
 
     pub(crate) fn cursor_state(&self) -> Option<TerminalCursorState> {
-        let mut core = shepr_vt::lock_terminal_core(&self.core).ok()?;
+        let mut core = self.core.lock().ok()?;
         current_cursor_state(&mut core)
     }
 
     pub(crate) fn synchronized_output_active(&self) -> bool {
-        shepr_vt::lock_terminal_core(&self.core)
-            .ok()
-            .is_some_and(|core| {
-                core.terminal
-                    .mode_get(shepr_vt::DecMode::SynchronizedOutput)
-            })
+        self.core.lock().ok().is_some_and(|core| {
+            core.terminal
+                .mode_get(shepr_vt::DecMode::SynchronizedOutput)
+        })
     }
 
     pub(crate) fn synchronized_output_state(&self) -> Option<(bool, u64)> {
-        let core = shepr_vt::lock_terminal_core(&self.core).ok()?;
+        let core = self.core.lock().ok()?;
         Some((
             core.terminal
                 .mode_get(shepr_vt::DecMode::SynchronizedOutput),
@@ -648,7 +654,8 @@ impl PaneTerminal {
     }
 
     pub(crate) fn detection_text(&self) -> String {
-        shepr_vt::lock_terminal_core(&self.core)
+        self.core
+            .lock()
             .ok()
             .and_then(|core| terminal_detection_text(&core.terminal).ok())
             .unwrap_or_default()
@@ -658,7 +665,8 @@ impl PaneTerminal {
         &self,
         selection: &shepr_vt::selection::Selection<P>,
     ) -> Option<String> {
-        shepr_vt::lock_terminal_core(&self.core)
+        self.core
+            .lock()
             .ok()
             .and_then(|mut core| terminal_extract_selection(&mut core, selection))
     }
@@ -672,7 +680,7 @@ impl PaneTerminal {
     /// or columns the screen does not have are blank in the terminal's default
     /// colours.
     pub(crate) fn render_into(&self, frame: &mut FrameData, area: Rect) {
-        let Ok(mut core) = shepr_vt::lock_terminal_core(&self.core) else {
+        let Ok(mut core) = self.core.lock() else {
             return;
         };
         if core
@@ -773,10 +781,10 @@ impl PaneTerminal {
         &self,
         area_width: u16,
         area_height: u16,
-    ) -> Option<super::TerminalDirtyPatchSnapshot> {
-        let Ok(mut core) = shepr_vt::lock_terminal_core(&self.core) else {
-            self.report_dirty_patch_fallback("terminal core lock poisoned");
-            return None;
+    ) -> Result<super::TerminalDirtyPatchSnapshot, PatchUnavailable> {
+        let Ok(mut core) = self.core.lock() else {
+            self.report_dirty_patch_fallback(PatchUnavailable::CorePoisoned);
+            return Err(PatchUnavailable::CorePoisoned);
         };
         if let Some(hook) = core.dirty_collection_hook.take() {
             hook();
@@ -785,21 +793,18 @@ impl PaneTerminal {
             .terminal
             .mode_get(shepr_vt::DecMode::SynchronizedOutput)
         {
-            return None;
+            return Err(PatchUnavailable::SynchronizedOutput);
         }
-        let collection = terminal_collect_dirty_patch(&mut core, area_width, area_height);
-        let patch = match collection.outcome {
-            TerminalDirtyPatchOutcome::Clean => None,
-            TerminalDirtyPatchOutcome::Patch(patch) => Some(patch),
-            TerminalDirtyPatchOutcome::Fallback => {
+        let patch = match terminal_collect_dirty_patch(&mut core, area_width, area_height) {
+            Ok(patch) => patch,
+            Err(reason) => {
                 drop(core);
-                if let Some(reason) = collection.fallback_reason {
-                    self.report_dirty_patch_fallback(reason);
-                }
-                return None;
+                let unavailable = PatchUnavailable::Fallback(reason);
+                self.report_dirty_patch_fallback(unavailable);
+                return Err(unavailable);
             }
         };
-        Some(super::TerminalDirtyPatchSnapshot {
+        Ok(super::TerminalDirtyPatchSnapshot {
             patch,
             content_revision: core.content_revision,
             scroll_metrics: terminal_scroll_metrics(&core.terminal),
@@ -889,18 +894,23 @@ impl PaneTerminal {
         self.encode_mouse_motion_with_modes(self.input_modes()?, kind, position, modifiers)
     }
 
-    pub(crate) fn collect_dirty_patch(
+    // Rendering tests compare cells; production consumes the typed snapshot result.
+    #[cfg(test)]
+    pub(super) fn collect_dirty_patch(
         &self,
         area_width: u16,
         area_height: u16,
     ) -> TerminalDirtyPatchOutcome {
         self.collect_dirty_patch_snapshot(area_width, area_height)
-            .map_or(TerminalDirtyPatchOutcome::Fallback, |snapshot| {
-                snapshot.patch.map_or(
-                    TerminalDirtyPatchOutcome::Clean,
-                    TerminalDirtyPatchOutcome::Patch,
-                )
-            })
+            .map_or_else(
+                |_| TerminalDirtyPatchOutcome::Fallback,
+                |snapshot| {
+                    snapshot.patch.map_or(
+                        TerminalDirtyPatchOutcome::Clean,
+                        TerminalDirtyPatchOutcome::Patch,
+                    )
+                },
+            )
     }
 
     /// Processes one chunk of child output. `now` is the read's timestamp: it
@@ -922,22 +932,25 @@ impl PaneTerminal {
         bytes: &[u8],
         now: Instant,
     ) -> ProcessBytesResult {
-        let core = shepr_vt::lock_terminal_core(&self.core)?;
+        let core = self.core.lock()?;
         self.process_pty_bytes_locked(pane_id, bytes, now, core)
     }
 
     pub(crate) fn has_transient_default_color_override(&self) -> bool {
-        shepr_vt::lock_terminal_core(&self.core)
+        self.core
+            .lock()
             .is_ok_and(|core| core.transient_default_color_owner_pgid.is_some())
     }
 
     pub(crate) fn visible_text(&self) -> String {
-        shepr_vt::lock_terminal_core(&self.core)
+        self.core
+            .lock()
             .map_or_default(|mut core| terminal_visible_text(&mut core))
     }
 
     pub(crate) fn visible_ansi(&self) -> String {
-        shepr_vt::lock_terminal_core(&self.core)
+        self.core
+            .lock()
             .ok()
             .and_then(|core| terminal_visible_ansi(&core).ok())
             .unwrap_or_default()
@@ -946,21 +959,24 @@ impl PaneTerminal {
     // Test-only reads compare retained content and replay against the chunked
     // production history reader; they need only text, not truncation metadata.
     pub(crate) fn recent_text(&self, lines: usize) -> String {
-        shepr_vt::lock_terminal_core(&self.core)
+        self.core
+            .lock()
             .ok()
             .and_then(|mut core| terminal_recent_text(&mut core, lines).ok())
             .unwrap_or_default()
     }
 
     pub(crate) fn recent_ansi(&self, lines: usize) -> String {
-        shepr_vt::lock_terminal_core(&self.core)
+        self.core
+            .lock()
             .ok()
             .and_then(|mut core| terminal_recent_ansi(&mut core, lines).ok())
             .unwrap_or_default()
     }
 
     pub(crate) fn recent_unwrapped_text(&self, lines: usize) -> String {
-        shepr_vt::lock_terminal_core(&self.core)
+        self.core
+            .lock()
             .ok()
             .and_then(|mut core| terminal_recent_text_unwrapped(&mut core, lines).ok())
             .unwrap_or_default()
@@ -980,7 +996,7 @@ mod tests {
         let pane = PaneTerminal::new(shepr_vt::Terminal::new(80, 4, 0));
         pane.seed_history_ansi("saved first row\r\n\r\nsaved third row");
 
-        let mut core = shepr_vt::lock_terminal_core(&pane.core).expect("terminal core");
+        let mut core = pane.core.lock().expect("terminal core");
         let mut scratch = String::new();
         let mut row_text = String::new();
         let seeded = terminal_screen_row_into_with_seeded(
@@ -1007,7 +1023,7 @@ mod tests {
     fn resize_returns_queued_replies_before_its_own() {
         let pane = PaneTerminal::new(shepr_vt::Terminal::new(80, 24, 0));
         {
-            let mut core = shepr_vt::lock_terminal_core(&pane.core).expect("terminal core");
+            let mut core = pane.core.lock().expect("terminal core");
             core.terminal.write(b"\x1b[?2048h\x1b[5n");
         }
 

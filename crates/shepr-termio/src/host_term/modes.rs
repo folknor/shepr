@@ -2,15 +2,11 @@ use shepr_protocol::KittyKeyboardFlags;
 use shepr_vt::ModifyOtherKeysLevel;
 use std::io::{self, Write};
 
-const HOST_MOUSE_REPORTING_DISABLE_MODES: &[shepr_vt::DecMode] = &[
-    shepr_vt::DecMode::MouseSgr,
-    shepr_vt::DecMode::MouseSgrPixels,
-    shepr_vt::DecMode::MouseUtf8,
-    shepr_vt::DecMode::MouseAnyMotion,
-    shepr_vt::DecMode::MouseButtonMotion,
-    shepr_vt::DecMode::MousePressRelease,
-    shepr_vt::DecMode::X10Mouse,
-];
+/// Host mouse modes cleared on exit, in this order: SGR, SGR pixels, urxvt,
+/// UTF-8, any motion, button motion, press and release, X10. This is a host
+/// list, not the emulator's: urxvt (1015) is cleared for legacy hosts although
+/// the pane core does not model it.
+const HOST_MOUSE_REPORTING_DISABLE_MODES: &[u16] = &[1006, 1016, 1015, 1005, 1003, 1002, 1000, 9];
 
 pub const HOST_KEYBOARD_QUERY_SEQUENCE: &[u8] = shepr_vt::seq::HOST_KEYBOARD_QUERY_SEQUENCE;
 pub const HOST_CELL_SIZE_QUERY_SEQUENCE: &[u8] = shepr_vt::seq::HOST_CELL_SIZE_QUERY_SEQUENCE;
@@ -25,18 +21,9 @@ pub const HOST_MOUSE_SGR_PIXELS_ENABLE_SEQUENCE: &[u8] =
 pub const HOST_WINDOW_TITLE_PUSH_SEQUENCE: &[u8] = shepr_vt::seq::HOST_WINDOW_TITLE_PUSH_SEQUENCE;
 pub const HOST_WINDOW_TITLE_POP_SEQUENCE: &[u8] = shepr_vt::seq::HOST_WINDOW_TITLE_POP_SEQUENCE;
 
-// 1015 remains in host cleanup for legacy urxvt terminals; the core does not
-// model that host-side mouse encoding.
 pub fn clear_host_mouse_reporting<W: Write>(writer: &mut W) -> io::Result<()> {
-    for (index, mode) in HOST_MOUSE_REPORTING_DISABLE_MODES
-        .iter()
-        .copied()
-        .enumerate()
-    {
-        write!(writer, "{}", shepr_vt::seq::DecSet(mode, false))?;
-        if index == 1 {
-            writer.write_all(b"\x1b[?1015l")?;
-        }
+    for mode in HOST_MOUSE_REPORTING_DISABLE_MODES {
+        write!(writer, "\x1b[?{mode}l")?;
     }
     writer.flush()
 }

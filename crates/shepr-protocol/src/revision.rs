@@ -39,30 +39,6 @@ macro_rules! counter {
                 Self::new(value)
             }
         }
-
-        impl From<$name> for u64 {
-            fn from(value: $name) -> Self {
-                value.get()
-            }
-        }
-
-        impl PartialEq<u64> for $name {
-            fn eq(&self, other: &u64) -> bool {
-                self.0 == *other
-            }
-        }
-
-        impl PartialEq<$name> for u64 {
-            fn eq(&self, other: &$name) -> bool {
-                *self == other.get()
-            }
-        }
-
-        impl PartialOrd<u64> for $name {
-            fn partial_cmp(&self, other: &u64) -> Option<std::cmp::Ordering> {
-                self.0.partial_cmp(other)
-            }
-        }
     };
 }
 

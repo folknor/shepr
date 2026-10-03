@@ -1,7 +1,7 @@
-use shepr_config::AgentSidebarToken;
-
-use shepr_config::SpaceSidebarToken;
-use shepr_config::{AgentsSidebarConfig, SidebarTokenStyle, SpacesSidebarConfig};
+use shepr_config::{
+    AgentSidebarTokenKind, AgentsSidebarConfig, SidebarTokenRendering, SidebarTokenStyle,
+    SpaceSidebarTokenKind, SpacesSidebarConfig,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ResolvedToken {
@@ -67,33 +67,37 @@ pub(crate) fn agent_rows(
                 .filter_map(|configured| {
                     let (token, style) = configured.parts();
                     let kind = match token {
-                        AgentSidebarToken::StateIcon => Some(ResolvedTokenKind::StateIcon),
-                        AgentSidebarToken::StateText => {
+                        AgentSidebarTokenKind::StateIcon => Some(ResolvedTokenKind::StateIcon),
+                        AgentSidebarTokenKind::StateText => {
                             Some(ResolvedTokenKind::StateText(state_text.to_string()))
                         }
-                        AgentSidebarToken::Machine => context
+                        AgentSidebarTokenKind::Machine => context
                             .machine
                             .map(|value| ResolvedTokenKind::Machine(value.to_string())),
-                        AgentSidebarToken::Workspace => {
+                        AgentSidebarTokenKind::Workspace => {
                             Some(ResolvedTokenKind::Workspace(context.workspace.to_string()))
                         }
-                        AgentSidebarToken::Pane => context
+                        AgentSidebarTokenKind::Pane => context
                             .pane
                             .map(|value| ResolvedTokenKind::Pane(value.to_string())),
-                        AgentSidebarToken::Agent => context
+                        AgentSidebarTokenKind::Agent => context
                             .agent_label
                             .map(|value| ResolvedTokenKind::Agent(value.to_string())),
-                        AgentSidebarToken::TerminalTitle => context
+                        AgentSidebarTokenKind::TerminalTitle => context
                             .terminal_title
                             .map(|value| ResolvedTokenKind::TerminalTitle(value.to_string())),
-                        AgentSidebarToken::TerminalTitleStripped => context
+                        AgentSidebarTokenKind::TerminalTitleStripped => context
                             .terminal_title_stripped
                             .map(|value| ResolvedTokenKind::TerminalTitle(value.to_string())),
-                        AgentSidebarToken::Styled { .. } => None,
                     }?;
-                    let style = kind
+                    let rendering = kind
                         .text_value()
-                        .map_or(Some(style), |value| configured.style_for_value(value))?;
+                        .map_or(SidebarTokenRendering::Styled(style), |value| {
+                            configured.style_for_value(value)
+                        });
+                    let SidebarTokenRendering::Styled(style) = rendering else {
+                        return None;
+                    };
                     Some(ResolvedToken::new(kind, style))
                 })
                 .collect::<Vec<_>>();
@@ -106,6 +110,7 @@ pub(crate) struct SpaceTokenContext<'a> {
     pub(crate) workspace: &'a str,
     pub(crate) branch: Option<&'a str>,
     pub(crate) state_text: &'a str,
+    /// Carries the projection's adjacent ahead and behind counts to the one renderer.
     pub(crate) ahead_behind: Option<(usize, usize)>,
 }
 
@@ -122,25 +127,29 @@ pub(crate) fn space_rows(
                 .filter_map(|configured| {
                     let (token, style) = configured.parts();
                     let kind = match token {
-                        SpaceSidebarToken::StateIcon => Some(ResolvedTokenKind::StateIcon),
-                        SpaceSidebarToken::StateText => {
+                        SpaceSidebarTokenKind::StateIcon => Some(ResolvedTokenKind::StateIcon),
+                        SpaceSidebarTokenKind::StateText => {
                             Some(ResolvedTokenKind::StateText(context.state_text.to_string()))
                         }
-                        SpaceSidebarToken::Workspace => {
+                        SpaceSidebarTokenKind::Workspace => {
                             Some(ResolvedTokenKind::Workspace(context.workspace.to_string()))
                         }
-                        SpaceSidebarToken::Branch => context
+                        SpaceSidebarTokenKind::Branch => context
                             .branch
                             .map(|branch| ResolvedTokenKind::Branch(branch.to_string())),
-                        SpaceSidebarToken::GitStatus => context
+                        SpaceSidebarTokenKind::GitStatus => context
                             .ahead_behind
                             .filter(|(ahead, behind)| *ahead > 0 || *behind > 0)
                             .map(|(ahead, behind)| ResolvedTokenKind::GitStatus { ahead, behind }),
-                        SpaceSidebarToken::Styled { .. } => None,
                     }?;
-                    let style = kind
+                    let rendering = kind
                         .text_value()
-                        .map_or(Some(style), |value| configured.style_for_value(value))?;
+                        .map_or(SidebarTokenRendering::Styled(style), |value| {
+                            configured.style_for_value(value)
+                        });
+                    let SidebarTokenRendering::Styled(style) = rendering else {
+                        return None;
+                    };
                     Some(ResolvedToken::new(kind, style))
                 })
                 .collect::<Vec<_>>();

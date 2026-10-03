@@ -12,7 +12,7 @@ impl HeadlessServer {
         &mut self,
         client_id: ClientId,
         active: bool,
-    ) -> Option<(bool, u64)> {
+    ) -> Option<(bool, shepr_protocol::ProjectionRevision)> {
         // The floor is per connection and steps once per activation or
         // changed snapshot, so exhaustion is unreachable in practice. Should
         // it happen, drop the client: it reconnects with a fresh counter
@@ -54,7 +54,7 @@ impl HeadlessServer {
                     shell.snapshot = None;
                 }
                 if !changed && !active {
-                    return Some((false, shell.projection_revision.get()));
+                    return Some((false, shell.projection_revision));
                 }
                 shell.projection_revision
             };
@@ -104,6 +104,6 @@ impl HeadlessServer {
         if active {
             self.sync_pane_focus();
         }
-        Some((changed || active, projection_revision.get()))
+        Some((changed || active, projection_revision))
     }
 }

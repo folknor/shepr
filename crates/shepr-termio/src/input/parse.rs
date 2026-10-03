@@ -144,13 +144,12 @@ fn parse_legacy_key_sequence(data: &str) -> Option<TerminalKey> {
             }
 
             let mut modifiers = KeyModifiers::empty();
-            let code = if ch.is_ascii_uppercase() {
+            // Legacy bytes already contain the produced character. Recover
+            // ASCII Shift identity without applying the US layout to it again.
+            if ch.is_ascii_uppercase() {
                 modifiers |= KeyModifiers::SHIFT;
-                KeyCode::Char(ch)
-            } else {
-                KeyCode::Char(ch)
-            };
-            Some(TerminalKey::new(code, modifiers))
+            }
+            Some(TerminalKey::new(KeyCode::Char(ch), modifiers))
         }
         _ => None,
     }

@@ -111,11 +111,7 @@ impl TextBufferBuilder {
                 }
             }
             shepr_vt::CellWide::Narrow | shepr_vt::CellWide::Wide => {
-                let width = if wide == shepr_vt::CellWide::Wide {
-                    2
-                } else {
-                    1
-                };
+                let width = wide.columns();
                 let start = TerminalTextPoint { row, col };
                 let end = TerminalTextPoint {
                     row,

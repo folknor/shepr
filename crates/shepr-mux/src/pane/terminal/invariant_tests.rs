@@ -92,13 +92,11 @@ impl Harness {
     }
 
     fn cursor(&self) -> Option<TerminalCursorState> {
-        current_cursor_state(
-            &mut shepr_vt::lock_terminal_core(&self.pane.core).expect("test precondition"),
-        )
+        current_cursor_state(&mut self.pane.core.lock().expect("test precondition"))
     }
 
     fn screen_text(&self) -> String {
-        let core = shepr_vt::lock_terminal_core(&self.pane.core).expect("test precondition");
+        let core = self.pane.core.lock().expect("test precondition");
         let terminal = &core.terminal;
         let last_row = terminal.total_rows().saturating_sub(1);
         terminal
@@ -296,7 +294,7 @@ fn incremental_rows_reconstruct_full_render() {
         match incremental.pane.collect_dirty_patch(12, 5) {
             TerminalDirtyPatchOutcome::Clean => {}
             TerminalDirtyPatchOutcome::Patch(patch) => {
-                for (row, cells) in patch.rows {
+                for PatchRow { y: row, cells } in patch.rows {
                     assert_eq!(cells.len(), 12);
                     let start = usize::from(row) * 12;
                     retained[start..start + 12].clone_from_slice(&cells);
@@ -328,12 +326,12 @@ fn sparse_dirty_patches_preserve_coordinates_and_clipped_rows() {
         };
         let expected_rows = if height == 3 { vec![1] } else { vec![1, 4] };
         assert_eq!(
-            patch.rows.iter().map(|(y, _)| *y).collect::<Vec<_>>(),
+            patch.rows.iter().map(|row| row.y).collect::<Vec<_>>(),
             expected_rows
         );
-        assert!(patch.rows.iter().all(|(_, cells)| cells.len() == 8));
+        assert!(patch.rows.iter().all(|row| row.cells.len() == 8));
 
-        let core = shepr_vt::lock_terminal_core(&terminal.pane.core).expect("test precondition");
+        let core = terminal.pane.core.lock().expect("test precondition");
         for row in core.render_state.iter_rows() {
             assert_eq!(row.is_dirty(), height == 3 && row.y() == 4);
         }
@@ -360,7 +358,7 @@ fn dirty_patch_fallback_keeps_previously_collected_rows_dirty() {
         hook_ran.load(std::sync::atomic::Ordering::Acquire),
         "the next collection attempt runs its hook even when it falls back"
     );
-    let core = shepr_vt::lock_terminal_core(&terminal.pane.core).expect("test precondition");
+    let core = terminal.pane.core.lock().expect("test precondition");
     #[expect(
         clippy::redundant_closure_for_method_calls,
         reason = "`RowView::y` takes `&self`, so it doesn't coerce to the `FnMut(RowView)` \

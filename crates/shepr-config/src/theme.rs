@@ -1,23 +1,39 @@
 use ratatui::style::Color;
 
 macro_rules! define_builtin_themes {
-    ($( $name:literal => $constructor:ident [ $($alias:literal),* $(,)? ] ),+ $(,)?) => {
+    (
+        $( $name:literal => $variant:ident : $constructor:ident [ $($alias:literal),* $(,)? ] ),+
+        $(,)?
+    ) => {
         pub const THEME_NAMES: &[&str] = &[$($name),+];
         pub const DEFAULT_THEME: &str = THEME_NAMES[0];
 
-        pub(crate) fn canonical_theme_name(name: &str) -> Option<&'static str> {
-            match name.to_lowercase().replace([' ', '_'], "-").as_str() {
-                $($name $(| $alias)* => Some($name),)+
-                _ => None,
+        /// A resolved built-in name; aliases are converted to the same variant once.
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        pub enum ThemeName {
+            $($variant,)+
+        }
+
+        impl ThemeName {
+            pub fn parse(name: &str) -> Option<Self> {
+                match name.to_lowercase().replace([' ', '_'], "-").as_str() {
+                    $($name $(| $alias)* => Some(Self::$variant),)+
+                    _ => None,
+                }
+            }
+
+            pub const fn as_str(self) -> &'static str {
+                match self {
+                    $(Self::$variant => $name,)+
+                }
             }
         }
 
         impl Palette {
-            /// Resolve a theme by name. Returns None for unknown names.
-            pub fn from_name(name: &str) -> Option<Self> {
-                match canonical_theme_name(name)? {
-                    $($name => Some(Self::$constructor()),)+
-                    _ => None,
+            /// Resolve a previously parsed built-in theme name.
+            pub fn from_name(name: ThemeName) -> Self {
+                match name {
+                    $(ThemeName::$variant => Self::$constructor(),)+
                 }
             }
         }
@@ -25,24 +41,24 @@ macro_rules! define_builtin_themes {
 }
 
 define_builtin_themes! {
-    "catppuccin" => catppuccin ["catppuccin-mocha"],
-    "catppuccin-latte" => catppuccin_latte ["latte", "light"],
-    "terminal" => terminal [],
-    "tokyo-night" => tokyo_night ["tokyonight"],
-    "tokyo-night-day" => tokyo_night_day ["tokyo-day", "tokyonight-day"],
-    "dracula" => dracula [],
-    "nord" => nord [],
-    "gruvbox" => gruvbox ["gruvbox-dark"],
-    "gruvbox-light" => gruvbox_light [],
-    "one-dark" => one_dark ["onedark"],
-    "one-light" => one_light ["onelight"],
-    "solarized" => solarized ["solarized-dark"],
-    "solarized-light" => solarized_light [],
-    "kanagawa" => kanagawa [],
-    "kanagawa-lotus" => kanagawa_lotus ["lotus"],
-    "rose-pine" => rose_pine ["rosepine"],
-    "rose-pine-dawn" => rose_pine_dawn ["rosepine-dawn", "dawn"],
-    "vesper" => vesper [],
+    "catppuccin" => Catppuccin: catppuccin ["catppuccin-mocha"],
+    "catppuccin-latte" => CatppuccinLatte: catppuccin_latte ["latte", "light"],
+    "terminal" => Terminal: terminal [],
+    "tokyo-night" => TokyoNight: tokyo_night ["tokyonight"],
+    "tokyo-night-day" => TokyoNightDay: tokyo_night_day ["tokyo-day", "tokyonight-day"],
+    "dracula" => Dracula: dracula [],
+    "nord" => Nord: nord [],
+    "gruvbox" => Gruvbox: gruvbox ["gruvbox-dark"],
+    "gruvbox-light" => GruvboxLight: gruvbox_light [],
+    "one-dark" => OneDark: one_dark ["onedark"],
+    "one-light" => OneLight: one_light ["onelight"],
+    "solarized" => Solarized: solarized ["solarized-dark"],
+    "solarized-light" => SolarizedLight: solarized_light [],
+    "kanagawa" => Kanagawa: kanagawa [],
+    "kanagawa-lotus" => KanagawaLotus: kanagawa_lotus ["lotus"],
+    "rose-pine" => RosePine: rose_pine ["rosepine"],
+    "rose-pine-dawn" => RosePineDawn: rose_pine_dawn ["rosepine-dawn", "dawn"],
+    "vesper" => Vesper: vesper [],
 }
 
 macro_rules! palette_tokens {
@@ -598,7 +614,7 @@ mod tests {
     fn built_in_theme_names_resolve() {
         for name in THEME_NAMES {
             assert!(
-                Palette::from_name(name).is_some(),
+                ThemeName::parse(name).is_some(),
                 "theme should resolve: {name}"
             );
         }
@@ -611,7 +627,8 @@ mod tests {
             .copied()
             .filter(|name| *name != "terminal")
         {
-            let palette = Palette::from_name(name).expect("test precondition");
+            let theme = ThemeName::parse(name).expect("test precondition");
+            let palette = Palette::from_name(theme);
             let background_contrast = contrast_ratio(palette.panel_bg, palette.active_row_bg);
             assert!(
                 background_contrast >= 1.05,
@@ -633,7 +650,8 @@ mod tests {
             .copied()
             .filter(|name| *name != "terminal")
         {
-            let palette = Palette::from_name(name).expect("test precondition");
+            let theme = ThemeName::parse(name).expect("test precondition");
+            let palette = Palette::from_name(theme);
             let background_contrast = contrast_ratio(palette.panel_bg, palette.selection_bg);
             assert!(
                 background_contrast >= 1.05,
@@ -655,7 +673,8 @@ mod tests {
     #[test]
     fn built_in_themes_leave_sidebar_background_unset() {
         for name in THEME_NAMES {
-            let palette = Palette::from_name(name).expect("test precondition");
+            let theme = ThemeName::parse(name).expect("test precondition");
+            let palette = Palette::from_name(theme);
             assert_eq!(
                 palette.sidebar_bg,
                 Color::Reset,
@@ -683,7 +702,7 @@ mod tests {
     fn light_theme_aliases_resolve() {
         for name in ["light", "latte", "tokyo-day", "onelight", "lotus", "dawn"] {
             assert!(
-                Palette::from_name(name).is_some(),
+                ThemeName::parse(name).is_some(),
                 "theme should resolve: {name}"
             );
         }

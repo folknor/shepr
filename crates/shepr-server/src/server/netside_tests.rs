@@ -106,11 +106,7 @@ async fn two_headless_servers_switch_endpoints_without_a_lease() {
         &mut source_server,
         ServerEvent::ShellConnected {
             client_id: source_client_id,
-            surface_cols: 80,
-            surface_rows: 24,
-            cell_width_px: 8,
-            cell_height_px: 16,
-            pixel_mouse: false,
+            geometry: shepr_core::geometry::HostGeometry::new(80, 24, 8, 16, false),
             mouse_capture: true,
             surface_active: true,
             outbox: source_writer,
@@ -127,11 +123,7 @@ async fn two_headless_servers_switch_endpoints_without_a_lease() {
         &mut target_server,
         ServerEvent::ShellConnected {
             client_id: target_client_id,
-            surface_cols: 80,
-            surface_rows: 24,
-            cell_width_px: 8,
-            cell_height_px: 16,
-            pixel_mouse: false,
+            geometry: shepr_core::geometry::HostGeometry::new(80, 24, 8, 16, false),
             mouse_capture: true,
             surface_active: false,
             outbox: target_writer,
@@ -258,6 +250,16 @@ async fn two_headless_servers_switch_endpoints_without_a_lease() {
                 .iter()
                 .any(|m| matches!(m, shepr_protocol::ClientMessage::ClientShellFocus { .. }))
         );
+        // The view request's ID is allocated opaquely (no ":on" suffix to
+        // recognise), so the acknowledgement is matched to the sent request.
+        let Some(shepr_protocol::ClientMessage::ClientShellEndpointRequest {
+            request_id: view_request_id,
+            ..
+        }) = messages.last()
+        else {
+            panic!("expected the view request last");
+        };
+        let view_request_id = view_request_id.clone();
         headless_tests::dispatch_lifecycle_messages(server, client, messages);
         headless_tests::render_now(server);
         let mut ack = false;
@@ -269,7 +271,7 @@ async fn two_headless_servers_switch_endpoints_without_a_lease() {
                     boot_id,
                     request_id,
                     result,
-                } if request_id.ends_with(":on") => {
+                } if request_id == view_request_id => {
                     shell
                         .endpoint_choice_mut()
                         .preparing_mut()

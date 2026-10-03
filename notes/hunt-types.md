@@ -22,6 +22,62 @@ reports are in the commit that precedes this file's.
 
 ## Identities
 
+## TYP-007 - TUI request ids still travel as text
+
+Every client request id is minted by one `RequestId::allocate()`, focus-id
+parsing is gone, and absent and empty JSON ids are distinct. Still open: TUI
+request ids serialize as text, and `RequestId` keeps its string constructors,
+`Deref`, `Borrow` and string comparisons. (contracts, client-core, client-shell)
+
+## TYP-008 - Connection generations and two wire counters are still raw
+
+The protocol counters no longer convert into or compare with `u64`, and the
+server and client projection carriers are typed; the supervisor owns the
+initial connection generation. Still open: `new(u64)`, `get()` and `From<u64>`
+remain on the counters; dozens of production connection-generation
+declarations in shepr-client, `SurfaceGeneration` and the snapshot-generation
+returns are raw `u64`; and the wire fields `content_revision` and
+`state_change_seq` are `u64`. (contracts, client-core, client-shell,
+server-serving)
+
+## TYP-024 - The server collapses typed hook outcomes again
+
+`HookOutcome::{Applied, Parked, Rejected}` with typed rejection reasons now
+comes out of the ownership transitions (`crates/shepr-agent/src/ownership/mod.rs`),
+with outcome-preserving entry points in mux `terminal/state/hooks.rs`. Still
+open: server admission does not consume `report_hook_outcome_at` and
+`report_session_start_outcome_at`, so rejection and parking still collapse to
+an unchanged state update; API responses and detect explain say nothing about
+an ignored report. (mux-panes)
+
+## TYP-026 - AppEvent still carries both transport and reducer roles
+
+Runtimes send a pane-free `RuntimeEvent` through an envelope that cannot be
+nested or mismatched. Still open: `AppEvent` still exposes the bare runtime
+reducer variants and carries the Git completions and API-origin reports, and
+the server rebuilds envelopes between admissions; `App::handle_state_event`
+exists for `app/api/panes/reports.rs` to send `StateEvent` directly. (mux-panes,
+mux-state, server-app)
+
+## TYP-031 - The launch failure carries the shell program as lossy text
+
+Resume-unavailable reasons are a typed enum. Still open: `pane/runtime/spawn.rs`
+converts the shell program path to text and `LaunchStatus.program` in
+`crates/shepr-mux/src/pane/launch_status.rs` stores a `String` and rebuilds a
+`PathBuf`, so a non-UTF-8 shell path is reported lossily. (foundation,
+mux-panes)
+
+## TYP-048 - Some cell and pixel extents still use zero for unknown
+
+Core and protocol geometry fields are private with typed accessors, client
+resize and cell reports carry geometry types, and the server events carry
+`HostGeometry`. Still open: termio `HostCellSize` (`host_term/cell_size.rs`)
+and the server connection storage (`clients.rs`) keep zero-valued axes;
+`ClientMouseGeometry`, the pane-surface pixel fields (protocol `input.rs` and
+surfaces) and the vt mouse adapters keep primitive extents; a raw `CellPx` is
+publicly constructible for refusal diagnostics. (foundation, terminal,
+contracts, client-core, server-serving, server-app)
+
 ## TYP-003 - WorkspacePane still derefs to PaneState with public fields
 
 Pane public numbers are a nonzero `PanePublicNumber`, commit consumes the same
@@ -70,73 +126,6 @@ allocating live ids itself. `raw` then becomes crate-private to `shepr-core`.
 imports it from there only for log lines and thread names; an `ids` module would
 read better. Reported by foundation, mux-state and server-app.
 
-## TYP-007 - `RequestId` is any string, and the client encodes structure in it
-
-`RequestId` has `From<String>`, `From<&str>`, `Deref<str>`, `Borrow<str>` and
-`PartialEq` with strings both ways; its doc says any string is a legitimate id.
-The client mints four families by format: the shell ledger `client-shell:{n}`,
-`endpoint::view::start_move` `client-shell-view:{serial}:on`,
-`EndpointRegistry::release_unwanted_views` `client-shell-view:{serial}:off`, and
-`FocusLane::request` `client-shell-focus:{view serial}:{n}`, which recovers the
-serial with `view_request.split(':').nth(1).unwrap_or(view_request)`.
-Distinctness holds only by prefix. `ClientShellEndpointRequest::id` is `String`,
-`EndpointCommandCancellation::{unsent, possibly_sent}` are `Vec<String>`,
-`drop_request`, `answer_request`, `release_highlight` and
-`keep_workspace_highlight_until_snapshot` take `&str`. The ledger is documented
-as the sole owner of request identities while core mints three more families.
-The CLI uses the literals `"cli:detect:capture"`, `"cli:detect:explain"`,
-`"cli:server:stop"`. JSON request ids use `""` for "no id"
-(`request_id_from_line`; `hand_off` calls `send_busy_refusal(stream, "")`) while
-`ErrorResponse::id` is `Option<String>`.
-
-Proposal: keep `RequestId` opaque on the wire (a client-minted counter on the
-TUI wire, text for JSON), and a client enum `ClientRequest::{Shell(n),
-ViewOn(serial), ViewOff(serial), Focus { view, n }}` with one `to_wire` and
-`from_wire`, minted by one allocator. Reported by contracts, client-core,
-client-shell and edges.
-
-## TYP-008 - Protocol counters convert freely to and from `u64`
-
-(Also the server-side carrier of the projection revision:
-`AppState::shell_projection_revision` and `ShellSessionCache.revision` in
-`crates/shepr-server/src/server/headless/render.rs` are raw `u64`s mirroring it,
-and `CachedShellProjection.projection_revision` and `snapshot_from_session`'s
-`revision` parameter carry it raw.)
-
-`ProjectionRevision`, `SurfaceRevision` and `ConnectionGeneration` come from
-`revision.rs::counter!` with `From<u64>`, `Into<u64>`, `PartialEq<u64>` both
-ways, `PartialOrd<u64>` and a public `get()`; with the cross-type comparisons a
-`ProjectionRevision` compares equal to a `ConnectionGeneration`'s `get()`. Uses:
-
-- On the wire: `EndpointReply::ClientShellSurfaceSet { projection_revision:
-  u64 }`; `PaneSurfacePane::content_revision: u64` and
-  `ClientShellAgent::state_change_seq: u64` have no type at all.
-- Server: `AppState::shell_projection_revision: u64`, `render.rs`
-  `projection_revision: u64` and `CachedShellProjection.projection_revision`,
-  `surface_interest.rs` returning `(bool, u64)`,
-  `snapshot_from_session(revision: u64)` then `revision.into()`; plus
-  location generation, `shell_session_generation`, `ShellSessionCache.revision`
-  compared across structs as raw `u64`s.
-- Client: every API carrying a connection generation takes `u64`
-  (`EndpointRegistry`, `EndpointTransportFailure`, `ClientLoopEvent`,
-  `EndpointSupervisorEvent`, `EndpointSupervisors`, `EndpointCommands`,
-  `ViewLease`, `MoveStage::Failed`, `PendingStart`, `Preparing`,
-  `start_endpoint_transport`, `spawn_endpoint_reader`, the shell's
-  `snapshot_generation`, `endpoint_snapshot_matches(id, generation, boot,
-  revision)` with two adjacent `u64`s); projection revisions are unwrapped in
-  `ViewLease::minimum_revision`, `Preparing::floor`,
-  `ViewEvidence::snapshot_revision` and `endpoint_snapshot_identity`.
-- Connection generations are minted in two places that agree by picked numbers:
-  `run_client_loop` passes the literal `1` and seeds `Some(1)` for a failed
-  launch, and `EndpointSupervisors::new` starts at `2`.
-- `ConnectionGeneration` lives in `shepr-protocol` but is never on the wire.
-
-Proposal: no `From<u64>`, no cross-type comparisons, `Ord` within a type,
-`ZERO` and `checked_next`, minting only through the owning allocator, the typed
-value on the wire, newtypes for content revision and state change sequence, and
-the connection generation owned by the client's supervisor allocator. Reported
-by contracts, client-core, client-shell and server-serving.
-
 ## TYP-011 - `SshTarget` still derefs to `str`
 
 The remote crate now uses `SshTarget::append_to`, typed target accessors and
@@ -150,16 +139,6 @@ contracts.
 
 ## Agent identity and state
 
-## TYP-015 - The published state event splits the screen verdict again
-
-The screen verdict is typed from manifest compilation through the mux
-publisher, and the baseline sentinel is an `Option<Detection>`. Still open:
-`AppEvent::StateChanged` and the server's `StateEvent::StateChanged` carry a
-state plus a blocker bool, which the publisher derives from the one verdict;
-carrying the typed detection across that contract (mux events and the server
-app event handling in `crates/shepr-server/src/app/`) finishes it. Reported by
-agents and mux-panes.
-
 ## TYP-016 - Agent state still has three mirror spellings
 
 Protocol `AgentStatus` and API `PaneAgentState` are now aliases of the shared
@@ -167,13 +146,6 @@ presented and detection states. Still open: `ManifestState` in shepr-agent
 manifests, the hook action names that overlap three state names, and the
 `DetectionState` mirror in `crates/shepr-api/src/schema/detection.rs`.
 (agents, contracts)
-
-## TYP-018 - A persisted agent session can still be built around its validation
-
-The four session copies now share one type with validating decode, and resume
-plans keep their argv private. Still open: `PersistedAgentSession`
-(`crates/shepr-agent/src/agent/resume.rs`) keeps three public fields, so a
-direct struct literal bypasses the validating constructor. (agents)
 
 ## TYP-020 - CLI requests return untyped JSON
 
@@ -184,45 +156,7 @@ decoding its own result. Reported by agents, contracts, edges and server-app.
 
 ## Hook arbitration and detector state
 
-## TYP-024 - Hook report outcomes collapse a dozen reasons into `None`
-
-`transition_report` and `transition_start` return
-`Option<TerminalStateMutation>`. `None` covers: built-in source naming another
-agent, an identity-only integration, an invalid session ref, a replaced
-session, a report after confirmed process exit, a label conflicting with the
-detected agent, an owner conflict without foreground takeover, a stale or
-cross-talk report, an out-of-order sequence and a full source table.
-`Some(default)` means parked. The server collapses all of it into
-`StateUpdate::Unchanged`, the reporter gets nothing back, and `detect explain`
-cannot say why a hook was ignored. Proposal: `HookOutcome::{Applied(mutation),
-Parked, Rejected(HookRejection)}` with a closed rejection enum. Inside the
-hook-source machine, `HookSourceState::transition` mixes state changes with
-pure queries answered through effect variants (`OrderAllowed(bool)`,
-`DetectorObservationAllowed(bool)`, `Report(route)`, `Start(route)`) that
-callers destructure with `let .. else { return None }`; queries should be
-methods. (mux-panes)
-
 ## Pane runtime
-
-## TYP-026 - Runtime events are an optional, nestable envelope around any `AppEvent`
-
-`AppEvent::Runtime { pane_id, generation, event: Box<AppEvent> }` can wrap any
-event, including another `Runtime` (so `admit_runtime_event` recurses) and
-non-runtime payloads (`GitStatusRefreshed`, `HookStateReported`); every runtime
-payload repeats `pane_id` and admission never checks it against the envelope's;
-the envelope is optional (see the latent bug). `AppEvent` also mixes a server
-worker completion (`GitStatusRefreshed`, produced by `app/git_refresh.rs`) and
-two API-origin reports that `app/api/panes/reports.rs` wraps only for
-`StateEvent::from_app_event` to unwrap; the App drops `ClipboardWrite` because
-the server handles it first. Proposal: a `RuntimeEvent` enum with only what
-runtimes emit (`LaunchSettled`, `Died`, `AgentProcessDetected`, `DetectorState`,
-`ClipboardWrite`, `CwdReported`) and no `pane_id`, wrapped in a mandatory
-`RuntimeEnvelope { pane_id, generation }` sendable only through a
-`RuntimeEventSender` that owns the pair; Git completions a server-local worker
-result; API reports going straight to `StateEvent`, which becomes the App's
-input type. server-app and mux-panes also suggest putting the terminal id in the
-envelope so admission is one lookup. Reported by mux-panes, mux-state and
-server-app.
 
 ## TYP-027 - ChildLiveness still has test-only adapters in production
 
@@ -233,33 +167,6 @@ handle. Still open: a no-leader constructor used by
 calls in `pane/runtime.rs` tests go through test-only adapters on the production
 type; moving those doubles into fixtures needs an observation seam through the
 runtime constructor. (mux-panes)
-
-## TYP-029 - The dirty patch snapshot folds three reasons into `None`
-
-`collect_dirty_patch_snapshot -> Option<TerminalDirtyPatchSnapshot>` folds a
-poisoned core, an open synchronized update and a fallback (whose reason string
-is logged once) into `None`; `TerminalDirtyPatch.rows` is
-`Vec<(u16, Vec<CellData>)>`; the fallback reason is an `Option<&'static str>`
-from a `fallback!` macro. The server's retained renderer has its own closed set
-of fallback reasons as string literals in its `fallback!` and
-`source_fallback!` macros (`client_missing`, `recompute_pending`,
-`no_baseline`, `baseline_mismatch`, `synchronized_visible`, `runtime_missing`,
-`terminal_snapshot`, `terminal_patch`, `alternate_screen_geometry`,
-`hyperlink`, `invalid_patch`, `scrollbar_patch`, `synchronized_during_patch`)
-stored in `retained_surface_fallbacks_reported: HashSet<&'static str>`, and
-`apply_pane_surface_patch -> Result<(), &'static str>`.
-`report_terminal_mutation_failure(operation: &'static str)` and
-`report_dirty_patch_fallback(reason: &'static str)` are the same pattern.
-`TerminalDirtyPatchSnapshot` is `pub` inside the private `runtime` module and
-cannot be named outside the crate. Proposal: `Result<DirtyPatchSnapshot,
-PatchUnavailable::{CorePoisoned, SynchronizedOutput, Fallback(PatchFallback)}>`
-with `Vec<PatchRow { y, cells }>`, and a `FallbackReason` enum in the server
-whose `terminal_snapshot` arm carries the real reason. Since mux now turns a
-fallback read into no snapshot, retained-surface fallbacks that logged as
-`terminal_patch` log as `terminal_snapshot`, so one label already carries two
-reasons, and the `invalid_patch` case now falls back silently through
-`prepare_pane_surface_patch` returning `None`. Reported by mux-panes and
-server-serving.
 
 ## TYP-030 - Content and detection counters are raw `u64` with sentinels
 
@@ -277,14 +184,6 @@ newtypes per counter (`ContentRevision`, `DetectionSeq`, `SyncEpoch`,
 `changed_since`, and `SyncState::{Idle(epoch), Active, Poisoned}`. The
 bookkeeping of these counters is filed among the consolidations. Reported by
 mux-panes and server-serving.
-
-## TYP-031 - Resume-unavailable reasons are still prose
-
-Launch status records are read by a `LaunchStatusReader` in pty, and pane start
-failures are a `PaneStartFailure` that keeps real `io::Error`s until
-presentation. Still open: the resume-unavailable reasons are prose strings, and
-the spawn path converts the shell program to text lossily before it reaches the
-failure. (foundation, mux-panes)
 
 ## TYP-032 - The raw shell setting uses an empty string for unset
 
@@ -374,58 +273,6 @@ server's host that the client never opens. Reported by mux-state, contracts,
 server-app and server-serving.
 
 ## Geometry and coordinates
-
-## TYP-048 - Cell size and host geometry are decomposed into primitives with `0` for unknown
-
-`HostGeometry` has `cols()`, `rows()`, `cell_width()`, `cell_height()` (both `0`
-when the cell is unknown) and public `pane` and `exact` fields, so a literal or
-`geometry.exact = true` bypasses "exact only with a cell". In the client it is
-pulled apart and rebuilt in a loop: `set_host_size` rebuilds it from
-`ClientHostSize` plus the old cell fields; `run_until_exit` feeds the parts into
-`ProtocolCellSize::from_host` then builds a new one; `handle_event` destructures
-`Resize(geometry)` into `handle_resize(cols, rows, cell_width, cell_height,
-exact)`; `bounded_cell_geometry` returns `(u32, u32, bool)` decomposed from the
-`ProtocolCellSize` it just built; `ioctl_cell_size`, `AtomicCellSize::load` (which
-packs `width << 32 | height` with `0` as not reported), `last_cell_size`,
-`reported_cell_size_from_events` and `cell_size_fallback` use `(u32, u32)`, and
-`ioctl_terminal_geometry` `(u16, u16, u32, u32)`; `platform::terminal_grid_size()`
-returns `(u16, u16)` though core has `GridSize`.
-
-Server and termio use `HostCellSize { pub width_px, pub height_px }` with
-`Default` (zeros) meaning unknown, `is_known()` re-validating through
-`CellPx::new` and `or_default()` normalising invalid sizes to zero; the framer
-validates into a `CellPx` then destructures back to `(u32, u32)` for
-`RawInputEvent::HostCellSizeReport`. `SpawnGeometry::cell_size: HostCellSize`
-uses zero for "never reported"; `ui::resize_pane_infos` passes the raw fields to
-`PaneGeometry::new` while spawn sizing goes through `SpawnGeometry::cell_px()`,
-so one value is converted two ways on two paths that size the same PTY.
-`PaneGeometry`, `ProtocolCellSize` (public `cell` and `exact`) and
-`TerminalGeometry` (public `grid`, `cell`, `pixel_mouse`, whose invariant is
-enforced by `new` and deserialization only) all expose zero accessors;
-`client_transport.rs` rebuilds `ProtocolCellSize::from_wire(hello.geometry.width(),
-..)` from those zeros. `Terminal::width_px()/height_px()` return 0 when unknown,
-`PaneSurfacePane.pixel_width/pixel_height` carry 0 on the wire (and
-`retained_surface.rs` builds zeros directly), and the client tests `> 0`.
-`HostPixelExtent` has public `width_px`/`height_px` on a `Copy` type, so the
-`> 0` invariant `new` checks can be undone. `ClientMouseGeometry { cols, rows,
-width_px, height_px }` is another shape of the same fact.
-`ServerEvent::ClientShellConnected`/`ClientShellResize` carry `surface_cols,
-surface_rows, cell_width_px, cell_height_px, pixel_mouse` as primitives although
-the wire already has a validated `TerminalGeometry`; `apply_server_event`
-rebuilds `GridSize::clamped`, a zero-sentinel `HostCellSize` and the pixel-mouse
-invariant in both the connect and resize arms, and `client_geometry`,
-`render_full`, `render_client_full` and `RenderTarget` each build `Rect::new(0, 0,
-cols.get(), rows.get())` by hand. `GridSize { pub cols: NonZeroU16, pub rows }`
-leads to `.cols.get()` everywhere.
-
-Proposal: `Option<CellPx>` end to end with the pixel bound in `CellPx`
-construction; `HostGeometry` with private fields and `CellKnowledge::{Unknown,
-Estimated(CellPx), Exact(CellPx)}` (or storing an already bounded
-`ProtocolCellSize`); private fields on `HostPixelExtent`, `ProtocolCellSize` and
-`TerminalGeometry`; `Option<PixelExtent>` from `PaneGeometry` to the wire; one
-validated `ClientSurfaceGeometry` minted in protocol decode and stored on the
-connection; `GridSize` accessors returning `u16`. Reported by foundation,
-terminal, contracts, client-core, server-serving and server-app.
 
 ## TYP-049 - Row spaces beyond the three typed ones travel as integers
 
@@ -561,27 +408,6 @@ ratatui diff hint on the wire. Proposal: `GridCellWidth::{Grapheme, One,
 WideLead, WideTail}` and `try_from` deserialization into the validated grid.
 Reported by contracts and client-shell.
 
-## TYP-069 - Smaller config axes
-
-- `ThemeConfig::name: Option<String>` is canonicalized by
-  `canonical_theme_name` and again by `Palette::from_name`; a `ThemeName` enum
-  generated by `define_builtin_themes!` makes the unreachable "no built-in
-  palette" branch unrepresentable.
-- `ValidatedClientUiConfig::mouse_scroll_lines: NonZeroU16` while the raw model
-  has `Option<NonZeroUsize>` and `DEFAULT_MOUSE_SCROLL_LINES: usize`.
-- `SidebarTokenRule::hide: Option<bool>` where only `Some(true)` matters, and
-  `style_for_value -> Option<SidebarTokenStyle>` using `None` for hidden: a
-  `TokenRendering::{Hidden, Styled}`.
-- `AgentSidebarToken::Styled { token: Box<Self>, .. }` permits nesting the parser
-  never produces; a `SidebarTokenSpec<T> { token, style, rules }` removes the box
-  and the recursion in `allows_rules` and `parts`.
-- `AppSettings::cjk_ime_agents: Vec<ConfigAgent>` where empty means every agent:
-  `AgentFilter::{Any, Only(..)}`.
-- `ClientShellWorkspace::git_ahead_behind: Option<(usize, usize)>` reaches
-  `SpaceTokenContext` as a tuple although mux has the counts as a struct.
-
-Reported by contracts, server-app and client-shell.
-
 ## TYP-070 - Keybindings: a tuple alias, labels as data, help groups as strings
 
 `KeyCombo = (KeyCode, KeyModifiers)` is a type alias exposed through
@@ -599,19 +425,6 @@ is never shown. Proposal: a public `CanonicalKey` with `matches`, labels from
 `Display` on the trigger, a range binding kept as one `IndexedRange` value, and a
 `HelpGroup` enum column with `HelpRow { keys, label }`. Reported by contracts and
 terminal.
-
-## TYP-071 - API log outcomes are strings
-
-`ApiLogOutcome { Ok, Timeout, Error }` is converted to `&'static str`, then
-`server::finish_api_response` adds `"client_disconnected"` as a bare literal and
-`logging::api_request_completed` picks the level with `outcome != "ok"`; the
-logging functions take `(name, mutates_ui, routine)` unpacked instead of
-`MethodTraits`. Similar: `logging::startup(role: &'static str)`,
-`HostWriteFailure::observe(write: &'static str, ..)`, mux persist events with
-hand-written `event = "persist.snapshot"` literals at a dozen sites,
-`logging::init_file_logging(dir, file_name: &str)` with two constants (a
-`LogFile::{Server, Client}` would also own its path). Reported by contracts,
-client-core, mux-state and foundation.
 
 ## Remote and launch
 
@@ -776,15 +589,3 @@ termio's `RgbColor`, `ColorScheme`, `DefaultColor`, `Position`,
 `HookClockSample { monotonic, wall }`, built from one another; the client shell
 also has `ClientShellState.now` beside a `now` parameter on many methods.
 Reported by server-app, foundation, terminal, mux-state and client-shell.
-
-## TYP-088 - Labels are normalized three ways
-
-User labels from the API go through one server helper,
-`normalized_user_label` in `crates/shepr-server/src/app/api_helpers.rs`
-(trim, empty clears). Labels restored from a saved session reach the pane
-through `set_manual_label` in shepr-mux without it, so `pane_border_title`
-still trims at render as the only guard for those. A `Label` (trimmed,
-non-empty) minted once, held as `Option<Label>` by the stores and by the saved
-schema, would cover restore too and let the render trim go.
-`normalize_reported_agent_label` stays separate: it also canonicalizes agent
-names. (server-app)

@@ -10,7 +10,6 @@ pub(super) struct FocusLane {
     pub(super) desired: Option<ClientEndpointFocusTarget>,
     in_flight: Option<(RequestId, ClientEndpointFocusTarget)>,
     acknowledged: Option<ClientEndpointFocusTarget>,
-    serial: u64,
 }
 impl FocusLane {
     pub(super) fn new(desired: Option<ClientEndpointFocusTarget>) -> Self {
@@ -18,7 +17,6 @@ impl FocusLane {
             desired,
             in_flight: None,
             acknowledged: None,
-            serial: 0,
         }
     }
     pub(super) fn settled(&self) -> bool {
@@ -29,24 +27,12 @@ impl FocusLane {
             .as_ref()
             .is_some_and(|(request, _)| request == id)
     }
-    pub(super) fn request(
-        &mut self,
-        boot_id: &BootId,
-        view_request: &RequestId,
-    ) -> Option<ClientMessage> {
+    pub(super) fn request(&mut self, boot_id: &BootId) -> Option<ClientMessage> {
         if self.in_flight.is_some() || self.settled() {
             return None;
         }
         let target = self.desired?;
-        self.serial = self.serial.saturating_add(1);
-        // `client-shell-focus:{view serial}:{n}`: the view serial (from the move's
-        // `client-shell-view:{serial}:on`) is unique per move, `n` per request within it.
-        let request_id: RequestId = format!(
-            "client-shell-focus:{}:{}",
-            view_request.split(':').nth(1).unwrap_or(view_request),
-            self.serial
-        )
-        .into();
+        let request_id = RequestId::allocate();
         let command = match &target {
             ClientEndpointFocusTarget::Pane(pane_id) => {
                 EndpointCommand::PaneFocus(PaneTarget { pane_id: *pane_id })
@@ -105,10 +91,7 @@ mod tests {
         }
     }
     fn request(lane: &mut FocusLane) -> Option<ClientMessage> {
-        lane.request(
-            &crate::tests::test_boot_id("boot"),
-            &"client-shell-view:4:on".into(),
-        )
+        lane.request(&crate::tests::test_boot_id("boot"))
     }
     #[test]
     fn a_newer_focus_pick_replaces_the_desired_target_without_joining_the_request() {

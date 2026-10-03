@@ -218,7 +218,7 @@ pub fn surface_grid_size(width: u16, height: u16) -> Option<usize> {
 ///
 /// The cap accepts unusually large display cells while rejecting geometry
 /// claims that would make pixel calculations unreasonable.
-pub const MAX_CELL_SIZE_PX: u32 = 4096;
+pub const MAX_CELL_SIZE_PX: u32 = shepr_core::geometry::CellPx::MAX_DIMENSION;
 
 /// Smallest divisor used to translate row-major buffer positions to cells.
 ///

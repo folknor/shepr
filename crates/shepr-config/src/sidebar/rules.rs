@@ -1,6 +1,6 @@
 use serde::Deserialize;
 
-use super::{SidebarTokenColor, SidebarTokenStyle};
+use super::{SidebarTokenColor, SidebarTokenRendering, SidebarTokenStyle};
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(try_from = "RawRule")]
@@ -8,7 +8,7 @@ pub struct SidebarTokenRule {
     condition: Condition,
     ignore_case: bool,
     style: SidebarTokenStyle,
-    hide: Option<bool>,
+    hide: bool,
 }
 
 // Deserialization rejects non-finite thresholds, so equality is reflexive.
@@ -78,7 +78,7 @@ impl TryFrom<RawRule> for SidebarTokenRule {
         Ok(Self {
             condition,
             ignore_case: ignore_case.unwrap_or(false),
-            hide,
+            hide: hide.unwrap_or(false),
             style: SidebarTokenStyle { fg, bold, dim },
         })
     }
@@ -135,21 +135,21 @@ pub(super) fn matching_style(
     rules: &[SidebarTokenRule],
     base: SidebarTokenStyle,
     value: &str,
-) -> Option<SidebarTokenStyle> {
+) -> SidebarTokenRendering {
     let mut numeric = None;
     for rule in rules {
         if rule.matches(value, &mut numeric) {
-            if rule.hide == Some(true) {
-                return None;
+            if rule.hide {
+                return SidebarTokenRendering::Hidden;
             }
-            return Some(SidebarTokenStyle {
+            return SidebarTokenRendering::Styled(SidebarTokenStyle {
                 fg: rule.style.fg.or(base.fg),
                 bold: rule.style.bold.or(base.bold),
                 dim: rule.style.dim.or(base.dim),
             });
         }
     }
-    Some(base)
+    SidebarTokenRendering::Styled(base)
 }
 
 #[cfg(test)]

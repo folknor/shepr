@@ -2,6 +2,9 @@
 
 use std::{fmt, str::FromStr};
 
+/// Package version advertised by both the protocol and client status output.
+pub const PACKAGE_VERSION: &str = env!("CARGO_PKG_VERSION");
+
 /// A fingerprint has eight bytes, encoded as sixteen lowercase hex digits.
 /// An unidentifiable build matches no build, including itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]

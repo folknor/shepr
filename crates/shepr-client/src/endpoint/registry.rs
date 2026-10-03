@@ -141,16 +141,18 @@ impl EndpointRegistry {
     }
 
     pub(crate) fn accepts(&self, endpoint_id: &ClientEndpointId, generation: u64) -> bool {
-        self.connections
-            .get(endpoint_id)
-            .is_some_and(|connection| connection.generation == generation)
+        self.connections.get(endpoint_id).is_some_and(|connection| {
+            connection.generation == shepr_protocol::ConnectionGeneration::new(generation)
+        })
     }
 
     pub(crate) fn mark_ready(&mut self, endpoint_id: &ClientEndpointId, generation: u64) {
         if let Some(health) = self
             .connections
             .get_mut(endpoint_id)
-            .filter(|connection| connection.generation == generation)
+            .filter(|connection| {
+                connection.generation == shepr_protocol::ConnectionGeneration::new(generation)
+            })
             .and_then(|connection| connection.health.as_mut())
         {
             health.ready();
@@ -252,7 +254,7 @@ impl EndpointRegistry {
 
     /// One pass over the connections: every viewed connection that is not `wanted` and whose
     /// boot id `boot_id_of` knows is marked not viewed, then sent focus-loss and the view-off
-    /// request (`client-shell-view:{serial}:off`, `*serial` advancing once per request). The
+    /// request with an independently allocated identity. The
     /// off acknowledgement is never awaited. A connection without a known boot id is skipped
     /// and stays viewed for the next pass. Failed sends are recorded after the traversal as in
     /// `send_viewed`. Returns how many connections were released. Allocates nothing when no
@@ -274,7 +276,8 @@ impl EndpointRegistry {
             };
             connection.viewed = false;
             released += 1;
-            let request_id = format!("client-shell-view:{}:off", serial.allocate()).into();
+            let _view_serial = serial.allocate();
+            let request_id = shepr_protocol::RequestId::allocate();
             let request = super::view::surface_interest_request(boot, request_id, false);
             // A transport that failed the focus-loss is a lost connection; its server drops the
             // view with it, so the release is not sent after it.
@@ -409,7 +412,9 @@ impl EndpointRegistry {
         if let Some(connection) = self
             .connections
             .get_mut(endpoint_id)
-            .filter(|connection| connection.generation == generation)
+            .filter(|connection| {
+                connection.generation == shepr_protocol::ConnectionGeneration::new(generation)
+            })
             .filter(|connection| connection.read_activity.is_none())
             && let Some(health) = connection.health.as_mut()
         {

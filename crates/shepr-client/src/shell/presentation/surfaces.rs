@@ -430,8 +430,14 @@ mod tests {
         let mut s = paired();
         s.receive(surface(2), None);
         s.pair(&surface(1).boot_id, 1.into(), None);
-        assert_eq!(s.presented().expect("held").projection_revision, 1);
-        assert_eq!(s.baseline().expect("baseline").projection_revision, 2);
+        assert_eq!(
+            s.presented().expect("held").projection_revision,
+            shepr_protocol::ProjectionRevision::new(1)
+        );
+        assert_eq!(
+            s.baseline().expect("baseline").projection_revision,
+            shepr_protocol::ProjectionRevision::new(2)
+        );
     }
     #[test]
     fn a_surface_behind_the_snapshot_waits_for_a_newer_one() {
@@ -439,7 +445,10 @@ mod tests {
         s.receive(surface(2), None);
         s.pair(&surface(1).boot_id, 3.into(), None);
         assert!(!s.is_paired());
-        assert_eq!(s.presented().expect("held").projection_revision, 1);
+        assert_eq!(
+            s.presented().expect("held").projection_revision,
+            shepr_protocol::ProjectionRevision::new(1)
+        );
     }
     #[test]
     fn a_snapshot_moving_past_a_pair_passes_it_without_a_copy() {
@@ -456,8 +465,14 @@ mod tests {
         let p = patch(s.baseline().expect("baseline"));
         s.validate(&p, None).expect("valid");
         s.apply_validated(&p).expect("apply");
-        assert_eq!(s.presented().expect("held").surface_revision, 1);
-        assert_eq!(s.baseline().expect("baseline").surface_revision, 2);
+        assert_eq!(
+            s.presented().expect("held").surface_revision,
+            shepr_protocol::SurfaceRevision::new(1)
+        );
+        assert_eq!(
+            s.baseline().expect("baseline").surface_revision,
+            shepr_protocol::SurfaceRevision::new(2)
+        );
     }
     #[test]
     fn a_full_surface_after_a_pass_replaces_the_baseline_without_a_copy() {
@@ -481,7 +496,10 @@ mod tests {
         s.receive(surface(2), Some(1));
         s.snapshot_generation_changed(Some(2));
         assert!(s.baseline().is_none());
-        assert_eq!(s.presented().expect("held").surface_revision, 1);
+        assert_eq!(
+            s.presented().expect("held").surface_revision,
+            shepr_protocol::SurfaceRevision::new(1)
+        );
     }
     #[test]
     fn a_surface_from_another_connection_never_pairs_with_this_snapshot() {
@@ -501,7 +519,10 @@ mod tests {
         s.receive(surface(1), Some(2));
         s.snapshot_generation_changed(Some(2));
         assert_eq!(s.baseline_generation(), Some(Some(2)));
-        assert_eq!(s.presented().expect("held").surface_revision, 1);
+        assert_eq!(
+            s.presented().expect("held").surface_revision,
+            shepr_protocol::SurfaceRevision::new(1)
+        );
         assert!(matches!(
             s.pair(&surface(1).boot_id, 1.into(), Some(2)),
             Pairing::Presented { .. }
@@ -543,7 +564,10 @@ mod tests {
             s.validate(&patch(&surface(2)), None),
             Err(PatchRejection::DoesNotFollow)
         );
-        assert_eq!(s.baseline().expect("baseline").surface_revision, 1);
+        assert_eq!(
+            s.baseline().expect("baseline").surface_revision,
+            shepr_protocol::SurfaceRevision::new(1)
+        );
     }
     #[test]
     fn a_patch_on_a_waiting_baseline_leaves_the_held_pair_untouched() {
@@ -552,7 +576,13 @@ mod tests {
         let p = patch(s.baseline().expect("baseline"));
         s.validate(&p, None).expect("valid");
         s.apply_validated(&p).expect("apply");
-        assert_eq!(s.presented().expect("held").surface_revision, 1);
-        assert_eq!(s.baseline().expect("baseline").surface_revision, 3);
+        assert_eq!(
+            s.presented().expect("held").surface_revision,
+            shepr_protocol::SurfaceRevision::new(1)
+        );
+        assert_eq!(
+            s.baseline().expect("baseline").surface_revision,
+            shepr_protocol::SurfaceRevision::new(3)
+        );
     }
 }

@@ -362,9 +362,7 @@ pub(super) fn read_bare(info: &GitWorktreeInfo) -> Result<bool, GitReadError> {
     Ok(output.stdout == b"true\n")
 }
 
-pub(super) fn git_user_config_paths_at(
-    cwd: &Path,
-) -> Result<Vec<PathBuf>, shepr_core::env::EnvError> {
+pub(super) fn git_user_config_paths_at(cwd: &Path) -> std::io::Result<Vec<PathBuf>> {
     let mut paths = Vec::new();
     let no_system = shepr_core::env::read_os(shepr_core::env::EnvVar::GitConfigNoSystem)?
         .as_deref()
@@ -381,11 +379,16 @@ pub(super) fn git_user_config_paths_at(
         return Ok(paths);
     }
 
+    // These are Git's user config files, not shepr locations, and Git itself
+    // skips the HOME-relative ones when HOME is unusable rather than failing.
+    // A server always computes a workspace's Git branch and ahead/behind, so
+    // a server started without HOME must not lose Git status over files Git
+    // would not read either; the HOME and XDG errors are deliberately not
+    // propagated here. A refused `XDG_CONFIG_HOME` (relative, padded,
+    // non-UTF-8) already failed shepr's own launch, since shepr's config
+    // directory resolves from it; here it reads as unset, the spec's answer
+    // for an invalid value.
     let home = shepr_core::pathutil::home_dir().ok();
-    // This reads Git's user config, not a Shepr location. A refused
-    // `XDG_CONFIG_HOME` (relative, padded, non-UTF-8) already failed shepr's
-    // own launch, since shepr's config directory resolves from it; here it
-    // reads as unset, the spec's answer for an invalid value.
     let xdg_config_home = shepr_core::env::read_path(shepr_core::env::EnvVar::XdgConfigHome)
         .ok()
         .flatten();

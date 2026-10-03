@@ -421,7 +421,7 @@ mod tests {
                 ended_at: std::time::Instant::now(),
             },
         );
-        app.handle_internal_event(exit);
+        app.handle_internal_event_after_checkpoint(exit);
     }
 
     #[test]
@@ -438,13 +438,15 @@ mod tests {
             .expect("test precondition");
         app.state.workspaces = vec![workspace];
         app.state.ensure_test_terminals();
-        let observed_at = std::time::Instant::now();
         let terminal = app
             .state
             .terminals
             .get_mut(&terminal_id)
             .expect("test precondition");
         terminal.set_detected_state(Some(Agent::Codex), AgentState::Working);
+        // The detector drops an observation older than the last one it took,
+        // so the probe is stamped after the detection seeded above.
+        let observed_at = std::time::Instant::now();
         terminal
             .set_hook_authority_at(
                 "shepr:codex",
@@ -467,8 +469,7 @@ mod tests {
             AppEvent::StateChanged {
                 pane_id,
                 agent: Some(Agent::Codex),
-                state: AgentState::Idle,
-                visible_blocker: false,
+                detection: shepr_agent::detect::Detection::new(AgentState::Idle, false),
                 process_exited: true,
                 observed_at,
             },

@@ -15,7 +15,7 @@ impl SyncTimeoutRender {
     /// Ask for a render at `at`. Returns the instant a new task must first
     /// wake at, or `None` when the armed task will cover it.
     pub(super) fn arm(&self, at: std::time::Instant) -> Option<std::time::Instant> {
-        let mut latest = shepr_vt::lock_auxiliary(&self.latest);
+        let mut latest = shepr_core::locks::lock_auxiliary(&self.latest);
         match *latest {
             Some(armed) => {
                 if at > armed {
@@ -36,7 +36,7 @@ impl SyncTimeoutRender {
     /// the earlier wake is safe: a newer update only begins after the earlier
     /// one ended, and ending an update requests its own render.
     pub(super) fn next_wake(&self, woke_for: std::time::Instant) -> Option<std::time::Instant> {
-        let mut latest = shepr_vt::lock_auxiliary(&self.latest);
+        let mut latest = shepr_core::locks::lock_auxiliary(&self.latest);
         match *latest {
             Some(later) if later > woke_for => Some(later),
             _ => {
@@ -124,7 +124,7 @@ pub(super) struct DeferredEffectTicket {
 
 impl Drop for DeferredEffectTicket {
     fn drop(&mut self) {
-        let mut state = shepr_vt::lock_auxiliary(&self.order.state);
+        let mut state = shepr_core::locks::lock_auxiliary(&self.order.state);
         state.finish(self.seq);
         let parked = state.waiting > 0;
         drop(state);
@@ -137,7 +137,7 @@ impl Drop for DeferredEffectTicket {
 impl DeferredEffectOrder {
     /// Called while the terminal reply-order lock is held.
     pub(super) fn reserve(self: &Arc<Self>) -> DeferredEffectTicket {
-        let mut state = shepr_vt::lock_auxiliary(&self.state);
+        let mut state = shepr_core::locks::lock_auxiliary(&self.state);
         let seq = state.next_reserved;
         state.next_reserved = state.next_reserved.wrapping_add(1);
         DeferredEffectTicket {
@@ -151,13 +151,13 @@ impl DeferredEffectTicket {
     /// Runs the effect after every earlier ticket has finished, then
     /// finishes this one (also when the effect panics).
     pub(super) fn apply(self, effect: impl FnOnce()) {
-        let mut state = shepr_vt::lock_auxiliary(&self.order.state);
+        let mut state = shepr_core::locks::lock_auxiliary(&self.order.state);
         if state.next_to_apply != self.seq {
             state.waiting += 1;
             while state.next_to_apply != self.seq {
                 state = match self.order.ready.wait(state) {
                     Ok(state) => state,
-                    Err(poisoned) => shepr_vt::recover_auxiliary_poison(poisoned),
+                    Err(poisoned) => shepr_core::locks::recover_auxiliary_poison(poisoned),
                 };
             }
             state.waiting -= 1;
@@ -229,7 +229,7 @@ impl PaneReadEffects {
         for content in result.clipboard_writes {
             if let Err(err) = self
                 .events
-                .try_send(AppEvent::ClipboardWrite { pane_id, content })
+                .try_send(crate::events::RuntimeEvent::ClipboardWrite { content })
             {
                 warn!(
                     pane = pane_id.raw(),

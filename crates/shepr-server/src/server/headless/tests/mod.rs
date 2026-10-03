@@ -62,11 +62,13 @@ pub(crate) fn dispatch_lifecycle_messages(
             shepr_protocol::ClientMessage::ClientShellResize { geometry } => {
                 crate::server::client_transport::ServerEvent::ShellResize {
                     client_id,
-                    cell_width_px: geometry.width(),
-                    cell_height_px: geometry.height(),
-                    surface_cols: geometry.cols(),
-                    surface_rows: geometry.rows(),
-                    pixel_mouse: geometry.pixel_mouse,
+                    geometry: shepr_core::geometry::HostGeometry::new(
+                        geometry.cols(),
+                        geometry.rows(),
+                        geometry.width(),
+                        geometry.height(),
+                        geometry.pixel_mouse(),
+                    ),
                 }
             }
             shepr_protocol::ClientMessage::ClientShellFocus { focused } => {
@@ -163,7 +165,6 @@ pub(crate) fn test_headless_server() -> HeadlessServer {
         shutdown_unregistered_clients: HashMap::new(),
         shutdown_flushes: Vec::new(),
         pending_checkpointed_pane_exits: std::collections::VecDeque::new(),
-        replaying_checkpointed_pane_exit: None,
         outbox_wake: Arc::new(tokio::sync::Notify::new()),
         workers: worker::EndpointWorkers::new(),
     }
@@ -656,11 +657,7 @@ async fn a_queued_new_client_gets_its_endpoint_refusal_before_shutdown() {
             .server_event_tx
             .try_send(ServerEvent::ShellConnected {
                 client_id,
-                surface_cols: 80,
-                surface_rows: 23,
-                cell_width_px: 0,
-                cell_height_px: 0,
-                pixel_mouse: false,
+                geometry: shepr_core::geometry::HostGeometry::new(80, 23, 0, 0, false),
                 mouse_capture: false,
                 surface_active: true,
                 outbox: writer,
@@ -1270,11 +1267,7 @@ async fn client_shell_attach_seeds_workspace() {
     assert!(
         server.test_handle_server_event(ServerEvent::ShellConnected {
             client_id: ClientId::test_new(6),
-            surface_cols: 80,
-            surface_rows: 23,
-            cell_width_px: 0,
-            cell_height_px: 0,
-            pixel_mouse: false,
+            geometry: shepr_core::geometry::HostGeometry::new(80, 23, 0, 0, false),
             mouse_capture: false,
             surface_active: true,
             outbox: writer,
@@ -1331,11 +1324,7 @@ async fn client_shell_snapshot_presents_unknown_agent_as_idle() {
     let (writer, control_rx, _render_rx) = test_client_writer();
     server.test_handle_server_event(ServerEvent::ShellConnected {
         client_id: ClientId::test_new(78),
-        surface_cols: 80,
-        surface_rows: 24,
-        cell_width_px: 0,
-        cell_height_px: 0,
-        pixel_mouse: false,
+        geometry: shepr_core::geometry::HostGeometry::new(80, 24, 0, 0, false),
         mouse_capture: false,
         surface_active: false,
         outbox: writer,
@@ -1364,11 +1353,7 @@ async fn client_shell_endpoint_request_uses_the_selected_connection() {
     assert!(
         server.test_handle_server_event(ServerEvent::ShellConnected {
             client_id,
-            surface_cols: 80,
-            surface_rows: 23,
-            cell_width_px: 0,
-            cell_height_px: 0,
-            pixel_mouse: false,
+            geometry: shepr_core::geometry::HostGeometry::new(80, 23, 0, 0, false),
             mouse_capture: false,
             surface_active: true,
             outbox: writer,
@@ -1841,11 +1826,7 @@ async fn an_endpoint_error_reply_is_held_until_the_flush() {
     assert!(
         server.test_handle_server_event(ServerEvent::ShellConnected {
             client_id,
-            surface_cols: 80,
-            surface_rows: 23,
-            cell_width_px: 0,
-            cell_height_px: 0,
-            pixel_mouse: false,
+            geometry: shepr_core::geometry::HostGeometry::new(80, 23, 0, 0, false),
             mouse_capture: false,
             surface_active: true,
             outbox: writer,
@@ -1890,11 +1871,7 @@ async fn an_endpoint_reply_for_a_departed_client_is_dropped() {
     assert!(
         server.test_handle_server_event(ServerEvent::ShellConnected {
             client_id,
-            surface_cols: 80,
-            surface_rows: 23,
-            cell_width_px: 0,
-            cell_height_px: 0,
-            pixel_mouse: false,
+            geometry: shepr_core::geometry::HostGeometry::new(80, 23, 0, 0, false),
             mouse_capture: false,
             surface_active: true,
             outbox: writer,
@@ -1946,11 +1923,7 @@ async fn client_shell_receives_metadata_then_shell_free_pane_surface() {
     assert!(
         server.test_handle_server_event(ServerEvent::ShellConnected {
             client_id: ClientId::test_new(7),
-            surface_cols: 80,
-            surface_rows: 23,
-            cell_width_px: 10,
-            cell_height_px: 20,
-            pixel_mouse: true,
+            geometry: shepr_core::geometry::HostGeometry::new(80, 23, 10, 20, true),
             mouse_capture: false,
             surface_active: true,
             outbox: writer,
@@ -2119,11 +2092,13 @@ fn connect_test_shell(
     assert!(
         server.test_handle_server_event(ServerEvent::ShellConnected {
             client_id: client_id.into(),
-            surface_cols,
-            surface_rows,
-            cell_width_px: 0,
-            cell_height_px: 0,
-            pixel_mouse: false,
+            geometry: shepr_core::geometry::HostGeometry::new(
+                surface_cols,
+                surface_rows,
+                0,
+                0,
+                false
+            ),
             mouse_capture: false,
             surface_active: true,
             outbox: writer,
@@ -2417,8 +2392,10 @@ async fn each_kind_of_change_sends_a_new_projection_through_its_real_path() {
         AppEvent::StateChanged {
             pane_id,
             agent: Some(shepr_agent::detect::Agent::Pi),
-            state: shepr_agent::detect::AgentState::Working,
-            visible_blocker: false,
+            detection: shepr_agent::detect::Detection::new(
+                shepr_agent::detect::AgentState::Working,
+                false,
+            ),
             process_exited: false,
             observed_at: Instant::now(),
         },
@@ -2746,7 +2723,7 @@ async fn unrelated_render_keeps_synchronized_pane_frame_committed() {
     server.render_now();
     let before = recv_pane_surface(&mut render, "baseline");
     assert!(frame_text(&before.frame).contains("BASE"));
-    let projection_before = server.clients[&7].shell_state().projection_revision.get();
+    let projection_before = server.clients[&7].shell_state().projection_revision;
     // Drain the attach and baseline control traffic.
     while control.recv_timeout(Duration::from_millis(50)).is_ok() {}
 
@@ -2774,7 +2751,7 @@ async fn unrelated_render_keeps_synchronized_pane_frame_committed() {
         panic!("expected the changed projection");
     };
     assert_eq!(snapshot.workspaces[0].label, "renamed during frame");
-    assert!(snapshot.revision.get() > projection_before);
+    assert!(snapshot.revision > projection_before);
     assert_eq!(
         server.clients[&7].shell_state().projection_revision,
         snapshot.revision
@@ -3950,11 +3927,7 @@ async fn client_shell_workspaces_render_accept_input_and_resize_independently() 
 
     assert!(server.test_handle_server_event(ServerEvent::ShellResize {
         client_id: ClientId::test_new(22),
-        surface_cols: 60,
-        surface_rows: 16,
-        cell_width_px: 0,
-        cell_height_px: 0,
-        pixel_mouse: false,
+        geometry: shepr_core::geometry::HostGeometry::new(60, 16, 0, 0, false),
     }));
     let resized_second = server.app.test_runtime(second_pane).current_size();
     assert_ne!(resized_second, second_size);
@@ -4111,11 +4084,7 @@ async fn workspace_focus_replaces_the_client_shell_projection() {
     assert!(
         server.test_handle_server_event(ServerEvent::ShellConnected {
             client_id: ClientId::test_new(9),
-            surface_cols: 80,
-            surface_rows: 23,
-            cell_width_px: 0,
-            cell_height_px: 0,
-            pixel_mouse: false,
+            geometry: shepr_core::geometry::HostGeometry::new(80, 23, 0, 0, false),
             mouse_capture: false,
             surface_active: true,
             outbox: writer,
@@ -4732,11 +4701,7 @@ fn resizing_a_background_shell_does_not_change_foreground_or_host_theme() {
 
     assert!(server.test_handle_server_event(ServerEvent::ShellResize {
         client_id: ClientId::test_new(2),
-        surface_cols: 100,
-        surface_rows: 30,
-        cell_width_px: 0,
-        cell_height_px: 0,
-        pixel_mouse: false,
+        geometry: shepr_core::geometry::HostGeometry::new(100, 30, 0, 0, false),
     }));
     assert_eq!(
         server.clients.foreground_client_id(),
@@ -5122,11 +5087,7 @@ async fn pane_death_reconciles_each_client_view_and_focus() {
     let before_resize = server.app.test_runtime(second_pane).current_size();
     assert!(server.test_handle_server_event(ServerEvent::ShellResize {
         client_id: ClientId::test_new(71),
-        surface_cols: 90,
-        surface_rows: 25,
-        cell_width_px: 0,
-        cell_height_px: 0,
-        pixel_mouse: false,
+        geometry: shepr_core::geometry::HostGeometry::new(90, 25, 0, 0, false),
     }));
     assert_ne!(
         server.app.test_runtime(second_pane).current_size(),
@@ -6152,8 +6113,10 @@ async fn unchanged_internal_events_leave_projection_and_sources_clean() {
             AppEvent::StateChanged {
                 pane_id,
                 agent: Some(shepr_agent::detect::Agent::Codex),
-                state: shepr_agent::detect::AgentState::Working,
-                visible_blocker: false,
+                detection: shepr_agent::detect::Detection::new(
+                    shepr_agent::detect::AgentState::Working,
+                    false,
+                ),
                 process_exited: false,
                 observed_at: server.app.clock.now,
             },
@@ -6210,11 +6173,15 @@ async fn missing_pane_exit_has_no_invalidation() {
         !server.handle_internal_event_with_forwarding(AppEvent::Runtime {
             pane_id,
             generation: shepr_mux::events::RuntimeGeneration::alloc(),
-            event: Box::new(AppEvent::PaneDied {
-                pane_id,
-                exit_reason: shepr_platform::ChildExitReason::Exited,
-                ended_at: std::time::Instant::now(),
-            }),
+            event: Box::new(
+                AppEvent::PaneDied {
+                    pane_id,
+                    exit_reason: shepr_platform::ChildExitReason::Exited,
+                    ended_at: std::time::Instant::now(),
+                }
+                .try_into()
+                .expect("runtime payload")
+            ),
         })
     );
     assert_eq!(server.app.state.shell_projection_revision, before);

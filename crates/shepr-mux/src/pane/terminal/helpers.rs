@@ -149,18 +149,12 @@ pub(super) fn terminal_collect_dirty_patch(
 ) -> TerminalDirtyPatchCollection {
     macro_rules! finish {
         ($outcome:expr) => {{
-            return TerminalDirtyPatchCollection {
-                outcome: $outcome,
-                fallback_reason: None,
-            };
+            return Ok($outcome);
         }};
     }
     macro_rules! fallback {
-        ($reason:literal) => {{
-            return TerminalDirtyPatchCollection {
-                outcome: TerminalDirtyPatchOutcome::Fallback,
-                fallback_reason: Some($reason),
-            };
+        ($reason:expr) => {{
+            return Err($reason);
         }};
     }
 
@@ -172,7 +166,7 @@ pub(super) fn terminal_collect_dirty_patch(
     let terminal: &shepr_vt::Terminal = terminal;
     render_state.update(terminal);
     match render_state.dirty() {
-        shepr_vt::Dirty::Clean => finish!(TerminalDirtyPatchOutcome::Clean),
+        shepr_vt::Dirty::Clean => finish!(None),
         shepr_vt::Dirty::Partial | shepr_vt::Dirty::Full => {}
     }
 
@@ -185,17 +179,15 @@ pub(super) fn terminal_collect_dirty_patch(
 
     let mut symbol_scratch = String::new();
     let mut patch_rows = Vec::new();
-    for row in render_state.dirty_rows() {
+    let dirty_rows = render_state.take_dirty_rows(area_height);
+    for row in dirty_rows.rows() {
         let y = row.y();
-        if y >= area_height {
-            break;
-        }
         let mut patch_cells = Vec::with_capacity(usize::from(area_width));
         let mut x = 0u16;
         for cell_view in row.cells().take(usize::from(area_width)) {
             let basic = cell_view.basic_data();
             if basic.has_hyperlink {
-                fallback!("hyperlink_present");
+                fallback!(PatchFallback::HyperlinkPresent);
             }
             let paint = terminal_cell_paint(
                 &cell_view,
@@ -221,38 +213,17 @@ pub(super) fn terminal_collect_dirty_patch(
         // The same rule as a full render at this width; each recipient
         // narrower than it applies it again to its own cut.
         shepr_protocol::normalize_pane_row(&mut patch_cells);
-        patch_rows.push((y, patch_cells));
+        patch_rows.push(PatchRow {
+            y,
+            cells: patch_cells,
+        });
     }
 
-    // Nothing above mutates dirty state. Only clear it after every row has
-    // been collected successfully, so a safety fallback leaves the next
-    // collection with the same information. Rows below the area were not
-    // collected: they stay dirty, and so does the overall state, so it only
-    // reads Clean when no row is left to send.
-    //
-    // A collected row is cleared even when `area_width < cols`. The width is
-    // the widest `inner_rect` among the clients receiving this patch, so the
-    // columns past it are shown by no client holding a retained baseline. A
-    // client that does show them (not a recipient, or whose view later widens)
-    // is owed or promoted to a full render, which ignores dirty flags.
-    let mut rows_left = false;
-    for row in render_state.iter_rows() {
-        if row.y() < area_height {
-            row.clear_dirty();
-        } else if row.is_dirty() {
-            rows_left = true;
-        }
-    }
-    let remaining = if rows_left {
-        shepr_vt::Dirty::Partial
-    } else {
-        shepr_vt::Dirty::Clean
-    };
-    render_state.set_dirty(remaining);
+    // The width is the widest recipient's inner rectangle. A client that
+    // later widens receives a full render, which ignores pending row flags.
+    dirty_rows.commit();
 
-    finish!(TerminalDirtyPatchOutcome::Patch(TerminalDirtyPatch {
-        rows: patch_rows
-    }));
+    finish!(Some(TerminalDirtyPatch { rows: patch_rows }));
 }
 
 /// The detector's snapshot: the active screen's rows up to the last content
@@ -413,10 +384,10 @@ fn terminal_screen_row_into_inner<const TRACK_SEEDED: bool>(
 }
 
 pub(super) fn terminal_blank_symbol_for_width(wide: shepr_vt::CellWide) -> &'static str {
-    match wide {
-        shepr_vt::CellWide::Wide => "  ",
-        shepr_vt::CellWide::SpacerTail => "",
-        shepr_vt::CellWide::Narrow | shepr_vt::CellWide::SpacerHead => " ",
+    match wide.columns() {
+        2 => "  ",
+        0 => "",
+        _ => " ",
     }
 }
 
@@ -443,12 +414,8 @@ pub(super) fn terminal_buffer_symbol_into<'a>(
 
 #[inline]
 pub(super) fn normalized_buffer_symbol(symbol: &str, wide: shepr_vt::CellWide) -> &str {
-    let expected_width = match wide {
-        shepr_vt::CellWide::Wide => 2,
-        shepr_vt::CellWide::Narrow | shepr_vt::CellWide::SpacerHead => 1,
-        shepr_vt::CellWide::SpacerTail => 0,
-    };
-    let actual_width = symbol.width();
+    let expected_width = usize::from(wide.columns());
+    let actual_width = shepr_vt::width::standard_grapheme_width(symbol);
     if actual_width != expected_width
         && !(wide == shepr_vt::CellWide::Narrow && actual_width == 2)
         && !(wide == shepr_vt::CellWide::Narrow
@@ -463,11 +430,10 @@ pub(super) fn normalized_buffer_symbol(symbol: &str, wide: shepr_vt::CellWide) -
 }
 
 pub(super) fn terminal_grid_width(wide: shepr_vt::CellWide) -> GridCellWidth {
-    match wide {
-        shepr_vt::CellWide::Narrow
-        | shepr_vt::CellWide::SpacerHead
-        | shepr_vt::CellWide::SpacerTail => GridCellWidth::One,
-        shepr_vt::CellWide::Wide => GridCellWidth::Two,
+    if wide.grid_width() == 2 {
+        GridCellWidth::Two
+    } else {
+        GridCellWidth::One
     }
 }
 

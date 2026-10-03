@@ -26,8 +26,8 @@ pub(crate) enum EndpointNoticeKind {
     StatusFailure(String),
     MoveRejected(String),
     MoveSurfaceTimedOut,
-    ConnectionLost(String),
-    MoveInterrupted(String),
+    ConnectionLost(&'static str),
+    MoveInterrupted(&'static str),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -262,7 +262,7 @@ fn unknown_session_start_source_records_a_session_but_never_replaces_one() {
             .ownership()
             .current_session_identity_for_persistence()
             .expect("a session is stored")
-            .session_ref
+            .session_ref()
             .value_str()
             .to_owned()
     };
@@ -477,7 +477,10 @@ fn replay_and_assert_contract(
                 .unwrap_or_else(|| panic!("{} did not establish hook authority", contract.asset));
             assert_eq!(authority.origin, origin);
             assert_eq!(authority.state, expected_state);
-            assert_eq!(authority.session_ref, Some(expected_session.session_ref));
+            assert_eq!(
+                authority.session_ref,
+                Some(expected_session.session_ref().clone())
+            );
         }
         None => assert!(
             terminal.ownership().hook_authority().is_none(),

@@ -9,6 +9,7 @@ pub const DEFAULT_SCROLLBACK_LIMIT_BYTES: usize = 10_000_000;
 ///
 /// A small number of lines makes a wheel step useful without jumping a large part of the
 /// visible history.
+/// Its `usize` matches the raw config accessor, which stays wide for diagnostics.
 pub const DEFAULT_MOUSE_SCROLL_LINES: usize = 3;
 
 /// Initial virtual terminal width when the server has no attached client.

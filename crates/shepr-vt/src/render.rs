@@ -99,11 +99,11 @@ impl Terminal {
 #[derive(Default)]
 struct RowSnapshot {
     cells: Vec<Cell>,
-    dirty: std::cell::Cell<bool>,
+    dirty: bool,
 }
 
 /// A snapshot of the viewport for rendering. Row dirty flags accumulate across
-/// [`RenderState::update`] calls until the caller clears them.
+/// [`RenderState::update`] calls until a dirty-row transaction commits.
 pub struct RenderState {
     cols: usize,
     rows: Vec<RowSnapshot>,
@@ -169,7 +169,7 @@ impl RenderState {
             }
             snapshot.cells.clear();
             snapshot.cells.extend_from_slice(current);
-            snapshot.dirty.set(true);
+            snapshot.dirty = true;
             any_changed = true;
         }
         if full {
@@ -198,8 +198,12 @@ impl RenderState {
         self.colors
     }
 
-    pub fn set_dirty(&mut self, dirty: Dirty) {
-        self.dirty = dirty;
+    /// Borrows pending rows. Dropping without committing preserves all damage.
+    pub fn take_dirty_rows(&mut self, max_rows: u16) -> DirtyRows<'_> {
+        DirtyRows {
+            state: self,
+            max_rows,
+        }
     }
 
     /// Iterates over every row as borrowed cell views.
@@ -241,7 +245,7 @@ impl<'a> Iterator for Rows<'a> {
             let index = self.next;
             self.next += 1;
             let snapshot = &self.state.rows[index];
-            if self.dirty_only && self.state.dirty != Dirty::Full && !snapshot.dirty.get() {
+            if self.dirty_only && self.state.dirty != Dirty::Full && !snapshot.dirty {
                 continue;
             }
             return Some(RowView {
@@ -266,11 +270,7 @@ impl<'a> RowView<'a> {
     }
 
     pub fn is_dirty(&self) -> bool {
-        self.snapshot.dirty.get()
-    }
-
-    pub fn clear_dirty(&self) {
-        self.snapshot.dirty.set(false);
+        self.snapshot.dirty
     }
 
     pub fn cells(&self) -> impl Iterator<Item = CellView<'a>> + 'a {
@@ -282,6 +282,37 @@ impl<'a> RowView<'a> {
     }
 }
 
+/// A damage transaction with no row allocation. Only a successful collector
+/// commits; an early return leaves the complete pending damage intact.
+pub struct DirtyRows<'a> {
+    state: &'a mut RenderState,
+    max_rows: u16,
+}
+
+impl DirtyRows<'_> {
+    pub fn rows(&self) -> impl Iterator<Item = RowView<'_>> {
+        self.state
+            .dirty_rows()
+            .take_while(|row| row.y() < self.max_rows)
+    }
+
+    pub fn commit(self) {
+        let mut remaining = false;
+        for (y, row) in self.state.rows.iter_mut().enumerate() {
+            if y < usize::from(self.max_rows) {
+                row.dirty = false;
+            } else {
+                remaining |= row.dirty;
+            }
+        }
+        self.state.dirty = if remaining {
+            Dirty::Partial
+        } else {
+            Dirty::Clean
+        };
+    }
+}
+
 #[cfg(test)]
 impl RenderState {
     pub(crate) fn cols(&self) -> u16 {
@@ -290,8 +321,8 @@ impl RenderState {
 
     pub(crate) fn clean(&mut self) {
         self.dirty = Dirty::Clean;
-        for row in &self.rows {
-            row.dirty.set(false);
+        for row in &mut self.rows {
+            row.dirty = false;
         }
     }
 }

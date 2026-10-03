@@ -111,15 +111,13 @@ pub(crate) fn pane_cursor(
     }
     let scrolled_back = super::panes::pane_is_scrolled_back(runtime);
     let reveal = app.settings.reveal_hidden_cursor_for_cjk_ime
-        && (app.settings.cjk_ime_agents.is_empty() || {
-            let detected = app
-                .workspaces
+        && app.settings.cjk_ime_agents.includes(
+            app.workspaces
                 .get(ws_idx)
                 .and_then(|ws| ws.terminal_id(pane_id))
                 .and_then(|terminal_id| app.terminals.get(terminal_id))
-                .and_then(|terminal| terminal.ownership().detected_agent());
-            detected.is_some_and(|agent| app.settings.cjk_ime_agents.contains(&agent))
-        });
+                .and_then(|terminal| terminal.ownership().detected_agent()),
+        );
 
     if let Some(cursor) = runtime.read().cursor_state(area) {
         let visible = if reveal {

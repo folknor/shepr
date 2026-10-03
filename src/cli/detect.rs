@@ -200,7 +200,7 @@ pub(super) fn explain_file(
         Ok(content) => content,
         Err(err) => {
             return Err(super::CliError::Response(ErrorResponse {
-                id: "cli:detect:explain".into(),
+                id: Some("cli:detect:explain".into()),
                 error: ErrorBody::new(
                     &shepr_api::error::ApiErrorCode::AgentExplainFileReadFailed,
                     format!("failed to read explain file {}: {err}", path.display()),

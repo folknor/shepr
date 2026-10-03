@@ -227,44 +227,7 @@ pub(crate) fn copy_mode_key_char(key: &TerminalKey) -> Option<char> {
     if let Some(ch) = key.shifted_codepoint {
         return Some(ch);
     }
-    let KeyCode::Char(ch) = key.code else {
-        return None;
-    };
-    if key.modifiers.contains(KeyModifiers::SHIFT) {
-        Some(shifted_ascii_char(ch).unwrap_or(ch))
-    } else {
-        Some(ch)
-    }
-}
-
-/// Shift on a US-layout key. Copy-mode routing, key help, and the legacy key
-/// encoder share this table so they read an unshifted key with Shift alike.
-pub(crate) fn shifted_ascii_char(ch: char) -> Option<char> {
-    match ch {
-        'a'..='z' => Some(ch.to_ascii_uppercase()),
-        '1' => Some('!'),
-        '2' => Some('@'),
-        '3' => Some('#'),
-        '4' => Some('$'),
-        '5' => Some('%'),
-        '6' => Some('^'),
-        '7' => Some('&'),
-        '8' => Some('*'),
-        '9' => Some('('),
-        '0' => Some(')'),
-        '-' => Some('_'),
-        '=' => Some('+'),
-        '[' => Some('{'),
-        ']' => Some('}'),
-        '\\' => Some('|'),
-        ';' => Some(':'),
-        '\'' => Some('"'),
-        ',' => Some('<'),
-        '.' => Some('>'),
-        '/' => Some('?'),
-        '`' => Some('~'),
-        _ => None,
-    }
+    key.produced_char()
 }
 
 #[cfg(test)]

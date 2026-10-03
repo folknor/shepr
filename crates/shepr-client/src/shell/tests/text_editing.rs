@@ -98,7 +98,9 @@ fn all_six_fields_route_shared_text_editing() {
 
 /// Opens the new-workspace prompt and returns the checkout-root request it
 /// sent, with its request id and the overlay's matching id.
-fn open_new_workspace(state: &mut ClientShellState) -> (String, shepr_protocol::RequestId, String) {
+fn open_new_workspace(
+    state: &mut ClientShellState,
+) -> (shepr_protocol::RequestId, shepr_protocol::RequestId, String) {
     let mut outcome = ClientShellInput::default();
     state.open_new_workspace_overlay(&mut outcome);
     let [ClientShellAction::Endpoint { request, .. }] = outcome.actions.as_slice() else {

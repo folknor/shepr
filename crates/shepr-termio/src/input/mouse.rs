@@ -9,8 +9,8 @@ pub enum Position {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HostPixelExtent {
     grid: shepr_core::geometry::GridSize,
-    pub width_px: u32,
-    pub height_px: u32,
+    width_px: u32,
+    height_px: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -21,6 +21,18 @@ pub struct HostPixels {
 }
 
 impl HostPixelExtent {
+    pub fn width_px(self) -> u32 {
+        self.width_px
+    }
+
+    pub fn height_px(self) -> u32 {
+        self.height_px
+    }
+
+    pub fn grid(self) -> shepr_core::geometry::GridSize {
+        self.grid
+    }
+
     pub fn cols(self) -> u16 {
         self.grid.cols.get()
     }

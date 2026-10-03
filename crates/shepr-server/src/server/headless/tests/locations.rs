@@ -415,11 +415,7 @@ async fn workspace_create_sizes_the_first_pty_for_the_requester_and_navigates_it
     assert!(
         server.test_handle_server_event(ServerEvent::ShellConnected {
             client_id,
-            surface_cols: 100,
-            surface_rows: 30,
-            cell_width_px: 9,
-            cell_height_px: 18,
-            pixel_mouse: false,
+            geometry: shepr_core::geometry::HostGeometry::new(100, 30, 9, 18, false),
             mouse_capture: false,
             surface_active: true,
             outbox: writer,

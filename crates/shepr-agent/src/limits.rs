@@ -121,6 +121,16 @@ pub(crate) const TOML_BASIC_STRING_DELIMITER_BYTES: usize = 2;
 /// the same way; this threshold covers a step the clock has since caught up
 /// on.
 pub(crate) const HOOK_SEQUENCE_REANCHOR_AFTER: Duration = Duration::from_secs(5);
+/// How long a parked hook start stays available to attribute a process.
+///
+/// A start normally reaches process detection in one polling interval, but the
+/// detector's slowest cadence (no foreground process group) rechecks only every
+/// thirty seconds, and a loaded host adds scheduling delay on top. Two minutes
+/// covers that without keeping an identity available indefinitely for an
+/// unrelated future process. No PID is supplied by either input, so this bounds
+/// temporal attribution rather than proving identity. Both ends are monotonic
+/// `Instant`s, so a wall-clock step cannot expire or extend a start.
+pub(crate) const PARKED_START_LIFETIME: Duration = Duration::from_secs(120);
 /// Maximum distinct hook sources tracked by a terminal, preventing arbitrary
 /// source names from growing the ordering map without bound.
 pub(crate) const MAX_HOOK_REPORT_SOURCES: usize = 64;

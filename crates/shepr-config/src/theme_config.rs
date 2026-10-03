@@ -1,6 +1,6 @@
 use serde::Deserialize;
 
-use crate::theme::{DEFAULT_THEME, ParsedThemeColors, THEME_NAMES};
+use crate::theme::{DEFAULT_THEME, ParsedThemeColors, THEME_NAMES, ThemeName};
 use crate::{ConfigDiagnostic, ConfigKeyPath};
 
 /// Theme configuration: pick a built-in or override individual tokens.
@@ -16,7 +16,7 @@ use crate::{ConfigDiagnostic, ConfigKeyPath};
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(default)]
 pub struct ThemeConfig {
-    /// Built-in theme name. The default is the first built-in theme.
+    /// Built-in theme input; the raw string preserves unknown values for keyed diagnostics.
     pub name: Option<String>,
     /// Fallback accent override; theme.custom.accent takes precedence.
     #[serde(default, deserialize_with = "crate::model::deserialize_theme_accent")]
@@ -81,16 +81,18 @@ pub(crate) fn resolve_palette(
 ) -> Result<crate::theme::Palette, Vec<ConfigDiagnostic>> {
     let mut diagnostics = Vec::new();
     let name = config.name.as_deref().unwrap_or(DEFAULT_THEME);
-    let base_palette = crate::theme::Palette::from_name(name).or_else(|| {
-        diagnostics.push(ConfigDiagnostic::validation(
-            ConfigKeyPath::root().key("theme").key("name"),
-            format!(
-                "unknown theme name {name:?}; valid themes: {}",
-                THEME_NAMES.join(", ")
-            ),
-        ));
-        None
-    });
+    let base_palette = ThemeName::parse(name)
+        .map(crate::theme::Palette::from_name)
+        .or_else(|| {
+            diagnostics.push(ConfigDiagnostic::validation(
+                ConfigKeyPath::root().key("theme").key("name"),
+                format!(
+                    "unknown theme name {name:?}; valid themes: {}",
+                    THEME_NAMES.join(", ")
+                ),
+            ));
+            None
+        });
     let overrides = config.custom.as_ref().map_or_else(
         || Ok(ParsedThemeColors::default()),
         CustomThemeColors::parse,
@@ -232,10 +234,7 @@ name = "catppucin"
     #[test]
     fn theme_name_aliases_are_valid() {
         for name in ["catppuccin-mocha", "tokyonight", "gruvbox-dark", "dawn"] {
-            assert!(
-                crate::theme::Palette::from_name(name).is_some(),
-                "alias: {name}"
-            );
+            assert!(ThemeName::parse(name).is_some(), "alias: {name}");
         }
     }
 

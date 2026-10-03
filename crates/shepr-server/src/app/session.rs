@@ -620,16 +620,6 @@ impl App {
         self.session_saver.in_flight = Some(InFlightSave { pending, kind });
     }
 
-    /// Whether an exited pane may be removed now, without a checkpoint of its
-    /// own: nothing is persisted, the latest durable save is a pane-exit
-    /// checkpoint and nothing has changed since (so the pane is in it, and a
-    /// burst of exits keeps the layout from before the first one), or
-    /// checkpoints have been abandoned after repeated failures.
-    pub(crate) fn pane_exit_checkpoint_settled(&self) -> bool {
-        !self.session_saver.policy.allows_saves()
-            || !self.session_saver.exit.would_hold(self.state.session_dirty)
-    }
-
     /// Starts a new checkpoint for a pane exit and returns its generation, or
     /// `None` when the exit is already settled. Each held exit gets a
     /// generation so a save captured before that exit cannot release it when
@@ -935,8 +925,7 @@ impl App {
             AppEvent::Runtime {
                 pane_id,
                 generation,
-                event: Box::new(AppEvent::PaneDied {
-                    pane_id,
+                event: Box::new(shepr_mux::events::RuntimeEvent::PaneDied {
                     exit_reason,
                     ended_at,
                 }),
@@ -1539,8 +1528,8 @@ mod tests {
     async fn a_restore_that_drops_a_workspace_backs_up_the_saved_session_before_the_first_save() {
         use crate::test_support::{AppPathsFixture as _, ValidatedServerConfigFixture as _};
         use shepr_mux::persist::snapshot::{
-            DirectionSnapshot, LayoutSnapshot, PaneSnapshot, SavedSplitRatio, SessionFile,
-            SessionSnapshot, WorkspaceSnapshot,
+            DirectionSnapshot, LayoutSnapshot, PaneSnapshot, SessionFile, SessionSnapshot,
+            WorkspaceSnapshot,
         };
 
         let scratch = crate::test_support::ScratchDir::new("dropped-workspace-backup");
@@ -1582,22 +1571,29 @@ mod tests {
                 focused: ids[0],
                 root_pane: ids[0],
             };
+        // A saved split ratio out of range refuses the whole file at decode,
+        // so the workspace-level defect here is two panes sharing one public
+        // number, which drops only that workspace.
+        let mut colliding = workspace(
+            "w2",
+            "colliding numbers",
+            LayoutSnapshot::Split {
+                direction: DirectionSnapshot::Horizontal,
+                ratio: shepr_core::layout::SplitRatio::EVEN,
+                first: Box::new(LayoutSnapshot::Pane(2)),
+                second: Box::new(LayoutSnapshot::Pane(3)),
+            },
+            &[2, 3],
+        );
+        for pane in colliding.panes.values_mut() {
+            pane.public_number = shepr_protocol::PanePublicNumber::new(1).expect("number");
+        }
         let snapshot = SessionSnapshot {
             version: shepr_mux::persist::snapshot::SNAPSHOT_VERSION,
             host_theme: Default::default(),
             workspaces: vec![
                 workspace("w1", "healthy", LayoutSnapshot::Pane(1), &[1]),
-                workspace(
-                    "w2",
-                    "invalid ratio",
-                    LayoutSnapshot::Split {
-                        direction: DirectionSnapshot::Horizontal,
-                        ratio: SavedSplitRatio::from_raw(1.0),
-                        first: Box::new(LayoutSnapshot::Pane(2)),
-                        second: Box::new(LayoutSnapshot::Pane(3)),
-                    },
-                    &[2, 3],
-                ),
+                colliding,
             ],
             active: Some(0),
         };

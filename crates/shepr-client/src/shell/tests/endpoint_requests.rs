@@ -40,7 +40,7 @@ fn submit_request(mut state: ClientShellState) -> (ClientShellState, Vec<ClientS
     (state, outcome.actions)
 }
 
-fn request_id(actions: &[ClientShellAction]) -> &str {
+fn request_id(actions: &[ClientShellAction]) -> &shepr_protocol::RequestId {
     let [ClientShellAction::Endpoint { request, .. }] = actions else {
         panic!("expected one endpoint request");
     };
@@ -204,7 +204,7 @@ fn selecting_the_shown_endpoint_is_a_noop_but_with_nothing_shown_it_reproves() {
                     endpoint_id: ClientEndpointId::Local,
                     generation: 1,
                     boot_id: crate::tests::test_boot_id("boot-1"),
-                    minimum_revision: 1,
+                    minimum_revision: 1.into(),
                 },
                 "client-shell-view:1:on".into(),
                 shepr_protocol::TerminalGeometry::new(80, 24, 8, 16, false),
@@ -336,7 +336,7 @@ fn stale_queued_request_is_cancelled_without_blocking_the_current_generation() {
                 &ClientEndpointId::Local,
                 1,
                 &crate::tests::test_boot_id("boot-1"),
-                &stale_id.clone().into(),
+                &stale_id,
                 Ok(EndpointReply::Done)
             )
             .is_none()
@@ -347,7 +347,7 @@ fn stale_queued_request_is_cancelled_without_blocking_the_current_generation() {
                 &ClientEndpointId::Local,
                 2,
                 &crate::tests::test_boot_id("boot-1"),
-                &current_id.clone().into(),
+                &current_id,
                 Ok(EndpointReply::Done)
             )
             .is_some()
@@ -509,13 +509,13 @@ fn copy_shell() -> ClientShellState {
     assert!(s.enter_copy_mode(&mut ClientShellInput::default()));
     s
 }
-fn copy_search(s: &mut ClientShellState) -> String {
+fn copy_search(s: &mut ClientShellState) -> shepr_protocol::RequestId {
     let outcome = s.handle_input_bytes(b"/needle\r");
     request_id(&outcome.actions).to_owned()
 }
 fn answer(
     s: &mut ClientShellState,
-    id: &str,
+    id: &shepr_protocol::RequestId,
     result: Result<EndpointReply, ClientShellEndpointError>,
 ) -> ClientShellInput {
     s.answer_request(
@@ -538,18 +538,18 @@ fn scroll_reply(offset: u64) -> EndpointReply {
         }),
     }
 }
-fn start_scroll(s: &mut ClientShellState, offset: usize) -> String {
+fn start_scroll(s: &mut ClientShellState, offset: usize) -> shepr_protocol::RequestId {
     let mut out = ClientShellInput::default();
     s.push_pane_scroll_offset(test_pane_id("w1:p1"), offset, &mut out);
     request_id(&out.actions).to_owned()
 }
-fn start_word(s: &mut ClientShellState) -> String {
+fn start_word(s: &mut ClientShellState) -> shepr_protocol::RequestId {
     let hit = s.hits.panes[0].clone();
     let mut out = ClientShellInput::default();
     s.request_word_selection(&hit, hit.scroll.expect("scroll"), 0, 1, &mut out);
     request_id(&out.actions).to_owned()
 }
-fn start_label(s: &mut ClientShellState) -> String {
+fn start_label(s: &mut ClientShellState) -> shepr_protocol::RequestId {
     let mut out = ClientShellInput::default();
     s.open_new_workspace_overlay(&mut out);
     request_id(&out.actions).to_owned()
@@ -573,7 +573,6 @@ fn a_dropped_request_runs_its_rollback_and_sends_nothing() {
                     &mut out,
                 )
                 .expect("submit")
-                .to_string()
             }
             2 => start_label(&mut s),
             3 => {
@@ -660,7 +659,7 @@ fn an_ignored_answer_still_reports_its_server_error() {
     let out = answer(&mut s, &old, Err(ClientShellEndpointError::Timeout));
     assert!(out.repaint);
     assert!(out.actions.is_empty());
-    assert!(s.copy_pipeline.is_awaiting(&current.clone().into()));
+    assert!(s.copy_pipeline.is_awaiting(&current));
     assert!(
         s.notices
             .timeout_suppressed(crate::shell::overlays::notices::NoticeCode::Command(
@@ -679,7 +678,7 @@ fn an_ignored_answer_still_reports_its_server_error() {
                 shepr_protocol::command::CommandKind::PaneCopySearch
             ))
     );
-    assert!(s.copy_pipeline.is_awaiting(&current.into()));
+    assert!(s.copy_pipeline.is_awaiting(&current));
 }
 #[test]
 fn answering_a_request_twice_applies_it_once() {
@@ -781,8 +780,8 @@ fn a_word_selection_answer_for_a_replaced_gesture_is_ignored() {
     );
     assert!(!out.repaint);
     assert!(s.mouse_selection.selection.is_none());
-    assert!(!s.drop_word_selection(&old.into()).is_needed());
-    assert!(s.drop_word_selection(&current.into()).is_needed());
+    assert!(!s.drop_word_selection(&old).is_needed());
+    assert!(s.drop_word_selection(&current).is_needed());
 }
 #[test]
 fn a_workspace_label_answer_for_a_reopened_overlay_is_ignored() {
@@ -806,7 +805,7 @@ fn a_workspace_label_answer_for_a_reopened_overlay_is_ignored() {
         ClientRenameTarget::NewWorkspace {
             label_lookup: Some(id),
             ..
-        } if id.as_str() == current
+        } if *id == current
     ));
 }
 #[test]

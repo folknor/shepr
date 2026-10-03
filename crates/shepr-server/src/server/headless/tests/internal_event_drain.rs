@@ -62,8 +62,7 @@ async fn full_internal_event_queue_eventually_applies_working_to_idle_transition
         AppEvent::StateChanged {
             pane_id,
             agent: Some(Agent::Pi),
-            state: AgentState::Working,
-            visible_blocker: false,
+            detection: shepr_agent::detect::Detection::new(AgentState::Working, false),
             process_exited: false,
             observed_at: now,
         },
@@ -99,8 +98,7 @@ async fn full_internal_event_queue_eventually_applies_working_to_idle_transition
         AppEvent::StateChanged {
             pane_id,
             agent: Some(Agent::Pi),
-            state: AgentState::Idle,
-            visible_blocker: false,
+            detection: shepr_agent::detect::Detection::new(AgentState::Idle, false),
             process_exited: false,
             observed_at: now,
         },

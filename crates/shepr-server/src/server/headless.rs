@@ -154,10 +154,10 @@ pub struct HeadlessServer {
     host_input_modes_dirty: bool,
     /// Reason captured by the retained renderer and reported after the full
     /// render that recovers from it.
-    retained_surface_fallback_reason: Option<&'static str>,
+    retained_surface_fallback_reason: Option<retained_surface::RetainedSurfaceFallback>,
     /// Fallback reasons already reported once, so each report can say whether
     /// its reason is recurring. Every fallback is still logged.
-    retained_surface_fallbacks_reported: HashSet<&'static str>,
+    retained_surface_fallbacks_reported: HashSet<retained_surface::RetainedSurfaceFallback>,
     /// Owns running, host-shutdown warning/freeze, cancellation and stopping.
     lifecycle: ShutdownLifecycle,
     /// Channel for receiving server events from client connection threads.
@@ -178,9 +178,6 @@ pub struct HeadlessServer {
     shutdown_flushes: Vec<tokio::sync::oneshot::Receiver<()>>,
     /// Pane exits held until their pre-removal session checkpoint reaches disk.
     pending_checkpointed_pane_exits: VecDeque<PendingCheckpointedPaneExit>,
-    /// Set only while a ready held exit is routed back through the forwarding
-    /// handler, which then skips its initial App preparation step.
-    replaying_checkpointed_pane_exit: Option<app::CheckpointGeneration>,
     /// Raised by client outboxes on closure or control-lane progress, client
     /// writers after a render drains, and the host shutdown monitor. Wakes an
     /// idle loop to reap, release replies, refresh surfaces, or sync shutdown.
@@ -224,7 +221,6 @@ impl HeadlessServer {
             shutdown_unregistered_clients: HashMap::new(),
             shutdown_flushes: Vec::new(),
             pending_checkpointed_pane_exits: VecDeque::new(),
-            replaying_checkpointed_pane_exit: None,
             outbox_wake,
             workers: worker::EndpointWorkers::new(),
         }
@@ -335,7 +331,7 @@ impl HeadlessServer {
     /// - Handles scheduled tasks (session save, metadata expiry, etc.)
     /// - Renders virtually and streams frames to clients
     pub async fn run(&mut self) -> io::Result<()> {
-        crate::logging::startup("server");
+        crate::logging::startup();
         // The fallible setup below returns before the loop, so it skips the
         // final save; `Drop` still releases the lease and socket in order. No
         // save is owed: no client has connected and no event has been applied,
@@ -1141,38 +1137,32 @@ impl HeadlessServer {
         match ev {
             ServerEvent::ShellConnected {
                 client_id,
-                surface_cols,
-                surface_rows,
-                cell_width_px,
-                cell_height_px,
-                pixel_mouse,
+                geometry,
                 mouse_capture,
                 surface_active,
                 outbox,
             } => {
                 info!(
                     ?client_id,
-                    cols = surface_cols,
-                    rows = surface_rows,
-                    cell_width_px,
-                    cell_height_px,
+                    cols = geometry.cols(),
+                    rows = geometry.rows(),
+                    cell_width_px = geometry.cell_width(),
+                    cell_height_px = geometry.cell_height(),
                     surface_active,
                     "client connected"
                 );
                 let first_app_client = self.app_client_count() == 0;
                 let last_activity = self.clients.allocate_activity_stamp();
-                let observed = shepr_termio::host_term::cell_size::HostCellSize {
-                    width_px: cell_width_px,
-                    height_px: cell_height_px,
-                };
+                let observed =
+                    shepr_termio::host_term::cell_size::HostCellSize::from_cell(geometry.cell());
                 let mut connection = ClientConnection::with_shell(
                     ClientShellState::with_surface_active(surface_active),
-                    shepr_core::geometry::GridSize::clamped(surface_cols, surface_rows),
+                    geometry.grid(),
                     observed,
                     last_activity,
                     outbox,
                 );
-                connection.pixel_mouse = pixel_mouse && observed.is_known();
+                connection.pixel_mouse = geometry.exact();
                 let shell = &mut connection.shell;
                 shell.mouse_capture = mouse_capture;
                 shell.projection_revision = shepr_protocol::ProjectionRevision::new(1);
@@ -1193,7 +1183,7 @@ impl HeadlessServer {
                     self.clients.get(&client_id).map(|client| {
                         (
                             client.shell_state().location.clone(),
-                            client.shell_state().projection_revision.get(),
+                            client.shell_state().projection_revision,
                         )
                     })
                 else {
@@ -1260,11 +1250,7 @@ impl HeadlessServer {
             }
             ServerEvent::ShellResize {
                 client_id,
-                surface_cols,
-                surface_rows,
-                cell_width_px,
-                cell_height_px,
-                pixel_mouse,
+                geometry,
             } => {
                 let active = {
                     let Some(client) = self.clients.get_mut(&client_id) else {
@@ -1272,16 +1258,14 @@ impl HeadlessServer {
                     };
                     let previous_geometry =
                         (client.terminal_size, client.cell_size, client.pixel_mouse);
-                    client.terminal_size =
-                        shepr_core::geometry::GridSize::clamped(surface_cols, surface_rows);
-                    let observed = shepr_termio::host_term::cell_size::HostCellSize {
-                        width_px: cell_width_px,
-                        height_px: cell_height_px,
-                    };
+                    client.terminal_size = geometry.grid();
+                    let observed = shepr_termio::host_term::cell_size::HostCellSize::from_cell(
+                        geometry.cell(),
+                    );
                     if observed.is_known() {
                         client.cell_size = observed;
                     }
-                    client.pixel_mouse = pixel_mouse && observed.is_known();
+                    client.pixel_mouse = geometry.exact();
                     if previous_geometry
                         == (client.terminal_size, client.cell_size, client.pixel_mouse)
                     {
@@ -1524,8 +1508,10 @@ impl HeadlessServer {
                     self.lifecycle.sync_host_shutdown_freeze(&mut self.app);
                     synced_host_shutdown_for_exits = true;
                 }
-                self.replaying_checkpointed_pane_exit = Some(pending.checkpoint_generation);
-                changed |= self.handle_internal_event_with_forwarding(pending.event);
+                changed |= self.replay_checkpointed_internal_event(
+                    pending.event,
+                    pending.checkpoint_generation,
+                );
             } else {
                 self.pending_checkpointed_pane_exits.push_back(pending);
             }

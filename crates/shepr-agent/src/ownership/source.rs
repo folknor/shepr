@@ -70,7 +70,7 @@ impl AgentOwnership {
     }
 
     #[cfg(not(test))]
-    fn check_hook_invariants(&self) {}
+    pub(super) fn check_hook_invariants(&self) {}
 
     pub(super) fn transition_hook_event(
         &mut self,
@@ -91,14 +91,18 @@ impl AgentOwnership {
                 session_ref,
                 seq,
                 sample,
-            } => self.transition_report(origin, state, session_ref, seq, sample),
+            } => self
+                .transition_report(origin, state, session_ref, seq, sample)
+                .into_mutation(),
             HookEvent::Start {
                 origin,
                 session_ref,
                 seq,
                 session_start_source,
                 sample,
-            } => self.transition_start(&origin, session_ref, seq, session_start_source, sample),
+            } => self
+                .transition_start(&origin, session_ref, seq, session_start_source, sample)
+                .into_mutation(),
             HookEvent::Detection {
                 agent,
                 fallback_state,
@@ -166,6 +170,9 @@ impl AgentProcessEvidence {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(super) struct HookSourceState {
     sequence: Option<HookSequence>,
+    // Hook reports contain no process handle. Only nearby, newer detector
+    // evidence can attribute a parked identity to a process of this agent.
+    pending_start_at: Option<Instant>,
     generation: HookGeneration,
     stale_sessions: Vec<StaleFullLifecycleHookSession>,
 }
@@ -197,19 +204,6 @@ enum HookSourceEvent<'a> {
         forget_retired: bool,
         clear_authority: bool,
     },
-    Report {
-        agent_label: &'a ReportedAgent,
-        session_ref: &'a Option<crate::agent::resume::AgentSessionRef>,
-        process_present: bool,
-        anchored_session_ref: Option<&'a crate::agent::resume::AgentSessionRef>,
-        authority_session_ref: Option<&'a crate::agent::resume::AgentSessionRef>,
-    },
-    Start {
-        agent_label: &'a ReportedAgent,
-        process_present: bool,
-        session_anchored: bool,
-        unsequenced_selection: bool,
-    },
     Release(
         FullLifecycleHookSuppressionReason,
         SuppressedFullLifecycleHookReport,
@@ -218,7 +212,6 @@ enum HookSourceEvent<'a> {
     Select {
         current_session_matches: bool,
     },
-    DetectorObservation(Instant),
     ParkStart(
         SuppressedFullLifecycleHookReport,
         crate::agent::resume::PersistedAgentSession,
@@ -234,10 +227,9 @@ enum HookSourceEvent<'a> {
         PendingFullLifecycleHookReport,
     ),
     ProcessExited(Instant),
-    ProcessObserved,
+    ProcessObserved(Instant),
     RecordSequence(u64, HookClockSample),
     ClearSequence,
-    OrderAllows(Option<u64>, HookClockSample),
     Retire(StaleFullLifecycleHookSession),
     Forget(&'a ReportedAgent, &'a crate::agent::resume::AgentSessionRef),
 }
@@ -255,12 +247,8 @@ enum HookSourceEffects {
         persisted: Option<crate::agent::resume::PersistedAgentSession>,
     },
     None,
-    Report(FullLifecycleHookReportRoute),
-    Start(HookStartRoute),
     Activated(Option<SuppressedFullLifecycleHookReport>),
     Parked(bool),
-    OrderAllowed(bool),
-    DetectorObservationAllowed(bool),
     ProcessObserved(
         Option<(
             crate::agent::resume::PersistedAgentSession,
@@ -276,9 +264,117 @@ enum AuthorityEffect {
 }
 
 impl HookSourceState {
-    /// Generation/event table. Report, Start and observation queries only decide
-    /// routing; capacity, ordering and policy validation must succeed before a commit event. This
-    /// keeps rejected reports from evicting records or changing a generation.
+    fn report_route(
+        &self,
+        agent_label: &ReportedAgent,
+        session_ref: &Option<crate::agent::resume::AgentSessionRef>,
+        process_present: bool,
+        anchored_session_ref: Option<&crate::agent::resume::AgentSessionRef>,
+        authority_session_ref: Option<&crate::agent::resume::AgentSessionRef>,
+    ) -> FullLifecycleHookReportRoute {
+        let stale = session_ref.as_ref().is_some_and(|incoming| {
+            self.stale_sessions
+                .iter()
+                .any(|stale| &stale.agent_label == agent_label && &stale.session_ref == incoming)
+        });
+        let cross_talk = authority_session_ref
+            .zip(session_ref.as_ref())
+            .is_some_and(|(current, incoming)| current != incoming)
+            || (process_present
+                && anchored_session_ref
+                    .zip(session_ref.as_ref())
+                    .is_some_and(|(anchored, incoming)| anchored != incoming));
+        if stale {
+            FullLifecycleHookReportRoute::Ignore(HookRejection::RetiredSession)
+        } else if cross_talk {
+            FullLifecycleHookReportRoute::Ignore(HookRejection::CrossTalk)
+        } else {
+            match &self.generation {
+                HookGeneration::Cleared(released) => {
+                    if &released.agent_label == agent_label
+                        && matches!(
+                            (&released.session_ref, session_ref),
+                            (Some(previous), Some(incoming)) if previous != incoming
+                        )
+                    {
+                        FullLifecycleHookReportRoute::Accept {
+                            reanchor_sequence: true,
+                        }
+                    } else {
+                        FullLifecycleHookReportRoute::Ignore(HookRejection::LifecycleGate)
+                    }
+                }
+                HookGeneration::AwaitingProcess(released)
+                    if &released.agent_label != agent_label =>
+                {
+                    FullLifecycleHookReportRoute::Ignore(HookRejection::LifecycleGate)
+                }
+                HookGeneration::Open
+                    if process_present
+                        && anchored_session_ref.is_some_and(|anchored| {
+                            session_ref
+                                .as_ref()
+                                .is_none_or(|incoming| incoming == anchored)
+                        }) =>
+                {
+                    FullLifecycleHookReportRoute::Accept {
+                        reanchor_sequence: false,
+                    }
+                }
+                HookGeneration::Open | HookGeneration::AwaitingProcess(_) => {
+                    if session_ref.is_some() {
+                        FullLifecycleHookReportRoute::Pending
+                    } else {
+                        FullLifecycleHookReportRoute::Ignore(HookRejection::LifecycleGate)
+                    }
+                }
+            }
+        }
+    }
+
+    fn start_route(
+        &self,
+        agent_label: &ReportedAgent,
+        process_present: bool,
+        session_anchored: bool,
+        unsequenced_selection: bool,
+    ) -> HookStartRoute {
+        if unsequenced_selection {
+            if process_present {
+                HookStartRoute::Commit
+            } else {
+                HookStartRoute::ParkSelection
+            }
+        } else if !process_present
+            || !session_anchored
+            || matches!(
+                &self.generation, HookGeneration::AwaitingProcess(released)
+                    if &released.agent_label == agent_label
+            )
+        {
+            HookStartRoute::ParkRecognizedStart
+        } else {
+            HookStartRoute::Commit
+        }
+    }
+
+    fn order_allows(&self, seq: Option<u64>, sample: HookClockSample) -> bool {
+        match seq {
+            Some(seq) => !self
+                .sequence
+                .is_some_and(|previous| previous.supersedes(seq, sample.monotonic, sample.wall)),
+            None => self.sequence.is_none(),
+        }
+    }
+
+    fn detector_observation_allows(&self, observed_at: Instant) -> bool {
+        self.suppressed()
+            .is_none_or(|released| observed_at > released.observed_at)
+    }
+
+    /// Generation/event table. Routing queries use shared methods; capacity,
+    /// ordering and policy validation must succeed before a commit event.
+    /// Rejected reports cannot evict records or change a generation.
     ///
     /// Open + anchored live report accepts; other reports park with an identity.
     /// AwaitingProcess + report parks, and + process requires a pending start.
@@ -359,102 +455,6 @@ impl HookSourceState {
                     persisted: Some(session),
                 }
             }
-            (
-                _,
-                HookSourceEvent::Report {
-                    agent_label,
-                    session_ref,
-                    process_present,
-                    anchored_session_ref,
-                    authority_session_ref,
-                },
-            ) => {
-                let stale = session_ref.as_ref().is_some_and(|incoming| {
-                    self.stale_sessions.iter().any(|stale| {
-                        &stale.agent_label == agent_label && &stale.session_ref == incoming
-                    })
-                });
-                let cross_talk = authority_session_ref
-                    .zip(session_ref.as_ref())
-                    .is_some_and(|(current, incoming)| current != incoming)
-                    || (process_present
-                        && anchored_session_ref
-                            .zip(session_ref.as_ref())
-                            .is_some_and(|(anchored, incoming)| anchored != incoming));
-                let route = if stale || cross_talk {
-                    FullLifecycleHookReportRoute::Ignore
-                } else {
-                    match &self.generation {
-                        HookGeneration::Cleared(released) => {
-                            if &released.agent_label == agent_label
-                                && matches!(
-                                    (&released.session_ref, session_ref),
-                                    (Some(previous), Some(incoming)) if previous != incoming
-                                )
-                            {
-                                FullLifecycleHookReportRoute::Accept {
-                                    reanchor_sequence: true,
-                                }
-                            } else {
-                                FullLifecycleHookReportRoute::Ignore
-                            }
-                        }
-                        HookGeneration::AwaitingProcess(released)
-                            if &released.agent_label != agent_label =>
-                        {
-                            FullLifecycleHookReportRoute::Ignore
-                        }
-                        HookGeneration::Open
-                            if process_present
-                                && anchored_session_ref.is_some_and(|anchored| {
-                                    session_ref
-                                        .as_ref()
-                                        .is_none_or(|incoming| incoming == anchored)
-                                }) =>
-                        {
-                            FullLifecycleHookReportRoute::Accept {
-                                reanchor_sequence: false,
-                            }
-                        }
-                        HookGeneration::Open | HookGeneration::AwaitingProcess(_) => {
-                            if session_ref.is_some() {
-                                FullLifecycleHookReportRoute::Pending
-                            } else {
-                                FullLifecycleHookReportRoute::Ignore
-                            }
-                        }
-                    }
-                };
-                HookSourceEffects::Report(route)
-            }
-            (
-                generation,
-                HookSourceEvent::Start {
-                    agent_label,
-                    process_present,
-                    session_anchored,
-                    unsequenced_selection,
-                },
-            ) => {
-                let route = if unsequenced_selection {
-                    if process_present {
-                        HookStartRoute::Commit
-                    } else {
-                        HookStartRoute::ParkSelection
-                    }
-                } else if !process_present
-                    || !session_anchored
-                    || matches!(
-                        generation, HookGeneration::AwaitingProcess(released)
-                            if &released.agent_label == agent_label
-                    )
-                {
-                    HookStartRoute::ParkRecognizedStart
-                } else {
-                    HookStartRoute::Commit
-                };
-                HookSourceEffects::Start(route)
-            }
             (_, HookSourceEvent::Release(reason, report)) => {
                 self.release(reason, report);
                 HookSourceEffects::None
@@ -476,13 +476,6 @@ impl HookSourceState {
                 }
                 HookSourceEffects::None
             }
-            (generation, HookSourceEvent::DetectorObservation(observed_at)) => {
-                HookSourceEffects::DetectorObservationAllowed(match generation {
-                    HookGeneration::Open => true,
-                    HookGeneration::AwaitingProcess(released)
-                    | HookGeneration::Cleared(released) => observed_at > released.observed_at,
-                })
-            }
             (_, HookSourceEvent::ParkOrderedStart(initial, session, seq, sample)) => {
                 self.record_sequence(seq, sample);
                 self.park_start(initial, session);
@@ -499,8 +492,8 @@ impl HookSourceState {
                 self.process_exited(now);
                 HookSourceEffects::None
             }
-            (_, HookSourceEvent::ProcessObserved) => {
-                HookSourceEffects::ProcessObserved(self.observe_process())
+            (_, HookSourceEvent::ProcessObserved(now)) => {
+                HookSourceEffects::ProcessObserved(self.observe_process(now))
             }
             (_, HookSourceEvent::RecordSequence(value, sample)) => {
                 self.record_sequence(value, sample);
@@ -509,14 +502,6 @@ impl HookSourceState {
             (_, HookSourceEvent::ClearSequence) => {
                 self.clear_sequence();
                 HookSourceEffects::None
-            }
-            (_, HookSourceEvent::OrderAllows(seq, sample)) => {
-                HookSourceEffects::OrderAllowed(match seq {
-                    Some(seq) => !self.sequence.is_some_and(|previous| {
-                        previous.supersedes(seq, sample.monotonic, sample.wall)
-                    }),
-                    None => self.sequence.is_none(),
-                })
             }
             (_, HookSourceEvent::Retire(session)) => {
                 self.retire(session);
@@ -584,6 +569,7 @@ impl HookSourceState {
     }
 
     fn activate(&mut self) -> Option<SuppressedFullLifecycleHookReport> {
+        self.pending_start_at = None;
         match std::mem::take(&mut self.generation) {
             HookGeneration::Open => None,
             HookGeneration::AwaitingProcess(report) | HookGeneration::Cleared(report) => {
@@ -612,7 +598,21 @@ impl HookSourceState {
         mut initial: SuppressedFullLifecycleHookReport,
         session: crate::agent::resume::PersistedAgentSession,
     ) {
+        self.pending_start_at = Some(initial.observed_at);
         if self.suppressed().is_none() {
+            // The start itself opens this suppression: no exit or clear bounds
+            // it, so its detector floor must not be the start's own instant.
+            // The process that sent the start existed before the hook did, and
+            // a detector tick stamped before the hook was applied may be the
+            // first to see it; refusing that tick loses the start until some
+            // later state change republishes presence. Observations older
+            // than the pane's last detector observation or its recorded exit
+            // are refused before reaching the source record, so the only
+            // floor left here is the attribution window itself.
+            initial.observed_at = initial
+                .observed_at
+                .checked_sub(PARKED_START_LIFETIME)
+                .unwrap_or(initial.observed_at);
             initial.pending_start = Some(session);
             self.release(FullLifecycleHookSuppressionReason::AwaitingProcess, initial);
             return;
@@ -660,6 +660,14 @@ impl HookSourceState {
     }
 
     fn process_exited(&mut self, now: Instant) {
+        // A queued old exit cannot consume a start observed after that exit.
+        if self
+            .pending_start_at
+            .is_some_and(|started_at| now <= started_at)
+        {
+            return;
+        }
+        self.pending_start_at = None;
         let suppressed = match &mut self.generation {
             HookGeneration::AwaitingProcess(suppressed) => suppressed,
             HookGeneration::Cleared(suppressed) if suppressed.pending_start.is_some() => suppressed,
@@ -706,10 +714,36 @@ impl HookSourceState {
     /// have a recognized pending session start; a parked report is insufficient.
     fn observe_process(
         &mut self,
+        now: Instant,
     ) -> Option<(
         crate::agent::resume::PersistedAgentSession,
         Option<PendingFullLifecycleHookReport>,
     )> {
+        // An observation sampled before the start arrived still attributes it:
+        // the detector stamps a tick when it begins, before its probe, and a
+        // hook can be applied while that tick's event is queued. Such an
+        // observation names the process that sent the start, and no further
+        // presence transition follows for it. Refusing observations older
+        // than the start would be wrong in principle, not only racy: the
+        // process that sends a start hook necessarily existed before the hook
+        // did, so its first presence sample may predate the start. The lower
+        // bound that matters is the exit or clear that parked the start;
+        // observations older than that are refused before this point
+        // (`transition_detector_observation`). Exact attribution would need a
+        // process id on both inputs, and hook reports carry none.
+        if let Some(started_at) = self.pending_start_at
+            && now.saturating_duration_since(started_at) > PARKED_START_LIFETIME
+        {
+            // Expiry discards the entire pending selection, including a
+            // report for it. Presence may reopen a clear, but cannot
+            // resurrect an expired exit-gated session.
+            if let Some(released) = self.suppressed_mut() {
+                released.pending_start = None;
+                released.pending_replacement_report = None;
+            }
+            self.pending_start_at = None;
+            self.sequence = None;
+        }
         let start_seq = self.sequence.map(|sequence| sequence.value);
         match &mut self.generation {
             HookGeneration::Open => {
@@ -735,6 +769,7 @@ impl HookSourceState {
                 // The start was policy-validated before it was parked. Process
                 // evidence commits that identity without a fallible conversion.
                 let start = released.pending_start.take()?;
+                self.pending_start_at = None;
                 let label = ReportedAgent::Known(start.agent);
                 let stale = released
                     .session_ref
@@ -790,6 +825,8 @@ impl HookSequence {
     }
 }
 
+use crate::limits::PARKED_START_LIFETIME;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct SuppressedFullLifecycleHookReport {
     agent_label: ReportedAgent,
@@ -815,7 +852,7 @@ enum FullLifecycleHookSuppressionReason {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FullLifecycleHookReportRoute {
     Accept { reanchor_sequence: bool },
-    Ignore,
+    Ignore(HookRejection),
     Pending,
 }
 
@@ -940,20 +977,18 @@ impl AgentOwnership {
             .as_ref()
             .filter(|authority| &authority.origin == origin)
             .and_then(|authority| authority.session_ref.as_ref());
-        let mut empty_source = HookSourceState::default();
+        let empty_source = HookSourceState::default();
         let record = self
             .hook_sources
-            .get_mut(origin.source())
-            .unwrap_or(&mut empty_source);
-        let HookSourceEffects::Report(route) = record.transition(HookSourceEvent::Report {
-            agent_label: origin.agent(),
+            .get(origin.source())
+            .unwrap_or(&empty_source);
+        let route = record.report_route(
+            origin.agent(),
             session_ref,
             process_present,
             anchored_session_ref,
             authority_session_ref,
-        }) else {
-            return FullLifecycleHookReportRoute::Ignore;
-        };
+        );
         if route != FullLifecycleHookReportRoute::Pending {
             return route;
         }
@@ -962,17 +997,17 @@ impl AgentOwnership {
         // establish or reopen one: it cannot distinguish startup from a late
         // report belonging to a process that already exited.
         let Some(session_ref) = session_ref.clone() else {
-            return FullLifecycleHookReportRoute::Ignore;
+            return FullLifecycleHookReportRoute::Ignore(HookRejection::MissingSession);
         };
         let Some(seq) = seq else {
-            return FullLifecycleHookReportRoute::Ignore;
+            return FullLifecycleHookReportRoute::Ignore(HookRejection::MissingSequence);
         };
         let source = origin.source();
-        if !self.hook_report_order_allows(source, Some(seq), sample)
-            || !self.hook_report_sequence_has_room(source)
-            || !self.prepare_hook_source(source)
-        {
-            return FullLifecycleHookReportRoute::Ignore;
+        if !self.hook_report_order_allows(source, Some(seq), sample) {
+            return FullLifecycleHookReportRoute::Ignore(HookRejection::OutOfOrder);
+        }
+        if !self.hook_report_sequence_has_room(source) || !self.prepare_hook_source(source) {
+            return FullLifecycleHookReportRoute::Ignore(HookRejection::SourceCapacity);
         }
         let previous_session_ref = self
             .persisted_agent_session
@@ -1006,7 +1041,7 @@ impl AgentOwnership {
         if matches!(parked, HookSourceEffects::Parked(true)) {
             FullLifecycleHookReportRoute::Pending
         } else {
-            FullLifecycleHookReportRoute::Ignore
+            FullLifecycleHookReportRoute::Ignore(HookRejection::OutOfOrder)
         }
     }
 
@@ -1030,6 +1065,7 @@ impl AgentOwnership {
         &mut self,
         previous_detected_agent: Option<Agent>,
         detected_agent: Option<Agent>,
+        now: Instant,
     ) {
         let Some(detected_agent) = detected_agent else {
             return;
@@ -1046,27 +1082,24 @@ impl AgentOwnership {
         let effect = self
             .hook_sources
             .get_mut(origin.source())
-            .map(|record| record.transition(HookSourceEvent::ProcessObserved));
+            .map(|record| record.transition(HookSourceEvent::ProcessObserved(now)));
         if let Some(effect) = effect {
             self.apply_source_effect(effect);
         }
     }
 
     fn detected_state_observed_before_release_suppression(
-        &mut self,
+        &self,
         detected_agent: Option<Agent>,
         observed_at: Instant,
     ) -> bool {
         let Some(record) = detected_agent
             .and_then(ReportOrigin::official)
-            .and_then(|origin| self.hook_sources.get_mut(origin.source()))
+            .and_then(|origin| self.hook_sources.get(origin.source()))
         else {
             return false;
         };
-        matches!(
-            record.transition(HookSourceEvent::DetectorObservation(observed_at)),
-            HookSourceEffects::DetectorObservationAllowed(false)
-        )
+        !record.detector_observation_allows(observed_at)
     }
 
     fn current_session_owner_conflicts(&self, origin: &ReportOrigin) -> bool {
@@ -1155,22 +1188,16 @@ impl AgentOwnership {
     }
 
     fn hook_report_order_allows(
-        &mut self,
+        &self,
         source: &AgentSource,
         seq: Option<u64>,
         sample: impl Into<HookClockSample>,
     ) -> bool {
         let sample = sample.into();
         // Routing queries never insert a source or evict ordering history.
-        let mut empty_source = HookSourceState::default();
-        let record = self
-            .hook_sources
-            .get_mut(source)
-            .unwrap_or(&mut empty_source);
-        matches!(
-            record.transition(HookSourceEvent::OrderAllows(seq, sample)),
-            HookSourceEffects::OrderAllowed(true)
-        )
+        let empty_source = HookSourceState::default();
+        let record = self.hook_sources.get(source).unwrap_or(&empty_source);
+        record.order_allows(seq, sample)
     }
 
     /// Capacity validation never mutates. Unprotected records are evicted only
@@ -1262,7 +1289,7 @@ impl AgentOwnership {
 
 #[cfg(test)]
 impl AgentOwnership {
-    fn check_hook_invariants(&self) {
+    pub(super) fn check_hook_invariants(&self) {
         for record in self.hook_sources.values() {
             record.check_invariants();
         }
@@ -1309,6 +1336,241 @@ mod transition_tests {
             monotonic: Instant::now(),
             wall: SystemTime::UNIX_EPOCH + Duration::from_secs(1_000_000),
         }
+    }
+
+    #[test]
+    fn parked_start_expires_in_both_release_generations() {
+        let clock = sample();
+        for row in [1, 2] {
+            let mut source = record(row, clock);
+            source.transition(HookSourceEvent::ParkOrderedStart(
+                release(clock),
+                session("new"),
+                20,
+                clock,
+            ));
+            source.transition(HookSourceEvent::ParkReport(
+                release(clock),
+                report("new", 21, clock),
+            ));
+            let effect = source.transition(HookSourceEvent::ProcessObserved(
+                clock.monotonic + PARKED_START_LIFETIME + Duration::from_nanos(1),
+            ));
+            assert!(matches!(effect, HookSourceEffects::ProcessObserved(None)));
+            assert!(source.suppressed().is_none_or(|released| {
+                released.pending_start.is_none() && released.pending_replacement_report.is_none()
+            }));
+            assert!(source.pending_start_at.is_none());
+            assert!(source.sequence.is_none());
+        }
+    }
+
+    #[test]
+    fn parked_start_can_be_promoted_at_the_deadline() {
+        let clock = sample();
+        let mut source = record(1, clock);
+        source.transition(HookSourceEvent::ParkStart(release(clock), session("new")));
+        assert!(matches!(
+            source.transition(HookSourceEvent::ProcessObserved(
+                clock.monotonic + PARKED_START_LIFETIME,
+            )),
+            HookSourceEffects::ProcessObserved(Some((start, _))) if start == session("new")
+        ));
+        assert!(source.pending_start_at.is_none());
+    }
+
+    #[test]
+    fn an_exit_before_a_parked_start_does_not_consume_it() {
+        let clock = sample();
+        for row in [1, 2] {
+            let mut source = record(row, clock);
+            source.transition(HookSourceEvent::ParkStart(release(clock), session("new")));
+            let before = source.clone();
+            source.transition(HookSourceEvent::ProcessExited(clock.monotonic));
+            assert_eq!(source, before);
+        }
+    }
+
+    #[test]
+    fn presence_sampled_before_a_parked_start_still_promotes_it() {
+        // The detector stamps a tick before probing, and the start can be
+        // applied while that tick's event is queued.
+        let clock = sample();
+        for row in [1, 2] {
+            let mut source = record(row, clock);
+            source.transition(HookSourceEvent::ParkStart(release(clock), session("new")));
+            assert!(matches!(
+                source.transition(HookSourceEvent::ProcessObserved(
+                    clock.monotonic - Duration::from_millis(1),
+                )),
+                HookSourceEffects::ProcessObserved(Some((start, _))) if start == session("new")
+            ));
+        }
+    }
+
+    #[test]
+    fn replayed_detector_exit_does_not_consume_a_new_parked_start() {
+        let clock = sample();
+        let origin = ReportOrigin::official(Agent::Pi).expect("official Pi");
+        let mut ownership = AgentOwnership::new();
+        ownership.set_detected_agent_process_at(Agent::Pi, clock.monotonic);
+        let exited_at = clock.monotonic + Duration::from_secs(1);
+        ownership.set_detected_state_with_screen_signals_at(
+            Some(Agent::Pi),
+            AgentState::Idle,
+            false,
+            true,
+            exited_at,
+        );
+        let start_clock = HookClockSample {
+            monotonic: exited_at + Duration::from_secs(1),
+            wall: clock.wall + Duration::from_secs(2),
+        };
+        assert_eq!(
+            ownership.report_session_start_outcome_at(
+                &origin,
+                Some(identity("new")),
+                Some(20),
+                ReportedSessionStart::Known(AgentSessionStartSource::Startup),
+                start_clock,
+            ),
+            HookOutcome::Parked
+        );
+        let replay = ownership.set_detected_state_with_screen_signals_at(
+            Some(Agent::Pi),
+            AgentState::Idle,
+            false,
+            true,
+            exited_at,
+        );
+        assert_eq!(replay, AgentOwnershipMutation::default());
+        ownership.set_detected_agent_process_at(
+            Agent::Pi,
+            start_clock.monotonic + Duration::from_millis(1),
+        );
+        assert_eq!(
+            ownership.current_session_identity_for_persistence(),
+            Some(session("new"))
+        );
+    }
+
+    #[test]
+    fn replayed_pane_exit_does_not_consume_a_late_parked_start() {
+        let clock = sample();
+        let mut ownership = AgentOwnership::new();
+        ownership
+            .set_pane_process_exit_at(shepr_platform::ChildExitReason::Exited, clock.monotonic);
+        let origin = ReportOrigin::official(Agent::Pi).expect("official Pi");
+        assert_eq!(
+            ownership.report_session_start_outcome_at(
+                &origin,
+                Some(identity("new")),
+                Some(20),
+                ReportedSessionStart::Known(AgentSessionStartSource::Startup),
+                HookClockSample {
+                    monotonic: clock.monotonic + Duration::from_secs(1),
+                    ..clock
+                },
+            ),
+            HookOutcome::Parked
+        );
+        let before = ownership.hook_sources.get(origin.source()).cloned();
+        ownership.set_pane_process_exit_at(
+            shepr_platform::ChildExitReason::Exited,
+            clock.monotonic + Duration::from_secs(2),
+        );
+        assert_eq!(ownership.hook_sources.get(origin.source()).cloned(), before);
+    }
+
+    #[test]
+    fn first_presence_sampled_before_a_fresh_start_promotes_it() {
+        // A fresh pane: no detector observation yet, so the start parks in an
+        // open generation. The detector's tick that first sees the agent was
+        // stamped before the start hook was applied.
+        let clock = sample();
+        let origin = ReportOrigin::official(Agent::Pi).expect("official Pi");
+        let mut ownership = AgentOwnership::new();
+        let start_clock = HookClockSample {
+            monotonic: clock.monotonic + Duration::from_secs(1),
+            ..clock
+        };
+        assert_eq!(
+            ownership.report_session_start_outcome_at(
+                &origin,
+                Some(identity("new")),
+                Some(20),
+                ReportedSessionStart::Known(AgentSessionStartSource::Startup),
+                start_clock,
+            ),
+            HookOutcome::Parked
+        );
+        ownership.set_detected_agent_process_at(
+            Agent::Pi,
+            start_clock.monotonic - Duration::from_millis(1),
+        );
+        assert_eq!(
+            ownership.current_session_identity_for_persistence(),
+            Some(session("new"))
+        );
+    }
+
+    #[test]
+    fn hook_outcomes_distinguish_missing_sequence_from_a_parked_start() {
+        let clock = sample();
+        let origin = ReportOrigin::official(Agent::Pi).expect("official Pi");
+        let mut ownership = AgentOwnership::new();
+        let source = ReportedSessionStart::Known(AgentSessionStartSource::Startup);
+        assert_eq!(
+            ownership.report_session_start_outcome_at(
+                &origin,
+                Some(identity("new")),
+                None,
+                source,
+                clock,
+            ),
+            HookOutcome::Rejected(HookRejection::MissingSequence)
+        );
+        assert_eq!(
+            ownership.report_session_start_outcome_at(
+                &origin,
+                Some(identity("new")),
+                Some(20),
+                source,
+                clock,
+            ),
+            HookOutcome::Parked
+        );
+    }
+
+    #[test]
+    fn unchanged_state_is_applied_and_duplicate_sequence_is_rejected() {
+        let clock = sample();
+        let origin = ReportOrigin::parse("custom:status", "pi").expect("custom Pi");
+        let mut ownership = AgentOwnership::new();
+        assert!(matches!(
+            ownership.report_hook_outcome_at(
+                origin.clone(),
+                AgentState::Idle,
+                None,
+                Some(20),
+                clock,
+            ),
+            HookOutcome::Applied(_)
+        ));
+        assert_eq!(
+            ownership.report_hook_outcome_at(
+                origin.clone(),
+                AgentState::Idle,
+                None,
+                Some(21),
+                clock,
+            ),
+            HookOutcome::Applied(AgentOwnershipMutation::default())
+        );
+        assert_eq!(
+            ownership.report_hook_outcome_at(origin, AgentState::Idle, None, Some(21), clock,),
+            HookOutcome::Rejected(HookRejection::OutOfOrder)
+        );
     }
 
     #[test]
@@ -1382,10 +1644,18 @@ mod transition_tests {
                 Accept {
                     reanchor_sequence: false,
                 },
-                Ignore,
+                Ignore(HookRejection::CrossTalk),
             ],
-            [Ignore, Pending, Ignore],
-            [Ignore, Ignore, Ignore],
+            [
+                Ignore(HookRejection::LifecycleGate),
+                Pending,
+                Ignore(HookRejection::CrossTalk),
+            ],
+            [
+                Ignore(HookRejection::LifecycleGate),
+                Ignore(HookRejection::LifecycleGate),
+                Ignore(HookRejection::CrossTalk),
+            ],
         ];
         let clock = sample();
         let anchor = identity("old");
@@ -1394,17 +1664,15 @@ mod transition_tests {
                 .into_iter()
                 .zip(expected)
             {
-                let mut record = record(row, clock);
+                let record = record(row, clock);
                 let before = record.clone();
-                let HookSourceEffects::Report(route) = record.transition(HookSourceEvent::Report {
-                    agent_label: &ReportedAgent::Known(Agent::Pi),
-                    session_ref: &incoming,
-                    process_present: true,
-                    anchored_session_ref: Some(&anchor),
-                    authority_session_ref: None,
-                }) else {
-                    panic!("report effect")
-                };
+                let route = record.report_route(
+                    &ReportedAgent::Known(Agent::Pi),
+                    &incoming,
+                    true,
+                    Some(&anchor),
+                    None,
+                );
                 assert_eq!(route, expected, "generation row {row}");
                 assert_eq!(record, before, "routing must be a query");
             }
@@ -1421,17 +1689,15 @@ mod transition_tests {
         .into_iter()
         .enumerate()
         {
-            let mut record = record(row, clock);
+            let record = record(row, clock);
             let incoming = Some(identity("new"));
-            let HookSourceEffects::Report(route) = record.transition(HookSourceEvent::Report {
-                agent_label: &ReportedAgent::Known(Agent::Pi),
-                session_ref: &incoming,
-                process_present: false,
-                anchored_session_ref: Some(&anchor),
-                authority_session_ref: None,
-            }) else {
-                panic!("report effect")
-            };
+            let route = record.report_route(
+                &ReportedAgent::Known(Agent::Pi),
+                &incoming,
+                false,
+                Some(&anchor),
+                None,
+            );
             assert_eq!(route, expected);
         }
     }
@@ -1443,18 +1709,14 @@ mod transition_tests {
             for process_present in [false, true] {
                 for session_anchored in [false, true] {
                     for unsequenced_selection in [false, true] {
-                        let mut record = record(row, clock);
+                        let record = record(row, clock);
                         let before = record.clone();
-                        let HookSourceEffects::Start(route) =
-                            record.transition(HookSourceEvent::Start {
-                                agent_label: &ReportedAgent::Known(Agent::Pi),
-                                process_present,
-                                session_anchored,
-                                unsequenced_selection,
-                            })
-                        else {
-                            panic!("start effect")
-                        };
+                        let route = record.start_route(
+                            &ReportedAgent::Known(Agent::Pi),
+                            process_present,
+                            session_anchored,
+                            unsequenced_selection,
+                        );
                         let expected = match (
                             unsequenced_selection,
                             process_present,
@@ -1482,7 +1744,7 @@ mod transition_tests {
             let mut record = record(row, clock);
             record.transition(HookSourceEvent::RecordSequence(20, clock));
             let HookSourceEffects::ProcessObserved(activation) =
-                record.transition(HookSourceEvent::ProcessObserved)
+                record.transition(HookSourceEvent::ProcessObserved(clock.monotonic))
             else {
                 panic!("process effect")
             };
@@ -1523,7 +1785,7 @@ mod transition_tests {
                 report(report_id, report_seq, clock),
             ));
             let HookSourceEffects::ProcessObserved(Some((start, pending))) =
-                record.transition(HookSourceEvent::ProcessObserved)
+                record.transition(HookSourceEvent::ProcessObserved(clock.monotonic))
             else {
                 panic!("activated start")
             };
@@ -1714,16 +1976,21 @@ mod transition_tests {
                 }
                 let before = record.clone();
                 let incoming = Some(identity("new"));
-                let HookSourceEffects::Report(route) = record.transition(HookSourceEvent::Report {
-                    agent_label: &ReportedAgent::Known(Agent::Pi),
-                    session_ref: &incoming,
-                    process_present: false,
-                    anchored_session_ref: None,
-                    authority_session_ref: (!retired).then_some(&old),
-                }) else {
-                    panic!("report effect")
-                };
-                assert_eq!(route, FullLifecycleHookReportRoute::Ignore);
+                let route = record.report_route(
+                    &ReportedAgent::Known(Agent::Pi),
+                    &incoming,
+                    false,
+                    None,
+                    (!retired).then_some(&old),
+                );
+                assert_eq!(
+                    route,
+                    FullLifecycleHookReportRoute::Ignore(if retired {
+                        HookRejection::RetiredSession
+                    } else {
+                        HookRejection::CrossTalk
+                    })
+                );
                 assert_eq!(record, before);
             }
         }
@@ -1753,18 +2020,10 @@ mod transition_tests {
                     true,
                 ),
             ] {
-                let before = record.clone();
-                assert!(
-                    matches!(record.transition(HookSourceEvent::OrderAllows(seq, observed)),
-                    HookSourceEffects::OrderAllowed(value) if value == accepted)
-                );
-                assert_eq!(record, before);
+                assert_eq!(record.order_allows(seq, observed), accepted);
             }
             record.transition(HookSourceEvent::ClearSequence);
-            assert!(matches!(
-                record.transition(HookSourceEvent::OrderAllows(None, later)),
-                HookSourceEffects::OrderAllowed(true)
-            ));
+            assert!(record.order_allows(None, later));
         }
     }
 
@@ -1851,7 +2110,7 @@ mod transition_tests {
         // A later validated start belongs to the next live generation.
         // The earlier clear cannot revoke it when process evidence arrives.
         let HookSourceEffects::ProcessObserved(activation) =
-            record.transition(HookSourceEvent::ProcessObserved)
+            record.transition(HookSourceEvent::ProcessObserved(clock.monotonic))
         else {
             panic!("process effect")
         };
@@ -1890,7 +2149,7 @@ mod transition_tests {
         );
         assert_eq!(record.sequence_value(), None);
         assert!(matches!(
-            record.transition(HookSourceEvent::ProcessObserved),
+            record.transition(HookSourceEvent::ProcessObserved(clock.monotonic)),
             HookSourceEffects::ProcessObserved(None)
         ));
         assert!(record.suppressed().is_some());
@@ -1924,15 +2183,12 @@ mod transition_tests {
         let clock = sample();
         for row in 0..3 {
             for offset in [0, 1] {
-                let mut record = record(row, clock);
-                let before = record.clone();
+                let record = record(row, clock);
                 let observed = clock.monotonic + Duration::from_secs(offset);
-                assert!(
-                    matches!(record.transition(HookSourceEvent::DetectorObservation(observed)),
-                    HookSourceEffects::DetectorObservationAllowed(allowed)
-                        if allowed == (row == 0 || offset > 0))
+                assert_eq!(
+                    record.detector_observation_allows(observed),
+                    row == 0 || offset > 0
                 );
-                assert_eq!(record, before);
             }
         }
     }

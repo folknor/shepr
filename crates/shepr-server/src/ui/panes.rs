@@ -12,7 +12,7 @@ use super::scrollbar::{render_pane_scrollbar, should_show_scrollbar};
 use super::text::truncate_end;
 use crate::app::AppState;
 use shepr_mux::pane::{PaneRuntime, PaneRuntimeRegistry};
-use shepr_mux::terminal::PaneStartFailure;
+use shepr_mux::terminal::{Label, PaneStartFailure};
 use shepr_mux::workspace::PaneChromeInfo as PaneInfo;
 use shepr_protocol::{CellData, FrameData, WireColor};
 
@@ -32,13 +32,15 @@ fn restore_failure_text(failure: &PaneStartFailure) -> Text<'_> {
     Text::from(lines)
 }
 
-fn pane_border_title(label: &str, pane_width: u16) -> Option<String> {
-    let label = label.trim();
-    if label.is_empty() || pane_width <= 4 {
+fn pane_border_title(label: &Label, pane_width: u16) -> Option<String> {
+    if pane_width <= 4 {
         return None;
     }
     let max_label_width = pane_width.saturating_sub(4) as usize;
-    Some(format!(" {} ", truncate_end(label, max_label_width)))
+    Some(format!(
+        " {} ",
+        truncate_end(label.as_str(), max_label_width)
+    ))
 }
 
 /// Apply a computed pane layout to every runtime it contains.
@@ -60,11 +62,10 @@ pub(super) fn resize_pane_infos(
         let Some(rt) = resizer.runtime(terminal_id) else {
             continue;
         };
-        rt.resize(shepr_core::geometry::PaneGeometry::new(
+        rt.resize(shepr_core::geometry::PaneGeometry::with_cell(
             info.inner_rect.width,
             info.inner_rect.height,
-            cell_size.width_px,
-            cell_size.height_px,
+            cell_size.cell(),
         ));
     }
 }
@@ -679,19 +680,26 @@ mod tests {
     }
 
     #[test]
-    fn pane_border_title_trims_and_truncates() {
+    fn pane_border_title_uses_labels_and_truncates() {
         assert_eq!(
-            pane_border_title(" claude ", 20).as_deref(),
+            pane_border_title(&Label::new(" claude ").expect("label"), 20).as_deref(),
             Some(" claude ")
         );
-        assert_eq!(pane_border_title("", 20), None);
-        assert_eq!(pane_border_title("abcdef", 8).as_deref(), Some(" abc… "));
-        assert_eq!(pane_border_title("abcdef", 4), None);
+        assert_eq!(Label::new(" "), None);
+        assert_eq!(
+            pane_border_title(&Label::new("abcdef").expect("label"), 8).as_deref(),
+            Some(" abc… ")
+        );
+        assert_eq!(
+            pane_border_title(&Label::new("abcdef").expect("label"), 4),
+            None
+        );
     }
 
     #[test]
     fn pane_border_title_truncates_cjk_by_display_width() {
-        let title = pane_border_title("1 模块组织（已定）", 12).expect("test precondition");
+        let label = Label::new("1 模块组织（已定）").expect("test label");
+        let title = pane_border_title(&label, 12).expect("test precondition");
 
         assert_eq!(title, " 1 模块… ");
         assert!(display_width(title.as_str()) <= 10);

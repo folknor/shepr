@@ -17,12 +17,16 @@ pub fn option_name_from_flag(flag: &'static str) -> &'static str {
     flag.strip_prefix("--").unwrap_or(flag)
 }
 
+pub const COMMAND_DETECT: &str = "detect";
 pub const COMMAND_STATUS: &str = "status";
 pub const COMMAND_SERVER: &str = "server";
 pub const COMMAND_CLIENT: &str = "client";
 pub const COMMAND_STOP: &str = "stop";
 pub const COMMAND_REMOTE_CLIENT_BRIDGE: &str = "remote-client-bridge";
 
+// The complete invocation model must live below config and remote: config
+// renders local stop guidance, and the daemon must not depend on SSH machinery.
+// Keep this producer limited to SSH commands until that lower-layer home exists.
 /// A `shepr` command line that shepr builds for another `shepr` process to parse.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RemoteCliCommand<'a> {

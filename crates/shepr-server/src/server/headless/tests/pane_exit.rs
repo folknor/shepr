@@ -32,11 +32,15 @@ fn deliver_interrupted_exit(
     server.handle_internal_event_with_forwarding(AppEvent::Runtime {
         pane_id,
         generation,
-        event: Box::new(AppEvent::PaneDied {
-            pane_id,
-            exit_reason: shepr_platform::ChildExitReason::Interrupted,
-            ended_at: std::time::Instant::now(),
-        }),
+        event: Box::new(
+            AppEvent::PaneDied {
+                pane_id,
+                exit_reason: shepr_platform::ChildExitReason::Interrupted,
+                ended_at: std::time::Instant::now(),
+            }
+            .try_into()
+            .expect("runtime payload"),
+        ),
     });
 }
 

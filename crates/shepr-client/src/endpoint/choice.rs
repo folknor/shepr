@@ -348,7 +348,7 @@ mod tests {
             endpoint_id: remote(),
             generation: 7,
             boot_id: crate::tests::test_boot_id("remote-boot"),
-            minimum_revision: 1,
+            minimum_revision: 1.into(),
         }
     }
     pub(super) fn preparing() -> EndpointChoice {

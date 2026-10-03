@@ -173,6 +173,12 @@ pub(crate) struct RenderTarget {
     pub(crate) cell_size: shepr_termio::host_term::cell_size::HostCellSize,
 }
 
+impl RenderTarget {
+    pub(crate) fn geometry(&self) -> crate::app::SpawnGeometry {
+        crate::app::SpawnGeometry::for_grid(self.terminal_size, self.cell_size)
+    }
+}
+
 /// State returned when a client stops presenting a pane surface or leaves the
 /// connection registry. Registry ownership and foreground arbitration are
 /// settled before the headless server applies these effects to panes.

@@ -16,6 +16,19 @@ impl AgentOwnership {
         let _ = self.transition_hook_event(HookEvent::RestoreSession(session));
     }
 
+    pub fn report_session_start_outcome_at(
+        &mut self,
+        origin: &ReportOrigin,
+        session_ref: Option<crate::agent::resume::AgentSessionRef>,
+        seq: Option<u64>,
+        session_start_source: ReportedSessionStart,
+        sample: impl Into<HookClockSample>,
+    ) -> HookOutcome {
+        let outcome = self.transition_start(origin, session_ref, seq, session_start_source, sample);
+        self.check_hook_invariants();
+        outcome
+    }
+
     pub fn set_agent_session_ref_at(
         &mut self,
         origin: ReportOrigin,
@@ -54,7 +67,7 @@ impl AgentOwnership {
     /// Fixture seam: installs `authority` without the report arbitration, so a
     /// test in another crate can model an authority no report is accepted
     /// with (persistence tests use it for malformed identities). Production
-    /// code never calls it; reports enter through `set_hook_report_at`.
+    /// code never calls it; reports enter through `report_hook_outcome_at`.
     pub fn with_initial_hook_authority(mut self, authority: Option<HookAuthority>) -> Self {
         let previous_label = self.effective_agent_label().map(str::to_owned);
         let previous_state = self.state;

@@ -282,7 +282,7 @@ impl Fixture {
                 request_id,
                 result: Ok(EndpointReply::ClientShellSurfaceSet {
                     active: true,
-                    projection_revision: 2,
+                    projection_revision: 2.into(),
                 }),
             },
         );

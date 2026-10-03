@@ -11,8 +11,8 @@ pub(super) struct PaneCwdState {
 
 impl PaneCwdState {
     pub(super) fn remembered_cwd(&self) -> Option<std::path::PathBuf> {
-        let reported = shepr_vt::lock_auxiliary(&self.reported);
-        let remembered = shepr_vt::lock_auxiliary(&self.remembered);
+        let reported = shepr_core::locks::lock_auxiliary(&self.reported);
+        let remembered = shepr_core::locks::lock_auxiliary(&self.remembered);
         remembered_cwd_for_save(reported.clone(), remembered.clone())
     }
 
@@ -20,7 +20,10 @@ impl PaneCwdState {
         &self,
         shell_cwd: Option<std::path::PathBuf>,
     ) -> Option<std::path::PathBuf> {
-        ReportedCwd::resolve(shepr_vt::lock_auxiliary(&self.reported).as_ref(), shell_cwd)
+        ReportedCwd::resolve(
+            shepr_core::locks::lock_auxiliary(&self.reported).as_ref(),
+            shell_cwd,
+        )
     }
 }
 
@@ -44,9 +47,9 @@ impl PaneCwdProbe {
         else {
             return self.remembered_cwd();
         };
-        let reported = shepr_vt::lock_auxiliary(&self.cwd.reported).clone();
+        let reported = shepr_core::locks::lock_auxiliary(&self.cwd.reported).clone();
         let cwd = ReportedCwd::resolve(reported.as_ref(), Some(shell_cwd.into_path_buf()))?;
-        *shepr_vt::lock_auxiliary(&self.cwd.remembered) = Some(PersistedCwd {
+        *shepr_core::locks::lock_auxiliary(&self.cwd.remembered) = Some(PersistedCwd {
             path: cwd.clone(),
             report_generation: reported.map(|reported| reported.generation),
         });
@@ -149,7 +152,7 @@ pub(super) fn publish_reported_cwd(
     };
     // One readlink per OSC 7, sampled before taking the lock.
     let shell_cwd_at_report = child_liveness.observe(readlink_process_cwd).flatten();
-    let mut last_reported = shepr_vt::lock_auxiliary(reported_cwd);
+    let mut last_reported = shepr_core::locks::lock_auxiliary(reported_cwd);
     if let Some(last) = last_reported.as_mut()
         && last.path == cwd.as_path()
     {
@@ -164,10 +167,7 @@ pub(super) fn publish_reported_cwd(
     // swallowed as a duplicate of a report AppState never saw. Keep the lock
     // through the nonblocking enqueue and store so concurrent publishers queue
     // cwd changes in the same order they update the dedupe slot.
-    match events.try_send(AppEvent::TerminalCwdReported {
-        pane_id,
-        cwd: cwd.clone(),
-    }) {
+    match events.try_send(crate::events::RuntimeEvent::TerminalCwdReported { cwd: cwd.clone() }) {
         Ok(()) => {
             let generation = last_reported
                 .as_ref()

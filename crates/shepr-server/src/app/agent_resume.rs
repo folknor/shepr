@@ -232,7 +232,11 @@ impl App {
                 agent = %plan.agent(),
                 "abandoning deferred agent resume: pane or workspace is gone"
             );
-            self.abandon_resume(terminal_id, "the pane no longer exists", now);
+            self.abandon_resume(
+                terminal_id,
+                shepr_mux::terminal::ResumeUnavailableReason::PaneGone,
+                now,
+            );
             return AttemptOutcome::Abandoned;
         };
 
@@ -277,7 +281,7 @@ impl App {
     fn abandon_resume(
         &mut self,
         terminal_id: &shepr_protocol::TerminalId,
-        reason: &str,
+        reason: shepr_mux::terminal::ResumeUnavailableReason,
         now: Instant,
     ) {
         self.abandon_terminal_agent_resume(
@@ -549,12 +553,13 @@ mod tests {
                 // disappeared; a live pane never reports a missing one.
                 *terminal = shepr_mux::terminal::TerminalState::new(terminal.id.clone(), missing);
             }
-            let session = shepr_agent::agent::resume::PersistedAgentSession {
-                source: shepr_agent::agent::AgentSource::parse("shepr:codex"),
-                agent: shepr_agent::agent::Agent::Codex,
-                session_ref: shepr_agent::agent::resume::AgentSessionRef::id("resume-test")
+            let session = shepr_agent::agent::resume::PersistedAgentSession::new(
+                shepr_agent::agent::AgentSource::parse("shepr:codex"),
+                shepr_agent::agent::Agent::Codex,
+                shepr_agent::agent::resume::AgentSessionRef::id("resume-test")
                     .expect("test precondition"),
-            };
+            )
+            .expect("test session is valid");
             terminal
                 .ownership_mut()
                 .set_persisted_agent_session(session.clone());
@@ -562,7 +567,9 @@ mod tests {
                 "resume-test",
                 long_running_test_argv(),
             ));
-            // Restore seeds the resumed agent as detected.
+            // Restore seeds the resumed agent as detected, stamped by the
+            // app's clock like the launch failure that later clears it: the
+            // detector refuses an observation older than the last one.
             let _ = terminal
                 .ownership_mut()
                 .set_detected_state_with_screen_signals_at(
@@ -570,7 +577,7 @@ mod tests {
                     shepr_agent::detect::AgentState::Idle,
                     false,
                     false,
-                    Instant::now(),
+                    app.clock.now,
                 );
             app.state
                 .test_record_all_workspace_areas(Rect::new(0, 0, 100, 30));

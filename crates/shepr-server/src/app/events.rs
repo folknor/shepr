@@ -16,8 +16,7 @@ pub(crate) enum StateEvent {
     StateChanged {
         pane_id: PaneId,
         agent: Option<Agent>,
-        state: AgentState,
-        visible_blocker: bool,
+        detection: shepr_agent::detect::Detection,
         process_exited: bool,
         observed_at: Instant,
     },
@@ -127,19 +126,7 @@ impl App {
             } => {
                 let runtime = self.state.runtime_of(&self.terminal_runtimes, pane_id);
                 runtime.filter(|runtime| runtime.generation() == generation)?;
-                match event.as_ref() {
-                    AppEvent::PaneLaunchSettled { pane_id: inner, .. }
-                    | AppEvent::PaneDied { pane_id: inner, .. }
-                    | AppEvent::AgentProcessDetected { pane_id: inner, .. }
-                    | AppEvent::StateChanged { pane_id: inner, .. }
-                    | AppEvent::ClipboardWrite { pane_id: inner, .. }
-                    | AppEvent::TerminalCwdReported { pane_id: inner, .. }
-                        if *inner == pane_id =>
-                    {
-                        Some(*event)
-                    }
-                    _ => None,
-                }
+                Some(event.into_app_event(pane_id))
             }
             AppEvent::HookStateReported { .. }
             | AppEvent::AgentSessionReported { .. }
@@ -148,8 +135,15 @@ impl App {
         }
     }
 
-    pub(crate) fn handle_internal_event(&mut self, ev: AppEvent) {
-        let _ = self.handle_internal_event_with_view_change(ev);
+    /// Applies an API report directly, without manufacturing a runtime event.
+    pub(crate) fn handle_state_event(&mut self, event: StateEvent) -> bool {
+        let (changed, projection_changed) = self.observe_projection_change(|app| {
+            let changed =
+                app.state.handle_state_event(event) != super::actions::StateUpdate::Unchanged;
+            app.apply_lifecycle_authority_changes();
+            changed
+        });
+        changed || projection_changed
     }
 
     pub(crate) fn handle_internal_event_with_view_change(&mut self, ev: AppEvent) -> bool {
@@ -208,6 +202,17 @@ impl App {
         ev: AppEvent,
         prepared: PreparedPaneExit,
     ) -> bool {
+        if prepared
+            .held_generation()
+            .is_some_and(|generation| !self.pane_exit_checkpoint_generation_settled(generation))
+        {
+            return false;
+        }
+        if !matches!(&ev, AppEvent::Runtime { event, .. }
+            if matches!(event.as_ref(), shepr_mux::events::RuntimeEvent::PaneDied { .. }))
+        {
+            return false;
+        }
         self.handle_internal_event_inner(ev, Some(prepared.checkpointed()))
     }
 
@@ -263,14 +268,9 @@ impl App {
             return false;
         }
 
-        if let AppEvent::PaneDied {
-            pane_id,
-            exit_reason,
-            ended_at,
-        } = &ev
-            && !pane_exit_prepared
-        {
-            self.publish_pane_process_exit(*pane_id, *exit_reason, *ended_at);
+        // Pane removal requires the preparation path, including its durable hold.
+        if matches!(&ev, AppEvent::PaneDied { .. }) && !pane_exit_prepared {
+            return false;
         }
 
         let mut removed = false;
@@ -281,26 +281,8 @@ impl App {
         } else {
             None
         };
-        // Direct App event callers do not pass through the headless loop's
-        // prepare-and-hold path, so retain a defensive decision here. The
-        // preliminary and application-time removal probes serve different
-        // moments: the latter must reflect changes made while an exit waited.
-        let checkpointed_pane_exit = match &ev {
-            AppEvent::PaneDied {
-                pane_id,
-                exit_reason,
-                ..
-            } if pane_removal_plan.is_some() => prepared_checkpoint
-                .unwrap_or_else(|| self.pane_exit_needs_checkpoint(*pane_id, *exit_reason)),
-            _ => false,
-        };
-        // The headless loop prepares and holds checkpointed exits before
-        // applying them. Keep this warning for direct App callers until pane
-        // exits carry their preparation through every entry point, including
-        // the server's queued replay path.
-        if checkpointed_pane_exit && !pane_exit_prepared && !self.pane_exit_checkpoint_settled() {
-            tracing::warn!("pane exit reached removal before its session checkpoint settled");
-        }
+        let checkpointed_pane_exit =
+            pane_removal_plan.is_some() && prepared_checkpoint == Some(true);
 
         let terminal_cwd_reported = matches!(ev, AppEvent::TerminalCwdReported { .. });
         // A cwd report changes only the projection (the state update reports
@@ -442,6 +424,13 @@ impl App {
 }
 
 #[cfg(test)]
+impl App {
+    pub(crate) fn handle_internal_event(&mut self, ev: AppEvent) {
+        let _ = self.handle_internal_event_with_view_change(ev);
+    }
+}
+
+#[cfg(test)]
 mod pane_exit_event_tests {
     use super::*;
     use crate::test_support::{PaneRuntimeFixture as _, WorkspaceFixture as _};
@@ -465,14 +454,18 @@ mod pane_exit_event_tests {
         let runtime = shepr_mux::pane::PaneRuntime::test_with_screen_bytes(20, 5, b"");
         let generation = runtime.generation();
         app.insert_test_runtime(pane_id, runtime);
-        app.handle_internal_event(AppEvent::Runtime {
+        app.handle_internal_event_after_checkpoint(AppEvent::Runtime {
             pane_id,
             generation,
-            event: Box::new(AppEvent::PaneDied {
-                pane_id,
-                exit_reason: shepr_platform::ChildExitReason::Exited,
-                ended_at: std::time::Instant::now(),
-            }),
+            event: Box::new(
+                AppEvent::PaneDied {
+                    pane_id,
+                    exit_reason: shepr_platform::ChildExitReason::Exited,
+                    ended_at: std::time::Instant::now(),
+                }
+                .try_into()
+                .expect("runtime payload"),
+            ),
         });
     }
 
@@ -535,11 +528,15 @@ mod pane_exit_event_tests {
             !app.handle_internal_event_with_view_change(AppEvent::Runtime {
                 pane_id: fake_id,
                 generation: shepr_mux::events::RuntimeGeneration::alloc(),
-                event: Box::new(AppEvent::PaneDied {
-                    pane_id: fake_id,
-                    exit_reason: shepr_platform::ChildExitReason::Exited,
-                    ended_at: std::time::Instant::now(),
-                }),
+                event: Box::new(
+                    AppEvent::PaneDied {
+                        pane_id: fake_id,
+                        exit_reason: shepr_platform::ChildExitReason::Exited,
+                        ended_at: std::time::Instant::now(),
+                    }
+                    .try_into()
+                    .expect("runtime payload")
+                ),
             })
         );
 
@@ -662,14 +659,20 @@ mod runtime_generation_tests {
         app.handle_internal_event(AppEvent::Runtime {
             pane_id,
             generation,
-            event: Box::new(AppEvent::StateChanged {
-                pane_id,
-                agent: Some(shepr_agent::agent::Agent::Codex),
-                state: shepr_agent::detect::AgentState::Idle,
-                visible_blocker: false,
-                process_exited: true,
-                observed_at: now,
-            }),
+            event: Box::new(
+                AppEvent::StateChanged {
+                    pane_id,
+                    agent: Some(shepr_agent::agent::Agent::Codex),
+                    detection: shepr_agent::detect::Detection::new(
+                        shepr_agent::detect::AgentState::Idle,
+                        false,
+                    ),
+                    process_exited: true,
+                    observed_at: now,
+                }
+                .try_into()
+                .expect("runtime payload"),
+            ),
         });
         // The agent is released at once ...
         assert_eq!(
@@ -728,11 +731,15 @@ mod runtime_generation_tests {
         let died = || AppEvent::Runtime {
             pane_id,
             generation,
-            event: Box::new(AppEvent::PaneDied {
-                pane_id,
-                exit_reason: shepr_platform::ChildExitReason::Interrupted,
-                ended_at: std::time::Instant::now(),
-            }),
+            event: Box::new(
+                AppEvent::PaneDied {
+                    pane_id,
+                    exit_reason: shepr_platform::ChildExitReason::Interrupted,
+                    ended_at: std::time::Instant::now(),
+                }
+                .try_into()
+                .expect("runtime payload"),
+            ),
         };
         assert!(!app.handle_internal_event_with_view_change(died()));
         assert!(app.state.workspaces[0].contains_pane(pane_id));
@@ -760,18 +767,22 @@ mod runtime_generation_tests {
             app.admit_runtime_event(AppEvent::Runtime {
                 pane_id,
                 generation: replacement_generation,
-                event: Box::new(AppEvent::PaneDied {
-                    pane_id,
-                    exit_reason: shepr_platform::ChildExitReason::Interrupted,
-                    ended_at: std::time::Instant::now(),
-                }),
+                event: Box::new(
+                    AppEvent::PaneDied {
+                        pane_id,
+                        exit_reason: shepr_platform::ChildExitReason::Interrupted,
+                        ended_at: std::time::Instant::now(),
+                    }
+                    .try_into()
+                    .expect("runtime payload")
+                ),
             })
             .is_some()
         );
     }
 
     #[test]
-    fn runtime_admission_rejects_bare_nested_and_misattributed_events() {
+    fn runtime_admission_rejects_bare_and_non_runtime_payloads() {
         let mut app = App::new(
             &shepr_config::ServerConfig::default(),
             crate::app::AppPolicy::Test,
@@ -800,33 +811,28 @@ mod runtime_generation_tests {
             app.admit_runtime_event(AppEvent::StateChanged {
                 pane_id,
                 agent: Some(Agent::Codex),
-                state: AgentState::Working,
-                visible_blocker: false,
+                detection: shepr_agent::detect::Detection::new(AgentState::Working, false),
                 process_exited: false,
                 observed_at: app.clock.now,
             })
             .is_none()
         );
+        // Runtime payloads have no pane identity and cannot contain envelopes.
         assert!(
-            app.admit_runtime_event(AppEvent::Runtime {
-                pane_id,
-                generation,
-                event: Box::new(clipboard(PaneId::alloc())),
+            shepr_mux::events::RuntimeEvent::try_from(AppEvent::GitStatusRefreshed {
+                results: Vec::new(),
+                cache_updates: Vec::new()
             })
-            .is_none()
+            .is_err()
         );
-        assert!(
-            app.admit_runtime_event(AppEvent::Runtime {
-                pane_id,
-                generation,
-                event: Box::new(AppEvent::Runtime {
-                    pane_id,
-                    generation,
-                    event: Box::new(clipboard(pane_id)),
-                }),
-            })
-            .is_none()
-        );
+        let envelope = AppEvent::Runtime {
+            pane_id,
+            generation,
+            event: Box::new(shepr_mux::events::RuntimeEvent::ClipboardWrite {
+                content: Vec::new(),
+            }),
+        };
+        assert!(shepr_mux::events::RuntimeEvent::try_from(envelope).is_err());
         assert!(
             app.admit_runtime_event(AppEvent::GitStatusRefreshed {
                 results: Vec::new(),
@@ -864,8 +870,7 @@ mod runtime_generation_tests {
             AppEvent::StateChanged {
                 pane_id,
                 agent: Some(Agent::Codex),
-                state: AgentState::Working,
-                visible_blocker: false,
+                detection: shepr_agent::detect::Detection::new(AgentState::Working, false),
                 process_exited: false,
                 observed_at: app.clock.now,
             },
@@ -878,7 +883,7 @@ mod runtime_generation_tests {
                 app.admit_runtime_event(AppEvent::Runtime {
                     pane_id,
                     generation: stale,
-                    event: Box::new(event),
+                    event: Box::new(event.try_into().expect("runtime payload")),
                 })
                 .is_none()
             );
@@ -887,10 +892,14 @@ mod runtime_generation_tests {
             app.admit_runtime_event(AppEvent::Runtime {
                 pane_id,
                 generation,
-                event: Box::new(AppEvent::ClipboardWrite {
-                    pane_id,
-                    content: Vec::new()
-                }),
+                event: Box::new(
+                    AppEvent::ClipboardWrite {
+                        pane_id,
+                        content: Vec::new()
+                    }
+                    .try_into()
+                    .expect("runtime payload")
+                ),
             })
             .is_some()
         );

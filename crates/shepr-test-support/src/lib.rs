@@ -94,7 +94,7 @@ use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 
-use shepr_core::env::{ChildEnv, EnvVar, is_registered_name};
+use shepr_core::env::{EnvVar, is_registered_name};
 use shepr_core::socket_path::fits_unix_socket_path;
 
 pub mod fixture;
@@ -611,9 +611,10 @@ pub fn command_in_scratch(program: impl AsRef<OsStr>, label: &str) -> std::proce
 /// Exclusive, restorable access to the process environment for one test.
 ///
 /// Holding it serializes the test against other tests in its process that hold
-/// one. On creation it snapshots the environment and removes every registered
-/// process variable, every shepr-specific child variable, the unregistered
-/// names used internally by the shipped agent assets, and the foreign XDG
+/// one. On creation it snapshots the environment and removes every name
+/// `shepr_core::env::is_registered_name` accepts (interpreted variables and
+/// child-only ones such as outer-terminal handles and agent session markers),
+/// the unregistered names used internally by the shipped agent assets, and the foreign XDG
 /// base directories. It then sets `HOME` and `XDG_RUNTIME_DIR` to fresh scratch
 /// directories and `GIT_CEILING_DIRECTORIES` to the scratch base. On drop it
 /// puts the snapshot back exactly.
@@ -669,14 +670,10 @@ impl IsolatedEnv {
         for key in FOREIGN_XDG_BASE_DIR_VARS {
             self.remove(key);
         }
-        // Clear the registered SHEPR_* names shepr writes for hooks and
-        // status commands. The scratch override is not in ChildEnv and stays,
-        // so a re-executed test binary sites its trees where this one does.
-        for variable in ChildEnv::ALL {
-            if variable.name().starts_with("SHEPR_") {
-                self.remove(variable);
-            }
-        }
+        // `is_registered_name` already covers every ChildEnv name, the
+        // SHEPR_* ones shepr writes for hooks included. The scratch override
+        // is not registered and stays, so a re-executed test binary sites its
+        // trees where this one does.
         for name in shepr_core::env::SHEPR_ASSET_INTERNAL_NAMES {
             self.remove(name);
         }
@@ -772,6 +769,7 @@ impl Drop for IsolatedEnv {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use shepr_core::env::ChildEnv;
 
     fn panic_message(payload: &(dyn std::any::Any + Send)) -> &str {
         shepr_core::panic_message(payload, "")
@@ -992,10 +990,10 @@ mod tests {
         for key in FOREIGN_XDG_BASE_DIR_VARS {
             env.set(key, "/leaked");
         }
+        // Child-only names too: an enclosing tmux or agent session exports
+        // outer-terminal handles and session markers.
         for variable in ChildEnv::ALL {
-            if variable.name().starts_with("SHEPR_") {
-                env.set(variable, "leaked");
-            }
+            env.set(variable, "leaked");
         }
         for name in shepr_core::env::SHEPR_ASSET_INTERNAL_NAMES {
             env.set(name, "leaked");
@@ -1029,12 +1027,13 @@ mod tests {
             }
         }
         for variable in ChildEnv::ALL {
-            if variable.name().starts_with("SHEPR_") {
+            // The shell and path variables share their names with interpreted
+            // variables, which the loop above already checked.
+            if !matches!(variable, ChildEnv::Shell | ChildEnv::Path) {
                 assert_eq!(
                     env.get(variable),
                     None,
-                    "{} leaked into an isolated test",
-                    variable.name()
+                    "{variable} leaked into an isolated test"
                 );
             }
         }

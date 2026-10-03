@@ -36,6 +36,22 @@ fn git_config_nosystem_accepts_git_integer_whitespace() {
 }
 
 #[test]
+fn unset_home_skips_home_relative_git_config_instead_of_failing() {
+    let env = shepr_test_support::IsolatedEnv::new();
+    env.remove(shepr_core::env::EnvVar::Home);
+    let paths = git_user_config_paths_at(std::path::Path::new("/repo")).expect("config paths");
+    assert!(
+        paths.iter().all(|path| !path.ends_with(".gitconfig")),
+        "{paths:?}"
+    );
+
+    let config_home = env.path().join("config");
+    env.set(shepr_core::env::EnvVar::XdgConfigHome, &config_home);
+    let paths = git_user_config_paths_at(std::path::Path::new("/repo")).expect("config paths");
+    assert!(paths.contains(&config_home.join("git/config")), "{paths:?}");
+}
+
+#[test]
 fn git_config_bool_uses_git_words_and_scaled_base_zero_integers() {
     assert_eq!(git_config_bool(b"YeS"), Some(true));
     assert_eq!(git_config_bool(b"OFF"), Some(false));

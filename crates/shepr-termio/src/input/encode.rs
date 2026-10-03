@@ -541,56 +541,16 @@ fn text_char_for_key(key: &TerminalKey) -> Option<char> {
 }
 
 fn shifted_text_char(key: &TerminalKey, ch: char) -> Option<char> {
-    if let Some(shifted) = key.shifted_codepoint {
-        return Some(shifted);
+    // Kitty text fallback accepts reported alternates, ASCII letters and
+    // already shifted punctuation, but does not guess a punctuation layout.
+    if key.shifted_codepoint.is_some()
+        || ch.is_ascii_alphabetic()
+        || shepr_config::is_shifted_ascii_symbol(ch)
+    {
+        key.produced_char()
+    } else {
+        None
     }
-
-    if ch.is_ascii_uppercase() {
-        return Some(ch);
-    }
-
-    if ch.is_ascii_lowercase() {
-        return Some(ch.to_ascii_uppercase());
-    }
-
-    if is_shifted_ascii_punctuation(ch) {
-        return Some(ch);
-    }
-
-    None
-}
-
-/// Shift applied to an unshifted US-layout key. Only the legacy encoding
-/// guesses this, with copy mode's table; the kitty protocol reports the base
-/// key instead of inferring a layout.
-fn shifted_ascii_punctuation(ch: char) -> Option<char> {
-    crate::copy_mode::shifted_ascii_char(ch)
-}
-
-fn is_shifted_ascii_punctuation(ch: char) -> bool {
-    matches!(
-        ch,
-        '!' | '@'
-            | '#'
-            | '$'
-            | '%'
-            | '^'
-            | '&'
-            | '*'
-            | '('
-            | ')'
-            | '_'
-            | '+'
-            | '{'
-            | '}'
-            | '|'
-            | ':'
-            | '"'
-            | '<'
-            | '>'
-            | '?'
-            | '~'
-    )
 }
 
 fn canonical_kitty_char(ch: char, mods: KeyModifiers) -> char {
@@ -639,9 +599,7 @@ fn encode_legacy_inner(key: &TerminalKey) -> Vec<u8> {
                 control_byte(ch).map_or_else(|| ch.to_string().into_bytes(), |byte| vec![byte])
             } else {
                 let ch = if key.modifiers == KeyModifiers::SHIFT {
-                    shifted_text_char(key, ch)
-                        .or_else(|| shifted_ascii_punctuation(ch))
-                        .unwrap_or(ch)
+                    key.produced_char().unwrap_or(ch)
                 } else {
                     ch
                 };

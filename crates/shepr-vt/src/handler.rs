@@ -195,7 +195,11 @@ impl<T: EventListener> CoreHandler<'_, T> {
     }
 
     fn reply(&self, text: String) {
-        super::lock_auxiliary(self.events).push(TerminalEvent::PtyWrite(text.into_bytes()));
+        self.reply_bytes(text.into_bytes());
+    }
+
+    fn reply_bytes(&self, bytes: Vec<u8>) {
+        super::lock_auxiliary(self.events).push(TerminalEvent::PtyWrite(bytes));
     }
 
     /// The adapter-modelled state of a private mode alacritty does not know
@@ -747,9 +751,7 @@ impl<T: EventListener> Handler for CoreHandler<'_, T> {
 
     /// Answered here; the pinned alacritty leaves it a no-op.
     fn report_modify_other_keys(&mut self) {
-        self.reply(
-            String::from_utf8_lossy(self.modes.modify_other_keys.set_sequence()).into_owned(),
-        );
+        self.reply_bytes(self.modes.modify_other_keys.set_sequence().to_vec());
     }
 
     fn set_scp(&mut self, char_path: ScpCharPath, update_mode: ScpUpdateMode) {

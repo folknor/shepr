@@ -8,6 +8,14 @@ use shepr_protocol::{
     FrameData, PaneSurfaceFrame, PaneSurfacePatch, ServerMessage, SurfaceRevision,
 };
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum PatchPreparationFailure {
+    RecomputePending,
+    MissingBaseline,
+    RevisionExhausted,
+    InvalidPatch,
+}
+
 fn warn_surface_encoding_failure(
     encoding: &'static str,
     error: &impl std::fmt::Display,
@@ -200,21 +208,28 @@ impl ClientRenderState {
     pub(crate) fn prepare_pane_surface_patch(
         &self,
         mut patch: PaneSurfacePatch,
-    ) -> Option<PreparedRender> {
+    ) -> Result<PreparedRender, PatchPreparationFailure> {
         let Self {
             last_surface,
             surface_revision,
             ..
         } = self;
         if self.requires_recompute() {
-            return None;
+            return Err(PatchPreparationFailure::RecomputePending);
         }
-        let last = last_surface.as_deref()?;
-        let next_revision = surface_revision.checked_next()?;
+        let last = last_surface
+            .as_deref()
+            .ok_or(PatchPreparationFailure::MissingBaseline)?;
+        let next_revision = surface_revision
+            .checked_next()
+            .ok_or(PatchPreparationFailure::RevisionExhausted)?;
         patch.surface_revision = next_revision;
         shepr_protocol::surface_reuse::SurfaceBaseline::new(last)
             .admits(&patch)
-            .ok()?;
+            .map_err(|reason| {
+                tracing::debug!(%reason, "retained surface patch failed baseline admission");
+                PatchPreparationFailure::InvalidPatch
+            })?;
         let meta = shepr_protocol::SurfaceMeta::Patch(shepr_protocol::SurfacePatchMeta {
             cursor: patch.cursor.clone(),
             panes: patch.panes.clone(),
@@ -228,7 +243,7 @@ impl ClientRenderState {
             meta: Some(meta),
             spans: patch.rows.clone(),
         });
-        Some(PreparedRender::SemanticPatch { message, patch })
+        Ok(PreparedRender::SemanticPatch { message, patch })
     }
 
     pub(crate) fn commit_sent_frame(&mut self, prepared: PreparedRender) {
@@ -439,7 +454,7 @@ mod tests {
                 .last_pane_surface()
                 .expect("test precondition")
                 .surface_revision,
-            2
+            shepr_protocol::SurfaceRevision::new(2)
         );
         state.request_repaint();
         assert!(state.last_pane_surface().is_none());
@@ -447,7 +462,7 @@ mod tests {
             .prepare_pane_surface(surface)
             .expect("test precondition");
         assert!(
-            matches!(recovery.message(), ServerMessage::PaneSurface(frame) if frame.surface_revision == 3)
+            matches!(recovery.message(), ServerMessage::PaneSurface(frame) if frame.surface_revision == shepr_protocol::SurfaceRevision::new(3))
         );
     }
 
@@ -491,7 +506,10 @@ mod tests {
         };
         assert_eq!(decoded.frame, surface.frame);
         assert_eq!(decoded.projection_revision, surface.projection_revision);
-        assert_eq!(decoded.surface_revision, 2);
+        assert_eq!(
+            decoded.surface_revision,
+            shepr_protocol::SurfaceRevision::new(2)
+        );
         state.commit_sent_frame(update);
 
         let mut changed_cell = surface.frame.cells[0].clone();
@@ -530,7 +548,10 @@ mod tests {
             panic!("decoded surface after patch");
         };
         assert_eq!(decoded.frame, surface.frame);
-        assert_eq!(decoded.surface_revision, 4);
+        assert_eq!(
+            decoded.surface_revision,
+            shepr_protocol::SurfaceRevision::new(4)
+        );
         state.commit_sent_frame(update);
 
         // A changed border or terminal cell must still reach the client.
@@ -669,7 +690,7 @@ mod tests {
                 .last_pane_surface()
                 .expect("committed surface")
                 .surface_revision,
-            1
+            shepr_protocol::SurfaceRevision::new(1)
         );
     }
 
@@ -687,7 +708,7 @@ mod tests {
             .expect("forced replacement surface");
         assert!(matches!(
             prepared.message(),
-            ServerMessage::PaneSurface(surface) if surface.surface_revision == 2
+            ServerMessage::PaneSurface(surface) if surface.surface_revision == shepr_protocol::SurfaceRevision::new(2)
         ));
         state.commit_sent_frame(prepared);
         assert_eq!(
@@ -695,7 +716,7 @@ mod tests {
                 .last_pane_surface()
                 .expect("test precondition")
                 .surface_revision,
-            2
+            shepr_protocol::SurfaceRevision::new(2)
         );
     }
 

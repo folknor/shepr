@@ -1,14 +1,14 @@
 use super::*;
 
 impl AgentOwnership {
-    pub(super) fn transition_report(
+    pub(in crate::ownership) fn transition_report(
         &mut self,
         origin: ReportOrigin,
         state: AgentState,
         session_ref: Option<crate::agent::resume::AgentSessionRef>,
         seq: Option<u64>,
         sample: HookClockSample,
-    ) -> Option<AgentOwnershipMutation> {
+    ) -> HookOutcome {
         let now = sample.monotonic;
         // All official session-only integrations use the same admission path.
         // A state report may contribute its session, but never state authority.
@@ -29,13 +29,13 @@ impl AgentOwnership {
                 .state_requires_session_ref
         }) && session_ref.is_none()
         {
-            return None;
+            return HookOutcome::Rejected(HookRejection::MissingSession);
         }
         if let Some(session_ref) = session_ref.as_ref()
             && origin.official_agent().is_some()
             && origin.session(session_ref.clone()).is_none()
         {
-            return None;
+            return HookOutcome::Rejected(HookRejection::InvalidSession);
         }
         let source = origin.source().clone();
         // Codex turn reports carry the id of the session they belong to. One
@@ -51,7 +51,7 @@ impl AgentOwnership {
                 .current_session_identity_for_persistence()
                 .is_some_and(|current| origin.owns(&current) && &current.session_ref != incoming)
         {
-            return None;
+            return HookOutcome::Rejected(HookRejection::ReplacedSession);
         }
         if !origin.is_full_lifecycle()
             && self
@@ -59,10 +59,10 @@ impl AgentOwnership {
                 .exit()
                 .is_some_and(|exit| origin.known_agent() == Some(exit.agent))
         {
-            return None;
+            return HookOutcome::Rejected(HookRejection::ProcessExited);
         }
         if self.known_agent_label_conflicts_with_detected_agent(&origin) {
-            return None;
+            return HookOutcome::Rejected(HookRejection::DetectedAgentConflict);
         }
         let custom_state_report = session_ref.is_none() && origin.official_agent().is_none();
         // A sessionless custom report updates state but cannot claim the
@@ -71,7 +71,7 @@ impl AgentOwnership {
         let foreground_takeover_allowed = owner_conflicts
             && self.foreground_agent_confirms_hook_authority_takeover(&origin, &session_ref);
         if owner_conflicts && !foreground_takeover_allowed {
-            return None;
+            return HookOutcome::Rejected(HookRejection::OwnerConflict);
         }
         // Absence of a session ref means "state for the current generation",
         // never "forget the session". Only a same-owner anchor may be inherited.
@@ -103,18 +103,19 @@ impl AgentOwnership {
             sample,
         ) {
             FullLifecycleHookReportRoute::Accept { reanchor_sequence } => reanchor_sequence,
-            FullLifecycleHookReportRoute::Ignore => return None,
-            FullLifecycleHookReportRoute::Pending => return Some(AgentOwnershipMutation::default()),
+            FullLifecycleHookReportRoute::Ignore(reason) => return HookOutcome::Rejected(reason),
+            FullLifecycleHookReportRoute::Pending => return HookOutcome::Parked,
         };
-        if !self.hook_report_sequence_has_room(&source)
-            || (!reanchor_sequence && !self.hook_report_order_allows(&source, seq, sample))
-        {
-            return None;
+        if !self.hook_report_sequence_has_room(&source) {
+            return HookOutcome::Rejected(HookRejection::SourceCapacity);
+        }
+        if !reanchor_sequence && !self.hook_report_order_allows(&source, seq, sample) {
+            return HookOutcome::Rejected(HookRejection::OutOfOrder);
         }
         if (seq.is_some() || self.hook_sources.contains_key(&source))
             && !self.prepare_hook_source(&source)
         {
-            return None;
+            return HookOutcome::Rejected(HookRejection::SourceCapacity);
         }
 
         let previous_agent_label = self.effective_agent_label().map(str::to_string);
@@ -164,7 +165,7 @@ impl AgentOwnership {
         let current_session = self.current_session_identity_for_persistence();
         let effective_state_change =
             self.recompute_effective_state(previous_agent_label.as_deref(), previous_state);
-        Some(AgentOwnershipMutation {
+        HookOutcome::Applied(AgentOwnershipMutation {
             effective_state_change,
             session_ref_changed: previous_session != current_session,
             agent_released: false,

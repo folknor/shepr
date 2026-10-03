@@ -200,7 +200,7 @@ fn hand_off(
         None => pending,
     };
     if matches!(pending.kind, Some(Kind::Api)) {
-        send_busy_refusal(pending.stream, "", api_admission);
+        send_busy_refusal(pending.stream, None, api_admission);
     }
 }
 
@@ -589,7 +589,9 @@ mod tests {
             .read_line(&mut line)
             .expect("refusal");
         let answer: serde_json::Value = serde_json::from_str(&line).expect("json");
-        assert_eq!(answer["id"], "");
+        // A refusal without a read request has no ID to echo: the wave made
+        // that absent (null), distinct from a caller-supplied empty string.
+        assert_eq!(answer["id"], serde_json::Value::Null);
         assert_eq!(answer["error"]["code"], "endpoint_busy");
     }
 

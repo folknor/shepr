@@ -8,11 +8,12 @@ impl AgentOwnership {
     /// checkpoint candidate (see `CheckpointCandidate`); a later genuine
     /// release replaces it. Newer accepted evidence of an agent process
     /// discards it, since that process is not the one that exited.
-    ///
-    /// The detector reports an exit once (its exit bookkeeping survives
-    /// resets), but an old exit replayed to a pane whose sources moved on can
-    /// still act on them: `ProcessExited` consumes a start parked after the
-    /// genuine release. That is not guarded here.
+    /// Older observations, and an exit repeating the recorded one, are
+    /// ignored before touching source generations, so replay cannot consume a
+    /// subsequently parked start. One detector tick stamps its process and
+    /// state observations with the same instant, so only a strictly older
+    /// observation is stale; an exit at the instant of the last presence
+    /// observation is a new exit.
     pub(super) fn transition_detector_observation(
         &mut self,
         agent: Option<Agent>,
@@ -21,7 +22,14 @@ impl AgentOwnership {
         process_exited: bool,
         now: Instant,
     ) -> AgentOwnershipMutation {
-        if self.pane_ended {
+        if self.pane_ended
+            || self
+                .fallback_observed_at
+                .is_some_and(|observed_at| now < observed_at)
+            || self.process_evidence.exit().is_some_and(|exit| {
+                now < exit.observed_at || (process_exited && now == exit.observed_at)
+            })
+        {
             return AgentOwnershipMutation::default();
         }
         let previous_session = self.current_session_identity_for_persistence();
@@ -109,6 +117,7 @@ impl AgentOwnership {
                     previous_detected_agent
                 },
                 agent,
+                now,
             );
         }
         self.fallback_state = fallback_state;
@@ -201,10 +210,9 @@ impl AgentOwnership {
             // restored seed) outranks it. Otherwise the effective identity is
             // kept: the authority's own session, else what was persisted. A
             // sessionless authority never owned the resume identity and must
-            // not clear it. This only decides between the two slots: whether a
-            // promoted parked start really belongs to the process now detected
-            // is a separate attribution gap (a parked start has no expiry and
-            // carries no process identity).
+            // not clear it. Promotion requires process evidence within the
+            // parked start's lifetime; neither input supplies a process handle
+            // that could prove attribution beyond that temporal bound.
             let durable_session = match &self.persisted_agent_session {
                 Some(persisted) if agent == Some(persisted.agent) => Some(persisted.clone()),
                 persisted => {
@@ -242,6 +250,9 @@ impl AgentOwnership {
         exit_reason: shepr_platform::ChildExitReason,
         now: Instant,
     ) -> AgentOwnershipMutation {
+        if self.pane_ended {
+            return AgentOwnershipMutation::default();
+        }
         let previous_session = self.current_session_identity_for_persistence();
         let agent = self.effective_known_agent().or(self.detected_agent);
         // A pane's own death is never a candidate: it is resolved here.

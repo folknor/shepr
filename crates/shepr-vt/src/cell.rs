@@ -1,5 +1,4 @@
 use super::*;
-use crate::limits::MAX_UNICODE_CODEPOINT_WIDTH;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CellColor {
@@ -97,6 +96,25 @@ pub enum CellWide {
     SpacerHead,
 }
 
+impl CellWide {
+    /// Columns occupied by this cell's text; a wide tail contains no text.
+    pub const fn columns(self) -> u16 {
+        match self {
+            Self::Wide => 2,
+            Self::SpacerTail => 0,
+            Self::Narrow | Self::SpacerHead => 1,
+        }
+    }
+
+    /// Columns advanced by a grid slot, including a wide character's tail.
+    pub const fn grid_width(self) -> u16 {
+        match self {
+            Self::Wide => 2,
+            _ => 1,
+        }
+    }
+}
+
 /// How a row joins its neighbours.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct RowWrap {
@@ -106,47 +124,8 @@ pub struct RowWrap {
     pub wrap_continuation: bool,
 }
 
-pub(super) fn is_halfwidth_voiced_mark(character: char) -> bool {
-    matches!(character, '\u{ff9e}' | '\u{ff9f}')
-}
-
-/// U+FF9E/U+FF9F on their own. unicode-width measures them as zero-width, but
-/// the terminal core gives them a cell (as wcwidth does).
-pub fn is_halfwidth_katakana_voiced_mark(symbol: &str) -> bool {
-    let mut characters = symbol.chars();
-    let Some(mark) = characters.next() else {
-        return false;
-    };
-    characters.next().is_none() && is_halfwidth_voiced_mark(mark)
-}
-
-/// A halfwidth katakana letter followed by its voiced mark: two columns in the
-/// terminal core, although unicode-width measures the pair as one.
-pub fn is_halfwidth_katakana_voiced_grapheme(symbol: &str) -> bool {
-    let mut characters = symbol.chars();
-    let Some(base) = characters.next() else {
-        return false;
-    };
-    let Some(mark) = characters.next() else {
-        return false;
-    };
-    characters.next().is_none()
-        && ('\u{ff66}'..='\u{ff9d}').contains(&base)
-        && is_halfwidth_voiced_mark(mark)
-}
-
-pub fn unicode_codepoint_width(character: char) -> u8 {
-    if is_halfwidth_voiced_mark(character) {
-        return 1;
-    }
-    u8::try_from(
-        character
-            .width()
-            .unwrap_or(0)
-            .min(usize::from(MAX_UNICODE_CODEPOINT_WIDTH)),
-    )
-    .unwrap_or(MAX_UNICODE_CODEPOINT_WIDTH)
-}
+pub(super) use crate::width::is_halfwidth_voiced_mark;
+use crate::width::unicode_codepoint_width;
 
 /// A codepoint and any following zero-width codepoints stored in its cell.
 ///
@@ -196,13 +175,6 @@ pub fn unicode_display_units(text: &str) -> UnicodeDisplayUnits<'_> {
         characters: text.char_indices(),
         next_character: None,
     }
-}
-
-/// Width of text under the terminal grid's per-codepoint and voiced-mark rules.
-pub fn unicode_text_width(text: &str) -> usize {
-    unicode_display_units(text).fold(0usize, |width, (_, unit_width)| {
-        width.saturating_add(usize::from(unit_width))
-    })
 }
 
 pub(super) fn cell_wide(cell: &Cell) -> CellWide {

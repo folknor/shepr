@@ -215,6 +215,7 @@ impl SessionWriter {
             // The platform's session helpers also emit tracing events, but
             // cover save, clear and restore outcomes only. Keep this distinct
             // so a snapshot failure is not mislabeled as a failed session save.
+            // The event literal is also the log schema category used to query this path.
             tracing::warn!(
                 event = "persist.snapshot", subsystem = "persist", outcome = "error",
                 path = %self.path.display(),

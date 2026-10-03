@@ -257,7 +257,7 @@ impl App {
             host_terminal_appearance_explicit: false,
             host_terminal_theme: restored_host_theme,
             session_dirty: false,
-            shell_projection_revision: 0,
+            shell_projection_revision: shepr_protocol::ProjectionRevision::ZERO,
         };
 
         state.set_bookmark_index(active);
@@ -498,7 +498,7 @@ mod tests {
             AppEvent::Runtime {
                 pane_id,
                 generation: self.test_runtime(pane_id).generation(),
-                event: Box::new(event),
+                event: Box::new(event.try_into().expect("runtime payload")),
             }
         }
 
@@ -555,8 +555,7 @@ mod tests {
                 AppEvent::StateChanged {
                     pane_id,
                     agent,
-                    state: AgentState::Idle,
-                    visible_blocker: false,
+                    detection: shepr_agent::detect::Detection::new(AgentState::Idle, false),
                     process_exited,
                     observed_at: app.clock.now,
                 },
@@ -569,8 +568,8 @@ mod tests {
     async fn restore_that_prunes_a_pane_backs_up_the_saved_session_before_the_first_save() {
         use crate::test_support::{AppPathsFixture as _, ValidatedServerConfigFixture as _};
         use shepr_mux::persist::snapshot::{
-            DirectionSnapshot, LayoutSnapshot, PaneSnapshot, SavedSplitRatio, SessionFile,
-            SessionSnapshot, WorkspaceSnapshot,
+            DirectionSnapshot, LayoutSnapshot, PaneSnapshot, SessionFile, SessionSnapshot,
+            WorkspaceSnapshot,
         };
 
         let scratch = crate::test_support::ScratchDir::new("pruned-pane-backup");
@@ -599,7 +598,7 @@ mod tests {
                     .expect("nonzero literal"),
                 layout: LayoutSnapshot::Split {
                     direction: DirectionSnapshot::Horizontal,
-                    ratio: SavedSplitRatio::from_raw(0.5),
+                    ratio: shepr_core::layout::SplitRatio::EVEN,
                     first: Box::new(LayoutSnapshot::Pane(1)),
                     second: Box::new(LayoutSnapshot::Pane(2)),
                 },
@@ -1316,9 +1315,9 @@ mod tests {
             .next()
             .and_then(|pane| pane.agent_session.as_ref())
             .expect("saved resume identity");
-        assert_eq!(saved.source, session.source);
-        assert_eq!(saved.agent, session.agent);
-        assert_eq!(saved.session_ref, session.session_ref);
+        assert_eq!(saved.source(), session.source());
+        assert_eq!(saved.agent(), session.agent());
+        assert_eq!(saved.session_ref(), session.session_ref());
     }
 
     /// A pane with a live agent session, ready to have its agent released by
@@ -1397,7 +1396,7 @@ mod tests {
         app.save_session_before_teardown_async().await;
         app.retire_session_writer();
         let saved = saved_agent_session(&app);
-        assert_eq!(saved.session_ref, session.session_ref);
+        assert_eq!(saved.session_ref(), session.session_ref());
     }
 
     #[tokio::test]
@@ -1413,13 +1412,13 @@ mod tests {
             app.state.terminals[&terminal_id]
                 .ownership()
                 .current_session_identity_for_persistence()
-                .map(|identity| identity.session_ref),
-            Some(session.session_ref.clone())
+                .map(|identity| identity.session_ref().clone()),
+            Some(session.session_ref().clone())
         );
         app.save_session_before_teardown_async().await;
         app.retire_session_writer();
         let saved = saved_agent_session(&app);
-        assert_eq!(saved.session_ref, session.session_ref);
+        assert_eq!(saved.session_ref(), session.session_ref());
     }
 
     #[test]
@@ -1483,7 +1482,7 @@ mod tests {
         app.state.ensure_test_terminals();
         app.insert_idle_test_runtime(pane_id);
 
-        app.handle_internal_event(runtime_pane_exit(
+        app.handle_internal_event_after_checkpoint(runtime_pane_exit(
             &app,
             pane_id,
             shepr_platform::ChildExitReason::ReaderPanicked,

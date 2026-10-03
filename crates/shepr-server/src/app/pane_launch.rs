@@ -93,7 +93,7 @@ impl App {
                 self.abandon_terminal_agent_resume(
                     &terminal_id,
                     shepr_mux::terminal::PaneStartFailure::resume_unavailable(
-                        "the shell for the resume did not confirm that it started",
+                        shepr_mux::terminal::ResumeUnavailableReason::ShellLaunchUnconfirmed,
                     ),
                     self.clock.now,
                 );
@@ -130,7 +130,7 @@ impl App {
                 self.abandon_terminal_agent_resume(
                     terminal_id,
                     shepr_mux::terminal::PaneStartFailure::resume_unavailable(
-                        "the resume command could not be sent to the shell",
+                        shepr_mux::terminal::ResumeUnavailableReason::CommandSendFailed,
                     ),
                     self.clock.now,
                 );

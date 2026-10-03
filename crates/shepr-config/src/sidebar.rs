@@ -77,32 +77,64 @@ pub struct SidebarTokenStyle {
 macro_rules! define_sidebar_token {
     (
         $token:ident,
-        $token_name:ident,
+        $kind:ident,
         $parse_builtin:ident,
         { $($variant:ident => $name:literal),+ $(,)? }
     ) => {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        pub enum $kind {
+            $($variant,)+
+        }
+
         #[derive(Debug, Clone, PartialEq, Eq)]
         pub enum $token {
             $($variant,)+
             Styled {
-                token: Box<$token>,
-                style: SidebarTokenStyle,
-                rules: Vec<SidebarTokenRule>,
+                spec: SidebarTokenSpec<$kind>,
             },
         }
 
-        fn $parse_builtin(name: &str) -> Option<$token> {
+        impl From<$kind> for $token {
+            fn from(token: $kind) -> Self {
+                match token {
+                    $($kind::$variant => Self::$variant,)+
+                }
+            }
+        }
+
+        fn $parse_builtin(name: &str) -> Option<$kind> {
             match name {
-                $($name => Some($token::$variant),)+
+                $($name => Some($kind::$variant),)+
                 _ => None,
             }
         }
     };
 }
 
+/// Presentation from one configured sidebar token and its matching rules.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SidebarTokenRendering {
+    Hidden,
+    Styled(SidebarTokenStyle),
+}
+
+/// Style and rules attached to a non-recursive token kind.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SidebarTokenSpec<T> {
+    pub token: T,
+    pub style: SidebarTokenStyle,
+    pub rules: Vec<SidebarTokenRule>,
+}
+
+impl<T> SidebarTokenSpec<T> {
+    fn style_for_value(&self, value: &str) -> SidebarTokenRendering {
+        rules::matching_style(&self.rules, self.style, value)
+    }
+}
+
 define_sidebar_token!(
     AgentSidebarToken,
-    agent_token_name,
+    AgentSidebarTokenKind,
     parse_agent_sidebar_builtin,
     {
         StateIcon => "state_icon",
@@ -118,7 +150,7 @@ define_sidebar_token!(
 
 define_sidebar_token!(
     SpaceSidebarToken,
-    space_token_name,
+    SpaceSidebarTokenKind,
     parse_space_sidebar_builtin,
     {
         StateIcon => "state_icon",
@@ -129,7 +161,7 @@ define_sidebar_token!(
     }
 );
 
-impl AgentSidebarToken {
+impl AgentSidebarTokenKind {
     fn allows_rules(&self) -> bool {
         match self {
             Self::StateIcon => false,
@@ -140,45 +172,85 @@ impl AgentSidebarToken {
             | Self::Agent
             | Self::TerminalTitle
             | Self::TerminalTitleStripped => true,
-            Self::Styled { token, .. } => token.allows_rules(),
+        }
+    }
+}
+
+impl AgentSidebarToken {
+    pub fn style_for_value(&self, value: &str) -> SidebarTokenRendering {
+        match self {
+            Self::Styled { spec } => spec.style_for_value(value),
+            _ => SidebarTokenRendering::Styled(SidebarTokenStyle::default()),
         }
     }
 
-    pub fn style_for_value(&self, value: &str) -> Option<SidebarTokenStyle> {
+    pub fn parts(&self) -> (AgentSidebarTokenKind, SidebarTokenStyle) {
         match self {
-            Self::Styled { style, rules, .. } => rules::matching_style(rules, *style, value),
-            _ => Some(SidebarTokenStyle::default()),
+            Self::StateIcon => (
+                AgentSidebarTokenKind::StateIcon,
+                SidebarTokenStyle::default(),
+            ),
+            Self::StateText => (
+                AgentSidebarTokenKind::StateText,
+                SidebarTokenStyle::default(),
+            ),
+            Self::Machine => (AgentSidebarTokenKind::Machine, SidebarTokenStyle::default()),
+            Self::Workspace => (
+                AgentSidebarTokenKind::Workspace,
+                SidebarTokenStyle::default(),
+            ),
+            Self::Pane => (AgentSidebarTokenKind::Pane, SidebarTokenStyle::default()),
+            Self::Agent => (AgentSidebarTokenKind::Agent, SidebarTokenStyle::default()),
+            Self::TerminalTitle => (
+                AgentSidebarTokenKind::TerminalTitle,
+                SidebarTokenStyle::default(),
+            ),
+            Self::TerminalTitleStripped => (
+                AgentSidebarTokenKind::TerminalTitleStripped,
+                SidebarTokenStyle::default(),
+            ),
+            Self::Styled { spec } => (spec.token, spec.style),
         }
     }
+}
 
-    pub fn parts(&self) -> (&Self, SidebarTokenStyle) {
+impl SpaceSidebarTokenKind {
+    fn allows_rules(&self) -> bool {
         match self {
-            Self::Styled { token, style, .. } => (token, *style),
-            token => (token, SidebarTokenStyle::default()),
+            Self::StateIcon | Self::GitStatus => false,
+            Self::StateText | Self::Workspace | Self::Branch => true,
         }
     }
 }
 
 impl SpaceSidebarToken {
-    fn allows_rules(&self) -> bool {
+    pub fn style_for_value(&self, value: &str) -> SidebarTokenRendering {
         match self {
-            Self::StateIcon | Self::GitStatus => false,
-            Self::StateText | Self::Workspace | Self::Branch => true,
-            Self::Styled { token, .. } => token.allows_rules(),
+            Self::Styled { spec } => spec.style_for_value(value),
+            _ => SidebarTokenRendering::Styled(SidebarTokenStyle::default()),
         }
     }
 
-    pub fn style_for_value(&self, value: &str) -> Option<SidebarTokenStyle> {
+    pub fn parts(&self) -> (SpaceSidebarTokenKind, SidebarTokenStyle) {
         match self {
-            Self::Styled { style, rules, .. } => rules::matching_style(rules, *style, value),
-            _ => Some(SidebarTokenStyle::default()),
-        }
-    }
-
-    pub fn parts(&self) -> (&Self, SidebarTokenStyle) {
-        match self {
-            Self::Styled { token, style, .. } => (token, *style),
-            token => (token, SidebarTokenStyle::default()),
+            Self::StateIcon => (
+                SpaceSidebarTokenKind::StateIcon,
+                SidebarTokenStyle::default(),
+            ),
+            Self::StateText => (
+                SpaceSidebarTokenKind::StateText,
+                SidebarTokenStyle::default(),
+            ),
+            Self::Workspace => (
+                SpaceSidebarTokenKind::Workspace,
+                SidebarTokenStyle::default(),
+            ),
+            Self::Branch => (SpaceSidebarTokenKind::Branch, SidebarTokenStyle::default()),
+            Self::GitStatus => (
+                SpaceSidebarTokenKind::GitStatus,
+                SidebarTokenStyle::default(),
+            ),
+            Self::Styled { spec } => (spec.token, spec.style),
         }
     }
 }
@@ -290,11 +362,13 @@ impl<'de> Deserialize<'de> for AgentSidebarToken {
         }
         Ok(match style {
             Some(style) => Self::Styled {
-                token: Box::new(token),
-                style,
-                rules,
+                spec: SidebarTokenSpec {
+                    token,
+                    style,
+                    rules,
+                },
             },
-            None => token,
+            None => token.into(),
         })
     }
 }
@@ -316,11 +390,13 @@ impl<'de> Deserialize<'de> for SpaceSidebarToken {
         }
         Ok(match style {
             Some(style) => Self::Styled {
-                token: Box::new(token),
-                style,
-                rules,
+                spec: SidebarTokenSpec {
+                    token,
+                    style,
+                    rules,
+                },
             },
-            None => token,
+            None => token.into(),
         })
     }
 }
@@ -514,7 +590,7 @@ rows = [[{ token = "git_status", fg = "#ff00aa" }], [{ token = "branch", bold = 
         .expect("test precondition");
 
         let (token, style) = config.ui.sidebar.agents.rows[0][0].parts();
-        assert_eq!(token, &AgentSidebarToken::Workspace);
+        assert_eq!(token, AgentSidebarTokenKind::Workspace);
         assert_eq!(style.bold, Some(false));
         assert_eq!(
             style.fg.expect("test precondition").ratatui(),
@@ -527,18 +603,18 @@ rows = [[{ token = "git_status", fg = "#ff00aa" }], [{ token = "branch", bold = 
 
         let (token, style) =
             config.ui.sidebar.agents.rows_by_agent[&ConfigAgent::Claude][0][0].parts();
-        assert_eq!(token, &AgentSidebarToken::Agent);
+        assert_eq!(token, AgentSidebarTokenKind::Agent);
         assert_eq!(style.bold, Some(true));
         assert_eq!(style.dim, Some(false));
 
         let (token, style) = config.ui.sidebar.spaces.rows[0][0].parts();
-        assert_eq!(token, &SpaceSidebarToken::GitStatus);
+        assert_eq!(token, SpaceSidebarTokenKind::GitStatus);
         assert_eq!(
             style.fg.expect("test precondition").ratatui(),
             ratatui::style::Color::Rgb(0xff, 0x00, 0xaa)
         );
         let (token, style) = config.ui.sidebar.spaces.rows[1][0].parts();
-        assert_eq!(token, &SpaceSidebarToken::Branch);
+        assert_eq!(token, SpaceSidebarTokenKind::Branch);
         assert_eq!(style.bold, Some(true));
     }
 
@@ -553,12 +629,14 @@ pi = [[{ token = "pane", rules = [{ gt = 80, dim = false }, { lt = 20.5, dim = t
 rows = [[{ token = "branch", rules = [{ contains = "error", bold = true }] }]]
 "##;
         let config: SidebarConfig = toml::from_str(input).expect("conditional sidebar config");
-        assert!(
-            matches!(&config.agents.rows[0][0], AgentSidebarToken::Styled { rules, .. } if rules.len() == 2)
-        );
-        assert!(
-            matches!(&config.spaces.rows[0][0], SpaceSidebarToken::Styled { rules, .. } if rules.len() == 1)
-        );
+        assert!(matches!(
+            &config.agents.rows[0][0],
+            AgentSidebarToken::Styled { spec } if spec.rules.len() == 2
+        ));
+        assert!(matches!(
+            &config.spaces.rows[0][0],
+            SpaceSidebarToken::Styled { spec } if spec.rules.len() == 1
+        ));
     }
 
     #[test]

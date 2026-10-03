@@ -221,6 +221,9 @@ pub enum ClientMousePosition {
     },
 }
 
+/// The child pane's whole pixel extent, used to reject an in-flight mouse
+/// event after the pane resizes. It is separate from host cell pitch: pane
+/// extents are capped by ioctl limits, while the host may include padding.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClientMouseGeometry {
     pub cols: u16,

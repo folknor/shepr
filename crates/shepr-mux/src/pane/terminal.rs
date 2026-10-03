@@ -15,7 +15,6 @@ use std::time::{Duration, Instant};
 use bytes::Bytes;
 use ratatui::layout::Rect;
 use tracing::{debug, error, warn};
-use unicode_width::UnicodeWidthStr;
 
 use shepr_core::layout::PaneId;
 use shepr_protocol::{CellData, FrameData, GridCellWidth, WireColor, WireStyle, WireStyleFlags};
@@ -183,23 +182,75 @@ impl std::fmt::Display for PaneClearError {
 
 impl std::error::Error for PaneClearError {}
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct TerminalDirtyPatch {
-    pub rows: Vec<(u16, Vec<CellData>)>,
+#[derive(Debug, Clone, Copy)]
+enum TerminalMutation {
+    HostThemeUpdate,
+    HostAppearanceUpdate,
+    HostThemeRestore,
+    AgentOscStateClear,
+    DefaultColorOwnerUpdate,
+    HistorySeed,
+    Resize,
+    DirtyCollectionHookUpdate,
+    ScrollUp,
+    ScrollDown,
+    ScrollReset,
+    SetScrollOffset,
+}
+
+/// The emulator mutex never exposes a guard after an interrupted mutation.
+pub(crate) struct TerminalCore(Mutex<PaneTerminalCore>);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TerminalCorePoisoned;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TerminalCoreTryLockError {
+    WouldBlock,
+    Poisoned,
+}
+
+impl TerminalCore {
+    fn new(core: PaneTerminalCore) -> Self {
+        Self(Mutex::new(core))
+    }
+
+    pub(crate) fn lock(
+        &self,
+    ) -> Result<std::sync::MutexGuard<'_, PaneTerminalCore>, TerminalCorePoisoned> {
+        self.0.lock().map_err(|_| TerminalCorePoisoned)
+    }
+
+    pub(crate) fn try_lock(
+        &self,
+    ) -> Result<std::sync::MutexGuard<'_, PaneTerminalCore>, TerminalCoreTryLockError> {
+        match self.0.try_lock() {
+            Ok(guard) => Ok(guard),
+            Err(std::sync::TryLockError::WouldBlock) => Err(TerminalCoreTryLockError::WouldBlock),
+            Err(std::sync::TryLockError::Poisoned(_)) => Err(TerminalCoreTryLockError::Poisoned),
+        }
+    }
+
+    fn is_poisoned(&self) -> bool {
+        self.0.is_poisoned()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TerminalDirtyPatchOutcome {
-    Clean,
-    Patch(TerminalDirtyPatch),
-    Fallback,
+pub struct PatchRow {
+    pub y: u16,
+    pub cells: Vec<CellData>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TerminalDirtyPatch {
+    pub rows: Vec<PatchRow>,
 }
 
 /// A dirty patch with the revision and metadata read in the same terminal-core
 /// hold.
 pub struct TerminalDirtyPatchSnapshot {
-    /// `None` means the terminal is clean. An unavailable or fallback read
-    /// produces no snapshot.
+    /// `None` means the terminal is clean. Unavailable reads return an error.
     pub patch: Option<TerminalDirtyPatch>,
     pub content_revision: u64,
     pub scroll_metrics: ScrollMetrics,
@@ -208,10 +259,19 @@ pub struct TerminalDirtyPatchSnapshot {
     pub alternate_screen_active: bool,
 }
 
-pub(super) struct TerminalDirtyPatchCollection {
-    pub outcome: TerminalDirtyPatchOutcome,
-    pub fallback_reason: Option<&'static str>,
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PatchFallback {
+    HyperlinkPresent,
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PatchUnavailable {
+    CorePoisoned,
+    SynchronizedOutput,
+    Fallback(PatchFallback),
+}
+
+pub(super) type TerminalDirtyPatchCollection = Result<Option<TerminalDirtyPatch>, PatchFallback>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RenderRequest {
@@ -236,7 +296,8 @@ pub(crate) struct ProcessBytesEffects {
     pub default_color_generation: Option<DefaultColorGeneration>,
 }
 
-pub(crate) type ProcessBytesResult = Result<ProcessBytesEffects, shepr_vt::TerminalCorePoisoned>;
+pub(crate) type ProcessBytesResult =
+    Result<ProcessBytesEffects, crate::pane::terminal::TerminalCorePoisoned>;
 
 pub(crate) struct PaneTerminal {
     /// Poisoned for good once anything panics while holding it. The readers
@@ -248,7 +309,7 @@ pub(crate) struct PaneTerminal {
     /// detection and the API for a state that lasts under a second. Writers do
     /// not treat a poisoned lock as a successful mutation: operations without
     /// a failure return log their skipped operation once per pane.
-    pub core: Mutex<PaneTerminalCore>,
+    pub core: TerminalCore,
     pub render_queued: std::sync::Arc<AtomicBool>,
     /// Set when parsing output (a read, or a synchronized update flushed by
     /// its timeout) leaves the terminal on the other screen than before, and
@@ -384,16 +445,17 @@ impl PaneTerminal {
         self.screen_flipped.swap(false, Ordering::Relaxed)
     }
 
-    fn report_terminal_mutation_failure(&self, operation: &'static str) {
+    fn report_terminal_mutation_failure(&self, operation: TerminalMutation) {
         if !self.mutation_failure_reported.swap(true, Ordering::Relaxed) {
             if let Some(pane_id) = self.pane_id {
                 error!(
                     pane = pane_id.raw(),
-                    operation, "terminal core lock poisoned; mutation was not applied"
+                    ?operation,
+                    "terminal core lock poisoned; mutation was not applied"
                 );
             } else {
                 error!(
-                    operation,
+                    ?operation,
                     "terminal core lock poisoned; mutation was not applied"
                 );
             }
@@ -414,18 +476,18 @@ impl PaneTerminal {
 
     /// A fallback is routine (a visible hyperlink is enough), so this is
     /// diagnostic detail, recorded once per pane.
-    fn report_dirty_patch_fallback(&self, reason: &'static str) {
+    fn report_dirty_patch_fallback(&self, reason: PatchUnavailable) {
         if !self
             .dirty_patch_fallback_reported
             .swap(true, Ordering::Relaxed)
         {
-            debug!(reason, "dirty terminal patch fell back to a full render");
+            debug!(?reason, "dirty terminal patch fell back to a full render");
         }
     }
 
     pub(crate) fn on_next_dirty_collection(&self, hook: Box<dyn FnOnce() + Send>) {
-        let Ok(mut core) = shepr_vt::lock_terminal_core(&self.core) else {
-            self.report_terminal_mutation_failure("dirty collection hook update");
+        let Ok(mut core) = self.core.lock() else {
+            self.report_terminal_mutation_failure(TerminalMutation::DirtyCollectionHookUpdate);
             return;
         };
         core.dirty_collection_hook = Some(hook);
@@ -434,11 +496,11 @@ impl PaneTerminal {
     /// Whether a panic while holding the core lock has broken the core. A
     /// single atomic load, taking no lock: the PTY actor asks on every loop.
     pub(crate) fn core_poisoned(&self) -> bool {
-        shepr_vt::terminal_core_is_poisoned(&self.core)
+        self.core.is_poisoned()
     }
 
     pub(crate) fn dimensions(&self) -> Option<(u16, u16)> {
-        let core = shepr_vt::lock_terminal_core(&self.core).ok()?;
+        let core = self.core.lock().ok()?;
         Some((core.terminal.cols(), core.terminal.rows()))
     }
 
@@ -456,7 +518,7 @@ impl PaneTerminal {
         cursor: TerminalTextPoint,
         motion: TerminalWordMotion,
     ) -> Option<TerminalTextPoint> {
-        let core = shepr_vt::lock_terminal_core(&self.core).ok()?;
+        let core = self.core.lock().ok()?;
         word_motion_in(&core.terminal, cursor, motion)
     }
 
@@ -467,7 +529,7 @@ impl PaneTerminal {
         cursor: TerminalTextPoint,
         motion: TerminalParagraphMotion,
     ) -> Option<TerminalTextPoint> {
-        let core = shepr_vt::lock_terminal_core(&self.core).ok()?;
+        let core = self.core.lock().ok()?;
         paragraph_motion_in(&core.terminal, cursor, motion)
     }
 }
@@ -483,6 +545,14 @@ pub use input::WheelRouting;
 
 use helpers::*;
 use text::*;
+
+#[cfg(test)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum TerminalDirtyPatchOutcome {
+    Clean,
+    Patch(TerminalDirtyPatch),
+    Fallback,
+}
 
 #[cfg(test)]
 mod invariant_tests;

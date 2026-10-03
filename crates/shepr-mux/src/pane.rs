@@ -25,10 +25,11 @@ pub use terminal::AgentDetectionInputs;
 pub use terminal::{HistoryPiece, PaneHistoryCache, PaneHistorySource};
 pub use terminal::{PaneClearError, ScrollMetrics, TerminalCursorState, WheelRouting};
 pub use terminal::{
-    TerminalCopyMotion, TerminalCopyMotionError, TerminalDirtyPatch, TerminalDirtyPatchOutcome,
-    TerminalDirtyPatchSnapshot, TerminalLineMotion, TerminalParagraphMotion, TerminalSearchCase,
-    TerminalSearchDirection, TerminalSearchLimit, TerminalSearchPosition, TerminalSearchWindow,
-    TerminalTextPoint, TerminalTextRange, TerminalTextSearch, TerminalWordMotion,
+    PatchFallback, PatchRow, PatchUnavailable, TerminalCopyMotion, TerminalCopyMotionError,
+    TerminalDirtyPatch, TerminalDirtyPatchSnapshot, TerminalLineMotion, TerminalParagraphMotion,
+    TerminalSearchCase, TerminalSearchDirection, TerminalSearchLimit, TerminalSearchPosition,
+    TerminalSearchWindow, TerminalTextPoint, TerminalTextRange, TerminalTextSearch,
+    TerminalWordMotion,
 };
 
 #[cfg(test)]

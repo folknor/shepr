@@ -410,8 +410,7 @@ fn state_changed_updates_pane() {
     state.handle_app_event(AppEvent::StateChanged {
         pane_id,
         agent: Some(Agent::Pi),
-        state: AgentState::Working,
-        visible_blocker: false,
+        detection: shepr_agent::detect::Detection::new(AgentState::Working, false),
         process_exited: false,
         observed_at: std::time::Instant::now(),
     });
@@ -442,8 +441,7 @@ fn state_changed_events_advance_the_agent_state_change_sequence() {
         app.handle_app_event(AppEvent::StateChanged {
             pane_id,
             agent: Some(Agent::Pi),
-            state,
-            visible_blocker: false,
+            detection: shepr_agent::detect::Detection::new(state, false),
             process_exited: false,
             observed_at: Instant::now(),
         });
@@ -467,8 +465,7 @@ fn agent_state_change_sequence_ignores_idle_unknown_presentation_changes() {
     let state_changed = |state| AppEvent::StateChanged {
         pane_id,
         agent: Some(Agent::Pi),
-        state,
-        visible_blocker: false,
+        detection: shepr_agent::detect::Detection::new(state, false),
         process_exited: false,
         observed_at: Instant::now(),
     };
@@ -525,8 +522,7 @@ fn visible_blocker_overrides_hook_working() {
     state.handle_app_event(AppEvent::StateChanged {
         pane_id: bg_pane_id,
         agent: Some(Agent::Codex),
-        state: AgentState::Idle,
-        visible_blocker: false,
+        detection: shepr_agent::detect::Detection::new(AgentState::Idle, false),
         process_exited: false,
         observed_at: std::time::Instant::now(),
     });
@@ -541,8 +537,7 @@ fn visible_blocker_overrides_hook_working() {
     state.handle_app_event(AppEvent::StateChanged {
         pane_id: bg_pane_id,
         agent: Some(Agent::Codex),
-        state: AgentState::Blocked,
-        visible_blocker: true,
+        detection: shepr_agent::detect::Detection::new(AgentState::Blocked, true),
 
         process_exited: false,
         observed_at: std::time::Instant::now(),
@@ -574,8 +569,7 @@ fn reserved_native_state_report_does_not_override_screen_state() {
     state.handle_app_event(AppEvent::StateChanged {
         pane_id,
         agent: Some(Agent::Claude),
-        state: AgentState::Working,
-        visible_blocker: false,
+        detection: shepr_agent::detect::Detection::new(AgentState::Working, false),
         process_exited: false,
         observed_at: std::time::Instant::now(),
     });
@@ -598,8 +592,7 @@ fn reserved_native_state_report_does_not_override_screen_state() {
     state.handle_app_event(AppEvent::StateChanged {
         pane_id,
         agent: Some(Agent::Claude),
-        state: AgentState::Idle,
-        visible_blocker: false,
+        detection: shepr_agent::detect::Detection::new(AgentState::Idle, false),
         process_exited: false,
         observed_at: std::time::Instant::now(),
     });
@@ -629,8 +622,7 @@ fn devin_state_report_refreshes_session_without_overriding_screen_state() {
     state.handle_app_event(AppEvent::StateChanged {
         pane_id,
         agent: Some(Agent::Devin),
-        state: AgentState::Idle,
-        visible_blocker: false,
+        detection: shepr_agent::detect::Detection::new(AgentState::Idle, false),
         process_exited: false,
         observed_at: std::time::Instant::now(),
     });

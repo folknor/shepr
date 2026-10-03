@@ -1,125 +1,26 @@
-use shepr_core::env::{ChildEnv, EnvVar};
+use shepr_core::env::{ChildEnv, EnvVar, PaneEnvPolicy, RegisteredEnv};
 use shepr_protocol::PublicPaneId;
 use shepr_pty::PtyCommand;
 
-/// What a pane child sees of one registered variable. `PtyCommand` hands the
-/// pane the server's whole environment (its `base_env` says why); this is the
-/// one place that decides what is removed from it. Both of core's vocabularies,
-/// the variables a shepr process interprets and the ones it writes or removes
-/// in a child, are matched exhaustively, so a variable cannot be registered
-/// without a pane decision. Variables shepr has never heard of pass through.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PaneEnvPolicy {
-    /// The inherited value or shepr's replacement remains visible to the child.
-    Allowed,
-    /// The inherited value describes something outside this pane (the outer
-    /// terminal, an outer agent session, another scope's handoff) and is
-    /// removed from the child environment.
-    Scrubbed,
-    /// Inherited values are removed. A dedicated typed launch field may
-    /// install its value after this policy runs.
-    ServerOnly,
-}
-
-fn pane_env_policy(variable: EnvVar) -> PaneEnvPolicy {
-    match variable {
-        // A pane id belongs to the launch that assigned it. Never let a
-        // server's enclosing pane id stand in for an id this launch omitted.
-        EnvVar::SheprStartupCwd | EnvVar::SheprDebugOscEvidence | EnvVar::SheprPaneId => {
-            PaneEnvPolicy::ServerOnly
-        }
-        EnvVar::Tmux | EnvVar::WeztermPane => PaneEnvPolicy::Scrubbed,
-        EnvVar::SheprSocketPath
-        | EnvVar::SheprEnv
-        | EnvVar::SheprBuildProfile
-        | EnvVar::SheprLog
-        | EnvVar::Home
-        | EnvVar::XdgConfigHome
-        | EnvVar::XdgStateHome
-        | EnvVar::XdgRuntimeDir
-        | EnvVar::Shell
-        | EnvVar::Path
-        | EnvVar::SshConnection
-        | EnvVar::SshTty
-        | EnvVar::VscodeIpcHookCli
-        | EnvVar::TermProgram
-        | EnvVar::WaylandDisplay
-        | EnvVar::Display
-        | EnvVar::PiCodingAgentDir
-        | EnvVar::PiConfigDir
-        | EnvVar::ClaudeConfigDir
-        | EnvVar::CodexHome
-        | EnvVar::KimiCodeHome
-        | EnvVar::CopilotHome
-        | EnvVar::QoderConfigDir
-        | EnvVar::QwenHome
-        | EnvVar::CursorConfigDir
-        | EnvVar::AntigravityCliConfigDir
-        | EnvVar::GrokHome
-        | EnvVar::GitCeilingDirectories
-        | EnvVar::GitConfigGlobal
-        | EnvVar::GitConfigSystem
-        | EnvVar::GitConfigNoSystem
-        | EnvVar::GitConfigCount
-        | EnvVar::GitConfigParameters => PaneEnvPolicy::Allowed,
-    }
-}
-
-/// Scrubbed: the outer terminal's or multiplexer's host handles, which never
-/// name this pane; an outer agent session's markers, since a new pane is not a
-/// child agent of the process that started the server.
-///
-/// Allowed: the terminal identity and `SHEPR_BIN_PATH`, which the terminal and
-/// launch layers below replace for every pane; the inherited shell inputs
-/// (`SHELL` is rewritten to the resolved shell at spawn); and the user's own
-/// askpass setup, which only shepr's SSH bridge overrides, on its own ssh child.
-fn pane_child_env_policy(variable: ChildEnv) -> PaneEnvPolicy {
-    match variable {
-        ChildEnv::ItermSessionId
-        | ChildEnv::LcTerminal
-        | ChildEnv::LcTerminalVersion
-        | ChildEnv::KittyWindowId
-        | ChildEnv::WtSession
-        | ChildEnv::TmuxPane
-        | ChildEnv::Sty
-        | ChildEnv::Zellij
-        | ChildEnv::ZellijSessionName
-        | ChildEnv::ZellijPaneId
-        | ChildEnv::ClaudeCode
-        | ChildEnv::ClaudeCodeChildSession
-        | ChildEnv::ClaudeCodeSessionId
-        | ChildEnv::ClaudeCodeMessagingToken
-        | ChildEnv::ClaudeJobDir
-        | ChildEnv::ClaudeCodeSessionKind
-        | ChildEnv::CodexThreadId
-        | ChildEnv::Ompcode => PaneEnvPolicy::Scrubbed,
-        ChildEnv::Term
-        | ChildEnv::Colorterm
-        | ChildEnv::TermProgramVersion
-        | ChildEnv::SheprBinPath
-        | ChildEnv::Shell
-        | ChildEnv::Path
-        | ChildEnv::SshAskpass
-        | ChildEnv::SshAskpassRequire => PaneEnvPolicy::Allowed,
-    }
-}
-
-/// Every registered name whose pane policy satisfies `wanted`. `SHELL` and
-/// `PATH` are in both vocabularies with the same policy, so they may appear
-/// twice; removal is idempotent.
-fn registered_names_where(
-    wanted: impl Fn(PaneEnvPolicy) -> bool,
-) -> impl Iterator<Item = &'static str> {
-    let interpreted = EnvVar::ALL
-        .iter()
-        .map(|&variable| (variable.name(), pane_env_policy(variable)));
-    let written = ChildEnv::ALL
-        .iter()
-        .map(|&variable| (variable.name(), pane_child_env_policy(variable)));
-    interpreted
-        .chain(written)
-        .filter(move |&(_, policy)| wanted(policy))
-        .map(|(name, _)| name)
+/// Every registered name a pane child must not inherit: the scrubbed and
+/// server-only names, and every agent descriptor's session markers. A marker
+/// no descriptor lists would pass through, which the policy test refuses.
+/// A pane id belongs to the launch that assigned it, so an enclosing pane's
+/// id is removed even when this launch assigns none.
+fn scrubbed_pane_names() -> impl Iterator<Item = RegisteredEnv> {
+    RegisteredEnv::all()
+        .filter(|variable| {
+            !matches!(
+                variable.pane_policy(),
+                PaneEnvPolicy::Allowed | PaneEnvPolicy::AgentSession
+            )
+        })
+        .chain(
+            shepr_agent::agent::AGENTS
+                .iter()
+                .flat_map(|agent| agent.session_markers.iter().copied())
+                .map(RegisteredEnv::from),
+        )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -175,7 +76,7 @@ impl PaneLaunchEnv {
 pub(super) fn apply_pane_launch_env(cmd: &mut PtyCommand, launch_env: &PaneLaunchEnv) {
     // Strip every inherited value that describes an enclosing terminal,
     // multiplexer or agent scope. Dedicated typed fields are installed below.
-    for name in registered_names_where(|policy| policy != PaneEnvPolicy::Allowed) {
+    for name in scrubbed_pane_names() {
         cmd.env_remove(name);
     }
     // The startup directory and OSC evidence capture belong to this server;
@@ -254,27 +155,26 @@ mod tests {
     use shepr_test_support::fixture::resolved_shell as test_shell;
 
     /// Every registered name with its pane policy, across both vocabularies.
-    fn every_policy() -> Vec<(&'static str, PaneEnvPolicy)> {
-        EnvVar::ALL
-            .iter()
-            .map(|&variable| (variable.name(), pane_env_policy(variable)))
-            .chain(
-                ChildEnv::ALL
-                    .iter()
-                    .map(|&variable| (variable.name(), pane_child_env_policy(variable))),
-            )
+    fn every_policy() -> Vec<(RegisteredEnv, PaneEnvPolicy)> {
+        RegisteredEnv::all()
+            .map(|variable| (variable, variable.pane_policy()))
             .collect()
     }
 
     #[test]
     fn every_registered_environment_variable_has_a_pane_policy() {
         let _env = shepr_test_support::IsolatedEnv::new();
-        let mut command = PtyCommand::interactive_shell(&test_shell("/shell"), false);
+        let inherited = [
+            ("SHEPR_TEST_UNREGISTERED".into(), "inherited".into()),
+            ("SSH_AUTH_SOCK".into(), "/run/user/1000/agent.sock".into()),
+        ]
+        .into_iter()
+        .collect();
+        let mut command = PtyCommand::interactive_shell(&test_shell("/shell"), false)
+            .with_inherited_env(inherited);
         for (name, _) in every_policy() {
             command.env(name, "inherited");
         }
-        command.env("SHEPR_TEST_UNREGISTERED", "inherited");
-        command.env("SSH_AUTH_SOCK", "/run/user/1000/agent.sock");
 
         apply_pane_terminal_env(&mut command);
         apply_pane_launch_env(
@@ -288,7 +188,9 @@ mod tests {
                     command.get_env(name).is_some(),
                     "{name} must remain available to pane children"
                 ),
-                PaneEnvPolicy::Scrubbed | PaneEnvPolicy::ServerOnly => assert!(
+                PaneEnvPolicy::Scrubbed
+                | PaneEnvPolicy::ServerOnly
+                | PaneEnvPolicy::AgentSession => assert!(
                     command.get_env(name).is_none(),
                     "{name} must not reach pane children"
                 ),
@@ -312,22 +214,6 @@ mod tests {
             command.get_env(ChildEnv::TermProgramVersion),
             Some(std::ffi::OsStr::new(&shepr_protocol::build_version()))
         );
-    }
-
-    #[test]
-    fn a_name_in_both_vocabularies_has_one_pane_policy() {
-        for &child in ChildEnv::ALL {
-            if let Some(&interpreted) = EnvVar::ALL
-                .iter()
-                .find(|variable| variable.name() == child.name())
-            {
-                assert_eq!(
-                    pane_env_policy(interpreted),
-                    pane_child_env_policy(child),
-                    "{child}"
-                );
-            }
-        }
     }
 
     #[test]

@@ -122,14 +122,17 @@ pub(crate) enum ApiLogOutcome {
     Ok,
     Timeout,
     Error,
+    ClientDisconnected,
 }
 
 impl ApiLogOutcome {
+    // Emit the log schema string only after request handling has kept the outcome typed.
     pub(crate) const fn as_str(&self) -> &'static str {
         match self {
             Self::Ok => "ok",
             Self::Timeout => "timeout",
             Self::Error => "error",
+            Self::ClientDisconnected => "client_disconnected",
         }
     }
 }
@@ -153,10 +156,13 @@ pub(crate) fn encode_result_with_outcome(id: String, result: ApiResult) -> Encod
         }
         Err(error) => {
             let response = ErrorResponse {
-                id,
+                id: Some(id),
                 error: error.into_body(),
             };
-            super::serialize_response_or_error_with_outcome(&response.id, &response)
+            super::serialize_response_or_error_with_outcome(
+                response.id.as_deref().unwrap_or_default(),
+                &response,
+            )
         }
     };
     EncodedApiResponse {

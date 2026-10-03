@@ -35,7 +35,10 @@ impl CanonicalKey {
             {
                 code = KeyCode::Char(lowercase);
             } else if modifiers.contains(KeyModifiers::SHIFT) && !ch.is_alphabetic() {
-                let shifted = shifted_codepoint.or_else(|| shifted_ascii_char(ch));
+                let shifted =
+                    produced_character(code, modifiers, shifted_codepoint).filter(|shifted| {
+                        shifted_codepoint.is_some() || *shifted != ch || is_shifted_ascii_symbol(ch)
+                    });
                 if let Some(shifted) = shifted {
                     code = KeyCode::Char(shifted);
                     modifiers.remove(KeyModifiers::SHIFT);
@@ -89,13 +92,32 @@ const SHIFTED_ASCII_KEYS: [(char, char); 21] = [
 
 /// Map Shift on a US-layout key to the character it produces for key identity.
 fn shifted_ascii_char(ch: char) -> Option<char> {
+    if ch.is_ascii_lowercase() {
+        return Some(ch.to_ascii_uppercase());
+    }
     SHIFTED_ASCII_KEYS
         .iter()
         .find_map(|(base, shifted)| (*base == ch).then_some(*shifted))
 }
 
-fn is_shifted_ascii_symbol(ch: char) -> bool {
+/// Whether `ch` is a character Shift produces on a US-layout key.
+pub fn is_shifted_ascii_symbol(ch: char) -> bool {
     SHIFTED_ASCII_KEYS.iter().any(|(_, shifted)| *shifted == ch)
+}
+
+fn produced_character(
+    code: KeyCode,
+    modifiers: KeyModifiers,
+    shifted: Option<char>,
+) -> Option<char> {
+    let KeyCode::Char(ch) = code else {
+        return None;
+    };
+    if modifiers.contains(KeyModifiers::SHIFT) {
+        Some(shifted.or_else(|| shifted_ascii_char(ch)).unwrap_or(ch))
+    } else {
+        Some(ch)
+    }
 }
 
 /// The key identity used to resolve configured bindings.
@@ -103,6 +125,12 @@ pub trait BindingKey {
     fn code(&self) -> KeyCode;
     fn modifiers(&self) -> KeyModifiers;
     fn shifted_codepoint(&self) -> Option<char>;
+
+    /// Character produced by Shift, using a reported alternate before the US
+    /// layout fallback. Modifier acceptance and text commits belong to callers.
+    fn produced_char(&self) -> Option<char> {
+        produced_character(self.code(), self.modifiers(), self.shifted_codepoint())
+    }
 
     fn canonical_key(&self) -> (KeyCode, KeyModifiers) {
         CanonicalKey::from_event(self.code(), self.modifiers(), self.shifted_codepoint()).combo()

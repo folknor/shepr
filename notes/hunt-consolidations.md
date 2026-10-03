@@ -21,20 +21,6 @@ file's.
 
 ## Platform, process and files
 
-## CON-005 - When is a cell size exact, how big may it be, and how small may a host grid be?
-
-"Pixel coordinates are exact only with a known cell" is decided in
-`HostGeometry::new` (core), `TerminalGeometry::new` and its `TryFrom` (protocol)
-and `ProtocolCellSize::from_host`, which adds a `MAX_CELL_SIZE_PX` bound core
-does not know: a 100000 px cell is exact to core and not to protocol. The cell
-size limit is three policies: `client_shell_geometry_error` refuses,
-`ProtocolCellSize::from_wire` nulls, `ProtocolCellSize::from_host` clamps. The
-minimum host grid is decided by `GridSize::clamped` (one cell),
-`HostGeometry` through `PaneGeometry` (4 by 2) and `ClientHostSize::new` through
-`ClientSurfaceSize::clamped`; two disagree (filed as a bug). The grid upper
-budget is filed separately. Owner: core `HostGeometry` with its own grid rule and
-a `CellPx` that owns the pixel bound. Reported by foundation and server-serving.
-
 ## CON-009 - How is a private file published durably and atomically?
 
 `persist/io.rs` `publish_private_file` (private temp, copy, fsync, rename, sync
@@ -76,6 +62,32 @@ visibility rule. Still open: `PaneChromeInfo` is constructed with provisional
 `inner_rect` and scrollbar fields until the screen mode is known, which callers
 overwrite. (mux-state, server-app, server-serving)
 
+## CON-069 - A prepared pane exit is still two arguments
+
+Replay passes `EventOrigin::Replay(generation)` explicitly and an unprepared
+death cannot remove a pane. Still open: the `PaneDied` event and its
+`PreparedPaneExit` are separate arguments in `crates/shepr-server/src/app/events.rs`
+rather than one bound prepared input. (server-app, server-serving)
+
+## CON-093 - The CLI schema and its parsers are still two copies
+
+Root command recognition reads clap's subcommands and remote stop guidance
+renders the producer's argv. Still open: the clap schema in `src/cli/spec.rs`
+and the typed parsers remain separate copies; the daemon invocation producer
+(`--client-spawned`, `--version` in shepr-remote `local_server.rs`) and the
+daemon parser are separate; `ServerAddress::stop_command` spells the local stop
+argv itself. A complete invocation model needs a home below config and remote.
+(edges, contracts)
+
+## CON-109 - The client still reconstructs the server split tree
+
+One allocation-free helper now decides which side of a split a pane is on.
+Still open: the client still hashes a topology signature and sends child lists,
+and the server reverse-maps them (`split_path_for_children` in shepr-core
+`layout.rs`); a server-minted layout epoch would let the client send
+`(workspace, path, epoch, ratio)`, which needs protocol, server API and
+workspace topology changes. (client-shell, server-serving)
+
 ## CON-013 - The socket path type is thrown away after the check
 
 `SocketPath` in `crates/shepr-core/src/socket_path.rs` owns the length check
@@ -97,39 +109,6 @@ shepr-server; the method lives in platform. Owner: one `PaneEnding` in mux next
 to the exit arbiter, carrying the reason and whether the core is intact, with a
 single `needs_checkpoint()`; platform keeps only `ExitKind::{Exited(code),
 Signalled(sig)}`. (foundation)
-
-## CON-018 - What does a child's environment contain, and under which policy?
-
-`ChildEnv` documents "every name shepr writes into a child in one place", but
-mux writes `SHEPR_ENV`, `SHEPR_SOCKET_PATH`, `SHEPR_BUILD_PROFILE`,
-`SHEPR_PANE_ID` and `TERM_PROGRAM` through `EnvVar`, pty writes `PWD` and
-removes `OLDPWD` by literal, `PtyCommand::env` accepts any `AsRef<OsStr>`, and
-`SHELL` is set in `interactive_shell` and overwritten in `launch_spec`. mux
-`pane/launch.rs` decides a pane policy per `EnvVar` (`pane_env_policy`) and per
-`ChildEnv` (`pane_child_env_policy`); `SHELL` and `PATH` are in both, held in
-step by the pairwise test `a_name_in_both_vocabularies_has_one_pane_policy`.
-Which agent owns which variable (`ClaudeConfigDir`, `CodexHome`, ..., and session
-markers stripped from panes) is a fact about the agent, split from the
-descriptor and from `integration/env.rs`, which maps variables to directories by
-hand. Owner: one registry where each name appears once with its pane policy as a
-property, `PtyCommand` taking registered names for everything shepr sets, and the
-descriptor naming its `config_dir_override` and `session_markers` so the
-stripping and integration-path lists derive from the agents. Reported by
-foundation, mux-panes and agents.
-
-## CON-019 - Where is the server log, and where are the XDG directories?
-
-`data_dir.join(SERVER_LOG_FILE)` is composed in `bootstrap.rs` (twice),
-`remote/local_server.rs` and implicitly in `logging::help_log_paths_summary`;
-owner `AppPaths::server_log()`. `XDG_CONFIG_HOME` is read by
-`shepr-config/src/io.rs` and again per call by mux `git/config.rs`
-`git_user_config_paths_at` (errors swallowed). The integration config lock
-directory (`integration/env.rs` `resolve_config_update_lock_dir`) recomputes the
-XDG state home and hard-codes `"shepr"` independently of config's
-`SHARED_APP_DIR_NAME`, and `devin_dir`, `opencode_dir`, `kilo_dir` and
-`opencode_state_dir` each re-decide "XDG var or `~/.config`/`~/.local/state`".
-Owner: shared `xdg_config_home()`/`xdg_state_home()` in core or platform.
-Reported by foundation and agents.
 
 ## Terminal emulation and input
 
@@ -163,33 +142,6 @@ equals `inner_rect`; with several clients of different cell sizes, the server
 publishes per-client extents while the child was told the geometry-source
 client's. Owner: `PaneGeometry`, with the wire carrying `Option<PixelExtent>`
 from it. (terminal)
-
-## CON-029 - What character does a key produce?
-
-`copy_mode_command_char` (also used by `keybind_help_text_char`), encode's
-`text_char_for_key`/`shifted_text_char`/`is_shifted_ascii_punctuation`,
-`TerminalKey::with_text_commit` (uppercase means Shift), parse's
-`parse_legacy_key_sequence`, keybindings' `generated_character_key`, and
-`BindingKey::canonical_key`. Two pairwise tests keep some in step. The context
-policies legitimately differ (copy mode applies the US shift table to letters
-too), but "Shift plus this base key gives which char" should be one
-`TerminalKey::produced_char()` with each context's policy on top. (terminal)
-
-## CON-030 - How wide is text?
-
-vt `unicode_codepoint_width`/`unicode_text_width` (grid widths with the
-voiced-mark override); termio `blit::text_width` (and aliases `symbol_width`,
-`cell_width`: grapheme width plus one per U+FF9E/U+FF9F, hard-coding the
-codepoints instead of using vt's predicate); mux `terminal_buffer_symbol_into`
-(measures `symbol.width()` against `CellWide` with vt's predicates); client
-`word_bounds` (re-measures row text with `unicode_codepoint_width`). The grid and
-grapheme rules differ on purpose, but the voiced-mark rule is written twice and
-the predicates three times. Cell width from `CellWide` is mapped four times in
-`helpers.rs` (`terminal_blank_symbol_for_width`, `terminal_grid_width`, the
-`expected_width` match in the render path and its test twin) and a fifth in
-`text.rs` `TextBufferBuilder::push_cell`. Owner: one width module exposing both
-rules by name, and `CellWide::columns()`/`grid_width()`. Reported by terminal and
-mux-panes.
 
 ## CON-035 - Where does an OSC end?
 
@@ -281,20 +233,6 @@ by hand. Reported by server-app and mux-panes.
 
 ## Persistence and session saves
 
-## CON-069 - Is a pane exit checkpointed before removal?
-
-The two `prepare_pane_removal_by_id` calls serve different moments (before the
-hold and after the checkpoint) and are documented as such, and the runtime
-envelope requeue is one helper. Still open: the server's
-`replaying_checkpointed_pane_exit` field passes a parameter through `self`
-(`handle_scheduled_tasks_headless` sets it, `handle_internal_event_with_forwarding`
-`take()`s it, early returns clear it by hand), and the direct `AppEvent`
-fallback survives for callers outside the prepare-and-hold path. Owner: `PaneDied`
-applicable only as a `(event, PreparedPaneExit)` input, and an explicit
-`Origin::Replay(generation)` argument, which needs the pending queue and
-scheduler in `server/headless.rs` to carry it. Reported by server-app and
-server-serving.
-
 ## App and server loop
 
 ## CON-071 - Geometry claims are decided by scattered handlers
@@ -343,58 +281,4 @@ contracts and server-serving.
 
 ## Edges
 
-## CON-093 - Command lines: producers and parsers are separate copies
-
-`shepr`: `RemoteCliCommand::args` (shepr-remote) produces argv; the clap builder
-in `src/cli/spec.rs` plus typed parsers (`status::parse`, `server::parse`,
-`detect::parse`) consume it. Shared `COMMAND_*`/`FLAG_*` constants keep spelling
-in step, but shape is held only by the pairwise test
-`generated_remote_cli_arguments_parse_with_the_cli_spec`; the spec and the typed
-parsers are two copies held by `every_cli_spec_root_has_typed_parser` and
-`every_cli_spec_leaf_parses_to_a_typed_command`; `root_exit_flags_before_subcommand`
-is a fourth copy of the subcommand list with `"detect"` as a bare literal (as in
-`CliCommand::from_matches`); the binary's clap spec imports its names from the
-SSH crate. `shepr-server`: `local_server.rs` produces `--client-spawned` and
-`--version` (a literal) and `shepr-daemon` parses both with its own constant; no
-test ties them. The `server stop` command is spelled three times:
-`RemoteCliCommand::ServerStop`, `src/preflight.rs::remote_stop_command`
-(hand-formatted `"ssh {} {} server stop --expect-boot {}"`) and
-`ServerAddress::stop_command`. A rename would move the spec, the producer and the
-round-trip test together while the two printed copies keep telling the operator
-the old spelling. Which commands need application paths is decided in
-`cli::run` and re-checked downstream. Owner: one `SheprInvocation` and one
-`ServerInvocation` enum, each with `argv()` and `parse()`, next to `daemon_exit`
-and `server_stop` (or clap derive); printed commands render the same value.
-Reported by edges and contracts.
-
 ## Client
-
-## CON-108 - What does compose draw over pane cells?
-
-`fast_path_blocker` (`surface_patch.rs`) predicts compose's layers (mode bar,
-overlay, endpoint error, notice card, selection, copy-mode owner, unknown pane
-hits, surface overflow) as `&'static str` reasons that production throws away;
-`render_mode_bar` decides the bar is drawn when `mode != Terminal ||
-endpoint_error.is_some()`; compose also draws a lifecycle banner and hides the
-cursor when the active endpoint is not Online, which the blocker does not check
-(covered only because compose clears `hits.panes`; a cursor-only patch still
-takes the fast path). The patch path also rebuilds `PaneHit` fields by hand
-(scrollbar rect offset, scroll metric conversion, mouse and pixel flags). Owner:
-compose records what it occluded in a `LastComposition` that the fast path
-consults, and one `PaneHit::from_wire(pane, origin, clip)`. Mouse capture off
-disables hits by clearing them in `render_shell` and in `compose` plus a check in
-the right-click arm. (client-shell)
-
-## CON-109 - Which side of a split is a pane on?
-
-The client's `split_child_panes` (`rect.x < split.pos` means first) and
-`pane_surface_topology_signature` (`rect.x >= split.pos` means second; outside
-means neither, hashed with FNV) answer it separately, both reconstructing the
-server's layout tree, which the server reverse-maps again in
-`split_path_for_children`; `pane_split_topology_matches_hit` and
-`pane_split_target_is_current` layer further checks on the hash. Owner: the
-server. `PaneSurfaceSplit` already carries `path`; adding a server-minted layout
-epoch (or the child lists) lets the client send `(workspace, path, epoch,
-ratio)` and drop the hash and the rect classification. The split hit-rect
-geometry in the server (`client_shell.rs::split_hit_rect`) is layout policy that
-could sit with the border rules. Reported by client-shell and server-serving.

@@ -623,6 +623,10 @@ impl ClientShellState {
         current_matches && waiting_matches
     }
 
+    // The command requires both child lists, and the server validates them against its
+    // current tree before resolving the path. A path alone could resize a replacement
+    // split after another client edits the layout. Remove this reconstruction only when
+    // the command and workspace owner provide a server-issued topology identity together.
     /// Capture the split's child identities from server surface coordinates.
     /// Pane rectangles include their borders; inner rectangles do not.
     fn split_child_panes(
@@ -646,23 +650,10 @@ impl ClientShellState {
         let mut first = Vec::new();
         let mut second = Vec::new();
         for pane in &surface.panes {
-            let rect = pane.rect;
-            let area = split.area;
-            if rect.x < area.x
-                || rect.y < area.y
-                || rect.x.saturating_add(rect.width) > area.x.saturating_add(area.width)
-                || rect.y.saturating_add(rect.height) > area.y.saturating_add(area.height)
-            {
-                continue;
-            }
-            let in_first = match split.direction {
-                shepr_protocol::PaneSurfaceSplitDirection::Horizontal => rect.x < split.pos,
-                shepr_protocol::PaneSurfaceSplitDirection::Vertical => rect.y < split.pos,
-            };
-            if in_first {
-                first.push(pane.pane_id);
-            } else {
-                second.push(pane.pane_id);
+            match crate::shell::presentation::topology::pane_split_side(pane.rect, split) {
+                Some(shepr_core::geometry::SplitBranch::First) => first.push(pane.pane_id),
+                Some(shepr_core::geometry::SplitBranch::Second) => second.push(pane.pane_id),
+                None => {}
             }
         }
         (!first.is_empty() && !second.is_empty()).then_some((first, second))

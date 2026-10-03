@@ -5,6 +5,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 use crate::pane::{HistoryPiece, PaneRuntimeRegistry};
+use crate::terminal::Label;
 use crate::workspace::Workspace;
 use shepr_core::layout::{Direction, Node};
 use shepr_core::limits::PALETTE_COLOR_COUNT;
@@ -268,7 +269,7 @@ pub struct PaneSnapshot {
     /// Decoding refuses zero; restore refuses repeats within a workspace.
     pub public_number: shepr_protocol::PanePublicNumber,
     #[serde(deserialize_with = "required_nullable")]
-    pub label: Option<String>,
+    pub label: Option<Label>,
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -314,31 +315,10 @@ pub enum LayoutSnapshot {
     Pane(u32),
     Split {
         direction: DirectionSnapshot,
-        ratio: SavedSplitRatio,
+        ratio: shepr_core::layout::SplitRatio,
         first: Box<LayoutSnapshot>,
         second: Box<LayoutSnapshot>,
     },
-}
-
-/// A ratio read from a saved workspace. It keeps the JSON number intact so a
-/// bad value can invalidate that workspace during restore without failing the
-/// session file's structural parse.
-#[derive(Clone, Copy, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct SavedSplitRatio(f32);
-
-impl SavedSplitRatio {
-    pub fn from_ratio(value: shepr_core::layout::SplitRatio) -> Self {
-        Self(value.get())
-    }
-
-    pub const fn from_raw(value: f32) -> Self {
-        Self(value)
-    }
-
-    pub fn validate(self) -> Option<shepr_core::layout::SplitRatio> {
-        shepr_core::layout::SplitRatio::new(self.0)
-    }
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -475,7 +455,7 @@ fn capture_workspace(
         if let Some(runtime) = runtime {
             cwds.probes.push((pane_ref, runtime.cwd_probe()));
         }
-        let label = terminal.and_then(|terminal| terminal.manual_label().map(str::to_owned));
+        let label = terminal.and_then(|terminal| terminal.manual_label_value().cloned());
         let agent_session = terminal.and_then(|terminal| {
             terminal
                 .ownership()
@@ -553,15 +533,12 @@ fn append_layout_fingerprint(layout: &LayoutSnapshot, encoding: &mut Vec<u8>) ->
             first,
             second,
         } => {
-            if !ratio.0.is_finite() {
-                return None;
-            }
             encoding.push(1);
             encoding.push(match direction {
                 DirectionSnapshot::Horizontal => 0,
                 DirectionSnapshot::Vertical => 1,
             });
-            encoding.extend_from_slice(&ratio.0.to_bits().to_le_bytes());
+            encoding.extend_from_slice(&ratio.get().to_bits().to_le_bytes());
             append_layout_fingerprint(first, encoding)?;
             append_layout_fingerprint(second, encoding)?;
         }
@@ -1018,7 +995,7 @@ pub(super) fn capture_node(node: &Node) -> LayoutSnapshot {
                 Direction::Horizontal => DirectionSnapshot::Horizontal,
                 Direction::Vertical => DirectionSnapshot::Vertical,
             },
-            ratio: SavedSplitRatio::from_ratio(*ratio),
+            ratio: *ratio,
             first: Box::new(capture_node(first)),
             second: Box::new(capture_node(second)),
         },
@@ -1101,7 +1078,13 @@ mod tests {
                 custom_name: None,
                 next_public_pane_number: shepr_protocol::PanePublicNumber::new(2)
                     .expect("nonzero literal"),
-                layout: super::LayoutSnapshot::Pane(0),
+                layout: super::LayoutSnapshot::Split {
+                    direction: super::DirectionSnapshot::Horizontal,
+                    ratio: shepr_core::layout::SplitRatio::new(0.5)
+                        .expect("test split ratio is valid"),
+                    first: Box::new(super::LayoutSnapshot::Pane(0)),
+                    second: Box::new(super::LayoutSnapshot::Pane(1)),
+                },
                 panes: HashMap::from([(
                     0,
                     super::PaneSnapshot {
@@ -1176,9 +1159,17 @@ mod tests {
                 "/snapshot/workspaces/0/panes/0/public_number",
                 serde_json::json!(0),
             ),
+            (
+                "/snapshot/workspaces/0/layout/Split/ratio",
+                serde_json::json!(0.0),
+            ),
+            (
+                "/snapshot/workspaces/0/layout/Split/ratio",
+                serde_json::json!(1.0),
+            ),
         ] {
             let mut damaged = saved.clone();
-            *damaged.pointer_mut(pointer).expect("identity field") = invalid;
+            *damaged.pointer_mut(pointer).expect("schema field") = invalid;
             assert!(
                 super::parse_session_file(&damaged.to_string()).is_err(),
                 "{pointer}"
@@ -1369,15 +1360,17 @@ mod tests {
                 reported_at: std::time::Instant::now(),
                 session_ref: Some(live_ref),
             }));
-            terminal.ownership_mut().set_persisted_agent_session(
-                shepr_agent::agent::resume::PersistedAgentSession {
-                    source: shepr_agent::agent::AgentSource::Official(
-                        shepr_agent::agent::IntegrationTarget::Claude,
-                    ),
-                    agent: shepr_agent::agent::Agent::Claude,
-                    session_ref: saved_ref.clone(),
-                },
-            );
+            let expected = shepr_agent::agent::resume::PersistedAgentSession::new(
+                shepr_agent::agent::AgentSource::Official(
+                    shepr_agent::agent::IntegrationTarget::Claude,
+                ),
+                shepr_agent::agent::Agent::Claude,
+                saved_ref.clone(),
+            )
+            .expect("test session is valid");
+            terminal
+                .ownership_mut()
+                .set_persisted_agent_session(expected.clone());
             let terminals = HashMap::from([(terminal_id, terminal)]);
 
             let snapshot = super::capture(
@@ -1396,16 +1389,7 @@ mod tests {
                 .expect("saved pane")
                 .agent_session
                 .as_ref();
-            assert_eq!(
-                saved,
-                Some(&super::PaneAgentSessionSnapshot {
-                    source: shepr_agent::agent::AgentSource::Official(
-                        shepr_agent::agent::IntegrationTarget::Claude,
-                    ),
-                    agent: shepr_agent::agent::Agent::Claude,
-                    session_ref: saved_ref,
-                })
-            );
+            assert_eq!(saved, Some(&expected));
         }
     }
 }

@@ -339,7 +339,7 @@ fn success_response_round_trips() {
 #[test]
 fn error_response_round_trips() {
     let response = ErrorResponse {
-        id: "req_1".into(),
+        id: Some("req_1".into()),
         error: ErrorBody {
             code: crate::error::ApiErrorCode::PaneNotFound,
             message: "pane p_1 not found".into(),

@@ -1,3 +1,4 @@
+use shepr_core::geometry::{CellPx, GridSize, HostCellGeometry};
 use std::io;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
@@ -16,14 +17,14 @@ pub(super) fn ioctl_cell_size(
     rows: u16,
     width_px: u32,
     height_px: u32,
-) -> Option<(u32, u32)> {
+) -> Option<CellPx> {
     if columns == 0 || rows == 0 || width_px == 0 || height_px == 0 {
         return None;
     }
-    Some((
+    CellPx::new(
         (width_px / u32::from(columns)).max(1),
         (height_px / u32::from(rows)).max(1),
-    ))
+    )
 }
 
 /// One host-terminal observation. The extent is kept separately from the rounded cell pitch:
@@ -66,12 +67,14 @@ impl AtomicCellSize {
         Self(AtomicU64::new(0))
     }
 
-    pub(super) fn load(&self) -> Option<(u32, u32)> {
+    pub(super) fn load(&self) -> Option<CellPx> {
         unpack_cell_size(self.0.load(Ordering::Acquire))
     }
 
-    pub(super) fn store(&self, width_px: u32, height_px: u32) -> CellSizeUpdate {
-        let packed = pack_cell_size(width_px, height_px);
+    pub(super) fn store(&self, cell: Option<CellPx>) -> CellSizeUpdate {
+        let packed = cell.map_or(0, |cell| {
+            pack_cell_size(cell.width.get(), cell.height.get())
+        });
         if self.0.swap(packed, Ordering::AcqRel) == packed {
             CellSizeUpdate::Unchanged
         } else {
@@ -90,11 +93,10 @@ pub(super) fn pack_cell_size(width_px: u32, height_px: u32) -> u64 {
     (u64::from(width_px) << 32) | u64::from(height_px)
 }
 
-fn unpack_cell_size(packed: u64) -> Option<(u32, u32)> {
+fn unpack_cell_size(packed: u64) -> Option<CellPx> {
     let width_px = (packed >> 32) as u32;
     let height_px = u32::try_from(packed & u64::from(u32::MAX)).unwrap_or(u32::MAX);
-    shepr_core::geometry::CellPx::new(width_px, height_px)
-        .map(|cell| (cell.width.get(), cell.height.get()))
+    CellPx::new(width_px, height_px)
 }
 
 pub(super) type TerminalGeometry = shepr_core::geometry::HostGeometry;
@@ -117,27 +119,23 @@ impl ClientHostSize {
     }
 }
 
-pub(super) fn bounded_cell_geometry(
-    cell_width_px: u32,
-    cell_height_px: u32,
-    pixel_geometry_exact: bool,
-) -> (u32, u32, bool) {
-    let size = shepr_protocol::ProtocolCellSize::from_host(
-        cell_width_px,
-        cell_height_px,
-        pixel_geometry_exact,
-    );
-    (size.width(), size.height(), size.exact)
+pub(super) fn bounded_cell_geometry(geometry: TerminalGeometry) -> TerminalGeometry {
+    // HostGeometry already owns the pixel bound. This boundary only bounds
+    // the retained shell grid, preserving its coherent cell observation.
+    let grid = shepr_core::geometry::BoundedGridSize::clamped(geometry.cols(), geometry.rows());
+    geometry.with_grid(grid.grid())
 }
 
 fn ioctl_host_geometry() -> Option<HostGeometrySnapshot> {
     let size = crossterm::terminal::window_size().ok()?;
     let width_px = u32::from(size.width);
     let height_px = u32::from(size.height);
-    let (cell_width_px, cell_height_px) =
-        ioctl_cell_size(size.columns, size.rows, width_px, height_px)?;
-    let geometry =
-        TerminalGeometry::new(size.columns, size.rows, cell_width_px, cell_height_px, true);
+    let cell = ioctl_cell_size(size.columns, size.rows, width_px, height_px)?;
+    let grid = GridSize::new(size.columns, size.rows)?;
+    let geometry = TerminalGeometry::with_cell(
+        grid,
+        HostCellGeometry::from_host(cell.width.get(), cell.height.get(), true),
+    );
     let pixel_extent = shepr_termio::input::mouse::HostPixelExtent::new(
         size.columns,
         size.rows,
@@ -152,19 +150,19 @@ fn ioctl_host_geometry() -> Option<HostGeometrySnapshot> {
 
 fn current_host_geometry(
     reported_cell_size: &AtomicCellSize,
-    last_cell_size: Option<(u32, u32)>,
+    last_cell_size: Option<CellPx>,
 ) -> io::Result<HostGeometrySnapshot> {
     if let Some(snapshot) = ioctl_host_geometry() {
         return Ok(snapshot);
     }
-    let (cols, rows) = shepr_platform::terminal_grid_size()?;
-    let (cell_width_px, cell_height_px) = reported_cell_size
-        .load()
-        .or(last_cell_size
-            .filter(|(width, height)| shepr_core::geometry::CellPx::new(*width, *height).is_some()))
-        .unwrap_or((DEFAULT_CELL_WIDTH_PX, DEFAULT_CELL_HEIGHT_PX));
+    let grid = shepr_platform::terminal_grid_size()?;
+    let cell = reported_cell_size.load().or(last_cell_size);
+    let cell_geometry = cell.map_or_else(
+        || HostCellGeometry::from_host(DEFAULT_CELL_WIDTH_PX, DEFAULT_CELL_HEIGHT_PX, false),
+        |cell| HostCellGeometry::from_host(cell.width.get(), cell.height.get(), false),
+    );
     Ok(HostGeometrySnapshot {
-        geometry: TerminalGeometry::new(cols, rows, cell_width_px, cell_height_px, false),
+        geometry: TerminalGeometry::with_cell(grid, cell_geometry),
         pixel_extent: None,
     })
 }
@@ -203,10 +201,7 @@ pub(super) fn resize_poll_loop(
         // the event queue; a successful unchanged probe is silent and quit already wakes the
         // client loop.
         let signalled = shepr_platform::take_terminal_resize_signal();
-        let snapshot = match current_host_geometry(
-            reported_cell_size,
-            Some((last_size.cell_width(), last_size.cell_height())),
-        ) {
+        let snapshot = match current_host_geometry(reported_cell_size, last_size.cell()) {
             Ok(snapshot) => snapshot,
             Err(err) => {
                 if let Err(send_error) =
@@ -322,26 +317,25 @@ pub(super) fn write_host_cell_size_query(mut writer: impl io::Write) -> io::Resu
     writer.flush()
 }
 
-pub(super) fn store_reported_cell_size(
-    reported_cell_size: &AtomicCellSize,
-    width_px: u32,
-    height_px: u32,
-) {
-    if reported_cell_size.store(width_px, height_px) == CellSizeUpdate::Changed {
-        debug!(width_px, height_px, "host terminal reported cell size");
+pub(super) fn store_reported_cell_size(reported_cell_size: &AtomicCellSize, cell: CellPx) {
+    if reported_cell_size.store(Some(cell)) == CellSizeUpdate::Changed {
+        debug!(
+            width_px = cell.width.get(),
+            height_px = cell.height.get(),
+            "host terminal reported cell size"
+        );
     }
 }
 
 pub(super) fn reported_cell_size_from_events<'a>(
     events: impl IntoIterator<Item = &'a shepr_termio::input::raw_input::RawInputEvent>,
-) -> Option<(u32, u32)> {
+) -> Option<CellPx> {
     events
         .into_iter()
         .filter_map(|event| match event {
-            shepr_termio::input::raw_input::RawInputEvent::HostCellSizeReport {
-                width_px,
-                height_px,
-            } => Some((*width_px, *height_px)),
+            shepr_termio::input::raw_input::RawInputEvent::HostCellSizeReport { cell } => {
+                Some(*cell)
+            }
             _ => None,
         })
         .last()
@@ -366,6 +360,7 @@ pub(super) fn current_terminal_geometry_with(
     let (cols, rows) = terminal_grid_size()?;
     let (cell_width_px, cell_height_px) = reported_cell_size
         .load()
+        .map(|cell| (cell.width.get(), cell.height.get()))
         .or(last_cell_size
             .filter(|(width, height)| shepr_core::geometry::CellPx::new(*width, *height).is_some()))
         .unwrap_or((DEFAULT_CELL_WIDTH_PX, DEFAULT_CELL_HEIGHT_PX));
@@ -381,6 +376,7 @@ pub(super) fn current_terminal_geometry_with(
 #[cfg(test)]
 pub(super) fn cell_size_fallback(reported: u64, last: Option<(u32, u32)>) -> (u32, u32) {
     unpack_cell_size(reported)
+        .map(|cell| (cell.width.get(), cell.height.get()))
         .or(last
             .filter(|(width, height)| shepr_core::geometry::CellPx::new(*width, *height).is_some()))
         .unwrap_or((DEFAULT_CELL_WIDTH_PX, DEFAULT_CELL_HEIGHT_PX))

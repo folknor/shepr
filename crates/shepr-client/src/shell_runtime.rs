@@ -171,18 +171,9 @@ pub(super) fn view_geometry(
     host: shepr_core::geometry::HostGeometry,
     size: shepr_protocol::ClientSurfaceSize,
 ) -> shepr_protocol::TerminalGeometry {
-    let (cell_width_px, cell_height_px, pixel_mouse) =
-        super::terminal_geometry::bounded_cell_geometry(
-            host.cell_width(),
-            host.cell_height(),
-            host.exact,
-        );
-    shepr_protocol::TerminalGeometry::new(
-        size.cols,
-        size.rows,
-        cell_width_px,
-        cell_height_px,
-        pixel_mouse,
+    shepr_protocol::TerminalGeometry::with_cell(
+        shepr_core::geometry::GridSize::clamped(size.cols, size.rows),
+        host.cell_geometry(),
     )
 }
 
@@ -221,7 +212,7 @@ pub(super) fn clear_endpoint_host_effects(state: &mut ClientState) -> Result<(),
     state.host_modes.clear_mouse_endpoint_request();
     let mouse = state.host_modes.apply_mouse(
         &mut state.output_writer,
-        state.reported_geometry.exact,
+        state.reported_geometry.exact(),
         false,
     );
     let shell_requests_report_all = state.shell.host_keyboard_report_all_requested();

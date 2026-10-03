@@ -17,7 +17,7 @@ pub enum AppEvent {
     Runtime {
         pane_id: PaneId,
         generation: RuntimeGeneration,
-        event: Box<AppEvent>,
+        event: Box<RuntimeEvent>,
     },
     /// A pane's launch settled: its shell's exec committed, it reported why
     /// it could not start, or it ended without a report. Always queued before
@@ -43,8 +43,7 @@ pub enum AppEvent {
     StateChanged {
         pane_id: PaneId,
         agent: Option<Agent>,
-        state: AgentState,
-        visible_blocker: bool,
+        detection: shepr_agent::detect::Detection,
         process_exited: bool,
         observed_at: Instant,
     },
@@ -80,6 +79,114 @@ pub enum AppEvent {
     },
 }
 
+/// Only payloads produced by a pane runtime. The sender owns their pane identity.
+#[derive(Debug)]
+pub enum RuntimeEvent {
+    /// A pane's launch settled: its shell's exec committed, it reported why
+    /// it could not start, or it ended without a report. Always queued before
+    /// the same runtime's `PaneDied`.
+    PaneLaunchSettled {
+        settlement: crate::pane::LaunchSettlement,
+    },
+    /// A pane's child process exited. `ended_at` is when the ending was
+    /// observed, which can be well before the event is handled.
+    PaneDied {
+        exit_reason: shepr_platform::ChildExitReason,
+        ended_at: Instant,
+    },
+    /// Process detection identified an agent before its screen state was confirmed.
+    AgentProcessDetected { agent: Agent, observed_at: Instant },
+    /// Fallback detector state changed in a pane.
+    StateChanged {
+        agent: Option<Agent>,
+        detection: shepr_agent::detect::Detection,
+        process_exited: bool,
+        observed_at: Instant,
+    },
+    /// A pane child emitted a valid OSC 52 clipboard write. The main loop
+    /// re-emits it to the clients viewing `pane_id`.
+    ClipboardWrite { content: Vec<u8> },
+    /// A pane child reported its shell current directory through terminal
+    /// metadata such as OSC 7.
+    TerminalCwdReported { cwd: crate::UsableCwd },
+}
+
+impl RuntimeEvent {
+    pub fn into_app_event(self, pane_id: PaneId) -> AppEvent {
+        match self {
+            Self::PaneLaunchSettled { settlement } => AppEvent::PaneLaunchSettled {
+                pane_id,
+                settlement,
+            },
+            Self::PaneDied {
+                exit_reason,
+                ended_at,
+            } => AppEvent::PaneDied {
+                pane_id,
+                exit_reason,
+                ended_at,
+            },
+            Self::AgentProcessDetected { agent, observed_at } => AppEvent::AgentProcessDetected {
+                pane_id,
+                agent,
+                observed_at,
+            },
+            Self::StateChanged {
+                agent,
+                detection,
+                process_exited,
+                observed_at,
+            } => AppEvent::StateChanged {
+                pane_id,
+                agent,
+                detection,
+                process_exited,
+                observed_at,
+            },
+            Self::ClipboardWrite { content } => AppEvent::ClipboardWrite { pane_id, content },
+            Self::TerminalCwdReported { cwd } => AppEvent::TerminalCwdReported { pane_id, cwd },
+        }
+    }
+}
+
+impl TryFrom<AppEvent> for RuntimeEvent {
+    type Error = AppEvent;
+
+    fn try_from(event: AppEvent) -> Result<Self, Self::Error> {
+        match event {
+            AppEvent::PaneLaunchSettled { settlement, .. } => {
+                Ok(Self::PaneLaunchSettled { settlement })
+            }
+            AppEvent::PaneDied {
+                exit_reason,
+                ended_at,
+                ..
+            } => Ok(Self::PaneDied {
+                exit_reason,
+                ended_at,
+            }),
+            AppEvent::AgentProcessDetected {
+                agent, observed_at, ..
+            } => Ok(Self::AgentProcessDetected { agent, observed_at }),
+            AppEvent::StateChanged {
+                agent,
+                detection,
+                process_exited,
+                observed_at,
+                ..
+            } => Ok(Self::StateChanged {
+                agent,
+                detection,
+                process_exited,
+                observed_at,
+            }),
+            AppEvent::ClipboardWrite { content, .. } => Ok(Self::ClipboardWrite { content }),
+            AppEvent::TerminalCwdReported { cwd, .. } => Ok(Self::TerminalCwdReported { cwd }),
+            other => Err(other),
+        }
+    }
+}
+
 /// Process-local identity of one runtime, independent of its durable pane id.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RuntimeGeneration(u64);
@@ -110,13 +217,12 @@ impl EventSender {
         }
     }
 
-    /// The pane every event from this sender is tagged with. Payloads that
-    /// also name their pane take it from here, so the two cannot disagree.
+    /// The pane every payload from this sender belongs to.
     pub(crate) fn pane_id(&self) -> PaneId {
         self.origin.0
     }
 
-    fn tag(&self, event: AppEvent) -> AppEvent {
+    fn tag(&self, event: RuntimeEvent) -> AppEvent {
         let (pane_id, generation) = self.origin;
         AppEvent::Runtime {
             pane_id,
@@ -127,14 +233,14 @@ impl EventSender {
 
     pub(crate) async fn send(
         &self,
-        event: AppEvent,
+        event: RuntimeEvent,
     ) -> Result<(), tokio::sync::mpsc::error::SendError<AppEvent>> {
         self.sender.send(self.tag(event)).await
     }
 
     pub(crate) fn try_send(
         &self,
-        event: AppEvent,
+        event: RuntimeEvent,
     ) -> Result<(), tokio::sync::mpsc::error::TrySendError<AppEvent>> {
         self.sender.try_send(self.tag(event))
     }
@@ -151,14 +257,12 @@ mod tests {
         let generation = RuntimeGeneration::alloc();
         let sender = EventSender::runtime(tx, pane_id, generation);
         sender
-            .try_send(AppEvent::ClipboardWrite {
-                pane_id,
+            .try_send(crate::events::RuntimeEvent::ClipboardWrite {
                 content: Vec::new(),
             })
             .expect("nonblocking event");
         sender
-            .send(AppEvent::AgentProcessDetected {
-                pane_id,
+            .send(crate::events::RuntimeEvent::AgentProcessDetected {
                 agent: Agent::Codex,
                 observed_at: Instant::now(),
             })

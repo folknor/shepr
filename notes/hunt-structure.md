@@ -218,17 +218,6 @@ edges and client-core.
 
 Reported by server-app, client-shell and client-core.
 
-## STR-016 - Lock poison policy lives in the emulator crate
-
-`shepr-vt/src/locks.rs` (`lock_auxiliary`, `try_lock_auxiliary`,
-`recover_auxiliary_poison`, `lock_terminal_core`, `terminal_core_is_poisoned`) is
-general poison policy; every mutex in mux (arbiter, cwd state, teardown tracker,
-deferred order, sync timer, `render_signal.rs`) uses it.
-`lock_terminal_core<T>` accepts any mutex, so "this is the terminal core" is a
-naming convention. Move the auxiliary policy to core or platform, and make the
-core a `TerminalCore(Mutex<..>)` newtype whose only lock returns
-`Result<Guard, TerminalCorePoisoned>`. Reported by terminal and mux-panes.
-
 ## Terminal emulation
 
 ## STR-017 - `Terminal` is a god struct whose handler borrows twelve fields
@@ -242,16 +231,6 @@ copies `Terminal` methods instead of calling them. Regroup into `Emulator`,
 borrowing the parts it needs. `modes::ModeSpec` stores one fact twice (`get:
 Getter::Extra(extra)` and `extra: Option<ExtraMode>`), and struct-literal rows
 could set them differently; derive `extra` from `get`. (terminal)
-
-## STR-018 - Dirty-row state lives in vt, its clearing policy in mux
-
-`RenderState` owns `Dirty` and per-row `Cell<bool>` bits; mux
-`terminal_collect_dirty_patch` clears rows through shared references
-(`RowView::clear_dirty`, interior mutability), computes `rows_left` and calls
-`set_dirty`. Any caller can `set_dirty(Clean)` without clearing rows. Move it
-into `RenderState::take_dirty_rows(max_rows) -> DirtyRows` that commits on drop
-or an explicit `commit()`, and remove `set_dirty` and `clear_dirty` from the
-public API. (terminal)
 
 ## Pane runtime and agent ownership
 
@@ -571,20 +550,13 @@ would check the token, and the `opened_since` orphan guard in `dropped_entry`
 
 ## Edges
 
-## STR-047 - The `src/` launcher's dispatch is split across partial matches
+## STR-047 - Preflight wording still sits with the restart engine
 
-`main.rs::launch_with_args` dispatches in four steps (an `if help/version`, an
-`if let Some(cli_command)`, an `if matches!(.. ClientBridge)`, then a `match` with
-an unreachable arm); with help and version in `Launch` it is one exhaustive
-match. `src/preflight.rs` mixes operator wording (which belongs in the binary)
-with the local restart engine (which does not). Proposed layout: `main.rs` parses
-and matches once; `launch/{tui.rs, client.rs, bridge.rs}` with the TUI path
-absorbing `autodetect.rs`; `cli/{status.rs, server.rs, detect.rs}`; `notices.rs`
-for all preflight and launch wording. `shepr-daemon`'s `main` re-decides what
-`shepr-api` defines: `report_server_error` and `config_error` map to raw exit
-constants by hand; `RunServerError::exit_class() -> DaemonExit` beside the error
-and `ExitCode::from(class.code())` remove the `exit_with(i32)`/`u8::try_from`
-handling. (edges)
+`src/main.rs` dispatches all six launch variants in one match with explicit TUI
+modes. Still open: `src/preflight.rs` mixes operator wording with the local
+restart engine, `src/autodetect.rs` stays a separate module rather than part of
+the TUI launch path, and daemon error classification stays in the daemon
+`main`. (edges)
 
 ## STR-048 - Preflight and the connectors resolve each machine twice
 

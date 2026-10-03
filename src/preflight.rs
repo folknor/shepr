@@ -245,11 +245,18 @@ fn prompt_notice(machine: &MachineConfig) -> String {
 
 /// The command an operator runs to stop a remote server themselves.
 fn remote_stop_command(machine: &MachineConfig, server: &DifferentBuildServer) -> String {
+    let arguments = shepr_remote::RemoteCliCommand::ServerStop {
+        expected_boot: &server.boot_id,
+    }
+    .args()
+    .into_iter()
+    .map(shepr_remote::shell_quote)
+    .collect::<Vec<_>>()
+    .join(" ");
     format!(
-        "ssh {} {} server stop --expect-boot {}",
+        "ssh {} {} {arguments}",
         machine.ssh.shell_word(),
         server.executable.shell_word(),
-        shepr_remote::shell_quote(&server.boot_id)
     )
 }
 

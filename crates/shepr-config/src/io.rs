@@ -13,10 +13,7 @@ use super::{
 
 include!(concat!(env!("OUT_DIR"), "/build_profile.rs"));
 
-/// The directory name shepr uses under an XDG base directory for state that
-/// every build shares: the config and the client-owned state in `client/`
-/// below the state directory of this name.
-const SHARED_APP_DIR_NAME: &str = "shepr";
+use shepr_core::env::SHARED_APP_DIR_NAME;
 
 /// The lease file inside the data directory. The server locks it for as long as
 /// it owns the directory (`shepr-mux`'s `DataDirLease`), and a stop waits for
@@ -187,6 +184,11 @@ impl AppPaths {
         &self.data_dir
     }
 
+    /// The server log in this build profile's data directory.
+    pub fn server_log(&self) -> PathBuf {
+        shepr_platform::logging::server_log_path(self.data_dir())
+    }
+
     /// The lease file inside [`data_dir`](Self::data_dir): the server that holds
     /// an exclusive lock on it owns the directory. It is never removed, so every
     /// contender locks the same inode.
@@ -299,27 +301,6 @@ impl AppPaths {
     }
 }
 
-/// An XDG base directory for shepr, with `app_dir` appended. Unset or empty falls back under `HOME`;
-/// a relative, padded or non-UTF-8 value is refused rather than ignored, so a
-/// mistyped variable fails the launch instead of silently moving shepr's
-/// config or state back under `HOME`.
-fn platform_xdg_dir(
-    variable: EnvVar,
-    home_suffix: &str,
-    home_dir: Option<&Path>,
-    app_dir: &str,
-) -> io::Result<PathBuf> {
-    // Empty follows the XDG Base Directory spec, which treats it as unset
-    // (the registry reads empty as unset). Relative is refused, which the
-    // spec also calls invalid.
-    if let Some(directory) = shepr_core::env::read_path(variable)? {
-        return Ok(directory.join(app_dir));
-    }
-
-    let home_dir = home_dir.ok_or_else(shepr_core::pathutil::missing_home_error)?;
-    Ok(home_dir.join(home_suffix).join(app_dir))
-}
-
 fn socket_path_override(
     variable: EnvVar,
     diagnostics: &mut Vec<ConfigDiagnostic>,
@@ -405,18 +386,17 @@ fn resolve_paths_from_env_with_marker(
         .map_err(|error| PathsError::one(ConfigDiagnostic::path(error.to_string())))?;
     let (current_dir, startup_cwd) = resolve_current_dir(current_dir_origin)
         .map_err(|error| PathsError::one(ConfigDiagnostic::path(error)))?;
-    let config_dir = platform_xdg_dir(
-        EnvVar::XdgConfigHome,
-        ".config",
-        Some(&home_dir),
-        SHARED_APP_DIR_NAME,
-    );
-    let state_dir = platform_xdg_dir(
-        EnvVar::XdgStateHome,
-        ".local/state",
-        Some(&home_dir),
-        SHARED_APP_DIR_NAME,
-    );
+    let read_base = |variable| {
+        if variable == EnvVar::Home {
+            Ok(Some(home_dir.clone()))
+        } else {
+            shepr_core::env::read_path(variable).map_err(io::Error::from)
+        }
+    };
+    let config_dir =
+        shepr_core::env::xdg_config_home_with(read_base).map(|path| path.join(SHARED_APP_DIR_NAME));
+    let state_dir =
+        shepr_core::env::xdg_state_home_with(read_base).map(|path| path.join(SHARED_APP_DIR_NAME));
     // XDG_RUNTIME_DIR has no base-directory fallback in the XDG spec. Unset
     // and empty are an error for shepr because its runtime sockets need a
     // user-private runtime directory; a relative value is refused by the

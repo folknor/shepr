@@ -5,7 +5,7 @@ use tracing::{error, warn};
 
 use crate::pane::PaneRuntime;
 use crate::pane::PaneState;
-use crate::terminal::{PaneStartFailure, TerminalState};
+use crate::terminal::{Label, PaneStartFailure, TerminalState};
 use crate::workspace::Workspace;
 use shepr_agent::detect::AgentState;
 use shepr_core::layout::{Direction, Node, PaneId, TileLayout};
@@ -17,11 +17,6 @@ use super::snapshot::{
 use super::{
     DirectionSnapshot, LayoutSnapshot, SessionHistorySnapshot, SessionSnapshot, WorkspaceSnapshot,
 };
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SavedLayoutDefect {
-    InvalidSplitRatio,
-}
 
 struct AgentRestoreState<'a> {
     enabled: bool,
@@ -60,7 +55,7 @@ struct RestoredLaunch {
     terminal_id: TerminalId,
     geometry: shepr_core::geometry::PaneGeometry,
     saved_cwd: PathBuf,
-    saved_label: Option<String>,
+    saved_label: Option<Label>,
     saved_agent_session: Option<PaneAgentSessionSnapshot>,
     initial_history: Option<String>,
 }
@@ -97,7 +92,7 @@ impl SessionRestorePlan {
                     // rollback.
                     let terminal = restored_terminal(
                         &launch.saved_cwd,
-                        launch.saved_label.as_deref(),
+                        launch.saved_label.as_ref(),
                         launch.saved_agent_session.as_ref(),
                         launch.terminal_id.clone(),
                         RestoredPaneStart::Unavailable(PaneStartFailure::shell_start_failed(&err)),
@@ -339,7 +334,7 @@ fn restored_workspace_id(saved: WorkspaceId, used_ids: &mut HashSet<WorkspaceId>
 ///   an earlier pane of this restore resumes.
 fn restored_terminal(
     cwd: &Path,
-    label: Option<&str>,
+    label: Option<&Label>,
     agent_session: Option<&PaneAgentSessionSnapshot>,
     terminal_id: TerminalId,
     start: RestoredPaneStart,
@@ -347,7 +342,7 @@ fn restored_terminal(
 ) -> TerminalState {
     let mut terminal = TerminalState::new(terminal_id, cwd.to_path_buf());
     if let Some(label) = label {
-        terminal.set_manual_label(label.to_owned());
+        terminal.set_manual_label(label.as_str().to_owned());
     }
     let duplicate_agent_session = matches!(
         start,
@@ -439,34 +434,27 @@ fn plan_workspace(original: &WorkspaceSnapshot) -> Option<WorkspaceRestorePlan> 
     restore_damage |= snap.panes.len() != saved_pane_count;
     // A file that does not match the saved schema (a missing key, a wrong
     // type) never gets here: it fails to parse and is refused whole, backed
-    // up as unusable. The identity types are part of that schema: a
-    // workspace ID decodes only from its canonical spelling and a pane
-    // number or next pane number only as nonzero, exactly what a shepr save
-    // writes, so a zero or a non-canonical ID is a type mismatch like any
-    // other and refuses the file. Checking them here instead would bring
-    // raw forms back onto the snapshot types just to tolerate values no save
+    // up as unusable. The snapshot types are part of that schema: a
+    // workspace ID decodes only from its canonical spelling, a pane number
+    // or next pane number only as nonzero, and a split ratio only when finite
+    // and within bounds, exactly what a shepr save writes. A zero number, a
+    // non-canonical ID, or an out-of-range ratio is a type mismatch like any
+    // other and refuses the file. Checking them here instead would bring raw
+    // forms back onto the snapshot types just to tolerate values no save
     // produces. What does get here parsed, so its defects are values the
     // snapshot types can hold but a restore cannot use, such as a relative
-    // cwd, a split ratio out of range, or pane numbers that collide or reach
-    // the next number. Such a defect drops this one workspace (or pane), like
-    // every other below, rather than refusing the whole session (which
-    // would lose every healthy workspace for one bad value) or repairing it
-    // (which silently rewrites a corrupt file). The workspace is not lost on
-    // disk: the workspace-drop case in `RestoredSession::restore_loss` makes
-    // the first save back the original file up before overwriting it.
+    // cwd or pane numbers that collide or reach the next number. Such a
+    // defect drops this one workspace (or pane), like every other below,
+    // rather than refusing the whole session (which would lose every healthy
+    // workspace for one bad value) or repairing it (which silently rewrites
+    // a corrupt file). The workspace is not lost on disk: the workspace-drop
+    // case in `RestoredSession::restore_loss` makes the first save back the
+    // original file up before overwriting it. A saved pane label must decode
+    // as a nonempty `Label` with no surrounding whitespace; empty or padded
+    // text fails this strict schema and refuses the whole file before planning.
     // Pane IDs are allocated here, before any shell starts; a workspace
     // dropped later only leaves gaps in the ID space.
-    let (node, id_map) = match restore_node_remapped(&snap.layout) {
-        Ok(restored) => restored,
-        Err(error) => {
-            error!(
-                workspace = %snap.id,
-                ?error,
-                "saved workspace layout is invalid; dropping workspace"
-            );
-            return None;
-        }
-    };
+    let (node, id_map) = restore_node_remapped(&snap.layout);
     let reverse_id_map: HashMap<PaneId, u32> = id_map
         .iter()
         .map(|(&old_id, &new_id)| (new_id, old_id))
@@ -644,7 +632,7 @@ fn restore_workspace(
         if let Some(plan) = restore_plan {
             let terminal = restored_terminal(
                 &saved_pane.cwd,
-                saved_pane.label.as_deref(),
+                saved_pane.label.as_ref(),
                 saved_pane.agent_session.as_ref(),
                 TerminalId::alloc(),
                 RestoredPaneStart::PendingResume(plan),
@@ -678,7 +666,7 @@ fn restore_workspace(
         // or a hook reports one.
         let terminal = restored_terminal(
             &saved_pane.cwd,
-            saved_pane.label.as_deref(),
+            saved_pane.label.as_ref(),
             saved_pane.agent_session.as_ref(),
             TerminalId::alloc(),
             RestoredPaneStart::Running {
@@ -775,9 +763,9 @@ fn persisted_agent_session_from_snapshot(
     session: &PaneAgentSessionSnapshot,
 ) -> Option<shepr_agent::agent::resume::PersistedAgentSession> {
     shepr_agent::agent::resume::PersistedAgentSession::new(
-        session.source.clone(),
-        session.agent,
-        session.session_ref.clone(),
+        session.source().clone(),
+        session.agent(),
+        session.session_ref().clone(),
     )
 }
 
@@ -804,28 +792,22 @@ pub(super) fn resolve_restored_pane(
         .or_else(|| pane_ids.first().copied())
 }
 
-/// Restore a layout tree, validating split ratios and remapping pane IDs.
-/// Returns the new tree and a map of old_raw_id → new PaneId, or the saved
-/// layout defect that prevented restoration.
+/// Restore a layout tree and remap pane IDs.
+/// Returns the new tree and a map of old_raw_id → new PaneId.
 ///
-/// The session file is plain JSON and may be hand-edited or damaged.
-/// Invalid split ratios reject the saved layout rather than being clamped.
+/// The session file is plain JSON and may be hand-edited or damaged. Split
+/// ratios have already been validated during snapshot deserialization.
 /// A saved pane ID that appears more than once maps only its first leaf.
 /// Later copies get a fresh ID with
 /// no saved pane behind it, and `restore_workspace` drops such leaves instead of
 /// inventing a pane for them.
-fn restore_node_remapped(
-    snap: &LayoutSnapshot,
-) -> Result<(Node, HashMap<u32, PaneId>), SavedLayoutDefect> {
+fn restore_node_remapped(snap: &LayoutSnapshot) -> (Node, HashMap<u32, PaneId>) {
     let mut id_map = HashMap::new();
-    let node = remap_inner(snap, &mut id_map)?;
-    Ok((node, id_map))
+    let node = remap_inner(snap, &mut id_map);
+    (node, id_map)
 }
 
-fn remap_inner(
-    snap: &LayoutSnapshot,
-    id_map: &mut HashMap<u32, PaneId>,
-) -> Result<Node, SavedLayoutDefect> {
+fn remap_inner(snap: &LayoutSnapshot, id_map: &mut HashMap<u32, PaneId>) -> Node {
     match snap {
         LayoutSnapshot::Pane(old_id) => {
             let new_id = PaneId::alloc();
@@ -837,7 +819,7 @@ fn remap_inner(
             } else {
                 id_map.insert(*old_id, new_id);
             }
-            Ok(Node::Pane(new_id))
+            Node::Pane(new_id)
         }
         LayoutSnapshot::Split {
             direction,
@@ -845,23 +827,20 @@ fn remap_inner(
             first,
             second,
         } => {
-            let ratio = ratio
-                .validate()
-                .ok_or(SavedLayoutDefect::InvalidSplitRatio)?;
-            let first_node = remap_inner(first, id_map)?;
-            let second_node = remap_inner(second, id_map)?;
+            let first_node = remap_inner(first, id_map);
+            let second_node = remap_inner(second, id_map);
             // Keep this translation at the persistence boundary: core owns
             // live layout directions, while this file owns the saved JSON tag.
             let dir = match direction {
                 DirectionSnapshot::Horizontal => Direction::Horizontal,
                 DirectionSnapshot::Vertical => Direction::Vertical,
             };
-            Ok(Node::Split {
+            Node::Split {
                 direction: dir,
-                ratio,
+                ratio: *ratio,
                 first: Box::new(first_node),
                 second: Box::new(second_node),
-            })
+            }
         }
     }
 }
@@ -923,12 +902,28 @@ mod tests {
     use shepr_test_support::fixture::resolved_shell as test_shell;
     use std::path::{Path, PathBuf};
 
-    use super::super::snapshot::SavedSplitRatio;
     use super::*;
 
     std::thread_local! {
         static RESTORE_TEST_SCRATCH: crate::test_support::ScratchDir =
             crate::test_support::ScratchDir::new("restore-test-paths");
+    }
+
+    fn test_split_ratio(value: f32) -> shepr_core::layout::SplitRatio {
+        shepr_core::layout::SplitRatio::new(value).expect("test split ratio is valid")
+    }
+
+    fn persisted_test_session(
+        source: &str,
+        agent: shepr_agent::agent::Agent,
+        session_ref: shepr_agent::agent::resume::AgentSessionRef,
+    ) -> shepr_agent::agent::resume::PersistedAgentSession {
+        shepr_agent::agent::resume::PersistedAgentSession::new(
+            shepr_agent::agent::AgentSource::parse(source),
+            agent,
+            session_ref,
+        )
+        .expect("test session is valid")
     }
 
     fn test_restore_now() -> std::time::Instant {
@@ -999,12 +994,11 @@ mod tests {
         let (mut snapshot, history) = snapshot_with_saved_pane_history(cwd);
         let workspace = &mut snapshot.workspaces[0];
         let pane = workspace.panes.get_mut(&0).expect("saved pane");
-        pane.agent_session = Some(PaneAgentSessionSnapshot {
-            source: shepr_agent::agent::AgentSource::parse("shepr:codex"),
-            agent: shepr_agent::agent::Agent::Codex,
-            session_ref: shepr_agent::agent::resume::AgentSessionRef::id("planned-session")
-                .expect("session id"),
-        });
+        pane.agent_session = Some(persisted_test_session(
+            "shepr:codex",
+            shepr_agent::agent::Agent::Codex,
+            shepr_agent::agent::resume::AgentSessionRef::id("planned-session").expect("session id"),
+        ));
         let mut duplicate = pane.clone();
         duplicate.public_number =
             shepr_protocol::PanePublicNumber::new(2).expect("nonzero literal");
@@ -1013,7 +1007,7 @@ mod tests {
             shepr_protocol::PanePublicNumber::new(3).expect("nonzero literal");
         workspace.layout = LayoutSnapshot::Split {
             direction: DirectionSnapshot::Horizontal,
-            ratio: SavedSplitRatio::from_raw(0.5),
+            ratio: test_split_ratio(0.5),
             first: Box::new(LayoutSnapshot::Pane(0)),
             second: Box::new(LayoutSnapshot::Pane(1)),
         };
@@ -1053,7 +1047,7 @@ mod tests {
         };
 
         let snap = super::super::snapshot::capture_node(&node);
-        let (restored, id_map) = restore_node_remapped(&snap).expect("valid snapshot ratios");
+        let (restored, id_map) = restore_node_remapped(&snap);
 
         assert_eq!(id_map.len(), 3);
         let ids = restored.pane_ids();
@@ -1063,45 +1057,14 @@ mod tests {
     }
 
     #[test]
-    fn restored_split_ratios_reject_invalid_saved_values() {
-        for saved in [f32::NAN, f32::INFINITY, 5.0, -1.0] {
-            let snap = LayoutSnapshot::Split {
-                direction: DirectionSnapshot::Horizontal,
-                ratio: SavedSplitRatio::from_raw(saved),
-                first: Box::new(LayoutSnapshot::Pane(0)),
-                second: Box::new(LayoutSnapshot::Pane(1)),
-            };
-            assert!(
-                matches!(
-                    restore_node_remapped(&snap),
-                    Err(SavedLayoutDefect::InvalidSplitRatio)
-                ),
-                "saved ratio {saved}"
-            );
-        }
-
-        let snap = LayoutSnapshot::Split {
-            direction: DirectionSnapshot::Horizontal,
-            ratio: SavedSplitRatio::from_raw(0.5),
-            first: Box::new(LayoutSnapshot::Pane(0)),
-            second: Box::new(LayoutSnapshot::Pane(1)),
-        };
-        let (node, _) = restore_node_remapped(&snap).expect("valid saved ratio");
-        let Node::Split { ratio, .. } = node else {
-            panic!("expected split");
-        };
-        assert_eq!(ratio.get(), 0.5);
-    }
-
-    #[test]
     fn repeated_saved_pane_maps_only_its_first_leaf() {
         let snap = LayoutSnapshot::Split {
             direction: DirectionSnapshot::Vertical,
-            ratio: SavedSplitRatio::from_raw(0.5),
+            ratio: test_split_ratio(0.5),
             first: Box::new(LayoutSnapshot::Pane(4)),
             second: Box::new(LayoutSnapshot::Pane(4)),
         };
-        let (node, id_map) = restore_node_remapped(&snap).expect("valid snapshot ratios");
+        let (node, id_map) = restore_node_remapped(&snap);
         let ids = node.pane_ids();
         assert_eq!(ids.len(), 2);
         assert_eq!(id_map.len(), 1);
@@ -1116,11 +1079,11 @@ mod tests {
         // Pane 0 appears twice and pane 7 has no entry in `panes`.
         snapshot.workspaces[0].layout = LayoutSnapshot::Split {
             direction: DirectionSnapshot::Horizontal,
-            ratio: SavedSplitRatio::from_raw(0.5),
+            ratio: test_split_ratio(0.5),
             first: Box::new(LayoutSnapshot::Pane(0)),
             second: Box::new(LayoutSnapshot::Split {
                 direction: DirectionSnapshot::Vertical,
-                ratio: SavedSplitRatio::from_raw(0.5),
+                ratio: test_split_ratio(0.5),
                 first: Box::new(LayoutSnapshot::Pane(7)),
                 second: Box::new(LayoutSnapshot::Pane(0)),
             }),
@@ -1184,13 +1147,13 @@ mod tests {
                 .panes
                 .get_mut(&0)
                 .expect("test precondition");
-            pane.label = Some("keep me".into());
-            pane.agent_session = Some(super::super::snapshot::PaneAgentSessionSnapshot {
-                source: shepr_agent::agent::AgentSource::parse("shepr:codex"),
-                agent: shepr_agent::agent::Agent::Codex,
-                session_ref: shepr_agent::agent::resume::AgentSessionRef::id("codex-session")
+            pane.label = Some(Label::new("keep me").expect("test label"));
+            pane.agent_session = Some(persisted_test_session(
+                "shepr:codex",
+                shepr_agent::agent::Agent::Codex,
+                shepr_agent::agent::resume::AgentSessionRef::id("codex-session")
                     .expect("test precondition"),
-            });
+            ));
             if missing_cwd {
                 pane.cwd = pane.cwd.join("__shepr_missing_restore_directory__");
                 assert!(!pane.cwd.try_exists().expect("test stat"));
@@ -1246,12 +1209,16 @@ mod tests {
                 .values()
                 .next()
                 .expect("test precondition");
-            assert_eq!(pane.label.as_deref(), Some("keep me"), "{case}");
+            assert_eq!(
+                pane.label.as_ref().map(Label::as_str),
+                Some("keep me"),
+                "{case}"
+            );
             assert_eq!(pane.cwd, saved_cwd, "{case}");
             assert_eq!(
                 pane.agent_session
                     .as_ref()
-                    .map(|session| session.session_ref.value_str()),
+                    .map(|session| session.session_ref().value_str()),
                 Some("codex-session"),
                 "{case}"
             );
@@ -1369,7 +1336,7 @@ mod tests {
             "numbers",
             LayoutSnapshot::Split {
                 direction: DirectionSnapshot::Horizontal,
-                ratio: SavedSplitRatio::from_raw(0.5),
+                ratio: test_split_ratio(0.5),
                 first: Box::new(LayoutSnapshot::Pane(1)),
                 second: Box::new(LayoutSnapshot::Pane(2)),
             },
@@ -1393,7 +1360,7 @@ mod tests {
             "paths",
             LayoutSnapshot::Split {
                 direction: DirectionSnapshot::Horizontal,
-                ratio: SavedSplitRatio::from_raw(0.5),
+                ratio: test_split_ratio(0.5),
                 first: Box::new(LayoutSnapshot::Pane(1)),
                 second: Box::new(LayoutSnapshot::Pane(2)),
             },
@@ -1433,52 +1400,6 @@ mod tests {
         restored
     }
 
-    /// An invalid saved ratio drops only its own workspace: the rest of the
-    /// session restores, the saved bookmarked workspace still resolves, and the
-    /// drop is counted so the caller backs the saved file up before the first
-    /// save.
-    #[test]
-    fn restore_drops_only_the_workspace_with_an_invalid_split_ratio() {
-        let invalid_workspace = |id: &str, name: &str, ratio: f32| {
-            workspace_snapshot(
-                id,
-                name,
-                LayoutSnapshot::Split {
-                    direction: DirectionSnapshot::Horizontal,
-                    ratio: SavedSplitRatio::from_raw(ratio),
-                    first: Box::new(LayoutSnapshot::Pane(1)),
-                    second: Box::new(LayoutSnapshot::Pane(2)),
-                },
-                &[1, 2],
-            )
-        };
-        let snapshot = SessionSnapshot {
-            version: super::super::snapshot::SNAPSHOT_VERSION,
-            host_theme: Default::default(),
-            workspaces: vec![
-                invalid_workspace("w1", "out of range", 1.0),
-                workspace_snapshot("w2", "healthy", LayoutSnapshot::Pane(3), &[3]),
-                invalid_workspace("w3", "not finite", f32::NAN),
-            ],
-            active: Some(2),
-        };
-
-        let restored = restore_runtimeless(&snapshot);
-
-        assert_eq!(
-            restored
-                .restore_loss
-                .expect("workspaces were dropped")
-                .dropped_workspaces(),
-            2
-        );
-        assert_eq!(restored.workspaces.len(), 1);
-        let workspace = &restored.workspaces[0];
-        assert_eq!(workspace.custom_name.as_deref(), Some("healthy"));
-        assert_eq!(restored.active, Some(0));
-        assert_eq!(restored.terminals.len(), 1);
-    }
-
     /// Capture writes one number per pane, so two panes sharing one is a
     /// damaged file; the workspace is dropped like any other defect rather
     /// than renumbered, and the first save backs the original up.
@@ -1489,7 +1410,7 @@ mod tests {
             "duplicated",
             LayoutSnapshot::Split {
                 direction: DirectionSnapshot::Horizontal,
-                ratio: SavedSplitRatio::from_raw(0.5),
+                ratio: test_split_ratio(0.5),
                 first: Box::new(LayoutSnapshot::Pane(1)),
                 second: Box::new(LayoutSnapshot::Pane(2)),
             },
@@ -1580,11 +1501,11 @@ mod tests {
     fn zoom_does_not_survive_pruning_to_one_pane_or_losing_the_zoomed_pane() {
         let split = |first: u32, second: u32, third: u32| LayoutSnapshot::Split {
             direction: DirectionSnapshot::Horizontal,
-            ratio: SavedSplitRatio::from_raw(0.5),
+            ratio: test_split_ratio(0.5),
             first: Box::new(LayoutSnapshot::Pane(first)),
             second: Box::new(LayoutSnapshot::Split {
                 direction: DirectionSnapshot::Vertical,
-                ratio: SavedSplitRatio::from_raw(0.5),
+                ratio: test_split_ratio(0.5),
                 first: Box::new(LayoutSnapshot::Pane(second)),
                 second: Box::new(LayoutSnapshot::Pane(third)),
             }),
@@ -1708,12 +1629,12 @@ mod tests {
     #[test]
     fn restore_plan_respects_opt_in_and_allowlist() {
         let pi_session_path = test_session_path("pi-session.jsonl");
-        let session = super::super::snapshot::PaneAgentSessionSnapshot {
-            source: shepr_agent::agent::AgentSource::parse("shepr:pi"),
-            agent: shepr_agent::agent::Agent::Pi,
-            session_ref: shepr_agent::agent::resume::AgentSessionRef::path(pi_session_path.clone())
+        let session = persisted_test_session(
+            "shepr:pi",
+            shepr_agent::agent::Agent::Pi,
+            shepr_agent::agent::resume::AgentSessionRef::path(pi_session_path.clone())
                 .expect("test precondition"),
-        };
+        );
 
         assert!(restore_plan_for_snapshot(&session, false).is_none());
         assert_eq!(
@@ -1723,26 +1644,28 @@ mod tests {
             &["--session", pi_session_path.as_str()]
         );
 
-        let unsupported_path = super::super::snapshot::PaneAgentSessionSnapshot {
-            source: shepr_agent::agent::AgentSource::parse("shepr:claude"),
-            agent: shepr_agent::agent::Agent::Claude,
-            session_ref: shepr_agent::agent::resume::AgentSessionRef::path(test_session_path(
-                "claude-session",
-            ))
-            .expect("test precondition"),
-        };
-        assert!(restore_plan_for_snapshot(&unsupported_path, true).is_none());
+        assert!(
+            shepr_agent::agent::resume::PersistedAgentSession::new(
+                shepr_agent::agent::AgentSource::parse("shepr:claude"),
+                shepr_agent::agent::Agent::Claude,
+                shepr_agent::agent::resume::AgentSessionRef::path(test_session_path(
+                    "claude-session",
+                ))
+                .expect("test precondition"),
+            )
+            .is_none()
+        );
     }
 
     #[test]
     fn restore_plan_selection_suppresses_duplicates() {
         let pi_session_path = test_session_path("pi-session.jsonl");
-        let session = super::super::snapshot::PaneAgentSessionSnapshot {
-            source: shepr_agent::agent::AgentSource::parse("shepr:pi"),
-            agent: shepr_agent::agent::Agent::Pi,
-            session_ref: shepr_agent::agent::resume::AgentSessionRef::path(pi_session_path.clone())
+        let session = persisted_test_session(
+            "shepr:pi",
+            shepr_agent::agent::Agent::Pi,
+            shepr_agent::agent::resume::AgentSessionRef::path(pi_session_path.clone())
                 .expect("test precondition"),
-        };
+        );
         let mut resumed = HashSet::new();
 
         assert!(take_restore_plan_for_snapshot(&session, false, &mut resumed).is_none());
@@ -1756,14 +1679,14 @@ mod tests {
 
     #[test]
     fn pane_restore_startup_suppresses_history_for_native_agent_resume() {
-        let session = super::super::snapshot::PaneAgentSessionSnapshot {
-            source: shepr_agent::agent::AgentSource::parse("shepr:pi"),
-            agent: shepr_agent::agent::Agent::Pi,
-            session_ref: shepr_agent::agent::resume::AgentSessionRef::path(test_session_path(
+        let session = persisted_test_session(
+            "shepr:pi",
+            shepr_agent::agent::Agent::Pi,
+            shepr_agent::agent::resume::AgentSessionRef::path(test_session_path(
                 "pi-session.jsonl",
             ))
             .expect("test precondition"),
-        };
+        );
         let history = super::super::snapshot::PaneHistorySnapshot {
             ansi: "RESTORED_HISTORY\r\n".into(),
         };
@@ -1782,14 +1705,14 @@ mod tests {
 
     #[test]
     fn pane_restore_startup_suppresses_history_for_duplicate_native_agent_session() {
-        let session = super::super::snapshot::PaneAgentSessionSnapshot {
-            source: shepr_agent::agent::AgentSource::parse("shepr:pi"),
-            agent: shepr_agent::agent::Agent::Pi,
-            session_ref: shepr_agent::agent::resume::AgentSessionRef::path(test_session_path(
+        let session = persisted_test_session(
+            "shepr:pi",
+            shepr_agent::agent::Agent::Pi,
+            shepr_agent::agent::resume::AgentSessionRef::path(test_session_path(
                 "pi-session.jsonl",
             ))
             .expect("test precondition"),
-        };
+        );
         let history = super::super::snapshot::PaneHistorySnapshot {
             ansi: "RESTORED_HISTORY\r\n".into(),
         };
@@ -1811,14 +1734,14 @@ mod tests {
 
     #[test]
     fn pane_restore_startup_keeps_history_without_native_agent_resume() {
-        let session = super::super::snapshot::PaneAgentSessionSnapshot {
-            source: shepr_agent::agent::AgentSource::parse("shepr:pi"),
-            agent: shepr_agent::agent::Agent::Pi,
-            session_ref: shepr_agent::agent::resume::AgentSessionRef::path(test_session_path(
+        let session = persisted_test_session(
+            "shepr:pi",
+            shepr_agent::agent::Agent::Pi,
+            shepr_agent::agent::resume::AgentSessionRef::path(test_session_path(
                 "pi-session.jsonl",
             ))
             .expect("test precondition"),
-        };
+        );
         let history = super::super::snapshot::PaneHistorySnapshot {
             ansi: "RESTORED_HISTORY\r\n".into(),
         };
@@ -1838,30 +1761,30 @@ mod tests {
 
     #[test]
     fn restore_rehydrates_agent_session_metadata() {
-        let session = super::super::snapshot::PaneAgentSessionSnapshot {
-            source: shepr_agent::agent::AgentSource::parse("shepr:codex"),
-            agent: shepr_agent::agent::Agent::Codex,
-            session_ref: shepr_agent::agent::resume::AgentSessionRef::id("codex-session")
+        let session = persisted_test_session(
+            "shepr:codex",
+            shepr_agent::agent::Agent::Codex,
+            shepr_agent::agent::resume::AgentSessionRef::id("codex-session")
                 .expect("test precondition"),
-        };
+        );
 
         let preserved = restored_terminal_agent_session(Some(&session), false)
             .expect("restore should preserve metadata");
-        assert_eq!(preserved.source.as_str(), "shepr:codex");
-        assert_eq!(preserved.agent.label(), "codex");
-        assert_eq!(preserved.session_ref.value_str(), "codex-session");
+        assert_eq!(preserved.source().as_str(), "shepr:codex");
+        assert_eq!(preserved.agent().label(), "codex");
+        assert_eq!(preserved.session_ref().value_str(), "codex-session");
     }
 
     #[test]
     fn restore_does_not_rehydrate_duplicate_agent_session_metadata() {
-        let session = super::super::snapshot::PaneAgentSessionSnapshot {
-            source: shepr_agent::agent::AgentSource::parse("shepr:pi"),
-            agent: shepr_agent::agent::Agent::Pi,
-            session_ref: shepr_agent::agent::resume::AgentSessionRef::path(test_session_path(
+        let session = persisted_test_session(
+            "shepr:pi",
+            shepr_agent::agent::Agent::Pi,
+            shepr_agent::agent::resume::AgentSessionRef::path(test_session_path(
                 "pi-session.jsonl",
             ))
             .expect("test precondition"),
-        };
+        );
         let mut resumed = HashSet::new();
         assert!(take_restore_plan_for_snapshot(&session, true, &mut resumed).is_some());
         assert!(take_restore_plan_for_snapshot(&session, true, &mut resumed).is_none());
@@ -1914,13 +1837,13 @@ mod tests {
                 .get_mut(&1)
                 .expect("test precondition");
             failed.cwd = missing.clone();
-            failed.label = Some("keep my pane".into());
-            failed.agent_session = Some(super::super::snapshot::PaneAgentSessionSnapshot {
-                source: shepr_agent::agent::AgentSource::parse("shepr:opencode"),
-                agent: shepr_agent::agent::Agent::OpenCode,
-                session_ref: shepr_agent::agent::resume::AgentSessionRef::id("keep-my-session")
+            failed.label = Some(Label::new("keep my pane").expect("test label"));
+            failed.agent_session = Some(persisted_test_session(
+                "shepr:opencode",
+                shepr_agent::agent::Agent::OpenCode,
+                shepr_agent::agent::resume::AgentSessionRef::id("keep-my-session")
                     .expect("test precondition"),
-            });
+            ));
             let (events, mut events_rx) = mpsc::channel(32);
             let RestoredSession {
                 workspaces,
@@ -1971,12 +1894,12 @@ mod tests {
                 pane.cwd, missing,
                 "fallback cwd must not replace saved intent"
             );
-            assert_eq!(pane.label.as_deref(), Some("keep my pane"));
+            assert_eq!(pane.label.as_ref().map(Label::as_str), Some("keep my pane"));
             assert_eq!(
                 pane.agent_session
                     .as_ref()
                     .expect("test precondition")
-                    .session_ref
+                    .session_ref()
                     .value_str(),
                 "keep-my-session"
             );
@@ -2022,13 +1945,10 @@ mod tests {
                 .await
                 .expect("the launch settles")
                 .expect("the event channel stays open");
-            let crate::events::AppEvent::Runtime { event, .. } = event else {
+            let crate::events::AppEvent::Runtime { pane_id, event, .. } = event else {
                 continue;
             };
-            if let crate::events::AppEvent::PaneLaunchSettled {
-                pane_id,
-                settlement,
-            } = *event
+            if let crate::events::RuntimeEvent::PaneLaunchSettled { settlement } = *event
                 && pane_id == pane
             {
                 return settlement;
@@ -2055,15 +1975,13 @@ mod tests {
                         cwd,
                         public_number: shepr_protocol::PanePublicNumber::new(1)
                             .expect("nonzero literal"),
-                        label: Some("reviewer".into()),
-                        agent_session: Some(super::super::snapshot::PaneAgentSessionSnapshot {
-                            source: shepr_agent::agent::AgentSource::parse("shepr:opencode"),
-                            agent: shepr_agent::agent::Agent::OpenCode,
-                            session_ref: shepr_agent::agent::resume::AgentSessionRef::id(
-                                "opencode-session",
-                            )
-                            .expect("test precondition"),
-                        }),
+                        label: Some(Label::new("reviewer").expect("test label")),
+                        agent_session: Some(persisted_test_session(
+                            "shepr:opencode",
+                            shepr_agent::agent::Agent::OpenCode,
+                            shepr_agent::agent::resume::AgentSessionRef::id("opencode-session")
+                                .expect("test precondition"),
+                        )),
                     },
                 )]),
                 zoomed: false,
@@ -2103,9 +2021,9 @@ mod tests {
             .ownership()
             .persisted_agent_session()
             .expect("persisted agent session should survive restore");
-        assert_eq!(session.source.as_str(), "shepr:opencode");
-        assert_eq!(session.agent.label(), "opencode");
-        assert_eq!(session.session_ref.value_str(), "opencode-session");
+        assert_eq!(session.source().as_str(), "shepr:opencode");
+        assert_eq!(session.agent().label(), "opencode");
+        assert_eq!(session.session_ref().value_str(), "opencode-session");
     }
 
     #[tokio::test]
@@ -2122,7 +2040,7 @@ mod tests {
                     .expect("nonzero literal"),
                 layout: LayoutSnapshot::Split {
                     direction: super::super::snapshot::DirectionSnapshot::Horizontal,
-                    ratio: SavedSplitRatio::from_raw(0.5),
+                    ratio: test_split_ratio(0.5),
                     first: Box::new(LayoutSnapshot::Pane(10)),
                     second: Box::new(LayoutSnapshot::Pane(20)),
                 },
@@ -2213,13 +2131,13 @@ mod tests {
         let final_pane = super::super::snapshot::PaneSnapshot {
             cwd: cwd.clone(),
             public_number: shepr_protocol::PanePublicNumber::new(7).expect("nonzero literal"),
-            label: Some("planner".into()),
-            agent_session: Some(super::super::snapshot::PaneAgentSessionSnapshot {
-                source: shepr_agent::agent::AgentSource::parse("shepr:codex"),
-                agent: shepr_agent::agent::Agent::Codex,
-                session_ref: shepr_agent::agent::resume::AgentSessionRef::id("codex-session")
+            label: Some(Label::new("planner").expect("test label")),
+            agent_session: Some(persisted_test_session(
+                "shepr:codex",
+                shepr_agent::agent::Agent::Codex,
+                shepr_agent::agent::resume::AgentSessionRef::id("codex-session")
                     .expect("test precondition"),
-            }),
+            )),
         };
         let snapshot = SessionSnapshot {
             version: super::super::snapshot::SNAPSHOT_VERSION,
@@ -2232,7 +2150,7 @@ mod tests {
                     .expect("nonzero literal"),
                 layout: LayoutSnapshot::Split {
                     direction: DirectionSnapshot::Horizontal,
-                    ratio: SavedSplitRatio::from_raw(0.5),
+                    ratio: test_split_ratio(0.5),
                     first: Box::new(LayoutSnapshot::Pane(10)),
                     second: Box::new(LayoutSnapshot::Pane(13)),
                 },
@@ -2310,14 +2228,12 @@ mod tests {
                         public_number: shepr_protocol::PanePublicNumber::new(1)
                             .expect("nonzero literal"),
                         label: None,
-                        agent_session: Some(super::super::snapshot::PaneAgentSessionSnapshot {
-                            source: shepr_agent::agent::AgentSource::parse("shepr:codex"),
-                            agent: shepr_agent::agent::Agent::Codex,
-                            session_ref: shepr_agent::agent::resume::AgentSessionRef::id(
-                                "codex-session",
-                            )
-                            .expect("test precondition"),
-                        }),
+                        agent_session: Some(persisted_test_session(
+                            "shepr:codex",
+                            shepr_agent::agent::Agent::Codex,
+                            shepr_agent::agent::resume::AgentSessionRef::id("codex-session")
+                                .expect("test precondition"),
+                        )),
                     },
                 )]),
                 zoomed: false,
@@ -2385,7 +2301,7 @@ mod tests {
                 workspaces: vec![WorkspaceSnapshot {
                     layout: LayoutSnapshot::Split {
                         direction: DirectionSnapshot::Horizontal,
-                        ratio: SavedSplitRatio::from_raw(0.25),
+                        ratio: test_split_ratio(0.25),
                         first: Box::new(LayoutSnapshot::Pane(0)),
                         second: Box::new(LayoutSnapshot::Pane(1)),
                     },

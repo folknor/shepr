@@ -572,7 +572,7 @@ pub enum EndpointReply {
     /// revision-bearing result can establish an activation floor.
     ClientShellSurfaceSet {
         active: bool,
-        projection_revision: u64,
+        projection_revision: crate::ProjectionRevision,
     },
 }
 

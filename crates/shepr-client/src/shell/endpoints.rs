@@ -360,7 +360,7 @@ impl ClientShellState {
         endpoint_id: &ClientEndpointId,
         generation: u64,
         boot_id: &shepr_protocol::BootId,
-        revision: u64,
+        revision: shepr_protocol::ProjectionRevision,
     ) -> bool {
         self.endpoints
             .iter()
@@ -379,7 +379,7 @@ impl ClientShellState {
         &self,
         endpoint_id: &ClientEndpointId,
         generation: u64,
-    ) -> Option<(&shepr_protocol::BootId, u64)> {
+    ) -> Option<(&shepr_protocol::BootId, shepr_protocol::ProjectionRevision)> {
         let endpoint = self
             .endpoints
             .iter()
@@ -392,7 +392,7 @@ impl ClientShellState {
         }
         endpoint
             .snapshot()
-            .map(|snapshot| (&snapshot.boot_id, snapshot.revision.get()))
+            .map(|snapshot| (&snapshot.boot_id, snapshot.revision))
     }
 
     /// A terminal normally starts focused. `None` means this host cannot report focus events,

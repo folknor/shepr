@@ -75,7 +75,7 @@ enum TargetReadiness {
     Ready {
         generation: u64,
         boot_id: BootId,
-        minimum_revision: u64,
+        minimum_revision: shepr_protocol::ProjectionRevision,
     },
 }
 
@@ -184,7 +184,8 @@ pub fn start_move<'a>(
         boot_id,
         minimum_revision,
     };
-    let request: RequestId = format!("client-shell-view:{}:on", serial.allocate()).into();
+    let _view_serial = serial.allocate();
+    let request = RequestId::allocate();
     shell
         .endpoints
         .choice
@@ -263,7 +264,7 @@ pub fn commit_move(
         &lease.endpoint_id,
         lease.generation,
         &lease.boot_id,
-        surface.projection_revision.get(),
+        surface.projection_revision,
     ) {
         return Err("endpoint move lost its coherent snapshot/surface pair".into());
     }

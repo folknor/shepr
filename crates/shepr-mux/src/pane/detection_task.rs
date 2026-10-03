@@ -143,7 +143,11 @@ impl DetectionTask {
         }
         // Read before collecting text: an older cache sequence can cause one
         // extra scan, but cannot mark old text as the latest screen.
-        let content_seq = shepr_vt::lock_terminal_core(&self.handles.terminal.core)
+        let content_seq = self
+            .handles
+            .terminal
+            .core
+            .lock()
             .map_or(0, |core| core.detection_content_seq);
         if !self.live(pid) {
             return None;
@@ -255,7 +259,7 @@ mod tests {
         let (locked_tx, locked_rx) = tokio::sync::oneshot::channel();
         let (release_tx, release_rx) = std::sync::mpsc::channel();
         let holder = std::thread::spawn(move || {
-            let _core = shepr_vt::lock_terminal_core(&terminal.core).expect("lock core");
+            let _core = terminal.core.lock().expect("lock core");
             locked_tx.send(()).expect("announce held core");
             // A finite fallback also lets this test fail without hanging if
             // detection ever starts waiting on the current-thread worker.
@@ -280,7 +284,7 @@ mod tests {
     fn cancellation_stops_a_tick_before_it_waits_for_the_core() {
         let mut task = task();
         let terminal = Arc::clone(&task.handles.terminal);
-        let _core = shepr_vt::lock_terminal_core(&terminal.core).expect("lock core");
+        let _core = terminal.core.lock().expect("lock core");
         let guard = CancelOnDrop(Arc::clone(&task.cancelled));
         drop(guard);
         assert!(task.tick(Instant::now()).is_none());

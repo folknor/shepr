@@ -17,7 +17,6 @@ use super::agent_detection::{
 use super::launch::LaunchKind;
 use super::terminal::PaneTerminal;
 use crate::UsableCwd;
-use crate::events::AppEvent;
 use shepr_agent::detect::{Agent, AgentState, Detection};
 use shepr_platform::{Pgid, Pid};
 
@@ -38,15 +37,12 @@ pub(super) async fn publish_state_changed_event(
 ) {
     // This runs on the async detector task, not the PTY reader thread.
     // Waiting for queue space here preserves correctness-critical state transitions
-    // without blocking pane I/O. The application event exposes only the state
-    // and blocker evidence it arbitrates; derive both from the same verdict.
+    // without blocking pane I/O. Carry the complete screen verdict to arbitration.
     let pane_id = state_events.pane_id();
     if let Err(e) = state_events
-        .send(AppEvent::StateChanged {
-            pane_id,
+        .send(crate::events::RuntimeEvent::StateChanged {
             agent: update.agent,
-            state: update.detection.state(),
-            visible_blocker: update.detection.visible_blocker(),
+            detection: update.detection,
             process_exited: update.process_exited,
             observed_at: update.observed_at,
         })
@@ -67,11 +63,7 @@ pub(super) async fn publish_agent_process_detected_event(
 ) {
     let pane_id = state_events.pane_id();
     if let Err(e) = state_events
-        .send(AppEvent::AgentProcessDetected {
-            pane_id,
-            agent,
-            observed_at,
-        })
+        .send(crate::events::RuntimeEvent::AgentProcessDetected { agent, observed_at })
         .await
     {
         warn!(

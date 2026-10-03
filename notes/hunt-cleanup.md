@@ -37,41 +37,33 @@ raw reports are in the commit that precedes this file's.
 
 (wave-1 review and gate, wave-3 review, wave-5 fixer and review, wave-7 and wave-8 reviews)
 
-## CLN-030 - Leftovers from the seventh light-loop wave
+## CLN-030 - Leftovers from the seventh and ninth light-loop waves
 
-- `crates/shepr-termio/src/host_term/modes.rs` `clear_host_mouse_reporting`
-  inserts mode 1015 with an `index == 1` special case because `DecMode` has no
-  urxvt variant; a plain host-only mode list would read better.
 - `dispatch_client_shell_actions` returns `Result` only for a clipboard `Fatal`
   arm the host write policy never produces; the same unreachable arm sits in the
   server clipboard path of client `lib.rs`.
-- `src/cli/status.rs` reports the root package `CARGO_PKG_VERSION` while
-  `shepr_protocol::build_version()` uses shepr-protocol's; one const would give
-  one source.
-- In the `Frozen` branch of `server/headless/lifecycle.rs`, a cancellation
-  between `host_shutdown_requested()` and `warning_generation()` now reads
-  `None` and restarts the warning for one turn (benign; the next sync cancels).
-- `EndpointNoticeKind::{ConnectionLost, MoveInterrupted}` take a `String` though
-  every source is a `&'static str` from `EndpointFailure::disconnect_notice()`.
-- shepr-vt `report_modify_other_keys` goes through
-  `String::from_utf8_lossy(set_sequence()).into_owned()`; a `&'static str`
-  sequence would do.
-
 - The server still accepts and tracks free-label custom report origins
   (`ReportedAgent::Custom`, non-`shepr:` sources in `ReportOrigin::parse`, the
-  API agent label in pane info), though the TUI projection now carries only a
-  known `Agent` and shepr installs no third-party reporter. Rejecting
-  non-official sources at `app/api/panes/reports.rs` and deleting
-  `ReportedAgent::Custom` would make the server agree with the TUI; it cuts
-  across shepr-agent ownership, mux persistence and their tests.
+  API agent label in pane info), though the TUI projection carries only a known
+  `Agent` and shepr installs no third-party reporter.
+- `crates/shepr-pty/src/locks.rs` keeps its own `lock_auxiliary` beside the one
+  in `crates/shepr-core/src/locks.rs`; pty depends on core.
+- The client view serial is vestigial: `endpoint/registry.rs` and
+  `endpoint/view.rs` allocate a `ViewSerial` and discard it, since request ids
+  come from `RequestId::allocate`; the parameter and its counter can go.
+- `AppEvent::HookStateReported` and `AgentSessionReported` are produced only by
+  tests now that API reports go through `App::handle_state_event`.
+- Production `expect`s remain in `RequestId::allocate` (u64 exhaustion) and
+  `EndpointSupervisors::new` (the successor of generation 1).
+- The patch fast path reads `LastComposition`, which is not reset when state
+  changes between compositions (opening an overlay, a new notice); such a patch
+  takes the fast path until the pending recompose repaints (a flash, where HEAD
+  read current state).
 
-- `SavedSplitRatio` (`crates/shepr-mux/src/persist/snapshot.rs`) keeps the raw
-  float so an out-of-range saved ratio drops one workspace, while zero pane
-  numbers and non-canonical workspace ids are now typed decodes that refuse the
-  whole file. No shepr save writes an out-of-range ratio either; by the same
-  rule it could decode as `SplitRatio` and `SavedSplitRatio` could go.
+- `crates/shepr-mux/src/git/runner.rs` spells `"SSH_ASKPASS"` as a literal
+  where `ChildEnv::SshAskpass` exists.
 
-(wave-7 review and adjudication, wave-8 adjudication)
+(wave-7 and wave-9 reviews, wave-9 adjudication)
 
 ## Test-only twins and test seams in production
 

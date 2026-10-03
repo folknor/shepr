@@ -110,26 +110,34 @@ fn launch_with_args(raw_args: &[String]) -> CliResult<ProcessExit> {
         Err(exit_code) => return Ok(ProcessExit::from_cli_code(exit_code)),
     };
 
-    let run_tui = match launch {
+    match launch {
         cli::Launch::Help => {
             cli::print_help();
-            return Ok(ProcessExit::Success);
+            Ok(ProcessExit::Success)
         }
         cli::Launch::Version => {
             shepr_platform::begin_cli_output();
             println!("shepr {}", shepr_protocol::build_version());
-            return Ok(ProcessExit::Success);
+            Ok(ProcessExit::Success)
         }
         cli::Launch::ClientBridge => {
             let paths = resolve_bridge_paths()?;
             init_client_logging(&paths)?;
-            return finish_bridge(shepr_remote::run_remote_client_bridge(&paths)?);
+            finish_bridge(shepr_remote::run_remote_client_bridge(&paths)?)
         }
-        cli::Launch::Cli(command) => return cli::run(&command).map(ProcessExit::from_cli_code),
-        cli::Launch::Client => false,
-        cli::Launch::Tui => true,
-    };
+        cli::Launch::Cli(command) => cli::run(&command).map(ProcessExit::from_cli_code),
+        cli::Launch::Client => launch_client(ClientLaunch::Direct),
+        cli::Launch::Tui => launch_client(ClientLaunch::Tui),
+    }
+}
 
+#[derive(Clone, Copy)]
+enum ClientLaunch {
+    Direct,
+    Tui,
+}
+
+fn launch_client(mode: ClientLaunch) -> CliResult<ProcessExit> {
     // Resolve the typed pane markers before reading client.toml. A same-profile
     // pane is refused even when the file is broken.
     let paths = shepr_config::AppPaths::resolve_for_client()
@@ -140,21 +148,29 @@ fn launch_with_args(raw_args: &[String]) -> CliResult<ProcessExit> {
     let loaded_config = shepr_config::load_client_validated(&paths).map_err(CliError::Config)?;
     let paths = loaded_config.paths();
 
-    if !run_tui {
-        init_client_logging(paths)?;
-        return cli::finish_client(shepr_client::run_client(&loaded_config, paths))
-            .map(ProcessExit::from_cli_code);
+    match mode {
+        ClientLaunch::Direct => {
+            init_client_logging(paths)?;
+            cli::finish_client(shepr_client::run_client(&loaded_config, paths))
+                .map(ProcessExit::from_cli_code)
+        }
+        ClientLaunch::Tui => launch_tui(&loaded_config, paths),
     }
+}
 
+fn launch_tui(
+    loaded_config: &shepr_config::ValidatedClientConfig,
+    paths: &shepr_config::AppPaths,
+) -> CliResult<ProcessExit> {
     autodetect::ensure_terminal_geometry()
         .map_err(|error| CliError::Client(shepr_client::ClientRunError::Launch(error)))?;
 
     init_client_logging(paths)?;
     // Prompts and restart offers must run before the client takes the
     // terminal: it connects to machines with BatchMode and cannot answer one.
-    preflight::run(&loaded_config, paths);
+    preflight::run(loaded_config, paths);
     let client = autodetect::auto_detect_launch(
-        &loaded_config,
+        loaded_config,
         paths,
         shepr_remote::local_server::SERVER_READY_TIMEOUT,
         shepr_client::run_client,

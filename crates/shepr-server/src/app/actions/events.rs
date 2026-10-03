@@ -21,15 +21,13 @@ impl StateEvent {
             AppEvent::StateChanged {
                 pane_id,
                 agent,
-                state,
-                visible_blocker,
+                detection,
                 process_exited,
                 observed_at,
             } => Some(Self::StateChanged {
                 pane_id,
                 agent,
-                state,
-                visible_blocker,
+                detection,
                 process_exited,
                 observed_at,
             }),
@@ -87,6 +85,43 @@ fn warn_unrecognized_hook_identity(
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+enum HookReportKind {
+    State,
+    SessionStart,
+}
+
+/// Turns a hook admission outcome into the mutation the reducer applies. A
+/// parked report and a rejected one both leave the pane as it was, but they
+/// are different answers: a parked one waits for process evidence, a
+/// rejected one is dropped for the logged reason. The API still answers a
+/// hook with success either way, since hooks are fire-and-forget and an
+/// out-of-order or superseded report is routine, not a caller error.
+fn admit_hook_outcome(
+    pane_id: shepr_core::layout::PaneId,
+    kind: HookReportKind,
+    source: &shepr_agent::agent::AgentSource,
+    outcome: shepr_agent::ownership::HookOutcome,
+) -> Option<AgentOwnershipMutation> {
+    match &outcome {
+        shepr_agent::ownership::HookOutcome::Applied(_) => {}
+        shepr_agent::ownership::HookOutcome::Parked => tracing::debug!(
+            pane = pane_id.raw(),
+            ?kind,
+            %source,
+            "hook report parked until process evidence"
+        ),
+        shepr_agent::ownership::HookOutcome::Rejected(reason) => tracing::debug!(
+            pane = pane_id.raw(),
+            ?kind,
+            %source,
+            ?reason,
+            "hook report rejected"
+        ),
+    }
+    outcome.into_mutation()
+}
+
 // ---------------------------------------------------------------------------
 // Event handling
 // ---------------------------------------------------------------------------
@@ -131,8 +166,7 @@ impl AppState {
             StateEvent::StateChanged {
                 pane_id,
                 agent,
-                state,
-                visible_blocker,
+                detection,
                 process_exited,
                 observed_at,
             } => self.update_terminal_state(pane_id, |terminal| {
@@ -141,8 +175,8 @@ impl AppState {
                         .ownership_mut()
                         .set_detected_state_with_screen_signals_at(
                             agent,
-                            state,
-                            visible_blocker,
+                            detection.state(),
+                            detection.visible_blocker(),
                             process_exited,
                             observed_at,
                         ),
@@ -157,9 +191,10 @@ impl AppState {
                 session_ref,
             } => self.update_terminal_state(pane_id, |terminal| {
                 warn_unrecognized_hook_identity(pane_id, &origin);
-                terminal
-                    .ownership_mut()
-                    .set_hook_report_at(origin, state, session_ref, seq, sample)
+                let source = origin.source().clone();
+                let outcome =
+                    terminal.report_hook_outcome_at(origin, state, session_ref, seq, sample);
+                admit_hook_outcome(pane_id, HookReportKind::State, &source, outcome)
             }),
             StateEvent::AgentSessionReported {
                 pane_id,
@@ -170,15 +205,15 @@ impl AppState {
                 session_start_source,
             } => self.update_terminal_state(pane_id, |terminal| {
                 warn_unrecognized_hook_identity(pane_id, &origin);
-                terminal
-                    .ownership_mut()
-                    .set_agent_session_ref_for_typed_start_source_at(
-                        origin,
-                        session_ref,
-                        seq,
-                        session_start_source,
-                        sample,
-                    )
+                let source = origin.source().clone();
+                let outcome = terminal.report_session_start_outcome_at(
+                    &origin,
+                    session_ref,
+                    seq,
+                    session_start_source,
+                    sample,
+                );
+                admit_hook_outcome(pane_id, HookReportKind::SessionStart, &source, outcome)
             }),
             StateEvent::TerminalCwdReported { pane_id, cwd } => {
                 let Some(terminal_id) = self.terminal_of(pane_id).cloned() else {

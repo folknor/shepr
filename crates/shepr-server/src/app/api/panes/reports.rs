@@ -15,14 +15,19 @@ impl App {
             params.agent_session_id,
             params.agent_session_path,
         )?;
-        self.handle_internal_event(shepr_mux::events::AppEvent::HookStateReported {
+        let sample = self.hook_clock_sample();
+        self.handle_state_event(crate::app::events::StateEvent::HookStateReported {
             pane_id,
+            sample,
             session_ref,
             origin,
             state: detect_state_from_api(params.state),
             seq: params.seq,
         });
 
+        // A parked or rejected report is still answered with success: hooks
+        // are fire-and-forget, and the admission outcome is logged where it
+        // is decided (`admit_hook_outcome`).
         success(ResponseResult::Ok {})
     }
 
@@ -56,8 +61,10 @@ impl App {
             }
             None => ReportedSessionStart::Omitted,
         };
-        self.handle_internal_event(shepr_mux::events::AppEvent::AgentSessionReported {
+        let sample = self.hook_clock_sample();
+        self.handle_state_event(crate::app::events::StateEvent::AgentSessionReported {
             pane_id,
+            sample,
             session_ref,
             origin,
             seq: params.seq,
@@ -65,6 +72,15 @@ impl App {
         });
 
         success(ResponseResult::Ok {})
+    }
+
+    /// The server clock a hook report is admitted at, as the event path
+    /// samples it for queued reports.
+    fn hook_clock_sample(&self) -> shepr_agent::ownership::HookClockSample {
+        shepr_agent::ownership::HookClockSample {
+            monotonic: self.clock.now,
+            wall: self.clock.wall_now,
+        }
     }
 
     /// Decode the wire identity once; internal events carry its resolved owner.

@@ -45,6 +45,44 @@ pub struct AgentOwnershipMutation {
     pub agent_released: bool,
 }
 
+/// Admission result, independent of whether applying a report changes the pane.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HookOutcome {
+    Applied(AgentOwnershipMutation),
+    Parked,
+    Rejected(HookRejection),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HookRejection {
+    MissingSession,
+    InvalidSession,
+    ReplacedSession,
+    ProcessExited,
+    DetectedAgentConflict,
+    OwnerConflict,
+    LifecycleGate,
+    RetiredSession,
+    CrossTalk,
+    UnrecognizedStart,
+    MissingSequence,
+    OutOfOrder,
+    SourceCapacity,
+    ProcessRequired,
+    UnsupportedOrigin,
+}
+
+impl HookOutcome {
+    /// Adapt admission to callers that only consume ownership changes.
+    pub fn into_mutation(self) -> Option<AgentOwnershipMutation> {
+        match self {
+            Self::Applied(mutation) => Some(mutation),
+            Self::Parked => Some(AgentOwnershipMutation::default()),
+            Self::Rejected(_) => None,
+        }
+    }
+}
+
 /// The winning row of the effective-state arbitration table.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EffectiveStateSource {

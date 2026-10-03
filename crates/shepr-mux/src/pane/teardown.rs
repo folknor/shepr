@@ -86,7 +86,7 @@ impl ChildLiveness {
     }
 
     pub(super) fn settle_launch(&self, committed: bool) {
-        let mut state = shepr_vt::lock_auxiliary(&self.state);
+        let mut state = shepr_core::locks::lock_auxiliary(&self.state);
         let launch = if committed {
             LaunchPhase::Committed
         } else {
@@ -100,7 +100,10 @@ impl ChildLiveness {
     }
 
     pub(super) fn launch_committed(&self) -> Option<bool> {
-        match shepr_vt::lock_auxiliary(&self.state).phase.launch() {
+        match shepr_core::locks::lock_auxiliary(&self.state)
+            .phase
+            .launch()
+        {
             LaunchPhase::Pending => None,
             LaunchPhase::Committed => Some(true),
             LaunchPhase::Unconfirmed => Some(false),
@@ -113,7 +116,7 @@ impl ChildLiveness {
 
     /// The pid the pane owns, launched or not: teardown signals it.
     pub(super) fn process_id(&self) -> Option<shepr_platform::Pid> {
-        match &shepr_vt::lock_auxiliary(&self.state).identity {
+        match &shepr_core::locks::lock_auxiliary(&self.state).identity {
             ChildIdentity::Process(leader) => Some(leader.process_id()),
             ChildIdentity::Unhandled(pid) => Some(*pid),
             ChildIdentity::Absent => None,
@@ -126,7 +129,7 @@ impl ChildLiveness {
     /// commitment and before waiting ends or the identity has been reaped.
     /// One lock hold: detection and cwd reads call this per probe.
     pub(super) fn live_process_id(&self) -> Option<shepr_platform::Pid> {
-        let state = shepr_vt::lock_auxiliary(&self.state);
+        let state = shepr_core::locks::lock_auxiliary(&self.state);
         if !matches!(state.phase, ChildPhase::Running) {
             return None;
         }
@@ -154,13 +157,13 @@ impl ChildLiveness {
     }
 
     pub(super) fn mark_wait_completed(&self) {
-        let mut state = shepr_vt::lock_auxiliary(&self.state);
+        let mut state = shepr_core::locks::lock_auxiliary(&self.state);
         state.phase = ChildPhase::WaitEnded(state.phase.launch());
     }
 
     pub(super) fn wait_completed(&self) -> bool {
         matches!(
-            shepr_vt::lock_auxiliary(&self.state).phase,
+            shepr_core::locks::lock_auxiliary(&self.state).phase,
             ChildPhase::WaitEnded(_)
         )
     }
@@ -184,13 +187,13 @@ impl ChildLiveness {
     /// A test identity has no handle, so its ended wait stands in for exit
     /// and reaping.
     fn unhandled_wait_ended(&self) -> bool {
-        let state = shepr_vt::lock_auxiliary(&self.state);
+        let state = shepr_core::locks::lock_auxiliary(&self.state);
         matches!(state.identity, ChildIdentity::Unhandled(_))
             && matches!(state.phase, ChildPhase::WaitEnded(_))
     }
 
     pub(super) fn leader(&self) -> Option<Arc<shepr_platform::ProcessHandle>> {
-        match &shepr_vt::lock_auxiliary(&self.state).identity {
+        match &shepr_core::locks::lock_auxiliary(&self.state).identity {
             ChildIdentity::Process(leader) => Some(Arc::clone(leader)),
             _ => None,
         }
@@ -212,7 +215,7 @@ impl PaneTeardownTracker {
     pub const BUDGET: Duration = PANE_TEARDOWN_BUDGET;
 
     fn start(self: &Arc<Self>) -> PaneTeardownInFlight {
-        *shepr_vt::lock_auxiliary(&self.in_flight) += 1;
+        *shepr_core::locks::lock_auxiliary(&self.in_flight) += 1;
         PaneTeardownInFlight {
             tracker: Arc::clone(self),
         }
@@ -224,13 +227,13 @@ impl PaneTeardownTracker {
     /// that exits right after dropping its panes would otherwise cut the
     /// SIGTERM/SIGKILL escalation short.
     pub fn wait(&self, timeout: Duration) -> bool {
-        let guard = shepr_vt::lock_auxiliary(&self.in_flight);
+        let guard = shepr_core::locks::lock_auxiliary(&self.in_flight);
         match self
             .done
             .wait_timeout_while(guard, timeout, |in_flight| *in_flight > 0)
         {
             Ok((guard, _)) => *guard == 0,
-            Err(poisoned) => *shepr_vt::recover_auxiliary_poison(poisoned).0 == 0,
+            Err(poisoned) => *shepr_core::locks::recover_auxiliary_poison(poisoned).0 == 0,
         }
     }
 }
@@ -243,7 +246,7 @@ struct PaneTeardownInFlight {
 
 impl Drop for PaneTeardownInFlight {
     fn drop(&mut self) {
-        let mut in_flight = shepr_vt::lock_auxiliary(&self.tracker.in_flight);
+        let mut in_flight = shepr_core::locks::lock_auxiliary(&self.tracker.in_flight);
         if *in_flight == 0 {
             warn!("pane teardown completion had no matching start");
             return;
@@ -300,7 +303,7 @@ pub(super) fn shutdown_pane_processes(
 type PaneTeardownWork = Mutex<Option<(PaneTeardownInFlight, Arc<ChildLiveness>)>>;
 
 fn run_pane_teardown(pane_id: PaneId, work: &PaneTeardownWork) {
-    let taken = shepr_vt::lock_auxiliary(work).take();
+    let taken = shepr_core::locks::lock_auxiliary(work).take();
     if let Some((_in_flight, child_liveness)) = taken {
         terminate_pane_session(pane_id, &child_liveness);
     }
@@ -394,7 +397,7 @@ impl ChildLiveness {
     }
 
     pub(super) fn set_pid_for_test(&self, pid: shepr_platform::Pid) {
-        let mut state = shepr_vt::lock_auxiliary(&self.state);
+        let mut state = shepr_core::locks::lock_auxiliary(&self.state);
         state.identity = ChildIdentity::Unhandled(pid);
         state.phase = ChildPhase::Running;
     }

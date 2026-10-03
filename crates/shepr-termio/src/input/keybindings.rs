@@ -114,11 +114,7 @@ fn resolve_exact_binding(
 }
 
 fn generated_character_key(key: &TerminalKey) -> Option<TerminalKey> {
-    let mut characters = key.generated_text.as_deref()?.chars();
-    let character = characters.next()?;
-    if character.is_control() || characters.next().is_some() {
-        return None;
-    }
+    let character = key.committed_char()?;
     Some(TerminalKey::new(
         KeyCode::Char(character),
         crossterm::event::KeyModifiers::empty(),

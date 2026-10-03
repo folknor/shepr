@@ -16,7 +16,7 @@ use crate::limits::{
     PASSWD_BUFFER_GROWTH_FACTOR, PASSWD_BUFFER_INITIAL_BYTES, PASSWD_BUFFER_MAX_BYTES,
 };
 
-use shepr_core::env::{ChildEnv, EnvVar};
+use shepr_core::env::{ChildEnv, EnvVar, RegisteredEnv};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PtyCommand {
@@ -60,22 +60,31 @@ impl PtyCommand {
         }
     }
 
+    /// Supply an explicit inherited environment snapshot before applying
+    /// registered launch edits. This is also the seam for testing arbitrary
+    /// inherited variables without making them shepr-owned names.
+    pub fn with_inherited_env(mut self, environment: BTreeMap<OsString, OsString>) -> Self {
+        self.envs = environment;
+        self
+    }
+
     /// The executable path used for `execve`, independent of the child's `SHELL` value.
     pub fn program(&self) -> &OsStr {
         self.program.path().as_os_str()
     }
 
+    /// Set a registered value; arbitrary inherited names belong to the snapshot.
     pub fn env<K, V>(&mut self, key: K, value: V)
     where
-        K: AsRef<OsStr>,
+        K: Into<RegisteredEnv>,
         V: AsRef<OsStr>,
     {
         self.envs
-            .insert(key.as_ref().to_owned(), value.as_ref().to_owned());
+            .insert(key.into().as_ref().to_owned(), value.as_ref().to_owned());
     }
 
-    pub fn env_remove<K: AsRef<OsStr>>(&mut self, key: K) {
-        self.envs.remove(key.as_ref());
+    pub fn env_remove<K: Into<RegisteredEnv>>(&mut self, key: K) {
+        self.envs.remove(key.into().as_ref());
     }
 
     pub fn get_env<K: AsRef<OsStr>>(&self, key: K) -> Option<&OsStr> {
@@ -143,7 +152,7 @@ impl PtyCommand {
         };
         let argv = vec![c_string(&argv0, "pane shell argv0")?];
         let mut base = self.envs.clone();
-        base.remove(OsStr::new("OLDPWD"));
+        base.remove(ChildEnv::Oldpwd.as_ref());
         base.insert(
             OsString::from(ChildEnv::Shell.name()),
             program_path.as_os_str().to_owned(),
@@ -156,9 +165,9 @@ impl PtyCommand {
                 // `PWD` belongs to the directory the child entered; a
                 // relative one is left for the shell to reconstruct.
                 if Path::new(&path).is_absolute() {
-                    env.insert(OsString::from("PWD"), path.clone());
+                    env.insert(OsString::from(ChildEnv::Pwd.name()), path.clone());
                 } else {
-                    env.remove(OsStr::new("PWD"));
+                    env.remove(ChildEnv::Pwd.as_ref());
                 }
                 let envp = env
                     .iter()
@@ -287,20 +296,20 @@ mod tests {
     #[test]
     fn env_edits_are_visible_before_spawn() {
         let mut cmd = PtyCommand::interactive_shell(&test_shell(fixture::path_str()), false);
-        cmd.env("SHEPR_PTY_TEST_KEY", "value");
+        cmd.envs.insert("SHEPR_PTY_TEST_KEY".into(), "value".into());
         assert_eq!(cmd.get_env("SHEPR_PTY_TEST_KEY"), Some(OsStr::new("value")));
-        cmd.env_remove("SHEPR_PTY_TEST_KEY");
+        cmd.envs.remove(OsStr::new("SHEPR_PTY_TEST_KEY"));
         assert!(cmd.get_env("SHEPR_PTY_TEST_KEY").is_none());
-        cmd.env_remove("SHELL");
+        cmd.env_remove(EnvVar::Shell);
         assert!(cmd.get_env("SHELL").is_none());
     }
 
     #[test]
     fn the_launch_carries_exactly_the_command_env() {
         let mut cmd = PtyCommand::interactive_shell(&test_shell(fixture::path_str()), false);
-        cmd.env("SHEPR_PTY_TEST_SET", "1");
-        cmd.env("SHEPR_PTY_TEST_REMOVED", "1");
-        cmd.env_remove("SHEPR_PTY_TEST_REMOVED");
+        cmd.envs.insert("SHEPR_PTY_TEST_SET".into(), "1".into());
+        cmd.envs.insert("SHEPR_PTY_TEST_REMOVED".into(), "1".into());
+        cmd.envs.remove(OsStr::new("SHEPR_PTY_TEST_REMOVED"));
         let spec = cmd.launch_spec(None).expect("build launch");
         for candidate in &spec.candidates {
             let env = env_of(candidate);
@@ -317,16 +326,16 @@ mod tests {
         let scratch = shepr_test_support::ScratchDir::new("pty-command-cwd-env");
         let mut cmd = PtyCommand::interactive_shell(&test_shell(fixture::path_str()), false);
         cmd.cwd(scratch.path());
-        cmd.env("HOME", "/");
-        cmd.env("PWD", "/server/working-directory");
-        cmd.env("OLDPWD", "/server/previous-directory");
+        cmd.env(EnvVar::Home, "/");
+        cmd.env(ChildEnv::Pwd, "/server/working-directory");
+        cmd.env(ChildEnv::Oldpwd, "/server/previous-directory");
 
         let spec = cmd.launch_spec(None).expect("build launch");
         assert_eq!(spec.candidates[0].path, scratch.path().as_os_str());
         for candidate in &spec.candidates {
             let env = env_of(candidate);
-            assert_eq!(env.get(OsStr::new("PWD")), Some(&candidate.path));
-            assert!(!env.contains_key(OsStr::new("OLDPWD")));
+            assert_eq!(env.get(ChildEnv::Pwd.as_ref()), Some(&candidate.path));
+            assert!(!env.contains_key(ChildEnv::Oldpwd.as_ref()));
         }
     }
 
@@ -334,14 +343,14 @@ mod tests {
     fn fallback_candidates_are_home_then_passwd_home_then_root_without_repeats() {
         let mut cmd = PtyCommand::interactive_shell(&test_shell(fixture::path_str()), false);
         cmd.cwd("/requested");
-        cmd.env("HOME", "/home/user");
+        cmd.env(EnvVar::Home, "/home/user");
         let spec = cmd
             .launch_spec(Some(OsStr::new("/home/user")))
             .expect("build launch");
         let paths: Vec<_> = spec.candidates.iter().map(|c| c.path.clone()).collect();
         assert_eq!(paths, ["/requested", "/home/user", "/"]);
 
-        cmd.env("HOME", "relative/home");
+        cmd.env(EnvVar::Home, "relative/home");
         let spec = cmd
             .launch_spec(Some(OsStr::new("/passwd/home")))
             .expect("build launch");
@@ -364,7 +373,7 @@ mod tests {
     #[test]
     fn the_child_sees_the_selected_shell_not_an_inherited_shell_env() {
         let mut cmd = PtyCommand::interactive_shell(&test_shell(fixture::path_str()), false);
-        cmd.env("SHELL", "/__shepr_missing_shell__");
+        cmd.env(EnvVar::Shell, "/__shepr_missing_shell__");
         let spec = cmd.launch_spec(None).expect("build launch");
         for candidate in &spec.candidates {
             assert_eq!(

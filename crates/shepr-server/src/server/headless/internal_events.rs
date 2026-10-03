@@ -1,5 +1,11 @@
 use super::*;
 
+#[derive(Clone, Copy)]
+pub(super) enum EventOrigin {
+    Fresh,
+    Replay(app::CheckpointGeneration),
+}
+
 impl HeadlessServer {
     /// Handles a single internal event with forwarding logic for clipboard
     /// writes to connected clients.
@@ -12,6 +18,20 @@ impl HeadlessServer {
     ///
     /// Returns true if the event changed visual state (requiring a re-render).
     pub(super) fn handle_internal_event_with_forwarding(&mut self, ev: AppEvent) -> bool {
+        self.handle_internal_event_with_origin(ev, EventOrigin::Fresh)
+    }
+
+    /// Replays an event held for a checkpoint, through the same forwarding
+    /// path as every other internal event.
+    pub(super) fn replay_checkpointed_internal_event(
+        &mut self,
+        ev: AppEvent,
+        checkpoint_generation: app::CheckpointGeneration,
+    ) -> bool {
+        self.handle_internal_event_with_origin(ev, EventOrigin::Replay(checkpoint_generation))
+    }
+
+    fn handle_internal_event_with_origin(&mut self, ev: AppEvent, origin: EventOrigin) -> bool {
         let runtime_origin = match &ev {
             AppEvent::Runtime {
                 pane_id,
@@ -20,12 +40,7 @@ impl HeadlessServer {
             } => Some((*pane_id, *generation)),
             _ => None,
         };
-        // PendingCheckpointedPaneExit retains only an AppEvent, so replay
-        // carries its checkpoint generation through this one-dispatch slot.
-        // Passing an explicit origin instead requires the queued replay item
-        // and its scheduler to retain that origin too.
         let Some(ev) = self.app.admit_runtime_event(ev) else {
-            self.replaying_checkpointed_pane_exit = None;
             return false;
         };
         // After a termination signal, the panes are most likely dying from the
@@ -35,7 +50,6 @@ impl HeadlessServer {
         // Leave the layout as it is for the final save; the process is about
         // to exit anyway.
         if matches!(ev, AppEvent::PaneDied { .. }) && self.lifecycle.signal_quit_requested() {
-            self.replaying_checkpointed_pane_exit = None;
             return false;
         }
         match &ev {
@@ -65,7 +79,10 @@ impl HeadlessServer {
                 // Publishing the process exit can change what the sidebar shows
                 // (the agent goes idle) even when the pane itself stays, held for
                 // its checkpoint or not removed at all.
-                let replay_generation = self.replaying_checkpointed_pane_exit.take();
+                let replay_generation = match origin {
+                    EventOrigin::Fresh => None,
+                    EventOrigin::Replay(generation) => Some(generation),
+                };
                 // A replayed exit was held for its checkpoint, so it was
                 // decided as checkpointed; it is finished that way whatever
                 // has happened to the pane since.
@@ -155,7 +172,9 @@ impl HeadlessServer {
 }
 
 /// Keep runtime identity attached while a pane exit waits so admission checks
-/// the same producer again when the queued event is replayed.
+/// the same producer again when the queued event is replayed. An event that
+/// came out of a runtime envelope is always a runtime payload; anything else
+/// is returned bare, which admission refuses rather than misattributes.
 fn preserve_runtime_origin(
     origin: Option<(
         shepr_core::layout::PaneId,
@@ -163,12 +182,15 @@ fn preserve_runtime_origin(
     )>,
     event: AppEvent,
 ) -> AppEvent {
-    match origin {
-        Some((pane_id, generation)) => AppEvent::Runtime {
+    let Some((pane_id, generation)) = origin else {
+        return event;
+    };
+    match shepr_mux::events::RuntimeEvent::try_from(event) {
+        Ok(payload) => AppEvent::Runtime {
             pane_id,
             generation,
-            event: Box::new(event),
+            event: Box::new(payload),
         },
-        None => event,
+        Err(event) => event,
     }
 }

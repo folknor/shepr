@@ -166,7 +166,7 @@ impl PaneRead<'_> {
         &self,
         area_width: u16,
         area_height: u16,
-    ) -> Option<TerminalDirtyPatchSnapshot> {
+    ) -> Result<TerminalDirtyPatchSnapshot, crate::pane::PatchUnavailable> {
         // Patch, revision and metadata are read in one terminal-core hold.
         self.terminal
             .collect_dirty_patch_snapshot(area_width, area_height)
@@ -174,6 +174,9 @@ impl PaneRead<'_> {
 
     /// Odd means unavailable or torn; it must never certify a stable surface.
     pub fn content_seq(&self) -> u64 {
-        shepr_vt::lock_terminal_core(&self.terminal.core).map_or(1, |core| core.content_revision)
+        self.terminal
+            .core
+            .lock()
+            .map_or(1, |core| core.content_revision)
     }
 }

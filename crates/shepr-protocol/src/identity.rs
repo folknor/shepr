@@ -196,18 +196,29 @@ impl PartialEq<BootId> for String {
     }
 }
 
-/// Correlates one client shell operation with its endpoint response.
+/// Correlates one client operation with its endpoint response.
 ///
-/// Unlike the other identities this one is minted from any text, on purpose.
-/// The client shell picks it (it writes `client-shell...` forms), and the
-/// server answers whatever id a command carried, so any string, empty
-/// included, is a legitimate request id and there is no canonical form to
-/// check. It is only ever compared for equality.
+/// Live clients allocate identities from one process-wide sequence. Request purpose
+/// and view ownership live in the client's ledger and lanes, never in this text.
+/// Text construction remains available for explicit external correlation values.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(transparent)]
 pub struct RequestId(String);
 
 impl RequestId {
+    /// Allocates a distinct identity across all request lanes in this client process.
+    pub fn allocate() -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        let value = NEXT
+            .try_update(
+                std::sync::atomic::Ordering::Relaxed,
+                std::sync::atomic::Ordering::Relaxed,
+                |value| value.checked_add(1),
+            )
+            .expect("request identity sequence exhausted");
+        Self(value.to_string())
+    }
+
     pub fn as_str(&self) -> &str {
         &self.0
     }

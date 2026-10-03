@@ -2,7 +2,9 @@ use clap::ArgMatches;
 
 use shepr_api::client::{ApiClient, ApiClientError};
 use shepr_api::schema::Request;
-use shepr_remote::{COMMAND_CLIENT, COMMAND_REMOTE_CLIENT_BRIDGE, COMMAND_SERVER, COMMAND_STATUS};
+use shepr_remote::{
+    COMMAND_CLIENT, COMMAND_DETECT, COMMAND_REMOTE_CLIENT_BRIDGE, COMMAND_SERVER, COMMAND_STATUS,
+};
 
 /// Writes CLI output to stdout, as `std::print!` does (a failed write
 /// panics), unless a test has captured this thread's output.
@@ -68,7 +70,7 @@ impl CliCommand {
                 status::ParsedCommand::Client { json } => Self::ClientStatus { json },
             },
             COMMAND_SERVER => Self::Server(server::parse(matches)?),
-            "detect" => Self::Detect(detect::parse(matches)?),
+            COMMAND_DETECT => Self::Detect(detect::parse(matches)?),
             _ => return None,
         })
     }
@@ -125,15 +127,15 @@ fn root_exit_flags_before_subcommand(args: &[String]) -> Option<Launch> {
     let mut version = false;
     let mut has_subcommand = false;
 
+    let specification = spec::command();
     for argument in args.iter().skip(1).map(String::as_str) {
         match argument {
             "-h" | "--help" => help = true,
             "-V" | "--version" => version = true,
-            COMMAND_CLIENT
-            | COMMAND_REMOTE_CLIENT_BRIDGE
-            | COMMAND_SERVER
-            | COMMAND_STATUS
-            | "detect" => {
+            name if specification
+                .get_subcommands()
+                .any(|command| command.get_name() == name) =>
+            {
                 has_subcommand = true;
                 break;
             }
@@ -178,16 +180,12 @@ pub(crate) fn print_help() {
 
 /// Runs one parsed CLI command. Launch modes are handled by `main` directly.
 pub(crate) fn run(command: &CliCommand) -> CliResult<i32> {
-    if let CliCommand::Detect(detect::Command::Explain(detect::ExplainArgs {
-        source: detect::ExplainSource::File { path, agent },
-        json,
-        verbose,
-    })) = command
-    {
-        return detect::run_file_explain(path, agent, *json, *verbose);
-    }
-
     match command {
+        CliCommand::Detect(detect::Command::Explain(detect::ExplainArgs {
+            source: detect::ExplainSource::File { path, agent },
+            json,
+            verbose,
+        })) => detect::run_file_explain(path, agent, *json, *verbose),
         CliCommand::ClientStatus { json } => {
             // This identity report reads only the binaries, never sockets or
             // runtime paths, so it works even where application paths cannot
@@ -236,7 +234,7 @@ fn ensure_server_build_matches(
         return Ok(());
     }
     let response = shepr_api::schema::ErrorResponse {
-        id: request_id.to_owned(),
+        id: Some(request_id.to_owned()),
         error: shepr_api::schema::ErrorBody::new(
             &shepr_api::error::ApiErrorCode::BuildMismatch,
             format!(
@@ -283,7 +281,7 @@ fn map_server_not_running_or_io(
                 },
             );
             CliError::Response(shepr_api::schema::ErrorResponse {
-                id: request_id.to_owned(),
+                id: Some(request_id.to_owned()),
                 error: shepr_api::schema::ErrorBody::new(
                     &shepr_api::error::ApiErrorCode::ServerNotRunning,
                     message,
@@ -563,7 +561,7 @@ mod tests {
         let CliError::Response(response) = &mapped else {
             panic!("dead-server connect failure should carry a response");
         };
-        assert_eq!(response.id, "cli:detect:capture");
+        assert_eq!(response.id.as_deref(), Some("cli:detect:capture"));
         assert_eq!(
             response.error.code,
             shepr_api::error::ApiErrorCode::ServerNotRunning

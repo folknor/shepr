@@ -48,6 +48,7 @@ impl ClientShellState {
         if has_surface && !self.surfaces.is_paired() {
             return None;
         }
+        let mut composition = crate::shell::state::LastComposition::default();
         let layout = self.layout(cols, rows);
         let (dragged_workspace_id, workspace_drop_indicator_row) = match &self.chrome_drag {
             Some(ClientChromeDrag::Workspace {
@@ -162,47 +163,20 @@ impl ClientShellState {
             // The surface may have been produced for another layout: a resize or sidebar toggle
             // keeps the retained surface until the resized one arrives, a resize can race a surface
             // already in flight. `compose_pane_surface` clips the cells; the hits are clipped to
-            // match (`clip_pane_hit`), so mouse input and the copy cursor never target rows or
+            // match through `PaneHit::from_wire`, so mouse input and the copy cursor never target rows or
             // columns that are not on screen. Later draws that use these rects still go through
             // `Buffer::cell_mut`, never `buffer[(x, y)]`.
             let surface_overflows = surface_overflows_area(surface, layout.pane_surface);
+            composition.pane_cells_occluded |= surface_overflows;
             self.hits.panes = surface
                 .panes
                 .iter()
                 .filter_map(|pane| {
-                    let hit = PaneHit {
-                        rect: Rect::new(
-                            layout.pane_surface.x.saturating_add(pane.rect.x),
-                            layout.pane_surface.y.saturating_add(pane.rect.y),
-                            pane.rect.width,
-                            pane.rect.height,
-                        ),
-                        inner_rect: Rect::new(
-                            layout.pane_surface.x.saturating_add(pane.inner_rect.x),
-                            layout.pane_surface.y.saturating_add(pane.inner_rect.y),
-                            pane.inner_rect.width,
-                            pane.inner_rect.height,
-                        ),
-                        scrollbar_rect: pane.scrollbar_rect.map(|rect| {
-                            Rect::new(
-                                layout.pane_surface.x.saturating_add(rect.x),
-                                layout.pane_surface.y.saturating_add(rect.y),
-                                rect.width,
-                                rect.height,
-                            )
-                        }),
-                        scroll: pane.scroll,
-                        pane_id: pane.pane_id,
-                        mouse_reporting: pane.mouse_reporting,
-                        sgr_pixel_mouse: pane.sgr_pixel_mouse,
-                        pixel_width: pane.pixel_width,
-                        pixel_height: pane.pixel_height,
-                    };
-                    if surface_overflows {
-                        clip_pane_hit(hit, layout.pane_surface)
-                    } else {
-                        Some(hit)
-                    }
+                    PaneHit::from_wire(
+                        pane,
+                        (layout.pane_surface.x, layout.pane_surface.y),
+                        layout.pane_surface,
+                    )
                 })
                 .collect();
             let topology_signature = pane_surface_topology_signature(surface);
@@ -307,6 +281,7 @@ impl ClientShellState {
                 }
             }
             if self.mode == ClientShellMode::Copy {
+                composition.pane_cursor_overridden = true;
                 frame.cursor = None;
                 if let Some((x, y)) = self
                     .copy_mode
@@ -356,6 +331,7 @@ impl ClientShellState {
             }
         };
         if !self.endpoint_usable(self.endpoints.presented()) {
+            composition.pane_cursor_overridden = true;
             frame.cursor = None;
             self.hits.panes.clear();
             self.hits.pane_splits.clear();
@@ -401,9 +377,12 @@ impl ClientShellState {
                 );
                 opaque.push(self.hits.notification_toast);
             }
+            composition.pane_cells_occluded |= opaque.iter().any(|rect| !rect.is_empty());
             overwrite(&mut frame, &opaque, &scratch);
         }
         if let Some(overlay) = self.overlay.as_ref() {
+            composition.pane_cells_occluded = true;
+            composition.pane_cursor_overridden = true;
             // Every overlay renderer draws into a fresh scratch buffer and reports what it
             // painted. The frame is touched only when the renderer succeeds, so one that
             // gives up leaves it exactly as it was for the fallback hint below.
@@ -509,6 +488,7 @@ impl ClientShellState {
                 &self.config.keybinds,
                 &self.config.palette,
             ) {
+                composition.pane_cells_occluded = true;
                 overwrite(&mut frame, &[bar], &scratch);
                 if frame
                     .cursor
@@ -524,6 +504,7 @@ impl ClientShellState {
         }
         // Both pane layers pass through the notice stage, so its lifetime starts here.
         self.notices.drawn(self.now);
+        self.last_composition = composition;
         self.record_composed_frame();
         Some(frame)
     }
@@ -538,43 +519,6 @@ impl ClientShellState {
 /// (the panes have not grown into a larger area yet) is drawn whole and its hits stay exact.
 pub(in crate::shell) fn surface_overflows_area(surface: &PaneSurfaceFrame, area: Rect) -> bool {
     surface.frame.width > area.width || surface.frame.height > area.height
-}
-
-fn clip_rect(rect: Rect, area: Rect) -> Rect {
-    let x = rect.x.max(area.x);
-    let y = rect.y.max(area.y);
-    let right = rect.right().min(area.right());
-    let bottom = rect.bottom().min(area.bottom());
-    Rect {
-        x,
-        y,
-        width: right.saturating_sub(x),
-        height: bottom.saturating_sub(y),
-    }
-}
-
-/// Clips a pane hit from an oversized surface to the visible pane area. Surface rects start at
-/// or after the area's origin, so clipping keeps each origin and mouse coordinates keep mapping
-/// to the same pane cells; a pane with no visible content cell is dropped. Pixel extents
-/// describe the whole pane and would stretch over the clipped rect, so a clipped hit reports
-/// cell positions only. Copy-mode coherence compares geometry with `inner_rect`, so the copy
-/// cursor and search highlights of a clipped pane wait for a surface that fits.
-fn clip_pane_hit(mut hit: PaneHit, area: Rect) -> Option<PaneHit> {
-    let inner = clip_rect(hit.inner_rect, area);
-    if inner.is_empty() {
-        return None;
-    }
-    if inner != hit.inner_rect {
-        hit.pixel_width = 0;
-        hit.pixel_height = 0;
-    }
-    hit.inner_rect = inner;
-    hit.rect = clip_rect(hit.rect, area);
-    hit.scrollbar_rect = hit
-        .scrollbar_rect
-        .map(|rect| clip_rect(rect, area))
-        .filter(|rect| !rect.is_empty());
-    Some(hit)
 }
 
 fn client_copy_surface_coherent(copy_mode: Option<&ClientCopyModeState>, hit: &PaneHit) -> bool {

@@ -2,8 +2,26 @@ use super::*;
 use crate::server::ClientId;
 use crate::server::clients::ClientPaneIdentity;
 use crate::server::pane_surface::PaneSurfaceMetadata;
+use shepr_mux::pane::PatchRow;
 use shepr_protocol::WorkspaceId;
 use tracing::trace;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(super) enum RetainedSurfaceFallback {
+    ClientMissing,
+    RecomputePending,
+    NoBaseline,
+    BaselineMismatch,
+    SynchronizedVisible,
+    RuntimeMissing,
+    TerminalSnapshot(shepr_mux::pane::PatchUnavailable),
+    AlternateScreenGeometry,
+    Hyperlink,
+    InvalidPatch,
+    ScrollbarPatch,
+    SynchronizedDuringPatch,
+    PatchAdmission(crate::server::render_stream::PatchPreparationFailure),
+}
 
 fn rect_fits_frame(rect: shepr_protocol::SurfaceRect, frame: &FrameData) -> bool {
     rect.x.saturating_add(rect.width) <= frame.width
@@ -22,9 +40,9 @@ fn patch_intersects_hyperlinks(
     patch
         .rows
         .iter()
-        .filter(|(local_y, _)| *local_y < area.height)
-        .any(|(local_y, _)| {
-            let start = usize::from(area.y + *local_y) * width + usize::from(area.x);
+        .filter(|row| row.y < area.height)
+        .any(|row| {
+            let start = usize::from(area.y + row.y) * width + usize::from(area.x);
             let end = start + usize::from(area.width);
             end > frame.cells.len()
                 || frame.cells[start..end]
@@ -56,7 +74,7 @@ fn changed_rows(
         return None;
     }
     let mut rows = Vec::new();
-    for (local_y, cells) in &patch.rows {
+    for PatchRow { y: local_y, cells } in &patch.rows {
         if *local_y >= area.height {
             continue;
         }
@@ -343,7 +361,7 @@ impl HeadlessServer {
         };
         let repeated = !self.retained_surface_fallbacks_reported.insert(reason);
         debug!(
-            reason,
+            ?reason,
             repeated, "retained pane surface fell back to a full render"
         );
     }
@@ -362,7 +380,7 @@ impl HeadlessServer {
     ) -> PatchOutcome {
         let mut outcome = PatchOutcome::default();
         macro_rules! fallback {
-            ($reason:literal, $id:expr, $label:lifetime) => {{
+            ($reason:expr, $id:expr, $label:lifetime) => {{
                 self.retained_surface_fallback_reason.get_or_insert($reason);
                 outcome.promote.push($id);
                 continue $label;
@@ -393,20 +411,20 @@ impl HeadlessServer {
         let mut layouts = HashMap::new();
         'targets: for target in &targets {
             let Some(client) = self.clients.get(&target.client_id) else {
-                fallback!("client_missing", target.client_id, 'targets);
+                fallback!(RetainedSurfaceFallback::ClientMissing, target.client_id, 'targets);
             };
             if client.render_state.requires_recompute() {
-                fallback!("recompute_pending", target.client_id, 'targets);
+                fallback!(RetainedSurfaceFallback::RecomputePending, target.client_id, 'targets);
             }
             let Some(surface) = client.render_state.last_pane_surface() else {
-                fallback!("no_baseline", target.client_id, 'targets);
+                fallback!(RetainedSurfaceFallback::NoBaseline, target.client_id, 'targets);
             };
             if surface.boot_id != self.client_shell_boot_id
                 || surface.projection_revision != client.shell_state().projection_revision
                 || surface.frame.width != target.terminal_size.cols.get()
                 || surface.frame.height != target.terminal_size.rows.get()
             {
-                fallback!("baseline_mismatch", target.client_id, 'targets);
+                fallback!(RetainedSurfaceFallback::BaselineMismatch, target.client_id, 'targets);
             }
             let identities = &client.surface_pane_identities;
             let layout = if let Some(identity) = identities.first() {
@@ -417,7 +435,7 @@ impl HeadlessServer {
                     surface.frame.width,
                     surface.frame.height,
                 ) else {
-                    fallback!("baseline_mismatch", target.client_id, 'targets);
+                    fallback!(RetainedSurfaceFallback::BaselineMismatch, target.client_id, 'targets);
                 };
                 Some(layout)
             } else {
@@ -428,15 +446,17 @@ impl HeadlessServer {
                     let Some(panes) =
                         resolve_retained_panes(&self.app, surface, identities, layout)
                     else {
-                        fallback!("baseline_mismatch", target.client_id, 'targets);
+                        fallback!(RetainedSurfaceFallback::BaselineMismatch, target.client_id, 'targets);
                     };
                     panes
                 }
                 None if surface.panes.is_empty() => Vec::new(),
-                None => fallback!("baseline_mismatch", target.client_id, 'targets),
+                None => {
+                    fallback!(RetainedSurfaceFallback::BaselineMismatch, target.client_id, 'targets)
+                }
             };
             if has_synchronized_pane(&self.app, &panes) {
-                fallback!("synchronized_visible", target.client_id, 'targets);
+                fallback!(RetainedSurfaceFallback::SynchronizedVisible, target.client_id, 'targets);
             }
             recipients.push(RetainedRecipient {
                 client_id: target.client_id,
@@ -451,7 +471,7 @@ impl HeadlessServer {
         let mut collected = Vec::with_capacity(pty_sources.len());
         let mut failed_sources = HashSet::new();
         macro_rules! source_fallback {
-            ($reason:literal, $source:expr) => {{
+            ($reason:expr, $source:expr) => {{
                 self.retained_surface_fallback_reason.get_or_insert($reason);
                 failed_sources.insert(*$source);
                 continue;
@@ -485,13 +505,14 @@ impl HeadlessServer {
                 workspace_index,
                 pane_id,
             ) else {
-                source_fallback!("runtime_missing", source);
+                source_fallback!(RetainedSurfaceFallback::RuntimeMissing, source);
             };
-            let Some(snapshot) = runtime.read().collect_dirty_patch_snapshot(width, height) else {
-                source_fallback!("terminal_snapshot", source);
+            let snapshot = match runtime.read().collect_dirty_patch_snapshot(width, height) {
+                Ok(snapshot) => snapshot,
+                Err(reason) => {
+                    source_fallback!(RetainedSurfaceFallback::TerminalSnapshot(reason), source)
+                }
             };
-            // A fallback read yields no snapshot at all (`terminal_snapshot`
-            // above); `None` here means the terminal is clean.
             let metadata = PaneSurfaceMetadata::from_dirty_snapshot(&snapshot);
             let patch = snapshot
                 .patch
@@ -531,26 +552,26 @@ impl HeadlessServer {
                     continue;
                 };
                 let Some(pane) = panes.get_mut(pane_index) else {
-                    fallback!("baseline_mismatch", client_id, 'recipients);
+                    fallback!(RetainedSurfaceFallback::BaselineMismatch, client_id, 'recipients);
                 };
                 // Alternate-screen transitions change whether the pane reserves
                 // a scrollbar gutter. Recompute layout and resize the runtime
                 // through the complete renderer before retaining further rows.
                 if pane.alternate_screen_active != collected_pane.metadata.alternate_screen_active {
-                    fallback!("alternate_screen_geometry", client_id, 'recipients);
+                    fallback!(RetainedSurfaceFallback::AlternateScreenGeometry, client_id, 'recipients);
                 }
                 if patch_intersects_hyperlinks(
                     &surface.frame,
                     pane.inner_rect,
                     &collected_pane.patch,
                 ) {
-                    fallback!("hyperlink", client_id, 'recipients);
+                    fallback!(RetainedSurfaceFallback::Hyperlink, client_id, 'recipients);
                 }
                 let previous_pane = pane.clone();
                 let Some(rows) =
                     changed_rows(&surface.frame, pane.inner_rect, &collected_pane.patch)
                 else {
-                    fallback!("invalid_patch", client_id, 'recipients);
+                    fallback!(RetainedSurfaceFallback::InvalidPatch, client_id, 'recipients);
                 };
                 patch_rows.extend(rows);
                 let Some(scrollbar_rows) = retained_scrollbar_patch(
@@ -561,7 +582,7 @@ impl HeadlessServer {
                     collected_pane.metadata.alternate_screen_active,
                     collected_pane.metadata.scroll(),
                 ) else {
-                    fallback!("scrollbar_patch", client_id, 'recipients);
+                    fallback!(RetainedSurfaceFallback::ScrollbarPatch, client_id, 'recipients);
                 };
                 patch_rows.extend(scrollbar_rows);
                 collected_pane.metadata.apply(pane);
@@ -602,13 +623,18 @@ impl HeadlessServer {
             };
             if synchronized.contains(&client_id) {
                 self.retained_surface_fallback_reason
-                    .get_or_insert("synchronized_during_patch");
+                    .get_or_insert(RetainedSurfaceFallback::SynchronizedDuringPatch);
                 outcome.promote.push(client_id);
                 continue;
             }
-            let Some(prepared) = client.render_state.prepare_pane_surface_patch(patch) else {
-                outcome.promote.push(client_id);
-                continue;
+            let prepared = match client.render_state.prepare_pane_surface_patch(patch) {
+                Ok(prepared) => prepared,
+                Err(reason) => {
+                    self.retained_surface_fallback_reason
+                        .get_or_insert(RetainedSurfaceFallback::PatchAdmission(reason));
+                    outcome.promote.push(client_id);
+                    continue;
+                }
             };
             let serialized = match shepr_protocol::encode_message(prepared.message()) {
                 Ok(serialized) => serialized,
@@ -847,7 +873,10 @@ mod tests {
             hyperlinks: Vec::new(),
         };
         let patch = shepr_mux::pane::TerminalDirtyPatch {
-            rows: vec![(0, vec![cell(" "), cell("x"), cell("y"), cell(" ")])],
+            rows: vec![PatchRow {
+                y: 0,
+                cells: vec![cell(" "), cell("x"), cell("y"), cell(" ")],
+            }],
         };
 
         let rows = changed_rows(
@@ -883,7 +912,10 @@ mod tests {
             hyperlinks: Vec::new(),
         };
         let patch = shepr_mux::pane::TerminalDirtyPatch {
-            rows: vec![(0, vec![cell("x"), cell("z"), cell("q")])],
+            rows: vec![PatchRow {
+                y: 0,
+                cells: vec![cell("x"), cell("z"), cell("q")],
+            }],
         };
 
         let rows = changed_rows(
@@ -918,15 +950,15 @@ mod tests {
         let two = shepr_protocol::GridCellWidth::Two;
         // Collected once at the wider recipient's width: the pair is whole.
         let patch = shepr_mux::pane::TerminalDirtyPatch {
-            rows: vec![(
-                0,
-                vec![
+            rows: vec![PatchRow {
+                y: 0,
+                cells: vec![
                     pane_cell("a", one),
                     pane_cell("\u{754c}", two),
                     pane_cell("", one),
                     pane_cell("b", one),
                 ],
-            )],
+            }],
         };
         let frame = |width: u16| FrameData {
             width,
@@ -957,7 +989,7 @@ mod tests {
         assert_eq!(applied.cells[1].grid_width, one);
         assert!(shepr_protocol::pane_row_is_normalized(&applied.cells));
         // The shared row is untouched for the wider recipient.
-        assert_eq!(patch.rows[0].1[1].grid_width, two);
+        assert_eq!(patch.rows[0].cells[1].grid_width, two);
     }
 
     #[test]
@@ -970,7 +1002,16 @@ mod tests {
             hyperlinks: Vec::new(),
         };
         let patch = shepr_mux::pane::TerminalDirtyPatch {
-            rows: vec![(0, vec![cell(" "); 4]), (1, vec![cell(" "); 4])],
+            rows: vec![
+                PatchRow {
+                    y: 0,
+                    cells: vec![cell(" "); 4],
+                },
+                PatchRow {
+                    y: 1,
+                    cells: vec![cell(" "); 4],
+                },
+            ],
         };
 
         let rows = changed_rows(

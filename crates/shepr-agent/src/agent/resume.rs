@@ -105,9 +105,9 @@ pub struct AgentResumePlan {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 pub struct PersistedAgentSession {
-    pub source: AgentSource,
-    pub agent: Agent,
-    pub session_ref: AgentSessionRef,
+    pub(crate) source: AgentSource,
+    pub(crate) agent: Agent,
+    pub(crate) session_ref: AgentSessionRef,
 }
 
 impl<'de> Deserialize<'de> for PersistedAgentSession {
@@ -248,6 +248,18 @@ impl PersistedAgentSession {
 
     pub fn is_resumable(&self) -> bool {
         self.source.agent() == Some(self.agent) && self.is_valid_identity()
+    }
+
+    pub fn source(&self) -> &AgentSource {
+        &self.source
+    }
+
+    pub const fn agent(&self) -> Agent {
+        self.agent
+    }
+
+    pub fn session_ref(&self) -> &AgentSessionRef {
+        &self.session_ref
     }
 
     pub fn new(source: AgentSource, agent: Agent, session_ref: AgentSessionRef) -> Option<Self> {

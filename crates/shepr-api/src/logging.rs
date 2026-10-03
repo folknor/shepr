@@ -1,24 +1,22 @@
+use crate::error::ApiLogOutcome;
+use crate::schema::MethodTraits;
+
 /// Request params are deliberately not logged, here or in the other request
 /// events: request params can carry user content. Keep them out when adding
 /// fields.
-pub(crate) fn api_request_started(
-    request_id: &str,
-    method_name: &str,
-    mutates_ui: bool,
-    routine: bool,
-) {
+pub(crate) fn api_request_started(request_id: &str, method: MethodTraits) {
     let event = "api.request.start";
     let subsystem = "api";
     let outcome = "started";
     let message = "api request received";
-    if mutates_ui && !routine {
+    if method.mutates_ui && !method.routine {
         tracing::info!(
             event,
             subsystem,
             outcome,
             request_id,
-            method = method_name,
-            changes_ui = mutates_ui,
+            method = method.name,
+            changes_ui = method.mutates_ui,
             "{message}"
         );
     } else {
@@ -27,8 +25,8 @@ pub(crate) fn api_request_started(
             subsystem,
             outcome,
             request_id,
-            method = method_name,
-            changes_ui = mutates_ui,
+            method = method.name,
+            changes_ui = method.mutates_ui,
             "{message}"
         );
     }
@@ -36,30 +34,29 @@ pub(crate) fn api_request_started(
 
 pub(crate) fn api_request_completed(
     request_id: &str,
-    method_name: &str,
-    mutates_ui: bool,
-    routine: bool,
-    outcome: &'static str,
+    method: MethodTraits,
+    outcome: ApiLogOutcome,
 ) {
     let event = "api.request.complete";
     let subsystem = "api";
     let message = "api request completed";
-    if outcome != "ok" || (mutates_ui && !routine) {
+    let outcome_value = outcome.as_str();
+    if outcome != ApiLogOutcome::Ok || (method.mutates_ui && !method.routine) {
         tracing::info!(
             event,
             subsystem,
-            outcome,
+            outcome = outcome_value,
             request_id,
-            method = method_name,
+            method = method.name,
             "{message}"
         );
     } else {
         tracing::debug!(
             event,
             subsystem,
-            outcome,
+            outcome = outcome_value,
             request_id,
-            method = method_name,
+            method = method.name,
             "{message}"
         );
     }

@@ -1,7 +1,7 @@
 //! Shared wire protocol and presentation encoding code.
 
 mod build;
-pub use build::{BuildIdentity, BuildIdentityParseError, BuildVersion};
+pub use build::{BuildIdentity, BuildIdentityParseError, BuildVersion, PACKAGE_VERSION};
 pub mod codec;
 pub mod command;
 pub mod endpoint;
@@ -56,7 +56,7 @@ pub use surface::*;
 /// separate machine-comparison field.
 pub fn build_version() -> String {
     BuildVersion {
-        version: env!("CARGO_PKG_VERSION").to_owned(),
+        version: PACKAGE_VERSION.to_owned(),
         build_id: BUILD_ID.parse().unwrap_or(BuildIdentity::Unidentifiable),
     }
     .to_string()
@@ -99,10 +99,7 @@ mod build_version_tests {
 
     #[test]
     fn version_carries_the_build_fingerprint() {
-        assert_eq!(
-            build_version(),
-            format!("{}+{}", env!("CARGO_PKG_VERSION"), BUILD_ID)
-        );
+        assert_eq!(build_version(), format!("{PACKAGE_VERSION}+{BUILD_ID}"));
         assert!(is_identifiable_build_id(BUILD_ID), "{BUILD_ID}");
         assert!(BuildIdentity::for_this_build().is_this_build());
     }

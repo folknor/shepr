@@ -71,9 +71,7 @@ fn client_shell_geometry_error(
     {
         return Some(shepr_protocol::SurfaceRefusal::TooManyCells);
     }
-    if cell_width_px > shepr_protocol::MAX_CELL_SIZE_PX
-        || cell_height_px > shepr_protocol::MAX_CELL_SIZE_PX
-    {
+    if !shepr_core::geometry::CellPx::within_host_limit(cell_width_px, cell_height_px) {
         return Some(shepr_protocol::SurfaceRefusal::CellTooLarge);
     }
     None
@@ -129,11 +127,7 @@ pub(crate) enum ServerEvent {
     /// A client-owned shell completed its dedicated handshake.
     ShellConnected {
         client_id: ClientId,
-        surface_cols: u16,
-        surface_rows: u16,
-        cell_width_px: u32,
-        cell_height_px: u32,
-        pixel_mouse: bool,
+        geometry: shepr_core::geometry::HostGeometry,
         mouse_capture: bool,
         surface_active: bool,
         outbox: ClientOutbox,
@@ -143,11 +137,7 @@ pub(crate) enum ServerEvent {
     /// A client-owned shell recomputed its pane viewport.
     ShellResize {
         client_id: ClientId,
-        surface_cols: u16,
-        surface_rows: u16,
-        cell_width_px: u32,
-        cell_height_px: u32,
-        pixel_mouse: bool,
+        geometry: shepr_core::geometry::HostGeometry,
     },
     /// A client-owned shell delivered semantic input to one stable pane target.
     ShellPaneInput {
@@ -300,13 +290,9 @@ fn handle_client_handshake(
         return Ok(());
     }
 
-    // Oversized raw dimensions were rejected above, so `from_wire`'s
+    // Oversized raw dimensions were rejected above, so `cell_geometry`'s
     // oversize fallback cannot be reached on this transport path.
-    let cell = shepr_protocol::ProtocolCellSize::from_wire(
-        hello.geometry.width(),
-        hello.geometry.height(),
-        hello.geometry.pixel_mouse,
-    );
+    let cell = hello.geometry.cell_geometry();
 
     if stop_signal.is_requested() {
         return Ok(());
@@ -342,11 +328,7 @@ fn handle_client_handshake(
     // The exact-build preamble guarantees support for semantic surfaces.
     let connected = ServerEvent::ShellConnected {
         client_id,
-        surface_cols: hello.geometry.cols(),
-        surface_rows: hello.geometry.rows(),
-        cell_width_px: cell.width(),
-        cell_height_px: cell.height(),
-        pixel_mouse: cell.exact,
+        geometry: shepr_core::geometry::HostGeometry::with_cell(hello.geometry.grid(), cell),
         mouse_capture: hello.mouse_capture,
         surface_active: hello.surface_active,
         outbox,
@@ -501,21 +483,11 @@ fn client_read_loop_with_endpoint_controls(
                     break;
                 }
                 // Oversized raw dimensions were rejected above, so
-                // `from_wire`'s oversize fallback cannot be reached here.
-                let cell = shepr_protocol::ProtocolCellSize::from_wire(
-                    geometry.width(),
-                    geometry.height(),
-                    geometry.pixel_mouse,
-                );
-                let (cell_width_px, cell_height_px, pixel_mouse) =
-                    (cell.width(), cell.height(), cell.exact);
+                // `cell_geometry`'s oversize fallback cannot be reached here.
+                let cell = geometry.cell_geometry();
                 ServerEvent::ShellResize {
                     client_id,
-                    surface_cols: surface_size.cols,
-                    surface_rows: surface_size.rows,
-                    cell_width_px,
-                    cell_height_px,
-                    pixel_mouse,
+                    geometry: shepr_core::geometry::HostGeometry::with_cell(geometry.grid(), cell),
                 }
             }
             ClientMessage::ClientShellHostTheme { update } => {
@@ -1118,19 +1090,15 @@ mod tests {
         {
             ServerEvent::ShellConnected {
                 client_id,
-                surface_cols,
-                surface_rows,
-                cell_width_px,
-                cell_height_px,
-                pixel_mouse,
+                geometry,
                 mouse_capture,
                 surface_active,
                 outbox: writer,
             } => {
                 assert_eq!(client_id, 43);
-                assert_eq!((surface_cols, surface_rows), (80, 29));
-                assert_eq!((cell_width_px, cell_height_px), (8, 16));
-                assert!(pixel_mouse);
+                assert_eq!((geometry.cols(), geometry.rows()), (80, 29));
+                assert_eq!((geometry.cell_width(), geometry.cell_height()), (8, 16));
+                assert!(geometry.exact());
                 assert!(mouse_capture);
                 assert!(surface_active);
                 drop(writer);
@@ -1281,12 +1249,9 @@ mod tests {
             recv_server_event(&mut server_event_rx, "shell resize"),
             ServerEvent::ShellResize {
                 client_id,
-                surface_cols: 60,
-                surface_rows: 15,
-                cell_width_px: 8,
-                cell_height_px: 16,
-                pixel_mouse: true,
+                geometry,
             } if client_id == ClientId::test_new(7)
+                && geometry == shepr_core::geometry::HostGeometry::new(60, 15, 8, 16, true)
         ));
 
         shepr_protocol::write_message(&mut client_stream, &ClientMessage::Detach)

@@ -11,6 +11,10 @@ use shepr_mux::persist::snapshot::*;
 use shepr_mux::terminal::TerminalState;
 use shepr_mux::workspace::Workspace;
 
+fn split_ratio(value: f32) -> shepr_core::layout::SplitRatio {
+    shepr_core::layout::SplitRatio::new(value).expect("test split ratio is valid")
+}
+
 fn state_with_workspaces(names: &[&str]) -> AppState {
     let mut state = AppState::test_new();
     state.workspaces = names.iter().map(|name| Workspace::test_new(name)).collect();
@@ -85,9 +89,7 @@ fn capture_history_with_carry(
 
 fn root_split_ratio(workspace: &WorkspaceSnapshot) -> Option<f32> {
     match &workspace.layout {
-        LayoutSnapshot::Split { ratio, .. } => {
-            ratio.validate().map(shepr_core::layout::SplitRatio::get)
-        }
+        LayoutSnapshot::Split { ratio, .. } => Some(ratio.get()),
         LayoutSnapshot::Pane(_) => None,
     }
 }
@@ -137,11 +139,11 @@ fn capture_keeps_the_theme_for_a_headless_resume() {
 fn round_trip_layout_snapshot() {
     let layout = LayoutSnapshot::Split {
         direction: DirectionSnapshot::Horizontal,
-        ratio: SavedSplitRatio::from_raw(0.6),
+        ratio: split_ratio(0.6),
         first: Box::new(LayoutSnapshot::Pane(0)),
         second: Box::new(LayoutSnapshot::Split {
             direction: DirectionSnapshot::Vertical,
-            ratio: SavedSplitRatio::from_raw(0.5),
+            ratio: split_ratio(0.5),
             first: Box::new(LayoutSnapshot::Pane(1)),
             second: Box::new(LayoutSnapshot::Pane(2)),
         }),
@@ -151,7 +153,7 @@ fn round_trip_layout_snapshot() {
 
     match restored {
         LayoutSnapshot::Split { ratio, .. } => {
-            assert!((ratio.validate().expect("valid saved ratio").get() - 0.6).abs() < 0.01);
+            assert!((ratio.get() - 0.6).abs() < 0.01);
         }
         _ => panic!("expected split"),
     }
@@ -174,7 +176,7 @@ fn round_trip_full_workspace_snapshot() {
         PaneSnapshot {
             cwd: PathBuf::from("/home/can/Projects/website"),
             public_number: shepr_protocol::PanePublicNumber::new(2).expect("nonzero literal"),
-            label: Some("website".into()),
+            label: Some(shepr_mux::terminal::Label::new("website").expect("test label")),
             agent_session: None,
         },
     );
@@ -188,7 +190,7 @@ fn round_trip_full_workspace_snapshot() {
                 .expect("nonzero literal"),
             layout: LayoutSnapshot::Split {
                 direction: DirectionSnapshot::Horizontal,
-                ratio: SavedSplitRatio::from_raw(0.5),
+                ratio: split_ratio(0.5),
                 first: Box::new(LayoutSnapshot::Pane(0)),
                 second: Box::new(LayoutSnapshot::Pane(1)),
             },
@@ -216,7 +218,10 @@ fn round_trip_full_workspace_snapshot() {
         PathBuf::from("/home/can/Projects/shepr")
     );
     assert_eq!(
-        restored.workspaces[0].panes[&1].label.as_deref(),
+        restored.workspaces[0].panes[&1]
+            .label
+            .as_ref()
+            .map(shepr_mux::terminal::Label::as_str),
         Some("website")
     );
 }
@@ -757,12 +762,13 @@ fn capture_contract_tracks_hook_authority_agent_session() {
         shepr_agent::detect::AgentState::Idle,
     );
     terminal.ownership_mut().set_persisted_agent_session(
-        shepr_agent::agent::resume::PersistedAgentSession {
-            source: shepr_agent::agent::AgentSource::parse("shepr:pi"),
-            agent: shepr_agent::agent::Agent::Pi,
-            session_ref: shepr_agent::agent::resume::AgentSessionRef::path(session_path.clone())
+        shepr_agent::agent::resume::PersistedAgentSession::new(
+            shepr_agent::agent::AgentSource::parse("shepr:pi"),
+            shepr_agent::agent::Agent::Pi,
+            shepr_agent::agent::resume::AgentSessionRef::path(session_path.clone())
                 .expect("test precondition"),
-        },
+        )
+        .expect("test session is valid"),
     );
     terminal.set_hook_authority_at(
         "shepr:pi",
@@ -782,13 +788,13 @@ fn capture_contract_tracks_hook_authority_agent_session() {
         .as_ref()
         .expect("agent session should be captured");
 
-    assert_eq!(agent_session.source.as_str(), "shepr:pi");
-    assert_eq!(agent_session.agent.label(), "pi");
+    assert_eq!(agent_session.source().as_str(), "shepr:pi");
+    assert_eq!(agent_session.agent().label(), "pi");
     assert_eq!(
-        agent_session.session_ref.kind(),
+        agent_session.session_ref().kind(),
         shepr_agent::agent::resume::AgentSessionRefKind::Path
     );
-    assert_eq!(agent_session.session_ref.value_str(), session_path);
+    assert_eq!(agent_session.session_ref().value_str(), session_path);
 }
 
 #[test]
@@ -804,12 +810,15 @@ fn capture_contract_preserves_restored_agent_session() {
         .get_mut(&terminal_id)
         .expect("test precondition")
         .ownership_mut()
-        .set_persisted_agent_session(shepr_agent::agent::resume::PersistedAgentSession {
-            source: shepr_agent::agent::AgentSource::parse("shepr:opencode"),
-            agent: shepr_agent::agent::Agent::OpenCode,
-            session_ref: shepr_agent::agent::resume::AgentSessionRef::id("opencode-session")
-                .expect("test precondition"),
-        });
+        .set_persisted_agent_session(
+            shepr_agent::agent::resume::PersistedAgentSession::new(
+                shepr_agent::agent::AgentSource::parse("shepr:opencode"),
+                shepr_agent::agent::Agent::OpenCode,
+                shepr_agent::agent::resume::AgentSessionRef::id("opencode-session")
+                    .expect("test precondition"),
+            )
+            .expect("test session is valid"),
+        );
 
     let snapshot = capture_from_state(&state);
     let agent_session = snapshot.workspaces[0].panes[&root.raw()]
@@ -817,13 +826,13 @@ fn capture_contract_preserves_restored_agent_session() {
         .as_ref()
         .expect("persisted agent session should be captured");
 
-    assert_eq!(agent_session.source.as_str(), "shepr:opencode");
-    assert_eq!(agent_session.agent.label(), "opencode");
+    assert_eq!(agent_session.source().as_str(), "shepr:opencode");
+    assert_eq!(agent_session.agent().label(), "opencode");
     assert_eq!(
-        agent_session.session_ref.kind(),
+        agent_session.session_ref().kind(),
         shepr_agent::agent::resume::AgentSessionRefKind::Id
     );
-    assert_eq!(agent_session.session_ref.value_str(), "opencode-session");
+    assert_eq!(agent_session.session_ref().value_str(), "opencode-session");
 }
 
 #[test]
@@ -889,7 +898,7 @@ fn snapshot_parsing_preserves_missing_cwd() {
                 .expect("nonzero literal"),
             layout: LayoutSnapshot::Split {
                 direction: DirectionSnapshot::Horizontal,
-                ratio: SavedSplitRatio::from_raw(0.5),
+                ratio: split_ratio(0.5),
                 first: Box::new(LayoutSnapshot::Pane(0)),
                 second: Box::new(LayoutSnapshot::Pane(1)),
             },

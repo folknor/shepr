@@ -7,8 +7,8 @@
 use clap::{Arg, ArgAction, Command, ValueHint};
 
 use shepr_remote::{
-    COMMAND_CLIENT, COMMAND_REMOTE_CLIENT_BRIDGE, COMMAND_SERVER, COMMAND_STATUS, COMMAND_STOP,
-    FLAG_EXPECT_BOOT, FLAG_JSON, PROGRAM_NAME, option_name_from_flag,
+    COMMAND_CLIENT, COMMAND_DETECT, COMMAND_REMOTE_CLIENT_BRIDGE, COMMAND_SERVER, COMMAND_STATUS,
+    COMMAND_STOP, FLAG_EXPECT_BOOT, FLAG_JSON, PROGRAM_NAME, option_name_from_flag,
 };
 
 pub(super) fn command() -> Command {
@@ -103,7 +103,7 @@ fn server_command() -> Command {
 }
 
 fn detect_command() -> Command {
-    group("detect")
+    group(COMMAND_DETECT)
         .about("Capture and explain what the agent detector sees")
         .after_help("PANE is a pane id such as w1:p1.")
         .subcommand(

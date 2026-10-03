@@ -395,7 +395,7 @@ fn word_drag_mouse(
     })])
 }
 
-fn word_read_id(actions: &[ClientShellAction]) -> String {
+fn word_read_id(actions: &[ClientShellAction]) -> shepr_protocol::RequestId {
     actions
         .iter()
         .find_map(|action| match action {
@@ -409,11 +409,15 @@ fn word_read_id(actions: &[ClientShellAction]) -> String {
         .expect("selection read")
 }
 
-fn word_row_reply(state: &mut ClientShellState, id: &str, text: &str) -> Vec<ClientShellAction> {
+fn word_row_reply(
+    state: &mut ClientShellState,
+    id: &shepr_protocol::RequestId,
+    text: &str,
+) -> Vec<ClientShellAction> {
     state
         .handle_endpoint_result(
             &crate::tests::test_boot_id("boot-1"),
-            id,
+            id.as_str(),
             Ok(EndpointReply::PaneSelection {
                 pane_id: shepr_test_fixtures::id("w1:p1"),
                 text: text.into(),
@@ -422,7 +426,7 @@ fn word_row_reply(state: &mut ClientShellState, id: &str, text: &str) -> Vec<Cli
         .actions
 }
 
-fn start_word_drag(state: &mut ClientShellState) -> String {
+fn start_word_drag(state: &mut ClientShellState) -> shepr_protocol::RequestId {
     word_drag_mouse(state, MouseEventKind::Down(MouseButton::Left), 0, 8);
     word_drag_mouse(state, MouseEventKind::Up(MouseButton::Left), 0, 8);
     assert!(

@@ -47,18 +47,15 @@ fn atomic_cell_size_keeps_width_and_height_in_one_snapshot() {
     let size = AtomicCellSize::new();
     assert_eq!(size.load(), None);
     assert_eq!(
-        size.store(9, 18),
+        size.store(shepr_core::geometry::CellPx::new(9, 18)),
         terminal_geometry::CellSizeUpdate::Changed
     );
-    assert_eq!(size.load(), Some((9, 18)));
+    assert_eq!(size.load(), shepr_core::geometry::CellPx::new(9, 18));
     assert_eq!(
-        size.store(9, 18),
+        size.store(shepr_core::geometry::CellPx::new(9, 18)),
         terminal_geometry::CellSizeUpdate::Unchanged
     );
-    assert_eq!(
-        size.store(0, 18),
-        terminal_geometry::CellSizeUpdate::Changed
-    );
+    assert_eq!(size.store(None), terminal_geometry::CellSizeUpdate::Changed);
     assert_eq!(size.load(), None);
 }
 
@@ -121,20 +118,17 @@ fn client_host_size_clamps_the_grid_to_one_surface() {
 
 #[test]
 fn cell_geometry_is_bounded_before_wire_use_and_disables_inexact_pixel_mouse() {
-    let (width, height, exact) = super::terminal_geometry::bounded_cell_geometry(
-        shepr_protocol::MAX_CELL_SIZE_PX + 1,
-        shepr_protocol::MAX_CELL_SIZE_PX + 2,
-        true,
-    );
-
-    assert_eq!(
-        (width, height, exact),
-        (
-            shepr_protocol::MAX_CELL_SIZE_PX,
-            shepr_protocol::MAX_CELL_SIZE_PX,
-            false,
-        )
-    );
+    let geometry =
+        super::terminal_geometry::bounded_cell_geometry(shepr_core::geometry::HostGeometry::new(
+            80,
+            24,
+            shepr_protocol::MAX_CELL_SIZE_PX + 1,
+            shepr_protocol::MAX_CELL_SIZE_PX + 2,
+            true,
+        ));
+    assert_eq!(geometry.cell_width(), shepr_protocol::MAX_CELL_SIZE_PX);
+    assert_eq!(geometry.cell_height(), shepr_protocol::MAX_CELL_SIZE_PX);
+    assert!(!geometry.exact());
 }
 
 #[test]
@@ -220,7 +214,7 @@ fn reported_cell_size_is_taken_from_host_cell_size_events() {
     let events = shepr_test_fixtures::parse_raw_input_bytes_sync(b"\x1b[6;21;10t\x1b[6;18;9t");
     assert_eq!(
         super::terminal_geometry::reported_cell_size_from_events(&events),
-        Some((9, 18))
+        shepr_core::geometry::CellPx::new(9, 18)
     );
 }
 
@@ -326,9 +320,18 @@ fn client_error_display_connection_lost() {
 
 #[test]
 fn ioctl_cell_size_accepts_fractional_terminal_geometry() {
-    assert_eq!(ioctl_cell_size(80, 24, 800, 480), Some((10, 20)));
-    assert_eq!(ioctl_cell_size(80, 24, 805, 480), Some((10, 20)));
-    assert_eq!(ioctl_cell_size(80, 24, 800, 485), Some((10, 20)));
+    assert_eq!(
+        ioctl_cell_size(80, 24, 800, 480),
+        shepr_core::geometry::CellPx::new(10, 20)
+    );
+    assert_eq!(
+        ioctl_cell_size(80, 24, 805, 480),
+        shepr_core::geometry::CellPx::new(10, 20)
+    );
+    assert_eq!(
+        ioctl_cell_size(80, 24, 800, 485),
+        shepr_core::geometry::CellPx::new(10, 20)
+    );
     assert_eq!(ioctl_cell_size(80, 24, 0, 485), None);
 }
 

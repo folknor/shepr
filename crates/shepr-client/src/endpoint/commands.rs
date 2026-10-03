@@ -40,10 +40,10 @@ pub(crate) struct EndpointCommandResult {
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(crate) struct EndpointCommandCancellation {
     /// Commands rejected before a transport send was attempted.
-    pub(crate) unsent: Vec<String>,
+    pub(crate) unsent: Vec<RequestId>,
     /// Commands that were in flight or whose transport send failed. The server
     /// may have received them, so their cancellation is reported as uncertain.
-    pub(crate) possibly_sent: Vec<String>,
+    pub(crate) possibly_sent: Vec<RequestId>,
 }
 
 #[derive(Default)]
@@ -93,14 +93,14 @@ impl EndpointCommands {
                 cancelled.unsent.push(id);
                 continue;
             }
-            let request_id = RequestId::from(id);
+            let request_id = id;
             let message = ClientMessage::ClientShellEndpointRequest {
                 boot_id: queued.boot_id.clone(),
                 request_id: request_id.clone(),
                 command,
             };
             if endpoints.send_to(endpoint_id, &message) != EndpointSendOutcome::Sent {
-                cancelled.possibly_sent.push(request_id.to_string());
+                cancelled.possibly_sent.push(request_id);
                 continue;
             }
             lane.in_flight = Some(InFlightCommand {
@@ -129,9 +129,7 @@ impl EndpointCommands {
         };
         let mut cancelled = EndpointCommandCancellation::default();
         if let Some(command) = lane.in_flight.take() {
-            cancelled
-                .possibly_sent
-                .push(command.key.request_id.to_string());
+            cancelled.possibly_sent.push(command.key.request_id);
         }
         cancelled
             .unsent
@@ -214,9 +212,7 @@ impl EndpointCommands {
             possibly_sent: Vec::new(),
         };
         if let Some(command) = lane.in_flight {
-            cancelled
-                .possibly_sent
-                .push(command.key.request_id.to_string());
+            cancelled.possibly_sent.push(command.key.request_id);
         }
         cancelled
     }

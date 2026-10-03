@@ -34,6 +34,30 @@ pub(in crate::shell) fn fnv1a64(bytes: &[u8]) -> u64 {
     hash.finish()
 }
 
+/// Classify a pane frame against a split in server surface coordinates.
+pub(in crate::shell) fn pane_split_side(
+    rect: shepr_protocol::SurfaceRect,
+    split: &shepr_protocol::PaneSurfaceSplit,
+) -> Option<shepr_core::geometry::SplitBranch> {
+    let area = split.area;
+    if rect.x < area.x
+        || rect.y < area.y
+        || rect.x.saturating_add(rect.width) > area.x.saturating_add(area.width)
+        || rect.y.saturating_add(rect.height) > area.y.saturating_add(area.height)
+    {
+        return None;
+    }
+    let first = match split.direction {
+        shepr_protocol::PaneSurfaceSplitDirection::Horizontal => rect.x < split.pos,
+        shepr_protocol::PaneSurfaceSplitDirection::Vertical => rect.y < split.pos,
+    };
+    Some(if first {
+        shepr_core::geometry::SplitBranch::First
+    } else {
+        shepr_core::geometry::SplitBranch::Second
+    })
+}
+
 pub(in crate::shell) fn pane_surface_topology_signature(surface: &PaneSurfaceFrame) -> u64 {
     fn write_delimited(hash: &mut Fnv64, bytes: &[u8]) {
         hash.write(bytes);
@@ -65,23 +89,10 @@ pub(in crate::shell) fn pane_surface_topology_signature(surface: &PaneSurfaceFra
         // Ratio movement changes pane rectangles but should preserve child membership.
         for pane in &panes {
             hash.write_pane_id(pane.pane_id);
-            let rect = pane.rect;
-            let area = split.area;
-            let inside = rect.x >= area.x
-                && rect.y >= area.y
-                && rect.x.saturating_add(rect.width) <= area.x.saturating_add(area.width)
-                && rect.y.saturating_add(rect.height) <= area.y.saturating_add(area.height);
-            let child = if !inside {
-                2
-            } else {
-                match split.direction {
-                    shepr_protocol::PaneSurfaceSplitDirection::Horizontal => {
-                        u8::from(rect.x >= split.pos)
-                    }
-                    shepr_protocol::PaneSurfaceSplitDirection::Vertical => {
-                        u8::from(rect.y >= split.pos)
-                    }
-                }
+            let child = match pane_split_side(pane.rect, split) {
+                Some(shepr_core::geometry::SplitBranch::First) => 0,
+                Some(shepr_core::geometry::SplitBranch::Second) => 1,
+                None => 2,
             };
             write_delimited(&mut hash, &[child]);
         }

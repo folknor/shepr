@@ -56,6 +56,7 @@ impl FileLoggingConfig {
 /// the process runs without file logging.
 /// An already-installed global logger also fails initialization because this
 /// call cannot install its file writer.
+/// Keep this writer generic over leaf names; AppPaths owns the server path exposed to clients.
 pub fn init_file_logging(dir: &Path, file_name: &str) -> io::Result<FileLoggingOutcome> {
     init_file_logging_with_config(dir, file_name, FileLoggingConfig::from_environment()?)
 }
@@ -126,6 +127,11 @@ fn log_filter(directives: Option<&str>) -> io::Result<EnvFilter> {
 
 /// The log the headless server writes.
 pub const SERVER_LOG_FILE: &str = "shepr-server.log";
+/// Compose the server log path for callers that own only a data directory.
+pub fn server_log_path(dir: &Path) -> std::path::PathBuf {
+    dir.join(SERVER_LOG_FILE)
+}
+
 /// The log every client process appends to.
 pub const CLIENT_LOG_FILE: &str = "shepr-client.log";
 
@@ -142,7 +148,7 @@ pub fn init_client_file_logging(
 pub fn help_log_paths_summary(dir: &Path) -> String {
     format!(
         "{} (and {CLIENT_LOG_FILE} beside it)",
-        dir.join(SERVER_LOG_FILE).display()
+        server_log_path(dir).display()
     )
 }
 

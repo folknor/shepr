@@ -98,7 +98,7 @@ fn run_launched_client(
         local_mismatch_guidance: Arc::clone(&mismatch_guidance),
     };
 
-    crate::logging::startup("client");
+    crate::logging::startup();
     info!(path = %socket_path.display(), "connecting to server");
 
     let machines = config.machines().to_vec();
@@ -120,7 +120,7 @@ fn run_launched_client(
         true,
         &mismatch_guidance,
     );
-    let local_generation = shepr_protocol::ConnectionGeneration::new(1);
+    let local_generation = endpoint::EndpointSupervisors::initial_local_generation();
     let reconnect_local = local_failure_policy.reconnects_local();
     let initial = match initial_attach {
         Ok(endpoint) => LocalAtLaunch::Attached {
@@ -223,7 +223,7 @@ fn run_launched_client(
     if let Some(diagnostic) = fatal.diagnostic() {
         fatal.guard(|| tracing::error!(diagnostic, "client panicked; exiting"));
     }
-    fatal.guard(|| crate::logging::shutdown("client"));
+    fatal.guard(crate::logging::shutdown);
 
     // Read once, after finalization: a panic later than this cannot change
     // the outcome. The diagnostic reaches the restored screen through the
@@ -292,18 +292,8 @@ async fn run_client_loop(
     let initial_geometry = initial_host_geometry.geometry;
     let host_geometry = SharedHostGeometry::new(initial_host_geometry);
     let (cols, rows) = (initial_geometry.cols(), initial_geometry.rows());
-    let (initial_cell_width_px, initial_cell_height_px, initial_pixel_geometry_exact) = (
-        initial_geometry.cell_width(),
-        initial_geometry.cell_height(),
-        initial_geometry.exact,
-    );
+    let initial_geometry = terminal_geometry::bounded_cell_geometry(initial_geometry);
     let draw_host_cursor = should_draw_host_cursor(config.settings.host_cursor());
-    let (initial_cell_width_px, initial_cell_height_px, initial_pixel_geometry_exact) =
-        terminal_geometry::bounded_cell_geometry(
-            initial_cell_width_px,
-            initial_cell_height_px,
-            initial_pixel_geometry_exact,
-        );
 
     let host_modes = terminal_guard.host_modes();
     // client-clock-sample-ok: sample launch time for initial shell and endpoint state.
@@ -313,13 +303,7 @@ async fn run_client_loop(
         output_writer: Box::new(output_writer),
         host_modes,
         host_theme_updates: Vec::new(),
-        reported_geometry: shepr_core::geometry::HostGeometry::new(
-            cols,
-            rows,
-            initial_cell_width_px,
-            initial_cell_height_px,
-            initial_pixel_geometry_exact,
-        ),
+        reported_geometry: initial_geometry,
         settings: config.settings,
         shell: Box::new(shell::ClientShellState::new_at(shell_config, launch_now)),
         repaint_pending: false,
@@ -360,7 +344,7 @@ async fn run_client_loop(
     query_host_terminal_appearance(&mut state.output_writer).map_err(ClientError::HostTerminal)?;
     // Terminals that report no pixel size through the ioctl are asked directly
     // instead of falling back to an assumed cell size.
-    let will_query_host_cell_size = if initial_geometry.exact {
+    let will_query_host_cell_size = if initial_geometry.exact() {
         false
     } else {
         query_host_cell_size(&mut state.output_writer).map_err(ClientError::HostTerminal)?
@@ -737,13 +721,7 @@ impl ClientLoop {
             ClientLoopEvent::Quit => Ok(ClientLoopAction::Exit),
             ClientLoopEvent::StdinInput(inputs) => self.handle_stdin_input(inputs, now),
             ClientLoopEvent::TerminalUnavailable(err) => self.handle_terminal_unavailable(&err),
-            ClientLoopEvent::Resize(geometry) => self.handle_resize(
-                geometry.cols(),
-                geometry.rows(),
-                geometry.cell_width(),
-                geometry.cell_height(),
-                geometry.exact,
-            ),
+            ClientLoopEvent::Resize(geometry) => self.handle_resize(geometry),
             ClientLoopEvent::EndpointSupervisor(event) => {
                 self.handle_endpoint_supervisor(event, now)
             }
@@ -764,7 +742,7 @@ impl ClientLoop {
                 self.state.retry_host_modes = false;
                 let mouse = self.state.host_modes.apply_mouse(
                     &mut self.state.output_writer,
-                    self.state.reported_geometry.exact,
+                    self.state.reported_geometry.exact(),
                     true,
                 );
                 self.state
@@ -790,16 +768,15 @@ impl ClientLoop {
             ..
         } = self;
         let raw_events = inputs.iter().map(|input| &input.event);
-        if *will_query_host_cell_size
-            && let Some((width_px, height_px)) = reported_cell_size_from_events(raw_events)
+        if *will_query_host_cell_size && let Some(cell) = reported_cell_size_from_events(raw_events)
         {
-            store_reported_cell_size(reported_cell_size, width_px, height_px);
+            store_reported_cell_size(reported_cell_size, cell);
         }
         if shepr_termio::input::raw_input::events_require_host_mode_refresh(
             inputs.iter().map(|input| &input.event),
         ) && let Err(error) = state.host_modes.apply_mouse(
             &mut state.output_writer,
-            state.reported_geometry.exact,
+            state.reported_geometry.exact(),
             true,
         ) {
             // Reassertion repeats a mode the host already accepted after a host event that
@@ -827,36 +804,22 @@ impl ClientLoop {
 
     fn handle_resize(
         &mut self,
-        new_cols: u16,
-        new_rows: u16,
-        cell_width_px: u32,
-        cell_height_px: u32,
-        pixel_geometry_exact: bool,
+        geometry: terminal_geometry::TerminalGeometry,
     ) -> Result<ClientLoopAction, ClientError> {
         let Self {
             state,
             write_stream,
             ..
         } = self;
-        let (cell_width_px, cell_height_px, pixel_geometry_exact) =
-            terminal_geometry::bounded_cell_geometry(
-                cell_width_px,
-                cell_height_px,
-                pixel_geometry_exact,
-            );
-        state.reported_geometry = shepr_core::geometry::HostGeometry::new(
-            new_cols,
-            new_rows,
-            cell_width_px,
-            cell_height_px,
-            pixel_geometry_exact,
-        );
+        let geometry = terminal_geometry::bounded_cell_geometry(geometry);
+        state.reported_geometry = geometry;
+        let pixel_geometry_exact = geometry.exact();
         let mouse =
             state
                 .host_modes
                 .apply_mouse(&mut state.output_writer, pixel_geometry_exact, false);
         state.record_host_mode_write("mouse mode resize", mouse)?;
-        state.set_host_size(new_cols, new_rows);
+        state.set_host_size(geometry.cols(), geometry.rows());
         // Resizing invalidates the host-side blit baseline. The retained pane surface
         // stays: until the resized one arrives, `compose` draws it clipped to the new
         // pane area (with pane hits clipped to match) instead of dropping to the
@@ -1164,7 +1127,7 @@ impl ClientLoop {
                     .set_mouse_endpoint_request(enabled, sgr_pixels);
                 let result = state.host_modes.apply_mouse(
                     &mut state.output_writer,
-                    state.reported_geometry.exact,
+                    state.reported_geometry.exact(),
                     false,
                 );
                 state.record_host_mode_write("endpoint mouse capture", result)?;

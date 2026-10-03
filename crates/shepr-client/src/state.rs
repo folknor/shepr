@@ -86,13 +86,11 @@ impl ClientState {
 
     pub(super) fn set_host_size(&mut self, cols: u16, rows: u16) {
         let size = terminal_geometry::ClientHostSize::new(cols, rows);
-        self.reported_geometry = shepr_core::geometry::HostGeometry::new(
-            size.cols,
-            size.rows,
-            self.reported_geometry.cell_width(),
-            self.reported_geometry.cell_height(),
-            self.reported_geometry.exact,
-        );
+        self.reported_geometry =
+            self.reported_geometry
+                .with_grid(shepr_core::geometry::GridSize::clamped(
+                    size.cols, size.rows,
+                ));
     }
 
     pub(super) fn record_host_mode_write(
@@ -382,6 +380,7 @@ impl HostWriteFailure {
     pub(super) fn observe(
         &mut self,
         purpose: HostWritePurpose,
+        // This label identifies the concrete write site; HostWritePurpose carries the policy.
         write: &'static str,
         result: &io::Result<()>,
         context: Option<&shell::ClientPresentationLogContext>,

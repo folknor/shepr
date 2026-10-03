@@ -10,9 +10,9 @@ use shepr_core::geometry::{BoundedGridSize, BoundedGridSizeError, CellPx, GridSi
     into = "ReceivedTerminalGeometry"
 )]
 pub struct TerminalGeometry {
-    pub grid: GridSize,
-    pub cell: Option<CellPx>,
-    pub pixel_mouse: bool,
+    grid: GridSize,
+    cell: Option<CellPx>,
+    pixel_mouse: bool,
 }
 
 /// The single positional wire shape used for both directions.
@@ -61,6 +61,31 @@ impl TerminalGeometry {
         }
     }
 
+    /// Construct a report from already coherent host cell geometry.
+    pub fn with_cell(grid: GridSize, cell: ProtocolCellSize) -> Self {
+        Self {
+            grid,
+            cell: cell.cell(),
+            pixel_mouse: cell.exact(),
+        }
+    }
+
+    pub fn grid(self) -> GridSize {
+        self.grid
+    }
+
+    pub fn cell(self) -> Option<CellPx> {
+        self.cell
+    }
+
+    pub fn pixel_mouse(self) -> bool {
+        self.pixel_mouse
+    }
+
+    pub fn cell_geometry(self) -> ProtocolCellSize {
+        ProtocolCellSize::from_wire(self.width(), self.height(), self.pixel_mouse)
+    }
+
     pub fn cols(self) -> u16 {
         self.grid.cols.get()
     }
@@ -93,56 +118,8 @@ impl TerminalGeometry {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ProtocolCellSize {
-    pub cell: Option<CellPx>,
-    pub exact: bool,
-}
-
-impl ProtocolCellSize {
-    /// Unknown dimensions stay absent. Clamping a reported size loses
-    /// exactness, so it must also disable pixel mouse coordinates.
-    pub fn from_host(width: u32, height: u32, exact: bool) -> Self {
-        let cell = CellPx::new(width, height);
-        let within_limit = width <= super::MAX_CELL_SIZE_PX && height <= super::MAX_CELL_SIZE_PX;
-        Self {
-            cell: cell.and_then(|_| {
-                CellPx::new(
-                    width.min(super::MAX_CELL_SIZE_PX),
-                    height.min(super::MAX_CELL_SIZE_PX),
-                )
-            }),
-            exact: exact && within_limit && cell.is_some(),
-        }
-    }
-
-    pub fn width(self) -> u32 {
-        self.cell.map_or(0, |cell| cell.width.get())
-    }
-
-    pub fn height(self) -> u32 {
-        self.cell.map_or(0, |cell| cell.height.get())
-    }
-
-    /// A peer's out-of-range pixel report is unusable rather than clamped:
-    /// clamping here would claim a geometry the peer did not send. The
-    /// server's handshake and resize paths already refuse an oversized
-    /// report before calling this, but the bound stays here too: it is this
-    /// type's own invariant, and a public constructor that relied on every
-    /// caller checking first would let the next caller build an out-of-range
-    /// cell size.
-    pub fn from_wire(width: u32, height: u32, exact: bool) -> Self {
-        let cell = if width <= super::MAX_CELL_SIZE_PX && height <= super::MAX_CELL_SIZE_PX {
-            CellPx::new(width, height)
-        } else {
-            None
-        };
-        Self {
-            cell,
-            exact: exact && cell.is_some(),
-        }
-    }
-}
+/// The shared host-cell policy, including the pixel bound and exactness.
+pub type ProtocolCellSize = shepr_core::geometry::HostCellGeometry;
 
 #[cfg(test)]
 mod tests {
@@ -178,20 +155,30 @@ mod tests {
 
     #[test]
     fn clamp_clears_exactness_and_preserves_unknown() {
-        assert_eq!(ProtocolCellSize::from_host(8, 0, true).cell, None);
-        assert!(!ProtocolCellSize::from_host(8, 0, true).exact);
+        assert_eq!(ProtocolCellSize::from_host(8, 0, true).cell(), None);
+        assert!(!ProtocolCellSize::from_host(8, 0, true).exact());
         let size = ProtocolCellSize::from_host(super::super::MAX_CELL_SIZE_PX + 1, 16, true);
         assert_eq!(size.width(), super::super::MAX_CELL_SIZE_PX);
-        assert!(!size.exact);
+        assert!(!size.exact());
         let invalid_wire = ProtocolCellSize::from_wire(u32::MAX, 16, true);
         assert_eq!((invalid_wire.width(), invalid_wire.height()), (0, 0));
-        assert!(!invalid_wire.exact);
+        assert!(!invalid_wire.exact());
     }
 
     #[test]
     fn received_geometry_rejects_pixel_mouse_without_cells() {
         assert!(decode_received_geometry(80, 24, None, true).is_err());
         assert!(decode_received_geometry(0, 24, None, false).is_err());
+    }
+
+    #[test]
+    fn received_oversized_cells_remain_raw_for_server_refusal() {
+        let cell = CellPx::new(CellPx::MAX_DIMENSION + 1, 16);
+        let geometry = decode_received_geometry(1, 1, cell, true).expect("raw report decodes");
+        assert_eq!(geometry.cell(), cell);
+        assert_eq!(geometry.grid(), GridSize::clamped(1, 1));
+        assert_eq!(geometry.cell_geometry().cell(), None);
+        assert!(!geometry.cell_geometry().exact());
     }
 
     #[test]

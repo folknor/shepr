@@ -26,6 +26,10 @@ pub const MAX_INPUT_EVENT_BATCH: usize = 4096;
 /// surfaces without constraining the raw geometry a host terminal can report.
 pub const MAX_TERMINAL_GRID_DIMENSION: u16 = 4096;
 
+/// Largest usable host cell axis in pixels. Raw protocol reports may exceed
+/// this so the server can refuse them with a specific reason.
+pub const MAX_HOST_CELL_PX: u32 = 4096;
+
 /// Maximum number of cells in a terminal grid.
 ///
 /// This bounds both configured headless terminals and client-requested pane

@@ -38,7 +38,7 @@ use tokio::sync::{oneshot, watch};
 
 use super::exit_arbiter::{PaneEnding, PaneExitArbiter};
 use super::teardown::ChildLiveness;
-use crate::events::{AppEvent, EventSender};
+use crate::events::EventSender;
 use crate::terminal::PaneStartFailure;
 use shepr_core::layout::PaneId;
 
@@ -193,8 +193,7 @@ async fn coordinate<Claim>(
         tracing::warn!(pane = pane_id.raw(), %failure, "pane launch failed");
     }
     if let Err(error) = events
-        .send(AppEvent::PaneLaunchSettled {
-            pane_id,
+        .send(crate::events::RuntimeEvent::PaneLaunchSettled {
             settlement: LaunchSettlement {
                 kind,
                 outcome: settlement,
@@ -213,8 +212,7 @@ async fn coordinate<Claim>(
     };
     // Wait for channel capacity so this critical pane exit is not dropped.
     if let Err(error) = events
-        .send(AppEvent::PaneDied {
-            pane_id,
+        .send(crate::events::RuntimeEvent::PaneDied {
             exit_reason: reason,
             ended_at,
         })
@@ -326,6 +324,7 @@ fn directory_failure(path: PathBuf, error: std::io::Error) -> PaneStartFailure {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::events::AppEvent;
     use shepr_platform::ChildExitReason;
     use std::time::Duration;
     use tokio::sync::mpsc;
@@ -344,14 +343,16 @@ mod tests {
                 panic!("runtime events carry their producer");
             };
             out.push(match *event {
-                AppEvent::PaneLaunchSettled { settlement, .. } => {
+                crate::events::RuntimeEvent::PaneLaunchSettled { settlement } => {
                     Told::Settled(match settlement.outcome {
                         LaunchOutcome::Launched { .. } => "launched",
                         LaunchOutcome::Failed(_) => "failed",
                         LaunchOutcome::Unconfirmed => "unconfirmed",
                     })
                 }
-                AppEvent::PaneDied { exit_reason, .. } => Told::Died(exit_reason),
+                crate::events::RuntimeEvent::PaneDied { exit_reason, .. } => {
+                    Told::Died(exit_reason)
+                }
                 _ => panic!("unexpected event"),
             });
         }

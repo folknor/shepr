@@ -394,15 +394,10 @@ impl HeadlessServer {
     /// The geometry `client_id` presents: its surface size and cell size.
     pub(super) fn client_geometry(&self, client_id: ClientId) -> Option<SpawnGeometry> {
         let client = self.clients.get(&client_id)?;
-        Some(SpawnGeometry {
-            area: Rect::new(
-                0,
-                0,
-                client.terminal_size.cols.get(),
-                client.terminal_size.rows.get(),
-            ),
-            cell_size: client.cell_size.or_default(),
-        })
+        Some(SpawnGeometry::for_grid(
+            client.terminal_size,
+            client.cell_size,
+        ))
     }
 
     /// The geometry a workspace's PTYs are sized for, per the PTY size rule;

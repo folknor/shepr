@@ -4,6 +4,7 @@ use std::time::Instant;
 use shepr_agent::detect::AgentState;
 use shepr_protocol::TerminalId;
 
+pub use names::Label;
 use shepr_agent::ownership::AgentOwnership;
 pub use shepr_agent::ownership::{EffectiveStateChange, HookAuthority, HookClockSample};
 
@@ -82,14 +83,32 @@ pub enum PaneStartFailure {
     },
     /// The saved agent's resume cannot be issued at all (no command to run,
     /// the pane gone from under the attempt), whatever the directory and shell.
-    ResumeUnavailable { reason: String },
+    ResumeUnavailable { reason: ResumeUnavailableReason },
+}
+
+/// Why an agent session's resume attempt could not be completed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResumeUnavailableReason {
+    PaneGone,
+    ShellLaunchUnconfirmed,
+    CommandSendFailed,
+}
+
+impl ResumeUnavailableReason {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::PaneGone => "the pane no longer exists",
+            Self::ShellLaunchUnconfirmed => {
+                "the shell for the resume did not confirm that it started"
+            }
+            Self::CommandSendFailed => "the resume command could not be sent to the shell",
+        }
+    }
 }
 
 impl PaneStartFailure {
-    pub fn resume_unavailable(reason: impl Into<String>) -> Self {
-        Self::ResumeUnavailable {
-            reason: reason.into(),
-        }
+    pub fn resume_unavailable(reason: ResumeUnavailableReason) -> Self {
+        Self::ResumeUnavailable { reason }
     }
 
     pub fn directory_unreadable(path: PathBuf, error: &std::io::Error) -> Self {
@@ -176,7 +195,7 @@ pub struct TerminalState {
     pub id: TerminalId,
     cwd: PathBuf,
     terminal_title: Option<String>,
-    manual_label: Option<String>,
+    manual_label: Option<Label>,
     ownership: AgentOwnership,
     agent_resume: AgentResumeState,
     restore_error: Option<PaneStartFailure>,
@@ -193,7 +212,10 @@ impl TerminalState {
         self.terminal_title.as_deref()
     }
     pub fn manual_label(&self) -> Option<&str> {
-        self.manual_label.as_deref()
+        self.manual_label.as_ref().map(Label::as_str)
+    }
+    pub fn manual_label_value(&self) -> Option<&Label> {
+        self.manual_label.as_ref()
     }
     pub fn agent_resume(&self) -> &AgentResumeState {
         &self.agent_resume

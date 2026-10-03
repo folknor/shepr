@@ -370,6 +370,10 @@ impl HookSessionPolicy {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AgentDescriptor {
+    /// The agent-owned override for its config directory.
+    pub config_dir_override: Option<shepr_core::env::EnvVar>,
+    /// Markers of an enclosing agent session, removed from fresh panes.
+    pub session_markers: &'static [shepr_core::env::ChildEnv],
     pub agent: Agent,
     pub label: &'static str,
     pub aliases: &'static [&'static str],
@@ -383,6 +387,8 @@ pub struct AgentDescriptor {
 pub const AGENTS: [AgentDescriptor; 23] = [
     AgentDescriptor {
         agent: Agent::Pi,
+        config_dir_override: Some(shepr_core::env::EnvVar::PiCodingAgentDir),
+        session_markers: &[],
         label: "pi",
         aliases: &[],
         executable: "pi",
@@ -400,6 +406,15 @@ pub const AGENTS: [AgentDescriptor; 23] = [
     },
     AgentDescriptor {
         agent: Agent::Claude,
+        config_dir_override: Some(shepr_core::env::EnvVar::ClaudeConfigDir),
+        session_markers: &[
+            shepr_core::env::ChildEnv::ClaudeCode,
+            shepr_core::env::ChildEnv::ClaudeCodeChildSession,
+            shepr_core::env::ChildEnv::ClaudeCodeSessionId,
+            shepr_core::env::ChildEnv::ClaudeCodeMessagingToken,
+            shepr_core::env::ChildEnv::ClaudeJobDir,
+            shepr_core::env::ChildEnv::ClaudeCodeSessionKind,
+        ],
         label: "claude",
         aliases: &["claude-code"],
         executable: "claude",
@@ -412,6 +427,8 @@ pub const AGENTS: [AgentDescriptor; 23] = [
     },
     AgentDescriptor {
         agent: Agent::Codex,
+        config_dir_override: Some(shepr_core::env::EnvVar::CodexHome),
+        session_markers: &[shepr_core::env::ChildEnv::CodexThreadId],
         label: "codex",
         aliases: &[],
         executable: "codex",
@@ -429,6 +446,8 @@ pub const AGENTS: [AgentDescriptor; 23] = [
     },
     AgentDescriptor {
         agent: Agent::Gemini,
+        config_dir_override: None,
+        session_markers: &[],
         label: "gemini",
         aliases: &[],
         executable: "gemini",
@@ -438,6 +457,8 @@ pub const AGENTS: [AgentDescriptor; 23] = [
     },
     AgentDescriptor {
         agent: Agent::Cursor,
+        config_dir_override: Some(shepr_core::env::EnvVar::CursorConfigDir),
+        session_markers: &[],
         label: "cursor",
         aliases: &["cursor-agent"],
         executable: "cursor-agent",
@@ -455,6 +476,8 @@ pub const AGENTS: [AgentDescriptor; 23] = [
     },
     AgentDescriptor {
         agent: Agent::Devin,
+        config_dir_override: None,
+        session_markers: &[],
         label: "devin",
         aliases: &["devin-cli", "devin cli"],
         executable: "devin",
@@ -472,6 +495,8 @@ pub const AGENTS: [AgentDescriptor; 23] = [
     },
     AgentDescriptor {
         agent: Agent::Antigravity,
+        config_dir_override: Some(shepr_core::env::EnvVar::AntigravityCliConfigDir),
+        session_markers: &[],
         label: "agy",
         aliases: &["antigravity", "antigravity-cli"],
         executable: "agy",
@@ -489,6 +514,8 @@ pub const AGENTS: [AgentDescriptor; 23] = [
     },
     AgentDescriptor {
         agent: Agent::Cline,
+        config_dir_override: None,
+        session_markers: &[],
         label: "cline",
         aliases: &[".cline"],
         executable: "cline",
@@ -498,6 +525,8 @@ pub const AGENTS: [AgentDescriptor; 23] = [
     },
     AgentDescriptor {
         agent: Agent::Omp,
+        config_dir_override: Some(shepr_core::env::EnvVar::PiConfigDir),
+        session_markers: &[shepr_core::env::ChildEnv::Ompcode],
         label: "omp",
         aliases: &[],
         executable: "omp",
@@ -515,6 +544,8 @@ pub const AGENTS: [AgentDescriptor; 23] = [
     },
     AgentDescriptor {
         agent: Agent::Mastracode,
+        config_dir_override: None,
+        session_markers: &[],
         label: "mastracode",
         aliases: &["mastra-code", "mastra code"],
         executable: "mastracode",
@@ -532,6 +563,8 @@ pub const AGENTS: [AgentDescriptor; 23] = [
     },
     AgentDescriptor {
         agent: Agent::OpenCode,
+        config_dir_override: None,
+        session_markers: &[],
         label: "opencode",
         aliases: &["opencode2", "open-code"],
         executable: "opencode",
@@ -549,6 +582,8 @@ pub const AGENTS: [AgentDescriptor; 23] = [
     },
     AgentDescriptor {
         agent: Agent::GithubCopilot,
+        config_dir_override: Some(shepr_core::env::EnvVar::CopilotHome),
+        session_markers: &[],
         label: "copilot",
         aliases: &["github-copilot", "ghcs"],
         executable: "copilot",
@@ -566,6 +601,8 @@ pub const AGENTS: [AgentDescriptor; 23] = [
     },
     AgentDescriptor {
         agent: Agent::Kimi,
+        config_dir_override: Some(shepr_core::env::EnvVar::KimiCodeHome),
+        session_markers: &[],
         label: "kimi",
         aliases: &["kimi-code", "kimi code"],
         executable: "kimi",
@@ -583,6 +620,8 @@ pub const AGENTS: [AgentDescriptor; 23] = [
     },
     AgentDescriptor {
         agent: Agent::Kiro,
+        config_dir_override: None,
+        session_markers: &[],
         label: "kiro",
         aliases: &["kiro-cli"],
         executable: "kiro-cli",
@@ -592,6 +631,8 @@ pub const AGENTS: [AgentDescriptor; 23] = [
     },
     AgentDescriptor {
         agent: Agent::Droid,
+        config_dir_override: None,
+        session_markers: &[],
         label: "droid",
         aliases: &[],
         executable: "droid",
@@ -609,6 +650,8 @@ pub const AGENTS: [AgentDescriptor; 23] = [
     },
     AgentDescriptor {
         agent: Agent::Amp,
+        config_dir_override: None,
+        session_markers: &[],
         label: "amp",
         aliases: &["amp-local"],
         executable: "amp",
@@ -618,6 +661,8 @@ pub const AGENTS: [AgentDescriptor; 23] = [
     },
     AgentDescriptor {
         agent: Agent::Grok,
+        config_dir_override: Some(shepr_core::env::EnvVar::GrokHome),
+        session_markers: &[],
         label: "grok",
         aliases: &["grok-build"],
         executable: "grok",
@@ -635,6 +680,8 @@ pub const AGENTS: [AgentDescriptor; 23] = [
     },
     AgentDescriptor {
         agent: Agent::Kilo,
+        config_dir_override: None,
+        session_markers: &[],
         label: "kilo",
         aliases: &["kilo-code", "kilo code"],
         executable: "kilo",
@@ -652,6 +699,8 @@ pub const AGENTS: [AgentDescriptor; 23] = [
     },
     AgentDescriptor {
         agent: Agent::Qodercli,
+        config_dir_override: Some(shepr_core::env::EnvVar::QoderConfigDir),
+        session_markers: &[],
         label: "qodercli",
         aliases: &["qoderclicn", "qoder", "qodercn"],
         executable: "qodercli",
@@ -661,6 +710,8 @@ pub const AGENTS: [AgentDescriptor; 23] = [
     },
     AgentDescriptor {
         agent: Agent::Qwen,
+        config_dir_override: Some(shepr_core::env::EnvVar::QwenHome),
+        session_markers: &[],
         label: "qwen",
         aliases: &["qwen-code", "qwen code"],
         executable: "qwen",
@@ -670,6 +721,8 @@ pub const AGENTS: [AgentDescriptor; 23] = [
     },
     AgentDescriptor {
         agent: Agent::Letta,
+        config_dir_override: None,
+        session_markers: &[],
         label: "letta",
         aliases: &["letta-code", "letta code"],
         executable: "letta",
@@ -679,6 +732,8 @@ pub const AGENTS: [AgentDescriptor; 23] = [
     },
     AgentDescriptor {
         agent: Agent::Maki,
+        config_dir_override: None,
+        session_markers: &[],
         label: "maki",
         aliases: &[],
         executable: "maki",
@@ -688,6 +743,8 @@ pub const AGENTS: [AgentDescriptor; 23] = [
     },
     AgentDescriptor {
         agent: Agent::Muse,
+        config_dir_override: None,
+        session_markers: &[],
         label: "muse",
         aliases: &["muse-code", "muse-cli"],
         executable: "muse",

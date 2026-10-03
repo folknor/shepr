@@ -4,12 +4,13 @@
 //! [`EnvVar`] variant with a declared [`EnvKind`], and every read goes through
 //! [`read`]
 //! and its typed wrappers (or [`resolve`], the pure half over a value handed
-//! in). Git's indexed `GIT_CONFIG_KEY_<n>` and `GIT_CONFIG_VALUE_<n>` families
-//! are registered by [`is_registered_name`] so test isolation can clear them.
+//! in). [`is_registered_name`] covers every [`RegisteredEnv`] name, read or
+//! only written into a child, plus Git's indexed `GIT_CONFIG_KEY_<n>` and
+//! `GIT_CONFIG_VALUE_<n>` families; test isolation clears exactly that set.
 //! Git subprocesses interpret the indexed and quoted command-scope settings.
 //! Variables shepr only sets or removes on a child's environment are the
-//! separate [`ChildEnv`] vocabulary. `PATH` and
-//! `SHELL` appear in both tables:
+//! [`ChildEnv`] view of [`RegisteredEnv`], which enumerates each name once. `PATH` and
+//! `SHELL` reuse their [`EnvVar`] names and policies:
 //! the process reads them to resolve its pane shell, then writes resolved
 //! values into the pane environment. The root `clippy.toml` denies
 //! `std::env::var`, `var_os`,
@@ -86,7 +87,7 @@ macro_rules! env_vocabulary {
     (
         $(#[$enum_meta:meta])*
         pub enum $name:ident {
-            $( $(#[$variant_meta:meta])* $variant:ident => $spelling:literal, )*
+            $( $(#[$variant_meta:meta])* $variant:ident => $spelling:expr, $policy:expr, )*
         }
     ) => {
         $(#[$enum_meta])*
@@ -97,6 +98,11 @@ macro_rules! env_vocabulary {
         impl $name {
             /// Every variant, in declaration order.
             pub const ALL: &'static [Self] = &[$(Self::$variant),*];
+
+            /// Policy for this name in a pane child.
+            pub const fn pane_policy(self) -> PaneEnvPolicy {
+                match self { $(Self::$variant => $policy,)* }
+            }
 
             /// The variable's name as the environment spells it.
             #[must_use]
@@ -129,116 +135,116 @@ env_vocabulary! {
     pub enum EnvVar {
         /// `SHEPR_SOCKET_PATH`: the socket of the server to target. Written
         /// into every pane as the socket of the server that owns it.
-        SheprSocketPath => "SHEPR_SOCKET_PATH",
+        SheprSocketPath => "SHEPR_SOCKET_PATH", PaneEnvPolicy::Allowed,
         /// `SHEPR_PANE_ID`: the public id of the pane a process runs in,
         /// written into every managed pane. Pane ids vary per pane, so this
         /// environment boundary preserves the opaque identifier as text
         /// instead of treating it as a closed set.
-        SheprPaneId => "SHEPR_PANE_ID",
+        SheprPaneId => "SHEPR_PANE_ID", PaneEnvPolicy::ServerOnly,
         /// `SHEPR_ENV`: marks a process as running inside a shepr pane; the
         /// value is [`SHEPR_ENV_IN_PANE`].
-        SheprEnv => "SHEPR_ENV",
+        SheprEnv => "SHEPR_ENV", PaneEnvPolicy::Allowed,
         /// `SHEPR_BUILD_PROFILE`: the build profile (`release` or `dev`) of the
         /// server that owns a pane, written into every pane next to the socket
         /// variables. A process whose own profile differs ignores the socket
         /// overrides, so a dev build run inside a release server's pane does
         /// not target that server. Absent means the overrides were set by a
         /// user or a script and apply as given.
-        SheprBuildProfile => "SHEPR_BUILD_PROFILE",
+        SheprBuildProfile => "SHEPR_BUILD_PROFILE", PaneEnvPolicy::Allowed,
         /// `SHEPR_STARTUP_CWD`: the directory the user launched `shepr` from,
         /// handed to the server daemon it spawns to seed the first workspace.
-        SheprStartupCwd => "SHEPR_STARTUP_CWD",
+        SheprStartupCwd => "SHEPR_STARTUP_CWD", PaneEnvPolicy::ServerOnly,
         /// `SHEPR_LOG`: the `tracing` filter directives for the file logs.
-        SheprLog => "SHEPR_LOG",
+        SheprLog => "SHEPR_LOG", PaneEnvPolicy::Allowed,
         /// `SHEPR_DEBUG_OSC_EVIDENCE`: logs selected OSC sequences each pane
         /// receives, pane content included. The payloads (window titles,
         /// progress text) are child-controlled and routinely carry paths,
         /// branch names and ticket numbers; they are truncated but not
         /// filtered. Meant for capturing evidence while writing agent
         /// manifests, not for leaving on.
-        SheprDebugOscEvidence => "SHEPR_DEBUG_OSC_EVIDENCE",
+        SheprDebugOscEvidence => "SHEPR_DEBUG_OSC_EVIDENCE", PaneEnvPolicy::ServerOnly,
         /// `HOME`: the user's home directory, the parent of every default path.
-        Home => "HOME",
+        Home => "HOME", PaneEnvPolicy::Allowed,
         /// `XDG_CONFIG_HOME`: the config tree's parent.
-        XdgConfigHome => "XDG_CONFIG_HOME",
+        XdgConfigHome => "XDG_CONFIG_HOME", PaneEnvPolicy::Allowed,
         /// `XDG_STATE_HOME`: the state tree's parent.
-        XdgStateHome => "XDG_STATE_HOME",
+        XdgStateHome => "XDG_STATE_HOME", PaneEnvPolicy::Allowed,
         /// `XDG_RUNTIME_DIR`: the runtime tree's parent; it has no default.
-        XdgRuntimeDir => "XDG_RUNTIME_DIR",
+        XdgRuntimeDir => "XDG_RUNTIME_DIR", PaneEnvPolicy::Allowed,
         /// `SHELL`: the inherited shell used when `terminal.default_shell` is
         /// empty. An unusable or unrecognized value, or one with surrounding
         /// whitespace, fails the launch; unset or empty means `/bin/sh`.
-        Shell => "SHELL",
+        Shell => "SHELL", PaneEnvPolicy::Allowed,
         /// `PATH`: the inherited executable search path used to resolve the
         /// configured pane shell at launch.
-        Path => "PATH",
+        Path => "PATH", PaneEnvPolicy::Allowed,
         /// `SSH_CONNECTION`: set by sshd; its presence means the clipboard is
         /// on the far side of an SSH session.
-        SshConnection => "SSH_CONNECTION",
+        SshConnection => "SSH_CONNECTION", PaneEnvPolicy::Allowed,
         /// `SSH_TTY`: set by sshd; read like `SSH_CONNECTION`.
-        SshTty => "SSH_TTY",
+        SshTty => "SSH_TTY", PaneEnvPolicy::Allowed,
         /// `VSCODE_IPC_HOOK_CLI`: set in a VS Code remote terminal; its
         /// presence means the clipboard is on the editor's side.
-        VscodeIpcHookCli => "VSCODE_IPC_HOOK_CLI",
+        VscodeIpcHookCli => "VSCODE_IPC_HOOK_CLI", PaneEnvPolicy::Allowed,
         /// `TMUX`: set inside tmux; selects the host key protocol. Removed from
         /// every pane, since it names the outer terminal.
-        Tmux => "TMUX",
+        Tmux => "TMUX", PaneEnvPolicy::Scrubbed,
         /// `TERM_PROGRAM`: the host terminal's name; selects the host key
         /// protocol by a byte comparison that ignores ASCII case. Written into
         /// every pane as `shepr`.
-        TermProgram => "TERM_PROGRAM",
+        TermProgram => "TERM_PROGRAM", PaneEnvPolicy::Allowed,
         /// `WEZTERM_PANE`: set inside WezTerm; selects the host key protocol.
         /// Removed from every pane, since it names the outer terminal.
-        WeztermPane => "WEZTERM_PANE",
+        WeztermPane => "WEZTERM_PANE", PaneEnvPolicy::Scrubbed,
         /// `WAYLAND_DISPLAY`: its presence offers the Wayland clipboard helpers.
-        WaylandDisplay => "WAYLAND_DISPLAY",
+        WaylandDisplay => "WAYLAND_DISPLAY", PaneEnvPolicy::Allowed,
         /// `DISPLAY`: its presence offers the X11 clipboard helpers.
-        Display => "DISPLAY",
+        Display => "DISPLAY", PaneEnvPolicy::Allowed,
         /// `PI_CODING_AGENT_DIR`: pi's config directory override.
-        PiCodingAgentDir => "PI_CODING_AGENT_DIR",
+        PiCodingAgentDir => "PI_CODING_AGENT_DIR", PaneEnvPolicy::Allowed,
         /// `PI_CONFIG_DIR`: omp's config directory name under `HOME`.
-        PiConfigDir => "PI_CONFIG_DIR",
+        PiConfigDir => "PI_CONFIG_DIR", PaneEnvPolicy::Allowed,
         /// `CLAUDE_CONFIG_DIR`: Claude Code's config directory override.
-        ClaudeConfigDir => "CLAUDE_CONFIG_DIR",
+        ClaudeConfigDir => "CLAUDE_CONFIG_DIR", PaneEnvPolicy::Allowed,
         /// `CODEX_HOME`: Codex's config directory override.
-        CodexHome => "CODEX_HOME",
+        CodexHome => "CODEX_HOME", PaneEnvPolicy::Allowed,
         /// `KIMI_CODE_HOME`: Kimi Code's config directory override.
-        KimiCodeHome => "KIMI_CODE_HOME",
+        KimiCodeHome => "KIMI_CODE_HOME", PaneEnvPolicy::Allowed,
         /// `COPILOT_HOME`: GitHub Copilot CLI's config directory override.
-        CopilotHome => "COPILOT_HOME",
+        CopilotHome => "COPILOT_HOME", PaneEnvPolicy::Allowed,
         /// `QODER_CONFIG_DIR`: Qoder CLI's config directory override.
-        QoderConfigDir => "QODER_CONFIG_DIR",
+        QoderConfigDir => "QODER_CONFIG_DIR", PaneEnvPolicy::Allowed,
         /// `QWEN_HOME`: Qwen Code's config directory override.
-        QwenHome => "QWEN_HOME",
+        QwenHome => "QWEN_HOME", PaneEnvPolicy::Allowed,
         /// `CURSOR_CONFIG_DIR`: Cursor CLI's config directory override.
-        CursorConfigDir => "CURSOR_CONFIG_DIR",
+        CursorConfigDir => "CURSOR_CONFIG_DIR", PaneEnvPolicy::Allowed,
         /// `ANTIGRAVITY_CLI_CONFIG_DIR`: Antigravity CLI's config directory
         /// override.
-        AntigravityCliConfigDir => "ANTIGRAVITY_CLI_CONFIG_DIR",
+        AntigravityCliConfigDir => "ANTIGRAVITY_CLI_CONFIG_DIR", PaneEnvPolicy::Allowed,
         /// `GROK_HOME`: the grok CLI's config home override.
-        GrokHome => "GROK_HOME",
+        GrokHome => "GROK_HOME", PaneEnvPolicy::Allowed,
         /// `GIT_CEILING_DIRECTORIES`: Git's byte-preserving, colon-separated
         /// list of absolute directories repository discovery does not ascend
         /// into. Git children read it themselves too.
-        GitCeilingDirectories => "GIT_CEILING_DIRECTORIES",
+        GitCeilingDirectories => "GIT_CEILING_DIRECTORIES", PaneEnvPolicy::Allowed,
         /// `GIT_CONFIG_GLOBAL`: replace both default global config files with
         /// this one file, as Git does. Preserve the path's OS bytes.
-        GitConfigGlobal => "GIT_CONFIG_GLOBAL",
+        GitConfigGlobal => "GIT_CONFIG_GLOBAL", PaneEnvPolicy::Allowed,
         /// `GIT_CONFIG_SYSTEM`: replace Git's system config file, normally
         /// `/etc/gitconfig`. Preserve the path's OS bytes.
-        GitConfigSystem => "GIT_CONFIG_SYSTEM",
+        GitConfigSystem => "GIT_CONFIG_SYSTEM", PaneEnvPolicy::Allowed,
         /// `GIT_CONFIG_NOSYSTEM`: Git's boolean setting that skips the system
         /// config file when true. Shepr also reads it to decide whether that
         /// file contributes to sidebar Git status, using Git's boolean
         /// grammar.
-        GitConfigNoSystem => "GIT_CONFIG_NOSYSTEM",
+        GitConfigNoSystem => "GIT_CONFIG_NOSYSTEM", PaneEnvPolicy::Allowed,
         /// `GIT_CONFIG_COUNT`: the number of indexed command-scope config
         /// pairs Git reads. Shepr passes it through to Git subprocesses and
         /// does not parse it.
-        GitConfigCount => "GIT_CONFIG_COUNT",
+        GitConfigCount => "GIT_CONFIG_COUNT", PaneEnvPolicy::Allowed,
         /// `GIT_CONFIG_PARAMETERS`: quoted `git -c` assignments inherited by
         /// Git subprocesses, applied after the indexed command-scope pairs.
-        GitConfigParameters => "GIT_CONFIG_PARAMETERS",
+        GitConfigParameters => "GIT_CONFIG_PARAMETERS", PaneEnvPolicy::Allowed,
     }
 }
 
@@ -247,69 +253,157 @@ env_vocabulary! {
     /// `SHELL` are also in [`EnvVar`] because the process reads them when
     /// resolving its pane shell.
     ///
-    /// The closed vocabulary keeps every name shepr writes into a child in one
-    /// place beside the names it reads, so the pane contract and the shipped
-    /// hook assets can be checked against it.
+    /// Together with [`EnvVar`], this forms [`RegisteredEnv`]: the names shepr
+    /// may write or remove in a child. Shared shell inputs delegate their
+    /// spelling and pane policy to [`EnvVar`], rather than deciding them twice.
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
     pub enum ChildEnv {
         /// `TERM`: the terminal type every pane advertises.
-        Term => "TERM",
+        Term => "TERM", PaneEnvPolicy::Allowed,
         /// `COLORTERM`: the colour support every pane advertises.
-        Colorterm => "COLORTERM",
+        Colorterm => "COLORTERM", PaneEnvPolicy::Allowed,
         /// `TERM_PROGRAM_VERSION`: shepr's version, beside `TERM_PROGRAM`.
-        TermProgramVersion => "TERM_PROGRAM_VERSION",
+        TermProgramVersion => "TERM_PROGRAM_VERSION", PaneEnvPolicy::Allowed,
         /// `SHELL`: the resolved shell a pane child sees.
-        Shell => "SHELL",
+        Shell => EnvVar::Shell.name(), EnvVar::Shell.pane_policy(),
         /// `PATH`: the child's executable search path.
-        Path => "PATH",
+        Path => EnvVar::Path.name(), EnvVar::Path.pane_policy(),
         /// `SHEPR_BIN_PATH`: the shepr executable, set for every pane so
         /// programs in it can call back into shepr.
-        SheprBinPath => "SHEPR_BIN_PATH",
+        SheprBinPath => "SHEPR_BIN_PATH", PaneEnvPolicy::Allowed,
+        /// `PWD`: the directory entered by the pane child.
+        Pwd => "PWD", PaneEnvPolicy::Allowed,
+        /// `OLDPWD`: the enclosing shell's previous directory, removed.
+        Oldpwd => "OLDPWD", PaneEnvPolicy::Scrubbed,
         /// `SSH_ASKPASS`: removed so interactive SSH authentication prompts on
-        /// the terminal.
-        SshAskpass => "SSH_ASKPASS",
+        /// the terminal. Only shepr's SSH bridge does this, on its own ssh
+        /// child; a pane keeps the user's askpass setup.
+        SshAskpass => "SSH_ASKPASS", PaneEnvPolicy::Allowed,
         /// `SSH_ASKPASS_REQUIRE`: set to `never` for the same reason.
-        SshAskpassRequire => "SSH_ASKPASS_REQUIRE",
+        SshAskpassRequire => "SSH_ASKPASS_REQUIRE", PaneEnvPolicy::Allowed,
         /// `ITERM_SESSION_ID`: an outer-terminal handle, removed from panes.
-        ItermSessionId => "ITERM_SESSION_ID",
+        ItermSessionId => "ITERM_SESSION_ID", PaneEnvPolicy::Scrubbed,
         /// `LC_TERMINAL`: an outer-terminal handle, removed from panes.
-        LcTerminal => "LC_TERMINAL",
+        LcTerminal => "LC_TERMINAL", PaneEnvPolicy::Scrubbed,
         /// `LC_TERMINAL_VERSION`: an outer-terminal handle, removed from panes.
-        LcTerminalVersion => "LC_TERMINAL_VERSION",
+        LcTerminalVersion => "LC_TERMINAL_VERSION", PaneEnvPolicy::Scrubbed,
         /// `KITTY_WINDOW_ID`: an outer-terminal handle, removed from panes.
-        KittyWindowId => "KITTY_WINDOW_ID",
+        KittyWindowId => "KITTY_WINDOW_ID", PaneEnvPolicy::Scrubbed,
         /// `WT_SESSION`: an outer-terminal handle, removed from panes.
-        WtSession => "WT_SESSION",
+        WtSession => "WT_SESSION", PaneEnvPolicy::Scrubbed,
         /// `TMUX_PANE`: an outer-terminal handle, removed from panes.
-        TmuxPane => "TMUX_PANE",
+        TmuxPane => "TMUX_PANE", PaneEnvPolicy::Scrubbed,
         /// `STY`: an outer-terminal handle (screen), removed from panes.
-        Sty => "STY",
+        Sty => "STY", PaneEnvPolicy::Scrubbed,
         /// `ZELLIJ`: an outer-terminal handle, removed from panes.
-        Zellij => "ZELLIJ",
+        Zellij => "ZELLIJ", PaneEnvPolicy::Scrubbed,
         /// `ZELLIJ_SESSION_NAME`: an outer-terminal handle, removed from panes.
-        ZellijSessionName => "ZELLIJ_SESSION_NAME",
+        ZellijSessionName => "ZELLIJ_SESSION_NAME", PaneEnvPolicy::Scrubbed,
         /// `ZELLIJ_PANE_ID`: an outer-terminal handle, removed from panes.
-        ZellijPaneId => "ZELLIJ_PANE_ID",
+        ZellijPaneId => "ZELLIJ_PANE_ID", PaneEnvPolicy::Scrubbed,
         /// `CLAUDECODE`: an outer Claude Code session's marker, removed from
         /// panes so a new pane is not taken for its child agent.
-        ClaudeCode => "CLAUDECODE",
+        ClaudeCode => "CLAUDECODE", PaneEnvPolicy::AgentSession,
         /// `CLAUDE_CODE_CHILD_SESSION`: removed from panes, as `CLAUDECODE`.
-        ClaudeCodeChildSession => "CLAUDE_CODE_CHILD_SESSION",
+        ClaudeCodeChildSession => "CLAUDE_CODE_CHILD_SESSION", PaneEnvPolicy::AgentSession,
         /// `CLAUDE_CODE_SESSION_ID`: removed from panes, as `CLAUDECODE`.
-        ClaudeCodeSessionId => "CLAUDE_CODE_SESSION_ID",
+        ClaudeCodeSessionId => "CLAUDE_CODE_SESSION_ID", PaneEnvPolicy::AgentSession,
         /// `CLAUDE_CODE_MESSAGING_TOKEN`: removed from panes, as `CLAUDECODE`.
-        ClaudeCodeMessagingToken => "CLAUDE_CODE_MESSAGING_TOKEN",
+        ClaudeCodeMessagingToken => "CLAUDE_CODE_MESSAGING_TOKEN", PaneEnvPolicy::AgentSession,
         /// `CLAUDE_JOB_DIR`: marks a Claude background session, removed from
         /// panes because the Claude hook asset reports nothing under it.
-        ClaudeJobDir => "CLAUDE_JOB_DIR",
+        ClaudeJobDir => "CLAUDE_JOB_DIR", PaneEnvPolicy::AgentSession,
         /// `CLAUDE_CODE_SESSION_KIND`: removed from panes, as `CLAUDE_JOB_DIR`.
-        ClaudeCodeSessionKind => "CLAUDE_CODE_SESSION_KIND",
+        ClaudeCodeSessionKind => "CLAUDE_CODE_SESSION_KIND", PaneEnvPolicy::AgentSession,
         /// `CODEX_THREAD_ID`: an outer Codex session's marker, removed from
         /// panes.
-        CodexThreadId => "CODEX_THREAD_ID",
+        CodexThreadId => "CODEX_THREAD_ID", PaneEnvPolicy::AgentSession,
         /// `OMPCODE`: an outer omp session's marker, removed from panes.
-        Ompcode => "OMPCODE",
+        Ompcode => "OMPCODE", PaneEnvPolicy::AgentSession,
     }
+}
+
+/// A registered child environment name. Shell and PATH use their interpreted
+/// identity, so the registry contains each name once.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RegisteredEnv {
+    Interpreted(EnvVar),
+    Child(ChildEnv),
+}
+
+impl From<EnvVar> for RegisteredEnv {
+    fn from(value: EnvVar) -> Self {
+        Self::Interpreted(value)
+    }
+}
+
+impl From<ChildEnv> for RegisteredEnv {
+    fn from(value: ChildEnv) -> Self {
+        match value {
+            ChildEnv::Shell => EnvVar::Shell.into(),
+            ChildEnv::Path => EnvVar::Path.into(),
+            _ => Self::Child(value),
+        }
+    }
+}
+
+impl RegisteredEnv {
+    pub fn all() -> impl Iterator<Item = Self> {
+        EnvVar::ALL.iter().copied().map(Self::from).chain(
+            ChildEnv::ALL
+                .iter()
+                .copied()
+                .filter(|value| !matches!(value, ChildEnv::Shell | ChildEnv::Path))
+                .map(Self::from),
+        )
+    }
+
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Interpreted(value) => value.name(),
+            Self::Child(value) => value.name(),
+        }
+    }
+
+    pub fn pane_policy(self) -> PaneEnvPolicy {
+        match self {
+            Self::Interpreted(value) => value.pane_policy(),
+            Self::Child(ChildEnv::Shell) => EnvVar::Shell.pane_policy(),
+            Self::Child(ChildEnv::Path) => EnvVar::Path.pane_policy(),
+            Self::Child(value) => value.pane_policy(),
+        }
+    }
+}
+
+impl std::fmt::Display for RegisteredEnv {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.name())
+    }
+}
+
+impl AsRef<OsStr> for RegisteredEnv {
+    fn as_ref(&self) -> &OsStr {
+        OsStr::new(self.name())
+    }
+}
+
+/// What a pane child sees of one registered variable. `PtyCommand` hands the
+/// pane the server's whole environment (its `base_env` says why); this is the
+/// one place that decides what is removed from it. Every registered name
+/// declares its pane policy beside its spelling. Unregistered names pass through.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PaneEnvPolicy {
+    /// The inherited value or shepr's replacement remains visible to the child.
+    Allowed,
+    /// The inherited value describes something outside this pane (the outer
+    /// terminal, an outer agent session, another scope's handoff) and is
+    /// removed from the child environment.
+    Scrubbed,
+    /// Inherited values are removed. A dedicated typed launch field may
+    /// install its value after this policy runs.
+    ServerOnly,
+    /// An enclosing agent session; ownership is declared by the agent descriptor.
+    AgentSession,
 }
 
 /// What a variable's value is, which decides how [`resolve`] reads it.
@@ -383,12 +477,20 @@ impl EnvVar {
     }
 }
 
-/// Whether `name` belongs to the fixed environment vocabulary or to one of
+/// Whether `name` belongs to the combined environment registry or to one of
 /// Git's indexed command-scope config variable families. Indexed names use
 /// the canonical decimal spelling Git generates (`_0`, `_1`, ...).
+///
+/// The scope is deliberately the whole [`RegisteredEnv`], not only the
+/// interpreted [`EnvVar`] names: test isolation clears what this accepts, and
+/// tests run inside tmux and inside agent sessions such as Claude Code, which
+/// export outer-terminal handles and session markers (`TMUX_PANE`,
+/// `CLAUDECODE`, `CLAUDE_JOB_DIR`, ...). Those change what shipped hook assets
+/// and pane environment code do, so a test must not inherit them. A test that
+/// needs one of these names, `TERM` included, sets it through the guard.
 #[must_use]
 pub fn is_registered_name(name: &OsStr) -> bool {
-    EnvVar::ALL.iter().any(|var| OsStr::new(var.name()) == name)
+    RegisteredEnv::all().any(|var| OsStr::new(var.name()) == name)
         || name.to_str().is_some_and(|name| {
             is_indexed_git_config_name(name, "GIT_CONFIG_KEY_")
                 || is_indexed_git_config_name(name, "GIT_CONFIG_VALUE_")
@@ -751,6 +853,48 @@ pub fn read_os(var: EnvVar) -> Result<Option<OsString>, EnvError> {
     resolve_os(var, raw(var).as_deref())
 }
 
+/// The directory name under an XDG base directory for config and state that
+/// every build profile shares.
+pub const SHARED_APP_DIR_NAME: &str = "shepr";
+
+/// Resolve the XDG config home from one environment snapshot, without IO.
+/// Empty is unset; invalid paths are refused by the registered read policy.
+/// An unset base falls back to HOME/.config.
+///
+/// # Errors
+///
+/// A refused read, or an unset base with no `HOME`.
+pub fn xdg_config_home_with(
+    read_path: impl Fn(EnvVar) -> io::Result<Option<PathBuf>>,
+) -> io::Result<PathBuf> {
+    xdg_home_with(EnvVar::XdgConfigHome, ".config", read_path)
+}
+
+/// Resolve the XDG state home from one environment snapshot, without IO.
+/// An unset base falls back to HOME/.local/state under the same path policy.
+///
+/// # Errors
+///
+/// A refused read, or an unset base with no `HOME`.
+pub fn xdg_state_home_with(
+    read_path: impl Fn(EnvVar) -> io::Result<Option<PathBuf>>,
+) -> io::Result<PathBuf> {
+    xdg_home_with(EnvVar::XdgStateHome, ".local/state", read_path)
+}
+
+fn xdg_home_with(
+    variable: EnvVar,
+    suffix: &str,
+    read_path: impl Fn(EnvVar) -> io::Result<Option<PathBuf>>,
+) -> io::Result<PathBuf> {
+    match read_path(variable)? {
+        Some(path) => Ok(path),
+        None => Ok(read_path(EnvVar::Home)?
+            .ok_or_else(crate::pathutil::missing_home_error)?
+            .join(suffix)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::os::unix::ffi::OsStrExt as _;
@@ -851,6 +995,23 @@ mod tests {
     }
 
     #[test]
+    fn registry_covers_child_only_names_so_isolation_clears_enclosing_sessions() {
+        for name in [
+            "TERM",
+            "PWD",
+            "OLDPWD",
+            "TMUX_PANE",
+            "CLAUDECODE",
+            "CLAUDE_JOB_DIR",
+        ] {
+            assert!(is_registered_name(OsStr::new(name)), "{name}");
+        }
+        for variable in ChildEnv::ALL {
+            assert!(is_registered_name(variable.as_ref()), "{variable}");
+        }
+    }
+
+    #[test]
     fn the_child_vocabulary_only_overlaps_on_inherited_shell_inputs() {
         let names: Vec<&str> = ChildEnv::ALL.iter().copied().map(ChildEnv::name).collect();
         assert_eq!(
@@ -862,6 +1023,8 @@ mod tests {
                 "SHELL",
                 "PATH",
                 "SHEPR_BIN_PATH",
+                "PWD",
+                "OLDPWD",
                 "SSH_ASKPASS",
                 "SSH_ASKPASS_REQUIRE",
                 "ITERM_SESSION_ID",

@@ -51,7 +51,7 @@ impl PaneExitArbiter {
     /// Records `ending` if nothing has been decided yet. Returns whether this
     /// call decided.
     pub(super) fn decide(&self, ending: PaneEnding) -> bool {
-        let mut decided = shepr_vt::lock_auxiliary(&self.decided);
+        let mut decided = shepr_core::locks::lock_auxiliary(&self.decided);
         if decided.is_some() {
             return false;
         }
@@ -65,7 +65,7 @@ impl PaneExitArbiter {
     pub(super) fn decide_after(&self, grace: Duration, ending: PaneEnding) -> bool {
         // clock-io-ok: bounds a real wait for the child watcher to report.
         let deadline = Instant::now() + grace;
-        let mut decided = shepr_vt::lock_auxiliary(&self.decided);
+        let mut decided = shepr_core::locks::lock_auxiliary(&self.decided);
         loop {
             if decided.is_some() {
                 return false;
@@ -85,7 +85,7 @@ impl PaneExitArbiter {
 
     /// The recorded ending, if any.
     pub(super) fn ending(&self) -> Option<PaneEnding> {
-        *shepr_vt::lock_auxiliary(&self.decided)
+        *shepr_core::locks::lock_auxiliary(&self.decided)
     }
 
     /// Waits until an ending is recorded. For the one publisher only.

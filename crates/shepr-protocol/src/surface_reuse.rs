@@ -904,8 +904,11 @@ mod tests {
             panic!("expected surface");
         };
         assert_eq!(applied.frame.cells[1], cell("c"));
-        assert_eq!(applied.projection_revision, 2);
-        assert_eq!(applied.surface_revision, 2);
+        assert_eq!(
+            applied.projection_revision,
+            crate::ProjectionRevision::new(2)
+        );
+        assert_eq!(applied.surface_revision, crate::SurfaceRevision::new(2));
     }
 
     #[test]
@@ -934,8 +937,11 @@ mod tests {
             SurfaceDecodeError::BaselineMismatch
         ));
         assert_eq!(subject.boot_id, "1-1");
-        assert_eq!(subject.projection_revision, 1);
-        assert_eq!(subject.surface_revision, 2);
+        assert_eq!(
+            subject.projection_revision,
+            crate::ProjectionRevision::new(1)
+        );
+        assert_eq!(subject.surface_revision, crate::SurfaceRevision::new(2));
     }
 
     #[test]

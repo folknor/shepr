@@ -206,7 +206,6 @@ exclude = [
     "crates/shepr-server/src/server/headless/tests/server_stop.rs",
     "crates/shepr-test-support/src/fixture.rs",
     "crates/shepr-test-support/src/lib.rs",
-    "crates/shepr-vt/src/locks.rs",
     "src/test_support.rs",
 ]
 message = "a new clippy seal escape; use the sanctioned alternative the seal's reason names (shepr_core::env, try_exists, a stated current_dir, a returned status), or add this file to the exclude list as the reviewed exception"

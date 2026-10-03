@@ -2614,7 +2614,7 @@ fn cancelling_an_old_copy_request_does_not_reset_a_new_session() {
 
     state.drop_request(&old_id, DropReason::Unsent);
 
-    assert!(state.copy_pipeline.is_awaiting(&current_id.clone().into()));
+    assert!(state.copy_pipeline.is_awaiting(&current_id));
     assert!(state.copy_pipeline.in_flight());
     assert_eq!(state.copy_pipeline.keys_len(), 1);
     assert!(state.ledger.contains(current_id.as_str()));

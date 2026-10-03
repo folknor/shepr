@@ -3,6 +3,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::PathBuf;
 use std::{collections::HashMap, io::ErrorKind};
 
+use crate::agent::Agent;
 use shepr_core::env::EnvVar;
 
 #[derive(Clone, Debug)]
@@ -33,21 +34,6 @@ fn captured_directory(result: &CapturedDirectory) -> io::Result<PathBuf> {
 type CapturedDirectory = Result<PathBuf, DirectoryError>;
 type CapturedEnvPath = Result<Option<PathBuf>, DirectoryError>;
 
-const INTEGRATION_PATH_ENV_VARS: &[EnvVar] = &[
-    EnvVar::Home,
-    EnvVar::XdgConfigHome,
-    EnvVar::XdgStateHome,
-    EnvVar::PiCodingAgentDir,
-    EnvVar::PiConfigDir,
-    EnvVar::ClaudeConfigDir,
-    EnvVar::CodexHome,
-    EnvVar::KimiCodeHome,
-    EnvVar::CopilotHome,
-    EnvVar::CursorConfigDir,
-    EnvVar::AntigravityCliConfigDir,
-    EnvVar::GrokHome,
-];
-
 #[derive(Clone, Debug)]
 struct IntegrationEnvironment {
     paths: HashMap<EnvVar, CapturedEnvPath>,
@@ -55,9 +41,13 @@ struct IntegrationEnvironment {
 
 impl IntegrationEnvironment {
     fn capture(read_path: impl Fn(EnvVar) -> io::Result<Option<PathBuf>>) -> Self {
-        let paths = INTEGRATION_PATH_ENV_VARS
-            .iter()
-            .copied()
+        let paths = [EnvVar::Home, EnvVar::XdgConfigHome, EnvVar::XdgStateHome]
+            .into_iter()
+            .chain(
+                crate::agent::AGENTS
+                    .iter()
+                    .filter_map(|agent| agent.config_dir_override),
+            )
             .map(|variable| {
                 let value =
                     read_path(variable).map_err(|error| DirectoryError(std::sync::Arc::new(error)));
@@ -198,24 +188,20 @@ fn resolve_config_update_lock_dir(environment: &IntegrationEnvironment) -> io::R
     // Agent configs are shared by dev and release builds. Capture the same
     // lock root as the agent paths so every operation in this launch uses one
     // stable environment snapshot.
-    let state_home = match environment.path(EnvVar::XdgStateHome)? {
-        Some(path) => path,
-        None => environment.home_dir()?.join(".local/state"),
-    };
-    Ok(state_home.join("shepr").join("integration-locks"))
-}
-
-fn pi_extension_dir(environment: &IntegrationEnvironment) -> io::Result<PathBuf> {
     Ok(
-        config_dir_from_env_or_home(environment, EnvVar::PiCodingAgentDir, &[".pi", "agent"])?
-            .join("extensions"),
+        shepr_core::env::xdg_state_home_with(|variable| environment.path(variable))?
+            .join(shepr_core::env::SHARED_APP_DIR_NAME)
+            .join("integration-locks"),
     )
 }
 
+fn pi_extension_dir(environment: &IntegrationEnvironment) -> io::Result<PathBuf> {
+    Ok(config_dir_from_env_or_home(environment, Agent::Pi, &[".pi", "agent"])?.join("extensions"))
+}
+
 fn omp_extension_dir(environment: &IntegrationEnvironment) -> io::Result<PathBuf> {
-    let config_dir = environment
-        .path(EnvVar::PiConfigDir)?
-        .unwrap_or_else(|| ".omp".into());
+    let config_dir =
+        agent_config_override(environment, Agent::Omp)?.unwrap_or_else(|| ".omp".into());
     let config_dir = expand_tilde_path_with_environment(config_dir, environment)?;
     let config_dir = if config_dir.is_absolute() {
         config_dir
@@ -226,41 +212,45 @@ fn omp_extension_dir(environment: &IntegrationEnvironment) -> io::Result<PathBuf
 }
 
 fn claude_dir(environment: &IntegrationEnvironment) -> io::Result<PathBuf> {
-    config_dir_from_env_or_home(environment, EnvVar::ClaudeConfigDir, &[".claude"])
+    config_dir_from_env_or_home(environment, Agent::Claude, &[".claude"])
 }
 
 fn codex_dir(environment: &IntegrationEnvironment) -> io::Result<PathBuf> {
-    config_dir_from_env_or_home(environment, EnvVar::CodexHome, &[".codex"])
+    config_dir_from_env_or_home(environment, Agent::Codex, &[".codex"])
 }
 
 fn kimi_dir(environment: &IntegrationEnvironment) -> io::Result<PathBuf> {
-    config_dir_from_env_or_home(environment, EnvVar::KimiCodeHome, &[".kimi-code"])
+    config_dir_from_env_or_home(environment, Agent::Kimi, &[".kimi-code"])
 }
 
 fn copilot_dir(environment: &IntegrationEnvironment) -> io::Result<PathBuf> {
-    config_dir_from_env_or_home(environment, EnvVar::CopilotHome, &[".copilot"])
+    config_dir_from_env_or_home(environment, Agent::GithubCopilot, &[".copilot"])
 }
 
 fn devin_dir(environment: &IntegrationEnvironment) -> io::Result<PathBuf> {
-    // Devin's config is another tool's location, under the XDG config home
-    // when one is set and Devin's conventional HOME path otherwise.
-    if let Some(path) = environment.path(EnvVar::XdgConfigHome)? {
-        return Ok(path.join("devin"));
-    }
-
-    Ok(environment.home_dir()?.join(".config").join("devin"))
+    Ok(shepr_core::env::xdg_config_home_with(|variable| environment.path(variable))?.join("devin"))
 }
 
 fn droid_dir(environment: &IntegrationEnvironment) -> io::Result<PathBuf> {
     Ok(environment.home_dir()?.join(".factory"))
 }
 
+fn agent_config_override(
+    environment: &IntegrationEnvironment,
+    agent: Agent,
+) -> io::Result<Option<PathBuf>> {
+    match agent.descriptor().config_dir_override {
+        Some(variable) => environment.path(variable),
+        None => Ok(None),
+    }
+}
+
 fn config_dir_from_env_or_home(
     environment: &IntegrationEnvironment,
-    env_var: EnvVar,
+    agent: Agent,
     home_relative_segments: &[&str],
 ) -> io::Result<PathBuf> {
-    if let Some(value) = environment.path(env_var)? {
+    if let Some(value) = agent_config_override(environment, agent)? {
         return expand_tilde_path_with_environment(value, environment);
     }
 
@@ -272,33 +262,25 @@ fn config_dir_from_env_or_home(
 }
 
 fn opencode_dir(environment: &IntegrationEnvironment) -> io::Result<PathBuf> {
-    if let Some(path) = environment.path(EnvVar::XdgConfigHome)? {
-        return Ok(path.join("opencode"));
-    }
-
-    Ok(environment.home_dir()?.join(".config/opencode"))
+    Ok(
+        shepr_core::env::xdg_config_home_with(|variable| environment.path(variable))?
+            .join("opencode"),
+    )
 }
 
 fn opencode_state_dir(environment: &IntegrationEnvironment) -> io::Result<PathBuf> {
-    // OpenCode's state is another tool's location, under the XDG state home
-    // when one is set and OpenCode's conventional HOME path otherwise.
-    if let Some(path) = environment.path(EnvVar::XdgStateHome)? {
-        return Ok(path.join("opencode"));
-    }
-
-    Ok(environment.home_dir()?.join(".local/state/opencode"))
+    Ok(
+        shepr_core::env::xdg_state_home_with(|variable| environment.path(variable))?
+            .join("opencode"),
+    )
 }
 
 fn kilo_dir(environment: &IntegrationEnvironment) -> io::Result<PathBuf> {
-    if let Some(path) = environment.path(EnvVar::XdgConfigHome)? {
-        return Ok(path.join("kilo"));
-    }
-
-    Ok(environment.home_dir()?.join(".config/kilo"))
+    Ok(shepr_core::env::xdg_config_home_with(|variable| environment.path(variable))?.join("kilo"))
 }
 
 fn cursor_dir(environment: &IntegrationEnvironment) -> io::Result<PathBuf> {
-    config_dir_from_env_or_home(environment, EnvVar::CursorConfigDir, &[".cursor"])
+    config_dir_from_env_or_home(environment, Agent::Cursor, &[".cursor"])
 }
 
 fn mastracode_dir(environment: &IntegrationEnvironment) -> io::Result<PathBuf> {
@@ -309,17 +291,13 @@ fn antigravity_cli_dir(environment: &IntegrationEnvironment) -> io::Result<PathB
     // Antigravity CLI discovers global customizations (hooks.json included)
     // from ~/.gemini/config; ~/.gemini/antigravity-cli holds runtime data and
     // is never read for hooks.
-    config_dir_from_env_or_home(
-        environment,
-        EnvVar::AntigravityCliConfigDir,
-        &[".gemini", "config"],
-    )
+    config_dir_from_env_or_home(environment, Agent::Antigravity, &[".gemini", "config"])
 }
 
 fn grok_dir(environment: &IntegrationEnvironment) -> io::Result<PathBuf> {
     // The grok CLI honors GROK_HOME as its config home (config.toml,
     // auth.json, hooks/); mirror it so hook installs land where grok looks.
-    config_dir_from_env_or_home(environment, EnvVar::GrokHome, &[".grok"])
+    config_dir_from_env_or_home(environment, Agent::Grok, &[".grok"])
 }
 
 fn expand_tilde_path_with_environment(
@@ -493,8 +471,15 @@ mod tests {
                 .map_err(io::Error::from)
         });
 
-        for variable in INTEGRATION_PATH_ENV_VARS {
-            assert_eq!(reads.borrow().get(variable), Some(&1), "{variable}");
+        for variable in [EnvVar::Home, EnvVar::XdgConfigHome, EnvVar::XdgStateHome]
+            .into_iter()
+            .chain(
+                crate::agent::AGENTS
+                    .iter()
+                    .filter_map(|agent| agent.config_dir_override),
+            )
+        {
+            assert_eq!(reads.borrow().get(&variable), Some(&1), "{variable}");
         }
         assert_eq!(
             directory(&paths, DirectoryKey::Grok).expect("captured Grok path"),

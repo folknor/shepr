@@ -45,10 +45,10 @@ fn dirty_full_collects_bounded_viewport_patch() {
 
     assert_eq!(patch.rows.len(), 3);
     assert_eq!(
-        patch.rows.iter().map(|(row, _)| *row).collect::<Vec<_>>(),
+        patch.rows.iter().map(|row| row.y).collect::<Vec<_>>(),
         vec![0, 1, 2]
     );
-    assert!(patch.rows.iter().all(|(_, cells)| cells.len() == 4));
+    assert!(patch.rows.iter().all(|row| row.cells.len() == 4));
     assert!(matches!(
         pane.collect_dirty_patch(4, 3),
         TerminalDirtyPatchOutcome::Clean
@@ -580,7 +580,7 @@ fn live_terminal_word_end_expands_through_a_long_wide_soft_wrap() {
 }
 
 fn current_palette_color(pane: &PaneTerminal, index: u8) -> shepr_vt::RgbColor {
-    let mut core = shepr_vt::lock_terminal_core(&pane.core).expect("test precondition");
+    let mut core = pane.core.lock().expect("test precondition");
     let PaneTerminalCore {
         terminal,
         render_state,
@@ -894,7 +894,9 @@ fn expired_synchronized_update_is_flushed_only_by_tick() {
     );
     assert!(begin.terminal_responses.is_empty());
     assert!(begin.clipboard_writes.is_empty());
-    let deadline = shepr_vt::lock_terminal_core(&pane.core)
+    let deadline = pane
+        .core
+        .lock()
         .expect("test precondition")
         .terminal
         .synchronized_output_deadline()
@@ -945,7 +947,9 @@ fn tick_ends_an_expired_synchronized_update() {
 
     let begin = pane.process_pty_bytes(pane_id, b"\x1b[?2026h\x1b[5n");
     assert!(matches!(begin.render_request, RenderRequest::After(_)));
-    let deadline = shepr_vt::lock_terminal_core(&pane.core)
+    let deadline = pane
+        .core
+        .lock()
         .expect("test precondition")
         .terminal
         .synchronized_output_deadline()
@@ -981,7 +985,9 @@ fn late_output_flushes_the_expired_update_first_and_keeps_reply_order() {
 
     let begin = pane.process_pty_bytes(pane_id, b"\x1b[?2026h\x1b[5n");
     assert!(begin.terminal_responses.is_empty());
-    let deadline = shepr_vt::lock_terminal_core(&pane.core)
+    let deadline = pane
+        .core
+        .lock()
         .expect("test precondition")
         .terminal
         .synchronized_output_deadline()
@@ -1008,7 +1014,7 @@ fn late_output_flushes_the_expired_update_first_and_keeps_reply_order() {
 fn host_terminal_theme_restore_probe_skips_when_no_transient_override() {
     let terminal = shepr_vt::Terminal::new(80, 24, 0);
     let pane = PaneTerminal::new(terminal);
-    let core = shepr_vt::lock_terminal_core(&pane.core).expect("test precondition");
+    let core = pane.core.lock().expect("test precondition");
 
     assert!(!should_probe_host_terminal_theme_restore(&core));
 }
@@ -1018,11 +1024,11 @@ fn host_terminal_theme_restore_probe_skips_when_host_theme_unknown() {
     let terminal = shepr_vt::Terminal::new(80, 24, 0);
     let pane = PaneTerminal::new(terminal);
     {
-        let mut core = shepr_vt::lock_terminal_core(&pane.core).expect("test precondition");
+        let mut core = pane.core.lock().expect("test precondition");
         core.transient_default_color_owner_pgid =
             Some(shepr_platform::Pgid::new(42).expect("test group"));
     }
-    let core = shepr_vt::lock_terminal_core(&pane.core).expect("test precondition");
+    let core = pane.core.lock().expect("test precondition");
 
     assert!(!should_probe_host_terminal_theme_restore(&core));
 }
@@ -1033,7 +1039,7 @@ fn host_terminal_theme_restore_probe_skips_on_alternate_screen() {
     terminal.write(b"\x1b[?1049h");
     let pane = PaneTerminal::new(terminal);
     {
-        let mut core = shepr_vt::lock_terminal_core(&pane.core).expect("test precondition");
+        let mut core = pane.core.lock().expect("test precondition");
         core.transient_default_color_owner_pgid =
             Some(shepr_platform::Pgid::new(42).expect("test group"));
         core.host_terminal_theme = shepr_termio::host_term::theme::TerminalTheme {
@@ -1050,7 +1056,7 @@ fn host_terminal_theme_restore_probe_skips_on_alternate_screen() {
             ..Default::default()
         };
     }
-    let core = shepr_vt::lock_terminal_core(&pane.core).expect("test precondition");
+    let core = pane.core.lock().expect("test precondition");
 
     assert!(!should_probe_host_terminal_theme_restore(&core));
 }
@@ -1060,7 +1066,7 @@ fn host_terminal_theme_restore_probe_runs_when_restore_is_pending() {
     let terminal = shepr_vt::Terminal::new(80, 24, 0);
     let pane = PaneTerminal::new(terminal);
     {
-        let mut core = shepr_vt::lock_terminal_core(&pane.core).expect("test precondition");
+        let mut core = pane.core.lock().expect("test precondition");
         core.transient_default_color_owner_pgid =
             Some(shepr_platform::Pgid::new(42).expect("test group"));
         core.host_terminal_theme = shepr_termio::host_term::theme::TerminalTheme {
@@ -1077,7 +1083,7 @@ fn host_terminal_theme_restore_probe_runs_when_restore_is_pending() {
             ..Default::default()
         };
     }
-    let core = shepr_vt::lock_terminal_core(&pane.core).expect("test precondition");
+    let core = pane.core.lock().expect("test precondition");
 
     assert!(should_probe_host_terminal_theme_restore(&core));
 }
@@ -2439,7 +2445,7 @@ fn render_leaves_unknown_host_default_background_transparent() {
     let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = PaneTerminal::new(terminal);
     {
-        let mut core = shepr_vt::lock_terminal_core(&pane.core).expect("test precondition");
+        let mut core = pane.core.lock().expect("test precondition");
         core.terminal.write(b"hi");
     }
 
@@ -2457,7 +2463,7 @@ fn render_blanks_kitty_unicode_placeholders() {
     let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = PaneTerminal::new(terminal);
     {
-        let mut core = shepr_vt::lock_terminal_core(&pane.core).expect("test precondition");
+        let mut core = pane.core.lock().expect("test precondition");
         core.terminal
             .write("before\u{10eeee}\u{0305}\u{0305}after".as_bytes());
     }
@@ -2475,7 +2481,7 @@ fn render_keeps_explicit_cell_foreground_when_host_is_unknown() {
     let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = PaneTerminal::new(terminal);
     {
-        let mut core = shepr_vt::lock_terminal_core(&pane.core).expect("test precondition");
+        let mut core = pane.core.lock().expect("test precondition");
         core.terminal.write(b"\x1b[38;2;68;85;102mhi\x1b[0m");
     }
 
@@ -2492,7 +2498,7 @@ fn render_keeps_explicit_cell_background_when_host_is_unknown() {
     let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = PaneTerminal::new(terminal);
     {
-        let mut core = shepr_vt::lock_terminal_core(&pane.core).expect("test precondition");
+        let mut core = pane.core.lock().expect("test precondition");
         core.terminal.write(b"\x1b[48;2;68;85;102mhi\x1b[0m");
     }
 
@@ -2509,7 +2515,7 @@ fn render_preserves_palette_colors_instead_of_flattening_to_rgb() {
     let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = PaneTerminal::new(terminal);
     {
-        let mut core = shepr_vt::lock_terminal_core(&pane.core).expect("test precondition");
+        let mut core = pane.core.lock().expect("test precondition");
         core.terminal.write(
             b"\x1b[31mR\x1b[0m \x1b[38;5;171mI\x1b[0m \x1b[48;5;4mB\x1b[0m \x1b[38;2;1;2;3mT",
         );
@@ -2531,7 +2537,7 @@ fn render_preserves_palette_background_fill_cells() {
     let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = PaneTerminal::new(terminal);
     {
-        let mut core = shepr_vt::lock_terminal_core(&pane.core).expect("test precondition");
+        let mut core = pane.core.lock().expect("test precondition");
         core.terminal.write(b"\x1b[48;5;4m\x1b[K");
     }
 
@@ -2547,7 +2553,7 @@ fn render_preserves_rgb_background_fill_cells() {
     let terminal = shepr_vt::Terminal::new(20, 5, 0);
     let pane = PaneTerminal::new(terminal);
     {
-        let mut core = shepr_vt::lock_terminal_core(&pane.core).expect("test precondition");
+        let mut core = pane.core.lock().expect("test precondition");
         core.terminal.write(b"\x1b[48;2;17;34;51m\x1b[K");
     }
 
@@ -2635,29 +2641,21 @@ fn color_scheme_queries_and_live_updates_follow_terminal_mode() {
 #[test]
 fn unchanged_host_appearance_does_not_advance_render_revision() {
     let pane = PaneTerminal::new(shepr_vt::Terminal::new(20, 5, 0));
-    let initial_revision = shepr_vt::lock_terminal_core(&pane.core)
-        .expect("terminal core")
-        .content_revision;
+    let initial_revision = pane.core.lock().expect("terminal core").content_revision;
     pane.apply_host_terminal_appearance(None);
     assert_eq!(
-        shepr_vt::lock_terminal_core(&pane.core)
-            .expect("terminal core")
-            .content_revision,
+        pane.core.lock().expect("terminal core").content_revision,
         initial_revision
     );
 
     let appearance = Some(shepr_termio::host_term::theme::HostAppearance::Dark);
 
     pane.apply_host_terminal_appearance(appearance);
-    let changed_revision = shepr_vt::lock_terminal_core(&pane.core)
-        .expect("terminal core")
-        .content_revision;
+    let changed_revision = pane.core.lock().expect("terminal core").content_revision;
     assert_eq!(changed_revision, initial_revision.wrapping_add(2));
 
     pane.apply_host_terminal_appearance(appearance);
-    let repeated_revision = shepr_vt::lock_terminal_core(&pane.core)
-        .expect("terminal core")
-        .content_revision;
+    let repeated_revision = pane.core.lock().expect("terminal core").content_revision;
     assert_eq!(repeated_revision, changed_revision);
 }
 
@@ -3316,7 +3314,7 @@ fn process_pty_bytes_preserves_untracked_multi_color_query_responses() {
             .count(),
         3
     );
-    let core = shepr_vt::lock_terminal_core(&pane.core).expect("test precondition");
+    let core = pane.core.lock().expect("test precondition");
     assert!(!has_default_color_override(&core.terminal));
     drop(core);
 }
@@ -3356,7 +3354,7 @@ fn process_pty_bytes_tracks_later_multi_value_color_set() {
 
     pane.process_pty_bytes(pane_id, b"\x1b]10;?;rgb:44/55/66\x1b\\");
 
-    let core = shepr_vt::lock_terminal_core(&pane.core).expect("test precondition");
+    let core = pane.core.lock().expect("test precondition");
     assert_eq!(
         core.terminal
             .default_color_override(shepr_vt::DefaultColor::Foreground),
@@ -3572,7 +3570,7 @@ fn render_leaves_host_default_background_transparent() {
     };
     pane.apply_host_terminal_theme(host_theme);
     {
-        let mut core = shepr_vt::lock_terminal_core(&pane.core).expect("test precondition");
+        let mut core = pane.core.lock().expect("test precondition");
         core.terminal.write(b"hi");
     }
 
@@ -3604,7 +3602,7 @@ fn render_keeps_explicit_default_foreground_when_it_differs_from_host() {
     };
     pane.apply_host_terminal_theme(host_theme);
     {
-        let mut core = shepr_vt::lock_terminal_core(&pane.core).expect("test precondition");
+        let mut core = pane.core.lock().expect("test precondition");
         core.terminal.write(b"\x1b]10;rgb:44/55/66\x1b\\hi");
     }
 
@@ -3635,7 +3633,7 @@ fn render_keeps_explicit_default_background_when_it_differs_from_host() {
     };
     pane.apply_host_terminal_theme(host_theme);
     {
-        let mut core = shepr_vt::lock_terminal_core(&pane.core).expect("test precondition");
+        let mut core = pane.core.lock().expect("test precondition");
         core.terminal.write(b"\x1b]11;rgb:44/55/66\x1b\\hi");
     }
 
@@ -3666,7 +3664,7 @@ fn render_inverse_text_swaps_fg_and_resolved_bg_when_bg_is_transparent() {
     };
     pane.apply_host_terminal_theme(host_theme);
     {
-        let mut core = shepr_vt::lock_terminal_core(&pane.core).expect("test precondition");
+        let mut core = pane.core.lock().expect("test precondition");
         // SGR 7 enables inverse/reverse video
         core.terminal.write(b"\x1b[7mhi\x1b[27m");
     }
@@ -3982,7 +3980,7 @@ fn full_render_leaves_dirty_rows_for_the_next_patch() {
     let TerminalDirtyPatchOutcome::Patch(patch) = pane.collect_dirty_patch(8, 4) else {
         panic!("the row written before the render must still be sent");
     };
-    assert!(patch.rows.iter().any(|(y, _)| *y == 1));
+    assert!(patch.rows.iter().any(|row| row.y == 1));
 }
 
 /// Rows below a patch's area stay dirty, and so does the overall state:
@@ -3998,7 +3996,7 @@ fn rows_below_a_patch_area_are_sent_by_a_later_taller_patch() {
     let TerminalDirtyPatchOutcome::Patch(short) = pane.collect_dirty_patch(8, 3) else {
         panic!("expected a patch");
     };
-    assert_eq!(short.rows.iter().map(|(y, _)| *y).collect::<Vec<_>>(), [1]);
+    assert_eq!(short.rows.iter().map(|row| row.y).collect::<Vec<_>>(), [1]);
     assert!(
         !matches!(
             pane.collect_dirty_patch(8, 3),
@@ -4009,7 +4007,7 @@ fn rows_below_a_patch_area_are_sent_by_a_later_taller_patch() {
     let TerminalDirtyPatchOutcome::Patch(tall) = pane.collect_dirty_patch(8, 6) else {
         panic!("expected a patch");
     };
-    assert_eq!(tall.rows.iter().map(|(y, _)| *y).collect::<Vec<_>>(), [4]);
+    assert_eq!(tall.rows.iter().map(|row| row.y).collect::<Vec<_>>(), [4]);
     assert!(matches!(
         pane.collect_dirty_patch(8, 6),
         TerminalDirtyPatchOutcome::Clean
@@ -4020,7 +4018,7 @@ fn rows_below_a_patch_area_are_sent_by_a_later_taller_patch() {
 fn default_color_changes_ask_for_an_owner_only_while_an_override_stands() {
     let terminal = shepr_vt::Terminal::new(20, 3, 0);
     let pane = PaneTerminal::new(terminal);
-    let mut core = shepr_vt::lock_terminal_core(&pane.core).expect("test precondition");
+    let mut core = pane.core.lock().expect("test precondition");
     core.terminal.write(b"\x1b]11;rgb:10/20/30\x07");
     let first_set = core.terminal.take_effects().default_color_set;
     assert_eq!(
@@ -4094,7 +4092,7 @@ fn a_core_poisoned_off_the_reader_is_reported_to_the_reader() {
     // A render or API read panicking while it holds the core lock.
     let poisoner = std::sync::Arc::clone(&pane);
     let joined = std::thread::spawn(move || {
-        let _core = shepr_vt::lock_terminal_core(&poisoner.core);
+        let _core = poisoner.core.lock();
         panic!("panic while holding the core lock");
     })
     .join();

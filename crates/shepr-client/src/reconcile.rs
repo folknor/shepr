@@ -150,7 +150,7 @@ impl ClientLoop {
                     &mut self.state,
                     &shell::EndpointNotice::new(
                         id.clone(),
-                        shell::EndpointNoticeKind::ConnectionLost(notice.to_owned()),
+                        shell::EndpointNoticeKind::ConnectionLost(notice),
                     ),
                 );
                 clear_endpoint_host_effects(&mut self.state)?;
@@ -160,7 +160,7 @@ impl ClientLoop {
                     &mut self.state,
                     &shell::EndpointNotice::new(
                         id.clone(),
-                        shell::EndpointNoticeKind::MoveInterrupted(notice.to_owned()),
+                        shell::EndpointNoticeKind::MoveInterrupted(notice),
                     ),
                 );
             }
@@ -184,9 +184,7 @@ mod tests {
         assert_eq!(
             shell::EndpointNotice::new(
                 buildbox,
-                shell::EndpointNoticeKind::MoveInterrupted(
-                    "connection was lost; reconnecting".to_owned(),
-                ),
+                shell::EndpointNoticeKind::MoveInterrupted("connection was lost; reconnecting"),
             )
             .body(),
             "machine switch interrupted: buildbox connection was lost; reconnecting"

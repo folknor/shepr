@@ -203,7 +203,7 @@ struct FullStatusJson {
 fn client_status_json() -> ClientStatusJson {
     ClientStatusJson {
         identity: Some(shepr_protocol::BuildVersion {
-            version: env!("CARGO_PKG_VERSION").to_owned(),
+            version: shepr_protocol::PACKAGE_VERSION.to_owned(),
             build_id: shepr_protocol::BuildIdentity::for_this_build(),
         }),
         binary: Some(current_exe_label()),

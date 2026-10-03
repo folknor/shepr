@@ -18,6 +18,19 @@ impl AgentOwnership {
         })
     }
 
+    pub fn report_hook_outcome_at(
+        &mut self,
+        origin: ReportOrigin,
+        state: AgentState,
+        session_ref: Option<crate::agent::resume::AgentSessionRef>,
+        seq: Option<u64>,
+        sample: HookClockSample,
+    ) -> HookOutcome {
+        let outcome = self.transition_report(origin, state, session_ref, seq, sample);
+        self.check_hook_invariants();
+        outcome
+    }
+
     pub fn current_session_identity_for_persistence(
         &self,
     ) -> Option<crate::agent::resume::PersistedAgentSession> {

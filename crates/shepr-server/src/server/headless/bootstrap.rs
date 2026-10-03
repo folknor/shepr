@@ -185,7 +185,7 @@ pub fn run_server(
         server.open_client_protocol();
         let ready = ServerReady {
             socket,
-            log_file: data_dir.join(shepr_platform::logging::SERVER_LOG_FILE),
+            log_file: paths.server_log(),
             log_file_unavailable: file_logging.unavailable,
         };
         info!(socket = %ready.socket.display(), "shepr server started");
@@ -199,7 +199,7 @@ pub fn run_server(
     });
 
     rt.shutdown_timeout(crate::limits::TOKIO_RUNTIME_SHUTDOWN_TIMEOUT);
-    crate::logging::shutdown("server");
+    crate::logging::shutdown();
     result
 }
 

@@ -36,7 +36,7 @@ impl RenderSignal {
     }
 
     pub fn request_generic(&self) {
-        let mut state = shepr_vt::lock_auxiliary(&self.state);
+        let mut state = shepr_core::locks::lock_auxiliary(&self.state);
         state.request.generic = true;
         self.pending.store(true, Ordering::Release);
     }
@@ -48,7 +48,7 @@ impl RenderSignal {
         if queued.swap(true, Ordering::AcqRel) {
             return false;
         }
-        let mut state = shepr_vt::lock_auxiliary(&self.state);
+        let mut state = shepr_core::locks::lock_auxiliary(&self.state);
         state.queued_pty_flags.push(Arc::clone(queued));
         let source_added = state.request.pty_sources.insert(pane_id);
         let wake_for_source = source_added && state.immediate_pty_sources.contains(&pane_id);
@@ -60,11 +60,11 @@ impl RenderSignal {
         // The headless loop refreshes this classification before checking
         // pending presentation work in that same iteration, so no extra wake
         // is needed when queued hidden work becomes immediately actionable.
-        shepr_vt::lock_auxiliary(&self.state).immediate_pty_sources = sources;
+        shepr_core::locks::lock_auxiliary(&self.state).immediate_pty_sources = sources;
     }
 
     pub fn has_immediate_work(&self) -> bool {
-        let state = shepr_vt::lock_auxiliary(&self.state);
+        let state = shepr_core::locks::lock_auxiliary(&self.state);
         state.request.generic
             || !state.request.terminal_title_sources.is_empty()
             || state
@@ -79,7 +79,7 @@ impl RenderSignal {
     /// title source makes hidden-only pending PTY work immediately actionable;
     /// later title sources join that already queued work.
     pub fn request_terminal_title(&self, pane_id: PaneId) -> bool {
-        let mut state = shepr_vt::lock_auxiliary(&self.state);
+        let mut state = shepr_core::locks::lock_auxiliary(&self.state);
         let first_title_source = state.request.terminal_title_sources.is_empty();
         let source_added = state.request.terminal_title_sources.insert(pane_id);
         let became_pending = !self.pending.swap(true, Ordering::AcqRel);
@@ -87,14 +87,14 @@ impl RenderSignal {
     }
 
     pub fn pending_terminal_title_sources(&self) -> HashSet<PaneId> {
-        shepr_vt::lock_auxiliary(&self.state)
+        shepr_core::locks::lock_auxiliary(&self.state)
             .request
             .terminal_title_sources
             .clone()
     }
 
     pub fn take(&self) -> RenderRequest {
-        let mut state = shepr_vt::lock_auxiliary(&self.state);
+        let mut state = shepr_core::locks::lock_auxiliary(&self.state);
         for queued in state.queued_pty_flags.drain(..) {
             queued.store(false, Ordering::Release);
         }
@@ -126,7 +126,7 @@ mod tests {
         let queued = Arc::new(AtomicBool::new(false));
         assert!(signal.request_pty_coalesced(pane_id, &queued));
         {
-            let _guard = shepr_vt::lock_auxiliary(&signal.state);
+            let _guard = shepr_core::locks::lock_auxiliary(&signal.state);
             assert!(!signal.request_pty_coalesced(pane_id, &queued));
         }
         assert_eq!(signal.take().pty_sources, HashSet::from([pane_id]));

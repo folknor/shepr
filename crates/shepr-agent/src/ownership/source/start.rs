@@ -1,23 +1,27 @@
 use super::*;
 
 impl AgentOwnership {
-    pub(super) fn transition_start(
+    pub(in crate::ownership) fn transition_start(
         &mut self,
         origin: &ReportOrigin,
         session_ref: Option<crate::agent::resume::AgentSessionRef>,
         seq: Option<u64>,
         session_start_source: ReportedSessionStart,
         sample: impl Into<HookClockSample>,
-    ) -> Option<AgentOwnershipMutation> {
+    ) -> HookOutcome {
         let sample = sample.into();
         let now = sample.monotonic;
-        let session_ref = session_ref?;
+        let Some(session_ref) = session_ref else {
+            return HookOutcome::Rejected(HookRejection::MissingSession);
+        };
         // The reducer validates references even for non-API callers.
-        let persisted_session = origin.session(session_ref.clone())?;
+        let Some(persisted_session) = origin.session(session_ref.clone()) else {
+            return HookOutcome::Rejected(HookRejection::InvalidSession);
+        };
         let source = origin.source().clone();
         let agent_label = origin.agent().clone();
         if self.known_agent_label_conflicts_with_detected_agent(origin) {
-            return None;
+            return HookOutcome::Rejected(HookRejection::DetectedAgentConflict);
         }
         let owner_conflicts = self.current_session_owner_conflicts(origin);
         let foreground_takeover_allowed = owner_conflicts
@@ -27,7 +31,7 @@ impl AgentOwnership {
                 session_start_source,
             );
         if owner_conflicts && !foreground_takeover_allowed {
-            return None;
+            return HookOutcome::Rejected(HookRejection::OwnerConflict);
         }
         let known_agent = origin.known_agent();
         let process_present = known_agent.is_some()
@@ -41,20 +45,14 @@ impl AgentOwnership {
             Self::is_unsequenced_opencode_selection(origin, session_start_source, seq);
         let selection_can_reconcile = unsequenced_selection && process_present;
         let start_route = if full_lifecycle_source {
-            let mut empty_source = HookSourceState::default();
-            let record = self
-                .hook_sources
-                .get_mut(&source)
-                .unwrap_or(&mut empty_source);
-            match record.transition(HookSourceEvent::Start {
-                agent_label: &agent_label,
+            let empty_source = HookSourceState::default();
+            let record = self.hook_sources.get(&source).unwrap_or(&empty_source);
+            record.start_route(
+                &agent_label,
                 process_present,
                 session_anchored,
                 unsequenced_selection,
-            }) {
-                HookSourceEffects::Start(route) => route,
-                _ => return None,
-            }
+            )
         } else {
             HookStartRoute::Commit
         };
@@ -71,7 +69,7 @@ impl AgentOwnership {
                         .map(|session| session.session_ref.clone())
                 });
             if !self.hook_report_sequence_has_room(&source) || !self.prepare_hook_source(&source) {
-                return None;
+                return HookOutcome::Rejected(HookRejection::SourceCapacity);
             }
             self.hook_sources
                 .entry(source)
@@ -86,25 +84,27 @@ impl AgentOwnership {
                     },
                     persisted_session,
                 ));
-            return Some(AgentOwnershipMutation::default());
+            return HookOutcome::Parked;
         }
         if start_route == HookStartRoute::ParkRecognizedStart {
             if !Self::session_start_source_is_recognized(session_start_source) {
-                return None;
+                return HookOutcome::Rejected(HookRejection::UnrecognizedStart);
             }
-            let seq = seq?;
+            let Some(seq) = seq else {
+                return HookOutcome::Rejected(HookRejection::MissingSequence);
+            };
             if !self.hook_report_order_allows(&source, Some(seq), sample) {
-                return None;
+                return HookOutcome::Rejected(HookRejection::OutOfOrder);
             }
             if !self.hook_report_sequence_has_room(&source) {
-                return None;
+                return HookOutcome::Rejected(HookRejection::SourceCapacity);
             }
 
             let previous_agent_label = self.effective_agent_label().map(str::to_string);
             let previous_state = self.state;
             let previous_session = self.current_session_identity_for_persistence();
             if !self.prepare_hook_source(&source) {
-                return None;
+                return HookOutcome::Rejected(HookRejection::SourceCapacity);
             }
             self.hook_sources
                 .entry(source.clone())
@@ -123,19 +123,25 @@ impl AgentOwnership {
                 ));
 
             if process_present {
-                self.clear_full_lifecycle_hook_suppression_for_detected_agent(None, known_agent);
+                self.clear_full_lifecycle_hook_suppression_for_detected_agent(
+                    None,
+                    known_agent,
+                    now,
+                );
                 let current_session = self.current_session_identity_for_persistence();
-                return Some(AgentOwnershipMutation {
+                return HookOutcome::Applied(AgentOwnershipMutation {
                     effective_state_change: self
                         .recompute_effective_state(previous_agent_label.as_deref(), previous_state),
                     session_ref_changed: previous_session != current_session,
                     agent_released: false,
                 });
             }
-            return Some(AgentOwnershipMutation::default());
+            return HookOutcome::Parked;
         }
         let session_replacement_allowed = origin.allows_session_replacement(session_start_source);
-        let session_agent = origin.official_agent()?;
+        let Some(session_agent) = origin.official_agent() else {
+            return HookOutcome::Rejected(HookRejection::UnsupportedOrigin);
+        };
         let replacing_identity_only_session =
             session_agent
                 .descriptor()
@@ -153,13 +159,13 @@ impl AgentOwnership {
                             && current.session_ref != session_ref
                     });
         if replacing_identity_only_session && !process_present {
-            return None;
+            return HookOutcome::Rejected(HookRejection::ProcessRequired);
         }
         if self
             .conflicting_same_owner_session_ref(origin, &session_ref, session_start_source)
             .is_some()
         {
-            return None;
+            return HookOutcome::Rejected(HookRejection::ReplacedSession);
         }
         let replaced_hook_session =
             self.same_owner_full_lifecycle_hook_authority_session_ref(origin, &session_ref);
@@ -167,15 +173,16 @@ impl AgentOwnership {
         // identity. A different ref alone can be delayed cross-talk; releasing
         // authority here would let an unrecognized start withdraw a live agent.
         if replaced_hook_session.is_some() && !session_replacement_allowed {
-            return None;
+            return HookOutcome::Rejected(HookRejection::ReplacedSession);
         }
 
-        if (!unsequenced_selection && !self.hook_report_order_allows(&source, seq, sample))
-            || (seq.is_some()
-                && (!self.hook_report_sequence_has_room(&source)
-                    || !self.prepare_hook_source(&source)))
+        if !unsequenced_selection && !self.hook_report_order_allows(&source, seq, sample) {
+            return HookOutcome::Rejected(HookRejection::OutOfOrder);
+        }
+        if seq.is_some()
+            && (!self.hook_report_sequence_has_room(&source) || !self.prepare_hook_source(&source))
         {
-            return None;
+            return HookOutcome::Rejected(HookRejection::SourceCapacity);
         }
         let selection = selection_can_reconcile.then(|| {
             self.current_session_identity_for_persistence()
@@ -226,7 +233,7 @@ impl AgentOwnership {
         // A committed start is a selection, even of the same identity again.
         self.checkpoint_candidate = None;
         let current_session = self.current_session_identity_for_persistence();
-        Some(AgentOwnershipMutation {
+        HookOutcome::Applied(AgentOwnershipMutation {
             effective_state_change: self
                 .recompute_effective_state(previous_agent_label.as_deref(), previous_state),
             session_ref_changed: previous_session != current_session,

@@ -109,7 +109,7 @@ impl PaneOutputWriter {
     pub fn begin(&self) -> PaneOutputWrite<'_> {
         PaneOutputWrite {
             writer: self,
-            core: shepr_vt::lock_terminal_core(&self.terminal.core).ok(),
+            core: self.terminal.core.lock().ok(),
         }
     }
 
@@ -117,7 +117,7 @@ impl PaneOutputWriter {
     pub fn try_begin(&self) -> Option<PaneOutputWrite<'_>> {
         Some(PaneOutputWrite {
             writer: self,
-            core: Some(shepr_vt::try_lock_terminal_core(&self.terminal.core).ok()?),
+            core: Some(self.terminal.core.try_lock().ok()?),
         })
     }
 }
@@ -132,7 +132,7 @@ impl PaneOutputWrite<'_> {
 
     fn process(self, bytes: &[u8], now: std::time::Instant) -> ProcessBytesResult {
         let Some(core) = self.core else {
-            return Err(shepr_vt::TerminalCorePoisoned);
+            return Err(crate::pane::terminal::TerminalCorePoisoned);
         };
         self.writer
             .terminal
@@ -352,8 +352,6 @@ impl Drop for PaneRuntime {
     }
 }
 
-#[cfg(test)]
-use shepr_agent::detect::AgentState;
 #[cfg(test)]
 use spawn::reader_exit_callback;
 #[cfg(test)]
@@ -576,6 +574,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn poisoned_and_synchronized_patch_reads_have_distinct_reasons() {
+        let (runtime, _rx) = PaneRuntime::test_with_channel(20, 4);
+        runtime.test_process_pty_bytes(b"\x1b[?2026h");
+        assert!(matches!(
+            runtime.read().collect_dirty_patch_snapshot(20, 4),
+            Err(crate::pane::PatchUnavailable::SynchronizedOutput)
+        ));
+        poison_terminal_core(&runtime.output_writer());
+        assert!(matches!(
+            runtime.read().collect_dirty_patch_snapshot(20, 4),
+            Err(crate::pane::PatchUnavailable::CorePoisoned)
+        ));
+        assert!(matches!(
+            runtime.terminal.core.lock(),
+            Err(crate::pane::terminal::TerminalCorePoisoned)
+        ));
+        assert!(matches!(
+            runtime.terminal.core.try_lock(),
+            Err(crate::pane::terminal::TerminalCoreTryLockError::Poisoned)
+        ));
+        assert!(!runtime.read().content_seq().is_multiple_of(2));
+    }
+
+    #[tokio::test]
     async fn output_writer_holds_the_core_without_announcing_an_unwritten_mutation() {
         let (runtime, _rx) = PaneRuntime::test_with_channel(20, 4);
         let writer = runtime.output_writer();
@@ -666,7 +688,10 @@ mod tests {
         );
         let before = runtime.visible_text();
         let content_seq = runtime.read().content_seq();
-        let detection_content_seq = shepr_vt::lock_terminal_core(&runtime.terminal.core)
+        let detection_content_seq = runtime
+            .terminal
+            .core
+            .lock()
             .expect("core")
             .detection_content_seq;
         assert_eq!(
@@ -676,7 +701,10 @@ mod tests {
         assert_eq!(runtime.visible_text(), before);
         assert_eq!(runtime.read().content_seq(), content_seq);
         assert_eq!(
-            shepr_vt::lock_terminal_core(&runtime.terminal.core)
+            runtime
+                .terminal
+                .core
+                .lock()
                 .expect("core")
                 .detection_content_seq,
             detection_content_seq
@@ -708,7 +736,12 @@ mod tests {
         assert!(!snapshot.alternate_screen_active);
 
         runtime.test_process_pty_bytes(b"\x1b]8;;https://example.com\x1b\\link\x1b]8;;\x1b\\");
-        assert!(runtime.read().collect_dirty_patch_snapshot(20, 4).is_none());
+        assert!(matches!(
+            runtime.read().collect_dirty_patch_snapshot(20, 4),
+            Err(crate::pane::PatchUnavailable::Fallback(
+                crate::pane::PatchFallback::HyperlinkPresent
+            ))
+        ));
         assert!(runtime.terminal.core.try_lock().is_ok());
     }
 
@@ -744,7 +777,7 @@ mod tests {
             panic!("resize must dirty the viewport");
         };
         assert_eq!(patch.rows.len(), 5);
-        assert!(patch.rows.iter().all(|(_, cells)| cells.len() == 24));
+        assert!(patch.rows.iter().all(|row| row.cells.len() == 24));
     }
 
     #[tokio::test]
@@ -799,7 +832,7 @@ mod tests {
             &sender,
         );
         assert!(
-            shepr_vt::lock_auxiliary(&runtime.cwd.reported).is_none(),
+            shepr_core::locks::lock_auxiliary(&runtime.cwd.reported).is_none(),
             "an unsent report must not occupy the dedupe slot"
         );
 
@@ -814,7 +847,7 @@ mod tests {
         let Ok(AppEvent::Runtime { event, .. }) = event_rx.try_recv() else {
             panic!("expected the retried cwd report");
         };
-        let AppEvent::TerminalCwdReported { cwd: sent, .. } = *event else {
+        let crate::events::RuntimeEvent::TerminalCwdReported { cwd: sent } = *event else {
             panic!("expected the retried cwd report");
         };
         assert_eq!(sent.as_path(), cwd);
@@ -822,7 +855,7 @@ mod tests {
     }
 
     fn reported_path(runtime: &PaneRuntime) -> Option<std::path::PathBuf> {
-        shepr_vt::lock_auxiliary(&runtime.cwd.reported)
+        shepr_core::locks::lock_auxiliary(&runtime.cwd.reported)
             .as_ref()
             .map(|reported| reported.path.clone())
     }
@@ -872,7 +905,7 @@ mod tests {
         let (events, mut event_rx) = mpsc::channel(4);
         let scratch = crate::test_support::ScratchDir::new("cwd-repeat");
         let cwd = scratch.to_path_buf();
-        *shepr_vt::lock_auxiliary(&runtime.cwd.reported) = Some(ReportedCwd {
+        *shepr_core::locks::lock_auxiliary(&runtime.cwd.reported) = Some(ReportedCwd {
             path: cwd.clone(),
             shell_cwd_at_report: Some("/stale".into()),
             generation: 0,
@@ -889,7 +922,7 @@ mod tests {
 
         assert!(event_rx.try_recv().is_err(), "a repeat is not a new event");
         assert_eq!(
-            shepr_vt::lock_auxiliary(&runtime.cwd.reported).clone(),
+            shepr_core::locks::lock_auxiliary(&runtime.cwd.reported).clone(),
             Some(ReportedCwd {
                 path: cwd,
                 shell_cwd_at_report: None,
@@ -948,7 +981,7 @@ mod tests {
         let (runtime, _rx) = PaneRuntime::test_with_channel(80, 24);
         let scratch = crate::test_support::ScratchDir::new("follow-cwd");
         let cwd = scratch.to_path_buf();
-        *shepr_vt::lock_auxiliary(&runtime.cwd.reported) = Some(ReportedCwd {
+        *shepr_core::locks::lock_auxiliary(&runtime.cwd.reported) = Some(ReportedCwd {
             path: cwd.clone(),
             shell_cwd_at_report: None,
             generation: 0,
@@ -1151,13 +1184,14 @@ mod tests {
             .expect("the timeout task requests a render");
         assert!(!terminal.synchronized_output_active());
         assert_eq!(
-            shepr_vt::lock_terminal_core(&effects.terminal.core)
-                .expect("core")
-                .content_revision,
+            effects.terminal.core.lock().expect("core").content_revision,
             4
         );
         assert_eq!(
-            shepr_vt::lock_terminal_core(&effects.terminal.core)
+            effects
+                .terminal
+                .core
+                .lock()
                 .expect("core")
                 .detection_content_seq,
             2
@@ -1171,7 +1205,7 @@ mod tests {
     fn wait_until_parked(order: &DeferredEffectOrder, count: usize) {
         // A ticket that never parks is a failure, not a hang.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-        while shepr_vt::lock_auxiliary(&order.state).waiting < count {
+        while shepr_core::locks::lock_auxiliary(&order.state).waiting < count {
             assert!(
                 std::time::Instant::now() < deadline,
                 "{count} ticket(s) never parked in apply"
@@ -1244,7 +1278,7 @@ mod tests {
         let ran = Cell::new(false);
         third.apply(|| ran.set(true));
         assert!(ran.get());
-        let state = shepr_vt::lock_auxiliary(&order.state);
+        let state = shepr_core::locks::lock_auxiliary(&order.state);
         assert_eq!(state.next_to_apply, 3);
         assert!(state.finished_early.is_empty());
     }
@@ -1275,8 +1309,8 @@ mod tests {
         );
         let mut cmd = PtyCommand::interactive_shell(&fixture::resolved_shell(&process), false);
         cmd.cwd(scratch.path());
-        cmd.env("TERM", "xterm-ghostty");
-        cmd.env("COLORTERM", "falsecolor");
+        cmd.env(shepr_core::env::ChildEnv::Term, "xterm-ghostty");
+        cmd.env(shepr_core::env::ChildEnv::Colorterm, "falsecolor");
         apply_pane_terminal_env(&mut cmd);
         apply_pane_launch_env(
             &mut cmd,
@@ -1437,7 +1471,7 @@ mod tests {
         let (runtime, _rx) = PaneRuntime::test_with_channel(80, 24);
         let scratch = crate::test_support::ScratchDir::new("exited-cwd");
         let saved = scratch.join("saved");
-        *shepr_vt::lock_auxiliary(&runtime.cwd.remembered) = Some(PersistedCwd {
+        *shepr_core::locks::lock_auxiliary(&runtime.cwd.remembered) = Some(PersistedCwd {
             path: saved.clone(),
             report_generation: None,
         });
@@ -1448,7 +1482,7 @@ mod tests {
         runtime.child_liveness.mark_wait_completed();
         assert_eq!(runtime.cwd_probe().read(), Some(saved.clone()));
         assert_eq!(runtime.remembered_cwd(), Some(saved));
-        *shepr_vt::lock_auxiliary(&runtime.cwd.remembered) = None;
+        *shepr_core::locks::lock_auxiliary(&runtime.cwd.remembered) = None;
         assert_eq!(runtime.remembered_cwd(), None);
     }
 
@@ -1489,11 +1523,11 @@ mod tests {
         let deleted_link = shepr_agent::detect::process_cwd(pid).expect("read unlinked cwd");
         assert!(deleted_link.to_string_lossy().ends_with(" (deleted)"));
 
-        *shepr_vt::lock_auxiliary(&runtime.cwd.remembered) = Some(PersistedCwd {
+        *shepr_core::locks::lock_auxiliary(&runtime.cwd.remembered) = Some(PersistedCwd {
             path: remembered.clone(),
             report_generation: Some(0),
         });
-        *shepr_vt::lock_auxiliary(&runtime.cwd.reported) = Some(ReportedCwd {
+        *shepr_core::locks::lock_auxiliary(&runtime.cwd.reported) = Some(ReportedCwd {
             path: reported.clone(),
             shell_cwd_at_report: None,
             generation: 0,
@@ -1510,11 +1544,11 @@ mod tests {
         let scratch = crate::test_support::ScratchDir::new("cwd-save-report-order");
         let probed = scratch.join("probed");
         let reported = scratch.join("reported");
-        *shepr_vt::lock_auxiliary(&runtime.cwd.remembered) = Some(PersistedCwd {
+        *shepr_core::locks::lock_auxiliary(&runtime.cwd.remembered) = Some(PersistedCwd {
             path: probed,
             report_generation: Some(3),
         });
-        *shepr_vt::lock_auxiliary(&runtime.cwd.reported) = Some(ReportedCwd {
+        *shepr_core::locks::lock_auxiliary(&runtime.cwd.reported) = Some(ReportedCwd {
             path: reported.clone(),
             shell_cwd_at_report: Some(scratch.join("shell")),
             generation: 4,
@@ -1573,7 +1607,7 @@ mod tests {
         let shell_cwd = shepr_agent::detect::process_cwd(pid).expect("read shell cwd");
         assert_eq!(shell_cwd, physical);
         runtime.child_liveness.set_pid_for_test(pid);
-        *shepr_vt::lock_auxiliary(&runtime.cwd.reported) = Some(ReportedCwd {
+        *shepr_core::locks::lock_auxiliary(&runtime.cwd.reported) = Some(ReportedCwd {
             path: logical.clone(),
             shell_cwd_at_report: Some(shell_cwd),
             generation: 0,
@@ -1945,14 +1979,12 @@ mod tests {
         };
         assert!(matches!(
             *event,
-            AppEvent::StateChanged {
-                pane_id: delivered_pane,
+            crate::events::RuntimeEvent::StateChanged {
                 agent: Some(Agent::Pi),
-                state: AgentState::Idle,
-                visible_blocker: false,
+                detection: shepr_agent::detect::Detection::Idle { visible: false },
                 process_exited: false,
                 observed_at: _,
-            } if delivered_pane == pane_id
+            }
         ));
     }
 }

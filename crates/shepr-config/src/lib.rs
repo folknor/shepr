@@ -47,8 +47,9 @@ pub use self::{
         SidebarWidth, StatusIndicatorStyle, validated_sidebar_bounds,
     },
     sidebar::{
-        AgentSidebarToken, AgentsSidebarConfig, SidebarConfig, SidebarTokenRule, SidebarTokenStyle,
-        SpaceSidebarToken, SpacesSidebarConfig,
+        AgentSidebarToken, AgentSidebarTokenKind, AgentsSidebarConfig, SidebarConfig,
+        SidebarTokenRendering, SidebarTokenRule, SidebarTokenSpec, SidebarTokenStyle,
+        SpaceSidebarToken, SpaceSidebarTokenKind, SpacesSidebarConfig,
     },
     theme_config::ThemeConfig,
     validated::{
@@ -58,7 +59,7 @@ pub use self::{
     window_title::{WindowTitlePart, WindowTitleTemplate, WindowTitleToken},
 };
 
-pub use self::keybinds::parse_key_combo;
+pub use self::keybinds::{is_shifted_ascii_symbol, parse_key_combo};
 pub use self::window_title::sanitize_window_title_text;
 
 pub const DEFAULT_CLIENT_CONFIG: &str = include_str!("default-client.toml");

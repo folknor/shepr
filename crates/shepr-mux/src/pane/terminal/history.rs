@@ -525,7 +525,7 @@ fn format_chunk(
 impl PaneTerminal {
     fn read_primary_history_inner(&self, cache: &mut PaneHistoryCache) -> Option<()> {
         loop {
-            let core = shepr_vt::lock_terminal_core(&self.core).ok()?;
+            let core = self.core.lock().ok()?;
             let terminal = &core.terminal;
             if terminal.active_screen() != shepr_vt::ActiveScreen::Primary {
                 return None;
@@ -656,7 +656,9 @@ mod tests {
     }
 
     fn write(terminal: &PaneTerminal, bytes: &[u8]) {
-        shepr_vt::lock_terminal_core(&terminal.core)
+        terminal
+            .core
+            .lock()
             .expect("test precondition")
             .terminal
             .write(bytes);
@@ -665,7 +667,7 @@ mod tests {
     /// The history as one read of every retained row formats it, under a
     /// single lock hold.
     fn whole_read(terminal: &Arc<PaneTerminal>) -> Option<String> {
-        let mut core = shepr_vt::lock_terminal_core(&terminal.core).expect("test precondition");
+        let mut core = terminal.core.lock().expect("test precondition");
         if core.terminal.active_screen() != shepr_vt::ActiveScreen::Primary {
             return None;
         }
@@ -696,7 +698,8 @@ mod tests {
             assert_eq!(cached, whole_read(&pane), "round {round}");
         }
         assert!(
-            shepr_vt::lock_terminal_core(&pane.core)
+            pane.core
+                .lock()
                 .expect("test precondition")
                 .terminal
                 .history_origin()
@@ -864,7 +867,8 @@ mod tests {
             write(&pane, output.as_bytes());
             assert_eq!(source.read(&mut cache), whole_read(&pane), "round {round}");
             origins.push(
-                shepr_vt::lock_terminal_core(&pane.core)
+                pane.core
+                    .lock()
                     .expect("test precondition")
                     .terminal
                     .history_origin()
@@ -1040,7 +1044,8 @@ mod tests {
             assert_eq!(source.read(&mut cache), whole_read(&pane), "round {round}");
         }
         assert!(
-            shepr_vt::lock_terminal_core(&pane.core)
+            pane.core
+                .lock()
                 .expect("test precondition")
                 .terminal
                 .history_origin()
@@ -1132,7 +1137,9 @@ mod tests {
         let mut inside_merged = 0;
         for round in 0..1_500 {
             write(&pane, small_save(round).as_bytes());
-            let origin = shepr_vt::lock_terminal_core(&pane.core)
+            let origin = pane
+                .core
+                .lock()
                 .expect("test precondition")
                 .terminal
                 .history_origin();

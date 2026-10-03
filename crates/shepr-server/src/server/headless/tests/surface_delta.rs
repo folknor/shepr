@@ -185,11 +185,7 @@ async fn a_resize_renders_only_the_resized_client_when_no_workspace_resizes() {
     let before = pair.server.view_epoch;
     pair.server.handle_server_event(ServerEvent::ShellResize {
         client_id: ClientId::test_new(8),
-        surface_cols: 79,
-        surface_rows: 23,
-        cell_width_px: 0,
-        cell_height_px: 0,
-        pixel_mouse: false,
+        geometry: shepr_core::geometry::HostGeometry::new(79, 23, 0, 0, false),
     });
     assert_eq!(pair.server.view_epoch, before);
     assert_eq!(pair.pass(false).full, vec![ClientId::test_new(8)]);
@@ -685,13 +681,12 @@ async fn cjk_cursor_reveal_keeps_retained_rendering_and_matches_full_surfaces() 
             .settings
             .reveal_hidden_cursor_for_cjk_ime = true;
         pair.server.app.state.settings.cjk_ime_agents = if allow_shell {
-            Vec::new()
+            crate::app::state::AgentFilter::from_config(&[])
         } else {
-            vec![
-                shepr_config::ConfigAgent::all()
-                    .next()
-                    .expect("bundled agent"),
-            ]
+            let agents = [shepr_config::ConfigAgent::all()
+                .next()
+                .expect("bundled agent")];
+            crate::app::state::AgentFilter::from_config(&agents)
         };
         pair.damage(b"\x1b[?25l\rIME");
 

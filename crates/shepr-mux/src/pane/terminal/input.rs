@@ -86,15 +86,16 @@ impl PaneTerminal {
                 application_cursor: modes.application_cursor_keys_enabled(),
             })
             .or_else(|| {
-                shepr_vt::lock_terminal_core(&self.core).ok().map(|core| {
-                    shepr_termio::input::KeyEncodeModes {
+                self.core
+                    .lock()
+                    .ok()
+                    .map(|core| shepr_termio::input::KeyEncodeModes {
                         kitty_flags: core.terminal.kitty_keyboard_flags(),
                         modify_other_keys: core.terminal.modify_other_keys_level(),
                         application_cursor: core
                             .terminal
                             .mode_get(shepr_vt::DecMode::ApplicationCursorKeys),
-                    }
-                })
+                    })
             });
         let Some(modes) = modes else {
             return shepr_termio::input::encode_terminal_key(key, protocol);
@@ -159,7 +160,7 @@ impl PaneTerminal {
         position: shepr_termio::input::mouse::Position,
         modifiers: crossterm::event::KeyModifiers,
     ) -> Option<Vec<u8>> {
-        let core = shepr_vt::lock_terminal_core(&self.core).ok()?;
+        let core = self.core.lock().ok()?;
         let terminal = &core.terminal;
         let protocol = modes.mouse_protocol()?;
         let cell_encoding = match protocol.encoding {

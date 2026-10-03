@@ -53,6 +53,7 @@ pub(crate) fn pane_exit_failed(pane_id: u32, err: &str) {
 }
 
 pub(crate) fn session_saved(path: &Path, workspaces: usize) {
+    // These literals are the emitted log schema, so keep the name visible at the event site.
     tracing::info!(
         event = "persist.save",
         subsystem = "persist",

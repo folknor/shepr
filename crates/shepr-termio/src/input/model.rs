@@ -66,6 +66,18 @@ impl TerminalKey {
         self
     }
 
+    /// The character identity after Shift, before context-specific modifier policy.
+    pub fn produced_char(&self) -> Option<char> {
+        shepr_config::BindingKey::produced_char(self)
+    }
+
+    /// A text commit can contain several characters; binding fallback accepts one.
+    pub(crate) fn committed_char(&self) -> Option<char> {
+        let mut characters = self.generated_text.as_deref()?.chars();
+        let character = characters.next()?;
+        (!character.is_control() && characters.next().is_none()).then_some(character)
+    }
+
     pub fn with_text_commit(mut self) -> Self {
         let has_text_only_modifiers = match self.code {
             KeyCode::Char(ch) if ch.is_uppercase() => {
@@ -75,6 +87,8 @@ impl TerminalKey {
             _ => false,
         };
         if has_text_only_modifiers && self.kind == crossterm::event::KeyEventKind::Press {
+            // Legacy text has already been shifted by the host. Do not apply
+            // a layout or an alternate to the committed character again.
             self.generated_text = match self.code {
                 KeyCode::Char(ch) => Some(ch.to_string()),
                 _ => None,

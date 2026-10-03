@@ -474,7 +474,7 @@ mod tests {
     fn pane_default_theme(
         pane: &super::super::PaneTerminal,
     ) -> shepr_termio::host_term::theme::TerminalTheme {
-        let mut core = shepr_vt::lock_terminal_core(&pane.core).expect("test precondition");
+        let mut core = pane.core.lock().expect("test precondition");
         let super::super::terminal::PaneTerminalCore {
             terminal,
             render_state,
@@ -995,7 +995,7 @@ mod tests {
 
         pane.apply_host_terminal_theme(host_theme);
         {
-            let mut core = shepr_vt::lock_terminal_core(&pane.core).expect("test precondition");
+            let mut core = pane.core.lock().expect("test precondition");
             core.transient_default_color_owner_pgid =
                 Some(shepr_platform::Pgid::new(42).expect("test group"));
             core.terminal
@@ -1011,7 +1011,7 @@ mod tests {
         );
 
         {
-            let mut core = shepr_vt::lock_terminal_core(&pane.core).expect("test precondition");
+            let mut core = pane.core.lock().expect("test precondition");
             // The child is mid-sequence when the restore runs: nothing may be
             // written into its stream.
             core.terminal.write(b"\x1b[3");

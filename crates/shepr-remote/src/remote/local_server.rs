@@ -666,9 +666,7 @@ fn launch_daemon(
     timeout: Duration,
 ) -> Result<RuntimeStatus, LaunchError> {
     let boot_log = paths.runtime_dir().join(BOOT_LOG_FILE_NAME);
-    let server_log = paths
-        .data_dir()
-        .join(shepr_platform::logging::SERVER_LOG_FILE);
+    let server_log = paths.server_log();
     let working_dir = server_daemon_working_dir(paths);
     launch_with(
         &LaunchFiles {

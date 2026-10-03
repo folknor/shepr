@@ -18,9 +18,17 @@ pub(crate) struct SpawnGeometry {
 }
 
 impl SpawnGeometry {
+    pub(crate) fn for_grid(grid: shepr_core::geometry::GridSize, cell_size: HostCellSize) -> Self {
+        let area = grid.rect();
+        Self {
+            area: Rect::new(area.x, area.y, area.width, area.height),
+            cell_size: cell_size.or_default(),
+        }
+    }
+
     /// The pixel size of one cell, `None` when the host never reported one.
     pub(crate) fn cell_px(&self) -> Option<shepr_core::geometry::CellPx> {
-        shepr_core::geometry::CellPx::new(self.cell_size.width_px, self.cell_size.height_px)
+        self.cell_size.cell()
     }
 }
 
@@ -77,7 +85,7 @@ pub struct AppState {
     /// Set when a persisted session snapshot would change.
     pub session_dirty: bool,
     /// Invalidates the shell projection after state changes that can affect chrome.
-    pub(crate) shell_projection_revision: u64,
+    pub(crate) shell_projection_revision: shepr_protocol::ProjectionRevision,
 }
 
 /// Runtime-ready settings copied once from the immutable launch config.
@@ -102,9 +110,8 @@ pub(crate) struct AppSettings {
     /// Expose the focused pane's cursor anchor to the outer terminal even when
     /// the pane requested `?25l`.
     pub(crate) reveal_hidden_cursor_for_cjk_ime: bool,
-    /// Restrict cursor reveal to focused panes whose detected agent matches
-    /// one of these. An empty vector applies to any focused pane.
-    pub(crate) cjk_ime_agents: Vec<shepr_config::ConfigAgent>,
+    /// Restrict cursor reveal to focused panes with a matching detected agent.
+    pub(crate) cjk_ime_agents: AgentFilter,
     /// Resolved once to the protocol cursor shape used by surface rendering.
     pub(crate) cjk_ime_cursor_shape: shepr_protocol::CursorShapeParam,
     pub(crate) new_terminal_cwd: NewTerminalCwd,
@@ -124,7 +131,7 @@ impl AppSettings {
             pane_gaps: ui.pane_gaps,
             show_agent_labels_on_pane_borders: ui.show_agent_labels_on_pane_borders,
             reveal_hidden_cursor_for_cjk_ime: experimental.reveal_hidden_cursor_for_cjk_ime,
-            cjk_ime_agents: experimental.cjk_ime_agents.clone(),
+            cjk_ime_agents: AgentFilter::from_config(&experimental.cjk_ime_agents),
             cjk_ime_cursor_shape: shepr_protocol::CursorShapeParam::from_decscusr(
                 experimental.cjk_ime_cursor_shape.to_decscusr(),
             ),
@@ -149,6 +156,32 @@ impl AppSettings {
             pane_gaps: self.pane_gaps,
             pane_outer_borders: self.pane_outer_borders,
             pane_scrollbars: self.pane_scrollbars,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct AgentFilter(AgentFilterKind);
+
+#[derive(Debug, Clone)]
+enum AgentFilterKind {
+    Any,
+    Only(Vec<shepr_config::ConfigAgent>),
+}
+
+impl AgentFilter {
+    pub(crate) fn from_config(agents: &[shepr_config::ConfigAgent]) -> Self {
+        if agents.is_empty() {
+            Self(AgentFilterKind::Any)
+        } else {
+            Self(AgentFilterKind::Only(agents.to_vec()))
+        }
+    }
+
+    pub(crate) fn includes(&self, agent: Option<shepr_config::ConfigAgent>) -> bool {
+        match &self.0 {
+            AgentFilterKind::Any => true,
+            AgentFilterKind::Only(agents) => agent.is_some_and(|agent| agents.contains(&agent)),
         }
     }
 }
@@ -224,7 +257,12 @@ impl AppState {
     }
 
     pub(crate) fn mark_shell_projection_dirty(&mut self) {
-        self.shell_projection_revision = self.shell_projection_revision.saturating_add(1);
+        // Saturates: a u64 of state changes does not run out in practice, and
+        // bookkeeping must never panic the server.
+        self.shell_projection_revision = self
+            .shell_projection_revision
+            .checked_next()
+            .unwrap_or(self.shell_projection_revision);
     }
 
     /// The area workspace `ws_idx` is laid out in: where the server last
@@ -373,7 +411,7 @@ impl AppState {
             host_terminal_appearance_explicit: false,
             host_terminal_theme: TerminalTheme::default(),
             session_dirty: false,
-            shell_projection_revision: 0,
+            shell_projection_revision: shepr_protocol::ProjectionRevision::ZERO,
         }
     }
 
@@ -659,13 +697,27 @@ mod tests {
     #[test]
     fn shell_projection_revision_is_explicit_and_monotonic() {
         let mut state = AppState::test_new();
-        assert_eq!(state.shell_projection_revision, 0);
+        assert_eq!(
+            state.shell_projection_revision,
+            shepr_protocol::ProjectionRevision::ZERO
+        );
         state.mark_shell_projection_dirty();
         state.mark_shell_projection_dirty();
-        assert_eq!(state.shell_projection_revision, 2);
+        assert_eq!(
+            state.shell_projection_revision,
+            shepr_protocol::ProjectionRevision::new(2)
+        );
 
-        state.shell_projection_revision = u64::MAX;
+        state.shell_projection_revision = shepr_protocol::ProjectionRevision::new(u64::MAX - 1);
         state.mark_shell_projection_dirty();
-        assert_eq!(state.shell_projection_revision, u64::MAX);
+        assert_eq!(
+            state.shell_projection_revision,
+            shepr_protocol::ProjectionRevision::new(u64::MAX)
+        );
+        state.mark_shell_projection_dirty();
+        assert_eq!(
+            state.shell_projection_revision,
+            shepr_protocol::ProjectionRevision::new(u64::MAX)
+        );
     }
 }

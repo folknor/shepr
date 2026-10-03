@@ -838,7 +838,7 @@ mod tests {
         let _guard = crate::locks::lock_auxiliary(pty_fd_test_lock());
         let scratch = shepr_test_support::ScratchDir::new("pty-launch-home");
         let mut cmd = fixture_command(&[Step::Sleep(std::time::Duration::from_secs(30))]);
-        cmd.env("HOME", scratch.path());
+        cmd.env(shepr_core::env::EnvVar::Home, scratch.path());
         cmd.cwd(scratch.join("removed-before-spawn"));
         let (mut spawned, records) = spawn_and_read_status(&cmd);
         assert_eq!(records, [LaunchRecord::ChdirOk(1)]);

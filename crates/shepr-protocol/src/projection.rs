@@ -29,6 +29,7 @@ pub struct ClientShellWorkspace {
     pub new_workspace_cwd: String,
     pub label: String,
     pub branch: Option<String>,
+    /// The pair stays compact at the projection boundary; the sidebar is the only reader.
     pub git_ahead_behind: Option<(usize, usize)>,
     pub agent_status: AgentStatus,
 }

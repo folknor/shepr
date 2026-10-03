@@ -39,24 +39,24 @@ mod format;
 mod handler;
 mod history;
 mod limits;
-mod locks;
 mod modes;
 mod read;
 mod render;
 mod rows;
 mod scan;
 pub mod selection;
+pub mod width;
 pub use cell::{ColorSource, RenderColors};
 pub mod seq;
-pub use cell::{
-    CellBasicData, CellColor, CellStyle, CellView, CellWide, UnderlineStyle,
-    is_halfwidth_katakana_voiced_grapheme, is_halfwidth_katakana_voiced_mark,
-    unicode_codepoint_width, unicode_text_width,
-};
+pub use cell::{CellBasicData, CellColor, CellStyle, CellView, CellWide, UnderlineStyle};
 use cell::{CellText, cell_text, cell_text_into, cell_wide};
 pub use cell::{RowWrap, unicode_display_units};
 pub use format::AnsiCarry;
 pub use modes::DecMode;
+pub use width::{
+    is_halfwidth_katakana_voiced_grapheme, is_halfwidth_katakana_voiced_mark,
+    unicode_codepoint_width, unicode_text_width,
+};
 // limits-exempt: this fixed terminfo name advertises the pane terminal type.
 pub const PANE_TERM: &str = "xterm-256color";
 pub const PANE_COLORTERM: &str = "truecolor";
@@ -116,11 +116,7 @@ pub use color::{
 pub use render::{CursorVisualStyle, Dirty, RenderState};
 pub use scan::{ProgressReport, WorkingDirectoryReport};
 
-pub use locks::{
-    TerminalCorePoisoned, lock_auxiliary, lock_terminal_core, recover_auxiliary_poison,
-    terminal_core_is_poisoned,
-};
-pub use locks::{TerminalCoreTryLockError, try_lock_auxiliary, try_lock_terminal_core};
+use shepr_core::locks::lock_auxiliary;
 
 use std::cell::Cell as ClockCell;
 use std::fmt;
@@ -133,7 +129,6 @@ use alacritty_terminal::grid::{Dimensions, Scroll};
 use alacritty_terminal::index::{Column, Line};
 use alacritty_terminal::term::cell::{Cell, Flags};
 use alacritty_terminal::term::{ClipboardType, Config, Osc52, Term, TermDamage, TermMode};
-use unicode_width::UnicodeWidthChar;
 use vte::ansi::{Color, CursorShape, NamedColor, Processor, Rgb, Timeout};
 
 pub use coords::Point;
@@ -1314,15 +1309,20 @@ impl Terminal {
         u16::try_from(line).unwrap_or(u16::MAX)
     }
 
+    /// The pane's ioctl-representable pixel extent, absent without a cell pitch.
+    pub fn text_area_px(&self) -> Option<(u16, u16)> {
+        self.current_geometry().text_area_px()
+    }
+
+    // Mouse encoding currently consumes zero-valued axes for an absent
+    // extent. Keep that conversion at these adapters; geometry observations
+    // themselves use the optional extent above.
     pub fn width_px(&self) -> u32 {
-        self.current_geometry()
-            .text_area_px()
-            .map_or(0, |(width, _)| u32::from(width))
+        self.text_area_px().map_or(0, |(width, _)| u32::from(width))
     }
 
     pub fn height_px(&self) -> u32 {
-        self.current_geometry()
-            .text_area_px()
+        self.text_area_px()
             .map_or(0, |(_, height)| u32::from(height))
     }
 }
