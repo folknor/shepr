@@ -93,10 +93,7 @@ fn path_lookup_result_with_rejected_candidate(
 ) -> io::Result<Option<RemoteExecutable>> {
     if !output.status.success() {
         let error = command_failed("remote SSH connection failed", output);
-        if !crate::EndpointFailure::from_error(&error)
-            .evidence()
-            .rejects_candidate()
-        {
+        if !crate::failure_evidence(&error).rejects_candidate() {
             return Err(error);
         }
         return Ok(None);
@@ -155,9 +152,7 @@ impl DiscoveryProgress {
     ) -> io::Result<RemoteExecutable> {
         let result = self.run_remaining(steps);
         if let Err(error) = &result
-            && !crate::EndpointFailure::from_error(error)
-                .evidence()
-                .preserves_discovery()
+            && !crate::failure_evidence(error).preserves_discovery()
         {
             *self = Self::default();
         }
@@ -194,11 +189,7 @@ impl DiscoveryProgress {
                 // later candidate, such as the real binary behind a PATH shim. A
                 // failure before any remote result says nothing about this
                 // candidate, so it ends the pass with progress kept.
-                Err(error)
-                    if crate::EndpointFailure::from_error(&error)
-                        .evidence()
-                        .rejects_candidate() =>
-                {
+                Err(error) if crate::failure_evidence(&error).rejects_candidate() => {
                     if self.first_candidate_rejection.is_none() {
                         self.first_candidate_rejection = Some(error);
                     }
@@ -490,8 +481,7 @@ fn remote_candidate_mismatch(message: String) -> io::Error {
 
 #[cfg(test)]
 pub(super) fn is_remote_candidate_mismatch(error: &io::Error) -> bool {
-    crate::EndpointFailure::from_error(error).evidence()
-        == crate::failure::FailureEvidence::CandidateMismatch
+    crate::failure_evidence(error) == crate::FailureEvidence::CandidateMismatch
 }
 
 #[cfg(test)]

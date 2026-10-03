@@ -133,11 +133,12 @@ impl ClientLoop {
     ) -> Result<(), LoopExit> {
         let id = &failure.endpoint_id;
         let notice = failure.failure.disconnect_notice();
-        let diagnostic = failure.failure.diagnostic();
         let status = endpoint::EndpointFailureStatus::after_failure(&failure.failure);
         self.supervisors
             .record_status(id, failure.generation, status.into(), now);
-        self.state.shell.set_machine_diagnostic(id, &diagnostic);
+        self.state
+            .shell
+            .set_machine_diagnostic(id, &failure.failure);
         let lost = self.state.shell.transition_endpoint_status(id, status);
         let cancelled = self.endpoint_commands.disconnect(id);
         let cancellation_repaint = cancel_endpoint_commands(&mut self.state.shell, cancelled);

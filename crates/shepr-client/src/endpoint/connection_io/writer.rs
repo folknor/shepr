@@ -195,7 +195,7 @@ impl EndpointTransport for NativeEndpointTransport {
         let frame = shepr_protocol::encode_frame(message).map_err(|error| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
-                shepr_remote::EndpointFailure::local_setup(format!(
+                shepr_launch::EndpointFailure::local_setup(format!(
                     "could not encode endpoint message: {error}"
                 )),
             )
@@ -262,7 +262,7 @@ fn queue_full() -> io::Error {
     // lose input ordering; revoke the connection and recover through the normal lifecycle.
     io::Error::new(
         io::ErrorKind::ConnectionAborted,
-        shepr_remote::EndpointFailure::backpressure("endpoint output queue is full"),
+        shepr_launch::EndpointFailure::backpressure("endpoint output queue is full"),
     )
 }
 

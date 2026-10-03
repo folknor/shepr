@@ -36,7 +36,7 @@ pub(crate) struct EndpointTransportFailure {
     pub(crate) endpoint_id: ClientEndpointId,
     pub(crate) generation: u64,
     pub(crate) kind: io::ErrorKind,
-    pub(crate) failure: shepr_remote::EndpointFailure,
+    pub(crate) failure: shepr_launch::EndpointFailure,
 }
 
 impl std::fmt::Display for EndpointTransportFailure {
@@ -369,7 +369,7 @@ impl EndpointRegistry {
             endpoint_id: endpoint_id.clone(),
             generation: connection.generation.get(),
             kind: error.kind(),
-            failure: shepr_remote::EndpointFailure::from_error(error),
+            failure: shepr_launch::EndpointFailure::from_error(error),
         };
         if let Some(existing) = self
             .failures
@@ -488,12 +488,12 @@ mod tests {
     fn live_failures_keep_their_operator_action_and_local_cause() {
         for (failure, status, notice) in [
             (
-                shepr_remote::EndpointFailure::incompatible("patch baseline rejected"),
+                shepr_launch::EndpointFailure::incompatible("patch baseline rejected"),
                 super::super::EndpointFailureStatus::Attention,
                 "connection failed; needs attention",
             ),
             (
-                shepr_remote::EndpointFailure::backpressure("endpoint output queue is full"),
+                shepr_launch::EndpointFailure::backpressure("endpoint output queue is full"),
                 super::super::EndpointFailureStatus::Reconnecting,
                 "local output queue filled; reconnecting",
             ),

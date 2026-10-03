@@ -24,10 +24,10 @@ use shepr_platform::ipc::{
 };
 use tracing::{debug, error, info, warn};
 
+use super::api_service::{handle_connection, reject_busy_connection, send_busy_refusal};
 use super::client_protocol::{
     ClientGate, ClientProtocolHandler, ConnectionAdmission, ConnectionSlot, refuse_client,
 };
-use super::{handle_connection, reject_busy_connection, send_busy_refusal};
 use crate::limits::{
     ACCEPT_BACKOFF_MAX, ACCEPT_BACKOFF_MIN, BUSY_REFUSAL_QUEUE, BUSY_REQUEST_ID_TIMEOUT,
     INITIAL_REQUEST_TIMEOUT, MAX_ACTIVE_CLIENT_CONNECTIONS, MAX_API_INGRESS_CONNECTIONS,

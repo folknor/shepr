@@ -2,6 +2,9 @@ use super::*;
 
 use std::io;
 
+use shepr_launch::restart::StopOutcome;
+use shepr_launch::stop::ServerStopExit;
+
 pub(super) const REMOTE_OUTPUT_READY_MARKER: &str = "shepr-remote-output-ready";
 
 /// Stops the remote server instance that reported `server.boot_id`, and no
@@ -17,7 +20,7 @@ pub(super) const REMOTE_OUTPUT_READY_MARKER: &str = "shepr-remote-output-ready";
 pub(crate) fn stop_remote_server_with_ssh(
     ssh: &RemoteSsh,
     server: &DifferentBuildServer,
-) -> io::Result<RemoteStop> {
+) -> io::Result<StopOutcome> {
     let args = RemoteCliCommand::ServerStop {
         expected_boot: &server.boot_id,
     }
@@ -27,33 +30,18 @@ pub(crate) fn stop_remote_server_with_ssh(
         crate::limits::REMOTE_STOP_SSH_TIMEOUT,
     )?;
     if output.status.success() {
-        return Ok(RemoteStop::Stopped);
+        return Ok(StopOutcome::Stopped);
     }
-    match output
-        .status
-        .code()
-        .and_then(shepr_api::server_stop::ServerStopExit::from_code)
-    {
-        Some(shepr_api::server_stop::ServerStopExit::NoServer) => {
-            return Ok(RemoteStop::NoServer);
+    match output.status.code().and_then(ServerStopExit::from_code) {
+        Some(ServerStopExit::NoServer) => {
+            return Ok(StopOutcome::NoServer);
         }
-        Some(shepr_api::server_stop::ServerStopExit::BootMismatch) => {
-            return Ok(RemoteStop::BootChanged);
+        Some(ServerStopExit::BootMismatch) => {
+            return Ok(StopOutcome::BootChanged);
         }
         None => {}
     }
     Err(command_failed("remote server stop failed", &output))
-}
-
-/// How a conditional remote stop ended when it did not fail.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RemoteStop {
-    /// The observed instance stopped answering and no replacement was found.
-    Stopped,
-    /// No server was present when the stop request ran.
-    NoServer,
-    /// A different boot answered while stopping the instance that had been observed.
-    BootChanged,
 }
 
 impl RemoteExecutable {

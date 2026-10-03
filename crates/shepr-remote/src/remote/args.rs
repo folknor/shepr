@@ -1,33 +1,13 @@
+use shepr_launch::invocation::{
+    COMMAND_CLIENT, COMMAND_REMOTE_CLIENT_BRIDGE, COMMAND_SERVER, COMMAND_STATUS, COMMAND_STOP,
+    FLAG_EXPECT_BOOT, FLAG_JSON,
+};
+
 use crate::limits::REMOTE_COMMAND_ARGS_INITIAL_CAPACITY;
 
-/// The local executable's default program name and CLI parser name.
-pub const PROGRAM_NAME: &str = "shepr";
-
-/// The executable name installed on remote hosts, which discovery searches for.
-pub const REMOTE_INSTALL_NAME: &str = "shepr";
-
-pub const FLAG_JSON: &str = "--json";
-
-/// The hidden `server stop` option that makes the stop conditional: the named
-/// server boot (from that server's status) is stopped, any other refused. It is
-/// for shepr's own use over SSH, not an operator command.
-pub const FLAG_EXPECT_BOOT: &str = "--expect-boot";
-
-pub fn option_name_from_flag(flag: &'static str) -> &'static str {
-    flag.strip_prefix("--").unwrap_or(flag)
-}
-
-pub const COMMAND_DETECT: &str = "detect";
-pub const COMMAND_STATUS: &str = "status";
-pub const COMMAND_SERVER: &str = "server";
-pub const COMMAND_CLIENT: &str = "client";
-pub const COMMAND_STOP: &str = "stop";
-pub const COMMAND_REMOTE_CLIENT_BRIDGE: &str = "remote-client-bridge";
-
-// The complete invocation model must live below config and remote: config
-// renders local stop guidance, and the daemon must not depend on SSH machinery.
-// Keep this producer limited to SSH commands until that lower-layer home exists.
-/// A `shepr` command line that shepr builds for another `shepr` process to parse.
+/// A `shepr` command line that shepr builds for another `shepr` process, on a
+/// configured machine, to parse. The words come from the invocation grammar
+/// the CLI parser also spells its commands from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RemoteCliCommand<'a> {
     ClientStatus,
@@ -35,7 +15,7 @@ pub enum RemoteCliCommand<'a> {
     ClientBridge,
     /// Stops only the server whose status reported this boot identity; a
     /// server of another boot refuses and keeps running, and the remote
-    /// command then exits with `shepr_api::server_stop::ServerStopExit::BootMismatch`.
+    /// command then exits with `shepr_launch::stop::ServerStopExit::BootMismatch`.
     /// With no server running it exits with `ServerStopExit::NoServer`.
     ServerStop {
         expected_boot: &'a str,

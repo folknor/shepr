@@ -12,29 +12,6 @@ pub(crate) const MAX_REMOTE_EXECUTABLE_BYTES: usize = 4096;
 /// letting a corrupt cache consume unbounded memory.
 pub(crate) const MAX_METADATA_BYTES: u64 = 16 * 1024;
 
-/// How often a launching client checks its spawned server and the launch lock.
-/// The interval notices a daemon that died during boot and makes startup
-/// visible promptly without a busy wait.
-pub(crate) const SOCKET_POLL_INTERVAL: Duration = Duration::from_millis(50);
-
-/// Least time between two starts of the server daemon in one launch. A daemon
-/// that found the data directory held while nothing listened (the holder was
-/// stopping, or still booting) is started again once this has passed, so a
-/// holder that is only leaving never fails the launch, and a holder that stays
-/// is not asked every poll.
-pub(crate) const DAEMON_RESTART_INTERVAL: Duration = Duration::from_millis(500);
-
-/// Time allowed for one status request to a local server, the response
-/// deadline of every launch probe. The timeout bounds an unavailable or
-/// overloaded local server check.
-pub(crate) const STATUS_REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
-
-/// The most a launched server's boot log may hold. A launch that finds more
-/// (a server printing without end while it boots) fails and kills the server,
-/// and one that boots successfully empties the log. The cap keeps a runaway
-/// server from filling the runtime directory, which is usually a small tmpfs.
-pub(crate) const BOOT_LOG_MAX_BYTES: u64 = 1024 * 1024;
-
 /// Time allowed for the SSH command that stops a remote server. The remote
 /// `server stop` itself waits up to its own stop deadline for the server to
 /// close its socket; this covers that plus the connection.
@@ -45,26 +22,6 @@ pub(crate) const REMOTE_STOP_SSH_TIMEOUT: Duration = Duration::from_secs(45);
 /// beyond that something keeps restarting it and the operator is told to run
 /// shepr again.
 pub(crate) const MAX_RESTART_OFFERS: usize = 2;
-
-/// Time allowed for the sibling `shepr-server --version` that `status client`
-/// runs to report the installed pair. It prints one line and exits, so a longer
-/// wait means a broken or hung binary; the deadline keeps a remote discovery
-/// probe from hanging on it.
-pub(crate) const SIBLING_VERSION_TIMEOUT: Duration = Duration::from_secs(5);
-
-/// The most of the sibling's `--version` output that is read. The real output
-/// is one short line; the cap bounds what a wrong binary can make us hold.
-pub(crate) const SIBLING_VERSION_OUTPUT_BYTES: u64 = 512;
-
-/// Maximum time for a newly spawned server to answer a status request with
-/// this build's identity. The deadline allows normal startup while keeping a
-/// failed launch finite.
-pub const SERVER_READY_TIMEOUT: Duration = Duration::from_secs(15);
-
-/// Slack added to [`SERVER_READY_TIMEOUT`] for a client waiting on the launch
-/// lock. The holder may spend its whole readiness window launching, so a
-/// waiter that gave up sooner would fail a launch that is about to succeed.
-pub(crate) const LAUNCH_LOCK_WAIT_GRACE: Duration = Duration::from_secs(5);
 
 /// Delay between checks that an SSH child process has exited. It bounds
 /// completion latency without spinning on `try_wait`.

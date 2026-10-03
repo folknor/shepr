@@ -355,19 +355,19 @@ mod tests {
     #[test]
     fn transport_failures_map_to_fixed_disconnect_notices() {
         assert_eq!(
-            shepr_remote::EndpointFailure::from_error(&io::Error::from(
+            shepr_launch::EndpointFailure::from_error(&io::Error::from(
                 io::ErrorKind::UnexpectedEof
             ))
             .disconnect_notice(),
             "connection was lost; reconnecting"
         );
         assert_eq!(
-            shepr_remote::EndpointFailure::from_error(&io::Error::from(io::ErrorKind::TimedOut))
+            shepr_launch::EndpointFailure::from_error(&io::Error::from(io::ErrorKind::TimedOut))
                 .disconnect_notice(),
             "connection timed out; reconnecting"
         );
         assert_eq!(
-            shepr_remote::EndpointFailure::from_error(&io::Error::from(io::ErrorKind::InvalidData))
+            shepr_launch::EndpointFailure::from_error(&io::Error::from(io::ErrorKind::InvalidData))
                 .disconnect_notice(),
             "connection failed; needs attention"
         );

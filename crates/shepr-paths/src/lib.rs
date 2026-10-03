@@ -11,11 +11,9 @@
 mod address;
 mod app_paths;
 mod error;
-mod guidance;
 mod profile;
 
 pub use self::address::ServerAddress;
 pub use self::app_paths::{AppPaths, DATA_DIR_LEASE_FILE_NAME};
 pub use self::error::PathsError;
-pub use self::guidance::operator_entrypoint;
 pub use self::profile::BuildProfile;

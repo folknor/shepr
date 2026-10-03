@@ -1,16 +1,12 @@
 [package]
-name = "shepr-remote"
+name = "shepr-launch"
 version = "0.1.0"
 edition = "2024"
 publish = false
 
 [dependencies]
-serde = { workspace = true }
-serde_json = { workspace = true }
 shepr-api = { path = "../shepr-api" }
-shepr-config = { path = "../shepr-config" }
 shepr-core = { path = "../shepr-core" }
-shepr-launch = { path = "../shepr-launch" }
 shepr-paths = { path = "../shepr-paths" }
 shepr-platform = { path = "../shepr-platform" }
 shepr-protocol = { path = "../shepr-protocol" }
@@ -18,6 +14,8 @@ tracing = { workspace = true }
 
 [dev-dependencies]
 libc = { workspace = true }
+serde_json = { workspace = true }
+shepr-test-fixtures = { path = "../shepr-test-fixtures" }
 shepr-test-support = { path = "../shepr-test-support" }
 
 [lints]

@@ -65,7 +65,7 @@ impl MachineProbe {
         paths: &shepr_paths::AppPaths,
         target: &SshTarget,
         server: &super::DifferentBuildServer,
-    ) -> io::Result<super::RemoteStop> {
+    ) -> io::Result<shepr_launch::restart::StopOutcome> {
         self.ensure_ssh(paths, target)?;
         let Some(ssh) = self.ssh.as_ref() else {
             return Err(io::Error::other("machine SSH transport is unavailable"));
@@ -140,11 +140,7 @@ impl MachineProbe {
                     // Only evidence that this path is stale drops the hint.
                     // Link, server and target-trust failures leave it as an
                     // unverified hint; a later attempt checks it again.
-                    Err(error)
-                        if !crate::EndpointFailure::from_error(&error)
-                            .evidence()
-                            .invalidates_executable() =>
-                    {
+                    Err(error) if !crate::failure_evidence(&error).invalidates_executable() => {
                         return Err(error);
                     }
                     Ok(false) | Err(_) => self.invalidate(cache),
@@ -186,10 +182,7 @@ impl MachineProbe {
     }
 
     fn observe_failure(&mut self, cache: &SshMetadataCache, error: &io::Error) -> bool {
-        if crate::EndpointFailure::from_error(error)
-            .evidence()
-            .invalidates_executable()
-        {
+        if crate::failure_evidence(error).invalidates_executable() {
             self.invalidate(cache);
             true
         } else {
@@ -546,7 +539,7 @@ fn is_launch_fatal_setup_error(error: &io::Error) -> bool {
         .get_ref()
         .and_then(|source| source.downcast_ref::<crate::EndpointFailure>())
     {
-        return failure.is_launch_fatal_setup();
+        return failure.cause() == crate::FailureCause::InvalidLocalSetup;
     }
     // Raw invalid input, such as an impossible config path, is permanent.
     error.kind() == io::ErrorKind::InvalidInput
@@ -554,9 +547,7 @@ fn is_launch_fatal_setup_error(error: &io::Error) -> bool {
 
 #[cfg(test)]
 fn remote_executable_must_be_rediscovered(error: &io::Error) -> bool {
-    crate::EndpointFailure::from_error(error)
-        .evidence()
-        .invalidates_executable()
+    crate::failure_evidence(error).invalidates_executable()
 }
 
 #[cfg(test)]

@@ -452,7 +452,7 @@ fn only_ssh_own_exit_code_counts_as_failing_before_a_remote_result() {
 
 #[test]
 fn remote_daemon_boot_failures_need_attention_only_when_the_host_must_be_fixed() {
-    use shepr_api::daemon_exit::DaemonExit;
+    use shepr_launch::daemon_exit::DaemonExit;
     for (class, disposition) in [
         (DaemonExit::ConfigRefused, crate::FailureDisposition::Repair),
         (DaemonExit::Failed, crate::FailureDisposition::Repair),
@@ -474,7 +474,10 @@ fn remote_daemon_boot_failures_need_attention_only_when_the_host_must_be_fixed()
                 .contains(super::super::host::DAEMON_BOOT_EXIT_MARKER)
         );
         // A fault on the remote host is not reported as local setup.
-        assert!(!failure.diagnostic().is_local_setup_failure(), "{class:?}");
+        assert!(
+            !crate::SshFailureDiagnostic::from_error(&error).is_local_setup_failure(),
+            "{class:?}"
+        );
     }
 
     let ordinary = ssh_bridge_exit_error(exit_status(1), b"server config was refused");

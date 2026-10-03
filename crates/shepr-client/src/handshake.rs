@@ -105,8 +105,8 @@ impl HandshakeError {
     /// alike. `mismatch_guidance` is the Local endpoint's way out of a build mismatch;
     /// a configured machine has none here, its bridge reports its own.
     pub(crate) fn class(self, mismatch_guidance: Option<&str>) -> std::io::Error {
+        use shepr_launch::EndpointFailure;
         use shepr_protocol::FramingError;
-        use shepr_remote::EndpointFailure;
         let (kind, failure) = match self {
             HandshakeError::EndpointSetup(error) => (
                 error.kind(),
@@ -186,7 +186,7 @@ pub(crate) fn classify_handshake_error(
             .and_then(shepr_remote::MachineSshBridge::reported_failure)
             .map(|failure| {
                 let kind = failure.kind();
-                let diagnostic = shepr_remote::EndpointFailure::from_error(&failure)
+                let diagnostic = shepr_launch::EndpointFailure::from_error(&failure)
                     .with_context(HANDSHAKE_CONTEXT);
                 std::io::Error::new(kind, diagnostic)
             })

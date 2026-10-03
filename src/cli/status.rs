@@ -1,8 +1,8 @@
 use serde::Serialize;
 
 use shepr_api::schema::{ClientStatusJson, ServerStatusJson};
-use shepr_api::{RuntimeStatus, ServerPresence};
-use shepr_remote::{COMMAND_CLIENT, COMMAND_SERVER, FLAG_JSON, option_name_from_flag};
+use shepr_launch::invocation::{COMMAND_CLIENT, COMMAND_SERVER, FLAG_JSON, option_name_from_flag};
+use shepr_launch::status::{RuntimeStatus, ServerPresence};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Command {
@@ -176,7 +176,7 @@ fn print_runtime_identity(status: &RuntimeStatus, indent: &str) {
 }
 
 fn read_server_runtime_status(paths: &shepr_paths::AppPaths) -> super::CliResult<ServerPresence> {
-    Ok(shepr_api::read_server_presence_at(
+    Ok(shepr_launch::status::read_server_presence_at(
         paths.server_address().socket(),
         crate::limits::STATUS_ANSWER_TIMEOUT,
     )?)
@@ -207,7 +207,7 @@ fn client_status_json() -> ClientStatusJson {
             build_id: shepr_protocol::BuildIdentity::for_this_build(),
         }),
         binary: Some(current_exe_label()),
-        server: Some(shepr_remote::local_server::sibling_server_status()),
+        server: Some(shepr_launch::local_server::sibling_server_status()),
     }
 }
 
@@ -278,7 +278,7 @@ mod tests {
             version: version.to_owned(),
             build_id: build_id.parse().expect("build identity"),
             boot_id: "4242-1700000000".parse().expect("boot identity"),
-            lifecycle: shepr_api::RuntimeLifecycle::Running,
+            lifecycle: shepr_launch::status::RuntimeLifecycle::Running,
         }
     }
 

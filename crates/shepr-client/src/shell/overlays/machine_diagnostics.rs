@@ -23,8 +23,8 @@ pub(in crate::shell) struct MachineDiagnostics {
     hover: Option<ClientEndpointId>,
 }
 
-/// A machine's last failure: sanitized display text plus the structured SSH
-/// class it was reported with, so the text is never re-parsed.
+/// A machine's last failure: sanitized display text plus what its typed cause
+/// says about authentication, so the text is never re-parsed.
 struct MachineDiagnostic {
     message: String,
     requires_authentication: bool,
@@ -59,15 +59,15 @@ impl ClientShellState {
     pub(crate) fn set_machine_diagnostic(
         &mut self,
         id: &ClientEndpointId,
-        failure: &shepr_remote::SshFailureDiagnostic,
+        failure: &shepr_launch::EndpointFailure,
     ) {
-        self.insert_machine_diagnostic(id, failure.text(), failure.requires_authentication());
+        self.insert_machine_diagnostic(id, failure.message(), failure.requires_authentication());
     }
 
     fn insert_machine_diagnostic(
         &mut self,
         id: &ClientEndpointId,
-        message: &shepr_remote::RemoteText,
+        message: &shepr_launch::RemoteText,
         requires_authentication: bool,
     ) {
         if !id.is_local() {

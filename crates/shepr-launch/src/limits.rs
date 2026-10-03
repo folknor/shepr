@@ -1,0 +1,64 @@
+//! Timeouts and capacity bounds of launching, probing and stopping a server.
+
+use std::time::Duration;
+
+/// How often a launching client checks its spawned server and the launch lock.
+/// The interval notices a daemon that died during boot and makes startup
+/// visible promptly without a busy wait.
+pub(crate) const SOCKET_POLL_INTERVAL: Duration = Duration::from_millis(50);
+
+/// Least time between two starts of the server daemon in one launch. A daemon
+/// that found the data directory held while nothing listened (the holder was
+/// stopping, or still booting) is started again once this has passed, so a
+/// holder that is only leaving never fails the launch, and a holder that stays
+/// is not asked every poll.
+pub(crate) const DAEMON_RESTART_INTERVAL: Duration = Duration::from_millis(500);
+
+/// Time allowed for one status request to a local server, the response
+/// deadline of every launch probe. The timeout bounds an unavailable or
+/// overloaded local server check.
+pub(crate) const STATUS_REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// The most a launched server's boot log may hold. A launch that finds more
+/// (a server printing without end while it boots) fails and kills the server,
+/// and one that boots successfully empties the log. The cap keeps a runaway
+/// server from filling the runtime directory, which is usually a small tmpfs.
+pub(crate) const BOOT_LOG_MAX_BYTES: u64 = 1024 * 1024;
+
+/// Time allowed for the sibling `shepr-server --version` that `status client`
+/// runs to report the installed pair. It prints one line and exits, so a longer
+/// wait means a broken or hung binary; the deadline keeps a remote discovery
+/// probe from hanging on it.
+pub(crate) const SIBLING_VERSION_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// The most of the sibling's `--version` output that is read. The real output
+/// is one short line; the cap bounds what a wrong binary can make us hold.
+pub(crate) const SIBLING_VERSION_OUTPUT_BYTES: u64 = 512;
+
+/// Maximum time for a newly spawned server to answer a status request with
+/// this build's identity. The deadline allows normal startup while keeping a
+/// failed launch finite.
+pub const SERVER_READY_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Slack added to [`SERVER_READY_TIMEOUT`] for a client waiting on the launch
+/// lock. The holder may spend its whole readiness window launching, so a
+/// waiter that gave up sooner would fail a launch that is about to succeed.
+pub(crate) const LAUNCH_LOCK_WAIT_GRACE: Duration = Duration::from_secs(5);
+
+/// Maximum time a server stop waits for the named server to stop answering, or
+/// for the socket to disappear when the stop was not conditional.
+pub(crate) const STOP_WAIT_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Maximum time a server stop waits for a data-directory lease after the
+/// stopped server no longer answers or its socket is gone. The server
+/// releases its lease before removing its socket; a later holder may be a new
+/// process using the same data directory.
+pub(crate) const STOP_LEASE_WAIT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Per-request deadline while polling the server's boot identity after a stop.
+pub(crate) const STOP_STATUS_PROBE_TIMEOUT: Duration = Duration::from_millis(250);
+
+/// Poll interval while waiting for a server to stop answering or its socket
+/// to disappear. It bounds shutdown detection latency without rapid repeated
+/// probes.
+pub(crate) const STOP_WAIT_POLL: Duration = Duration::from_millis(25);

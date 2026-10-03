@@ -330,10 +330,7 @@ mod startup_tests {
         let api =
             shepr_api::start_server(tx, Arc::clone(&stop), &paths).expect("socket before restore");
         let client = shepr_api::client::ApiClient::for_socket(paths.server_address().socket());
-        assert_eq!(
-            client.status().expect("starting pong").lifecycle,
-            shepr_api::RuntimeLifecycle::Starting
-        );
+        assert!(client.ping().expect("starting pong").starting);
         let app = app::App::with_paths(
             &config,
             &paths,
@@ -341,23 +338,17 @@ mod startup_tests {
             app::AppPolicy::Suspended,
             super::super::sample_app_clock(),
         );
-        assert_eq!(
+        assert!(
             client
-                .status()
+                .ping()
                 .expect("restore alone leaves gate closed")
-                .lifecycle,
-            shepr_api::RuntimeLifecycle::Starting
+                .starting
         );
         let server = HeadlessServer::new(app, rx, api, stop);
-        assert_eq!(
-            client.status().expect("constructed pong").lifecycle,
-            shepr_api::RuntimeLifecycle::Starting
-        );
+        assert!(client.ping().expect("constructed pong").starting);
         server.open_client_protocol();
-        assert_eq!(
-            client.status().expect("ready pong").lifecycle,
-            shepr_api::RuntimeLifecycle::Running
-        );
+        let ready = client.ping().expect("ready pong");
+        assert!(!ready.starting && !ready.stopping);
         let mut peer = shepr_platform::ipc::connect_local_stream(paths.server_address().socket())
             .expect("TUI connect");
         peer.set_read_timeout(Some(std::time::Duration::from_secs(1)))

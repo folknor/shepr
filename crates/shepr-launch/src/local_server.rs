@@ -24,24 +24,25 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
-use shepr_api::RuntimeStatus;
-use shepr_api::daemon_exit::DaemonExit;
+use shepr_api::schema::SiblingServerJson;
 use shepr_core::env::EnvVar;
 use shepr_platform::SpawnedDaemon;
 use shepr_platform::ipc::FlockLock;
 use tracing::info;
 
-use shepr_api::schema::SiblingServerJson;
-
+use crate::daemon_exit::DaemonExit;
+use crate::guidance;
+use crate::invocation::{
+    CLIENT_SPAWNED_FLAG, SERVER_BINARY_NAME, VERSION_FLAG, parse_server_version_line,
+};
 use crate::limits::{
     BOOT_LOG_MAX_BYTES, DAEMON_RESTART_INTERVAL, LAUNCH_LOCK_WAIT_GRACE,
     SIBLING_VERSION_OUTPUT_BYTES, SIBLING_VERSION_TIMEOUT, SOCKET_POLL_INTERVAL,
     STATUS_REQUEST_TIMEOUT,
 };
+use crate::status::{RuntimeStatus, ServerPresence};
 
 pub use crate::limits::SERVER_READY_TIMEOUT;
-
-use shepr_api::daemon_exit::{CLIENT_SPAWNED_FLAG, SERVER_BINARY_NAME};
 
 /// The launch lock inside the runtime directory. It is never removed, so
 /// every contender locks the same inode.
@@ -99,6 +100,15 @@ impl LaunchError {
             _ => io::ErrorKind::Other,
         }
     }
+
+    /// How the daemon this launch started ended during boot, when that is
+    /// what failed the launch.
+    pub fn daemon_boot_exit(&self) -> Option<DaemonExit> {
+        match self {
+            Self::DaemonFailed { class, .. } => Some(*class),
+            _ => None,
+        }
+    }
 }
 
 impl std::fmt::Display for LaunchError {
@@ -137,13 +147,6 @@ impl From<io::Error> for LaunchError {
 impl From<LaunchError> for io::Error {
     fn from(error: LaunchError) -> Self {
         io::Error::new(error.kind(), error.to_string())
-    }
-}
-
-pub(super) fn daemon_boot_exit_class(error: &LaunchError) -> Option<DaemonExit> {
-    match error {
-        LaunchError::DaemonFailed { class, .. } => Some(*class),
-        _ => None,
     }
 }
 
@@ -264,9 +267,8 @@ fn probe_server(paths: &shepr_paths::AppPaths) -> io::Result<Probed> {
 /// lead to a second server. The status request itself checks who serves the
 /// socket before writing to it.
 fn probe_server_at(socket: &Path) -> io::Result<Probed> {
-    use shepr_api::ServerPresence;
     Ok(
-        match shepr_api::read_server_presence_at(socket, STATUS_REQUEST_TIMEOUT)? {
+        match crate::status::read_server_presence_at(socket, STATUS_REQUEST_TIMEOUT)? {
             ServerPresence::Gone => Probed::NoServer,
             ServerPresence::Starting(_) => Probed::Starting,
             ServerPresence::Running(status) => Probed::Running(status),
@@ -383,7 +385,7 @@ fn running_build_mismatch(paths: &shepr_paths::AppPaths, status: &RuntimeStatus)
 }
 
 fn build_mismatch_guidance(paths: &shepr_paths::AppPaths) -> String {
-    paths.server_address().build_mismatch_guidance()
+    guidance::build_mismatch_guidance(paths.server_address())
 }
 
 /// A client starts a server only for its profile's own runtime address. A
@@ -508,14 +510,6 @@ pub fn sibling_server_status() -> SiblingServerJson {
     }
 }
 
-/// Splits the `shepr-server <version>+<build id>` line that `--version` prints
-/// into the version and the build id. `None` for any other text.
-fn parse_server_version_line(line: &str) -> Option<(String, shepr_protocol::BuildIdentity)> {
-    let identity = line.trim().strip_prefix(SERVER_BINARY_NAME)?.trim();
-    let identity = identity.parse::<shepr_protocol::BuildVersion>().ok()?;
-    Some((identity.version, identity.build_id))
-}
-
 /// Runs `server --version` under a deadline and returns its first output line.
 /// A child that outlives the deadline is killed and reaped.
 fn read_server_version_line(server: &Path, timeout: Duration) -> io::Result<String> {
@@ -523,7 +517,7 @@ fn read_server_version_line(server: &Path, timeout: Duration) -> io::Result<Stri
 
     let mut command = shepr_platform::child_command(server, Path::new("/"));
     command
-        .arg("--version")
+        .arg(VERSION_FLAG)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());

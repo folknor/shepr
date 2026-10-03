@@ -1,13 +1,9 @@
 pub mod client;
-pub mod daemon_exit;
 pub mod error;
-pub mod guidance;
 mod limits;
 pub(crate) mod logging;
 pub mod schema;
 mod server;
-pub mod server_stop;
-mod status;
 mod stop;
 
 pub use limits::MAX_APP_REQUESTS_IN_FLIGHT;
@@ -16,7 +12,6 @@ pub use server::{
     ClientGate, ClientHandshakeOutcome, ClientHandshakeSilence, ClientProtocolHandler,
     ConnectionSlot, ServerHandle, read_client_handshake,
 };
-pub use status::{RuntimeLifecycle, RuntimeStatus, ServerPresence, read_server_presence_at};
 pub use stop::ServerStopSignal;
 
 use tokio::sync::mpsc;

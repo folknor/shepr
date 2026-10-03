@@ -8,10 +8,9 @@
 use std::fmt::Display;
 use std::process::ExitCode;
 
-use shepr_api::daemon_exit::{CLIENT_SPAWNED_FLAG, DaemonExit};
+use shepr_launch::daemon_exit::DaemonExit;
+use shepr_launch::invocation::{ServerInvocation, server_usage, server_version_line};
 use shepr_server::server::headless::{RunServerError, run_server};
-
-const VERSION_FLAG: &str = "--version";
 
 fn main() -> ExitCode {
     let args: Vec<String> = match std::env::args_os()
@@ -22,26 +21,21 @@ fn main() -> ExitCode {
         Ok(args) => args,
         Err(_) => return usage_error("arguments must be valid UTF-8"),
     };
-    match args
-        .iter()
-        .map(String::as_str)
-        .collect::<Vec<_>>()
-        .as_slice()
-    {
-        [] => serve(false),
-        [CLIENT_SPAWNED_FLAG] => serve(true),
-        [VERSION_FLAG] => {
+    let args = args.iter().map(String::as_str).collect::<Vec<_>>();
+    match ServerInvocation::parse(&args) {
+        Some(ServerInvocation::Serve { client_spawned }) => serve(client_spawned),
+        Some(ServerInvocation::Version) => {
             shepr_platform::begin_cli_output();
-            println!("shepr-server {}", shepr_protocol::build_version());
+            println!("{}", server_version_line());
             ExitCode::SUCCESS
         }
-        other => usage_error(&format!("unexpected arguments: {}", other.join(" "))),
+        None => usage_error(&format!("unexpected arguments: {}", args.join(" "))),
     }
 }
 
 fn usage_error(message: &str) -> ExitCode {
     eprintln!("error: {message}");
-    eprintln!("usage: shepr-server [--version]");
+    eprintln!("{}", server_usage());
     ServerProcessExit::Usage.into_exit_code()
 }
 

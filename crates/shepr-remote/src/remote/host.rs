@@ -2,6 +2,9 @@
 
 use std::io;
 
+use shepr_launch::local_server::{self, BuildCheck, SERVER_READY_TIMEOUT};
+use shepr_launch::status::RuntimeStatus;
+
 /// Marker on the first stderr line for a daemon that exited during boot. The
 /// local bridge consumes the record into the endpoint failure vocabulary.
 pub(super) const DAEMON_BOOT_EXIT_MARKER: &str = "shepr-remote-daemon-boot-exit:";
@@ -54,16 +57,10 @@ pub fn run_remote_client_bridge(
 /// the client's SSH bridge turns into a typed endpoint failure (a refused
 /// configuration or failed start needs attention), keeping the daemon output
 /// as its diagnostic.
-fn ensure_remote_server_running(
-    paths: &shepr_paths::AppPaths,
-) -> io::Result<shepr_api::RuntimeStatus> {
-    match super::local_server::ensure_running(
-        paths,
-        super::local_server::SERVER_READY_TIMEOUT,
-        super::local_server::BuildCheck::AtClientHandshake,
-    ) {
+fn ensure_remote_server_running(paths: &shepr_paths::AppPaths) -> io::Result<RuntimeStatus> {
+    match local_server::ensure_running(paths, SERVER_READY_TIMEOUT, BuildCheck::AtClientHandshake) {
         Err(error) => {
-            let Some(class) = super::local_server::daemon_boot_exit_class(&error) else {
+            let Some(class) = error.daemon_boot_exit() else {
                 return Err(error.into());
             };
             Err(io::Error::new(

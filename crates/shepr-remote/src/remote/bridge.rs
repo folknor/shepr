@@ -583,7 +583,7 @@ fn remote_daemon_boot_failure(stderr: &str) -> Option<io::Error> {
         let Ok(code) = code.parse::<i32>() else {
             continue;
         };
-        let class = shepr_api::daemon_exit::DaemonExit::from_code(Some(code));
+        let class = shepr_launch::daemon_exit::DaemonExit::from_code(Some(code));
         if class.code() != code {
             continue;
         }
@@ -603,12 +603,12 @@ fn remote_daemon_boot_failure(stderr: &str) -> Option<io::Error> {
             )
         };
         let failure = match class {
-            shepr_api::daemon_exit::DaemonExit::ConfigRefused
-            | shepr_api::daemon_exit::DaemonExit::Failed => {
+            shepr_launch::daemon_exit::DaemonExit::ConfigRefused
+            | shepr_launch::daemon_exit::DaemonExit::Failed => {
                 crate::EndpointFailure::remote_repair(message)
             }
-            shepr_api::daemon_exit::DaemonExit::Clean
-            | shepr_api::daemon_exit::DaemonExit::AlreadyRunning => {
+            shepr_launch::daemon_exit::DaemonExit::Clean
+            | shepr_launch::daemon_exit::DaemonExit::AlreadyRunning => {
                 crate::EndpointFailure::retry(message)
             }
         };

@@ -26,7 +26,7 @@ pub(crate) enum EndpointSupervisorEvent {
         endpoint_id: ClientEndpointId,
         generation: u64,
         status: EndpointFailureStatus,
-        message: shepr_remote::EndpointFailure,
+        message: shepr_launch::EndpointFailure,
         connector: Option<OwnedConnector>,
     },
     Connected {
@@ -295,7 +295,7 @@ impl EndpointSupervisors {
                 let event = match result {
                     Ok((connector, Ok(event))) => event.with_connector(connector),
                     Ok((connector, Err(error))) => {
-                        let failure = shepr_remote::EndpointFailure::from_error(&error);
+                        let failure = shepr_launch::EndpointFailure::from_error(&error);
                         EndpointSupervisorEvent::Status {
                             endpoint_id: task_endpoint_id,
                             generation,
@@ -305,7 +305,7 @@ impl EndpointSupervisors {
                         }
                     }
                     Err(error) => {
-                        let failure = shepr_remote::EndpointFailure::local_setup(format!(
+                        let failure = shepr_launch::EndpointFailure::local_setup(format!(
                             "endpoint connection task stopped unexpectedly: {error}"
                         ));
                         EndpointSupervisorEvent::Status {
@@ -461,7 +461,7 @@ fn connect_once(
                     if error.kind() == std::io::ErrorKind::NotFound {
                         std::io::Error::new(
                             error.kind(),
-                            shepr_remote::EndpointFailure::retry(
+                            shepr_launch::EndpointFailure::retry(
                                 "Local is unavailable; start its server to reconnect",
                             ),
                         )
@@ -862,7 +862,11 @@ mod tests {
             "timed out",
         ))
         .class(None);
-        assert!(!shepr_remote::SshFailureDiagnostic::from_error(&timeout).needs_attention());
+        assert!(
+            !shepr_launch::EndpointFailure::from_error(&timeout)
+                .disposition()
+                .needs_attention()
+        );
         let rejected = crate::errors::HandshakeError::HandshakeRejected {
             error: shepr_protocol::HandshakeRefusal::InvalidSurface(
                 shepr_protocol::SurfaceRefusal::CellTooLarge,
@@ -870,7 +874,11 @@ mod tests {
         }
         .class(None);
         assert_eq!(rejected.kind(), std::io::ErrorKind::Unsupported);
-        assert!(shepr_remote::SshFailureDiagnostic::from_error(&rejected).needs_attention());
+        assert!(
+            shepr_launch::EndpointFailure::from_error(&rejected)
+                .disposition()
+                .needs_attention()
+        );
     }
 
     #[test]
@@ -885,7 +893,11 @@ mod tests {
         }
         .class(None);
         assert_eq!(full.kind(), std::io::ErrorKind::ConnectionAborted);
-        assert!(!shepr_remote::SshFailureDiagnostic::from_error(&full).needs_attention());
+        assert!(
+            !shepr_launch::EndpointFailure::from_error(&full)
+                .disposition()
+                .needs_attention()
+        );
         assert!(
             full.to_string().contains("limit of 64 client connections"),
             "{full}"
@@ -899,7 +911,11 @@ mod tests {
         }
         .class(None);
         assert_eq!(starting.kind(), std::io::ErrorKind::ConnectionAborted);
-        assert!(!shepr_remote::SshFailureDiagnostic::from_error(&starting).needs_attention());
+        assert!(
+            !shepr_launch::EndpointFailure::from_error(&starting)
+                .disposition()
+                .needs_attention()
+        );
     }
 
     #[test]
@@ -908,12 +924,20 @@ mod tests {
             crate::errors::HandshakeError::Protocol(shepr_protocol::FramingError::UnexpectedEof)
                 .class(None);
         assert_eq!(eof.kind(), std::io::ErrorKind::UnexpectedEof);
-        assert!(!shepr_remote::SshFailureDiagnostic::from_error(&eof).needs_attention());
+        assert!(
+            !shepr_launch::EndpointFailure::from_error(&eof)
+                .disposition()
+                .needs_attention()
+        );
         let shutdown = crate::errors::HandshakeError::ServerShutdown {
             reason: shepr_protocol::ShutdownReason::Stopping,
         }
         .class(None);
-        assert!(!shepr_remote::SshFailureDiagnostic::from_error(&shutdown).needs_attention());
+        assert!(
+            !shepr_launch::EndpointFailure::from_error(&shutdown)
+                .disposition()
+                .needs_attention()
+        );
         let malformed = crate::errors::HandshakeError::Protocol(
             shepr_protocol::FramingError::LimitExceeded(shepr_protocol::LimitExceeded::new(
                 shepr_protocol::Limit::new(shepr_protocol::LimitKind::MessageBytes, 1),
@@ -921,7 +945,11 @@ mod tests {
             )),
         )
         .class(None);
-        assert!(shepr_remote::SshFailureDiagnostic::from_error(&malformed).needs_attention());
+        assert!(
+            shepr_launch::EndpointFailure::from_error(&malformed)
+                .disposition()
+                .needs_attention()
+        );
     }
 
     /// A welcome that does not decode surfaces as a handshake failure
@@ -933,8 +961,8 @@ mod tests {
         ))
         .class(None);
         assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
-        let diagnostic = shepr_remote::SshFailureDiagnostic::from_error(&error);
-        assert!(diagnostic.needs_attention());
+        let diagnostic = shepr_launch::EndpointFailure::from_error(&error);
+        assert!(diagnostic.disposition().needs_attention());
         assert!(diagnostic.to_string().contains("handshake failed"));
     }
 
@@ -959,7 +987,8 @@ mod tests {
         let paths = shepr_paths::AppPaths::resolve().expect("isolated paths resolve");
         let now = Instant::now();
         let mut supervisors = EndpointSupervisors::new(Vec::new(), now).expect("test precondition");
-        let guidance: Arc<str> = paths.server_address().build_mismatch_guidance().into();
+        let guidance: Arc<str> =
+            shepr_launch::guidance::build_mismatch_guidance(paths.server_address()).into();
         supervisors.add_local(paths.server_address().socket().into(), guidance, None, now);
         let ConnectTarget::Local {
             mismatch_guidance, ..
@@ -970,12 +999,12 @@ mod tests {
 
         let error = different_build().class(Some(&**mismatch_guidance));
         assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
-        let diagnostic = shepr_remote::SshFailureDiagnostic::from_error(&error);
-        assert!(diagnostic.needs_attention());
+        let diagnostic = shepr_launch::EndpointFailure::from_error(&error);
+        assert!(diagnostic.disposition().needs_attention());
         let message = diagnostic.to_string();
         // The commands name this build's own entry point, which for a test
         // build is its running executable rather than the installed `shepr`.
-        let entrypoint = shepr_paths::operator_entrypoint();
+        let entrypoint = shepr_launch::guidance::operator_entrypoint();
         for expected in [
             "handshake failed".to_owned(),
             "00000000deadbeef".to_owned(),

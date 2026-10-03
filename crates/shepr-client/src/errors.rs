@@ -110,7 +110,7 @@ impl std::error::Error for ClientRunError {
 pub(crate) fn endpoint_setup_launch_error(error: &io::Error) -> ClientRunError {
     ClientRunError::Launch(io::Error::new(
         error.kind(),
-        LaunchContext::EndpointSetup(shepr_remote::EndpointFailure::from_error(error)),
+        LaunchContext::EndpointSetup(shepr_launch::EndpointFailure::from_error(error)),
     ))
 }
 
@@ -126,7 +126,7 @@ pub(crate) fn endpoint_connection_launch_error(error: io::Error) -> ClientRunErr
 #[derive(Debug)]
 enum LaunchContext {
     Connection(io::Error),
-    EndpointSetup(shepr_remote::EndpointFailure),
+    EndpointSetup(shepr_launch::EndpointFailure),
 }
 
 impl std::fmt::Display for LaunchContext {

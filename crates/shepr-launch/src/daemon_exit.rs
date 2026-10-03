@@ -7,15 +7,6 @@
 //! that predates a code, or a daemon killed by a signal, is simply
 //! [`DaemonExit::Failed`].
 
-/// The server executable's file name, looked up beside the running client.
-// limits-exempt: executable name shared by the server binary and the launcher.
-pub const SERVER_BINARY_NAME: &str = "shepr-server";
-
-/// The private argument a client passes to the server executable to mark a
-/// start by a shepr client.
-// limits-exempt: argument shared by the server binary and the launcher.
-pub const CLIENT_SPAWNED_FLAG: &str = "--client-spawned";
-
 /// Exit status of a server that found another server already running: a live
 /// listener on a socket, or the data directory lease held.
 // limits-exempt: process exit status shared by the server and client executables.

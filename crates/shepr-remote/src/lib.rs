@@ -1,8 +1,5 @@
-mod failure;
-use failure::FailureEvidence;
-pub use failure::{EndpointFailure, FailureDisposition};
-mod text;
-pub use text::RemoteText;
+mod evidence;
+use evidence::{FailureEvidence, failure_evidence};
 
 mod limits;
 
@@ -16,8 +13,6 @@ mod discovery;
 mod host;
 #[path = "remote/launch.rs"]
 mod launch;
-#[path = "remote/local_server.rs"]
-pub mod local_server;
 pub mod machine;
 #[path = "remote/machine_ssh.rs"]
 mod machine_ssh;
@@ -38,17 +33,20 @@ use discovery::*;
 use launch::*;
 use server_lifecycle::*;
 use shell_command::*;
+use shepr_launch::invocation::REMOTE_INSTALL_NAME;
+use shepr_launch::{
+    EndpointFailure, FailureCause, FailureDisposition, RemoteText, SshFailureClass,
+};
 use ssh::*;
 
 pub use crate::machine::SshTarget;
-pub use args::*;
+pub use args::RemoteCliCommand;
 pub use host::run_remote_client_bridge;
-pub use launch::{RemoteStop, shell_quote};
+pub use launch::shell_quote;
 pub use machine_ssh::*;
 pub use preflight::{
     AuthenticationError, MachineCheck, MachineSshPreflight, PreflightOutcome, PreflightSsh,
-    RestartDecider, RestartDecision, RestartFailure, RestartResult, classify_check, preflight,
-    restart_different_builds,
+    RestartDecider, classify_check, preflight, restart_different_builds,
 };
 pub use server_lifecycle::{DifferentBuildServer, MachineSshCheck};
 pub use ssh::{release_ssh_resources_before_exit, ssh_authentication_command};
@@ -98,43 +96,19 @@ impl RemoteExit {
     }
 }
 
-/// SSH diagnostic classes. Endpoint operator policy lives in
-/// `EndpointFailure::disposition`, including failures outside SSH.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum SshFailure {
-    /// The remote refused every offered credential.
-    Authentication,
-    /// A bounded SSH command ended before returning, so foreground SSH may
-    /// need to wait for interactive authentication or security-key presence.
-    AuthenticationPending,
-    /// The remote's host key is unknown or changed.
-    HostKey,
-    /// A local SSH or endpoint setup operation failed.
-    LocalSetup,
-    /// The remote was never reached or the link dropped: a retry can clear it.
-    Link,
-    /// ssh could not use the configured target or the local ssh configuration.
-    LocalConfiguration,
-    /// The remote answered and then closed or refused the connection.
-    RemoteRejected,
-    /// ssh failed with its own exit status for a reason shepr does not
-    /// recognise. Reported rather than retried silently.
-    Unrecognized,
-    /// The remote end is not a usable shepr of this build.
-    Compatibility,
-    /// Anything else: an IO error or a message with no ssh classification.
-    Other,
-}
-
-/// An SSH diagnostic with its process cause kept alongside its text.
-/// Text classification is reserved for the SSH process boundary. Generic
-/// endpoint failures use `EndpointFailure`; this also adapts their diagnostics
-/// for callers that only display text and SSH hints.
+/// An SSH-side failure: the neutral endpoint failure the client sees, plus
+/// where in the SSH machinery it arose. The origin is what discovery reads
+/// its evidence from and what tells a link failure from a remote command's
+/// answer; it never leaves this crate. Text classification is reserved for
+/// the SSH process boundary ([`Self::from_ssh_output`]).
+///
+/// Carried in an `io::Error`, the diagnostic names its endpoint failure as
+/// its source, so `EndpointFailure::from_error` outside this crate reads the
+/// neutral cause without knowing this type.
 #[derive(Clone, Debug)]
 pub struct SshFailureDiagnostic {
-    failure: SshFailure,
+    failure: EndpointFailure,
     origin: SshFailureOrigin,
-    message: RemoteText,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -149,59 +123,68 @@ enum SshFailureOrigin {
 }
 
 impl SshFailureDiagnostic {
+    /// The diagnostic an error carries, or one built from the endpoint
+    /// failure it carries, or from its IO kind.
     pub fn from_error(error: &std::io::Error) -> Self {
-        EndpointFailure::from_error(error).diagnostic()
+        if let Some(diagnostic) = error
+            .get_ref()
+            .and_then(|source| source.downcast_ref::<Self>())
+        {
+            return diagnostic.clone();
+        }
+        let failure = EndpointFailure::from_error(error);
+        let origin = match failure.cause() {
+            FailureCause::Io(kind) => SshFailureOrigin::Io(kind),
+            FailureCause::Incompatible => SshFailureOrigin::RemoteCompatibility,
+            FailureCause::LocalSetup | FailureCause::InvalidLocalSetup => {
+                SshFailureOrigin::LocalSetup
+            }
+            FailureCause::Ssh(SshFailureClass::AuthenticationPending) => {
+                SshFailureOrigin::CommandTimeout
+            }
+            FailureCause::Ssh(_) => SshFailureOrigin::SshOutput(SshExit::SshFailed),
+            FailureCause::RemoteRepair
+            | FailureCause::Backpressure
+            | FailureCause::Retry
+            | FailureCause::Unclassified
+            | FailureCause::Shutdown(_) => SshFailureOrigin::Message,
+        };
+        Self { failure, origin }
     }
 
     pub fn from_message(message: impl Into<String>) -> Self {
-        let message = message.into();
         Self {
-            failure: SshFailure::Other,
+            failure: EndpointFailure::unclassified(message),
             origin: SshFailureOrigin::Message,
-            message: RemoteText::from_untrusted(&message),
         }
     }
 
     pub fn from_ssh_output(exit_code: Option<i32>, message: &str) -> Self {
         let exit = SshExit::from_code(exit_code);
         let failure = if exit == SshExit::SshFailed {
-            classify_ssh_diagnostic(message)
+            EndpointFailure::ssh(classify_ssh_diagnostic(message), message)
         } else {
-            SshFailure::Other
+            EndpointFailure::unclassified(message)
         };
         Self {
             failure,
             origin: SshFailureOrigin::SshOutput(exit),
-            message: RemoteText::from_untrusted(message),
         }
     }
 
     /// Adds display context while retaining this diagnostic's structured class.
     pub fn with_context(mut self, context: impl Into<String>) -> Self {
-        self.message = RemoteText::from_untrusted(&format!("{}: {}", context.into(), self.message));
+        self.failure = self.failure.with_context(&context.into());
         self
-    }
-
-    /// Safe display text for a diagnostic card or other terminal output.
-    pub fn text(&self) -> &RemoteText {
-        &self.message
-    }
-
-    pub fn requires_authentication(&self) -> bool {
-        self.failure == SshFailure::Authentication
-    }
-
-    pub(crate) fn is_authentication_wait_timeout(&self) -> bool {
-        self.failure == SshFailure::AuthenticationPending
     }
 
     pub(crate) fn authentication_wait_timeout() -> Self {
         Self {
-            failure: SshFailure::AuthenticationPending,
-            origin: SshFailureOrigin::CommandTimeout,
-            message: RemoteText::from_untrusted(
+            failure: EndpointFailure::ssh(
+                SshFailureClass::AuthenticationPending,
                 "SSH command timed out before returning a remote result; interactive authentication may be needed",
             ),
+            origin: SshFailureOrigin::CommandTimeout,
         }
     }
 
@@ -210,14 +193,16 @@ impl SshFailureDiagnostic {
     /// supply this context explicitly instead of relying on `from_error`.
     pub fn from_local_setup_error(error: &std::io::Error) -> Self {
         Self {
-            failure: SshFailure::LocalSetup,
+            failure: EndpointFailure::local_setup(error.to_string()),
             origin: SshFailureOrigin::LocalSetup,
-            message: RemoteText::from_untrusted(&error.to_string()),
         }
     }
 
-    pub fn is_host_key(&self) -> bool {
-        self.failure == SshFailure::HostKey
+    fn ssh_class(&self) -> Option<SshFailureClass> {
+        match self.failure.cause() {
+            FailureCause::Ssh(class) => Some(class),
+            _ => None,
+        }
     }
 
     /// Whether the attempt failed before any remote command produced a result:
@@ -225,11 +210,11 @@ impl SshFailureDiagnostic {
     /// included), a bounded SSH command timed out, or a typed IO error says the
     /// link was never made or was lost. The bridge and the machine check use it
     /// so no such failure is read as a remote command's answer; discovery
-    /// classifies failures through `EndpointFailure` evidence instead. It says
-    /// nothing about whether a retry helps.
+    /// classifies failures through their evidence instead. It says nothing
+    /// about whether a retry helps.
     pub fn failed_before_remote_result(&self) -> bool {
         match self.origin {
-            SshFailureOrigin::Io(kind) => is_ssh_link_error_kind(kind),
+            SshFailureOrigin::Io(kind) => shepr_launch::failure::is_link_error_kind(kind),
             SshFailureOrigin::SshOutput(exit) => exit == SshExit::SshFailed,
             SshFailureOrigin::CommandTimeout => true,
             SshFailureOrigin::LocalSetup
@@ -239,6 +224,9 @@ impl SshFailureDiagnostic {
         }
     }
 
+    /// What this failure established about the remote executable. Display
+    /// text is deliberately irrelevant: SSH output classification and typed
+    /// remote status errors are the only sources of install evidence.
     fn evidence(&self) -> FailureEvidence {
         if matches!(
             self.origin,
@@ -251,16 +239,18 @@ impl SshFailureDiagnostic {
         match self.origin {
             SshFailureOrigin::RemoteCandidateMismatch => FailureEvidence::CandidateMismatch,
             SshFailureOrigin::RemoteCompatibility => FailureEvidence::InstallChanged,
-            SshFailureOrigin::Io(kind) if is_ssh_link_error_kind(kind) => {
+            SshFailureOrigin::Io(kind) if shepr_launch::failure::is_link_error_kind(kind) => {
                 FailureEvidence::NothingLearned
             }
             SshFailureOrigin::SshOutput(SshExit::SshFailed)
                 if matches!(
-                    self.failure,
-                    SshFailure::HostKey
-                        | SshFailure::LocalConfiguration
-                        | SshFailure::RemoteRejected
-                        | SshFailure::Unrecognized
+                    self.ssh_class(),
+                    Some(
+                        SshFailureClass::HostKey
+                            | SshFailureClass::Configuration
+                            | SshFailureClass::RemoteRejected
+                            | SshFailureClass::Unrecognized
+                    )
                 ) =>
             {
                 FailureEvidence::TargetUntrusted
@@ -298,17 +288,11 @@ impl SshFailureDiagnostic {
     /// Whether this failure is a transient connection problem that the client
     /// should retry without treating the machine as needing operator attention.
     pub fn is_transient_network_failure(&self) -> bool {
-        self.failure == SshFailure::Link
-    }
-
-    /// Whether the operator needs to fix the configured SSH target or local
-    /// OpenSSH configuration before this machine can be reached.
-    pub fn needs_local_ssh_configuration(&self) -> bool {
-        self.failure == SshFailure::LocalConfiguration
+        self.disposition() == FailureDisposition::Offline
     }
 
     pub fn disposition(&self) -> FailureDisposition {
-        EndpointFailure::from_ssh(self.clone()).disposition()
+        self.failure.disposition()
     }
 
     pub fn needs_attention(&self) -> bool {
@@ -318,13 +302,17 @@ impl SshFailureDiagnostic {
 
 impl std::fmt::Display for SshFailureDiagnostic {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        std::fmt::Display::fmt(&self.message, formatter)
+        std::fmt::Display::fmt(&self.failure, formatter)
     }
 }
 
-impl std::error::Error for SshFailureDiagnostic {}
+impl std::error::Error for SshFailureDiagnostic {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.failure)
+    }
+}
 
-fn classify_ssh_diagnostic(message: &str) -> SshFailure {
+fn classify_ssh_diagnostic(message: &str) -> SshFailureClass {
     // OpenSSH has no structured stderr format. Only the SSH-output constructor
     // uses these narrow signatures, and only for ssh's own exit 255; generic
     // errors and remote command output are classified by their typed source or
@@ -334,7 +322,7 @@ fn classify_ssh_diagnostic(message: &str) -> SshFailure {
         || message.contains("remote host identification has changed")
         || message.contains("no matching host key")
     {
-        return SshFailure::HostKey;
+        return SshFailureClass::HostKey;
     }
     if (message.contains("permission denied")
         && ["(publickey", "(keyboard-interactive", "(password"]
@@ -344,16 +332,16 @@ fn classify_ssh_diagnostic(message: &str) -> SshFailure {
         || (message.contains("signing failed")
             && (message.contains("sign_and_send_pubkey") || message.contains("agent")))
     {
-        return SshFailure::Authentication;
+        return SshFailureClass::Authentication;
     }
     if is_local_ssh_configuration_error(&message) {
-        return SshFailure::LocalConfiguration;
+        return SshFailureClass::Configuration;
     }
     if message.contains("could not resolve hostname") {
         if message.contains("temporary failure in name resolution") {
-            return SshFailure::Link;
+            return SshFailureClass::Link;
         }
-        return SshFailure::LocalConfiguration;
+        return SshFailureClass::Configuration;
     }
     if [
         "connection timed out",
@@ -368,17 +356,17 @@ fn classify_ssh_diagnostic(message: &str) -> SshFailure {
     .iter()
     .any(|signature| message.contains(signature))
     {
-        return SshFailure::Link;
+        return SshFailureClass::Link;
     }
     if message.contains("kex_exchange_identification:")
         && message.contains("connection closed by remote host")
     {
-        return SshFailure::Link;
+        return SshFailureClass::Link;
     }
     if message.contains("connection closed by ") || message.contains("received disconnect from ") {
-        return SshFailure::RemoteRejected;
+        return SshFailureClass::RemoteRejected;
     }
-    SshFailure::Unrecognized
+    SshFailureClass::Unrecognized
 }
 
 fn is_local_ssh_configuration_error(message: &str) -> bool {
@@ -392,25 +380,6 @@ fn is_local_ssh_configuration_error(message: &str) -> bool {
     ]
     .iter()
     .any(|signature| message.contains(signature))
-}
-
-/// Whether an IO failure says the link to the machine could not be made, so
-/// nothing was learned about the remote side and the machine reads as offline.
-/// This deliberately does not use `shepr_platform::ipc::classify_stream_error`:
-/// that classifier answers how a local stream ended, and a peer that went away
-/// mid-session (a broken pipe, an unexpected EOF) is a remote fault to retry,
-/// not evidence that the machine is unreachable.
-fn is_ssh_link_error_kind(kind: std::io::ErrorKind) -> bool {
-    matches!(
-        kind,
-        std::io::ErrorKind::TimedOut
-            | std::io::ErrorKind::ConnectionRefused
-            | std::io::ErrorKind::ConnectionReset
-            | std::io::ErrorKind::AddrInUse
-            | std::io::ErrorKind::HostUnreachable
-            | std::io::ErrorKind::NetworkUnreachable
-            | std::io::ErrorKind::NetworkDown
-    )
 }
 
 /// Classifies platform policy while its typed error is still available.
@@ -464,55 +433,18 @@ pub(crate) fn remote_compatibility_error(message: impl Into<String>) -> std::io:
 }
 
 pub(crate) fn remote_candidate_mismatch_error(message: impl Into<String>) -> std::io::Error {
-    let message = message.into();
     std::io::Error::new(
         std::io::ErrorKind::Unsupported,
         SshFailureDiagnostic {
-            failure: SshFailure::Compatibility,
+            failure: EndpointFailure::incompatible(message),
             origin: SshFailureOrigin::RemoteCandidateMismatch,
-            message: RemoteText::from_untrusted(&message),
         },
     )
 }
 
-/// Operator hint lines for a failed configured-machine SSH operation, one per
-/// line and without a trailing newline. Empty when there is no hint. The
-/// binary renders them; this crate does not print.
-pub fn machine_ssh_error_hint(err: &SshFailureDiagnostic, target: &SshTarget) -> Vec<String> {
-    if err.is_host_key() {
-        vec![
-            "hint: configured machines use strict host-key checking; add the host key to the configured known_hosts file, then retry."
-                .to_string(),
-        ]
-    } else if err.needs_local_ssh_configuration() {
-        vec![
-            "hint: check the configured SSH target and local SSH configuration; OpenSSH reports the file and line for configuration errors."
-                .to_string(),
-        ]
-    } else {
-        remote_error_hint_for_failure(err, target)
-    }
-}
-
-fn remote_error_hint_for_failure(
-    failure: &SshFailureDiagnostic,
-    target: &SshTarget,
-) -> Vec<String> {
-    if failure.requires_authentication() {
-        vec![
-            format!(
-                "hint: verify SSH access first with `{}`.",
-                ssh_check_command(target)
-            ),
-            "hint: if your SSH key has a passphrase, load it into ssh-agent with `ssh-add` before retrying."
-                .to_string(),
-        ]
-    } else {
-        Vec::new()
-    }
-}
-
-fn ssh_check_command(target: &SshTarget) -> String {
+/// The command an operator runs to check SSH access to `target` by hand, with
+/// the target quoted for a POSIX shell.
+pub fn ssh_check_command(target: &SshTarget) -> String {
     format!("ssh {}", target.shell_word())
 }
 
@@ -523,7 +455,10 @@ impl SshFailureDiagnostic {
     }
 
     pub(crate) fn is_local_setup_failure(&self) -> bool {
-        self.failure == SshFailure::LocalSetup
+        matches!(
+            self.failure.cause(),
+            FailureCause::LocalSetup | FailureCause::InvalidLocalSetup
+        )
     }
 }
 
@@ -531,28 +466,22 @@ impl SshFailureDiagnostic {
 mod tests {
     use super::*;
 
-    fn test_host() -> SshTarget {
-        SshTarget::parse("host").expect("test precondition")
-    }
-
     #[test]
     fn remote_host_key_error_matches_ssh_diagnostics() {
-        let target = SshTarget::parse("host").expect("test precondition");
         for message in [
             "Host key verification failed.",
             "REMOTE HOST IDENTIFICATION HAS CHANGED!",
         ] {
             let failure =
                 SshFailureDiagnostic::from_ssh_output(Some(SSH_OWN_FAILURE_EXIT_CODE), message);
-            assert!(!machine_ssh_error_hint(&failure, &target).is_empty());
+            assert_eq!(
+                failure.ssh_class(),
+                Some(SshFailureClass::HostKey),
+                "{message}"
+            );
         }
-        assert!(
-            machine_ssh_error_hint(
-                &SshFailureDiagnostic::from_message("server closed connection"),
-                &target
-            )
-            .is_empty()
-        );
+        let unclassified = SshFailureDiagnostic::from_message("server closed connection");
+        assert_eq!(unclassified.ssh_class(), None);
     }
 
     #[test]
@@ -561,7 +490,10 @@ mod tests {
             Some(SSH_OWN_FAILURE_EXIT_CODE),
             "remote platform detection failed: user@host: Permission denied (publickey).",
         );
-        assert!(!remote_error_hint_for_failure(&diagnostic, &test_host()).is_empty());
+        assert_eq!(
+            diagnostic.ssh_class(),
+            Some(SshFailureClass::Authentication)
+        );
     }
 
     #[test]
@@ -570,7 +502,10 @@ mod tests {
             Some(SSH_OWN_FAILURE_EXIT_CODE),
             "remote server status failed: user@host: Permission denied (keyboard-interactive).",
         );
-        assert!(!remote_error_hint_for_failure(&diagnostic, &test_host()).is_empty());
+        assert_eq!(
+            diagnostic.ssh_class(),
+            Some(SshFailureClass::Authentication)
+        );
     }
 
     #[test]
@@ -579,7 +514,7 @@ mod tests {
             "remote platform detection failed: unsupported platform",
         );
 
-        assert!(remote_error_hint_for_failure(&diagnostic, &test_host()).is_empty());
+        assert_eq!(diagnostic.ssh_class(), None);
     }
 
     #[test]
@@ -588,7 +523,10 @@ mod tests {
             Some(SSH_OWN_FAILURE_EXIT_CODE),
             "SIGN_AND_SEND_PUBKEY: SIGNING FAILED for ED25519 from agent: agent refused operation",
         );
-        assert!(!remote_error_hint_for_failure(&diagnostic, &test_host()).is_empty());
+        assert_eq!(
+            diagnostic.ssh_class(),
+            Some(SshFailureClass::Authentication)
+        );
     }
 
     #[test]
@@ -597,7 +535,7 @@ mod tests {
             Some(SSH_OWN_FAILURE_EXIT_CODE),
             "Permission denied (publickey). Host key verification failed.",
         );
-        assert!(remote_error_hint_for_failure(&diagnostic, &test_host()).is_empty());
+        assert_eq!(diagnostic.ssh_class(), Some(SshFailureClass::HostKey));
     }
 
     #[test]
@@ -655,7 +593,7 @@ mod tests {
                 "{message}"
             );
             assert_eq!(
-                diagnostic.needs_local_ssh_configuration(),
+                diagnostic.ssh_class() == Some(SshFailureClass::Configuration),
                 local_configuration,
                 "{message}"
             );
@@ -669,6 +607,53 @@ mod tests {
                 crate::MachineCheck::Failed(_) => "failed",
             };
             assert_eq!(class, expected_class, "{message}");
+        }
+    }
+
+    #[test]
+    fn a_diagnostic_reaches_the_client_as_its_neutral_failure() {
+        let diagnostic = SshFailureDiagnostic::from_ssh_output(
+            Some(SSH_OWN_FAILURE_EXIT_CODE),
+            "Permission denied (publickey).",
+        )
+        .with_context("handshake failed");
+        let error = std::io::Error::other(diagnostic);
+        let failure = EndpointFailure::from_error(&error);
+        assert_eq!(
+            failure.cause(),
+            FailureCause::Ssh(SshFailureClass::Authentication)
+        );
+        assert_eq!(failure.disposition(), FailureDisposition::Authentication);
+        assert_eq!(
+            failure.to_string(),
+            "handshake failed: Permission denied (publickey)."
+        );
+        // The origin stays readable inside this crate.
+        assert!(SshFailureDiagnostic::from_error(&error).is_ssh_process_failure());
+    }
+
+    #[test]
+    fn a_remote_command_failure_is_not_an_ssh_class() {
+        let diagnostic = SshFailureDiagnostic::from_ssh_output(Some(127), "shepr: not found");
+        assert_eq!(diagnostic.failure.cause(), FailureCause::Unclassified);
+        assert_eq!(diagnostic.remote_exit_code(), Some(127));
+        assert_eq!(diagnostic.evidence(), FailureEvidence::InstallStale);
+    }
+
+    #[test]
+    fn unreadable_remote_status_replies_have_the_same_operator_action() {
+        for error in [
+            crate::discovery::parse_remote_client_status_json("not JSON")
+                .expect_err("malformed client status"),
+            crate::server_lifecycle::parse_remote_server_status_json("not JSON")
+                .expect_err("malformed server status"),
+        ] {
+            let failure = EndpointFailure::from_error(&error);
+            assert_eq!(failure.disposition(), FailureDisposition::Incompatible);
+            assert!(matches!(
+                crate::classify_check(Err(error)),
+                crate::MachineCheck::Incompatible(_)
+            ));
         }
     }
 

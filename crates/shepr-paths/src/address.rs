@@ -20,7 +20,7 @@ impl ServerAddress {
     // is not an override: a pane exports its server's resolved socket, and a
     // pane of the same profile must still count as the runtime address.
     /// Resolve and retain the checked socket pathname for the entire launch.
-    pub(crate) fn resolve_paths_checked(
+    pub fn for_runtime_dir(
         runtime_dir: &Path,
         socket_override: Option<&Path>,
     ) -> std::io::Result<Self> {
@@ -49,7 +49,7 @@ impl ServerAddress {
 
     /// `command` as an operator runs it against this server: prefixed with
     /// the socket override that selected the server, if one did.
-    pub(crate) fn command(&self, command: &str) -> String {
+    pub fn command(&self, command: &str) -> String {
         if self.overridden {
             format!(
                 "{}={} {command}",
@@ -79,8 +79,7 @@ mod tests {
 
     impl ServerAddress {
         pub(crate) fn resolve_paths(runtime_dir: &Path, socket_override: Option<&Path>) -> Self {
-            Self::resolve_paths_checked(runtime_dir, socket_override)
-                .expect("valid test socket path")
+            Self::for_runtime_dir(runtime_dir, socket_override).expect("valid test socket path")
         }
     }
 

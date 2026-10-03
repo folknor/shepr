@@ -7,19 +7,20 @@
 //!   Every offer comes after the last authentication prompt, so prompts and
 //!   questions never interleave.
 //!
-//! The mechanism lives in `shepr_remote::preflight`; this module supplies the
-//! config, the terminal, the local server and the words.
+//! The machine mechanism lives in `shepr_remote::preflight` and the restart
+//! offer in `shepr_launch::restart`; this module supplies the config, the
+//! terminal, the local server and the words, the hints for a failed machine
+//! check included.
 
 use std::io::{self, IsTerminal, Write as _};
 use std::os::fd::AsRawFd as _;
 
-use shepr_api::RuntimeStatus;
-use shepr_api::server_stop::ServerStopError;
-use shepr_config::MachineConfig;
-use shepr_remote::{
-    DifferentBuildServer, MachineCheck, PreflightOutcome, RemoteStop, RestartDecision,
-    RestartResult,
-};
+use shepr_config::{MachineConfig, SshTarget};
+use shepr_launch::restart::{RestartDecision, RestartFailure, RestartResult, StopOutcome};
+use shepr_launch::status::RuntimeStatus;
+use shepr_launch::stop::ServerStopError;
+use shepr_launch::{EndpointFailure, FailureCause, SshFailureClass};
+use shepr_remote::{DifferentBuildServer, MachineCheck, PreflightOutcome};
 
 /// Authenticates the machines that need it, then offers to restart each running
 /// server of another build: the local one first, then the machines'. Every
@@ -68,7 +69,7 @@ pub(crate) fn run(
     };
     let local = restart_local(
         || local_server_status(paths),
-        |boot_id| shepr_api::server_stop::stop_active_server(paths, Some(boot_id)),
+        |boot_id| shepr_launch::stop::stop_active_server(paths, Some(boot_id)),
         local_decision,
     );
     let mut decide_remote = |machine: &MachineConfig, server: &DifferentBuildServer| {
@@ -107,7 +108,7 @@ fn local_server_status(paths: &shepr_paths::AppPaths) -> Option<RuntimeStatus> {
     if !paths.server_address().is_runtime_address() {
         return None;
     }
-    match shepr_remote::local_server::running_server_status(paths) {
+    match shepr_launch::local_server::running_server_status(paths) {
         Ok(status) => status,
         Err(error) => {
             tracing::warn!(%error, "cannot read the local server for a restart offer");
@@ -206,10 +207,10 @@ fn restart_local(
         &mut probe,
         |status| !status.build_id.is_this_build(),
         |status| match stop(&status.boot_id) {
-            Ok(()) => Ok(RemoteStop::Stopped),
-            Err(ServerStopError::NotRunning { .. }) => Ok(RemoteStop::NoServer),
-            Err(error) if error.is_boot_mismatch() => Ok(RemoteStop::BootChanged),
-            Err(error) => Err(shepr_remote::RestartFailure::Local(error)),
+            Ok(()) => Ok(StopOutcome::Stopped),
+            Err(ServerStopError::NotRunning { .. }) => Ok(StopOutcome::NoServer),
+            Err(error) if error.is_boot_mismatch() => Ok(StopOutcome::BootChanged),
+            Err(error) => Err(RestartFailure::Local(error)),
         },
     )
 }
@@ -286,32 +287,32 @@ fn result_notices(outcomes: &[PreflightOutcome], can_prompt: bool) -> Vec<String
                     machine.label
                 ));
             }
-            (MachineCheck::NeedsAuthentication(diagnostic), Some(Ok(()))) => {
+            (MachineCheck::NeedsAuthentication(failure), Some(Ok(()))) => {
                 notices.push(format!(
-                    "shepr: machine {} still refuses the client's connection after ssh authenticated: {diagnostic}. The client keeps retrying it.",
+                    "shepr: machine {} still refuses the client's connection after ssh authenticated: {failure}. The client keeps retrying it.",
                     machine.label
                 ));
             }
-            (MachineCheck::HostKey(diagnostic), _) => {
-                let mut notice = format!("shepr: machine {}: {diagnostic}", machine.label);
-                for hint in shepr_remote::machine_ssh_error_hint(diagnostic, &machine.ssh) {
+            (MachineCheck::HostKey(failure), _) => {
+                let mut notice = format!("shepr: machine {}: {failure}", machine.label);
+                for hint in machine_failure_hints(failure, &machine.ssh) {
                     notice.push('\n');
                     notice.push_str(&hint);
                 }
                 notices.push(notice);
             }
-            (MachineCheck::Incompatible(diagnostic), _) => notices.push(format!(
-                "shepr: machine {} cannot be used: {diagnostic}. {}",
+            (MachineCheck::Incompatible(failure), _) => notices.push(format!(
+                "shepr: machine {} cannot be used: {failure}. {}",
                 machine.label,
-                diagnostic.disposition().client_action()
+                failure.disposition().client_action()
             )),
-            (MachineCheck::Failed(diagnostic), _) => {
-                let client_action = diagnostic.disposition().client_action();
+            (MachineCheck::Failed(failure), _) => {
+                let client_action = failure.disposition().client_action();
                 let mut notice = format!(
-                    "shepr: machine {} could not be checked: {diagnostic}. {client_action}",
+                    "shepr: machine {} could not be checked: {failure}. {client_action}",
                     machine.label
                 );
-                for hint in shepr_remote::machine_ssh_error_hint(diagnostic, &machine.ssh) {
+                for hint in machine_failure_hints(failure, &machine.ssh) {
                     notice.push('\n');
                     notice.push_str(&hint);
                 }
@@ -321,6 +322,31 @@ fn result_notices(outcomes: &[PreflightOutcome], can_prompt: bool) -> Vec<String
         }
     }
     notices
+}
+
+/// Operator hint lines for a configured machine's failure, derived from its
+/// typed cause, with the configured target as what they name. Empty when the
+/// cause has no hint.
+fn machine_failure_hints(failure: &EndpointFailure, target: &SshTarget) -> Vec<String> {
+    match failure.cause() {
+        FailureCause::Ssh(SshFailureClass::HostKey) => vec![
+            "hint: configured machines use strict host-key checking; add the host key to the configured known_hosts file, then retry."
+                .to_owned(),
+        ],
+        FailureCause::Ssh(SshFailureClass::Configuration) => vec![
+            "hint: check the configured SSH target and local SSH configuration; OpenSSH reports the file and line for configuration errors."
+                .to_owned(),
+        ],
+        FailureCause::Ssh(SshFailureClass::Authentication) => vec![
+            format!(
+                "hint: verify SSH access first with `{}`.",
+                shepr_remote::ssh_check_command(target)
+            ),
+            "hint: if your SSH key has a passphrase, load it into ssh-agent with `ssh-add` before retrying."
+                .to_owned(),
+        ],
+        _ => Vec::new(),
+    }
 }
 
 /// What came of the restart offer for one machine, with what to do when its
@@ -397,8 +423,10 @@ mod tests {
         }
     }
 
-    fn diagnostic(message: &str) -> shepr_remote::SshFailureDiagnostic {
-        shepr_remote::SshFailureDiagnostic::from_ssh_output(Some(255), message)
+    fn diagnostic(message: &str) -> EndpointFailure {
+        EndpointFailure::from_error(&io::Error::other(
+            shepr_remote::SshFailureDiagnostic::from_ssh_output(Some(255), message),
+        ))
     }
 
     fn different_build_server() -> DifferentBuildServer {
@@ -500,6 +528,63 @@ mod tests {
     }
 
     #[test]
+    fn hints_follow_the_typed_cause_and_name_the_configured_target() {
+        let target = SshTarget::parse("host name").expect("test precondition");
+        for message in [
+            "Host key verification failed.",
+            "REMOTE HOST IDENTIFICATION HAS CHANGED!",
+        ] {
+            let hints = machine_failure_hints(&diagnostic(message), &target);
+            assert_eq!(hints.len(), 1, "{message}");
+            assert!(hints[0].contains("known_hosts"), "{hints:?}");
+        }
+
+        for message in [
+            "remote platform detection failed: user@host: Permission denied (publickey).",
+            "remote server status failed: user@host: Permission denied (keyboard-interactive).",
+            "SIGN_AND_SEND_PUBKEY: SIGNING FAILED for ED25519 from agent: agent refused operation",
+        ] {
+            let hints = machine_failure_hints(&diagnostic(message), &target);
+            assert_eq!(hints.len(), 2, "{message}");
+            assert!(
+                hints[0].contains("`ssh 'host name'`"),
+                "the target is quoted: {hints:?}"
+            );
+            assert!(hints[1].contains("ssh-add"), "{hints:?}");
+        }
+
+        let configuration = machine_failure_hints(
+            &diagnostic("Bad owner or permissions on /home/u/.ssh/config"),
+            &target,
+        );
+        assert!(
+            configuration[0].contains("local SSH configuration"),
+            "{configuration:?}"
+        );
+
+        // A host-key refusal named alongside a denied key is a host-key failure.
+        let both = machine_failure_hints(
+            &diagnostic("Permission denied (publickey). Host key verification failed."),
+            &target,
+        );
+        assert!(
+            both.iter().all(|hint| !hint.contains("ssh-add")),
+            "{both:?}"
+        );
+
+        for failure in [
+            EndpointFailure::unclassified("server closed connection"),
+            EndpointFailure::incompatible("remote platform detection failed: unsupported platform"),
+            EndpointFailure::from_error(&io::Error::from(io::ErrorKind::TimedOut)),
+        ] {
+            assert!(
+                machine_failure_hints(&failure, &target).is_empty(),
+                "{failure}"
+            );
+        }
+    }
+
+    #[test]
     fn a_machine_still_refused_after_authenticating_is_named() {
         let machines = [machine("build")];
         let outcomes = [outcome(
@@ -539,9 +624,7 @@ mod tests {
             (RestartResult::Declined, ""),
             (RestartResult::NoTerminal, "interactive terminal"),
             (
-                RestartResult::Failed(shepr_remote::RestartFailure::Remote(io::Error::other(
-                    "timed out",
-                ))),
+                RestartResult::Failed(RestartFailure::Remote(io::Error::other("timed out"))),
                 "timed out",
             ),
         ] {
@@ -641,7 +724,7 @@ mod tests {
             version: "0.0.0-test".into(),
             build_id: build_id.parse().expect("build identity"),
             boot_id: boot_id.parse().expect("boot identity"),
-            lifecycle: shepr_api::RuntimeLifecycle::Running,
+            lifecycle: shepr_launch::status::RuntimeLifecycle::Running,
         }
     }
 
@@ -842,9 +925,9 @@ mod tests {
             vec![true],
         );
         assert!(
-            matches!(script.run(true), RestartResult::Failed(shepr_remote::RestartFailure::Local(ServerStopError::Protocol(detail))) if detail == "refused")
+            matches!(script.run(true), RestartResult::Failed(RestartFailure::Local(ServerStopError::Protocol(detail))) if detail == "refused")
         );
-        let notice = local_notice(&RestartResult::Failed(shepr_remote::RestartFailure::Local(
+        let notice = local_notice(&RestartResult::Failed(RestartFailure::Local(
             ServerStopError::Protocol("refused".into()),
         )))
         .expect("a notice");

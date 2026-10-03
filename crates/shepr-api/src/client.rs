@@ -7,8 +7,22 @@ use serde::de::DeserializeOwned;
 
 use crate::limits::ORDINARY_RESPONSE_TIMEOUT;
 use crate::schema::{ErrorResponse, Method, PingParams, Request, ResponseResult, SuccessResponse};
-use crate::status::RuntimeLifecycle;
 use shepr_platform::ipc::{LocalStreamDeadlineReader, TrustedServerStream};
+
+/// A decoded `ping` answer: the identity the server reports and its readiness
+/// flags, as they crossed the wire. What they mean for a launch or a stop is
+/// the caller's to decide.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Pong {
+    pub version: String,
+    pub build_id: shepr_protocol::BuildIdentity,
+    /// The server process's boot identity.
+    pub boot_id: shepr_protocol::BootId,
+    /// The server has begun stopping.
+    pub stopping: bool,
+    /// The server has bound its socket but not yet opened its client protocol.
+    pub starting: bool,
+}
 
 /// Reusable client for Shepr's newline-delimited JSON API.
 #[derive(Debug, Clone)]
@@ -65,7 +79,11 @@ impl ApiClient {
         read_json_line(&mut reader).map_err(normalize_socket_timeout)
     }
 
-    pub(crate) fn request_value_until(
+    /// Sends one request and reads its single-line response, all of it bounded
+    /// by one `deadline`: the connect, the write and the read share it, so a
+    /// caller polling a server keeps one budget across requests. A failure to
+    /// reach the socket is told apart from a failure of the request itself.
+    pub fn request_value_until(
         &self,
         request: &Request,
         deadline: Instant,
@@ -102,7 +120,9 @@ impl ApiClient {
             .map_err(ApiClientDeadlineError::Request)
     }
 
-    pub(crate) fn request_until(
+    /// [`Self::request_value_until`], decoded into a success or the server's
+    /// error response.
+    pub fn request_until(
         &self,
         request: &Request,
         deadline: Instant,
@@ -111,25 +131,17 @@ impl ApiClient {
         parse_response_value(value).map_err(ApiClientDeadlineError::Request)
     }
 
-    pub fn status(&self) -> Result<crate::RuntimeStatus, ApiClientError> {
-        let request = Request {
-            id: "api-client:status".into(),
-            method: Method::Ping(PingParams::default()),
-        };
-        let response = self.request(&request)?;
-        runtime_status(response)
+    /// Asks the server for its identity and readiness with the ordinary
+    /// response bound.
+    pub fn ping(&self) -> Result<Pong, ApiClientError> {
+        let response = self.request(&ping_request())?;
+        pong(response)
     }
 
-    pub(crate) fn status_until(
-        &self,
-        deadline: Instant,
-    ) -> Result<crate::RuntimeStatus, ApiClientDeadlineError> {
-        let request = Request {
-            id: "api-client:status".into(),
-            method: Method::Ping(PingParams::default()),
-        };
-        let response = self.request_until(&request, deadline)?;
-        runtime_status(response).map_err(ApiClientDeadlineError::Request)
+    /// [`Self::ping`] bounded by one `deadline`.
+    pub fn ping_until(&self, deadline: Instant) -> Result<Pong, ApiClientDeadlineError> {
+        let response = self.request_until(&ping_request(), deadline)?;
+        pong(response).map_err(ApiClientDeadlineError::Request)
     }
 
     /// Every request (status, stop, detect) checks who serves the socket
@@ -140,9 +152,14 @@ impl ApiClient {
     }
 }
 
-fn runtime_status(
-    response: crate::schema::SuccessResponse,
-) -> Result<crate::RuntimeStatus, ApiClientError> {
+fn ping_request() -> Request {
+    Request {
+        id: "api-client:status".into(),
+        method: Method::Ping(PingParams::default()),
+    }
+}
+
+fn pong(response: SuccessResponse) -> Result<Pong, ApiClientError> {
     match response.result {
         ResponseResult::Pong {
             version,
@@ -150,17 +167,12 @@ fn runtime_status(
             boot_id,
             stopping,
             starting,
-        } => Ok(crate::RuntimeStatus {
+        } => Ok(Pong {
             version,
             build_id,
             boot_id,
-            lifecycle: if stopping {
-                RuntimeLifecycle::Stopping
-            } else if starting {
-                RuntimeLifecycle::Starting
-            } else {
-                RuntimeLifecycle::Running
-            },
+            stopping,
+            starting,
         }),
         result => Err(ApiClientError::UnexpectedResult(format!("{result:?}"))),
     }
@@ -205,9 +217,32 @@ pub enum ApiClientError {
     UnexpectedResult(String),
 }
 
-pub(crate) enum ApiClientDeadlineError {
+/// A deadline-bounded request's failure: the socket could not be reached, or
+/// the request on a reached socket failed.
+#[derive(Debug)]
+pub enum ApiClientDeadlineError {
+    /// No connection was made, including one whose deadline ran out first.
     Connect(io::Error),
+    /// The connection was made and the request or its response failed.
     Request(ApiClientError),
+}
+
+impl fmt::Display for ApiClientDeadlineError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Connect(error) => write!(f, "{error}"),
+            Self::Request(error) => write!(f, "{error}"),
+        }
+    }
+}
+
+impl std::error::Error for ApiClientDeadlineError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Connect(error) => Some(error),
+            Self::Request(error) => Some(error),
+        }
+    }
 }
 
 impl fmt::Display for ApiClientError {

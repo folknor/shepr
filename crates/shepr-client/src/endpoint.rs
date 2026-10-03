@@ -124,7 +124,7 @@ pub enum EndpointFailureStatus {
 impl EndpointFailureStatus {
     /// Attention for a failure that needs a repair outside this client, Reconnecting for one
     /// a later attempt can outlive.
-    pub(crate) fn after_failure(failure: &shepr_remote::EndpointFailure) -> Self {
+    pub(crate) fn after_failure(failure: &shepr_launch::EndpointFailure) -> Self {
         if failure.disposition().needs_attention() {
             Self::Attention
         } else {

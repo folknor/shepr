@@ -173,8 +173,8 @@ fn a_failed_handshake_marks_only_its_endpoint() {
     state.set_endpoint_status(&failed, EndpointFailureStatus::Attention);
     state.set_machine_diagnostic(
         &failed,
-        &shepr_remote::SshFailureDiagnostic::from_message(
-            "handshake failed: protocol error: codec error".to_owned(),
+        &shepr_launch::EndpointFailure::unclassified(
+            "handshake failed: protocol error: codec error",
         ),
     );
 
@@ -351,8 +351,8 @@ fn machine_diagnostic_badge_reopens_notice_without_collapsing_machine() {
     // ssh exits 255 for its own failures; this is how an auth prompt failure arrives.
     state.set_machine_diagnostic(
         &id,
-        &shepr_remote::SshFailureDiagnostic::from_ssh_output(
-            Some(255),
+        &shepr_launch::EndpointFailure::ssh(
+            shepr_launch::SshFailureClass::Authentication,
             "Permission denied (keyboard-interactive)",
         ),
     );
@@ -401,9 +401,7 @@ fn machine_diagnostic_card_replaces_tabs_and_preserves_lines() {
     state.set_endpoint_status(&id, EndpointFailureStatus::Attention);
     state.set_machine_diagnostic(
         &id,
-        &shepr_remote::SshFailureDiagnostic::from_message(
-            "failure\twith fields\nretry\twith a key".to_owned(),
-        ),
+        &shepr_launch::EndpointFailure::unclassified("failure\twith fields\nretry\twith a key"),
     );
 
     state.compose(120, 40).expect("diagnostic badge");

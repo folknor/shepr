@@ -1257,6 +1257,7 @@ dependencies = [
  "shepr-config",
  "shepr-core",
  "shepr-detect",
+ "shepr-launch",
  "shepr-paths",
  "shepr-platform",
  "shepr-protocol",
@@ -1304,6 +1305,7 @@ dependencies = [
  "serde_json",
  "shepr-config",
  "shepr-core",
+ "shepr-launch",
  "shepr-paths",
  "shepr-platform",
  "shepr-protocol",
@@ -1346,11 +1348,10 @@ dependencies = [
 name = "shepr-daemon"
 version = "0.1.0"
 dependencies = [
- "shepr-api",
  "shepr-config",
+ "shepr-launch",
  "shepr-paths",
  "shepr-platform",
- "shepr-protocol",
  "shepr-server",
 ]
 
@@ -1384,6 +1385,22 @@ dependencies = [
  "shepr-test-support",
  "toml",
  "toml_edit",
+ "tracing",
+]
+
+[[package]]
+name = "shepr-launch"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "serde_json",
+ "shepr-api",
+ "shepr-core",
+ "shepr-paths",
+ "shepr-platform",
+ "shepr-protocol",
+ "shepr-test-fixtures",
+ "shepr-test-support",
  "tracing",
 ]
 
@@ -1472,10 +1489,10 @@ dependencies = [
  "shepr-api",
  "shepr-config",
  "shepr-core",
+ "shepr-launch",
  "shepr-paths",
  "shepr-platform",
  "shepr-protocol",
- "shepr-test-fixtures",
  "shepr-test-support",
  "tracing",
 ]

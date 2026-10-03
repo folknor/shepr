@@ -1,9 +1,15 @@
+//! Stopping a server, unconditionally or only if it is the boot that was
+//! observed, and waiting until it is gone.
+
+use shepr_api::client::{ApiClient, ApiClientDeadlineError, ApiClientError};
+use shepr_api::error::ApiErrorCode;
+use shepr_api::schema::{
+    Method, Request, ResponseResult, ServerStopIfBootParams, ServerStopParams,
+};
 use shepr_protocol::BootId;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
-
-use crate::client::{ApiClient, ApiClientDeadlineError, ApiClientError};
 
 // Stopping a server only connects to its socket (to stop or probe it); it
 // never binds one. Binding goes through
@@ -100,12 +106,12 @@ pub enum ServerStopError {
 
 impl ServerStopError {
     /// The API error code the CLI reports this failure under.
-    pub fn error_code(&self) -> crate::error::ApiErrorCode {
+    pub fn error_code(&self) -> ApiErrorCode {
         match self {
             Self::BootMismatch { .. } | Self::OccupantChanged { .. } => {
-                crate::error::ApiErrorCode::ServerBootMismatch
+                ApiErrorCode::ServerBootMismatch
             }
-            _ => crate::error::ApiErrorCode::ServerStopFailed,
+            _ => ApiErrorCode::ServerStopFailed,
         }
     }
 
@@ -575,7 +581,7 @@ fn status_probe_error(error: ApiClientDeadlineError, label: &str) -> ServerStopE
 
 fn send_stop_request(
     socket_path: &Path,
-    request: &crate::schema::Request,
+    request: &Request,
     deadline: Instant,
     label: &str,
     expected_boot_id: Option<&BootId>,
@@ -593,7 +599,7 @@ fn send_stop_request(
     let client = ApiClient::for_socket(socket_path);
     match client.request_until(request, deadline) {
         Ok(response) => match response.result {
-            crate::schema::ResponseResult::Ok {} => Ok(()),
+            ResponseResult::Ok {} => Ok(()),
             _ => Err(ServerStopError::Protocol(
                 "unexpected stop result from server".into(),
             )),
@@ -623,9 +629,7 @@ fn send_stop_request(
         }
         Err(ApiClientDeadlineError::Request(ApiClientError::ErrorResponse(response))) => {
             match expected_boot_id {
-                Some(expected)
-                    if response.error.code == crate::error::ApiErrorCode::ServerBootMismatch =>
-                {
+                Some(expected) if response.error.code == ApiErrorCode::ServerBootMismatch => {
                     Err(ServerStopError::BootMismatch {
                         label: label.into(),
                         expected_boot_id: expected.clone(),
@@ -656,16 +660,14 @@ fn stop_socket_io_error(socket_path: &Path, label: &str, error: io::Error) -> Se
     }
 }
 
-fn server_stop_request(id: &str, expected_boot_id: Option<&BootId>) -> crate::schema::Request {
+fn server_stop_request(id: &str, expected_boot_id: Option<&BootId>) -> Request {
     let method = match expected_boot_id {
-        Some(expected_boot_id) => {
-            crate::schema::Method::ServerStopIfBoot(crate::schema::ServerStopIfBootParams {
-                expected_boot_id: expected_boot_id.clone(),
-            })
-        }
-        None => crate::schema::Method::ServerStop(crate::schema::ServerStopParams::default()),
+        Some(expected_boot_id) => Method::ServerStopIfBoot(ServerStopIfBootParams {
+            expected_boot_id: expected_boot_id.clone(),
+        }),
+        None => Method::ServerStop(ServerStopParams::default()),
     };
-    crate::schema::Request {
+    Request {
         id: id.into(),
         method,
     }
@@ -775,7 +777,7 @@ mod tests {
         )
         .expect("test precondition");
         let received = handle.join().expect("test precondition");
-        let received: crate::schema::Request =
+        let received: Request =
             serde_json::from_str(&received).expect("stop request is valid API JSON");
         assert_eq!(
             received,
@@ -897,10 +899,7 @@ mod tests {
             "{error}"
         );
         assert!(error.is_boot_mismatch());
-        assert_eq!(
-            error.error_code(),
-            crate::error::ApiErrorCode::ServerBootMismatch
-        );
+        assert_eq!(error.error_code(), ApiErrorCode::ServerBootMismatch);
         // The expected boot travelled in the one stop request; nothing else was sent.
         assert_eq!(requests.len(), 1, "{requests:?}");
         assert!(requests[0].contains("server.stop"), "{requests:?}");

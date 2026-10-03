@@ -30,7 +30,7 @@ pub(crate) fn auto_detect_launch<T>(
         &shepr_paths::AppPaths,
         Vec<shepr_remote::MachineSshConnector>,
     ) -> T,
-) -> Result<T, shepr_remote::local_server::LaunchError> {
+) -> Result<T, shepr_launch::local_server::LaunchError> {
     let socket_path = paths.server_address().socket().to_path_buf();
     tracing::info!(path = %socket_path.display(), "auto-detect launch starting");
 
@@ -38,10 +38,10 @@ pub(crate) fn auto_detect_launch<T>(
     // configured. With configured machines a mismatch does not end the launch below,
     // so they stay reachable; the Local endpoint's own handshake then rejects
     // the different build and shows the same guidance.
-    let startup = shepr_remote::local_server::ensure_running(
+    let startup = shepr_launch::local_server::ensure_running(
         paths,
         server_ready_timeout,
-        shepr_remote::local_server::BuildCheck::BeforeAttach,
+        shepr_launch::local_server::BuildCheck::BeforeAttach,
     );
     if let Err(error) = startup {
         if config.machines().is_empty() {

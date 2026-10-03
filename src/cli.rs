@@ -2,7 +2,7 @@ use clap::ArgMatches;
 
 use shepr_api::client::{ApiClient, ApiClientError};
 use shepr_api::schema::Request;
-use shepr_remote::{
+use shepr_launch::invocation::{
     COMMAND_CLIENT, COMMAND_DETECT, COMMAND_REMOTE_CLIENT_BRIDGE, COMMAND_SERVER, COMMAND_STATUS,
 };
 
@@ -227,10 +227,10 @@ fn ensure_server_build_matches(
     client: &ApiClient,
     request_id: &str,
 ) -> CliResult<()> {
-    let status = client
-        .status()
+    let pong = client
+        .ping()
         .map_err(|err| map_server_not_running_or_io(paths, err, request_id, client))?;
-    if status.build_id.is_this_build() {
+    if pong.build_id.is_this_build() {
         return Ok(());
     }
     let response = shepr_api::schema::ErrorResponse {
@@ -240,8 +240,8 @@ fn ensure_server_build_matches(
             format!(
                 "this shepr client (build {}) differs from the running server (build {}); restart the server with this build before using this command. {}",
                 shepr_protocol::BUILD_ID,
-                status.build_id,
-                paths.server_address().build_mismatch_guidance()
+                pong.build_id,
+                shepr_launch::guidance::build_mismatch_guidance(paths.server_address())
             ),
         ),
     };
@@ -269,13 +269,8 @@ fn map_server_not_running_or_io(
             if server_not_running_error(&client.socket_path()).unwrap_or(false) =>
         {
             let socket_path = client.socket_path();
-            let attach_command = paths.server_address().attach_command();
-            let message = shepr_api::guidance::operator_guidance(
-                shepr_api::guidance::OperatorGuidance::ServerNotRunning {
-                    socket_path: &socket_path,
-                    attach_command: &attach_command,
-                },
-            );
+            let attach_command = shepr_launch::guidance::attach_command(paths.server_address());
+            let message = shepr_launch::guidance::server_not_running(&socket_path, &attach_command);
             CliError::Response(shepr_api::schema::ErrorResponse {
                 id: Some(request_id.to_owned()),
                 error: shepr_api::schema::ErrorBody::new(
@@ -425,7 +420,7 @@ mod tests {
     /// conditional on the named boot.
     #[test]
     fn server_stop_parses_the_expected_boot() {
-        let expect_boot = shepr_remote::FLAG_EXPECT_BOOT;
+        let expect_boot = shepr_launch::invocation::FLAG_EXPECT_BOOT;
         for (args, expected) in [
             (
                 &["server", "stop", expect_boot, "4242-17"][..],

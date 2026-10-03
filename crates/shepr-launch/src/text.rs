@@ -8,7 +8,7 @@ impl RemoteText {
     /// Accepts text from a remote command or another untrusted diagnostic source.
     /// Newlines and tabs stay readable, carriage returns are dropped, and other
     /// control characters become `?` so they cannot start terminal sequences.
-    pub(crate) fn from_untrusted(value: &str) -> Self {
+    pub fn from_untrusted(value: &str) -> Self {
         Self(
             value
                 .chars()

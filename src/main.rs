@@ -8,7 +8,7 @@ pub(crate) enum ProcessExit {
     Success,
     Failed,
     Usage,
-    Stop(shepr_api::server_stop::ServerStopExit),
+    Stop(shepr_launch::stop::ServerStopExit),
 }
 
 impl ProcessExit {
@@ -28,7 +28,7 @@ impl ProcessExit {
             0 => Self::Success,
             1 => Self::Failed,
             2 => Self::Usage,
-            code => match shepr_api::server_stop::ServerStopExit::from_code(code) {
+            code => match shepr_launch::stop::ServerStopExit::from_code(code) {
                 Some(exit) => Self::Stop(exit),
                 None => {
                     tracing::error!(code, "CLI returned an invalid process exit status");
@@ -172,7 +172,7 @@ fn launch_tui(
     let client = autodetect::auto_detect_launch(
         loaded_config,
         paths,
-        shepr_remote::local_server::SERVER_READY_TIMEOUT,
+        shepr_launch::local_server::SERVER_READY_TIMEOUT,
         connectors,
         shepr_client::run_client_with_connectors,
     )

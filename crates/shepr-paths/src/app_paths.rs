@@ -165,7 +165,7 @@ impl AppPaths {
             home_dir: home_dir.map(Path::to_path_buf),
             current_dir: current_dir.map(Path::to_path_buf),
             startup_cwd: None,
-            server_address: ServerAddress::resolve_paths_checked(&root.join("runtime"), None)?,
+            server_address: ServerAddress::for_runtime_dir(&root.join("runtime"), None)?,
         })
     }
 }
@@ -307,10 +307,9 @@ fn resolve_paths_from_env_with_marker(
         {
             // Fail before socket setup when either selected endpoint is too long.
             let server_address =
-                ServerAddress::resolve_paths_checked(&runtime_dir, socket_override.as_deref())
-                    .map_err(|error| {
-                        PathsError::one(format!("server socket path error: {error}"))
-                    })?;
+                ServerAddress::for_runtime_dir(&runtime_dir, socket_override.as_deref()).map_err(
+                    |error| PathsError::one(format!("server socket path error: {error}")),
+                )?;
             // The saved layout sits beside the shared state directory under the
             // profile's directory name: the state directory itself for release.
             let data_dir = state_dir.with_file_name(profile.app_dir_name());

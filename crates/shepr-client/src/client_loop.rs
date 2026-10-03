@@ -51,12 +51,10 @@ fn update_endpoint_status_presentation(
     state: &mut ClientState,
     endpoint_id: &endpoint::ClientEndpointId,
     status: endpoint::EndpointFailureStatus,
-    message: &shepr_remote::EndpointFailure,
+    message: &shepr_launch::EndpointFailure,
 ) {
     state.shell.set_endpoint_status(endpoint_id, status);
-    state
-        .shell
-        .set_machine_diagnostic(endpoint_id, &message.diagnostic());
+    state.shell.set_machine_diagnostic(endpoint_id, message);
     // Handshake diagnostics carry only the failing phase; the status line supplies
     // the configured endpoint label once.
     let unavailable = (status == endpoint::EndpointFailureStatus::Attention

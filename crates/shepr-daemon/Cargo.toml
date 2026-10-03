@@ -12,11 +12,10 @@ name = "shepr-server"
 path = "src/main.rs"
 
 [dependencies]
-shepr-api = { path = "../shepr-api" }
 shepr-config = { path = "../shepr-config" }
+shepr-launch = { path = "../shepr-launch" }
 shepr-paths = { path = "../shepr-paths" }
 shepr-platform = { path = "../shepr-platform" }
-shepr-protocol = { path = "../shepr-protocol" }
 shepr-server = { path = "../shepr-server" }
 
 [lints]

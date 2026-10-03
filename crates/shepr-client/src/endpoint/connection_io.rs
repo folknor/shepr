@@ -24,11 +24,11 @@ pub(crate) enum LocalAttachFailure {
 }
 
 impl LocalAttachFailure {
-    pub(crate) fn initial_failure(&self) -> Option<shepr_remote::EndpointFailure> {
+    pub(crate) fn initial_failure(&self) -> Option<shepr_launch::EndpointFailure> {
         match self {
             Self::Connection(_) => None,
             Self::Handshake(error) | Self::Setup(error) => {
-                Some(shepr_remote::EndpointFailure::from_error(error))
+                Some(shepr_launch::EndpointFailure::from_error(error))
             }
         }
     }
@@ -127,7 +127,7 @@ impl EndpointConnectionIo {
         assemble().map_err(|error| {
             io::Error::new(
                 error.kind(),
-                shepr_remote::EndpointFailure::local_setup(format!(
+                shepr_launch::EndpointFailure::local_setup(format!(
                     "failed to set up configured endpoint transport: {error}"
                 )),
             )
@@ -280,12 +280,12 @@ fn framing_error_to_io(
         source: error,
     };
     let failure = match &framed.source {
-        shepr_protocol::FramingError::Io(error) => shepr_remote::EndpointFailure::from_error(error)
+        shepr_protocol::FramingError::Io(error) => shepr_launch::EndpointFailure::from_error(error)
             .with_context(&format!("endpoint {}", framed.endpoint_id)),
         shepr_protocol::FramingError::UnexpectedEof => {
-            shepr_remote::EndpointFailure::from_error(&io::Error::new(kind, framed))
+            shepr_launch::EndpointFailure::from_error(&io::Error::new(kind, framed))
         }
-        _ => shepr_remote::EndpointFailure::incompatible(framed.to_string()),
+        _ => shepr_launch::EndpointFailure::incompatible(framed.to_string()),
     };
     io::Error::new(kind, failure)
 }
@@ -393,11 +393,11 @@ mod tests {
         assert_eq!(surface_error.kind(), io::ErrorKind::InvalidData);
         let failure = surface_error
             .get_ref()
-            .and_then(|error| error.downcast_ref::<shepr_remote::EndpointFailure>())
+            .and_then(|error| error.downcast_ref::<shepr_launch::EndpointFailure>())
             .expect("the io error carries the typed endpoint failure");
         assert_eq!(
             failure.disposition(),
-            shepr_remote::FailureDisposition::Incompatible
+            shepr_launch::FailureDisposition::Incompatible
         );
         assert!(failure.to_string().contains("endpoint local"));
         assert!(

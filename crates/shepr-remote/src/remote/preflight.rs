@@ -28,10 +28,14 @@ use std::io;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use crate::SshFailureDiagnostic;
+use shepr_launch::restart::{RestartDecision, RestartFailure, RestartResult, StopOutcome};
+
 use crate::machine::{MachineConfig, MachineLabel};
 use crate::machine_ssh::MachineProbe;
-use crate::{DifferentBuildServer, MachineSshCheck, RemoteStop};
+use crate::{
+    DifferentBuildServer, EndpointFailure, FailureCause, FailureDisposition, MachineSshCheck,
+    SshFailureClass,
+};
 
 use crate::limits::MAX_RESTART_OFFERS;
 
@@ -57,30 +61,32 @@ pub trait PreflightSsh: Sync {
         &self,
         machine: &MachineConfig,
         server: &DifferentBuildServer,
-    ) -> io::Result<RemoteStop>;
+    ) -> io::Result<StopOutcome>;
 }
 
-/// What the non-interactive check found out about one machine.
+/// What the non-interactive check found out about one machine. A failed check
+/// carries its neutral endpoint failure; presentation derives the operator
+/// hints from its cause.
 #[derive(Clone, Debug)]
 pub enum MachineCheck {
     /// SSH works and a compatible shepr can be served from the machine.
     Ready,
     /// Non-interactive SSH refused credentials or timed out before returning;
     /// foreground SSH may complete authentication or wait for key presence.
-    NeedsAuthentication(SshFailureDiagnostic),
+    NeedsAuthentication(EndpointFailure),
     /// The machine did not answer: timeout, refusal, no route.
-    Offline(SshFailureDiagnostic),
+    Offline(EndpointFailure),
     /// The host key is unknown or changed. Never accepted automatically.
-    HostKey(SshFailureDiagnostic),
+    HostKey(EndpointFailure),
     /// The installed pair is this build and a server of another build is
     /// running: a restart would fix it, with the operator's consent.
     DifferentBuild(DifferentBuildServer),
     /// The machine answered but cannot be served: no shepr, another build, a
     /// shepr-server beside it that is missing or another build, or a running
     /// server whose build or boot identity is unknown.
-    Incompatible(SshFailureDiagnostic),
+    Incompatible(EndpointFailure),
     /// Any other failure.
-    Failed(SshFailureDiagnostic),
+    Failed(EndpointFailure),
 }
 
 impl MachineCheck {
@@ -96,18 +102,15 @@ pub fn classify_check(result: io::Result<MachineSshCheck>) -> MachineCheck {
         Ok(MachineSshCheck::DifferentBuild(server)) => return MachineCheck::DifferentBuild(server),
         Err(error) => error,
     };
-    let diagnostic = SshFailureDiagnostic::from_error(&error);
-    match diagnostic.disposition() {
-        crate::FailureDisposition::Authentication
-        | crate::FailureDisposition::PossibleAuthentication => {
-            MachineCheck::NeedsAuthentication(diagnostic)
+    let failure = EndpointFailure::from_error(&error);
+    match failure.disposition() {
+        FailureDisposition::Authentication | FailureDisposition::PossibleAuthentication => {
+            MachineCheck::NeedsAuthentication(failure)
         }
-        crate::FailureDisposition::HostKey => MachineCheck::HostKey(diagnostic),
-        crate::FailureDisposition::Offline => MachineCheck::Offline(diagnostic),
-        crate::FailureDisposition::Incompatible => MachineCheck::Incompatible(diagnostic),
-        crate::FailureDisposition::Repair | crate::FailureDisposition::Retry => {
-            MachineCheck::Failed(diagnostic)
-        }
+        FailureDisposition::HostKey => MachineCheck::HostKey(failure),
+        FailureDisposition::Offline => MachineCheck::Offline(failure),
+        FailureDisposition::Incompatible => MachineCheck::Incompatible(failure),
+        FailureDisposition::Repair | FailureDisposition::Retry => MachineCheck::Failed(failure),
     }
 }
 
@@ -140,103 +143,6 @@ impl std::error::Error for AuthenticationError {
             Self::Exited(_) => None,
         }
     }
-}
-
-/// A restart retains the stop failure until the operator notice is rendered.
-#[derive(Debug)]
-pub enum RestartFailure {
-    Local(shepr_api::server_stop::ServerStopError),
-    Remote(io::Error),
-}
-
-impl std::fmt::Display for RestartFailure {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Local(error) => error.fmt(f),
-            Self::Remote(error) => error.fmt(f),
-        }
-    }
-}
-
-impl std::error::Error for RestartFailure {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::Local(error) => Some(error),
-            Self::Remote(error) => Some(error),
-        }
-    }
-}
-
-/// How one offer to restart a server of another build ended.
-#[derive(Debug)]
-pub enum RestartResult {
-    /// No server of another build was found.
-    NotNeeded,
-    /// There was no terminal to ask on, so the server was left running.
-    NoTerminal,
-    /// The operator kept the server running.
-    Declined,
-    /// The observed server was stopped; the caller can start a replacement.
-    Stopped,
-    /// No server was present when its conditional stop ran.
-    NoServer,
-    /// A different boot answered the stop or appeared while the observed
-    /// instance was shutting down; it was not stopped as part of this offer.
-    OccupantChanged,
-    /// The stop failed; the server may still be running.
-    Failed(RestartFailure),
-}
-
-impl RestartResult {
-    /// Offers to restart the different-build server found by `observe`.
-    /// After a changed boot identity, the server is observed again and another
-    /// offer is made only while the new observation still needs a restart.
-    ///
-    /// `decide` is absent when there is no terminal on which to ask. `observe`
-    /// returns `None` when no server answers; a present server that
-    /// `restartable` rejects is a replacement that does not need this offer.
-    pub fn offer<S>(
-        max_offers: usize,
-        decide: Option<&mut dyn FnMut(&S) -> RestartDecision>,
-        mut observe: impl FnMut() -> Option<S>,
-        mut restartable: impl FnMut(&S) -> bool,
-        mut stop: impl FnMut(&S) -> Result<RemoteStop, RestartFailure>,
-    ) -> Self {
-        let Some(mut server) = observe().filter(|server| restartable(server)) else {
-            return Self::NotNeeded;
-        };
-        let Some(decide) = decide else {
-            return Self::NoTerminal;
-        };
-
-        for offer in 1..=max_offers {
-            if decide(&server) == RestartDecision::Keep {
-                return Self::Declined;
-            }
-            match stop(&server) {
-                Ok(RemoteStop::Stopped) => return Self::Stopped,
-                Ok(RemoteStop::NoServer) => return Self::NoServer,
-                Err(error) => return Self::Failed(error),
-                Ok(RemoteStop::BootChanged) => {
-                    let Some(next) = observe() else {
-                        return Self::NoServer;
-                    };
-                    if !restartable(&next) || offer == max_offers {
-                        return Self::OccupantChanged;
-                    }
-                    server = next;
-                }
-            }
-        }
-        Self::OccupantChanged
-    }
-}
-
-/// The answer to one restart offer.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RestartDecision {
-    Restart,
-    Keep,
 }
 
 /// The operator's consent callback for one restart offer.
@@ -324,12 +230,12 @@ pub fn preflight(
 
 fn check_after_authentication(check: MachineCheck) -> MachineCheck {
     match check {
-        MachineCheck::NeedsAuthentication(diagnostic)
-            if diagnostic.is_authentication_wait_timeout() =>
+        MachineCheck::NeedsAuthentication(failure)
+            if failure.cause() == FailureCause::Ssh(SshFailureClass::AuthenticationPending) =>
         {
             // Foreground authentication already succeeded. A later bounded
             // timeout is a failed check, not evidence that the remote refused it.
-            MachineCheck::Failed(diagnostic)
+            MachineCheck::Failed(failure)
         }
         check => check,
     }
@@ -422,7 +328,7 @@ pub fn restart_different_builds(
                     MachineCheck::DifferentBuild(server) => ssh
                         .stop_server(machine, server)
                         .map_err(RestartFailure::Remote),
-                    _ => Ok(RemoteStop::NoServer),
+                    _ => Ok(StopOutcome::NoServer),
                 },
             )
         };
@@ -526,7 +432,7 @@ impl PreflightSsh for MachineSshPreflight<'_> {
         &self,
         machine: &MachineConfig,
         server: &DifferentBuildServer,
-    ) -> io::Result<RemoteStop> {
+    ) -> io::Result<StopOutcome> {
         let probe = Arc::clone(
             self.probes
                 .lock()
@@ -561,7 +467,7 @@ mod tests {
     }
 
     fn ssh_failure(message: &str) -> io::Error {
-        io::Error::other(SshFailureDiagnostic::from_ssh_output(
+        io::Error::other(crate::SshFailureDiagnostic::from_ssh_output(
             Some(crate::SSH_OWN_FAILURE_EXIT_CODE),
             message,
         ))
@@ -722,22 +628,22 @@ mod tests {
             &self,
             machine: &MachineConfig,
             server: &DifferentBuildServer,
-        ) -> io::Result<RemoteStop> {
+        ) -> io::Result<StopOutcome> {
             self.log(format!("stop {} {}", machine.label, server.boot_id));
             let script = locked(&self.stops)
                 .pop_front()
                 .ok_or_else(|| io::Error::other("no scripted stop"))?;
             match script {
-                StopScript::Stopped => Ok(RemoteStop::Stopped),
+                StopScript::Stopped => Ok(StopOutcome::Stopped),
                 StopScript::ChangedTo(boot) => {
                     *locked(&self.current_boot) = boot.into();
-                    Ok(RemoteStop::BootChanged)
+                    Ok(StopOutcome::BootChanged)
                 }
                 StopScript::ChangedToReady => {
                     *locked(&self.ready_now) = true;
-                    Ok(RemoteStop::BootChanged)
+                    Ok(StopOutcome::BootChanged)
                 }
-                StopScript::NoServer => Ok(RemoteStop::NoServer),
+                StopScript::NoServer => Ok(StopOutcome::NoServer),
                 StopScript::Fails => Err(io::Error::other("remote server stop failed: timed out")),
             }
         }

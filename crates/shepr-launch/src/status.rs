@@ -1,9 +1,14 @@
+//! What answers at a server socket: whether a listener is live, and the
+//! identity and readiness it gives in its `ping` answer. A launch is
+//! permitted only on [`ServerPresence::Gone`].
+
 use std::io;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use crate::client::{ApiClient, ApiClientDeadlineError, ApiClientError};
+use shepr_api::client::{ApiClient, ApiClientDeadlineError, ApiClientError, Pong};
 
+/// A server's identity and readiness, as its `ping` answer gave them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeStatus {
     pub version: String,
@@ -12,6 +17,23 @@ pub struct RuntimeStatus {
     /// stop this instance and no other.
     pub boot_id: shepr_protocol::BootId,
     pub lifecycle: RuntimeLifecycle,
+}
+
+impl From<Pong> for RuntimeStatus {
+    fn from(pong: Pong) -> Self {
+        Self {
+            version: pong.version,
+            build_id: pong.build_id,
+            boot_id: pong.boot_id,
+            lifecycle: if pong.stopping {
+                RuntimeLifecycle::Stopping
+            } else if pong.starting {
+                RuntimeLifecycle::Starting
+            } else {
+                RuntimeLifecycle::Running
+            },
+        }
+    }
 }
 
 /// Readiness reported by ping. Stopping takes precedence over starting.
@@ -66,7 +88,9 @@ pub(crate) fn read_runtime_status_until(
     socket_path: &Path,
     deadline: Instant,
 ) -> Result<RuntimeStatus, ApiClientDeadlineError> {
-    ApiClient::for_socket(socket_path).status_until(deadline)
+    ApiClient::for_socket(socket_path)
+        .ping_until(deadline)
+        .map(RuntimeStatus::from)
 }
 
 /// A closed stream, missing listener or timed-out operation means the socket
@@ -209,6 +233,24 @@ mod tests {
             pong_presence(true, true),
             ServerPresence::Stopping(_)
         ));
+        let pong = |stopping, starting| Pong {
+            version: "0.1.0".into(),
+            build_id: "0123456789abcdef".parse().expect("build identity"),
+            boot_id: "17-23".parse().expect("boot identity"),
+            stopping,
+            starting,
+        };
+        for (stopping, starting, lifecycle) in [
+            (true, true, RuntimeLifecycle::Stopping),
+            (true, false, RuntimeLifecycle::Stopping),
+            (false, true, RuntimeLifecycle::Starting),
+            (false, false, RuntimeLifecycle::Running),
+        ] {
+            assert_eq!(
+                RuntimeStatus::from(pong(stopping, starting)).lifecycle,
+                lifecycle
+            );
+        }
     }
 
     #[test]

@@ -6,7 +6,7 @@
 
 use clap::{Arg, ArgAction, Command, ValueHint};
 
-use shepr_remote::{
+use shepr_launch::invocation::{
     COMMAND_CLIENT, COMMAND_DETECT, COMMAND_REMOTE_CLIENT_BRIDGE, COMMAND_SERVER, COMMAND_STATUS,
     COMMAND_STOP, FLAG_EXPECT_BOOT, FLAG_JSON, PROGRAM_NAME, option_name_from_flag,
 };

@@ -210,7 +210,10 @@ fn progress_survives_retryable_failures_and_restarts_for_untrusted_targets() {
     let error = progress
         .advance(&mut authentication_wait)
         .expect_err("authentication wait times out");
-    assert!(crate::SshFailureDiagnostic::from_error(&error).is_authentication_wait_timeout());
+    assert_eq!(
+        crate::SshFailureDiagnostic::from_error(&error).ssh_class(),
+        Some(crate::SshFailureClass::AuthenticationPending)
+    );
     assert!(progress.has_progress());
     assert!(progress.advance(&mut authentication_wait).is_ok());
     assert_eq!(
@@ -255,7 +258,10 @@ fn progress_survives_retryable_failures_and_restarts_for_untrusted_targets() {
     let error = progress
         .advance(&mut host_key_changed)
         .expect_err("host-key rejection");
-    assert!(crate::SshFailureDiagnostic::from_error(&error).is_host_key());
+    assert_eq!(
+        crate::SshFailureDiagnostic::from_error(&error).ssh_class(),
+        Some(crate::SshFailureClass::HostKey)
+    );
     assert!(!progress.has_progress());
     assert!(progress.advance(&mut host_key_changed).is_ok());
     assert_eq!(
@@ -368,7 +374,10 @@ fn command_remote_stderr_is_filtered_before_error_output() {
         "remote SSH connection failed",
         &ssh_output(255, "Permission denied (publickey)\x1b[2J"),
     );
-    assert!(crate::SshFailureDiagnostic::from_error(&authentication).requires_authentication());
+    assert_eq!(
+        crate::SshFailureDiagnostic::from_error(&authentication).ssh_class(),
+        Some(crate::SshFailureClass::Authentication)
+    );
     assert!(!authentication.to_string().contains('\x1b'));
 }
 

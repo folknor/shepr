@@ -163,10 +163,9 @@ orientation, and nothing checks them:
 - `shepr-pty`: PTY process launch and IO, using `shepr-platform` for fd plumbing, socket admission and process identities.
 - `shepr-paths`: runtime layout and server address policy: `AppPaths` (XDG
   directories, `SHEPR_STARTUP_CWD`), `BuildProfile` and the pane markers,
-  `ServerAddress` and the socket override rule, the data-directory lease file
-  name, and the operator text naming the commands that reach a server. It reads
-  no config file, so api, remote and the CLI get the layout without the
-  settings.
+  `ServerAddress` and the socket override rule, and the data-directory lease
+  file name. It reads no config file, so api, remote and the CLI get the
+  layout without the settings.
 - `shepr-test-support`: shared environment isolation, scratch directories and hook asset capture for tests.
 - `shepr-agent`: agent identity: the descriptor table, report origins,
   session and resume vocabulary, `AgentState` and label normalization.
@@ -182,14 +181,26 @@ orientation, and nothing checks them:
   shared grid and input-batch resource budgets that config also borrows, and
   `shepr-agent` for the agent identity the client projection carries.
 - `shepr-api`: JSON API schema and client, and the server socket: its listener
-  tells JSON requests from TUI connections and hands the latter to the server's
-  client protocol. Its detect explain schema is built on `shepr-detect`'s
-  explanation types.
+  tells JSON requests from TUI connections, admits each kind, and hands JSON
+  connections to the JSON service and TUI ones to the server's client
+  protocol. The client's deadline-bounded requests and the decoded `ping`
+  answer are the boundary launch drives. Its detect explain schema is built
+  on `shepr-detect`'s explanation types.
+- `shepr-launch`: the server lifecycle seen from outside the server: local
+  server launch and probing (the launch lock, the sibling `shepr-server`, its
+  boot log, the different-build policy), presence probing, conditional stop,
+  the restart offer, the invocation grammar and exit codes shepr processes
+  share (the server's arguments and `DaemonExit`, the CLI's command words),
+  the operator text naming the commands that reach a server, and the endpoint
+  failure vocabulary with its one disposition table, for every endpoint.
 - `shepr-termio`: host terminal I/O: host input framing and parsing, the
   fixed and configured key tables the client's modes and overlays route by,
   copy-mode keys, frame blitting and host terminal modes,
   title, clipboard and theme queries.
-- `shepr-remote`: configured machines and SSH connections.
+- `shepr-remote`: configured machines and SSH connections, startup preflight,
+  and the remote-host side of the SSH bridge, which ensures its local server
+  through `shepr-launch`. It classifies OpenSSH output into launch's failure
+  vocabulary at its boundary and keeps discovery evidence to itself.
 - `shepr-mux`: terminals, panes, workspaces, Git state, events and persistence.
 - `shepr-server`: application state, UI and serving.
 - `shepr-client`: endpoint management and TUI presentation.

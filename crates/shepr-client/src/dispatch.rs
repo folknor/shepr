@@ -87,7 +87,7 @@ impl ClientLoop {
                             endpoint_id,
                             &io::Error::new(
                                 io::ErrorKind::InvalidData,
-                                shepr_remote::EndpointFailure::incompatible(
+                                shepr_launch::EndpointFailure::incompatible(
                                     "client shell rejected a pane surface patch",
                                 ),
                             ),
@@ -116,7 +116,7 @@ impl ClientLoop {
                     endpoint_id,
                     &io::Error::new(
                         io::ErrorKind::ConnectionAborted,
-                        shepr_remote::EndpointFailure::server_shutdown(reason),
+                        shepr_launch::EndpointFailure::server_shutdown(reason),
                     ),
                 );
             }

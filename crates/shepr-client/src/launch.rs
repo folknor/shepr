@@ -53,7 +53,8 @@ impl Launched {
         let socket_path = paths.server_address().socket().to_path_buf();
         let shell_config = shell::ClientShellConfig::from_validated_config(config)
             .with_local_endpoint(paths.state_dir(), &socket_path)?;
-        let mismatch_guidance: Arc<str> = paths.server_address().build_mismatch_guidance().into();
+        let mismatch_guidance: Arc<str> =
+            shepr_launch::guidance::build_mismatch_guidance(paths.server_address()).into();
 
         crate::logging::startup();
         info!(path = %socket_path.display(), "connecting to server");
@@ -470,7 +471,7 @@ enum LocalAtLaunch {
         generation: shepr_protocol::ConnectionGeneration,
     },
     Failed {
-        failure: Option<shepr_remote::EndpointFailure>,
+        failure: Option<shepr_launch::EndpointFailure>,
         generation: shepr_protocol::ConnectionGeneration,
     },
 }
@@ -480,7 +481,7 @@ enum LocalLaunchState {
     /// The socket could not be reached; no attempt outcome is recorded, so the supervisor
     /// starts its first attempt at once.
     Unreached,
-    Failed(shepr_remote::EndpointFailure),
+    Failed(shepr_launch::EndpointFailure),
 }
 
 #[cfg(test)]

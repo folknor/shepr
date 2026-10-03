@@ -165,9 +165,8 @@ allow_marker = "clock-io-ok"
 allow_marker_above = 3
 message = "pass time in from the server loop; mark deadlines that bound real IO"
 
-# The API socket threads, client and session stop. Request timeouts decided
-# by the API take the clock; deadlines handed to a real socket reader are
-# marked.
+# The API socket threads and client. Request timeouts decided by the API take
+# the clock; deadlines handed to a real socket reader are marked.
 [[textlint]]
 name = "api-clock-is-injected"
 pattern = '\b(?:Instant|SystemTime)::now\b'
@@ -178,6 +177,19 @@ region = "code"
 allow_marker = "clock-io-ok"
 allow_marker_above = 3
 message = "take the clock as a parameter; mark deadlines that bound real socket IO"
+
+# Launching, probing and stopping a server wait on another process's socket,
+# lease and boot; those deadlines bound real IO and are marked.
+[[textlint]]
+name = "launch-clock-is-injected"
+pattern = '\b(?:Instant|SystemTime)::now\b'
+paths = ["crates/shepr-launch/src/**/*.rs"]
+exclude = ["**/tests.rs", "**/tests/**", "**/*_tests.rs"]
+skip_after = '^[ \t]*#\[cfg\(test\)\]'
+region = "code"
+allow_marker = "clock-io-ok"
+allow_marker_above = 3
+message = "take the clock as a parameter; mark deadlines that bound real IO"
 
 # The clippy seals (`clippy.toml`): the environment reader, exits, bool path
 # probes, panic containment, child working directories and debug assertions.
@@ -687,6 +699,7 @@ packages = [
     "shepr-daemon",
     "shepr-detect",
     "shepr-integration",
+    "shepr-launch",
     "shepr-mux",
     "shepr-paths",
     "shepr-platform",
@@ -855,9 +868,9 @@ forbid = "shepr-integration"
 except = ["shepr-server"]
 
 # Runtime layout and server address policy: the XDG directories, the build
-# profile and its pane markers, the socket override and the guidance naming
-# the commands that reach a server. Below config and api, so a crate that only
-# needs to know where things live does not link the settings.
+# profile and its pane markers and the socket override. Below config and api,
+# so a crate that only needs to know where things live does not link the
+# settings.
 [[dependency_rule]]
 name = "shepr-paths-layer"
 from = "shepr-paths"
@@ -884,6 +897,18 @@ from = "shepr-api"
 allow = ["serde", "serde_json", "shepr-agent", "shepr-core", "shepr-detect", "shepr-paths", "shepr-platform", "shepr-protocol", "tokio", "tracing"]
 kinds = ["normal"]
 
+# The server lifecycle seen from outside the server: launch, probe, restart
+# and stop, the invocation and exit vocabulary shepr processes share, operator
+# guidance, and the endpoint failure vocabulary. Above api, whose client it
+# drives, and below remote and the client, so the TUI takes the failure
+# vocabulary without the SSH crate and the daemon takes its invocation grammar
+# without remote.
+[[dependency_rule]]
+name = "shepr-launch-layer"
+from = "shepr-launch"
+allow = ["shepr-api", "shepr-core", "shepr-paths", "shepr-platform", "shepr-protocol", "tracing"]
+kinds = ["normal"]
+
 [[dependency_rule]]
 name = "shepr-termio-layer"
 from = "shepr-termio"
@@ -893,13 +918,16 @@ kinds = ["normal"]
 [[dependency_rule]]
 name = "shepr-remote-layer"
 from = "shepr-remote"
-allow = ["serde", "serde_json", "shepr-api", "shepr-config", "shepr-core", "shepr-paths", "shepr-platform", "shepr-protocol", "tracing"]
+allow = ["serde", "serde_json", "shepr-api", "shepr-config", "shepr-core", "shepr-launch", "shepr-paths", "shepr-platform", "shepr-protocol", "tracing"]
 kinds = ["normal"]
 
+# The client reaches the server only through the client protocol, so it never
+# takes the JSON API directly; launch is its home for the endpoint failure
+# vocabulary and the server guidance.
 [[dependency_rule]]
 name = "shepr-client-layer"
 from = "shepr-client"
-allow = ["base64", "crossterm", "ctrlc", "ratatui", "serde", "serde_json", "shepr-config", "shepr-core", "shepr-paths", "shepr-platform", "shepr-protocol", "shepr-remote", "shepr-term", "shepr-termio", "tokio", "toml", "tracing", "unicode-segmentation", "unicode-width"]
+allow = ["base64", "crossterm", "ctrlc", "ratatui", "serde", "serde_json", "shepr-config", "shepr-core", "shepr-launch", "shepr-paths", "shepr-platform", "shepr-protocol", "shepr-remote", "shepr-term", "shepr-termio", "tokio", "toml", "tracing", "unicode-segmentation", "unicode-width"]
 kinds = ["normal"]
 
 # Git command environment and deadline policy are owned by mux, which uses the
@@ -915,14 +943,15 @@ kinds = ["normal"]
 [[dependency_rule]]
 name = "shepr-binary-layer"
 from = "shepr"
-allow = ["clap", "serde", "serde_json", "shepr-api", "shepr-client", "shepr-config", "shepr-core", "shepr-detect", "shepr-paths", "shepr-platform", "shepr-protocol", "shepr-remote", "tracing"]
+allow = ["clap", "serde", "serde_json", "shepr-api", "shepr-client", "shepr-config", "shepr-core", "shepr-detect", "shepr-launch", "shepr-paths", "shepr-platform", "shepr-protocol", "shepr-remote", "tracing"]
 kinds = ["normal"]
 
-# The server executable links the server and not the client.
+# The server executable links the server and not the client. Its argument
+# grammar and exit classes come from launch, which the client reads them from.
 [[dependency_rule]]
 name = "shepr-daemon-layer"
 from = "shepr-daemon"
-allow = ["shepr-api", "shepr-config", "shepr-paths", "shepr-platform", "shepr-protocol", "shepr-server"]
+allow = ["shepr-config", "shepr-launch", "shepr-paths", "shepr-platform", "shepr-server"]
 kinds = ["normal"]
 
 # Only the server watches logind and owns the checkpoint policy. The monitor's

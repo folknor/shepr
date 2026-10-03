@@ -176,7 +176,8 @@ fn ssh_authentication_diagnostics_are_narrow() {
             Some(crate::SSH_OWN_FAILURE_EXIT_CODE),
             message,
         )
-        .requires_authentication()
+        .ssh_class()
+            == Some(crate::SshFailureClass::Authentication)
     };
     for message in [
         "user@host: Permission denied (publickey).",
@@ -214,7 +215,8 @@ fn ssh_failure_output_wins_over_a_stdin_write_error() {
     .expect("ssh failure output is retained");
     let error = command_failed("remote SSH connection failed", &output);
     assert!(
-        crate::SshFailureDiagnostic::from_error(&error).requires_authentication(),
+        crate::SshFailureDiagnostic::from_error(&error).ssh_class()
+            == Some(crate::SshFailureClass::Authentication),
         "the authentication class must survive the failed stdin write"
     );
 
@@ -539,7 +541,7 @@ fn a_round_trip_timeout_can_prompt_but_an_attempt_deadline_stays_offline() {
         true,
     );
     let diagnostic = crate::SshFailureDiagnostic::from_error(&round_trip);
-    assert!(diagnostic.is_authentication_wait_timeout());
+    assert!(diagnostic.ssh_class() == Some(crate::SshFailureClass::AuthenticationPending));
     assert!(diagnostic.failed_before_remote_result());
     assert!(!diagnostic.is_transient_network_failure());
 
@@ -548,6 +550,9 @@ fn a_round_trip_timeout_can_prompt_but_an_attempt_deadline_stays_offline() {
         false,
     );
     let diagnostic = crate::SshFailureDiagnostic::from_error(&attempt);
-    assert!(!diagnostic.is_authentication_wait_timeout());
+    assert_ne!(
+        diagnostic.ssh_class(),
+        Some(crate::SshFailureClass::AuthenticationPending)
+    );
     assert!(diagnostic.is_transient_network_failure());
 }

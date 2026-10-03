@@ -17,7 +17,7 @@ fn status_of_build(build_id: &str) -> RuntimeStatus {
         version: "0.0.0".to_owned(),
         build_id: build_id.parse().expect("build identity"),
         boot_id: "4242-1700000000".parse().expect("boot identity"),
-        lifecycle: shepr_api::RuntimeLifecycle::Running,
+        lifecycle: crate::status::RuntimeLifecycle::Running,
     }
 }
 
@@ -442,27 +442,6 @@ fn a_directory_named_like_the_server_is_an_install_error() {
 }
 
 #[test]
-fn the_version_line_yields_the_version_and_build_id() {
-    assert_eq!(
-        parse_server_version_line("shepr-server 0.6.0+0123456789abcdef\n"),
-        Some((
-            "0.6.0".to_owned(),
-            "0123456789abcdef".parse().expect("build identity")
-        ))
-    );
-    for bad in [
-        "",
-        "shepr 0.6.0+0123456789abcdef",
-        "shepr-server 0.6.0",
-        "shepr-server +0123456789abcdef",
-        "shepr-server 0.6.0+",
-        "shepr-server 0.6.0+abc def",
-    ] {
-        assert_eq!(parse_server_version_line(bad), None, "{bad:?}");
-    }
-}
-
-#[test]
 fn the_sibling_version_is_read_from_its_first_output_line() {
     let dir = ScratchDir::new("sibling-version");
     let server = fixture::stand_in(
@@ -596,7 +575,7 @@ fn a_daemon_that_dies_during_boot_reports_its_exit_and_output() {
         &dir,
         &[
             Step::PrintErr("no such runtime directory\n".into()),
-            Step::Exit(shepr_api::daemon_exit::CONFIG_REFUSED_EXIT_CODE),
+            Step::Exit(crate::daemon_exit::CONFIG_REFUSED_EXIT_CODE),
         ],
         Duration::from_secs(10),
         || Ok(Probed::NoServer),
@@ -607,7 +586,7 @@ fn a_daemon_that_dies_during_boot_reports_its_exit_and_output() {
             LaunchError::DaemonFailed { class, .. } => Some(*class),
             _ => None,
         },
-        Some(shepr_api::daemon_exit::DaemonExit::ConfigRefused)
+        Some(crate::daemon_exit::DaemonExit::ConfigRefused)
     );
     let message = error.to_string();
     assert!(message.contains("refused its configuration"), "{message}");
@@ -622,9 +601,7 @@ fn a_daemon_that_gives_way_to_an_occupant_waits_for_the_occupant() {
     let calls = Cell::new(0_u32);
     let (result, _) = launch_fixture(
         &dir,
-        &[Step::Exit(
-            shepr_api::daemon_exit::ALREADY_RUNNING_EXIT_CODE,
-        )],
+        &[Step::Exit(crate::daemon_exit::ALREADY_RUNNING_EXIT_CODE)],
         Duration::from_secs(10),
         || {
             calls.set(calls.get() + 1);
@@ -645,9 +622,7 @@ fn an_occupant_of_another_build_is_handed_back_once_the_daemon_gave_way() {
     let calls = Cell::new(0_u32);
     let (result, _) = launch_fixture(
         &dir,
-        &[Step::Exit(
-            shepr_api::daemon_exit::ALREADY_RUNNING_EXIT_CODE,
-        )],
+        &[Step::Exit(crate::daemon_exit::ALREADY_RUNNING_EXIT_CODE)],
         Duration::from_secs(10),
         || {
             calls.set(calls.get() + 1);
@@ -669,9 +644,7 @@ fn an_occupant_that_never_answers_ends_in_a_timeout() {
     let dir = ScratchDir::new("launch-occupant-silent");
     let (result, _) = launch_fixture(
         &dir,
-        &[Step::Exit(
-            shepr_api::daemon_exit::ALREADY_RUNNING_EXIT_CODE,
-        )],
+        &[Step::Exit(crate::daemon_exit::ALREADY_RUNNING_EXIT_CODE)],
         Duration::from_millis(400),
         || Ok(Probed::Unresponsive),
     );
@@ -696,9 +669,7 @@ fn launch_after_a_refused_first_daemon(
     let server_log = dir.join("shepr-server.log");
     let spawned = Cell::new(0_u32);
     let group = Cell::new(0_u32);
-    let refused = [Step::Exit(
-        shepr_api::daemon_exit::ALREADY_RUNNING_EXIT_CODE,
-    )];
+    let refused = [Step::Exit(crate::daemon_exit::ALREADY_RUNNING_EXIT_CODE)];
     let idle = idle_daemon_steps();
     let result = launch_with(
         &LaunchFiles {
@@ -764,7 +735,7 @@ fn a_stopping_occupant_is_outlasted_rather_than_attached_to() {
         });
     let status = result.expect("the daemon started after the occupant left answers");
     assert!(status.build_id.is_this_build());
-    assert_eq!(status.lifecycle, shepr_api::RuntimeLifecycle::Running);
+    assert_eq!(status.lifecycle, crate::status::RuntimeLifecycle::Running);
     assert_eq!(
         spawned, 2,
         "the occupant's successor, not a daemon per poll"

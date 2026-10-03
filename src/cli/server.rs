@@ -1,4 +1,4 @@
-use shepr_remote::COMMAND_STOP;
+use shepr_launch::invocation::{COMMAND_STOP, FLAG_EXPECT_BOOT, option_name_from_flag};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Command {
@@ -14,7 +14,7 @@ pub(super) fn parse(matches: &clap::ArgMatches) -> Option<Command> {
         Some((COMMAND_STOP, command)) => {
             let expected_boot = super::matches::try_value::<shepr_protocol::BootId>(
                 command,
-                shepr_remote::option_name_from_flag(shepr_remote::FLAG_EXPECT_BOOT),
+                option_name_from_flag(FLAG_EXPECT_BOOT),
             )
             .ok()?;
             Some(Command::Stop { expected_boot })
@@ -42,7 +42,7 @@ fn server_stop(
     paths: &shepr_paths::AppPaths,
     expected_boot: Option<&shepr_protocol::BootId>,
 ) -> super::CliResult<i32> {
-    shepr_api::server_stop::stop_active_server(paths, expected_boot)
+    shepr_launch::stop::stop_active_server(paths, expected_boot)
         .map_err(super::CliError::ServerStop)?;
     Ok(0)
 }
