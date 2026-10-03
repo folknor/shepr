@@ -11,7 +11,6 @@ impl AgentOwnership {
     ) -> Option<AgentOwnershipMutation> {
         let sample = sample.into();
         let now = sample.monotonic;
-        self.warn_unrecognized_hook_identity(origin);
         let session_ref = session_ref?;
         // The reducer validates references even for non-API callers.
         let persisted_session = origin.session(session_ref.clone())?;

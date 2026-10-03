@@ -685,13 +685,21 @@ fn keyboard_selections_survive_output_and_copy_live_ranges() {
             range
         );
 
+        // A linewise selection is requested across the pane's full width; a character
+        // selection is requested as its own range.
+        let expected = if selection_key == b"V" {
+            let width = state.copy_hit().expect("copy hit").inner_rect.width;
+            ((range.0.0, 0), (range.1.0, width.saturating_sub(1)))
+        } else {
+            range
+        };
         let copied = state.handle_input_bytes(b"y");
         assert!(copied.actions.iter().any(|action| matches!(
             action,
             ClientShellAction::Endpoint { request, .. }
                 if matches!(&request.command, EndpointCommand::PaneSelectionRead(params)
-                    if (params.anchor.row, params.anchor.col) == range.0
-                        && (params.cursor.row, params.cursor.col) == range.1)
+                    if (params.anchor.row, params.anchor.col) == expected.0
+                        && (params.cursor.row, params.cursor.col) == expected.1)
         )));
         assert_eq!(state.mode, ClientShellMode::Terminal);
         assert!(state.mouse_selection.selection.is_none());
@@ -2957,7 +2965,6 @@ fn copy_mode_repeat_during_projection_gap_stays_active() {
             shepr_termio::input::TerminalKey::new(KeyCode::Char('k'), KeyModifiers::empty()),
         )]);
 
-        let end_col = state.copy_mode.as_ref().expect("copy mode").geometry.0 - 1;
         let mut next = snapshot();
         next.revision = next.revision.checked_next().expect("test precondition");
         state.set_snapshot(Box::new(next));
@@ -2974,7 +2981,16 @@ fn copy_mode_repeat_during_projection_gap_stays_active() {
                     .as_ref()
                     .expect("linewise selection")
                     .ordered_cells(),
-                ((shepr_vt::AbsRow(20), 0), (shepr_vt::AbsRow(20), end_col))
+                ((shepr_vt::AbsRow(20), 0), (shepr_vt::AbsRow(20), 0))
+            );
+            assert_eq!(
+                state
+                    .mouse_selection
+                    .selection
+                    .as_ref()
+                    .expect("linewise selection")
+                    .shape(),
+                shepr_vt::selection::SelectionShape::Lines
             );
         }
 
@@ -3009,7 +3025,7 @@ fn copy_mode_repeat_during_projection_gap_stays_active() {
                         } else {
                             20
                         }),
-                        end_col
+                        0
                     )
                 )
             );

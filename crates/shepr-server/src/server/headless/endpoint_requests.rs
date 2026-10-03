@@ -86,8 +86,7 @@ impl HeadlessServer {
                 }
                 match self.app.prepare_workspace_checkout_root(&params) {
                     Ok((cwd, home)) => {
-                        worker::EndpointWorkers::dispatch_checkout_root(
-                            self,
+                        self.dispatch_checkout_root(
                             client_id,
                             boot_id.clone(),
                             request_id.clone(),

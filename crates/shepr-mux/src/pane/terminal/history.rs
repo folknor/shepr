@@ -114,7 +114,10 @@ pub struct PaneHistoryCache {
     /// the tail changes. Equal revisions mean the exposed text is unchanged;
     /// different ones do not mean it changed (a change past the last content,
     /// such as one more blank line, moves the revision and not the text).
-    /// Zero while the cache has never held anything.
+    /// Zero while the cache has never held anything. Consumers compare only
+    /// equality, including the empty cache, so zero is a valid text identity
+    /// rather than an unavailable read. Making it optional would add a state
+    /// that those consumers do not need.
     revision: u64,
 }
 

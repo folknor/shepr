@@ -67,7 +67,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use tracing::{info, warn};
 
-use shepr_protocol::{ClientMessage, ServerMessage, surface_reuse::DecodedServerMessage};
+use shepr_protocol::{
+    ClientMessage,
+    surface_reuse::{DecodedClientServerMessage, DecodedWireServerMessage},
+};
 use shepr_termio::blit as render_ansi;
 
 /// Runs the local shell client with startup settings already loaded by the
@@ -630,18 +633,17 @@ impl ClientLoop {
             if self.fatal.is_latched() {
                 return Err(ClientError::Panicked);
             }
-            let geometry = view_geometry(
-                self.state.reported_geometry,
-                self.state.shell.surface_size(
-                    self.state.reported_geometry.cols(),
-                    self.state.reported_geometry.rows(),
-                ),
-            );
+            let host_geometry = self.state.reported_geometry;
+            let shell = &self.state.shell;
+            let mouse_capture = self.state.host_modes.mouse_shell_preference();
             self.supervisors.spawn_due(
                 loop_now,
-                endpoint::EndpointConnectOptions {
-                    geometry,
-                    mouse_capture: self.state.host_modes.mouse_shell_preference(),
+                || endpoint::EndpointConnectOptions {
+                    geometry: view_geometry(
+                        host_geometry,
+                        shell.surface_size(host_geometry.cols(), host_geometry.rows()),
+                    ),
+                    mouse_capture,
                 },
                 &self.event_tx,
             );
@@ -862,7 +864,7 @@ impl ClientLoop {
         &mut self,
         endpoint_id: &endpoint::ClientEndpointId,
         generation: u64,
-        message: Box<DecodedServerMessage>,
+        message: Box<DecodedClientServerMessage>,
         now: std::time::Instant,
     ) -> Result<ClientLoopAction, ClientError> {
         let Self {
@@ -877,11 +879,13 @@ impl ClientLoop {
         }
         let role = state.choice.role(endpoint_id);
         let move_response = match message.as_ref() {
-            DecodedServerMessage::Wire(ServerMessage::ClientShellEndpointResponse {
-                boot_id,
-                request_id,
-                ..
-            }) => state
+            DecodedClientServerMessage::Wire(
+                DecodedWireServerMessage::ClientShellEndpointResponse {
+                    boot_id,
+                    request_id,
+                    ..
+                },
+            ) => state
                 .choice
                 .preparing()
                 .is_some_and(|p| p.accepts_response(endpoint_id, generation, boot_id, request_id)),
@@ -893,8 +897,8 @@ impl ClientLoop {
             return Ok(ClientLoopAction::NextEvent);
         }
         let message = match *message {
-            DecodedServerMessage::Wire(message) => message,
-            DecodedServerMessage::PaneSurfacePatch(patch) => {
+            DecodedClientServerMessage::Wire(message) => message,
+            DecodedClientServerMessage::PaneSurfacePatch(patch) => {
                 if presentation_decision.buffers() {
                     if let Some(pending) = state.choice.preparing_mut() {
                         pending.receive_patch(endpoint_id, generation, &patch);
@@ -942,21 +946,17 @@ impl ClientLoop {
             }
         };
         match message {
-            ServerMessage::PaneSurface(surface) => {
+            DecodedWireServerMessage::PaneSurface(surface) => {
                 if presentation_decision.buffers() {
-                    let size = state.shell.surface_size(
-                        state.reported_geometry.cols(),
-                        state.reported_geometry.rows(),
-                    );
                     if let Some(pending) = state.choice.preparing_mut() {
-                        pending.receive_surface(endpoint_id, generation, surface, size);
+                        pending.receive_surface(endpoint_id, generation, surface);
                     }
                     return Ok(ClientLoopAction::NextEvent);
                 }
                 state.shell.receive_pane_surface_from(surface, generation);
                 state.mark_pane_dirty();
             }
-            ServerMessage::ServerShutdown { reason } => {
+            DecodedWireServerMessage::ServerShutdown { reason } => {
                 if local_failure_policy.ends_client_for(endpoint_id.policy()) {
                     return Err(ClientError::ServerShutdown { reason });
                 }
@@ -968,14 +968,14 @@ impl ClientLoop {
                     ),
                 );
             }
-            ServerMessage::ClientShellError { kind } => {
+            DecodedWireServerMessage::ClientShellError { kind } => {
                 if state.shell.receive_server_notice(&kind) {
                     // The error banner is chrome; it must show while nothing is shown,
                     // like machine statuses do.
                     state.mark_chrome_dirty();
                 }
             }
-            ServerMessage::ClientShellEndpointResponse {
+            DecodedWireServerMessage::ClientShellEndpointResponse {
                 boot_id,
                 request_id,
                 result,
@@ -1026,7 +1026,7 @@ impl ClientLoop {
                     return Ok(ClientLoopAction::Exit);
                 }
             }
-            ServerMessage::Clipboard { data } => {
+            DecodedWireServerMessage::Clipboard { data } => {
                 // write_clipboard_bytes flushes its own OSC 52 fallback, so no flush is
                 // needed here. Once per user copy, so a warn cannot flood; only the
                 // base64 length is logged because the payload is the user's selection.
@@ -1044,7 +1044,7 @@ impl ClientLoop {
                     );
                 }
             }
-            ServerMessage::WindowTitle { title } => {
+            DecodedWireServerMessage::WindowTitle { title } => {
                 // `None` is deliberate from the server (an API title was
                 // cleared, or every template token resolved empty) and
                 // resets to Shepr's default. A disabled `ui.window_title`
@@ -1058,7 +1058,7 @@ impl ClientLoop {
                     .title_write_failure
                     .observe("window title", &written, None);
             }
-            ServerMessage::MouseCapture {
+            DecodedWireServerMessage::MouseCapture {
                 enabled,
                 sgr_pixels,
             } => {
@@ -1074,7 +1074,7 @@ impl ClientLoop {
                     )
                     .map_err(ClientError::HostTerminal)?;
             }
-            ServerMessage::ClientShellKeyboardReportAll { enabled } => {
+            DecodedWireServerMessage::ClientShellKeyboardReportAll { enabled } => {
                 let shell_requests_report_all = state.shell.host_keyboard_report_all_requested();
                 state
                     .host_modes
@@ -1085,10 +1085,10 @@ impl ClientLoop {
                     )
                     .map_err(ClientError::HostTerminal)?;
             }
-            ServerMessage::HealthPong => {
+            DecodedWireServerMessage::HealthPong => {
                 return Ok(ClientLoopAction::NextEvent);
             }
-            ServerMessage::EndpointSnapshot(snapshot) => {
+            DecodedWireServerMessage::EndpointSnapshot(snapshot) => {
                 if let Some(kind) = snapshot.restore_notice.as_ref() {
                     state
                         .shell
@@ -1106,23 +1106,6 @@ impl ClientLoop {
                 }
                 install_client_shell_snapshot(state, endpoint_id, snapshot, role, write_stream);
                 write_stream.mark_ready(endpoint_id, generation);
-            }
-            ServerMessage::EndpointWelcome(_) | ServerMessage::SurfaceUpdate(_) => {
-                tracing::error!(
-                    endpoint = %endpoint_id.storage_key(),
-                    generation,
-                    "handshake-only or undecoded surface message reached the client loop; failing its connection"
-                );
-                write_stream.fail(
-                    endpoint_id,
-                    &io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        shepr_remote::EndpointFailure::incompatible(
-                            "protocol error: unexpected message after endpoint handshake",
-                        ),
-                    ),
-                );
-                return Ok(ClientLoopAction::NextEvent);
             }
         }
         Ok(ClientLoopAction::NextEvent)

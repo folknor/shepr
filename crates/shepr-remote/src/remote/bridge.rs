@@ -545,6 +545,9 @@ pub(super) fn bridge_connection(
 pub(super) fn ssh_bridge_exit_error(status: std::process::ExitStatus, stderr: &[u8]) -> io::Error {
     let stderr = String::from_utf8_lossy(stderr);
     let stderr = stderr.trim();
+    if let Some(error) = remote_daemon_boot_failure(stderr) {
+        return error;
+    }
     let (failure, exit_status) = match status.code() {
         Some(SSH_OWN_FAILURE_EXIT_CODE) => (
             "remote SSH connection failed",
@@ -575,6 +578,53 @@ pub(super) fn ssh_bridge_exit_error(status: std::process::ExitStatus, stderr: &[
         io::ErrorKind::ConnectionAborted,
         super::SshFailureDiagnostic::from_ssh_output(status.code(), &message),
     )
+}
+
+/// Converts the explicit daemon boot record on SSH stderr to a typed endpoint
+/// failure. Ordinary remote stderr remains diagnostic text and is never used
+/// to infer an operator action.
+fn remote_daemon_boot_failure(stderr: &str) -> Option<io::Error> {
+    for (index, line) in stderr.lines().enumerate() {
+        let line = line.trim();
+        let line = line.strip_prefix("error: ").unwrap_or(line);
+        let Some(code) = line.strip_prefix(super::host::DAEMON_BOOT_EXIT_MARKER) else {
+            continue;
+        };
+        let Ok(code) = code.parse::<i32>() else {
+            continue;
+        };
+        let class = shepr_api::daemon_exit::DaemonExit::from_code(Some(code));
+        if class.code() != code {
+            continue;
+        }
+        let detail = stderr
+            .lines()
+            .skip(index + 1)
+            .collect::<Vec<_>>()
+            .join("\n")
+            .trim()
+            .to_owned();
+        let message = if detail.is_empty() {
+            format!("remote shepr-server {}", class.describe_boot_end())
+        } else {
+            format!(
+                "remote shepr-server {}:\n{detail}",
+                class.describe_boot_end()
+            )
+        };
+        let failure = match class {
+            shepr_api::daemon_exit::DaemonExit::ConfigRefused
+            | shepr_api::daemon_exit::DaemonExit::Failed => {
+                crate::EndpointFailure::remote_repair(message)
+            }
+            shepr_api::daemon_exit::DaemonExit::Clean
+            | shepr_api::daemon_exit::DaemonExit::AlreadyRunning => {
+                crate::EndpointFailure::retry(message)
+            }
+        };
+        return Some(io::Error::new(io::ErrorKind::ConnectionAborted, failure));
+    }
+    None
 }
 
 /// A connection attempt that ran out of its time budget. `TimedOut`, so it counts as a link

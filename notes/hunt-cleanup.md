@@ -20,26 +20,6 @@ raw reports are in the commit that precedes this file's.
 
 ## Dead code and dead state
 
-## CLN-006 - Dead checks in the server serving path
-
-- `ProtocolCellSize::from_wire` in `shepr-protocol` still nulls oversize
-  cells, a branch the server transport never reaches because its geometry
-  refusal runs first (commented at the transport call sites). Decide whether
-  protocol keeps it for other callers or drops it.
-
-(server-serving)
-
-## CLN-008 - Dead pieces in the client core
-
-- `ServerMessage::SurfaceUpdate` and `EndpointWelcome` reach the loop only as
-  protocol violations, rejected there; `DecodedServerMessage::Wire(ServerMessage)`
-  still admits every wire variant, so the decoder type could exclude them.
-- The test that exercised termio's `HostReplies` through the removed
-  `HostInputFramer` wrapper was deleted with it rather than moved into
-  `shepr-termio`.
-
-(client-core)
-
 ## CLN-009 - Dead pieces in the client shell
 
 `ClientShellWorkspace.custom_label` (defined in
@@ -50,53 +30,32 @@ for. (client-shell)
 ## CLN-010 - Dead pieces in the edges
 
 - `DifferentBuildServer.version` is populated and stored but read only in
-  tests.
-- `DaemonExit::code()` is used only in its own test; `shepr-daemon`'s
-  `report_server_error` and `config_error` map to the raw constants by hand.
-- `ServerStatusJson.compatible` and `.restart_needed` are still written by
+  tests (one initializer is in `src/preflight.rs`).
+- `ServerStatusJson.compatible` and `.restart_needed`
+  (`crates/shepr-api/src/schema/server.rs`) are still written by
   `src/cli/status.rs` while the remote preflight parse
   (`crates/shepr-remote/src/remote/server_lifecycle.rs`) recomputes
   compatibility from `build_id`; drop the fields with that consumer.
-- `forward_remote_bridge_stdio(stream, idle_timeout: bool)` in
-  `crates/shepr-platform/src/remote_bridge_io.rs`: the only production caller
-  (`crates/shepr-remote/src/remote/host.rs`) passes `true`.
+- `forward_remote_bridge_stdio_with_timeout` in
+  `crates/shepr-platform/src/remote_bridge_io.rs` takes `Option<Duration>`;
+  production always passes `Some`, and only a test passes anything else.
 
 Reported by edges; contracts also notes the doubled compatibility derivation.
 
 ## CLN-011 - Dead pieces in the contracts crates
 
-`RuntimeStatus::version: Option<String>` is always `Some` (ping decoding
-supplies it). Its consumers in `crates/shepr-remote/src/remote/local_server.rs`
-and its tests still format absence as `"unknown"`; make the field plain and
-drop those branches together. (contracts)
+`RuntimeStatus::version: Option<String>` is always `Some` (ping decoding in
+`crates/shepr-api/src/client.rs` supplies it). Its consumers in
+`crates/shepr-remote/src/remote/local_server.rs` and the fixtures in
+`src/preflight.rs` still format absence as `"unknown"`; make the field plain
+and drop those branches together. (contracts)
 
 ## CLN-014 - Dead pieces in mux state and core layout
 
-- `upstream_full_ref(&BranchConfig) -> Option<String>` always returns `Some`.
-- `split_pane` returns `None` when the target is not in the workspace, then
-  `split_pane_shell` returns `Err(NotFound)` for "target not in the layout", a
-  condition the first check ruled out unless layout and records disagree.
-- `cached_auto_label = String::new()` in `assemble` before
-  `mark_identity_undiscovered` overwrites it.
-- `shepr_core::layout`: `split_focused` is documented as "used by tests" yet
-  `pub`; `TileLayout::new` returns `(Self, PaneId)` although the id is
-  `focused()`; `InvalidSavedLayout::InvalidSplitRatio` is never produced by
-  `from_saved` (a `Node` already holds a valid `SplitRatio`) but by mux
-  restore.
-- `PaneId::from_raw` has no production caller, and the `Serialize` and
-  `Deserialize` derives on `PaneId` have no consumer found (the wire uses
-  `PublicPaneId`, snapshots use `u32`), yet the doc lists deserialization as a
-  way to mint one.
-- `ProcessIdentity::tag(token)` is always called with `0`, and the sweep accepts
-  only `Some((owner, 0))` from `parse_tag`: the token field is dead format.
-  `ssh_paths.rs` `bridge_endpoint_path_with_token(.., 0)` uses token `0` to
-  measure the name length.
-- `fair_share` returns `usize::MAX` for "no pane needs trimming".
-- Panic payload to message is written three times: pty `actor.rs`
-  `panic_payload_message`, `shepr-client/src/fatal_panic.rs` and
-  shepr-test-support (code duplication only).
-
-Reported by mux-state and foundation.
+`ProcessIdentity::tag(token)` is always called with `0`, and the sweep accepts
+only `Some((owner, 0))` from `parse_tag`: the token field is dead format.
+Removing it means changing the tag writers and the sweep parse together
+(`crates/shepr-platform/src/process_identity.rs`). (foundation)
 
 ## CLN-023 - Small leftovers from the first fixes
 
@@ -109,24 +68,11 @@ Reported by mux-state and foundation.
 - `crates/shepr-client/src/shell/sidebar/endpoint_sidebar.rs`:
   `.workspaces.iter().enumerate().map(|(entry, _)| ..)` is `0..len` spelled
   the long way.
-- `crates/shepr-server/src/server/client_transport.rs`: with the two dataless
-  wakes gone, every `ServerEvent` variant starts with `Client`, held by an
-  `expect(clippy::enum_variant_names)`; drop the prefix instead.
-- `crates/shepr-server/src/server/headless.rs`: `server_event_tx` is read only
-  by tests and carries a non-test `expect(dead_code)`; a test seam stored in
-  production.
 
 - `crates/shepr-server/src/app/`: `AppPolicy::Test` is kept as a const equal
   to `Suspended`, with a comment calling Suspended a different state, while
   every test teardown now spells `Suspended`. One spelling should win.
 
-- `crates/shepr-server/src/server/headless.rs`: `send_to_all_clients` has no
-  callers although its comment describes one in shutdown completion.
-
-- `crates/shepr-server/src/server/headless/worker.rs`:
-  `EndpointWorkers::dispatch_checkout_root` is an associated function taking
-  the whole `&mut HeadlessServer`, ownership in name only; it reads as a
-  `HeadlessServer` method.
 - `crates/shepr-remote/src/remote/preflight.rs`: `RestartResult::offer` checks
   for a missing decision callback before its loop and again inside it, so the
   inner `NoTerminal` branch cannot be reached.
@@ -247,60 +193,9 @@ Reported by edges, client-core and contracts.
 
 ## Stale documentation
 
-## CLN-020 - The content revision doc contradicts the server
+## CLN-021 - The shepr-remote module tree is named for an older layout
 
-`PaneTerminalCore::content_revision`'s doc says the parity scheme is no longer
-used, but mux still advances by two (`wrapping_add(2)`) and
-`shepr-server/src/server/client_shell.rs` marks a torn read with `after | 1` and
-tests `after.is_multiple_of(2)`; the retained path sends the snapshot revision
-without that rule. One side is stale; mux-panes reads the doc as the stale one.
-The revision type is filed among the consolidations. Reported by mux-panes,
-terminal and server-serving.
+`shepr-remote`'s `remote/` directory name reflects an older module tree (its
+`lib.rs` mounts the files with `#[path]`; see the structure entry on the client
+shell and remote module trees). (edges)
 
-## CLN-021 - Stale comments and docs across crates
-
-- `shepr-core/src/shell.rs` says the lookup is "shared between config
-  validation and PTY launch"; PTY launch does not use it.
-- `shepr-core/src/agent_session.rs` says `AgentSessionRefKind` lives there
-  because protocol and API name it; neither does any more.
-- `note_default_color_change` says "`shell_pid` 0 (no child yet) is handled
-  there", but `resolve_default_color_owner` takes an `Option` from
-  `live_pid()`.
-- The doc on `AgentDetection.visible_working` says the flag is not forwarded in
-  `StateChanged`; `DetectionPublishDecision::Publish` carries it.
-- `ChildExitReason` hosts the checkpoint policy in platform while AGENTS.md
-  places checkpoint policy in shepr-server.
-- The `shepr-api` schema says an invalid official reference "fails validation
-  before dispatch"; it fails inside the app handler.
-- `crates/shepr-config/src/io.rs` `AppPaths::resolve_for_server` and
-  `crates/shepr-protocol/src/command.rs` `WorkspaceCreateSource::Follow` speak
-  of `new_terminal_cwd`; the key is `terminal.new_cwd`.
-- `crates/shepr-config/src/default-client.toml`'s `[[machines]]` comment
-  hard-codes path byte counts, a drifting specific.
-- `crates/shepr-protocol/src/ids.rs`'s `TerminalId` doc speaks of "the
-  pane-backed transition", which reads as a finished migration.
-- AGENTS.md's crate list describes `shepr-termio` as "terminal input and copy
-  mode", but `copy_mode.rs` is four helpers; copy mode lives in the client and
-  mux.
-- `shepr-remote`'s `remote/` directory name reflects an older module tree.
-
-Reported by foundation, agents, mux-panes, server-app, contracts, terminal and
-edges.
-
-## CLN-022 - The saved schema carries compatibility optionality nothing needs
-
-No on-disk state needs to stay compatible, yet `WorkspaceSnapshot::id:
-Option<String>` with `#[serde(default)]`, `custom_name` default,
-`next_public_pane_number` defaulting to `0`, `focused` and `root_pane` as
-optional `u32`s, `PaneSnapshot::public_number` optional and tolerated at zero,
-`SessionSnapshot::host_theme` default, `SavedHostTheme::palette` default and
-`history_digest` default all have restore fallbacks (focus to first leaf, root
-to first leaf, fresh IDs, fresh numbers). Each absence could be a parse error
-handled by the existing drop-and-back-up path. The agent-session tolerance in
-`deserialize_agent_session` is different (a newer build can lose an agent
-kind) and should stay. The layout file is also written as `SavedSession`
-(`#[serde(flatten)]` over the snapshot) and read twice, as `SessionSnapshot` and
-as `SavedHistoryReference`; one `SessionFile { snapshot, history_digest }` would
-serve both directions. The saved `identity_cwd` is derivable from `root_pane`
-and `panes` except when the root pane is gone, which restore treats as damage
-anyway. (mux-state)

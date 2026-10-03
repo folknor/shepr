@@ -107,10 +107,10 @@ impl App {
                 let width = runtime
                     .terminal_dimensions()
                     .map_or(1, |(cols, _)| cols.max(1));
-                let selection = shepr_vt::selection::Selection::range(
+                let selection = shepr_vt::selection::Selection::line_range(
                     pane_id,
-                    shepr_vt::Point::new(params.cursor.row, 0),
-                    shepr_vt::Point::new(params.cursor.row, width.saturating_sub(1)),
+                    params.cursor.row,
+                    params.cursor.row,
                 );
                 let Some(text) = runtime.extract_selection(&selection) else {
                     return rejected("terminal row is unavailable");

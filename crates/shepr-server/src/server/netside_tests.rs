@@ -104,7 +104,7 @@ async fn two_headless_servers_switch_endpoints_without_a_lease() {
     let source_client_id = ClientId::test_new(78);
     assert!(headless_tests::handle_server_event(
         &mut source_server,
-        ServerEvent::ClientShellConnected {
+        ServerEvent::ShellConnected {
             client_id: source_client_id,
             surface_cols: 80,
             surface_rows: 24,
@@ -125,7 +125,7 @@ async fn two_headless_servers_switch_endpoints_without_a_lease() {
     let target_client_id = ClientId::test_new(79);
     assert!(headless_tests::handle_server_event(
         &mut target_server,
-        ServerEvent::ClientShellConnected {
+        ServerEvent::ShellConnected {
             client_id: target_client_id,
             surface_cols: 80,
             surface_rows: 24,
@@ -185,10 +185,8 @@ async fn two_headless_servers_switch_endpoints_without_a_lease() {
         headless_tests::outer_terminal_focus(&source_server, source_client_id),
         Some(true)
     );
-    let size = shepr_protocol::ClientSurfaceSize { cols: 80, rows: 24 };
-    let baseline = HostBaseline {
+    let baseline = || HostBaseline {
         geometry: lifecycle_geometry(),
-        host_focused: true,
         theme: &[],
     };
     for returning in [false, true] {
@@ -234,7 +232,7 @@ async fn two_headless_servers_switch_endpoints_without_a_lease() {
                 &mut choice,
                 &mut endpoints,
                 &shell,
-                &baseline,
+                baseline,
                 &mut serial,
                 Instant::now()
             ),
@@ -302,11 +300,11 @@ async fn two_headless_servers_switch_endpoints_without_a_lease() {
         choice
             .preparing_mut()
             .expect("preparing")
-            .receive_surface(&to, generation, surface, size);
-        assert!(choice.preparing().expect("preparing").ready(size).is_some());
+            .receive_surface(&to, generation, surface);
+        assert!(choice.preparing().expect("preparing").ready().is_some());
         view::send_focus(&mut choice, &mut endpoints);
         assert!(
-            view::commit_move(&mut choice, &mut endpoints, &mut shell, true, size)
+            view::commit_move(&mut choice, &mut endpoints, &mut shell, true)
                 .expect("commit")
                 .is_some()
         );

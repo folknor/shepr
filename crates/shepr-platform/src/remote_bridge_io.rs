@@ -30,18 +30,13 @@ enum RelayEvent {
 /// stay out of logs and error messages here and in `remote_bridge` (log byte
 /// counts or error kinds, never the buffers).
 ///
-/// With `idle_timeout`, a watchdog ends the relay after
-/// `remote_bridge::IDLE_TIMEOUT` without traffic and this returns
-/// [`RemoteBridgeOutcome::IdleExpired`]; see that variant for what the caller
-/// owes. Without it the relay only ends when the server side closes.
+/// A watchdog ends the relay after `remote_bridge::IDLE_TIMEOUT` without
+/// traffic and this returns [`RemoteBridgeOutcome::IdleExpired`]; see that
+/// variant for what the caller owes.
 pub fn forward_remote_bridge_stdio(
     stream: crate::ipc::LocalStream,
-    idle_timeout: bool,
 ) -> std::io::Result<RemoteBridgeOutcome> {
-    forward_remote_bridge_stdio_with_timeout(
-        stream,
-        idle_timeout.then_some(remote_bridge::IDLE_TIMEOUT),
-    )
+    forward_remote_bridge_stdio_with_timeout(stream, Some(remote_bridge::IDLE_TIMEOUT))
 }
 
 pub(super) fn forward_remote_bridge_stdio_with_timeout(

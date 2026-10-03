@@ -61,9 +61,9 @@ pub(super) fn has_default_color_override(terminal: &shepr_vt::Terminal) -> bool 
 /// returns the generation of a newly set override whose owner still has to
 /// be looked up. The lookup scans `/proc`, so the caller does it after
 /// releasing the terminal, content and reply-order locks
-/// ([`PaneTerminal::resolve_default_color_owner`]); `shell_pid` 0 (no
-/// child yet) is handled there. The returned generation is absent when there
-/// is no owner lookup to perform.
+/// ([`PaneTerminal::resolve_default_color_owner`]); with no live child pid,
+/// that method returns without scanning `/proc`. The returned generation is
+/// absent when there is no owner lookup to perform.
 pub(super) fn note_default_color_change(
     core: &mut PaneTerminalCore,
     set: bool,
@@ -365,15 +365,18 @@ pub(super) fn terminal_extract_selection<P>(
     core: &mut PaneTerminalCore,
     selection: &shepr_vt::selection::Selection<P>,
 ) -> Option<String> {
-    let (start, end) = selection.ordered_rows();
+    let ((start_abs, start_col), (end_abs, end_col)) = selection.ordered_cells();
     let terminal = &core.terminal;
-    let origin = terminal.history_origin();
-    let start_row = start.row.screen_row(origin)?;
-    let end_row = end.row.screen_row(origin)?;
+    let start_row = terminal.screen_row_for_absolute(start_abs)?;
+    let end_row = terminal.screen_row_for_absolute(end_abs)?;
+    let (start_col, end_col) = match selection.shape() {
+        shepr_vt::selection::SelectionShape::Range => (start_col, end_col),
+        shepr_vt::selection::SelectionShape::Lines => (0, terminal.cols().saturating_sub(1)),
+    };
     terminal
         .read_text_screen(
-            Point::new(start_row, start.col),
-            Point::new(end_row, end.col),
+            Point::new(start_row, start_col),
+            Point::new(end_row, end_col),
         )
         .ok()
 }

@@ -9,8 +9,8 @@ use tracing::warn;
 
 use super::lock::DataDirLease;
 use super::snapshot::{
-    HistoryText, SessionHistory, SessionHistorySnapshot, SessionSnapshot, parse_history_snapshot,
-    parse_snapshot,
+    HistoryText, SessionFile, SessionHistory, SessionHistorySnapshot, SessionSnapshot,
+    parse_history_snapshot, parse_session_file,
 };
 
 pub(super) const SESSION_FILE_NAME: &str = "session.json";
@@ -196,9 +196,9 @@ pub(super) fn open_regular(path: &Path) -> std::io::Result<std::fs::File> {
 }
 
 /// SHA-256 of a history file's bytes: how a layout names the history it pairs
-/// with. Its string form is only used at persistence and server boundaries.
+/// with.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct HistoryDigest([u8; 32]);
+pub struct HistoryDigest([u8; 32]);
 
 impl HistoryDigest {
     pub(super) fn from_bytes(bytes: &[u8]) -> Self {
@@ -227,7 +227,7 @@ impl serde::Serialize for HistoryDigest {
     where
         S: serde::Serializer,
     {
-        serializer.serialize_str(&encode_sha256(&self.0))
+        serializer.serialize_str(&self.to_hex())
     }
 }
 
@@ -434,24 +434,6 @@ fn remove_stale_temporary(path: &Path) -> std::io::Result<()> {
     }
 }
 
-/// The layout file: the snapshot, plus the digest of the history file it pairs
-/// with. The writer alone supplies the digest, from the history bytes this
-/// same save prepared or the one it knows the file still holds.
-#[derive(serde::Serialize)]
-struct SavedSession<'a> {
-    #[serde(flatten)]
-    snapshot: &'a SessionSnapshot,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    history_digest: Option<&'a HistoryDigest>,
-}
-
-/// The history reference read back from a layout file.
-#[derive(serde::Deserialize)]
-struct SavedHistoryReference {
-    #[serde(default)]
-    history_digest: Option<HistoryDigest>,
-}
-
 pub(super) fn save_to_path(
     path: &Path,
     snapshot: &SessionSnapshot,
@@ -459,9 +441,9 @@ pub(super) fn save_to_path(
 ) -> std::io::Result<Published> {
     save_json_to_path(
         path,
-        &SavedSession {
+        &SessionFile {
             snapshot,
-            history_digest,
+            history_digest: history_digest.copied(),
         },
     )
 }
@@ -593,7 +575,9 @@ fn serialize_history_within(
     let Some(room) = room else {
         return compact_history_without_workspace_shape(history, cap, content);
     };
-    let share = fair_share(sizes.clone(), room);
+    let Some(share) = fair_share(sizes.clone(), room) else {
+        return compact_history_without_workspace_shape(history, cap, content);
+    };
 
     let mut trim = HistoryTrim {
         panes: 0,
@@ -884,18 +868,18 @@ fn write_escaped<W: Write>(out: &mut W, text: &str) -> std::io::Result<()> {
 /// The largest per-pane size such that every pane capped at it fits `room`
 /// in total. Panes smaller than an equal split keep everything, and what they
 /// leave unused is shared among the rest.
-fn fair_share(mut sizes: Vec<usize>, room: usize) -> usize {
+fn fair_share(mut sizes: Vec<usize>, room: usize) -> Option<usize> {
     sizes.sort_unstable();
     let count = sizes.len();
     let mut remaining = room;
     for (index, size) in sizes.into_iter().enumerate() {
         let share = remaining / (count - index);
         if size > share {
-            return share;
+            return Some(share);
         }
         remaining -= size;
     }
-    usize::MAX
+    None
 }
 
 /// The earliest line start in `text` from which the rest, JSON-escaped, is at
@@ -1004,7 +988,7 @@ pub enum SessionLoad {
         snapshot: SessionSnapshot,
         /// The digest of the history file this layout pairs with; `None`
         /// when it was saved without history.
-        history_digest: Option<String>,
+        history_digest: Option<HistoryDigest>,
     },
     /// A session file exists but could not be read or parsed; the reason.
     /// Nothing of it is restored, and the first save backs it up before
@@ -1068,21 +1052,10 @@ pub fn load(lease: &DataDirLease) -> SessionLoad {
             return SessionLoad::Unusable(format!("it could not be read: {err}"));
         }
     };
-    match parse_snapshot(&content) {
-        Ok(snapshot) => SessionLoad::Loaded {
-            snapshot,
-            history_digest: match serde_json::from_str::<SavedHistoryReference>(&content) {
-                Ok(reference) => reference.history_digest.map(HistoryDigest::to_hex),
-                Err(err) => {
-                    warn!(
-                        event = "persist.restore", subsystem = "persist",
-                        outcome = "history_reference_invalid", path = %path.display(),
-                        error = %err,
-                        "the saved layout's history reference is invalid; restoring without history"
-                    );
-                    None
-                }
-            },
+    match parse_session_file(&content) {
+        Ok(file) => SessionLoad::Loaded {
+            snapshot: file.snapshot,
+            history_digest: file.history_digest,
         },
         Err(err) => {
             warn!(
@@ -1103,13 +1076,12 @@ pub fn load(lease: &DataDirLease) -> SessionLoad {
 /// that simply fail to match.
 pub fn load_history(
     lease: &DataDirLease,
-    expected_digest: Option<&str>,
+    expected_digest: Option<&HistoryDigest>,
 ) -> Option<SessionHistorySnapshot> {
     if !lease.is_active() {
         return None;
     }
     let expected_digest = expected_digest?;
-    let expected_digest = HistoryDigest::from_hex(expected_digest)?;
     let path = session_history_path(lease.directory());
     let content = match read_history_file(&path) {
         Ok(content) => content,
@@ -1128,7 +1100,7 @@ pub fn load_history(
             return None;
         }
     };
-    if history_digest(&content) != expected_digest {
+    if history_digest(&content) != *expected_digest {
         warn!(
             event = "persist.restore", subsystem = "persist", outcome = "history_mismatch",
             path = %path.display(),
@@ -1227,7 +1199,8 @@ mod tests {
         assert!(matches!(load(&lease), SessionLoad::Loaded { .. }));
         lease.release();
         assert!(matches!(load(&lease), SessionLoad::Missing));
-        assert!(load_history(&lease, Some("any")).is_none());
+        let digest = history_digest(b"any");
+        assert!(load_history(&lease, Some(&digest)).is_none());
     }
 
     #[test]
@@ -1239,7 +1212,6 @@ mod tests {
         save_history_json_to_path(&session_history_path(lease.directory()), &json)
             .expect("write history");
         let digest = history_digest(&json);
-        let digest_hex = digest.to_hex();
         save_to_path(
             &session_path(lease.directory()),
             &empty_snapshot(),
@@ -1247,11 +1219,15 @@ mod tests {
         )
         .expect("save layout");
 
-        let SessionLoad::Loaded { history_digest, .. } = load(&lease) else {
+        let SessionLoad::Loaded {
+            history_digest: named,
+            ..
+        } = load(&lease)
+        else {
             panic!("the layout loads");
         };
-        assert_eq!(history_digest.as_deref(), Some(digest_hex.as_str()));
-        let restored = load_history(&lease, history_digest.as_deref()).expect("paired history");
+        assert_eq!(named, Some(digest));
+        let restored = load_history(&lease, named.as_ref()).expect("paired history");
         assert_eq!(
             restored.workspaces[0].panes[&0].ansi,
             "saved scrollback\r\n"
@@ -1260,17 +1236,18 @@ mod tests {
         // Any other history in the file, a layout naming none, or a digest
         // for other bytes restores nothing.
         assert!(load_history(&lease, None).is_none());
-        assert!(load_history(&lease, Some(&history_digest_of("other"))).is_none());
+        let other_digest = history_digest_of("other");
+        assert!(load_history(&lease, Some(&other_digest)).is_none());
         let other = serialize_history(&history_with_panes(&[(0, "swapped\r\n")]))
             .expect("serialize")
             .json;
         save_history_json_to_path(&session_history_path(lease.directory()), &other)
             .expect("write history");
-        assert!(load_history(&lease, Some(&digest_hex)).is_none());
+        assert!(load_history(&lease, Some(&digest)).is_none());
     }
 
-    fn history_digest_of(text: &str) -> String {
-        history_digest(text.as_bytes()).to_hex()
+    fn history_digest_of(text: &str) -> HistoryDigest {
+        history_digest(text.as_bytes())
     }
 
     #[test]
@@ -1668,9 +1645,9 @@ mod tests {
 
     #[test]
     fn fair_share_leaves_what_small_panes_do_not_use_to_the_rest() {
-        assert_eq!(fair_share(vec![10, 100, 100], 110), 50);
-        assert_eq!(fair_share(vec![10, 20], 30), usize::MAX);
-        assert_eq!(fair_share(vec![40, 40], 30), 15);
+        assert_eq!(fair_share(vec![10, 100, 100], 110), Some(50));
+        assert_eq!(fair_share(vec![10, 20], 30), None);
+        assert_eq!(fair_share(vec![40, 40], 30), Some(15));
     }
 
     #[test]
@@ -1684,7 +1661,12 @@ mod tests {
         let session = std::fs::read_to_string(&session_path).expect("test precondition");
         let history = std::fs::read_to_string(&history_path).expect("test precondition");
         assert!(!session.contains("split-secret"));
-        assert!(!session.contains("history"));
+        assert!(
+            parse_session_file(&session)
+                .expect("test precondition")
+                .history_digest
+                .is_none()
+        );
         assert!(history.contains("split-secret"));
     }
 
@@ -1737,9 +1719,10 @@ mod tests {
                 .file_type()
                 .is_symlink()
         );
-        let parsed = parse_snapshot(&std::fs::read_to_string(&target).expect("test precondition"))
-            .expect("test precondition");
-        assert_eq!(parsed.active, Some(7));
+        let parsed =
+            parse_session_file(&std::fs::read_to_string(&target).expect("test precondition"))
+                .expect("test precondition");
+        assert_eq!(parsed.snapshot.active, Some(7));
     }
 
     #[test]
@@ -1810,9 +1793,10 @@ mod tests {
         snap.active = Some(3);
         save_to_path(&path, &snap, None).expect("test precondition");
 
-        let parsed = parse_snapshot(&std::fs::read_to_string(&path).expect("test precondition"))
-            .expect("test precondition");
-        assert_eq!(parsed.active, Some(3));
+        let parsed =
+            parse_session_file(&std::fs::read_to_string(&path).expect("test precondition"))
+                .expect("test precondition");
+        assert_eq!(parsed.snapshot.active, Some(3));
         assert!(
             !path
                 .with_extension("json.tmp")

@@ -14,7 +14,7 @@ pub(super) enum ClientLoopEvent {
     ServerMessage {
         endpoint_id: endpoint::ClientEndpointId,
         generation: u64,
-        message: Box<DecodedServerMessage>,
+        message: Box<DecodedClientServerMessage>,
     },
     ServerDisconnected {
         endpoint_id: endpoint::ClientEndpointId,

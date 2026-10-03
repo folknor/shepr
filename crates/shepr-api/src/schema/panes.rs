@@ -17,7 +17,7 @@ pub struct PaneReportAgentParams {
     pub seq: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     /// Omission retains the current official session identity. An explicitly
-    /// supplied invalid official reference fails validation before dispatch.
+    /// supplied invalid official reference is rejected by the app handler.
     pub agent_session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     /// Mutually exclusive with agent_session_id; both supplied is a bad request.

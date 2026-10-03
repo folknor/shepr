@@ -217,15 +217,12 @@ pub(super) fn render_pane_surface(
             };
             let content_revision = runtime.map_or(0, |runtime| {
                 let after = runtime.content_seq();
-                if content_revisions_before
-                    .get(&pane.id)
-                    .is_some_and(|&(_, before)| before == after)
-                    && after.is_multiple_of(2)
-                {
-                    after
-                } else {
-                    after | 1
-                }
+                shepr_mux::pane::PaneRuntime::surface_content_revision(
+                    content_revisions_before
+                        .get(&pane.id)
+                        .map(|&(_, before)| before),
+                    after,
+                )
             });
             panes.push(shepr_protocol::PaneSurfacePane {
                 pane_id,

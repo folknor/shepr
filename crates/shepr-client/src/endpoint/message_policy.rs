@@ -1,5 +1,5 @@
 use super::ConnectionRole;
-use shepr_protocol::{ServerMessage, surface_reuse::DecodedServerMessage};
+use shepr_protocol::surface_reuse::{DecodedClientServerMessage, DecodedWireServerMessage};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PresentationDecision {
     Apply,
@@ -40,33 +40,33 @@ impl PresentationGate {
         }
     }
 
-    pub(crate) fn decide(&self, message: &DecodedServerMessage) -> PresentationDecision {
+    pub(crate) fn decide(&self, message: &DecodedClientServerMessage) -> PresentationDecision {
         use PresentationDecision::*;
         match message {
-            DecodedServerMessage::PaneSurfacePatch(_) => self.surface_decision(),
-            DecodedServerMessage::Wire(message) => match message {
-                ServerMessage::EndpointWelcome(_)
-                | ServerMessage::SurfaceUpdate(_)
-                | ServerMessage::ServerShutdown { .. }
-                | ServerMessage::HealthPong => Apply,
-                ServerMessage::EndpointSnapshot(_) => match self.role {
+            DecodedClientServerMessage::PaneSurfacePatch(_) => self.surface_decision(),
+            DecodedClientServerMessage::Wire(message) => match message {
+                DecodedWireServerMessage::ServerShutdown { .. }
+                | DecodedWireServerMessage::HealthPong => Apply,
+                DecodedWireServerMessage::EndpointSnapshot(_) => match self.role {
                     ConnectionRole::Target => ApplyAndBuffer,
                     ConnectionRole::Shown | ConnectionRole::Other => Apply,
                 },
-                ServerMessage::PaneSurface(_) => self.surface_decision(),
-                ServerMessage::ClientShellEndpointResponse { .. } => match self.role {
+                DecodedWireServerMessage::PaneSurface(_) => self.surface_decision(),
+                DecodedWireServerMessage::ClientShellEndpointResponse { .. } => match self.role {
                     ConnectionRole::Shown => Apply,
                     ConnectionRole::Target if self.move_response => Buffer,
                     _ => Drop,
                 },
-                ServerMessage::ClientShellError { .. }
-                | ServerMessage::Clipboard { .. }
-                | ServerMessage::WindowTitle { .. }
-                | ServerMessage::MouseCapture { .. }
-                | ServerMessage::ClientShellKeyboardReportAll { .. } => match self.role {
-                    ConnectionRole::Shown => Apply,
-                    ConnectionRole::Target | ConnectionRole::Other => Drop,
-                },
+                DecodedWireServerMessage::ClientShellError { .. }
+                | DecodedWireServerMessage::Clipboard { .. }
+                | DecodedWireServerMessage::WindowTitle { .. }
+                | DecodedWireServerMessage::MouseCapture { .. }
+                | DecodedWireServerMessage::ClientShellKeyboardReportAll { .. } => {
+                    match self.role {
+                        ConnectionRole::Shown => Apply,
+                        ConnectionRole::Target | ConnectionRole::Other => Drop,
+                    }
+                }
             },
         }
     }
@@ -77,13 +77,16 @@ mod tests {
     use super::*;
     use ConnectionRole::*;
     use PresentationDecision::*;
+    use shepr_protocol::ServerMessage;
     fn gate(role: ConnectionRole) -> PresentationGate {
         PresentationGate::new(role, false)
     }
-    fn wire(message: ServerMessage) -> DecodedServerMessage {
-        DecodedServerMessage::Wire(message)
+    fn wire(message: ServerMessage) -> DecodedClientServerMessage {
+        DecodedClientServerMessage::Wire(
+            DecodedWireServerMessage::try_from(message).expect("allowed client wire message"),
+        )
     }
-    fn response() -> DecodedServerMessage {
+    fn response() -> DecodedClientServerMessage {
         wire(ServerMessage::ClientShellEndpointResponse {
             boot_id: crate::tests::test_boot_id("boot"),
             request_id: "request".into(),
@@ -137,8 +140,8 @@ mod tests {
             cursor: None,
         };
         for message in [
-            wire(ServerMessage::PaneSurface(surface)),
-            DecodedServerMessage::PaneSurfacePatch(patch),
+            DecodedClientServerMessage::Wire(DecodedWireServerMessage::PaneSurface(surface)),
+            DecodedClientServerMessage::PaneSurfacePatch(patch),
         ] {
             assert_eq!(gate(Shown).decide(&message), Apply);
             assert_eq!(gate(Target).decide(&message), Buffer);

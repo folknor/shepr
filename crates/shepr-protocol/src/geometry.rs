@@ -114,7 +114,12 @@ impl ProtocolCellSize {
     }
 
     /// A peer's out-of-range pixel report is unusable rather than clamped:
-    /// clamping here would claim a geometry the peer did not send.
+    /// clamping here would claim a geometry the peer did not send. The
+    /// server's handshake and resize paths already refuse an oversized
+    /// report before calling this, but the bound stays here too: it is this
+    /// type's own invariant, and a public constructor that relied on every
+    /// caller checking first would let the next caller build an out-of-range
+    /// cell size.
     pub fn from_wire(width: u32, height: u32, exact: bool) -> Self {
         let cell = if width <= super::MAX_CELL_SIZE_PX && height <= super::MAX_CELL_SIZE_PX {
             CellPx::new(width, height)

@@ -136,7 +136,7 @@ use unicode_width::UnicodeWidthChar;
 use vte::ansi::{Color, CursorShape, NamedColor, Processor, Rgb, Timeout};
 
 pub use coords::Point;
-pub use coords::{AbsRow, ScreenRow, ViewportRow};
+pub use coords::{AbsRow, ScreenRow, ViewportPosition, ViewportRow};
 
 use self::format::Format;
 use self::handler::{CoreHandler, KeyboardStackDepth};

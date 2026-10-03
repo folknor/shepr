@@ -202,14 +202,6 @@ mode reimplements it as `viewport_top`; four field-by-field conversions run
 between termio's and protocol's scroll metrics. Owner: vt returning one
 `ScrollMetrics`, also the wire type. Reported by terminal and client-shell.
 
-## CON-025 - Is an absolute row retained?
-
-`AbsRow::screen_row(origin)` checks only the lower bound;
-`Terminal::screen_row_for_absolute(row)` checks both. They disagree for rows past
-the end; mux `terminal_extract_selection` uses the lower-bound form and relies on
-`read_text_screen`'s prose error. Owner: `Terminal`; remove `AbsRow::screen_row`.
-(terminal)
-
 ## CON-027 - How are styles, colours and colour replies spelled in VT sequences?
 
 `UnderlineStyle` to SGR is in `format.rs` `UNDERLINE_SGR` and `blit.rs`
@@ -229,19 +221,15 @@ All agree today. Owner: `UnderlineStyle::sgr_param()`, a small shared SGR writer
 `ColorQuery::reply(color, ReplyForm)` in vt, and a `seq` module of typed builders
 and matchers used by both the pane side and the host side. (terminal)
 
-## CON-028 - Key encode and parse are mirrored tables
+## CON-028 - The mouse button byte is encoded and parsed by mirrored code
 
-Functional keys: encode has `encode_kitty_functional_key`,
-`encode_modified_special`, `encode_legacy_inner`, `encode_f_key`,
-`apply_application_cursor` and the list inside `try_encode_csi_u`; parse has
-`parse_legacy_special_sequence`, `parse_xterm_modified_special_sequence` and
-`kitty_codepoint_to_keycode`. Modifier bits: `xterm_modifier`/`kitty_modifier`
-versus `key_modifiers_from_u8`. Ctrl bytes: `encode_legacy_inner` versus
-`parse_legacy_ctrl_char`. Mouse button byte: `encode_mouse_cb` versus
-`parse_mouse_cb`. Round-trip tests keep the pairs in step and catch only the
-pairs they exercise. Owner: one `FunctionalKey { code, legacy, kitty_codepoint }`
-table and one modifiers-to-bits mapping, each read in both directions.
-(terminal)
+Functional keys, key modifier bits and control-byte aliases now come from one
+table (`crates/shepr-termio/src/input/tables.rs`) read in both directions. The
+mouse button and modifier byte is still written twice: `encode_mouse_cb` in
+`input/encode.rs` and `parse_mouse_cb` in `input/raw_input.rs`, held in step only
+by round-trip tests. The parser legitimately accepts forms the encoder never
+emits (release information and extended motion), so a shared table covers only
+the common part. (terminal)
 
 ## CON-029 - What character does a key produce?
 
@@ -417,24 +405,16 @@ remain two copies of the last OSC 7 report kept in step by the event (kept
 deliberately so save probes survive without terminal state; the reason is at
 the code). Reported by mux-panes, mux-state and server-app.
 
-## CON-054 - Content, detection, sync and history counters are bumped at each mutation site
+## CON-054 - Pane counter bookkeeping is partly outside the one rule
 
-In `pane/terminal/backend.rs`: `content_revision.wrapping_add(2)` at about a dozen
-sites (process, tick, seed, resize, every scroll, clear, host theme, host
-appearance, theme restore); `detection_content_seq` through
-`observe_detection_content_change` (non-empty bytes only) and
-`mark_detection_content_changed` (tick flush, resize, clear), free functions on
-`&mut u64`; `synchronized_output_epoch` at four sites; `history_epoch` in
-`resize`. They already disagree once (the two flush paths, filed as a latent
-bug), and no-op scrolls bump the revision (filed as a bug). The `+2` keeps the
-revision even for the server's torn-read parity mark, which mux's doc says is no
-longer used (filed under cleanup). `DetectionTask::tick` and the osc tests read
-`core.detection_content_seq` directly because all of `PaneTerminalCore`'s fields
-are `pub` or `pub(super)`. Owner: a `CoreRevisions` value inside the core with
-`record(Mutation::{Output { nonempty }, SyncFlush, Resize { grid_changed },
-Viewport, Presentation, Clear})` deciding all four counters, a `ContentRevision`
-whose stable-or-torn reading is a method, and private core fields. Reported by
-mux-panes, terminal and server-serving.
+`backend.rs` now records every mutation through one `CoreMutation` and
+`record_mutation` rule (`pane/terminal.rs`) that decides the content,
+detection, sync and history counters. Still open: the detection increment
+helpers in `crates/shepr-mux/src/pane/agent_detection.rs` (free functions on
+`&mut u64`) sit outside that rule, and `PaneTerminalCore`'s fields are still
+`pub`/`pub(super)`, so `DetectionTask::tick` and the osc tests read
+`core.detection_content_seq` directly. The counter types are filed among the
+types. Reported by mux-panes, terminal and server-serving.
 
 ## CON-055 - How is a pane launched?
 
@@ -690,17 +670,6 @@ their keys as literals with a comment pointing at `route_overlay_key`.
 command table per fixed-key surface (commands, keys, labels) that routing and
 help both read. (client-shell)
 
-## CON-089 - Initial chrome is computed twice
-
-`ClientShellState::new_at` and `ClientShellConfig::initial_surface_size` each
-compute the starting `sidebar_collapsed` and `sidebar_width` from preferences and
-config (`preferences.sidebar_collapsed.unwrap_or(..)` and `clamp_width`), pinned
-by the pairwise test `initial_surface_size_uses_persisted_endpoint_chrome`; the
-second exists because the shell state does not exist when the first handshake
-runs. Owner: one `InitialChrome::resolve(config, preferences)`, or build the
-shell state before the launch handshake. Reported by client-shell and
-client-core.
-
 ## Edges
 
 ## CON-093 - Command lines: producers and parsers are separate copies
@@ -726,15 +695,6 @@ the old spelling. Which commands need application paths is decided in
 `ServerInvocation` enum, each with `argv()` and `parse()`, next to `daemon_exit`
 and `server_stop` (or clap derive); printed commands render the same value.
 Reported by edges and contracts.
-
-## CON-094 - The server still quotes through shepr-remote
-
-Quoting lives in one module, `crates/shepr-core/src/shell_quote.rs`, used by
-remote, config, agent integration and the test fixture. `shepr-server` still
-depends on `shepr-remote` only to call `interactive_shell_command` in
-`app/agent_resume.rs`; switching that call to the core module removes the edge
-and the `shepr-server-layer` allowance for it. Reported by edges, contracts and
-server-app.
 
 ## CON-095 - The local restart offer echoes socket ids raw
 
@@ -823,11 +783,3 @@ epoch (or the child lists) lets the client send `(workspace, path, epoch,
 ratio)` and drop the hash and the rect classification. The split hit-rect
 geometry in the server (`client_shell.rs::split_hit_rect`) is layout policy that
 could sit with the border rules. Reported by client-shell and server-serving.
-
-## CON-112 - Is a surface sized for this client?
-
-`Preparing::receive_surface` (`crates/shepr-client/src/endpoint/choice/preparing.rs`)
-and `ViewEvidence::coherent_surface` compare a surface's width and height with
-the client's by hand. It is a deliberate re-check; a
-`PaneSurfaceFrame::is_sized_for(size)` beside the protocol type would make it
-one answer. (client-core)

@@ -7,9 +7,7 @@
 
 use std::process::ExitCode;
 
-use shepr_api::daemon_exit::{
-    ALREADY_RUNNING_EXIT_CODE, CLIENT_SPAWNED_FLAG, CONFIG_REFUSED_EXIT_CODE, FAILED_EXIT_CODE,
-};
+use shepr_api::daemon_exit::{CLIENT_SPAWNED_FLAG, DaemonExit};
 use shepr_server::server::headless::{RunServerError, run_server};
 
 const VERSION_FLAG: &str = "--version";
@@ -96,7 +94,7 @@ fn config_error(diagnostics: &[String]) -> ExitCode {
     for diagnostic in diagnostics {
         eprintln!("  {diagnostic}");
     }
-    exit_with(CONFIG_REFUSED_EXIT_CODE)
+    exit_with(DaemonExit::ConfigRefused.code())
 }
 
 /// A server already holding the runtime, by either socket or by the data lock,
@@ -107,16 +105,16 @@ fn report_server_error(error: RunServerError) -> ExitCode {
         RunServerError::AlreadyRunning { path } => {
             eprintln!("error: {ALREADY_RUNNING}");
             eprintln!("socket: {}", path.display());
-            exit_with(ALREADY_RUNNING_EXIT_CODE)
+            exit_with(DaemonExit::AlreadyRunning.code())
         }
         RunServerError::DataDirHeld { directory } => {
             eprintln!("error: {ALREADY_RUNNING}");
             eprintln!("data directory: {}", directory.display());
-            exit_with(ALREADY_RUNNING_EXIT_CODE)
+            exit_with(DaemonExit::AlreadyRunning.code())
         }
         RunServerError::Io(error) => {
             eprintln!("error: {error}");
-            exit_with(FAILED_EXIT_CODE)
+            exit_with(DaemonExit::Failed.code())
         }
     }
 }

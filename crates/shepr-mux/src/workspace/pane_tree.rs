@@ -229,6 +229,9 @@ impl Workspace {
     ) -> std::io::Result<NewPane> {
         let mut prepared_layout = self.layout.clone();
         let Some(new_id) = prepared_layout.split_pane(target, direction, 0.5) else {
+            // `Workspace::split_pane` checks the pane record first. Keep this
+            // guard because the pane map and layout tree are separate state;
+            // disagreement must not create an unlaid-out pane record.
             return Err(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 "split target pane is not in the layout",

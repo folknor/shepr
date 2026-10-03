@@ -1156,8 +1156,19 @@ impl PaneRuntime {
         self.current_size.get().grid()
     }
 
+    /// Odd means unavailable or torn; it must never certify a stable surface.
     pub fn content_seq(&self) -> u64 {
-        shepr_vt::lock_terminal_core(&self.terminal.core).map_or(0, |core| core.content_revision)
+        shepr_vt::lock_terminal_core(&self.terminal.core).map_or(1, |core| core.content_revision)
+    }
+
+    /// A full draw spans multiple core holds. Only unchanged, available reads
+    /// certify its cells; retained patches collect everything in one hold.
+    pub fn surface_content_revision(before: Option<u64>, after: u64) -> u64 {
+        if before == Some(after) && after.is_multiple_of(2) {
+            after
+        } else {
+            after | 1
+        }
     }
 
     /// Resize if the dimensions actually changed.

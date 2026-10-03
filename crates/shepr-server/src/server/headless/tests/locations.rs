@@ -418,7 +418,7 @@ async fn workspace_create_sizes_the_first_pty_for_the_requester_and_navigates_it
     let (writer, control, _render) = test_client_writer();
     let client_id = ClientId::test_new(7);
     assert!(
-        server.test_handle_server_event(ServerEvent::ClientShellConnected {
+        server.test_handle_server_event(ServerEvent::ShellConnected {
             client_id,
             surface_cols: 100,
             surface_rows: 30,

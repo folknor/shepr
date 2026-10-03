@@ -117,9 +117,9 @@ impl ClientShellConfig {
     }
 
     pub(crate) fn initial_surface_size(&self, cols: u16, rows: u16) -> ClientSurfaceSize {
-        let chrome = crate::shell::sidebar::chrome::ChromeLayout::new(self);
+        let chrome = self.initial_chrome();
         let surface = self
-            .layout(cols, rows, chrome.collapsed(), chrome.width())
+            .layout(cols, rows, chrome.collapsed, chrome.width)
             .pane_surface;
         ClientSurfaceSize {
             cols: surface.width.max(1),
@@ -169,9 +169,13 @@ mod tests {
         .expect("persist endpoint chrome");
         let config = ClientShellConfig::from_config(&ClientConfig::default())
             .with_preferences_path(path.clone());
+        let initial_chrome = config.initial_chrome();
         let initial = config.initial_surface_size(100, 30);
         let state = ClientShellState::new(config);
         assert_eq!(initial, state.surface_size(100, 30));
+        assert_eq!(state.chrome.width(), initial_chrome.width);
+        assert_eq!(state.chrome.collapsed(), initial_chrome.collapsed);
+        assert_eq!(state.chrome.split(), initial_chrome.split);
         std::fs::remove_file(path).expect("remove endpoint chrome");
     }
 

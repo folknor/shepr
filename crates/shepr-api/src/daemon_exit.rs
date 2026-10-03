@@ -54,7 +54,8 @@ impl DaemonExit {
         }
     }
 
-    /// The exit code a server ends with for this class.
+    /// The exit code a server ends with for this class, shared with clients
+    /// that classify a daemon which ends during startup.
     pub fn code(self) -> i32 {
         match self {
             Self::Clean => 0,

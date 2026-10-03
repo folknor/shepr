@@ -1,5 +1,6 @@
 use super::*;
 use shepr_platform::ipc::LocalStream;
+use shepr_protocol::ServerMessage;
 use tracing::debug;
 
 pub(super) struct AttachedEndpoint {
@@ -170,7 +171,7 @@ pub(super) fn server_reader_thread(
                     matches!(message, ServerMessage::EndpointSnapshot(_)),
                 );
                 surface_decoder
-                    .decode(message)
+                    .decode_client(message)
                     .map_err(shepr_protocol::FramingError::SurfaceDecode)
             });
         match message {

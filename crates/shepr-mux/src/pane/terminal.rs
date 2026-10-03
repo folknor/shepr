@@ -177,8 +177,9 @@ pub struct AgentDetectionInputs {
 
 pub(crate) struct PaneTerminalCore {
     /// Render-visible mutations advance this while holding the core lock.
-    /// Revisions remain even for callers that previously tested write parity;
-    /// exclusion is now provided by the core, with no announced-write state.
+    /// Stored revisions are even. A full surface spans several core holds;
+    /// the server marks its revision odd if output changed during drawing.
+    /// A retained patch reads its cells and revision under one hold.
     pub content_revision: u64,
     /// Live output, completed synchronized updates, clears and resizes only.
     /// Viewport and host presentation changes do not invalidate screen scans.
@@ -188,6 +189,9 @@ pub(crate) struct PaneTerminalCore {
     /// `PaneRuntime::on_next_dirty_collection`.
     pub dirty_collection_hook: Option<Box<dyn FnOnce() + Send>>,
     pub terminal: shepr_vt::Terminal,
+    // This is an equality token paired with the active flag under one hold.
+    // Poison is represented by None in synchronized_output_state, never by
+    // an invented epoch. Keeping that read atomic is the important invariant.
     synchronized_output_epoch: u64,
     /// Bumped by every resize that changes the grid. A taller grid pulls
     /// history rows back onto the screen, where the child can rewrite them,
@@ -202,9 +206,67 @@ pub(crate) struct PaneTerminalCore {
     /// colour (OSC 10/11); its overrides are dropped once the shell is back
     /// in the foreground. `None` while no override is in effect.
     pub transient_default_color_owner_pgid: Option<u32>,
+    // Raw only inside the core; effects carry DefaultColorGeneration so an
+    // owner probe cannot be mistaken for another kind of generation.
     default_color_generation: u64,
     pub(super) osc_debug_tracker: OscDebugTracker,
     pub(super) agent_osc_state: AgentOscStateTracker,
+}
+
+/// Record the meaning of a mutation once, rather than choosing counters at
+/// every parser, timer and presentation call site. These counters stay raw at
+/// the detection and persistence boundaries, which consume equality tokens.
+#[derive(Clone, Copy)]
+#[expect(
+    variant_size_differences,
+    reason = "a short-lived value passed by copy; the largest variant is one slice and two flags"
+)]
+enum CoreMutation<'a> {
+    Output {
+        bytes: &'a [u8],
+        flushed: bool,
+        sync_changed: bool,
+    },
+    SyncFlush,
+    Resize {
+        grid_changed: bool,
+        sync_changed: bool,
+    },
+    Presentation,
+    Clear,
+}
+
+impl PaneTerminalCore {
+    fn record_mutation(&mut self, mutation: CoreMutation<'_>) {
+        self.content_revision = self.content_revision.wrapping_add(2);
+        let (detection_changed, sync_changes, grid_changed) = match mutation {
+            CoreMutation::Output {
+                bytes,
+                flushed,
+                sync_changed,
+            } => {
+                super::agent_detection::observe_detection_content_change(
+                    bytes,
+                    &mut self.detection_content_seq,
+                );
+                (flushed, u64::from(flushed) + u64::from(sync_changed), false)
+            }
+            CoreMutation::SyncFlush => (true, 1, false),
+            CoreMutation::Resize {
+                grid_changed,
+                sync_changed,
+            } => (true, u64::from(sync_changed), grid_changed),
+            CoreMutation::Clear => (true, 0, false),
+            CoreMutation::Presentation => (false, 0, false),
+        };
+        if detection_changed {
+            super::agent_detection::mark_detection_content_changed(&mut self.detection_content_seq);
+        }
+        self.synchronized_output_epoch = self.synchronized_output_epoch.wrapping_add(sync_changes);
+        if grid_changed {
+            self.history_epoch = self.history_epoch.wrapping_add(1);
+        }
+    }
 }
 
 impl PaneTerminal {

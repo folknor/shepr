@@ -422,11 +422,19 @@ mod tests {
     fn snapshot() -> SessionSnapshot {
         serde_json::from_value(serde_json::json!({
             "version": super::super::snapshot::SNAPSHOT_VERSION,
+            "host_theme": super::super::snapshot::SavedHostTheme::default(),
             "workspaces": [{
                 "id": "w1",
-                "identity_cwd": "/shepr-persister-test",
+                "custom_name": null,
+                "next_public_pane_number": 2,
                 "layout": { "Pane": 0 },
-                "panes": { "0": { "cwd": "/shepr-persister-test" } },
+                "panes": {
+                    "0": {
+                        "cwd": "/shepr-persister-test",
+                        "public_number": 1,
+                        "label": null
+                    }
+                },
                 "zoomed": false,
                 "focused": 0,
                 "root_pane": 0

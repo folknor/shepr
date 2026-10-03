@@ -26,7 +26,7 @@ pub use self::actor::{PendingSave, PersistJob, SaveCompletion, SessionBundle, Se
 pub use self::capture::capture_job;
 pub use self::error::{SaveError, SaveRefusal};
 pub use self::io::{
-    SessionLoad, check_session_target, load, load_history, session_backup_directory,
+    HistoryDigest, SessionLoad, check_session_target, load, load_history, session_backup_directory,
 };
 pub use self::lock::{DataDirLease, DataDirLeaseHeld};
 pub use self::open::{

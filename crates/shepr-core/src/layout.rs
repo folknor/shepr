@@ -35,10 +35,9 @@ impl SplitRatio {
     }
 }
 
-/// Process-wide pane identity: a value comes from [`PaneId::alloc`], or from
-/// [`PaneId::from_raw`] and deserialization, which carry an id minted
-/// elsewhere.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+/// Process-wide pane identity. Runtime IDs come from [`PaneId::alloc`];
+/// [`PaneId::from_raw`] is the public seam for deterministic test fixtures.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct PaneId(u32);
 
 /// Global atomic counter for unique PaneId generation across all workspaces.
@@ -47,8 +46,8 @@ pub struct PaneId(u32);
 /// workspace id, so allocations in separate workspaces must not collide. An
 /// owned allocator would sit above this crate and need to be passed through
 /// each layout creation and split path without changing that invariant. Tests
-/// that want fixed ids build them with `from_raw`, and the exhaustion rule is
-/// tested through `alloc_from`.
+/// that want fixed ids build them with `from_raw`, and the exhaustion rule
+/// is tested through `alloc_from`.
 static NEXT_PANE_ID: std::sync::atomic::AtomicU32 =
     std::sync::atomic::AtomicU32::new(FIRST_PANE_ID);
 
@@ -80,8 +79,11 @@ impl PaneId {
         self.0
     }
 
-    /// Reconstruct a raw id without advancing the allocator. Live restore
-    /// must remap saved pane IDs through `alloc` before installing the layout.
+    /// Construct a fixed ID for test fixtures without advancing the allocator.
+    /// It is public because tests in other crates (`shepr-test-fixtures`,
+    /// `shepr-pty`) build fixed IDs, and no production crate has a test
+    /// feature to hide it behind. Live restore must remap saved pane IDs
+    /// through `alloc` before installing the layout.
     pub fn from_raw(id: u32) -> Self {
         Self(id)
     }
@@ -200,13 +202,13 @@ pub enum InvalidSavedLayout {
     DuplicatePaneId(PaneId),
     /// The focused pane is not present among the leaves.
     FocusNotFound(PaneId),
-    /// A saved split ratio is non-finite or outside the permitted bounds.
-    InvalidSplitRatio,
 }
 
 impl TileLayout {
     /// Create a new layout with a single pane (globally unique ID).
-    /// Returns (layout, root_pane_id) so the caller can create the pane.
+    /// Returns the root ID separately so a workspace can retain its root pane
+    /// identity after focus moves elsewhere. It equals `focused()` only at
+    /// creation; returning it keeps callers from deriving the root from focus.
     pub fn new() -> (Self, PaneId) {
         let root_id = PaneId::alloc();
         (
@@ -259,8 +261,10 @@ impl TileLayout {
         result
     }
 
-    /// Split the focused pane. Returns the new pane's id. This helper is used
-    /// by tests; production prepares a cloned layout before starting a runtime.
+    /// Split the focused pane. Returns the new pane's id. Production launch
+    /// paths prepare a cloned layout before starting a runtime; this public
+    /// method also serves cross-crate test support that needs a fixed layout
+    /// seam without a test feature.
     pub fn split_focused(&mut self, direction: Direction) -> PaneId {
         self.split_focused_with_ratio(direction, EVEN_SPLIT)
     }

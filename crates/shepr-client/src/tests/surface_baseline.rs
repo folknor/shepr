@@ -1,6 +1,7 @@
 use super::endpoint_choice::{Fixture, snapshot, surface};
 use super::*;
 use endpoint::ClientEndpointId;
+use shepr_protocol::ServerMessage;
 
 fn patch(s: &shepr_protocol::PaneSurfaceFrame) -> shepr_protocol::PaneSurfacePatch {
     shepr_protocol::PaneSurfacePatch {

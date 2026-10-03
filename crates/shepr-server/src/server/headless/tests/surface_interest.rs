@@ -10,7 +10,7 @@ fn surface_set(active: bool) -> Box<EndpointCommand> {
 fn request_active_surface(server: &mut HeadlessServer, client_id: u64, request_id: &str) {
     let boot_id = server.client_shell_boot_id.clone();
     assert!(
-        server.test_handle_server_event(ServerEvent::ClientShellEndpointRequest {
+        server.test_handle_server_event(ServerEvent::ShellEndpointRequest {
             client_id: client_id.into(),
             boot_id,
             request_id: request_id.into(),
@@ -35,7 +35,7 @@ async fn metadata_only_shell_is_isolated_until_surface_activation() {
     let client_id = ClientId::test_new(52);
 
     assert!(
-        server.test_handle_server_event(ServerEvent::ClientShellConnected {
+        server.test_handle_server_event(ServerEvent::ShellConnected {
             client_id,
             surface_cols: 101,
             surface_rows: 37,
@@ -62,7 +62,7 @@ async fn metadata_only_shell_is_isolated_until_surface_activation() {
     );
 
     assert!(
-        !server.test_handle_server_event(ServerEvent::ClientShellPaneInput {
+        !server.test_handle_server_event(ServerEvent::ShellPaneInput {
             client_id,
             pane_id: pane_id.parse().expect("test precondition"),
             events: vec![shepr_protocol::ClientPaneInputEvent::Paste(
@@ -74,7 +74,7 @@ async fn metadata_only_shell_is_isolated_until_surface_activation() {
 
     let boot_id = server.client_shell_boot_id.clone();
     assert!(
-        !server.test_handle_server_event(ServerEvent::ClientShellEndpointRequest {
+        !server.test_handle_server_event(ServerEvent::ShellEndpointRequest {
             client_id,
             boot_id: boot_id.clone(),
             request_id: "inactive-mutation".into(),
@@ -112,7 +112,7 @@ async fn metadata_only_shell_is_isolated_until_surface_activation() {
     ));
 
     assert!(
-        server.test_handle_server_event(ServerEvent::ClientShellEndpointRequest {
+        server.test_handle_server_event(ServerEvent::ShellEndpointRequest {
             client_id,
             boot_id: boot_id.clone(),
             request_id: "activate-surface".into(),
@@ -148,7 +148,7 @@ async fn metadata_only_shell_is_isolated_until_surface_activation() {
     assert_eq!(surface.surface_revision, 1);
 
     assert!(
-        server.test_handle_server_event(ServerEvent::ClientShellEndpointRequest {
+        server.test_handle_server_event(ServerEvent::ShellEndpointRequest {
             client_id,
             boot_id: boot_id.clone(),
             request_id: "deactivate-surface".into(),
@@ -174,7 +174,7 @@ async fn metadata_only_shell_is_isolated_until_surface_activation() {
     assert!(render_rx.try_recv().is_err());
 
     assert!(
-        server.test_handle_server_event(ServerEvent::ClientShellEndpointRequest {
+        server.test_handle_server_event(ServerEvent::ShellEndpointRequest {
             client_id,
             boot_id,
             request_id: "reactivate-surface".into(),
@@ -220,12 +220,10 @@ async fn background_surface_activation_preserves_focused_viewer_geometry() {
     let pane_id = install_shared_view_test_runtime(&mut server);
     let (focused_control, _) = connect_test_shell(&mut server, 7, 68, 17);
     let _ = focused_control.recv().expect("focused client snapshot");
-    assert!(
-        server.test_handle_server_event(ServerEvent::ClientShellFocus {
-            client_id: ClientId::test_new(7),
-            focused: true,
-        })
-    );
+    assert!(server.test_handle_server_event(ServerEvent::ShellFocus {
+        client_id: ClientId::test_new(7),
+        focused: true,
+    }));
     let focused_size = server.app.test_runtime(pane_id).current_size();
     assert_eq!(focused_size, (17, 67));
     let shared_workspace_id = server
@@ -238,7 +236,7 @@ async fn background_surface_activation_preserves_focused_viewer_geometry() {
 
     let (writer, background_control, _background_render) = test_client_writer();
     assert!(
-        server.test_handle_server_event(ServerEvent::ClientShellConnected {
+        server.test_handle_server_event(ServerEvent::ShellConnected {
             client_id: ClientId::test_new(8),
             surface_cols: 100,
             surface_rows: 35,
@@ -277,12 +275,10 @@ async fn background_surface_activation_preserves_focused_viewer_geometry() {
         Some(ClientId::test_new(7))
     );
 
-    assert!(
-        server.test_handle_server_event(ServerEvent::ClientShellFocus {
-            client_id: ClientId::test_new(8),
-            focused: false,
-        })
-    );
+    assert!(server.test_handle_server_event(ServerEvent::ShellFocus {
+        client_id: ClientId::test_new(8),
+        focused: false,
+    }));
     assert_eq!(
         server.clients[&7].shell_state().outer_terminal_focus,
         Some(true)
@@ -321,12 +317,10 @@ async fn focused_surface_reassertion_reclaims_workspace_geometry() {
     let pane_id = install_shared_view_test_runtime(&mut server);
     let (focused_control, _) = connect_test_shell(&mut server, 8, 100, 35);
     let _ = focused_control.recv().expect("focused client snapshot");
-    assert!(
-        server.test_handle_server_event(ServerEvent::ClientShellFocus {
-            client_id: ClientId::test_new(8),
-            focused: true,
-        })
-    );
+    assert!(server.test_handle_server_event(ServerEvent::ShellFocus {
+        client_id: ClientId::test_new(8),
+        focused: true,
+    }));
     let shared_workspace_id = server
         .shell_target_for_client(ClientId::test_new(8))
         .expect("focused workspace");
@@ -435,7 +429,7 @@ async fn replay_host_effects_replays_modes_and_title() {
     let (writer, control_rx, _render_rx) = test_client_writer();
     let client_id = ClientId::test_new(63);
     assert!(
-        server.test_handle_server_event(ServerEvent::ClientShellConnected {
+        server.test_handle_server_event(ServerEvent::ShellConnected {
             client_id,
             surface_cols: 80,
             surface_rows: 24,
@@ -463,7 +457,7 @@ async fn replay_host_effects_replays_modes_and_title() {
 
     let boot_id = server.client_shell_boot_id.clone();
     assert!(
-        server.test_handle_server_event(ServerEvent::ClientShellEndpointRequest {
+        server.test_handle_server_event(ServerEvent::ShellEndpointRequest {
             client_id,
             boot_id,
             request_id: "post-commit-reassert".into(),
@@ -474,7 +468,7 @@ async fn replay_host_effects_replays_modes_and_title() {
     let _ = control_rx
         .recv()
         .expect("typed surface reassertion acknowledgement");
-    server.test_handle_server_event(ServerEvent::ClientShellReplayHostEffects { client_id });
+    server.test_handle_server_event(ServerEvent::ShellReplayHostEffects { client_id });
     assert_eq!(
         server.clients[&client_id].outbox.told_mouse_capture(),
         Some(true),
@@ -512,7 +506,7 @@ async fn replay_host_effects_is_ignored_by_a_non_viewed_connection() {
     let mut server = test_headless_server();
     let (writer, control, _render) = test_client_writer();
     let client_id = ClientId::test_new(64);
-    server.test_handle_server_event(ServerEvent::ClientShellConnected {
+    server.test_handle_server_event(ServerEvent::ShellConnected {
         client_id,
         surface_cols: 80,
         surface_rows: 24,
@@ -524,7 +518,7 @@ async fn replay_host_effects_is_ignored_by_a_non_viewed_connection() {
         outbox: writer,
     });
     let _ = client_shell_snapshot(&control);
-    server.test_handle_server_event(ServerEvent::ClientShellReplayHostEffects { client_id });
+    server.test_handle_server_event(ServerEvent::ShellReplayHostEffects { client_id });
     assert!(control.try_recv().is_err());
     shutdown_test_runtimes(&mut server);
 }

@@ -36,14 +36,8 @@ impl FatalPanic {
     }
 
     fn record(&self, info: &std::panic::PanicHookInfo<'_>) {
-        // Only string payloads are formatted; any other type could run
-        // arbitrary code inside the hook.
-        let payload = info
-            .payload()
-            .downcast_ref::<&str>()
-            .copied()
-            .or_else(|| info.payload().downcast_ref::<String>().map(String::as_str))
-            .unwrap_or("a panic with a non-string payload");
+        let payload =
+            shepr_core::panic_message(info.payload(), "a panic with a non-string payload");
         let location = info
             .location()
             .map_or_else(|| "an unknown location".to_owned(), ToString::to_string);

@@ -10,7 +10,6 @@ impl AgentOwnership {
         sample: HookClockSample,
     ) -> Option<AgentOwnershipMutation> {
         let now = sample.monotonic;
-        self.warn_unrecognized_hook_identity(&origin);
         // All official session-only integrations use the same admission path.
         // A state report may contribute its session, but never state authority.
         if !origin.authority_class().admits_state_report() {

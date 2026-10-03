@@ -348,6 +348,40 @@ fn only_ssh_own_exit_code_counts_as_failing_before_a_remote_result() {
 }
 
 #[test]
+fn remote_daemon_boot_failures_need_attention_only_when_the_host_must_be_fixed() {
+    use shepr_api::daemon_exit::DaemonExit;
+    for (class, disposition) in [
+        (DaemonExit::ConfigRefused, crate::FailureDisposition::Repair),
+        (DaemonExit::Failed, crate::FailureDisposition::Repair),
+        (DaemonExit::Clean, crate::FailureDisposition::Retry),
+        (DaemonExit::AlreadyRunning, crate::FailureDisposition::Retry),
+    ] {
+        let stderr = format!(
+            "error: {}{}\nshepr-server refused its configuration\n  invalid server.toml",
+            super::super::host::DAEMON_BOOT_EXIT_MARKER,
+            class.code(),
+        );
+        let error = ssh_bridge_exit_error(exit_status(1), stderr.as_bytes());
+        let failure = crate::EndpointFailure::from_error(&error);
+        assert_eq!(failure.disposition(), disposition, "{class:?}");
+        assert!(failure.to_string().contains("invalid server.toml"));
+        assert!(
+            !failure
+                .to_string()
+                .contains(super::super::host::DAEMON_BOOT_EXIT_MARKER)
+        );
+        // A fault on the remote host is not reported as local setup.
+        assert!(!failure.diagnostic().is_local_setup_failure(), "{class:?}");
+    }
+
+    let ordinary = ssh_bridge_exit_error(exit_status(1), b"server config was refused");
+    assert_eq!(
+        crate::EndpointFailure::from_error(&ordinary).disposition(),
+        crate::FailureDisposition::Retry
+    );
+}
+
+#[test]
 fn bridge_remote_stderr_is_filtered_before_error_output() {
     let error = ssh_bridge_exit_error(
         exit_status(SSH_OWN_FAILURE_EXIT_CODE),

@@ -183,15 +183,14 @@ async fn a_view_change_owes_every_presenting_client_one_pass_and_settles_them() 
 async fn a_resize_renders_only_the_resized_client_when_no_workspace_resizes() {
     let mut pair = Pair::new();
     let before = pair.server.view_epoch;
-    pair.server
-        .handle_server_event(ServerEvent::ClientShellResize {
-            client_id: ClientId::test_new(8),
-            surface_cols: 79,
-            surface_rows: 23,
-            cell_width_px: 0,
-            cell_height_px: 0,
-            pixel_mouse: false,
-        });
+    pair.server.handle_server_event(ServerEvent::ShellResize {
+        client_id: ClientId::test_new(8),
+        surface_cols: 79,
+        surface_rows: 23,
+        cell_width_px: 0,
+        cell_height_px: 0,
+        pixel_mouse: false,
+    });
     assert_eq!(pair.server.view_epoch, before);
     assert_eq!(pair.pass(false).full, vec![ClientId::test_new(8)]);
 }
@@ -263,7 +262,7 @@ async fn a_host_effects_replay_renders_nobody() {
     let mut pair = Pair::new();
     let epoch = pair.server.view_epoch;
     pair.server
-        .handle_server_event(ServerEvent::ClientShellReplayHostEffects {
+        .handle_server_event(ServerEvent::ShellReplayHostEffects {
             client_id: ClientId::test_new(8),
         });
     assert_eq!(pair.server.view_epoch, epoch);

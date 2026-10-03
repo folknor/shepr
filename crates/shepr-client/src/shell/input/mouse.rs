@@ -316,30 +316,39 @@ impl ClientShellState {
             .selection
             .as_ref()
             .is_some_and(shepr_vt::selection::Selection::is_dragging);
-        let moved_from_anchor = self
-            .mouse_selection
-            .selection
-            .as_ref()
-            .is_some_and(|selection| {
-                let anchor = selection.anchor_position();
-                let top = metrics.map_or(
-                    shepr_vt::AbsRow(0),
-                    shepr_termio::ScrollMetrics::viewport_top_row,
-                );
-                let anchor_row = hit
-                    .inner_rect
-                    .y
-                    .saturating_add(anchor.row.viewport_row(top).0)
-                    .clamp(
-                        hit.inner_rect.y,
-                        hit.inner_rect.y + hit.inner_rect.height.saturating_sub(1),
+        let moved_from_anchor =
+            self.mouse_selection
+                .selection
+                .as_ref()
+                .is_some_and(|selection| {
+                    let anchor = selection.anchor_position();
+                    let anchor_col = hit.inner_rect.x.saturating_add(anchor.col).clamp(
+                        hit.inner_rect.x,
+                        hit.inner_rect.x + hit.inner_rect.width.saturating_sub(1),
                     );
-                let anchor_col = hit.inner_rect.x.saturating_add(anchor.col).clamp(
-                    hit.inner_rect.x,
-                    hit.inner_rect.x + hit.inner_rect.width.saturating_sub(1),
-                );
-                anchor_row != row || anchor_col != column
-            });
+                    let row_moved = metrics.map_or_else(
+                        || {
+                            selection.is_just_click()
+                                && self
+                                    .mouse_selection
+                                    .last_pane_click
+                                    .as_ref()
+                                    .filter(|click| click.pane_id == selection.pane_id)
+                                    .is_some_and(|click| {
+                                        hit.inner_rect.y.saturating_add(click.viewport_row) != row
+                                    })
+                        },
+                        |metrics| match anchor.row.viewport_row(metrics.viewport_top_row()) {
+                            shepr_vt::ViewportPosition::Above
+                            | shepr_vt::ViewportPosition::Below => true,
+                            shepr_vt::ViewportPosition::At(anchor_row) => {
+                                anchor_row.0 >= hit.inner_rect.height
+                                    || hit.inner_rect.y.checked_add(anchor_row.0) != Some(row)
+                            }
+                        },
+                    );
+                    row_moved || anchor_col != column
+                });
         self.update_selection_cursor_with_metrics(hit, column, row, metrics, outcome, now);
         let is_dragging = self
             .mouse_selection
@@ -544,14 +553,16 @@ impl ClientShellState {
             self.stop_selection_autoscroll();
             return outcome;
         }
+        let Some(scroll) = hit.scroll else {
+            self.stop_selection_autoscroll();
+            return outcome;
+        };
         autoscroll.offset_from_bottom = next_offset;
         let metrics = shepr_termio::ScrollMetrics {
             offset_from_bottom: next_offset,
             max_offset_from_bottom: autoscroll.max_offset_from_bottom,
-            viewport_rows: hit.scroll.map_or(0, |metrics| metrics.viewport_rows),
-            history_origin: hit
-                .scroll
-                .map_or(shepr_vt::AbsRow(0), |metrics| metrics.history_origin),
+            viewport_rows: scroll.viewport_rows,
+            history_origin: scroll.history_origin,
         };
         self.update_selection_cursor_with_metrics(
             &hit,

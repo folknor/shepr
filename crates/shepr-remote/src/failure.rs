@@ -73,6 +73,9 @@ enum Cause {
     Io(io::ErrorKind),
     Incompatible,
     LocalSetup,
+    /// The remote host's shepr ran and refused to serve for a reason the
+    /// operator must fix on that host, such as its own config.
+    RemoteRepair,
     Backpressure,
     Retry,
     Shutdown(Option<shepr_protocol::ShutdownReason>),
@@ -133,6 +136,14 @@ impl EndpointFailure {
         let message = message.into();
         Self {
             cause: Cause::LocalSetup,
+            message: RemoteText::from_untrusted(&message),
+        }
+    }
+
+    pub(crate) fn remote_repair(message: impl Into<String>) -> Self {
+        let message = message.into();
+        Self {
+            cause: Cause::RemoteRepair,
             message: RemoteText::from_untrusted(&message),
         }
     }
@@ -201,7 +212,7 @@ impl EndpointFailure {
             Cause::Io(io::ErrorKind::InvalidData | io::ErrorKind::Unsupported)
             | Cause::Incompatible => D::Incompatible,
             Cause::Io(kind) if crate::is_ssh_link_error_kind(*kind) => D::Offline,
-            Cause::LocalSetup => D::Repair,
+            Cause::LocalSetup | Cause::RemoteRepair => D::Repair,
             Cause::Io(_) | Cause::Backpressure | Cause::Retry | Cause::Shutdown(_) => D::Retry,
         }
     }
@@ -217,9 +228,11 @@ impl EndpointFailure {
             Cause::Io(kind) if crate::is_ssh_link_error_kind(*kind) => {
                 FailureEvidence::NothingLearned
             }
-            Cause::Io(_) | Cause::Backpressure | Cause::Retry | Cause::Shutdown(_) => {
-                FailureEvidence::RemoteFault
-            }
+            Cause::Io(_)
+            | Cause::RemoteRepair
+            | Cause::Backpressure
+            | Cause::Retry
+            | Cause::Shutdown(_) => FailureEvidence::RemoteFault,
         }
     }
 
@@ -252,6 +265,11 @@ impl EndpointFailure {
         }
         let failure = match self.disposition() {
             FailureDisposition::Incompatible => SshFailure::Compatibility,
+            // The remote answered and refused: the remote-side repair class,
+            // whose disposition and evidence match this cause's.
+            FailureDisposition::Repair if matches!(self.cause, Cause::RemoteRepair) => {
+                SshFailure::RemoteRejected
+            }
             FailureDisposition::Repair => SshFailure::LocalSetup,
             FailureDisposition::Offline => SshFailure::Link,
             _ => SshFailure::Other,

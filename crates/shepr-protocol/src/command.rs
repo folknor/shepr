@@ -38,7 +38,7 @@ pub enum WorkspaceCreateSource {
     /// An explicit working directory.
     Cwd(String),
     /// The focused pane of this workspace supplies the cwd policy
-    /// (`new_terminal_cwd`); a workspace that no longer exists falls back to
+    /// (`terminal.new_cwd`); a workspace that no longer exists falls back to
     /// [`Self::Default`].
     Follow(WorkspaceId),
     /// The server's default working directory.

@@ -3,7 +3,7 @@ use super::{
 };
 use crate::shell::ClientShellState;
 use shepr_protocol::{
-    BootId, ClientHostThemeUpdate, ClientMessage, ClientSurfaceSize, RequestId, TerminalGeometry,
+    BootId, ClientHostThemeUpdate, ClientMessage, RequestId, TerminalGeometry,
     command::{ClientShellSurfaceSetParams, EndpointCommand},
 };
 use std::time::Instant;
@@ -12,8 +12,6 @@ use std::time::Instant;
 pub struct HostBaseline<'a> {
     /// The one surface geometry every endpoint renders.
     pub geometry: TerminalGeometry,
-    /// The host focus baseline. Not sent by `turn_on`: focus follows the commit.
-    pub host_focused: bool,
     /// Every recorded host theme update, replayed in order.
     pub theme: &'a [ClientHostThemeUpdate],
 }
@@ -110,11 +108,11 @@ pub(crate) fn surface_interest_request(
 /// generation) once `to` has a connection with metadata for its generation. The lease comes
 /// from that metadata; `begin_preparing` runs before `turn_on`, so every send happens with the
 /// `Preparing` installed.
-pub fn start_move(
+pub fn start_move<'a>(
     choice: &mut EndpointChoice,
     endpoints: &mut EndpointRegistry,
     shell: &ClientShellState,
-    baseline: &HostBaseline<'_>,
+    baseline: impl FnOnce() -> HostBaseline<'a>,
     serial: &mut u64,
     now: Instant,
 ) -> StartOutcome {
@@ -141,6 +139,7 @@ pub fn start_move(
             minimum_revision,
         } => (generation, boot_id, minimum_revision),
     };
+    let baseline = baseline();
     let lease = ViewLease {
         endpoint_id: pending.to.clone(),
         generation,
@@ -150,7 +149,7 @@ pub fn start_move(
     let request: RequestId = format!("client-shell-view:{serial}:on").into();
     *serial = serial.saturating_add(1);
     choice.begin_preparing(lease.clone(), request.clone(), baseline.geometry, now);
-    turn_on(endpoints, &lease, &request, baseline);
+    turn_on(endpoints, &lease, &request, &baseline);
     StartOutcome::Started
 }
 
@@ -204,12 +203,11 @@ pub fn commit_move(
     endpoints: &mut EndpointRegistry,
     shell: &mut ClientShellState,
     host_focused: bool,
-    size: ClientSurfaceSize,
 ) -> Result<Option<Committed>, String> {
     let Some(preparing) = choice.preparing() else {
         return Ok(None);
     };
-    let Some(surface) = preparing.ready(size) else {
+    let Some(surface) = preparing.ready() else {
         return Ok(None);
     };
     let lease = preparing.lease();
@@ -267,22 +265,21 @@ mod tests {
     use super::*;
     use crate::tests::endpoint_choice::{Fixture, RecordingTransport, boot, remote, snapshot};
     fn start(f: &mut Fixture) -> StartOutcome {
-        let baseline = HostBaseline {
+        let host_geometry = f.client.state.reported_geometry;
+        let shell = &f.client.state.shell;
+        let theme = &f.client.state.host_theme_updates;
+        let baseline = || HostBaseline {
             geometry: crate::shell_runtime::view_geometry(
-                f.client.state.reported_geometry,
-                f.client.state.shell.surface_size(
-                    f.client.state.reported_geometry.cols(),
-                    f.client.state.reported_geometry.rows(),
-                ),
+                host_geometry,
+                shell.surface_size(host_geometry.cols(), host_geometry.rows()),
             ),
-            host_focused: true,
-            theme: &f.client.state.host_theme_updates,
+            theme,
         };
         start_move(
             &mut f.client.state.choice,
             &mut f.client.write_stream,
-            &f.client.state.shell,
-            &baseline,
+            shell,
+            baseline,
             &mut f.client.next_view_serial,
             f.now,
         )
@@ -385,7 +382,6 @@ mod tests {
             7,
             snapshot(&remote(), 3),
         );
-        let size = f.size();
         let messages = f.target.take();
         assert!(!messages.is_empty());
         assert!(
@@ -393,8 +389,7 @@ mod tests {
                 &mut f.client.state.choice,
                 &mut f.client.write_stream,
                 &mut f.client.state.shell,
-                true,
-                size
+                true
             )
             .is_err()
         );
@@ -416,14 +411,12 @@ mod tests {
         f.start();
         f.evidence();
         f.target.take();
-        let size = f.size();
         assert!(
             commit_move(
                 &mut f.client.state.choice,
                 &mut f.client.write_stream,
                 &mut f.client.state.shell,
-                false,
-                size
+                false
             )
             .expect("commit")
             .is_some()
@@ -442,14 +435,12 @@ mod tests {
         f.start();
         f.evidence();
         f.target.fail_next();
-        let size = f.size();
         assert!(
             commit_move(
                 &mut f.client.state.choice,
                 &mut f.client.write_stream,
                 &mut f.client.state.shell,
-                true,
-                size
+                true
             )
             .expect("commit")
             .is_some()

@@ -7,6 +7,13 @@
 
 use super::{AbsRow, Point};
 
+/// Whether a selection covers explicit cells or complete rows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SelectionShape {
+    Range,
+    Lines,
+}
+
 /// Current phase of a selection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Phase {
@@ -26,6 +33,7 @@ pub struct Selection<P> {
     pub pane_id: P,
     anchor: Point<AbsRow>,
     cursor: Point<AbsRow>,
+    shape: SelectionShape,
     phase: Phase,
 }
 
@@ -36,6 +44,7 @@ impl<P> Selection<P> {
             pane_id,
             anchor: position,
             cursor: position,
+            shape: SelectionShape::Range,
             phase: Phase::Anchored,
         }
     }
@@ -46,22 +55,25 @@ impl<P> Selection<P> {
             pane_id,
             anchor,
             cursor,
+            shape: SelectionShape::Range,
             phase: Phase::Dragging,
         }
     }
 
     /// Select whole rows in reading order, including their trailing cells.
-    pub fn line_range(pane_id: P, anchor_row: AbsRow, cursor_row: AbsRow, end_col: u16) -> Self {
-        let (anchor_col, cursor_col) = if anchor_row <= cursor_row {
-            (0, end_col)
-        } else {
-            (end_col, 0)
-        };
-        Self::range(
+    pub fn line_range(pane_id: P, anchor_row: AbsRow, cursor_row: AbsRow) -> Self {
+        Self {
             pane_id,
-            Point::new(anchor_row, anchor_col),
-            Point::new(cursor_row, cursor_col),
-        )
+            anchor: Point::new(anchor_row, 0),
+            cursor: Point::new(cursor_row, 0),
+            shape: SelectionShape::Lines,
+            phase: Phase::Dragging,
+        }
+    }
+
+    /// The extent represented by this selection.
+    pub fn shape(&self) -> SelectionShape {
+        self.shape
     }
 
     /// The original anchor position.
@@ -143,6 +155,9 @@ impl<P> Selection<P> {
         let (start, end) = self.ordered_rows();
         if cell.row < start.row || cell.row > end.row {
             return false;
+        }
+        if self.shape == SelectionShape::Lines {
+            return true;
         }
         if start.row == end.row {
             cell.col >= start.col && cell.col <= end.col

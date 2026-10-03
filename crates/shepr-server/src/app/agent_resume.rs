@@ -238,7 +238,9 @@ impl App {
         // A restored resume runs through the shell by design. Quote each argv
         // element into shell text before sending it to the PTY; the planner's
         // metacharacter regression asserts on this resulting text.
-        let Some(resume_command) = shepr_remote::interactive_shell_command(&plan.argv) else {
+        let Some(resume_command) =
+            (!plan.argv.is_empty()).then(|| shepr_core::shell_quote::join_argv(&plan.argv))
+        else {
             // The planner refuses to produce an empty argv, so this is a
             // plan that should not exist; retrying cannot change it.
             tracing::warn!(

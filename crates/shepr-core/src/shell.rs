@@ -22,9 +22,8 @@ pub enum ExecutableStatus {
 
 /// Resolve a program path using the pane's `PATH` and working directory.
 ///
-/// The caller supplies the platform-specific executability check. This keeps
-/// path lookup shared between config validation and PTY launch while leaving
-/// access checks in the layer that owns them.
+/// The caller supplies the platform-specific executability check, so path
+/// lookup does not own platform access checks.
 pub fn resolve_executable(
     program: &OsStr,
     path: Option<&OsStr>,

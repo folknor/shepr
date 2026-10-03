@@ -167,7 +167,7 @@ async fn checkout_root_requests_are_limited_by_running_workers() {
     }));
 
     for index in 0..crate::limits::MAX_WORKER_COMPLETION_BACKLOG {
-        server.test_handle_server_event(ServerEvent::ClientShellEndpointRequest {
+        server.test_handle_server_event(ServerEvent::ShellEndpointRequest {
             client_id,
             boot_id: boot_id.clone(),
             request_id: format!("checkout-{index}").into(),
@@ -180,7 +180,7 @@ async fn checkout_root_requests_are_limited_by_running_workers() {
             .expect("checkout worker should start within the limit");
     }
 
-    server.test_handle_server_event(ServerEvent::ClientShellEndpointRequest {
+    server.test_handle_server_event(ServerEvent::ShellEndpointRequest {
         client_id,
         boot_id,
         request_id: "checkout-over-limit".into(),
@@ -250,7 +250,7 @@ fn checkout_root_requests_count_completions_waiting_in_the_worker_channel() {
             });
     }
 
-    server.test_handle_server_event(ServerEvent::ClientShellEndpointRequest {
+    server.test_handle_server_event(ServerEvent::ShellEndpointRequest {
         client_id,
         boot_id,
         request_id: "checkout-queued-limit".into(),

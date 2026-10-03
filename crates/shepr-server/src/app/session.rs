@@ -947,8 +947,9 @@ mod tests {
                 .join(shepr_mux::persist::SessionWriter::SESSION_FILE_NAME),
         )
         .expect("read the session file");
-        shepr_mux::persist::snapshot::parse_snapshot(&saved)
+        shepr_mux::persist::snapshot::parse_session_file(&saved)
             .expect("parse the session file")
+            .snapshot
             .workspaces
             .iter()
             .map(|workspace| workspace.panes.len())
@@ -1505,7 +1506,8 @@ mod tests {
     async fn a_restore_that_drops_a_workspace_backs_up_the_saved_session_before_the_first_save() {
         use crate::test_support::{AppPathsFixture as _, ValidatedServerConfigFixture as _};
         use shepr_mux::persist::snapshot::{
-            DirectionSnapshot, LayoutSnapshot, PaneSnapshot, SessionSnapshot, WorkspaceSnapshot,
+            DirectionSnapshot, LayoutSnapshot, PaneSnapshot, SessionFile, SessionSnapshot,
+            WorkspaceSnapshot,
         };
 
         let scratch = crate::test_support::ScratchDir::new("dropped-workspace-backup");
@@ -1520,23 +1522,26 @@ mod tests {
 
         // A working directory that does not exist: each pane's shell launch
         // fails in its chdir.
-        let pane = || PaneSnapshot {
+        let pane = |public_number| PaneSnapshot {
             cwd: scratch.join("missing-cwd"),
-            public_number: None,
+            public_number,
             label: None,
             agent_session: None,
         };
         let workspace =
             |id: &str, name: &str, layout: LayoutSnapshot, ids: &[u32]| WorkspaceSnapshot {
-                id: Some(id.into()),
+                id: id.into(),
                 custom_name: Some(name.into()),
-                identity_cwd: scratch.path().to_path_buf(),
-                next_public_pane_number: 0,
                 layout,
-                panes: ids.iter().map(|id| (*id, pane())).collect(),
+                panes: ids
+                    .iter()
+                    .enumerate()
+                    .map(|(index, id)| (*id, pane(index + 1)))
+                    .collect(),
+                next_public_pane_number: ids.len() + 1,
                 zoomed: false,
-                focused: None,
-                root_pane: None,
+                focused: ids[0],
+                root_pane: ids[0],
             };
         let snapshot = SessionSnapshot {
             version: shepr_mux::persist::snapshot::SNAPSHOT_VERSION,
@@ -1557,7 +1562,11 @@ mod tests {
             ],
             active: Some(0),
         };
-        let original = serde_json::to_vec(&snapshot).expect("encode the saved session");
+        let original = serde_json::to_vec(&SessionFile {
+            snapshot,
+            history_digest: None,
+        })
+        .expect("encode the saved session");
         // The session file name the persist layer reads and writes.
         let session_file = data_dir.join("session.json");
         std::fs::write(&session_file, &original).expect("test precondition");
@@ -1593,10 +1602,11 @@ mod tests {
 
         assert!(app.save_session_now(), "first save");
         assert_eq!(directory_files(&backups), vec![original.clone()]);
-        let saved = shepr_mux::persist::snapshot::parse_snapshot(
+        let saved = shepr_mux::persist::snapshot::parse_session_file(
             &std::fs::read_to_string(&session_file).expect("read the new session"),
         )
-        .expect("parse the new session");
+        .expect("parse the new session")
+        .snapshot;
         assert_eq!(
             saved
                 .workspaces

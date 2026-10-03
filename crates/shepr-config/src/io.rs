@@ -269,8 +269,8 @@ impl AppPaths {
     /// in the home directory so it never pins the directory it was launched
     /// from, but its current directory is still the one the user launched
     /// `shepr` from: the spawning client hands that over as
-    /// `SHEPR_STARTUP_CWD`, and it is what `new_terminal_cwd = "current"`, a
-    /// relative `new_terminal_cwd` and the new-terminal fallback resolve
+    /// `SHEPR_STARTUP_CWD`, and it is what `terminal.new_cwd = "current"`, a
+    /// relative `terminal.new_cwd` and the new-terminal fallback resolve
     /// against. A server started without the handoff (by hand, from a shell)
     /// uses its own working directory.
     pub fn resolve_for_server() -> Result<Self, Vec<String>> {

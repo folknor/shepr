@@ -6,6 +6,7 @@ mod model;
 pub mod mouse;
 mod parse;
 pub mod raw_input;
+mod tables;
 
 pub use encode::encode_mouse_event;
 pub use encode::{KeyEncodeModes, encode_terminal_key, encode_terminal_key_with_modes};

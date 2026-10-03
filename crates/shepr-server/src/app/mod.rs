@@ -463,7 +463,8 @@ mod tests {
     async fn restore_that_prunes_a_pane_backs_up_the_saved_session_before_the_first_save() {
         use crate::test_support::{AppPathsFixture as _, ValidatedServerConfigFixture as _};
         use shepr_mux::persist::snapshot::{
-            DirectionSnapshot, LayoutSnapshot, PaneSnapshot, SessionSnapshot, WorkspaceSnapshot,
+            DirectionSnapshot, LayoutSnapshot, PaneSnapshot, SessionFile, SessionSnapshot,
+            WorkspaceSnapshot,
         };
 
         let scratch = crate::test_support::ScratchDir::new("pruned-pane-backup");
@@ -476,9 +477,9 @@ mod tests {
         let lease =
             shepr_mux::persist::DataDirLease::acquire(&data_dir).expect("test session lease");
 
-        let pane = |cwd: std::path::PathBuf| PaneSnapshot {
+        let pane = |cwd: std::path::PathBuf, public_number| PaneSnapshot {
             cwd,
-            public_number: None,
+            public_number,
             label: None,
             agent_session: None,
         };
@@ -486,10 +487,9 @@ mod tests {
             version: shepr_mux::persist::snapshot::SNAPSHOT_VERSION,
             host_theme: Default::default(),
             workspaces: vec![WorkspaceSnapshot {
-                id: Some("w1".into()),
+                id: "w1".into(),
                 custom_name: Some("surviving workspace".into()),
-                identity_cwd: scratch.path().to_path_buf(),
-                next_public_pane_number: 0,
+                next_public_pane_number: 3,
                 layout: LayoutSnapshot::Split {
                     direction: DirectionSnapshot::Horizontal,
                     ratio: 0.5,
@@ -497,16 +497,20 @@ mod tests {
                     second: Box::new(LayoutSnapshot::Pane(2)),
                 },
                 panes: std::collections::HashMap::from([
-                    (1, pane("relative-cwd".into())),
-                    (2, pane(scratch.join("missing-cwd"))),
+                    (1, pane("relative-cwd".into(), 1)),
+                    (2, pane(scratch.join("missing-cwd"), 2)),
                 ]),
                 zoomed: false,
-                focused: Some(2),
-                root_pane: Some(2),
+                focused: 2,
+                root_pane: 2,
             }],
             active: Some(0),
         };
-        let original = serde_json::to_vec(&snapshot).expect("encode the saved session");
+        let original = serde_json::to_vec(&SessionFile {
+            snapshot,
+            history_digest: None,
+        })
+        .expect("encode the saved session");
         let session_file = data_dir.join("session.json");
         std::fs::write(&session_file, &original).expect("write the saved session");
 
@@ -1328,7 +1332,7 @@ mod tests {
                 .join(shepr_mux::persist::SessionWriter::SESSION_FILE_NAME),
         )
         .expect("the pane exit writes a checkpoint");
-        assert!(shepr_mux::persist::snapshot::parse_snapshot(&checkpoint).is_ok());
+        assert!(shepr_mux::persist::snapshot::parse_session_file(&checkpoint).is_ok());
         assert!(
             app.session_saver.autosave_deadline().is_some(),
             "the pane exit schedules the normal autosave"

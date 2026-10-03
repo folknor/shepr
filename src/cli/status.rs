@@ -231,9 +231,10 @@ fn server_status_json(
     };
     let status = answered_status(server);
     let (compatible, restart_needed) = build_status_flags(server);
-    // Keep the compatibility and restart fields in the shared server status
-    // JSON shape. Remote preflight parses this shape and uses presence and
-    // build_id to make its decision.
+    // `compatible` and `restart_needed` are judged against this CLI's build,
+    // for the operator reading the output. A remote preflight runs a
+    // different machine's CLI, so it ignores them and compares presence and
+    // build_id against its own build instead.
     ServerStatusJson {
         presence,
         version: status.and_then(|status| status.version.clone()),

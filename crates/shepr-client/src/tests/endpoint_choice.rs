@@ -3,7 +3,7 @@ use endpoint::{
     ClientEndpointId, ClientEndpointStatus, EndpointChoice, EndpointRegistry, EndpointTransport,
 };
 use shepr_protocol::{
-    ClientShellSnapshot, ClientSurfaceSize, PaneSurfaceFrame,
+    ClientShellSnapshot, ClientSurfaceSize, PaneSurfaceFrame, ServerMessage,
     command::{EndpointCommand, EndpointReply},
 };
 use std::sync::Mutex;
@@ -219,6 +219,9 @@ impl Fixture {
         self.reconcile();
     }
     pub(crate) fn inbound(&mut self, id: &ClientEndpointId, message: ServerMessage) {
+        let message = shepr_protocol::surface_reuse::Decoder::default()
+            .decode_client(message)
+            .expect("test message is valid");
         let generation = self
             .client
             .write_stream
@@ -231,7 +234,7 @@ impl Fixture {
                 ClientLoopEvent::ServerMessage {
                     endpoint_id: id.clone(),
                     generation,
-                    message: Box::new(DecodedServerMessage::Wire(message)),
+                    message: Box::new(message),
                 },
                 self.now,
             )
@@ -254,7 +257,7 @@ impl Fixture {
                 ClientLoopEvent::ServerMessage {
                     endpoint_id: id.clone(),
                     generation,
-                    message: Box::new(DecodedServerMessage::PaneSurfacePatch(patch)),
+                    message: Box::new(DecodedClientServerMessage::PaneSurfacePatch(patch)),
                 },
                 self.now,
             )
@@ -786,7 +789,7 @@ fn a_resize_reaches_every_viewed_connection_and_drops_the_recorded_surface() {
             .choice
             .preparing()
             .expect("preparing")
-            .ready(f.size())
+            .ready()
             .is_none()
     );
     for sent in [f.local.take(), f.target.take()] {
@@ -811,7 +814,7 @@ fn a_resize_with_an_unchanged_geometry_keeps_the_move_evidence() {
             .choice
             .preparing()
             .expect("preparing")
-            .ready(f.size())
+            .ready()
             .is_some()
     );
     f.reconcile();

@@ -74,7 +74,9 @@ impl SnapshotFingerprintCache {
         };
         let layout = match layout {
             Some(content) => {
-                let snapshot = serde_json::from_str::<SessionSnapshot>(&content).ok();
+                let snapshot = super::snapshot::parse_session_file(&content)
+                    .ok()
+                    .map(|file| file.snapshot);
                 Some(snapshot.map_or(SavedLayout::Unknown, |snapshot| saved_layout(&snapshot)))
             }
             None => stamp.map(|_| SavedLayout::Unknown),
@@ -234,7 +236,7 @@ impl SessionWriter {
         snapshot: &SessionSnapshot,
         history: Option<&SessionHistory>,
         now: SystemTime,
-    ) -> Result<Option<String>, SaveError> {
+    ) -> Result<Option<super::io::HistoryDigest>, SaveError> {
         if !self.may_write()? {
             return Ok(None);
         }
@@ -253,19 +255,13 @@ impl SessionWriter {
     pub fn save_keeping_history(
         &mut self,
         snapshot: &SessionSnapshot,
-        digest: &str,
+        digest: &super::io::HistoryDigest,
         now: SystemTime,
-    ) -> Result<Option<String>, SaveError> {
+    ) -> Result<Option<super::io::HistoryDigest>, SaveError> {
         if !self.may_write()? {
             return Ok(None);
         }
-        let digest = super::io::HistoryDigest::from_hex(digest).ok_or_else(|| {
-            SaveError::Io(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "session history digest is not a SHA-256 hex digest",
-            ))
-        })?;
-        self.save_with(snapshot, HistoryIntent::Keep(digest), now)
+        self.save_with(snapshot, HistoryIntent::Keep(*digest), now)
     }
 
     /// Serializes `history` (trimmed to the file cap) and hashes exactly the
@@ -303,7 +299,7 @@ impl SessionWriter {
         snapshot: &SessionSnapshot,
         history: HistoryIntent,
         now: SystemTime,
-    ) -> Result<Option<String>, SaveError> {
+    ) -> Result<Option<super::io::HistoryDigest>, SaveError> {
         let mut snapshot_history_plan = SnapshotHistoryPlan::RetryAfterWrite;
         let result = self.preserve_unloaded(now).and_then(|()| {
             snapshot_history_plan = self.prepare_snapshot_history(snapshot, now);
@@ -320,8 +316,8 @@ impl SessionWriter {
         history: HistoryIntent,
         snapshot_history_plan: SnapshotHistoryPlan,
         now: SystemTime,
-    ) -> Result<Option<String>, SaveError> {
-        let digest = history.digest().map(super::io::HistoryDigest::to_hex);
+    ) -> Result<Option<super::io::HistoryDigest>, SaveError> {
+        let digest = history.digest();
         let mut failure = None;
         if result.is_ok() {
             self.snapshot_fingerprints
@@ -1027,12 +1023,18 @@ mod tests {
     fn snapshot() -> SessionSnapshot {
         serde_json::from_value(serde_json::json!({
             "version": super::super::snapshot::SNAPSHOT_VERSION,
+            "host_theme": super::super::snapshot::SavedHostTheme::default(),
             "workspaces": [{
                 "id": "w1",
-                "identity_cwd": "/shepr-writer-test",
+                "custom_name": null,
+                "next_public_pane_number": 2,
                 "layout": { "Pane": 0 },
                 "panes": {
-                    "0": { "cwd": "/shepr-writer-test" }
+                    "0": {
+                        "cwd": "/shepr-writer-test",
+                        "public_number": 1,
+                        "label": null
+                    }
                 },
                 "zoomed": false,
                 "focused": 0,
@@ -1234,8 +1236,8 @@ mod tests {
         let pane = workspace.panes.remove(&0).expect("test precondition");
         workspace.panes.insert(1, pane);
         workspace.layout = super::super::snapshot::LayoutSnapshot::Pane(1);
-        workspace.focused = Some(1);
-        workspace.root_pane = Some(1);
+        workspace.focused = 1;
+        workspace.root_pane = 1;
         writer.save(&changed, None, rolled_back).expect("save");
         assert_eq!(snapshots(&writer).len(), 2);
         let path = writer.path.clone();
@@ -1272,8 +1274,8 @@ mod tests {
         let pane = workspace.panes.remove(&0).expect("test precondition");
         workspace.panes.insert(1, pane);
         workspace.layout = super::super::snapshot::LayoutSnapshot::Pane(1);
-        workspace.focused = Some(1);
-        workspace.root_pane = Some(1);
+        workspace.focused = 1;
+        workspace.root_pane = 1;
         writer
             .save(
                 &changed,
@@ -1408,11 +1410,11 @@ mod tests {
         let mut changed = snapshot();
         changed.workspaces[0].custom_name = Some("latest layout".into());
         assert!(writer.save_for_test(&changed, None).is_err());
-        let saved: SessionSnapshot =
+        let saved: super::super::snapshot::SessionFile<SessionSnapshot> =
             serde_json::from_slice(&std::fs::read(&writer.path).expect("test precondition"))
                 .expect("test precondition");
         assert_eq!(
-            saved.workspaces[0].custom_name.as_deref(),
+            saved.snapshot.workspaces[0].custom_name.as_deref(),
             Some("latest layout")
         );
         std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
@@ -1608,17 +1610,18 @@ mod tests {
             .save(&snapshot(), Some(&history), SystemTime::now())
             .expect("save")
             .expect("a history was saved");
-        assert_eq!(named(&writer).as_deref(), Some(digest.as_str()));
-        assert_eq!(file_digest(), digest);
+        let digest_hex = digest.to_hex();
+        assert_eq!(named(&writer).as_deref(), Some(digest_hex.as_str()));
+        assert_eq!(file_digest(), digest_hex);
 
         let mut changed = snapshot();
         changed.workspaces[0].custom_name = Some("layout only".into());
         let kept = writer
             .save_keeping_history(&changed, &digest, SystemTime::now())
             .expect("save");
-        assert_eq!(kept.as_deref(), Some(digest.as_str()));
-        assert_eq!(named(&writer).as_deref(), Some(digest.as_str()));
-        assert_eq!(file_digest(), digest);
+        assert_eq!(kept, Some(digest));
+        assert_eq!(named(&writer).as_deref(), Some(digest_hex.as_str()));
+        assert_eq!(file_digest(), digest_hex);
 
         assert_eq!(
             writer

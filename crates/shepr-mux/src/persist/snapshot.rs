@@ -95,26 +95,89 @@ mod path_bytes {
     }
 }
 
+// The serde types below are the on-disk schema itself: every field is
+// required, a nullable one included, so a key a save always writes cannot go
+// missing unnoticed. A file that does not match fails to parse and takes the
+// unusable-file path (backed up, then replaced), whole. Keeping a second,
+// hand-written schema in front of lenient types, or `Option`s and defaults
+// for damaged in-memory fixtures, lets the two drift; restore validates only
+// what a type cannot express. The one tolerance is a pane's agent session
+// (see `deserialize_agent_session`).
+
 /// Serializable snapshot of the entire shepr session.
 #[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SessionSnapshot {
     /// Format version - used to detect incompatible changes.
     pub version: SnapshotVersion,
-    #[serde(default)]
     pub host_theme: SavedHostTheme,
     pub workspaces: Vec<WorkspaceSnapshot>,
     /// The workspace the session's bookmark names: where a client with no
     /// location of its own starts.
+    #[serde(deserialize_with = "required_nullable")]
     pub active: Option<usize>,
 }
 
+/// One saved layout file, including the history bytes it names. `T` is the
+/// borrowed snapshot form while writing and the owned form while reading.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionFile<T> {
+    pub snapshot: T,
+    #[serde(deserialize_with = "required_nullable")]
+    pub history_digest: Option<super::HistoryDigest>,
+}
+
+// Serde fills a missing `Option` field with `None` unless the field has its
+// own `deserialize_with`, which makes the key required while its value may
+// still be `null`.
+fn required_nullable<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer)
+}
+
 /// Last observed physical terminal colours, retained for headless resumes.
-#[derive(Clone, Default, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SavedHostTheme {
+    #[serde(deserialize_with = "required_nullable")]
     pub foreground: Option<shepr_termio::host_term::theme::RgbColor>,
+    #[serde(deserialize_with = "required_nullable")]
     pub background: Option<shepr_termio::host_term::theme::RgbColor>,
-    #[serde(default)]
+    #[serde(deserialize_with = "deserialize_palette")]
     pub palette: Vec<Option<shepr_termio::host_term::theme::RgbColor>>,
+}
+
+// serde has no array impl past 32 entries, so the palette is a `Vec` whose
+// length is checked here.
+fn deserialize_palette<'de, D>(
+    deserializer: D,
+) -> Result<Vec<Option<shepr_termio::host_term::theme::RgbColor>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let palette =
+        Vec::<Option<shepr_termio::host_term::theme::RgbColor>>::deserialize(deserializer)?;
+    if palette.len() != PALETTE_COLOR_COUNT {
+        return Err(serde::de::Error::custom(format!(
+            "palette has {} colors, expected {PALETTE_COLOR_COUNT}",
+            palette.len()
+        )));
+    }
+    Ok(palette)
+}
+
+impl Default for SavedHostTheme {
+    fn default() -> Self {
+        Self {
+            foreground: None,
+            background: None,
+            palette: vec![None; PALETTE_COLOR_COUNT],
+        }
+    }
 }
 
 impl From<shepr_termio::host_term::theme::TerminalTheme> for SavedHostTheme {
@@ -174,29 +237,26 @@ where
     map.end()
 }
 
+/// One saved workspace. Its identity cwd is not saved: restore derives it from
+/// the restored root pane's cwd.
 #[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WorkspaceSnapshot {
-    #[serde(default)]
-    pub id: Option<String>,
-    #[serde(default)]
+    /// A non-canonical value is restore's to replace, with a fresh ID.
+    pub id: String,
+    #[serde(deserialize_with = "required_nullable")]
     pub custom_name: Option<String>,
-    #[serde(
-        serialize_with = "path_bytes::serialize",
-        deserialize_with = "path_bytes::deserialize"
-    )]
-    pub identity_cwd: PathBuf,
-    #[serde(default)]
+    /// Restore checks it against the panes' numbers.
     pub next_public_pane_number: usize,
     pub layout: LayoutSnapshot,
     pub panes: HashMap<u32, PaneSnapshot>,
     pub zoomed: bool,
-    #[serde(default)]
-    pub focused: Option<u32>,
-    #[serde(default)]
-    pub root_pane: Option<u32>,
+    pub focused: u32,
+    pub root_pane: u32,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PaneSnapshot {
     #[serde(
         serialize_with = "path_bytes::serialize",
@@ -205,12 +265,9 @@ pub struct PaneSnapshot {
     // Saved paths may disappear between capture and restore. Keep the path
     // observation; restore and the child's required chdir own admission.
     pub cwd: PathBuf,
-    /// The pane's public number within its workspace. Restore gives a pane
-    /// with none, or with zero (which no public ID can carry), a fresh free
-    /// number.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub public_number: Option<usize>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Restore rejects zero and repeats within a workspace.
+    pub public_number: usize,
+    #[serde(deserialize_with = "required_nullable")]
     pub label: Option<String>,
     #[serde(
         default,
@@ -289,10 +346,8 @@ pub struct PendingCwds {
 }
 
 impl PendingCwds {
-    /// Reads every probe and stores the best result in `snapshot`, then updates
-    /// each affected workspace's identity cwd from its root pane.
+    /// Reads every probe and stores the best result in `snapshot`.
     pub fn resolve(self, snapshot: &mut SessionSnapshot) {
-        let mut touched = Vec::new();
         for ((workspace, pane), probe) in self.probes {
             let Some(cwd) = probe.read() else {
                 continue;
@@ -303,25 +358,9 @@ impl PendingCwds {
                 .and_then(|workspace| workspace.panes.get_mut(&pane))
             {
                 saved.cwd = cwd;
-                touched.push(workspace);
-            }
-        }
-        for workspace in touched {
-            if let Some(workspace) = snapshot.workspaces.get_mut(workspace)
-                && let Some(cwd) = root_pane_cwd(workspace)
-            {
-                workspace.identity_cwd = cwd;
             }
         }
     }
-}
-
-/// The cwd of a workspace's root pane, which names the workspace.
-fn root_pane_cwd(workspace: &WorkspaceSnapshot) -> Option<PathBuf> {
-    workspace
-        .root_pane
-        .and_then(|id| workspace.panes.get(&id))
-        .map(|pane| pane.cwd.clone())
 }
 
 /// Capture the current app state into a serializable snapshot, refreshing each
@@ -421,25 +460,21 @@ fn capture_workspace(
             id.raw(),
             PaneSnapshot {
                 cwd,
-                public_number: Some(workspace_pane.public_number),
+                public_number: workspace_pane.public_number,
                 label,
                 agent_session,
             },
         );
     }
-    let identity_cwd = ws.resolved_identity_cwd_from_root_pane(
-        panes.get(&ws.root_pane.raw()).map(|pane| pane.cwd.clone()),
-    );
     WorkspaceSnapshot {
-        id: Some(ws.id.to_string()),
+        id: ws.id.to_string(),
         custom_name: ws.custom_name.clone(),
-        identity_cwd,
         next_public_pane_number: ws.next_public_pane_number,
         layout: capture_node(ws.layout.root()),
         panes,
         zoomed: ws.zoomed,
-        focused: Some(ws.layout.focused().raw()),
-        root_pane: Some(ws.root_pane.raw()),
+        focused: ws.layout.focused().raw(),
+        root_pane: ws.root_pane.raw(),
     }
 }
 
@@ -618,7 +653,7 @@ pub enum ResolvedHistory {
     /// The history file already holds exactly this history, whose digest is
     /// given: nothing was assembled and nothing needs writing. Only ever
     /// produced when the caller allowed it.
-    Unchanged(String),
+    Unchanged(super::io::HistoryDigest),
     Changed(SessionHistory),
 }
 
@@ -688,10 +723,9 @@ impl HistoryCarry {
     /// The save whose history was last resolved reached the disk, its layout
     /// naming that history by `digest`. A save that wrote no history
     /// (`None`) leaves nothing to skip against.
-    pub(super) fn note_saved(&mut self, digest: Option<String>) {
+    pub(super) fn note_saved(&mut self, digest: Option<super::io::HistoryDigest>) {
         let resolved = self.resolved.take();
-        self.saved =
-            resolved.zip(digest.and_then(|digest| super::io::HistoryDigest::from_hex(&digest)));
+        self.saved = resolved.zip(digest);
     }
 
     /// The history file may not hold what the last resolution said; the next
@@ -840,9 +874,8 @@ impl PendingHistory {
             && let Some((saved, digest)) = &carry.saved
             && *saved == stamp
         {
-            let digest = digest.to_hex();
             carry.resolved = Some(stamp);
-            return ResolvedHistory::Unchanged(digest);
+            return ResolvedHistory::Unchanged(*digest);
         }
         carry.resolved = Some(stamp);
         ResolvedHistory::Changed(SessionHistory {
@@ -967,11 +1000,10 @@ pub(super) fn capture_node(node: &Node) -> LayoutSnapshot {
     }
 }
 
-/// Deserializes the saved shape only. Semantic checks stay in `restore`, so
-/// one invalid workspace can be dropped while healthy ones survive and the caller
-/// can back up the original session file before its next save.
-pub fn parse_snapshot(content: &str) -> Result<SessionSnapshot, String> {
-    serde_json::from_str(content).map_err(|e| e.to_string())
+/// Parses one on-disk session file. The serde types are the whole schema, so
+/// a missing key, a wrong type or an unknown field is a parse error here.
+pub fn parse_session_file(content: &str) -> Result<SessionFile<SessionSnapshot>, String> {
+    serde_json::from_str(content).map_err(|error| error.to_string())
 }
 
 pub(super) fn parse_history_snapshot(content: &str) -> Result<SessionHistorySnapshot, String> {
@@ -1019,13 +1051,104 @@ mod tests {
 
     #[test]
     fn snapshot_cwds_parse_relative_paths_for_restore_validation() {
-        let relative = r#"{"cwd":"relative"}"#;
+        let relative = r#"{"cwd":"relative","public_number":1,"label":null}"#;
         assert!(serde_json::from_str::<super::PaneSnapshot>(relative).is_ok());
-        let missing = r#"{"cwd":"/shepr-missing-saved-directory"}"#;
-        // The rest of the pane fields default, so this also checks that a
-        // missing saved path remains available for a later restore attempt.
+        // A missing saved path remains available for a later restore attempt.
+        let missing = r#"{"cwd":"/shepr-missing-saved-directory","public_number":1,"label":null}"#;
         let pane: super::PaneSnapshot = serde_json::from_str(missing).expect("absolute saved cwd");
         assert_eq!(pane.cwd, PathBuf::from("/shepr-missing-saved-directory"));
+    }
+
+    /// Every key a save writes is required, a nullable one included, and a
+    /// key no save writes is refused; a pane's agent session alone may be
+    /// absent (a save leaves it out when there is none).
+    #[test]
+    fn every_saved_key_is_required_and_no_other_is_accepted() {
+        let snapshot = super::SessionSnapshot {
+            version: super::SNAPSHOT_VERSION,
+            host_theme: super::SavedHostTheme::default(),
+            workspaces: vec![super::WorkspaceSnapshot {
+                id: "w1".into(),
+                custom_name: None,
+                next_public_pane_number: 2,
+                layout: super::LayoutSnapshot::Pane(0),
+                panes: HashMap::from([(
+                    0,
+                    super::PaneSnapshot {
+                        cwd: PathBuf::from("/"),
+                        public_number: 1,
+                        label: None,
+                        agent_session: None,
+                    },
+                )]),
+                zoomed: false,
+                focused: 0,
+                root_pane: 0,
+            }],
+            active: None,
+        };
+        let saved = serde_json::to_value(super::SessionFile {
+            snapshot: &snapshot,
+            history_digest: None,
+        })
+        .expect("serialize");
+        assert!(
+            saved
+                .pointer("/snapshot/workspaces/0/panes/0/agent_session")
+                .is_none()
+        );
+        super::parse_session_file(&saved.to_string()).expect("a saved file parses");
+
+        let workspace = "/snapshot/workspaces/0";
+        let pane = "/snapshot/workspaces/0/panes/0";
+        for (parent, key) in [
+            ("", "history_digest"),
+            ("/snapshot", "version"),
+            ("/snapshot", "host_theme"),
+            ("/snapshot", "workspaces"),
+            ("/snapshot", "active"),
+            ("/snapshot/host_theme", "foreground"),
+            ("/snapshot/host_theme", "background"),
+            ("/snapshot/host_theme", "palette"),
+            (workspace, "id"),
+            (workspace, "custom_name"),
+            (workspace, "next_public_pane_number"),
+            (workspace, "layout"),
+            (workspace, "panes"),
+            (workspace, "zoomed"),
+            (workspace, "focused"),
+            (workspace, "root_pane"),
+            (pane, "cwd"),
+            (pane, "public_number"),
+            (pane, "label"),
+        ] {
+            let mut damaged = saved.clone();
+            damaged
+                .pointer_mut(parent)
+                .and_then(serde_json::Value::as_object_mut)
+                .and_then(|object| object.remove(key))
+                .expect("test precondition");
+            assert!(
+                super::parse_session_file(&damaged.to_string()).is_err(),
+                "{parent}/{key} missing"
+            );
+        }
+
+        let mut unknown = saved.clone();
+        unknown
+            .pointer_mut(workspace)
+            .and_then(serde_json::Value::as_object_mut)
+            .expect("test precondition")
+            .insert("identity_cwd".into(), "/".into());
+        assert!(super::parse_session_file(&unknown.to_string()).is_err());
+
+        let mut short_palette = saved;
+        short_palette
+            .pointer_mut("/snapshot/host_theme/palette")
+            .and_then(serde_json::Value::as_array_mut)
+            .expect("test precondition")
+            .pop();
+        assert!(super::parse_session_file(&short_palette.to_string()).is_err());
     }
 
     #[test]
@@ -1036,7 +1159,7 @@ mod tests {
             serde_json::json!(42),
         ] {
             let pane: super::PaneSnapshot = serde_json::from_value(serde_json::json!({
-                "cwd": "/", "agent_session": session,
+                "cwd": "/", "public_number": 1, "label": null, "agent_session": session,
             }))
             .expect("bad session stays local to this pane");
             assert!(pane.agent_session.is_none());
@@ -1106,9 +1229,9 @@ mod tests {
             crate::pane::PaneRuntime::test_with_scrollback_bytes(20, 3, 4096, b"ONE\r\n"),
         );
         let mut carry = super::HistoryCarry::default();
-        let first = super::super::io::history_digest(b"first").to_hex();
-        let second = super::super::io::history_digest(b"second").to_hex();
-        let third = super::super::io::history_digest(b"third").to_hex();
+        let first = super::super::io::history_digest(b"first");
+        let second = super::super::io::history_digest(b"second");
+        let third = super::super::io::history_digest(b"third");
         let resolve = |carry: &mut super::HistoryCarry, allow: bool| {
             super::capture_pending_history(&workspaces, &runtimes).resolve_for_save(carry, allow)
         };
@@ -1117,13 +1240,13 @@ mod tests {
             resolve(&mut carry, true),
             super::ResolvedHistory::Changed(_)
         ));
-        carry.note_saved(Some(first.clone()));
+        carry.note_saved(Some(first));
         assert!(matches!(
             resolve(&mut carry, true),
             super::ResolvedHistory::Unchanged(digest) if digest == first
         ));
         // An unchanged save keeps what it can skip against.
-        carry.note_saved(Some(first.clone()));
+        carry.note_saved(Some(first));
         assert!(
             matches!(
                 resolve(&mut carry, false),
@@ -1131,7 +1254,7 @@ mod tests {
             ),
             "a caller that cannot skip always gets the history"
         );
-        carry.note_saved(Some(second.clone()));
+        carry.note_saved(Some(second));
         assert!(matches!(
             resolve(&mut carry, true),
             super::ResolvedHistory::Unchanged(digest) if digest == second

@@ -11,7 +11,7 @@ use crate::render_signal::RenderSignal;
 use crate::terminal::{RestoreFailure, TerminalState};
 use crate::workspace::Workspace;
 use shepr_agent::detect::AgentState;
-use shepr_core::layout::{Direction, InvalidSavedLayout, Node, PaneId, SplitRatio, TileLayout};
+use shepr_core::layout::{Direction, Node, PaneId, SplitRatio, TileLayout};
 use shepr_protocol::{TerminalId, WorkspaceId};
 
 use super::snapshot::{
@@ -20,6 +20,11 @@ use super::snapshot::{
 use super::{
     DirectionSnapshot, LayoutSnapshot, SessionHistorySnapshot, SessionSnapshot, WorkspaceSnapshot,
 };
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SavedLayoutDefect {
+    InvalidSplitRatio,
+}
 
 struct AgentRestoreState<'a> {
     enabled: bool,
@@ -102,6 +107,7 @@ type RestoredWorkspace = (
 // reserves agent sessions. The whole snapshot is planned before execution.
 struct WorkspaceRestorePlan {
     snapshot: WorkspaceSnapshot,
+    identity_cwd: std::path::PathBuf,
     layout: TileLayout,
     reverse_id_map: HashMap<PaneId, u32>,
     pane_ids: Vec<PaneId>,
@@ -148,11 +154,7 @@ pub fn restore(
     let saved_ids = snapshot
         .workspaces
         .iter()
-        .map(|ws| {
-            ws.id
-                .as_deref()
-                .and_then(|id| id.parse::<WorkspaceId>().ok())
-        })
+        .map(|ws| ws.id.parse::<WorkspaceId>().ok())
         .collect::<Vec<_>>();
     // Before any allocation below, so a fresh ID is never one a saved
     // workspace owns.
@@ -161,15 +163,13 @@ pub fn restore(
     let mut seen_saved_ids = HashSet::new();
     let mut dropped_workspaces = 0;
     for ((idx, plan), saved_id) in plans.into_iter().enumerate().zip(saved_ids) {
-        if let Some(raw_id) = snapshot.workspaces[idx].id.as_deref() {
-            match raw_id.parse::<WorkspaceId>() {
-                Ok(id) => {
-                    if !seen_saved_ids.insert(id) {
-                        restore_damage = true;
-                    }
+        match &saved_id {
+            Some(id) => {
+                if !seen_saved_ids.insert(id.clone()) {
+                    restore_damage = true;
                 }
-                Err(_) => restore_damage = true,
             }
+            None => restore_damage = true,
         }
         let Some(plan) = plan else {
             dropped_workspaces += 1;
@@ -344,6 +344,8 @@ fn restored_pane_size(
 fn plan_workspace(original: &WorkspaceSnapshot) -> Option<WorkspaceRestorePlan> {
     let mut snap = original.clone();
     let mut restore_damage = false;
+    let saved_focus = snap.focused;
+    let saved_root = snap.root_pane;
     // shepr only ever saves absolute cwds, so a relative one is a damaged
     // value, not a directory that went missing. It is dropped with its pane
     // rather than kept as an unavailable pane: a relative cwd in live terminal
@@ -358,12 +360,16 @@ fn plan_workspace(original: &WorkspaceSnapshot) -> Option<WorkspaceRestorePlan> 
         valid
     });
     restore_damage |= snap.panes.len() != saved_pane_count;
-    // An invalid saved split ratio drops this one workspace, like every other
-    // per-workspace restore defect below, rather than refusing the whole
-    // session (which would lose every healthy workspace for one bad number) or
-    // clamping it (which silently repairs a corrupt file). The workspace is
-    // not lost on disk: a nonzero `RestoredSession::dropped_workspaces` makes
-    // the first save back the original file up before overwriting it.
+    // A file that does not match the saved schema (a missing key, a wrong
+    // type) never gets here: it fails to parse and is refused whole, backed
+    // up as unusable. What does get here parsed, so its defects are in
+    // values only a restore can judge, such as a split ratio out of range or
+    // pane numbers that collide. Such a defect drops this one workspace,
+    // like every other below, rather than refusing the whole session (which
+    // would lose every healthy workspace for one bad value) or repairing it
+    // (which silently rewrites a corrupt file). The workspace is not lost on
+    // disk: a nonzero `RestoredSession::dropped_workspaces` makes the first
+    // save back the original file up before overwriting it.
     // Pane IDs are allocated here, before any shell starts; a workspace
     // dropped later only leaves gaps in the ID space.
     let (node, id_map) = match restore_node_remapped(&snap.layout) {
@@ -412,14 +418,13 @@ fn plan_workspace(original: &WorkspaceSnapshot) -> Option<WorkspaceRestorePlan> 
         return None;
     };
     let pane_ids = node.pane_ids();
-    let saved_focus_survived = snap
-        .focused
-        .and_then(|old_id| id_map.get(&old_id))
+    let saved_focus_survived = id_map
+        .get(&saved_focus)
         .is_some_and(|pane_id| surviving.contains(pane_id));
     // A stale saved focus falls back to the first surviving leaf before the
     // checked layout constructor is called.
-    let focus = resolve_restored_pane(snap.focused, &id_map, &surviving, &pane_ids)?;
-    let root_pane = resolve_restored_pane(snap.root_pane, &id_map, &surviving, &pane_ids)?;
+    let focus = resolve_restored_pane(saved_focus, &id_map, &surviving, &pane_ids)?;
+    let root_pane = resolve_restored_pane(saved_root, &id_map, &surviving, &pane_ids)?;
     // Every leaf got a fresh `PaneId::alloc` in `restore_node_remapped` and
     // focus was just resolved to a surviving leaf, so the saved-file defects
     // `from_saved` checks for cannot reach it; a rejection here means an
@@ -447,30 +452,33 @@ fn plan_workspace(original: &WorkspaceSnapshot) -> Option<WorkspaceRestorePlan> 
     snap.panes
         .retain(|old, _| id_map.get(old).is_some_and(|id| surviving.contains(id)));
     restore_damage |= snap.panes.len() != planned_pane_count;
-    let max = snap
+    let numbers: HashMap<u32, usize> = snap
         .panes
-        .values()
-        .filter_map(|pane| pane.public_number)
-        .max()
-        .unwrap_or(0);
-    let Some(mut next) = max.checked_add(1) else {
+        .iter()
+        .map(|(&old_raw, pane)| (old_raw, pane.public_number))
+        .collect();
+    let max = numbers.values().copied().max().unwrap_or(0);
+    let Some(minimum_next) = max.checked_add(1) else {
         warn!(workspace = ?snap.id, "saved public pane number space exhausted; dropping workspace");
         return None;
     };
-    next = next.max(snap.next_public_pane_number).max(1);
-    let Some(numbers) = assign_public_pane_numbers(&snap, &mut next) else {
-        warn!(workspace = ?snap.id, "saved public pane number space exhausted; dropping workspace");
+    // Also refuses zero, since `minimum_next` is at least one.
+    let next = snap.next_public_pane_number;
+    if next < minimum_next {
+        warn!(
+            workspace = ?snap.id,
+            "saved next public pane number is inconsistent; dropping workspace"
+        );
         return None;
-    };
+    }
     if !Workspace::valid_public_numbers(numbers.values().copied(), next) {
         warn!(workspace = ?snap.id, "dropping saved workspace with invalid public pane numbers");
         return None;
     }
-    if !snap.identity_cwd.is_absolute() {
-        snap.identity_cwd = snap.panes.get(reverse_id_map.get(&root_pane)?)?.cwd.clone();
-    }
+    let identity_cwd = snap.panes.get(reverse_id_map.get(&root_pane)?)?.cwd.clone();
     Some(WorkspaceRestorePlan {
         snapshot: snap,
+        identity_cwd,
         layout,
         reverse_id_map,
         pane_ids,
@@ -495,6 +503,7 @@ fn restore_workspace(
 ) -> Option<RestoredWorkspace> {
     let WorkspaceRestorePlan {
         snapshot: snap,
+        identity_cwd,
         layout,
         reverse_id_map,
         pane_ids,
@@ -647,9 +656,8 @@ fn restore_workspace(
         }
     }
 
-    // Every surviving pane is a saved layout pane, which
-    // `assign_public_pane_numbers` numbered and counted into
-    // `next_public_pane_number`; a pane without one means that invariant broke.
+    // Every surviving pane has a validated public number from the saved
+    // snapshot; a missing mapping here means an internal invariant broke.
     for (pane_id, pane) in &mut panes {
         let Some(&public_number) = reverse_id_map
             .get(pane_id)
@@ -668,7 +676,7 @@ fn restore_workspace(
     let workspace = Workspace::from_restored(
         workspace_id,
         snap.custom_name.clone(),
-        snap.identity_cwd.clone(),
+        identity_cwd,
         root_pane,
         layout,
         panes,
@@ -750,13 +758,14 @@ fn restored_terminal_agent_session(
 }
 
 pub(super) fn resolve_restored_pane(
-    saved_old_id: Option<u32>,
+    saved_old_id: u32,
     id_map: &HashMap<u32, PaneId>,
     surviving: &HashSet<PaneId>,
     pane_ids: &[PaneId],
 ) -> Option<PaneId> {
-    saved_old_id
-        .and_then(|old_id| id_map.get(&old_id).copied())
+    id_map
+        .get(&saved_old_id)
+        .copied()
         .filter(|pane_id| surviving.contains(pane_id))
         .or_else(|| pane_ids.first().copied())
 }
@@ -771,9 +780,9 @@ pub(super) fn resolve_restored_pane(
 /// Later copies get a fresh ID with
 /// no saved pane behind it, and `restore_workspace` drops such leaves instead of
 /// inventing a pane for them.
-pub(super) fn restore_node_remapped(
+fn restore_node_remapped(
     snap: &LayoutSnapshot,
-) -> Result<(Node, HashMap<u32, PaneId>), InvalidSavedLayout> {
+) -> Result<(Node, HashMap<u32, PaneId>), SavedLayoutDefect> {
     let mut id_map = HashMap::new();
     let node = remap_inner(snap, &mut id_map)?;
     Ok((node, id_map))
@@ -782,7 +791,7 @@ pub(super) fn restore_node_remapped(
 fn remap_inner(
     snap: &LayoutSnapshot,
     id_map: &mut HashMap<u32, PaneId>,
-) -> Result<Node, InvalidSavedLayout> {
+) -> Result<Node, SavedLayoutDefect> {
     match snap {
         LayoutSnapshot::Pane(old_id) => {
             let new_id = PaneId::alloc();
@@ -802,7 +811,7 @@ fn remap_inner(
             first,
             second,
         } => {
-            let ratio = SplitRatio::new(*ratio).ok_or(InvalidSavedLayout::InvalidSplitRatio)?;
+            let ratio = SplitRatio::new(*ratio).ok_or(SavedLayoutDefect::InvalidSplitRatio)?;
             let first_node = remap_inner(first, id_map)?;
             let second_node = remap_inner(second, id_map)?;
             // Keep this translation at the persistence boundary: core owns
@@ -817,46 +826,6 @@ fn remap_inner(
                 first: Box::new(first_node),
                 second: Box::new(second_node),
             })
-        }
-    }
-}
-
-/// Public pane numbers for every saved pane of a workspace, keyed by saved
-/// pane ID. Every restored pane needs its public ID before its shell starts:
-/// the ID goes into the shell's SHEPR identity environment, which agent hooks
-/// use to report back. A saved pane without a number, or with the number zero
-/// that no public ID can carry (a hand-edited or damaged file), gets the next
-/// free one, in layout order.
-fn assign_public_pane_numbers(
-    snap: &WorkspaceSnapshot,
-    next_public_pane_number: &mut usize,
-) -> Option<HashMap<u32, usize>> {
-    let mut numbers: HashMap<u32, usize> = snap
-        .panes
-        .iter()
-        .filter_map(|(old_raw, pane)| {
-            pane.public_number
-                .filter(|number| *number > 0)
-                .map(|number| (*old_raw, number))
-        })
-        .collect();
-    let mut layout_panes = Vec::new();
-    collect_snapshot_pane_ids(&snap.layout, &mut layout_panes);
-    for old_raw in layout_panes {
-        if snap.panes.contains_key(&old_raw) && !numbers.contains_key(&old_raw) {
-            numbers.insert(old_raw, *next_public_pane_number);
-            *next_public_pane_number = next_public_pane_number.checked_add(1)?;
-        }
-    }
-    Some(numbers)
-}
-
-fn collect_snapshot_pane_ids(layout: &LayoutSnapshot, ids: &mut Vec<u32>) {
-    match layout {
-        LayoutSnapshot::Pane(id) => ids.push(*id),
-        LayoutSnapshot::Split { first, second, .. } => {
-            collect_snapshot_pane_ids(first, ids);
-            collect_snapshot_pane_ids(second, ids);
         }
     }
 }
@@ -949,7 +918,7 @@ mod tests {
             assert!(
                 matches!(
                     restore_node_remapped(&snap),
-                    Err(InvalidSavedLayout::InvalidSplitRatio)
+                    Err(SavedLayoutDefect::InvalidSplitRatio)
                 ),
                 "saved ratio {saved}"
             );
@@ -1198,7 +1167,7 @@ mod tests {
         assert!(!cwd.try_exists().expect("test stat"));
         super::super::snapshot::PaneSnapshot {
             cwd,
-            public_number: None,
+            public_number: 1,
             label: None,
             agent_session: None,
         }
@@ -1207,28 +1176,38 @@ mod tests {
     /// A workspace with one kept pane per ID in `panes`; `layout` may name IDs
     /// without a saved pane, which restore drops.
     fn workspace_snapshot(
-        id: Option<&str>,
+        id: &str,
         name: &str,
         layout: LayoutSnapshot,
         panes: &[u32],
     ) -> WorkspaceSnapshot {
+        let saved_panes: HashMap<_, _> = panes
+            .iter()
+            .enumerate()
+            .map(|(index, id)| {
+                let mut pane = runtimeless_pane();
+                pane.public_number = index + 1;
+                (*id, pane)
+            })
+            .collect();
+        // A workspace with no saved pane is dropped whatever these name.
+        let first_pane = panes.first().copied().unwrap_or_default();
         WorkspaceSnapshot {
-            id: id.map(str::to_string),
+            id: id.to_string(),
             custom_name: Some(name.into()),
-            identity_cwd: PathBuf::from("/"),
-            next_public_pane_number: 0,
+            next_public_pane_number: panes.len() + 1,
             layout,
-            panes: panes.iter().map(|id| (*id, runtimeless_pane())).collect(),
+            panes: saved_panes,
             zoomed: false,
-            focused: None,
-            root_pane: None,
+            focused: first_pane,
+            root_pane: first_pane,
         }
     }
 
     #[test]
     fn restore_plans_reject_collisions_and_exhaustion_before_execution() {
         let mut snap = workspace_snapshot(
-            Some("w1"),
+            "w1",
             "numbers",
             LayoutSnapshot::Split {
                 direction: DirectionSnapshot::Horizontal,
@@ -1239,21 +1218,18 @@ mod tests {
             &[1, 2],
         );
         for pane in snap.panes.values_mut() {
-            pane.public_number = Some(7);
+            pane.public_number = 7;
         }
         assert!(plan_workspace(&snap).is_none());
-        snap.panes.get_mut(&2).expect("pane").public_number = None;
-        snap.next_public_pane_number = usize::MAX;
-        assert!(plan_workspace(&snap).is_none());
         snap.next_public_pane_number = 8;
-        snap.panes.get_mut(&1).expect("pane").public_number = Some(usize::MAX);
+        snap.panes.get_mut(&1).expect("pane").public_number = usize::MAX;
         assert!(plan_workspace(&snap).is_none());
     }
 
     #[test]
-    fn restore_plans_prune_relative_panes_and_recover_identity_cwd() {
+    fn restore_plans_prune_relative_panes_and_derive_identity_cwd_from_a_surviving_root() {
         let mut snap = workspace_snapshot(
-            Some("w1"),
+            "w1",
             "paths",
             LayoutSnapshot::Split {
                 direction: DirectionSnapshot::Horizontal,
@@ -1263,12 +1239,11 @@ mod tests {
             },
             &[1, 2],
         );
-        snap.identity_cwd = PathBuf::from("relative");
         snap.panes.get_mut(&1).expect("pane").cwd = PathBuf::from("relative");
         snap.panes.get_mut(&2).expect("pane").cwd = PathBuf::from("/surviving");
         let plan = plan_workspace(&snap).expect("healthy pane survives");
         assert_eq!(plan.snapshot.panes.len(), 1);
-        assert_eq!(plan.snapshot.identity_cwd, PathBuf::from("/surviving"));
+        assert_eq!(plan.identity_cwd, PathBuf::from("/surviving"));
         assert_eq!(plan.pane_ids.len(), 1);
         assert!(plan.restore_damage);
     }
@@ -1303,7 +1278,7 @@ mod tests {
     fn restore_drops_only_the_workspace_with_an_invalid_split_ratio() {
         let invalid_workspace = |id: &str, name: &str, ratio: f32| {
             workspace_snapshot(
-                Some(id),
+                id,
                 name,
                 LayoutSnapshot::Split {
                     direction: DirectionSnapshot::Horizontal,
@@ -1319,7 +1294,7 @@ mod tests {
             host_theme: Default::default(),
             workspaces: vec![
                 invalid_workspace("w1", "out of range", 1.0),
-                workspace_snapshot(Some("w2"), "healthy", LayoutSnapshot::Pane(3), &[3]),
+                workspace_snapshot("w2", "healthy", LayoutSnapshot::Pane(3), &[3]),
                 invalid_workspace("w3", "not finite", f32::NAN),
             ],
             active: Some(2),
@@ -1341,7 +1316,7 @@ mod tests {
     #[test]
     fn restore_drops_a_workspace_whose_panes_share_a_public_number() {
         let mut duplicated = workspace_snapshot(
-            Some("w1"),
+            "w1",
             "duplicated",
             LayoutSnapshot::Split {
                 direction: DirectionSnapshot::Horizontal,
@@ -1352,14 +1327,14 @@ mod tests {
             &[1, 2],
         );
         for pane in duplicated.panes.values_mut() {
-            pane.public_number = Some(3);
+            pane.public_number = 3;
         }
         let snapshot = SessionSnapshot {
             version: super::super::snapshot::SNAPSHOT_VERSION,
             host_theme: Default::default(),
             workspaces: vec![
                 duplicated,
-                workspace_snapshot(Some("w2"), "healthy", LayoutSnapshot::Pane(3), &[3]),
+                workspace_snapshot("w2", "healthy", LayoutSnapshot::Pane(3), &[3]),
             ],
             active: Some(1),
         };
@@ -1382,10 +1357,10 @@ mod tests {
             host_theme: Default::default(),
             workspaces: vec![
                 // Nothing survives: the layout names a pane with no saved state.
-                workspace_snapshot(Some("w1"), "dropped", LayoutSnapshot::Pane(1), &[]),
-                workspace_snapshot(Some("w2"), "kept", LayoutSnapshot::Pane(2), &[2]),
-                workspace_snapshot(Some("w3"), "gone", LayoutSnapshot::Pane(4), &[]),
-                workspace_snapshot(Some("w4"), "active", LayoutSnapshot::Pane(5), &[5]),
+                workspace_snapshot("w1", "dropped", LayoutSnapshot::Pane(1), &[]),
+                workspace_snapshot("w2", "kept", LayoutSnapshot::Pane(2), &[2]),
+                workspace_snapshot("w3", "gone", LayoutSnapshot::Pane(4), &[]),
+                workspace_snapshot("w4", "active", LayoutSnapshot::Pane(5), &[5]),
             ],
             active: Some(3),
         };
@@ -1408,8 +1383,8 @@ mod tests {
             version: super::super::snapshot::SNAPSHOT_VERSION,
             host_theme: Default::default(),
             workspaces: vec![
-                workspace_snapshot(Some("w1"), "before", LayoutSnapshot::Pane(1), &[1]),
-                workspace_snapshot(Some("w2"), "dropped", LayoutSnapshot::Pane(2), &[]),
+                workspace_snapshot("w1", "before", LayoutSnapshot::Pane(1), &[1]),
+                workspace_snapshot("w2", "dropped", LayoutSnapshot::Pane(2), &[]),
             ],
             active: Some(1),
         };
@@ -1443,9 +1418,9 @@ mod tests {
             // Another pane is gone; the zoomed one stays zoomed.
             (&[1, 2][..], 2, true),
         ] {
-            let mut workspace = workspace_snapshot(Some("w1"), "ws", split(1, 2, 3), panes);
+            let mut workspace = workspace_snapshot("w1", "ws", split(1, 2, 3), panes);
             workspace.zoomed = true;
-            workspace.focused = Some(focused);
+            workspace.focused = focused;
             let snapshot = SessionSnapshot {
                 version: super::super::snapshot::SNAPSHOT_VERSION,
                 host_theme: Default::default(),
@@ -1473,18 +1448,17 @@ mod tests {
         let taken = WorkspaceId::from_number(probe.number() + 1)
             .expect("test precondition")
             .to_string();
-        let workspace = |id: Option<&str>, name: &str, pane: u32| {
+        let workspace = |id: &str, name: &str, pane: u32| {
             workspace_snapshot(id, name, LayoutSnapshot::Pane(pane), &[pane])
         };
         let snapshot = SessionSnapshot {
             version: super::super::snapshot::SNAPSHOT_VERSION,
             host_theme: Default::default(),
             workspaces: vec![
-                workspace(None, "unsaved id", 1),
-                workspace(Some(&taken), "owner", 2),
-                workspace(Some(&taken), "repeat", 3),
-                workspace(Some(""), "empty id", 4),
-                workspace(Some("ws_1"), "non-canonical id", 5),
+                workspace(&taken, "owner", 2),
+                workspace(&taken, "repeat", 3),
+                workspace("", "empty id", 4),
+                workspace("ws_1", "non-canonical id", 5),
             ],
             active: Some(0),
         };
@@ -1492,9 +1466,15 @@ mod tests {
         let restored = restore_runtimeless(&snapshot);
 
         let ids: Vec<_> = restored.workspaces.iter().map(|ws| ws.id.clone()).collect();
-        assert_eq!(ids.len(), 5);
-        assert_eq!(ids[1], taken, "the first owner of a saved ID keeps it");
-        assert_ne!(ids[4], "ws_1", "a non-canonical saved ID is replaced");
+        assert_eq!(
+            ids.len(),
+            4,
+            "an unusable saved ID is replaced, not dropped"
+        );
+        assert!(restored.restore_damage);
+        assert_eq!(ids[0], taken, "the first owner of a saved ID keeps it");
+        assert_ne!(ids[1], taken, "a duplicate saved ID is replaced");
+        assert_ne!(ids[3], "ws_1", "a non-canonical saved ID is replaced");
         let unique: HashSet<_> = ids.iter().collect();
         assert_eq!(unique.len(), ids.len(), "{ids:?}");
         // A later new workspace does not reuse any restored ID either.
@@ -1530,11 +1510,11 @@ mod tests {
         let pane_ids = vec![first];
 
         assert_eq!(
-            resolve_restored_pane(Some(0), &id_map, &surviving, &pane_ids),
+            resolve_restored_pane(0, &id_map, &surviving, &pane_ids),
             Some(first)
         );
         assert_eq!(
-            resolve_restored_pane(Some(1), &id_map, &surviving, &pane_ids),
+            resolve_restored_pane(1, &id_map, &surviving, &pane_ids),
             Some(first)
         );
     }
@@ -1711,21 +1691,24 @@ mod tests {
         for missing_shell in [false, true] {
             let mut snapshot: SessionSnapshot = serde_json::from_value(serde_json::json!({
                 "version": super::super::snapshot::SNAPSHOT_VERSION,
+                "host_theme": super::super::snapshot::SavedHostTheme::default(),
                 "workspaces": [
                     {
                         "id": "workspace-a",
-                        "identity_cwd": "/tmp/shepr-restore-test-a",
+                        "custom_name": null,
+                        "next_public_pane_number": 2,
                         "layout": { "Pane": 1 },
-                        "panes": { "1": { "cwd": "/tmp/shepr-restore-test-a" } },
+                        "panes": { "1": { "cwd": "/tmp/shepr-restore-test-a", "public_number": 1, "label": null } },
                         "zoomed": false,
                         "focused": 1,
                         "root_pane": 1
                     },
                     {
                         "id": "workspace-b",
-                        "identity_cwd": "/tmp/shepr-restore-test-b",
+                        "custom_name": null,
+                        "next_public_pane_number": 2,
                         "layout": { "Pane": 3 },
-                        "panes": { "3": { "cwd": "/tmp/shepr-restore-test-b" } },
+                        "panes": { "3": { "cwd": "/tmp/shepr-restore-test-b", "public_number": 1, "label": null } },
                         "zoomed": false,
                         "focused": 3,
                         "root_pane": 3
@@ -1739,7 +1722,6 @@ mod tests {
             let missing = cwd.join("__shepr_missing_restore_directory__");
             assert!(!missing.try_exists().expect("test stat"));
             for workspace in &mut snapshot.workspaces {
-                workspace.identity_cwd = cwd.clone();
                 for pane in workspace.panes.values_mut() {
                     pane.cwd = cwd.clone();
                 }
@@ -1876,16 +1858,15 @@ mod tests {
             version: super::super::snapshot::SNAPSHOT_VERSION,
             host_theme: Default::default(),
             workspaces: vec![WorkspaceSnapshot {
-                id: Some("workspace".into()),
+                id: "workspace".into(),
                 custom_name: None,
-                identity_cwd: cwd.clone(),
-                next_public_pane_number: 0,
+                next_public_pane_number: 2,
                 layout: LayoutSnapshot::Pane(0),
                 panes: HashMap::from([(
                     0,
                     super::super::snapshot::PaneSnapshot {
                         cwd,
-                        public_number: None,
+                        public_number: 1,
                         label: Some("reviewer".into()),
                         agent_session: Some(super::super::snapshot::PaneAgentSessionSnapshot {
                             source: shepr_agent::agent::AgentSource::parse("shepr:opencode"),
@@ -1898,8 +1879,8 @@ mod tests {
                     },
                 )]),
                 zoomed: false,
-                focused: Some(0),
-                root_pane: Some(0),
+                focused: 0,
+                root_pane: 0,
             }],
             active: Some(0),
         };
@@ -1946,9 +1927,8 @@ mod tests {
             version: super::super::snapshot::SNAPSHOT_VERSION,
             host_theme: Default::default(),
             workspaces: vec![WorkspaceSnapshot {
-                id: Some("w1".into()),
+                id: "w1".into(),
                 custom_name: None,
-                identity_cwd: cwd.clone(),
                 next_public_pane_number: 4,
                 layout: LayoutSnapshot::Split {
                     direction: super::super::snapshot::DirectionSnapshot::Horizontal,
@@ -1961,7 +1941,7 @@ mod tests {
                         10,
                         super::super::snapshot::PaneSnapshot {
                             cwd: cwd.clone(),
-                            public_number: Some(1),
+                            public_number: 1,
                             label: None,
                             agent_session: None,
                         },
@@ -1970,15 +1950,15 @@ mod tests {
                         20,
                         super::super::snapshot::PaneSnapshot {
                             cwd: cwd.clone(),
-                            public_number: Some(3),
+                            public_number: 3,
                             label: None,
                             agent_session: None,
                         },
                     ),
                 ]),
                 zoomed: false,
-                focused: Some(10),
-                root_pane: Some(10),
+                focused: 10,
+                root_pane: 10,
             }],
             active: Some(0),
         };
@@ -2016,77 +1996,11 @@ mod tests {
     }
 
     #[test]
-    fn every_saved_pane_gets_a_public_number_before_its_shell_starts() {
-        let pane = |public_number| super::super::snapshot::PaneSnapshot {
-            cwd: PathBuf::from("/"),
-            public_number,
-            label: None,
-            agent_session: None,
-        };
-        let snap = WorkspaceSnapshot {
-            id: Some("w1".into()),
-            custom_name: None,
-            identity_cwd: PathBuf::from("/"),
-            next_public_pane_number: 5,
-            layout: LayoutSnapshot::Split {
-                direction: DirectionSnapshot::Horizontal,
-                ratio: 0.5,
-                first: Box::new(LayoutSnapshot::Pane(30)),
-                second: Box::new(LayoutSnapshot::Split {
-                    direction: DirectionSnapshot::Vertical,
-                    ratio: 0.5,
-                    first: Box::new(LayoutSnapshot::Pane(10)),
-                    second: Box::new(LayoutSnapshot::Split {
-                        direction: DirectionSnapshot::Vertical,
-                        ratio: 0.5,
-                        // A leaf with no saved pane is dropped by restore
-                        // and needs no number.
-                        first: Box::new(LayoutSnapshot::Pane(99)),
-                        second: Box::new(LayoutSnapshot::Pane(20)),
-                    }),
-                }),
-            },
-            // Only pane 10 kept its number; 30 and 20 lost theirs.
-            panes: HashMap::from([(10, pane(Some(4))), (30, pane(None)), (20, pane(None))]),
-            zoomed: false,
-            focused: None,
-            root_pane: None,
-        };
-        let mut next = 5;
+    fn a_saved_zero_pane_number_drops_its_workspace() {
+        let mut snap = workspace_snapshot("w1", "zero number", LayoutSnapshot::Pane(10), &[10]);
+        snap.panes.get_mut(&10).expect("pane").public_number = 0;
 
-        let numbers = assign_public_pane_numbers(&snap, &mut next).expect("available numbers");
-
-        assert_eq!(numbers, HashMap::from([(10, 4), (30, 5), (20, 6)]));
-        assert_eq!(next, 7);
-    }
-
-    #[test]
-    fn a_saved_zero_pane_number_is_replaced_instead_of_aborting() {
-        let snap = WorkspaceSnapshot {
-            id: Some("w1".into()),
-            custom_name: None,
-            identity_cwd: PathBuf::from("/"),
-            next_public_pane_number: 1,
-            layout: LayoutSnapshot::Pane(10),
-            panes: HashMap::from([(
-                10,
-                super::super::snapshot::PaneSnapshot {
-                    cwd: PathBuf::from("/"),
-                    public_number: Some(0),
-                    label: None,
-                    agent_session: None,
-                },
-            )]),
-            zoomed: false,
-            focused: None,
-            root_pane: None,
-        };
-        let mut next = 1;
-
-        let numbers = assign_public_pane_numbers(&snap, &mut next).expect("available numbers");
-
-        assert_eq!(numbers, HashMap::from([(10, 1)]));
-        assert_eq!(next, 2);
+        assert!(plan_workspace(&snap).is_none());
     }
 
     #[tokio::test]
@@ -2098,7 +2012,7 @@ mod tests {
                 id,
                 super::super::snapshot::PaneSnapshot {
                     cwd: cwd.clone(),
-                    public_number: Some(public_number),
+                    public_number,
                     label: None,
                     agent_session: None,
                 },
@@ -2106,7 +2020,7 @@ mod tests {
         };
         let final_pane = super::super::snapshot::PaneSnapshot {
             cwd: cwd.clone(),
-            public_number: Some(7),
+            public_number: 7,
             label: Some("planner".into()),
             agent_session: Some(super::super::snapshot::PaneAgentSessionSnapshot {
                 source: shepr_agent::agent::AgentSource::parse("shepr:codex"),
@@ -2119,9 +2033,8 @@ mod tests {
             version: super::super::snapshot::SNAPSHOT_VERSION,
             host_theme: Default::default(),
             workspaces: vec![WorkspaceSnapshot {
-                id: Some("w1".into()),
+                id: "w1".into(),
                 custom_name: None,
-                identity_cwd: cwd.clone(),
                 // Numbers 1 to 3 were public panes that are gone.
                 next_public_pane_number: 8,
                 layout: LayoutSnapshot::Split {
@@ -2132,8 +2045,8 @@ mod tests {
                 },
                 panes: HashMap::from([pane_snap(10, 4), (13, final_pane)]),
                 zoomed: false,
-                focused: Some(13),
-                root_pane: Some(10),
+                focused: 13,
+                root_pane: 10,
             }],
             active: Some(0),
         };
@@ -2176,16 +2089,15 @@ mod tests {
             version: super::super::snapshot::SNAPSHOT_VERSION,
             host_theme: Default::default(),
             workspaces: vec![WorkspaceSnapshot {
-                id: Some("workspace".into()),
+                id: "workspace".into(),
                 custom_name: None,
-                identity_cwd: cwd.clone(),
-                next_public_pane_number: 0,
+                next_public_pane_number: 2,
                 layout: LayoutSnapshot::Pane(0),
                 panes: HashMap::from([(
                     0,
                     super::super::snapshot::PaneSnapshot {
                         cwd,
-                        public_number: None,
+                        public_number: 1,
                         label: None,
                         agent_session: Some(super::super::snapshot::PaneAgentSessionSnapshot {
                             source: shepr_agent::agent::AgentSource::parse("shepr:codex"),
@@ -2198,8 +2110,8 @@ mod tests {
                     },
                 )]),
                 zoomed: false,
-                focused: Some(0),
-                root_pane: Some(0),
+                focused: 0,
+                root_pane: 0,
             }],
             active: Some(0),
         };
@@ -2250,9 +2162,9 @@ mod tests {
     async fn restored_panes_start_at_their_own_layout_size() {
         for zoomed in [false, true] {
             let scratch = crate::test_support::ScratchDir::new("restore-pane-size");
-            let pane = || super::super::snapshot::PaneSnapshot {
+            let pane = |public_number| super::super::snapshot::PaneSnapshot {
                 cwd: scratch.to_path_buf(),
-                public_number: None,
+                public_number,
                 label: None,
                 agent_session: None,
             };
@@ -2266,11 +2178,12 @@ mod tests {
                         first: Box::new(LayoutSnapshot::Pane(0)),
                         second: Box::new(LayoutSnapshot::Pane(1)),
                     },
-                    panes: HashMap::from([(0, pane()), (1, pane())]),
+                    panes: HashMap::from([(0, pane(1)), (1, pane(2))]),
                     zoomed,
-                    focused: Some(1),
-                    root_pane: Some(0),
-                    ..workspace_snapshot(Some("w1"), "split", LayoutSnapshot::Pane(0), &[])
+                    focused: 1,
+                    root_pane: 0,
+                    next_public_pane_number: 3,
+                    ..workspace_snapshot("w1", "split", LayoutSnapshot::Pane(0), &[])
                 }],
                 active: Some(0),
             };
@@ -2415,7 +2328,7 @@ mod tests {
             0,
             super::super::snapshot::PaneSnapshot {
                 cwd: cwd.clone(),
-                public_number: None,
+                public_number: 1,
                 label: None,
                 agent_session: None,
             },
@@ -2439,15 +2352,14 @@ mod tests {
             version: super::super::snapshot::SNAPSHOT_VERSION,
             host_theme: Default::default(),
             workspaces: vec![WorkspaceSnapshot {
-                id: Some("workspace".into()),
+                id: "workspace".into(),
                 custom_name: None,
-                identity_cwd: cwd,
-                next_public_pane_number: 0,
+                next_public_pane_number: 2,
                 layout: LayoutSnapshot::Pane(0),
                 panes,
                 zoomed: false,
-                focused: Some(0),
-                root_pane: Some(0),
+                focused: 0,
+                root_pane: 0,
             }],
             active: Some(0),
         };

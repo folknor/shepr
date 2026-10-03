@@ -862,7 +862,7 @@ impl ClientShellState {
         }
     }
 
-    fn copy_hit(&self) -> Option<PaneHit> {
+    pub(in crate::shell) fn copy_hit(&self) -> Option<PaneHit> {
         let pane_id = self.copy_mode.as_ref()?.pane_id.as_str();
         self.hits
             .panes
@@ -1001,11 +1001,9 @@ impl ClientShellState {
     }
 
     fn begin_copy_selection(&mut self, linewise: bool) {
-        let width = self.copy_hit().map(|hit| hit.inner_rect.width);
         let Some(copy_mode) = self.copy_mode.as_mut() else {
             return;
         };
-        let end_col = width.unwrap_or(copy_mode.geometry.0).saturating_sub(1);
         let row = copy_mode.cursor.row;
         if linewise {
             copy_mode.selection = Some(ClientCopySelection::Linewise { anchor_row: row });
@@ -1013,7 +1011,6 @@ impl ClientShellState {
                 copy_mode.pane_id.clone(),
                 row,
                 row,
-                end_col,
             ));
         } else {
             copy_mode.selection = Some(ClientCopySelection::Character {
@@ -1046,9 +1043,6 @@ impl ClientShellState {
                     copy_mode.pane_id.clone(),
                     anchor_row,
                     copy_mode.cursor.row,
-                    self.copy_hit()
-                        .map_or(copy_mode.geometry.0, |hit| hit.inner_rect.width)
-                        .saturating_sub(1),
                 )
             }
         });
@@ -1197,9 +1191,9 @@ impl ClientShellState {
                 shepr_vt::Point::new(text_match.end.row, text_match.end.col),
             ));
         }
-        let Some(copy_mode) = self.copy_mode.take() else {
+        if self.copy_mode.is_none() {
             return;
-        };
+        }
         self.reset_copy_pipeline();
         if copy
             && self
@@ -1210,6 +1204,9 @@ impl ClientShellState {
         {
             self.request_selection_copy(outcome);
         }
+        let Some(copy_mode) = self.copy_mode.take() else {
+            return;
+        };
         self.mouse_selection.clear();
         self.push_pane_scroll_offset(
             copy_mode.pane_id,

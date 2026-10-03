@@ -8,6 +8,14 @@
 #[serde(transparent)]
 pub struct ViewportRow(pub u16);
 
+/// The position of a stable row relative to a viewport's top row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ViewportPosition {
+    Above,
+    At(ViewportRow),
+    Below,
+}
+
 /// A row index in the currently retained screen buffer, starting at its oldest
 /// retained row. This index can move when the buffer evicts old history.
 #[derive(
@@ -53,16 +61,14 @@ impl AbsRow {
         Self(top.0.saturating_add(u64::from(row.0)))
     }
 
-    /// Convert this stable row identity to its current retained-buffer index.
-    pub fn screen_row(self, origin: Self) -> Option<ScreenRow> {
-        usize::try_from(self.0.checked_sub(origin.0)?)
-            .ok()
-            .map(ScreenRow)
-    }
-
-    /// Convert this stable row identity to a viewport-relative offset.
-    pub fn viewport_row(self, top: Self) -> ViewportRow {
-        ViewportRow(self.0.saturating_sub(top.0).try_into().unwrap_or(u16::MAX))
+    /// Convert this stable row identity to a viewport-relative position.
+    pub fn viewport_row(self, top: Self) -> ViewportPosition {
+        let Some(offset) = self.0.checked_sub(top.0) else {
+            return ViewportPosition::Above;
+        };
+        u16::try_from(offset).map_or(ViewportPosition::Below, |row| {
+            ViewportPosition::At(ViewportRow(row))
+        })
     }
 }
 

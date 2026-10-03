@@ -44,3 +44,25 @@ where
 pub fn quote_always(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn join_argv_quotes_posix_arguments() {
+        let argv = [
+            "pi",
+            "",
+            "two words",
+            "a'b",
+            "$HOME",
+            "semi;colon",
+            "@options",
+        ];
+        assert_eq!(
+            join_argv(argv),
+            "pi '' 'two words' 'a'\\''b' '$HOME' 'semi;colon' @options"
+        );
+    }
+}

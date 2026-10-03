@@ -125,6 +125,11 @@ impl SurfaceTopology<'_> {
 }
 
 impl PaneSurfaceFrame {
+    /// Whether this surface has the pane grid requested by the client.
+    pub fn is_sized_for(&self, size: ClientSurfaceSize) -> bool {
+        self.frame.width == size.cols && self.frame.height == size.rows
+    }
+
     pub fn topology(&self) -> SurfaceTopology<'_> {
         SurfaceTopology {
             width: self.frame.width,

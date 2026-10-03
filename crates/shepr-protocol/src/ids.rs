@@ -313,11 +313,10 @@ fn parse_public_pane_id(value: &str) -> Option<(WorkspaceId, usize)> {
 
 /// Opaque identity for a server-owned terminal.
 ///
-/// During the pane-backed transition this is stored one-to-one beside panes,
-/// but callers must not derive it from a pane id or layout position. That is
-/// structural: a value comes from [`TerminalId::alloc`] or from parsing text
-/// in the exact form `alloc` writes (`term_<stamp>_<counter>`), and
-/// deserialization goes through the same parse.
+/// A pane refers to its terminal by this identity, but callers must not derive
+/// it from a pane id or layout position. A value comes from
+/// [`TerminalId::alloc`] or from parsing text in the exact form `alloc` writes
+/// (`term_<stamp>_<counter>`), and deserialization goes through the same parse.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(try_from = "String")]
 pub struct TerminalId(String);

@@ -160,7 +160,9 @@ orientation, and nothing checks them:
 - `shepr-api`: JSON API schema and client, and the server socket: its listener
   tells JSON requests from TUI connections and hands the latter to the server's
   client protocol.
-- `shepr-termio`: terminal input and copy mode.
+- `shepr-termio`: terminal input encoding and parsing, copy-mode text
+  helpers, scrolling, selection rendering, frame blitting and host terminal
+  helpers.
 - `shepr-remote`: configured machines and SSH connections.
 - `shepr-mux`: terminals, panes, workspaces, Git state, events and persistence.
 - `shepr-server`: application state, UI and serving.
@@ -301,9 +303,10 @@ every agent integration reports through it.
   `cfg!` branches for other platforms. libc, `/proc` and helper-program
   plumbing lives in the flat `crates/shepr-platform/src/` crate (`lib.rs` plus
   self-contained submodules). Git command environment and deadline policy lives
-  in `shepr-mux`, and the logind shutdown monitor and checkpoint policy live in
-  `shepr-server`. There is no per-OS layer and no shims standing in for other
-  platforms.
+  in `shepr-mux`, and the logind shutdown monitor and session checkpoint
+  lifecycle live in `shepr-server`. `shepr-platform` classifies pane exit
+  reasons and whether they require a final session checkpoint. There is no
+  per-OS layer and no shims standing in for other platforms.
 - **Detection is decoupled.** The detector reads a screen snapshot and never
   touches the parser or viewport state. When changing a manifest, capture the
   pane with `shepr detect capture <pane>`, encode

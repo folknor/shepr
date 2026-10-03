@@ -96,7 +96,7 @@ pub fn open_session(
                 restored_host_theme = Some(snapshot.host_theme.to_theme());
                 let history = options
                     .pane_history
-                    .then(|| load_history(&lease, history_digest.as_deref()))
+                    .then(|| load_history(&lease, history_digest.as_ref()))
                     .flatten();
                 let restored_session = restore(
                     &snapshot,

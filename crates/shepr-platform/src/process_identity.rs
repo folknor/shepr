@@ -36,7 +36,9 @@ impl ProcessIdentity {
         })
     }
 
-    /// Serialize this process identity with a random collision token.
+    /// Serialize the process identity and a trailing format field. The process
+    /// identity alone names the owner; every runtime marker writes zero there
+    /// and the stale-marker sweep only accepts zero.
     pub(super) fn tag(self, token: u64) -> String {
         format!(
             "{:08x}-{:016x}-{:016x}-{:016x}-{:016x}",
@@ -44,7 +46,7 @@ impl ProcessIdentity {
         )
     }
 
-    /// Parse a serialized identity and its random collision token.
+    /// Parse a serialized identity and its marker-format suffix.
     pub(super) fn parse_tag(value: &str) -> Option<(Self, u64)> {
         let mut fields = value.split('-');
         let identity = Self {

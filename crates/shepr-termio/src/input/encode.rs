@@ -1,6 +1,7 @@
 use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEventKind};
 use std::fmt::Write as _;
 
+use super::tables::{control_byte, functional_key, modifier_bits};
 use super::{KeyboardProtocol, MouseProtocolEncoding, MouseProtocolMode, TerminalKey};
 use crate::limits::{KITTY_KEY_SEQUENCE_INITIAL_CAPACITY, UTF8_MOUSE_REPORT_INITIAL_CAPACITY};
 use shepr_config::BindingKey;
@@ -85,6 +86,8 @@ fn encode_mouse_cb(
     modifiers: KeyModifiers,
     encoding: MouseProtocolEncoding,
 ) -> Option<Vec<u8>> {
+    // Mouse reports are not a bijection: legacy release loses the button,
+    // and host decoding also accepts extended-button motion we cannot emit.
     // SGR reports which button was released; the legacy encodings report
     // every release as button 3.
     let sgr = matches!(
@@ -176,25 +179,12 @@ fn try_encode_csi_u(key: &TerminalKey, flags: KittyKeyboardFlags) -> Option<Vec<
     // understood. Even Ghostty sends these in legacy format with kitty mode on.
     // Use CSI u for character keys and keys without legacy forms. Super chords
     // on functional keys also need it because xterm's modifier bits omit Super.
-    match key.code {
-        KeyCode::Up
-        | KeyCode::Down
-        | KeyCode::Left
-        | KeyCode::Right
-        | KeyCode::Home
-        | KeyCode::End
-        | KeyCode::PageUp
-        | KeyCode::PageDown
-        | KeyCode::Insert
-        | KeyCode::Delete
-        | KeyCode::F(_)
-            if event_suffix.is_none()
-                && !report_all_keys
-                && !mods.contains(KeyModifiers::SUPER) =>
-        {
-            return None; // let legacy handle these
-        }
-        _ => {}
+    if (functional_key(key.code).is_some() || matches!(key.code, KeyCode::F(_)))
+        && event_suffix.is_none()
+        && !report_all_keys
+        && !mods.contains(KeyModifiers::SUPER)
+    {
+        return None;
     }
 
     let (codepoint, alternate_shifted) = match key.code {
@@ -246,30 +236,12 @@ fn encode_kitty_functional_key(
     mods: KeyModifiers,
     event_suffix: Option<u8>,
 ) -> Option<Vec<u8>> {
-    let (number, final_byte) = match code {
-        KeyCode::Up => (1, 'A'),
-        KeyCode::Down => (1, 'B'),
-        KeyCode::Right => (1, 'C'),
-        KeyCode::Left => (1, 'D'),
-        KeyCode::Home => (1, 'H'),
-        KeyCode::End => (1, 'F'),
-        KeyCode::Insert => (2, '~'),
-        KeyCode::Delete => (3, '~'),
-        KeyCode::PageUp => (5, '~'),
-        KeyCode::PageDown => (6, '~'),
-        KeyCode::F(1) => (1, 'P'),
-        KeyCode::F(2) => (1, 'Q'),
-        KeyCode::F(3) => (13, '~'),
-        KeyCode::F(4) => (1, 'S'),
-        KeyCode::F(5) => (15, '~'),
-        KeyCode::F(6) => (17, '~'),
-        KeyCode::F(7) => (18, '~'),
-        KeyCode::F(8) => (19, '~'),
-        KeyCode::F(9) => (20, '~'),
-        KeyCode::F(10) => (21, '~'),
-        KeyCode::F(11) => (23, '~'),
-        KeyCode::F(12) => (24, '~'),
-        _ => return None,
+    let functional = functional_key(code)?;
+    // CSI 1;mods R is ambiguous with cursor position reports in kitty mode.
+    let (number, final_byte) = if code == KeyCode::F(3) {
+        (13, '~')
+    } else {
+        (functional.number, functional.final_byte)
     };
     let modifier = kitty_modifier(mods);
     let mut sequence = format!("\x1b[{number};{modifier}");
@@ -401,15 +373,14 @@ fn apply_application_cursor(
     {
         return bytes;
     }
-    let final_byte = match key.code {
-        KeyCode::Up => b'A',
-        KeyCode::Down => b'B',
-        KeyCode::Right => b'C',
-        KeyCode::Left => b'D',
-        KeyCode::Home => b'H',
-        KeyCode::End => b'F',
-        _ => return bytes,
+    let Some(functional) = functional_key(key.code) else {
+        return bytes;
     };
+    if functional.number != 1 || !matches!(functional.final_byte, 'A' | 'B' | 'C' | 'D' | 'H' | 'F')
+    {
+        return bytes;
+    }
+    let final_byte = functional.final_byte as u8;
     if bytes.as_slice() == [0x1b, b'[', final_byte] {
         vec![0x1b, b'O', final_byte]
     } else {
@@ -523,73 +494,16 @@ fn encode_modified_special(code: KeyCode, mods: KeyModifiers) -> Option<Vec<u8>>
         return None; // no modifiers to encode
     }
 
-    match code {
-        // CSI 1;{mod}{letter} format
-        KeyCode::Up => Some(format!("\x1b[1;{modifier}A").into_bytes()),
-        KeyCode::Down => Some(format!("\x1b[1;{modifier}B").into_bytes()),
-        KeyCode::Right => Some(format!("\x1b[1;{modifier}C").into_bytes()),
-        KeyCode::Left => Some(format!("\x1b[1;{modifier}D").into_bytes()),
-        KeyCode::Home => Some(format!("\x1b[1;{modifier}H").into_bytes()),
-        KeyCode::End => Some(format!("\x1b[1;{modifier}F").into_bytes()),
-        // CSI {n};{mod}~ format
-        KeyCode::Insert => Some(format!("\x1b[2;{modifier}~").into_bytes()),
-        KeyCode::Delete => Some(format!("\x1b[3;{modifier}~").into_bytes()),
-        KeyCode::PageUp => Some(format!("\x1b[5;{modifier}~").into_bytes()),
-        KeyCode::PageDown => Some(format!("\x1b[6;{modifier}~").into_bytes()),
-        // F1-F4: CSI 1;{mod}{P-S}
-        KeyCode::F(1) => Some(format!("\x1b[1;{modifier}P").into_bytes()),
-        KeyCode::F(2) => Some(format!("\x1b[1;{modifier}Q").into_bytes()),
-        KeyCode::F(3) => Some(format!("\x1b[1;{modifier}R").into_bytes()),
-        KeyCode::F(4) => Some(format!("\x1b[1;{modifier}S").into_bytes()),
-        // F5-F12: CSI {n};{mod}~
-        KeyCode::F(n @ 5..=12) => {
-            let code = match n {
-                5 => 15,
-                6 => 17,
-                7 => 18,
-                8 => 19,
-                9 => 20,
-                10 => 21,
-                11 => 23,
-                12 => 24,
-                _ => unreachable!(),
-            };
-            Some(format!("\x1b[{code};{modifier}~").into_bytes())
-        }
-        _ => None,
-    }
+    let key = functional_key(code)?;
+    Some(format!("\x1b[{};{modifier}{}", key.number, key.final_byte).into_bytes())
 }
 
-/// xterm modifier encoding: 1 + shift(1) + alt(2) + ctrl(4)
-/// Used for legacy modified special keys (arrows, function keys, etc.)
 fn xterm_modifier(mods: KeyModifiers) -> u32 {
-    let mut m = 1u32;
-    if mods.contains(KeyModifiers::SHIFT) {
-        m += 1;
-    }
-    if mods.contains(KeyModifiers::ALT) {
-        m += 2;
-    }
-    if mods.contains(KeyModifiers::CONTROL) {
-        m += 4;
-    }
-    m
+    1 + modifier_bits(mods, false)
 }
 
-/// Kitty protocol modifier encoding: 1 + shift(1) + alt(2) + ctrl(4) + super(8) + hyper(16) + meta(32)
-/// Superset of xterm - adds Super/Hyper/Meta bits.
 fn kitty_modifier(mods: KeyModifiers) -> u32 {
-    let mut m = xterm_modifier(mods);
-    if mods.contains(KeyModifiers::SUPER) {
-        m += 8;
-    }
-    if mods.contains(KeyModifiers::HYPER) {
-        m += 16;
-    }
-    if mods.contains(KeyModifiers::META) {
-        m += 32;
-    }
-    m
+    1 + modifier_bits(mods, true)
 }
 
 fn encode_text_input(key: &TerminalKey) -> Option<Vec<u8>> {
@@ -730,18 +644,7 @@ fn encode_legacy_inner(key: &TerminalKey) -> Vec<u8> {
     match key.code {
         KeyCode::Char(ch) => {
             if key.modifiers.contains(KeyModifiers::CONTROL) {
-                let upper = ch.to_ascii_uppercase();
-                match upper {
-                    'A'..='Z' => vec![upper as u8 - 64],
-                    ' ' | '@' | '2' => vec![0],
-                    '[' | '3' => vec![27],
-                    '\\' | '4' => vec![28],
-                    ']' | '5' => vec![29],
-                    '^' | '6' => vec![30],
-                    '_' | '/' | '7' | '-' => vec![31],
-                    '?' | '8' => vec![127],
-                    _ => ch.to_string().into_bytes(),
-                }
+                control_byte(ch).map_or_else(|| ch.to_string().into_bytes(), |byte| vec![byte])
             } else {
                 let ch = if key.modifiers == KeyModifiers::SHIFT {
                     shifted_text_char(key, ch)
@@ -759,38 +662,7 @@ fn encode_legacy_inner(key: &TerminalKey) -> Vec<u8> {
         KeyCode::Tab => vec![9],
         KeyCode::BackTab => vec![27, 91, 90],
         KeyCode::Esc => vec![27],
-        KeyCode::Left => vec![27, 91, 68],
-        KeyCode::Right => vec![27, 91, 67],
-        KeyCode::Up => vec![27, 91, 65],
-        KeyCode::Down => vec![27, 91, 66],
-        KeyCode::Home => vec![27, 91, 72],
-        KeyCode::End => vec![27, 91, 70],
-        KeyCode::PageUp => vec![27, 91, 53, 126],
-        KeyCode::PageDown => vec![27, 91, 54, 126],
-        KeyCode::Delete => vec![27, 91, 51, 126],
-        KeyCode::Insert => vec![27, 91, 50, 126],
-        KeyCode::F(n) => encode_f_key(n),
-        _ => vec![],
-    }
-}
-
-// Agent and shell panes do not need full Kitty report-all fidelity, so the
-// legacy fallback intentionally encodes only F1-F12.
-fn encode_f_key(n: u8) -> Vec<u8> {
-    match n {
-        1 => vec![27, 79, 80],
-        2 => vec![27, 79, 81],
-        3 => vec![27, 79, 82],
-        4 => vec![27, 79, 83],
-        5 => vec![27, 91, 49, 53, 126],
-        6 => vec![27, 91, 49, 55, 126],
-        7 => vec![27, 91, 49, 56, 126],
-        8 => vec![27, 91, 49, 57, 126],
-        9 => vec![27, 91, 50, 48, 126],
-        10 => vec![27, 91, 50, 49, 126],
-        11 => vec![27, 91, 50, 51, 126],
-        12 => vec![27, 91, 50, 52, 126],
-        _ => vec![],
+        code => functional_key(code).map_or_else(Vec::new, |key| key.legacy.as_bytes().to_vec()),
     }
 }
 
@@ -810,17 +682,13 @@ fn encode_key(key: KeyEvent, protocol: KeyboardProtocol) -> Vec<u8> {
 /// Test-only: production applies DECCKM in `encode_terminal_key_with_modes`.
 #[cfg(test)]
 fn encode_cursor_key(code: KeyCode, application_cursor: bool) -> Vec<u8> {
-    match (code, application_cursor) {
-        (KeyCode::Up, true) => b"\x1bOA".to_vec(),
-        (KeyCode::Down, true) => b"\x1bOB".to_vec(),
-        (KeyCode::Right, true) => b"\x1bOC".to_vec(),
-        (KeyCode::Left, true) => b"\x1bOD".to_vec(),
-        (KeyCode::Up, false) => b"\x1b[A".to_vec(),
-        (KeyCode::Down, false) => b"\x1b[B".to_vec(),
-        (KeyCode::Right, false) => b"\x1b[C".to_vec(),
-        (KeyCode::Left, false) => b"\x1b[D".to_vec(),
-        _ => encode_legacy(KeyEvent::new(code, KeyModifiers::empty()).into()),
-    }
+    encode_terminal_key_with_modes(
+        TerminalKey::new(code, KeyModifiers::empty()),
+        KeyEncodeModes {
+            application_cursor,
+            ..KeyEncodeModes::default()
+        },
+    )
 }
 
 /// Test-only: production mouse reports go through `encode_mouse_event`.

@@ -4,6 +4,35 @@ use super::sidebar_tokens::SectionSplit;
 use crate::shell::overlays::preferences::ClientChromePreferences;
 use crate::shell::state::ClientShellConfig;
 
+/// The configured and remembered chrome used by initial sizing and the shell's first layout.
+#[derive(Clone, Copy)]
+pub(in crate::shell) struct InitialChrome {
+    pub(in crate::shell) width: u16,
+    pub(in crate::shell) collapsed: bool,
+    pub(in crate::shell) split: SectionSplit,
+}
+
+impl ClientShellConfig {
+    /// One resolution for initial surface sizing and the shell's first
+    /// layout, so the first surface request matches the first drawn chrome.
+    pub(in crate::shell) fn initial_chrome(&self) -> InitialChrome {
+        let preferences = &self.preferences;
+        InitialChrome {
+            width: preferences
+                .sidebar_width
+                .map_or(self.sidebar_width, |width| {
+                    self.sidebar_bounds.clamp_width(width)
+                }),
+            collapsed: preferences
+                .sidebar_collapsed
+                .unwrap_or(self.sidebar_start_collapsed),
+            split: preferences
+                .sidebar_section_split
+                .unwrap_or(SectionSplit::DEFAULT),
+        }
+    }
+}
+
 /// The sidebar width, collapse and section split the user sees, each with
 /// whether the user chose it (only chosen values are persisted). Every width
 /// it holds is within the configured bounds: a remembered or dragged width is
@@ -22,20 +51,13 @@ pub(in crate::shell) struct ChromeLayout {
 impl ChromeLayout {
     pub(in crate::shell) fn new(config: &ClientShellConfig) -> Self {
         let preferences = &config.preferences;
+        let initial = config.initial_chrome();
         Self {
-            width: preferences
-                .sidebar_width
-                .map_or(config.sidebar_width, |width| {
-                    config.sidebar_bounds.clamp_width(width)
-                }),
+            width: initial.width,
             width_manual: preferences.sidebar_width.is_some(),
-            collapsed: preferences
-                .sidebar_collapsed
-                .unwrap_or(config.sidebar_start_collapsed),
+            collapsed: initial.collapsed,
             collapsed_manual: preferences.sidebar_collapsed.is_some(),
-            split: preferences
-                .sidebar_section_split
-                .unwrap_or(SectionSplit::DEFAULT),
+            split: initial.split,
             split_manual: preferences.sidebar_section_split.is_some(),
             bounds: config.sidebar_bounds,
             configured_width: config.sidebar_width,

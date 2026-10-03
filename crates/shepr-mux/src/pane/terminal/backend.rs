@@ -65,7 +65,7 @@ impl PaneTerminal {
         };
         // The server filters identical host themes before dispatching this
         // update, so each call installs a new set of pane defaults.
-        core.content_revision = core.content_revision.wrapping_add(2);
+        core.record_mutation(CoreMutation::Presentation);
         core.host_terminal_theme = theme;
         if !has_default_color_override(&core.terminal) {
             core.transient_default_color_owner_pgid = None;
@@ -98,7 +98,7 @@ impl PaneTerminal {
         // Only a change of the stored scheme, including one between unknown
         // and known, can change the pane; repeating the current one cannot.
         if previous != color_scheme {
-            core.content_revision = core.content_revision.wrapping_add(2);
+            core.record_mutation(CoreMutation::Presentation);
         }
 
         let transitioned = matches!(
@@ -157,7 +157,7 @@ impl PaneTerminal {
             foreground_job.as_ref(),
         );
         if restored {
-            core.content_revision = core.content_revision.wrapping_add(2);
+            core.record_mutation(CoreMutation::Presentation);
         }
         restored
     }
@@ -202,11 +202,6 @@ impl PaneTerminal {
         now: Instant,
         mut core: std::sync::MutexGuard<'_, PaneTerminalCore>,
     ) -> ProcessBytesResult {
-        core.content_revision = core.content_revision.wrapping_add(2);
-        super::super::agent_detection::observe_detection_content_change(
-            bytes,
-            &mut core.detection_content_seq,
-        );
         core.osc_debug_tracker.observe(bytes);
         for event in core.osc_debug_tracker.drain_pending() {
             debug!(
@@ -223,12 +218,7 @@ impl PaneTerminal {
         // The flush changes the screen on its own, so it marks detection
         // content changed exactly as the timer tick does, whatever the read
         // carries.
-        if core.terminal.tick(now) {
-            super::super::agent_detection::mark_detection_content_changed(
-                &mut core.detection_content_seq,
-            );
-            core.synchronized_output_epoch = core.synchronized_output_epoch.wrapping_add(1);
-        }
+        let flushed = core.terminal.tick(now);
         let synchronized_output_before = core
             .terminal
             .mode_get(shepr_vt::DecMode::SynchronizedOutput);
@@ -238,9 +228,11 @@ impl PaneTerminal {
         let synchronized_output = core
             .terminal
             .mode_get(shepr_vt::DecMode::SynchronizedOutput);
-        if synchronized_output != synchronized_output_before {
-            core.synchronized_output_epoch = core.synchronized_output_epoch.wrapping_add(1);
-        }
+        core.record_mutation(CoreMutation::Output {
+            bytes,
+            flushed,
+            sync_changed: synchronized_output != synchronized_output_before,
+        });
         // A synchronized update that never ends is force-flushed by the core
         // after its timeout; schedule a render for then so the pane does not
         // stay frozen until the next PTY read.
@@ -322,11 +314,7 @@ impl PaneTerminal {
         };
         let flushed = core.terminal.tick(now);
         if flushed {
-            super::super::agent_detection::mark_detection_content_changed(
-                &mut core.detection_content_seq,
-            );
-            core.content_revision = core.content_revision.wrapping_add(2);
-            core.synchronized_output_epoch = core.synchronized_output_epoch.wrapping_add(1);
+            core.record_mutation(CoreMutation::SyncFlush);
         }
         let effects = collect_core_effects(&mut core);
         drop(core);
@@ -363,7 +351,7 @@ impl PaneTerminal {
             self.report_terminal_mutation_failure("history seed");
             return;
         };
-        core.content_revision = core.content_revision.wrapping_add(2);
+        core.record_mutation(CoreMutation::Presentation);
         core.terminal.write(ansi.as_bytes());
         // Saved history is trimmed, so it normally ends on the last restored
         // line with no line break. Without one the cursor stays at the end of
@@ -392,10 +380,6 @@ impl PaneTerminal {
                 return Vec::new();
             }
         };
-        super::super::agent_detection::mark_detection_content_changed(
-            &mut core.detection_content_seq,
-        );
-        core.content_revision = core.content_revision.wrapping_add(2);
         let synchronized_output_before = core
             .terminal
             .mode_get(shepr_vt::DecMode::SynchronizedOutput);
@@ -412,15 +396,14 @@ impl PaneTerminal {
         // writing and move its cursor behind its back.
         let grid_before = (core.terminal.cols(), core.terminal.rows());
         core.terminal.resize(geometry);
-        if (core.terminal.cols(), core.terminal.rows()) != grid_before {
-            core.history_epoch = core.history_epoch.wrapping_add(1);
-        }
+        let grid_changed = (core.terminal.cols(), core.terminal.rows()) != grid_before;
         let synchronized_output_after = core
             .terminal
             .mode_get(shepr_vt::DecMode::SynchronizedOutput);
-        if synchronized_output_after != synchronized_output_before {
-            core.synchronized_output_epoch = core.synchronized_output_epoch.wrapping_add(1);
-        }
+        core.record_mutation(CoreMutation::Resize {
+            grid_changed,
+            sync_changed: synchronized_output_after != synchronized_output_before,
+        });
         let terminal_responses = drain_terminal_responses(core.terminal.take_pty_responses());
 
         terminal_set_scroll_offset_from_bottom(&mut core.terminal, offset_from_bottom);
@@ -472,7 +455,7 @@ impl PaneTerminal {
         if offset_before == offset_after {
             return SurfaceChange::Unchanged;
         }
-        core.content_revision = core.content_revision.wrapping_add(2);
+        core.record_mutation(CoreMutation::Presentation);
         SurfaceChange::Changed
     }
 
@@ -501,10 +484,7 @@ impl PaneTerminal {
             .map_err(|_| PaneClearError::TerminalLockPoisoned)?;
         match core.terminal.clear_screen() {
             shepr_vt::ClearScreenOutcome::Cleared => {
-                super::super::agent_detection::mark_detection_content_changed(
-                    &mut core.detection_content_seq,
-                );
-                core.content_revision = core.content_revision.wrapping_add(2);
+                core.record_mutation(CoreMutation::Clear);
                 Ok(SurfaceChange::Changed)
             }
             shepr_vt::ClearScreenOutcome::AlternateScreenActive => {

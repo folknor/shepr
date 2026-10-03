@@ -1748,6 +1748,25 @@ mod tests {
         assert_eq!(key.modifiers, modifiers);
     }
 
+    #[test]
+    fn host_replies_keep_a_split_color_response_out_of_input() {
+        let mut framer = RawInputFramer::for_host_input();
+        framer.host_color_query_sent();
+
+        assert!(framer.push_framed(b"\x1b").is_empty());
+        assert!(framer.flush_timeout_framed().is_empty());
+
+        let events = framer.push_framed(b"]11;rgb:2424/2727/3a3a\x1b\\");
+        assert_eq!(events.len(), 1);
+        assert!(matches!(
+            &events[0].event,
+            RawInputEvent::HostDefaultColor {
+                kind: DefaultColorKind::Background,
+                ..
+            }
+        ));
+    }
+
     fn decode_hex(hex: &str) -> Vec<u8> {
         let hex = hex.trim();
         assert_eq!(hex.len() % 2, 0, "hex string must have even length");

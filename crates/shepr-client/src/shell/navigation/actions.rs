@@ -156,7 +156,23 @@ impl ClientShellState {
             return;
         };
         let pane_id = selection.pane_id.clone();
-        let (anchor, cursor) = selection.ordered_cells();
+        let (anchor, cursor) = match selection.shape() {
+            shepr_vt::selection::SelectionShape::Range => selection.ordered_cells(),
+            shepr_vt::selection::SelectionShape::Lines => {
+                let (start, end) = selection.ordered_rows();
+                let width = self
+                    .copy_hit()
+                    .map(|hit| hit.inner_rect.width)
+                    .or_else(|| {
+                        self.copy_mode
+                            .as_ref()
+                            .map(|copy_mode| copy_mode.geometry.0)
+                    })
+                    .unwrap_or(1)
+                    .max(1);
+                ((start.row, 0), (end.row, width.saturating_sub(1)))
+            }
+        };
         self.submit(
             EndpointCommand::PaneSelectionRead(shepr_protocol::command::PaneSelectionReadParams {
                 pane_id,

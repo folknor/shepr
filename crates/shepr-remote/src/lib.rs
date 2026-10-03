@@ -44,7 +44,7 @@ pub use crate::machine::SshTarget;
 pub use args::*;
 pub use bridge::{BridgeUpload, BridgeUploadEnd};
 pub use host::run_remote_client_bridge;
-pub use launch::{RemoteStop, interactive_shell_command, shell_quote, stop_remote_server};
+pub use launch::{RemoteStop, shell_quote, stop_remote_server};
 pub use machine_ssh::*;
 pub use preflight::{
     MachineCheck, MachineSshPreflight, PreflightOutcome, PreflightSsh, RestartDecider,

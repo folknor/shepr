@@ -55,6 +55,9 @@ pub fn remote_bridge_endpoint_path(
     short_name: &str,
 ) -> std::io::Result<PathBuf> {
     validate_ssh_runtime_dir(runtime_dir)?;
+    // Token zero measures the name: `with_name_token` always formats 16 hex
+    // digits, so any token gives the same length, and a path that cannot fit
+    // is refused before the sweep runs or randomness is drawn.
     bridge_endpoint_path_with_token(runtime_dir, readable_name, short_name, 0)?;
     super::ipc::sweep_abandoned_single_use_sockets(runtime_dir);
     let token = unpredictable_token()?;
@@ -69,6 +72,8 @@ pub fn validate_remote_bridge_endpoint_path(
     short_name: &str,
 ) -> std::io::Result<()> {
     validate_ssh_runtime_dir(runtime_dir)?;
+    // Token zero stands in for the real one; every token formats to the
+    // same length.
     bridge_endpoint_path_with_token(runtime_dir, readable_name, short_name, 0).map(|_| ())
 }
 

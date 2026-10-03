@@ -596,9 +596,12 @@ fn a_daemon_that_dies_during_boot_reports_its_exit_and_output() {
         Duration::from_secs(10),
         || Ok(Probed::NoServer),
     );
-    let message = result
-        .expect_err("a dead daemon is a failed launch")
-        .to_string();
+    let error = result.expect_err("a dead daemon is a failed launch");
+    assert_eq!(
+        daemon_boot_exit_class(&error),
+        Some(shepr_api::daemon_exit::DaemonExit::ConfigRefused)
+    );
+    let message = error.to_string();
     assert!(message.contains("refused its configuration"), "{message}");
     assert!(message.contains("no such runtime directory"), "{message}");
     assert!(message.contains("server-boot.log"), "{message}");

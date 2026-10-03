@@ -77,56 +77,6 @@ impl EndpointWorkers {
         self.receiver.recv().await
     }
 
-    /// Reserves and starts a checkout root request, producing every refusal
-    /// associated with worker admission and launch in the worker owner.
-    pub(super) fn dispatch_checkout_root(
-        server: &mut super::HeadlessServer,
-        client_id: crate::server::ClientId,
-        boot_id: shepr_protocol::BootId,
-        request_id: shepr_protocol::RequestId,
-        cwd: PathBuf,
-        home: Option<String>,
-    ) {
-        if !server.workers.can_admit() {
-            server.queue_endpoint_reply(
-                client_id,
-                &crate::server::client_commands::response_message(
-                    boot_id,
-                    request_id,
-                    Err(shepr_protocol::command::EndpointError::Rejected(
-                        "checkout root worker limit reached; retry later".to_owned(),
-                    )),
-                ),
-            );
-            return;
-        }
-
-        let shutdown_message = crate::server::client_commands::error_message(
-            boot_id.clone(),
-            request_id.clone(),
-            shepr_protocol::command::EndpointError::ShuttingDown,
-        );
-        let Some(ticket) = server.reserve_endpoint_reply(client_id, &shutdown_message) else {
-            return;
-        };
-        if let Err(error) =
-            server
-                .workers
-                .checkout_root(ticket, boot_id.clone(), request_id.clone(), cwd, home)
-        {
-            server.complete_endpoint_reply(
-                ticket,
-                &crate::server::client_commands::response_message(
-                    boot_id,
-                    request_id,
-                    Err(shepr_protocol::command::EndpointError::Rejected(format!(
-                        "failed to start checkout root worker: {error}"
-                    ))),
-                ),
-            );
-        }
-    }
-
     /// Starts a checkout root worker thread. Its sender clone is what
     /// [`Self::can_admit`] counts as running until the completion is sent.
     pub(super) fn checkout_root(
@@ -155,6 +105,57 @@ impl EndpointWorkers {
                 }
             })
             .map(|_| ())
+    }
+}
+
+impl super::HeadlessServer {
+    /// Reserves and starts a checkout root request, producing every refusal
+    /// associated with worker admission and launch from the server coordinator.
+    pub(super) fn dispatch_checkout_root(
+        &mut self,
+        client_id: crate::server::ClientId,
+        boot_id: shepr_protocol::BootId,
+        request_id: shepr_protocol::RequestId,
+        cwd: PathBuf,
+        home: Option<String>,
+    ) {
+        if !self.workers.can_admit() {
+            self.queue_endpoint_reply(
+                client_id,
+                &crate::server::client_commands::response_message(
+                    boot_id,
+                    request_id,
+                    Err(shepr_protocol::command::EndpointError::Rejected(
+                        "checkout root worker limit reached; retry later".to_owned(),
+                    )),
+                ),
+            );
+            return;
+        }
+
+        let shutdown_message = crate::server::client_commands::error_message(
+            boot_id.clone(),
+            request_id.clone(),
+            shepr_protocol::command::EndpointError::ShuttingDown,
+        );
+        let Some(ticket) = self.reserve_endpoint_reply(client_id, &shutdown_message) else {
+            return;
+        };
+        if let Err(error) =
+            self.workers
+                .checkout_root(ticket, boot_id.clone(), request_id.clone(), cwd, home)
+        {
+            self.complete_endpoint_reply(
+                ticket,
+                &crate::server::client_commands::response_message(
+                    boot_id,
+                    request_id,
+                    Err(shepr_protocol::command::EndpointError::Rejected(format!(
+                        "failed to start checkout root worker: {error}"
+                    ))),
+                ),
+            );
+        }
     }
 }
 

@@ -164,8 +164,9 @@ pub struct HeadlessServer {
     lifecycle: ShutdownLifecycle,
     /// Channel for receiving server events from client connection threads.
     server_event_rx: mpsc::Receiver<ServerEvent>,
-    /// Sender cloned into the client transport handler when startup opens
-    /// the protocol. Keeping it also prevents closure between loop passes.
+    /// Production sender cloned into the client transport handler when startup
+    /// opens the protocol. Retaining it keeps the receiver alive across gaps
+    /// between client connection threads; tests also use it to inject events.
     server_event_tx: mpsc::Sender<ServerEvent>,
     /// Bounded requests received by the JSON API listener.
     api_request_rx: mpsc::Receiver<shepr_api::ApiRequestMessage>,
@@ -510,7 +511,7 @@ impl HeadlessServer {
                 // This request was already dequeued when the stop arrived.
                 // Queue its refusal now; shutdown cleanup broadcasts the
                 // notice after it settles events still waiting in the channel.
-                if let LoopEvent::ServerEvent(ServerEvent::ClientShellEndpointRequest {
+                if let LoopEvent::ServerEvent(ServerEvent::ShellEndpointRequest {
                     client_id,
                     boot_id,
                     request_id,
@@ -529,7 +530,7 @@ impl HeadlessServer {
                         self.lifecycle.sync_host_shutdown_freeze(&mut self.app);
                         self.handle_internal_event_with_forwarding(ev);
                     }
-                    LoopEvent::ServerEvent(ServerEvent::ClientShellConnected {
+                    LoopEvent::ServerEvent(ServerEvent::ShellConnected {
                         client_id,
                         outbox,
                         ..
@@ -872,12 +873,12 @@ impl HeadlessServer {
         self.server_event_rx.close();
         while let Some(event) = self.server_event_rx.recv().await {
             match event {
-                ServerEvent::ClientShellConnected {
+                ServerEvent::ShellConnected {
                     client_id, outbox, ..
                 } => {
                     unregistered_clients.insert(client_id, outbox);
                 }
-                ServerEvent::ClientShellEndpointRequest {
+                ServerEvent::ShellEndpointRequest {
                     client_id,
                     boot_id,
                     request_id,
@@ -1108,12 +1109,12 @@ impl HeadlessServer {
     fn handle_server_event(&mut self, ev: ServerEvent) {
         if !self.begin_request_dispatch() {
             match ev {
-                ServerEvent::ClientShellConnected {
+                ServerEvent::ShellConnected {
                     client_id, outbox, ..
                 } => {
                     self.shutdown_unregistered_clients.insert(client_id, outbox);
                 }
-                ServerEvent::ClientShellEndpointRequest {
+                ServerEvent::ShellEndpointRequest {
                     client_id,
                     boot_id,
                     request_id,
@@ -1127,8 +1128,8 @@ impl HeadlessServer {
         }
         if matches!(
             &ev,
-            ServerEvent::ClientDetach { client_id }
-                | ServerEvent::ClientDisconnected { client_id }
+            ServerEvent::Detached { client_id }
+                | ServerEvent::Disconnected { client_id }
                 if !self.clients.contains_key(client_id)
         ) {
             return;
@@ -1136,7 +1137,7 @@ impl HeadlessServer {
         // Endpoint commands and client departures settle pane focus in their
         // own shared effect path; only an outer focus report needs this step.
         // Failed sends close the outbox and the next reap handles departure.
-        let may_move_focus = matches!(ev, ServerEvent::ClientShellFocus { .. });
+        let may_move_focus = matches!(ev, ServerEvent::ShellFocus { .. });
         self.apply_server_event(ev);
         if may_move_focus {
             self.sync_pane_focus();
@@ -1145,7 +1146,7 @@ impl HeadlessServer {
 
     fn apply_server_event(&mut self, ev: ServerEvent) {
         match ev {
-            ServerEvent::ClientShellConnected {
+            ServerEvent::ShellConnected {
                 client_id,
                 surface_cols,
                 surface_rows,
@@ -1246,7 +1247,7 @@ impl HeadlessServer {
                     self.mark_view_changed();
                 }
             }
-            ServerEvent::ClientPasteRejected { client_id, size } => {
+            ServerEvent::PasteRejected { client_id, size } => {
                 // Every rejection is a separate user action, so each one is
                 // reported.
                 self.send_to_client(
@@ -1259,7 +1260,7 @@ impl HeadlessServer {
                     },
                 );
             }
-            ServerEvent::ClientShellResize {
+            ServerEvent::ShellResize {
                 client_id,
                 surface_cols,
                 surface_rows,
@@ -1305,7 +1306,7 @@ impl HeadlessServer {
                     self.mark_view_changed();
                 }
             }
-            ServerEvent::ClientShellHostTheme { client_id, update } => {
+            ServerEvent::ShellHostTheme { client_id, update } => {
                 let is_foreground = self.clients.foreground_client_id() == Some(client_id);
                 let Some(client) = self.clients.get_mut(&client_id) else {
                     return;
@@ -1326,7 +1327,7 @@ impl HeadlessServer {
                     self.mark_view_changed();
                 }
             }
-            ServerEvent::ClientShellFocus { client_id, focused } => {
+            ServerEvent::ShellFocus { client_id, focused } => {
                 let Some(client) = self.clients.get_mut(&client_id) else {
                     return;
                 };
@@ -1347,7 +1348,7 @@ impl HeadlessServer {
                     }
                 }
             }
-            ServerEvent::ClientShellReplayHostEffects { client_id } => {
+            ServerEvent::ShellReplayHostEffects { client_id } => {
                 let Some(client) = self.clients.get_mut(&client_id) else {
                     return;
                 };
@@ -1359,7 +1360,7 @@ impl HeadlessServer {
                 self.stream_shell_keyboard_mode();
                 self.sync_window_title();
             }
-            ServerEvent::ClientShellPaneInput {
+            ServerEvent::ShellPaneInput {
                 client_id,
                 pane_id,
                 events,
@@ -1450,7 +1451,7 @@ impl HeadlessServer {
                     self.invalidate_pane_viewers(runtime_pane_id);
                 }
             }
-            ServerEvent::ClientShellEndpointRequest {
+            ServerEvent::ShellEndpointRequest {
                 client_id,
                 boot_id,
                 request_id,
@@ -1458,13 +1459,13 @@ impl HeadlessServer {
             } => {
                 self.handle_client_shell_endpoint_request(client_id, boot_id, request_id, *command);
             }
-            ServerEvent::ClientDetach { client_id } => {
+            ServerEvent::Detached { client_id } => {
                 if !self.remove_client_if_present(client_id) {
                     return;
                 }
                 info!(?client_id, "client detached");
             }
-            ServerEvent::ClientDisconnected { client_id } => {
+            ServerEvent::Disconnected { client_id } => {
                 if !self.remove_client_if_present(client_id) {
                     return;
                 }

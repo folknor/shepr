@@ -99,13 +99,13 @@ fn round_trip_empty_session() {
         active: None,
     };
     let json = serde_json::to_string(&snap).expect("test precondition");
-    let restored = parse_snapshot(&json).expect("test precondition");
+    let restored: SessionSnapshot = serde_json::from_str(&json).expect("test precondition");
     assert!(restored.workspaces.is_empty());
     assert_eq!(restored.active, None);
 }
 
 #[test]
-fn saved_host_theme_round_trips_and_old_snapshots_default_to_empty() {
+fn saved_host_theme_round_trips() {
     let color = shepr_termio::host_term::theme::RgbColor {
         r: 12,
         g: 34,
@@ -120,10 +120,6 @@ fn saved_host_theme_round_trips_and_old_snapshots_default_to_empty() {
     let json = serde_json::to_string(&saved).expect("test precondition");
     let loaded: SavedHostTheme = serde_json::from_str(&json).expect("test precondition");
     assert_eq!(loaded.to_theme(), theme);
-
-    let old = r#"{"version":1,"workspaces":[],"active":null}"#;
-    let loaded = parse_snapshot(old).expect("old snapshot remains readable");
-    assert!(loaded.host_theme.to_theme().is_empty());
 }
 
 #[test]
@@ -164,7 +160,7 @@ fn round_trip_full_workspace_snapshot() {
         0,
         PaneSnapshot {
             cwd: PathBuf::from("/home/can/Projects/shepr"),
-            public_number: Some(1),
+            public_number: 1,
             label: None,
             agent_session: None,
         },
@@ -173,7 +169,7 @@ fn round_trip_full_workspace_snapshot() {
         1,
         PaneSnapshot {
             cwd: PathBuf::from("/home/can/Projects/website"),
-            public_number: Some(2),
+            public_number: 2,
             label: Some("website".into()),
             agent_session: None,
         },
@@ -182,9 +178,8 @@ fn round_trip_full_workspace_snapshot() {
     let snap = SessionSnapshot {
         host_theme: Default::default(),
         workspaces: vec![WorkspaceSnapshot {
-            id: Some("wproj".to_string()),
+            id: "wproj".to_string(),
             custom_name: Some("pi-mono".to_string()),
-            identity_cwd: PathBuf::from("/home/can/Projects/shepr"),
             next_public_pane_number: 3,
             layout: LayoutSnapshot::Split {
                 direction: DirectionSnapshot::Horizontal,
@@ -194,18 +189,18 @@ fn round_trip_full_workspace_snapshot() {
             },
             panes,
             zoomed: false,
-            focused: Some(0),
-            root_pane: Some(0),
+            focused: 0,
+            root_pane: 0,
         }],
         active: Some(0),
         version: SNAPSHOT_VERSION,
     };
 
     let json = serde_json::to_string_pretty(&snap).expect("test precondition");
-    let restored = parse_snapshot(&json).expect("test precondition");
+    let restored: SessionSnapshot = serde_json::from_str(&json).expect("test precondition");
 
     assert_eq!(restored.workspaces.len(), 1);
-    assert_eq!(restored.workspaces[0].id.as_deref(), Some("wproj"));
+    assert_eq!(restored.workspaces[0].id, "wproj");
     assert_eq!(
         restored.workspaces[0].custom_name.as_deref(),
         Some("pi-mono")
@@ -230,11 +225,7 @@ fn capture_contract_tracks_workspace_order_and_the_bookmark() {
 
     let snapshot = capture_from_state(&state);
     let ids: Vec<_> = state.workspaces.iter().map(|ws| ws.id.clone()).collect();
-    let captured_ids: Vec<_> = snapshot
-        .workspaces
-        .iter()
-        .map(|ws| ws.id.clone().expect("test precondition"))
-        .collect();
+    let captured_ids: Vec<_> = snapshot.workspaces.iter().map(|ws| ws.id.clone()).collect();
     assert_eq!(captured_ids, ids);
     assert_eq!(snapshot.active, state.bookmark_index());
 }
@@ -279,8 +270,8 @@ fn capture_contract_tracks_layout_focus_zoom_and_root_pane() {
     let snapshot = capture_from_state(&state);
     let workspace = &snapshot.workspaces[0];
     assert!(matches!(workspace.layout, LayoutSnapshot::Split { .. }));
-    assert_eq!(workspace.focused, Some(second.raw()));
-    assert_eq!(workspace.root_pane, Some(root.raw()));
+    assert_eq!(workspace.focused, second.raw());
+    assert_eq!(workspace.root_pane, root.raw());
     assert!(workspace.zoomed);
     assert_eq!(workspace.panes.len(), 2);
 }
@@ -305,8 +296,8 @@ fn capture_contract_tracks_focus_navigation() {
     );
 
     let snapshot = capture_from_state(&app.state);
-    assert_eq!(snapshot.workspaces[0].focused, Some(second.raw()));
-    assert_ne!(snapshot.workspaces[0].focused, Some(root.raw()));
+    assert_eq!(snapshot.workspaces[0].focused, second.raw());
+    assert_ne!(snapshot.workspaces[0].focused, root.raw());
 }
 
 #[test]
@@ -334,7 +325,7 @@ fn capture_contract_tracks_resize_ratio_changes() {
     let before_ratio = root_split_ratio(&before.workspaces[0]).expect("test precondition");
     let after_ratio = root_split_ratio(&after.workspaces[0]).expect("test precondition");
     assert_ne!(before_ratio, after_ratio);
-    assert_eq!(after.workspaces[0].focused, Some(right.raw()));
+    assert_eq!(after.workspaces[0].focused, right.raw());
 }
 
 #[test]
@@ -371,7 +362,7 @@ fn capture_contract_tracks_public_id_counters() {
 
     let snapshot = capture_from_state(&state);
     let workspace = &snapshot.workspaces[0];
-    let numbers: HashMap<u32, Option<usize>> = workspace
+    let numbers: HashMap<u32, usize> = workspace
         .panes
         .iter()
         .map(|(id, pane)| (*id, pane.public_number))
@@ -379,9 +370,9 @@ fn capture_contract_tracks_public_id_counters() {
     assert_eq!(
         numbers,
         HashMap::from([
-            (state.workspaces[0].root_pane().raw(), Some(1)),
-            (third.raw(), Some(3)),
-            (fourth.raw(), Some(4)),
+            (state.workspaces[0].root_pane().raw(), 1),
+            (third.raw(), 3),
+            (fourth.raw(), 4),
         ])
     );
     assert_eq!(workspace.next_public_pane_number, 5);
@@ -468,7 +459,6 @@ async fn capture_follows_live_cwd_arbitration_and_keeps_it_after_exit() {
         old,
         "the report arrived after the shell moved, so it wins, as for the live cwd"
     );
-    assert_eq!(before.workspaces[0].identity_cwd, old);
     assert_eq!(
         runtimes.values().next().expect("test precondition").cwd(),
         Some(old.clone())
@@ -495,7 +485,6 @@ async fn capture_follows_live_cwd_arbitration_and_keeps_it_after_exit() {
             .cwd,
         old
     );
-    assert_eq!(after.workspaces[0].identity_cwd, old);
     assert_eq!(
         runtimes.values().next().expect("test precondition").cwd(),
         Some(old)
@@ -506,12 +495,11 @@ async fn capture_follows_live_cwd_arbitration_and_keeps_it_after_exit() {
 }
 
 #[test]
-fn capture_contract_tracks_workspace_identity_and_pane_cwds() {
+fn capture_contract_tracks_pane_cwds() {
     let mut state = state_with_workspaces(&["one"]);
     let pion_cwd = ScratchDir::new("snapshot-pion-cwd").to_path_buf();
     let shepr_cwd = ScratchDir::new("snapshot-shepr-cwd").to_path_buf();
     let root = state.workspaces[0].root_pane();
-    state.workspaces[0].identity_cwd = pion_cwd.clone();
     let second = state.workspaces[0].test_split(Direction::Horizontal);
     state.ensure_test_terminals();
     let root_terminal_id = state.workspaces[0].panes()[&root]
@@ -531,7 +519,6 @@ fn capture_contract_tracks_workspace_identity_and_pane_cwds() {
 
     let snapshot = capture_from_state(&state);
     let workspace = &snapshot.workspaces[0];
-    assert_eq!(workspace.identity_cwd, pion_cwd);
     assert_eq!(workspace.panes[&root.raw()].cwd, pion_cwd);
     assert_eq!(workspace.panes[&second.raw()].cwd, shepr_cwd);
 }
@@ -817,10 +804,18 @@ fn capture_contract_preserves_restored_agent_session() {
 
 #[test]
 fn other_or_missing_version_is_rejected() {
-    let json = r#"{"workspaces":[],"active":null}"#;
-    assert!(parse_snapshot(json).is_err());
-    let json = r#"{"version":999,"workspaces":[],"active":null}"#;
-    assert!(parse_snapshot(json).is_err());
+    let theme = serde_json::to_value(SavedHostTheme::default()).expect("test precondition");
+    for version in [None, Some(999)] {
+        let mut json = serde_json::json!({
+            "host_theme": theme,
+            "workspaces": [],
+            "active": null,
+        });
+        if let Some(version) = version {
+            json["version"] = version.into();
+        }
+        assert!(serde_json::from_value::<SessionSnapshot>(json).is_err());
+    }
 }
 
 #[test]
@@ -845,7 +840,7 @@ fn snapshot_parsing_preserves_missing_cwd() {
         0,
         PaneSnapshot {
             cwd: missing_cwd.clone(),
-            public_number: None,
+            public_number: 1,
             label: None,
             agent_session: None,
         },
@@ -854,7 +849,7 @@ fn snapshot_parsing_preserves_missing_cwd() {
         1,
         PaneSnapshot {
             cwd: existing_cwd.clone(),
-            public_number: None,
+            public_number: 2,
             label: None,
             agent_session: None,
         },
@@ -864,10 +859,9 @@ fn snapshot_parsing_preserves_missing_cwd() {
         version: SNAPSHOT_VERSION,
         host_theme: Default::default(),
         workspaces: vec![WorkspaceSnapshot {
-            id: Some("test-ws".to_string()),
+            id: "test-ws".to_string(),
             custom_name: Some("fallback test".to_string()),
-            identity_cwd: existing_cwd,
-            next_public_pane_number: 0,
+            next_public_pane_number: 3,
             layout: LayoutSnapshot::Split {
                 direction: DirectionSnapshot::Horizontal,
                 ratio: 0.5,
@@ -876,14 +870,14 @@ fn snapshot_parsing_preserves_missing_cwd() {
             },
             panes,
             zoomed: false,
-            focused: Some(0),
-            root_pane: Some(0),
+            focused: 0,
+            root_pane: 0,
         }],
         active: Some(0),
     };
 
     let json = serde_json::to_string(&snap).expect("test precondition");
-    let restored = parse_snapshot(&json).expect("test precondition");
+    let restored: SessionSnapshot = serde_json::from_str(&json).expect("test precondition");
     assert_eq!(restored.workspaces.len(), 1);
     assert_eq!(restored.workspaces[0].panes[&0].cwd, missing_cwd);
 }

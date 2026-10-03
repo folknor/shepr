@@ -116,19 +116,15 @@ fn send_client_disconnected(server_event_tx: &mpsc::Sender<ServerEvent>, client_
     send_final_client_event(
         server_event_tx,
         client_id,
-        ServerEvent::ClientDisconnected { client_id },
+        ServerEvent::Disconnected { client_id },
     );
 }
 
 /// Internal event sent from client transport threads to the main event loop.
 #[derive(Debug)]
-#[expect(
-    clippy::enum_variant_names,
-    reason = "every event comes from a client connection, so the prefix names the source"
-)]
 pub(crate) enum ServerEvent {
     /// A client-owned shell completed its dedicated handshake.
-    ClientShellConnected {
+    ShellConnected {
         client_id: ClientId,
         surface_cols: u16,
         surface_rows: u16,
@@ -140,9 +136,9 @@ pub(crate) enum ServerEvent {
         outbox: ClientOutbox,
     },
     /// A fully decoded interactive paste exceeded the text-input limit.
-    ClientPasteRejected { client_id: ClientId, size: usize },
+    PasteRejected { client_id: ClientId, size: usize },
     /// A client-owned shell recomputed its pane viewport.
-    ClientShellResize {
+    ShellResize {
         client_id: ClientId,
         surface_cols: u16,
         surface_rows: u16,
@@ -151,32 +147,32 @@ pub(crate) enum ServerEvent {
         pixel_mouse: bool,
     },
     /// A client-owned shell delivered semantic input to one stable pane target.
-    ClientShellPaneInput {
+    ShellPaneInput {
         client_id: ClientId,
         pane_id: shepr_protocol::PublicPaneId,
         events: Vec<ClientPaneInputEvent>,
     },
     /// A client-owned shell published one host terminal theme observation.
-    ClientShellHostTheme {
+    ShellHostTheme {
         client_id: ClientId,
         update: shepr_protocol::ClientHostThemeUpdate,
     },
     /// A client-owned shell reported whether its outer terminal has focus.
-    ClientShellFocus { client_id: ClientId, focused: bool },
+    ShellFocus { client_id: ClientId, focused: bool },
     /// A shell that just committed to showing this connection asks for its current mouse
     /// capture, keyboard mode and title, which it dropped while preparing the connection.
-    ClientShellReplayHostEffects { client_id: ClientId },
+    ShellReplayHostEffects { client_id: ClientId },
     /// A client-owned shell invoked one endpoint operation through this connection.
-    ClientShellEndpointRequest {
+    ShellEndpointRequest {
         client_id: ClientId,
         boot_id: shepr_protocol::BootId,
         request_id: shepr_protocol::RequestId,
         command: Box<shepr_protocol::command::EndpointCommand>,
     },
     /// A client detached gracefully.
-    ClientDetach { client_id: ClientId },
+    Detached { client_id: ClientId },
     /// A client connection was lost.
-    ClientDisconnected { client_id: ClientId },
+    Disconnected { client_id: ClientId },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -358,7 +354,7 @@ fn handle_client_handshake(
     // Notify the main loop about the new client.
     let endpoint_control_writer = outbox.control_sender();
     // The exact-build preamble guarantees support for semantic surfaces.
-    let connected = ServerEvent::ClientShellConnected {
+    let connected = ServerEvent::ShellConnected {
         client_id,
         surface_cols: hello.geometry.cols(),
         surface_rows: hello.geometry.rows(),
@@ -370,7 +366,7 @@ fn handle_client_handshake(
         outbox,
     };
     if let Err(err) = server_event_tx.blocking_send(connected)
-        && let ServerEvent::ClientShellConnected { outbox, .. } = err.0
+        && let ServerEvent::ShellConnected { outbox, .. } = err.0
     {
         send_shutdown_to_unregistered_client(&outbox);
     }
@@ -530,7 +526,7 @@ fn client_read_loop_with_endpoint_controls(
                 );
                 let (cell_width_px, cell_height_px, pixel_mouse) =
                     (cell.width(), cell.height(), cell.exact);
-                ServerEvent::ClientShellResize {
+                ServerEvent::ShellResize {
                     client_id,
                     surface_cols: surface_size.cols,
                     surface_rows: surface_size.rows,
@@ -540,14 +536,14 @@ fn client_read_loop_with_endpoint_controls(
                 }
             }
             ClientMessage::ClientShellHostTheme { update } => {
-                ServerEvent::ClientShellHostTheme { client_id, update }
+                ServerEvent::ShellHostTheme { client_id, update }
             }
             ClientMessage::ClientShellFocus { focused } => {
-                ServerEvent::ClientShellFocus { client_id, focused }
+                ServerEvent::ShellFocus { client_id, focused }
             }
             ClientMessage::ClientShellPaneInput { pane_id, events } => {
                 match pane_input_event_limit(&events) {
-                    InputEventLimit::WithinLimits => ServerEvent::ClientShellPaneInput {
+                    InputEventLimit::WithinLimits => ServerEvent::ShellPaneInput {
                         client_id,
                         pane_id,
                         events,
@@ -568,7 +564,7 @@ fn client_read_loop_with_endpoint_controls(
                             max = MAX_INPUT_PAYLOAD,
                             "oversized targeted pane paste, rejecting"
                         );
-                        ServerEvent::ClientPasteRejected { client_id, size }
+                        ServerEvent::PasteRejected { client_id, size }
                     }
                     InputEventLimit::InputPayloadTooLarge { size } => {
                         warn!(
@@ -599,16 +595,14 @@ fn client_read_loop_with_endpoint_controls(
                     send_client_disconnected(server_event_tx, client_id);
                     break;
                 }
-                ServerEvent::ClientShellEndpointRequest {
+                ServerEvent::ShellEndpointRequest {
                     client_id,
                     boot_id,
                     request_id,
                     command: Box::new(command),
                 }
             }
-            ClientMessage::ReplayHostEffects => {
-                ServerEvent::ClientShellReplayHostEffects { client_id }
-            }
+            ClientMessage::ReplayHostEffects => ServerEvent::ShellReplayHostEffects { client_id },
             ClientMessage::HealthPing => {
                 // This acknowledges transport liveness for this reader and
                 // writer, not responsiveness of the headless event loop. A
@@ -629,7 +623,7 @@ fn client_read_loop_with_endpoint_controls(
                 send_final_client_event(
                     server_event_tx,
                     client_id,
-                    ServerEvent::ClientDetach { client_id },
+                    ServerEvent::Detached { client_id },
                 );
                 break;
             }
@@ -1128,7 +1122,7 @@ mod tests {
             .blocking_recv()
             .expect("client shell connected event")
         {
-            ServerEvent::ClientShellConnected {
+            ServerEvent::ShellConnected {
                 client_id,
                 surface_cols,
                 surface_rows,
@@ -1147,7 +1141,7 @@ mod tests {
                 assert!(surface_active);
                 drop(writer);
             }
-            other => panic!("expected ClientShellConnected, got {other:?}"),
+            other => panic!("expected ShellConnected, got {other:?}"),
         }
 
         drop(client_stream);
@@ -1187,7 +1181,7 @@ mod tests {
 
         assert!(matches!(
             recv_server_event(&mut server_event_rx, "detach event"),
-            ServerEvent::ClientDetach { client_id } if client_id == ClientId::test_new(7)
+            ServerEvent::Detached { client_id } if client_id == ClientId::test_new(7)
         ));
         handle
             .join()
@@ -1219,7 +1213,7 @@ mod tests {
 
         assert!(matches!(
             recv_server_event(&mut server_event_rx, "detach after health ping"),
-            ServerEvent::ClientDetach { client_id } if client_id == ClientId::test_new(7)
+            ServerEvent::Detached { client_id } if client_id == ClientId::test_new(7)
         ));
         handle
             .join()
@@ -1259,7 +1253,7 @@ mod tests {
 
         assert!(matches!(
             recv_server_event(&mut server_event_rx, "unsafe resize disconnect"),
-            ServerEvent::ClientDisconnected { client_id } if client_id == ClientId::test_new(7)
+            ServerEvent::Disconnected { client_id } if client_id == ClientId::test_new(7)
         ));
         handle
             .join()
@@ -1291,7 +1285,7 @@ mod tests {
         .expect("write shell resize");
         assert!(matches!(
             recv_server_event(&mut server_event_rx, "shell resize"),
-            ServerEvent::ClientShellResize {
+            ServerEvent::ShellResize {
                 client_id,
                 surface_cols: 60,
                 surface_rows: 15,
@@ -1305,7 +1299,7 @@ mod tests {
             .expect("write detach");
         assert!(matches!(
             recv_server_event(&mut server_event_rx, "detach event"),
-            ServerEvent::ClientDetach { client_id } if client_id == ClientId::test_new(7)
+            ServerEvent::Detached { client_id } if client_id == ClientId::test_new(7)
         ));
         handle
             .join()
@@ -1359,14 +1353,14 @@ mod tests {
 
         assert!(matches!(
             recv_server_event(&mut server_event_rx, "bounded palette update"),
-            ServerEvent::ClientShellHostTheme {
+            ServerEvent::ShellHostTheme {
                 client_id,
                 update: shepr_protocol::ClientHostThemeUpdate::PaletteColors(colors),
             } if client_id == ClientId::test_new(7) && colors.len() == 256
         ));
         assert!(matches!(
             recv_server_event(&mut server_event_rx, "ordered appearance update"),
-            ServerEvent::ClientShellHostTheme {
+            ServerEvent::ShellHostTheme {
                 client_id,
                 update: shepr_protocol::ClientHostThemeUpdate::Appearance(
                     shepr_protocol::ClientHostAppearance::Dark
@@ -1407,7 +1401,7 @@ mod tests {
             .expect("write oversized palette frame");
         assert!(matches!(
             recv_server_event(&mut server_event_rx, "oversized palette disconnect"),
-            ServerEvent::ClientDisconnected { client_id } if client_id == ClientId::test_new(7)
+            ServerEvent::Disconnected { client_id } if client_id == ClientId::test_new(7)
         ));
 
         drop(client_stream);

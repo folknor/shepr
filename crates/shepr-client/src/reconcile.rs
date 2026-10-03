@@ -57,24 +57,24 @@ impl ClientLoop {
                 });
             }
         }
-        let baseline = HostBaseline {
+        let host_geometry = self.state.reported_geometry;
+        let shell = &self.state.shell;
+        let theme = &self.state.host_theme_updates;
+        // Focus is sent at commit. Geometry and theme are used only if a move is ready to
+        // start; deriving the layout on every ordinary event would repeat shell work.
+        let focused = shell.host_focus_baseline();
+        let baseline = || HostBaseline {
             geometry: view_geometry(
-                self.state.reported_geometry,
-                self.state.shell.surface_size(
-                    self.state.reported_geometry.cols(),
-                    self.state.reported_geometry.rows(),
-                ),
+                host_geometry,
+                shell.surface_size(host_geometry.cols(), host_geometry.rows()),
             ),
-            host_focused: self.state.shell.host_focus_baseline(),
-            theme: &self.state.host_theme_updates,
+            theme,
         };
-        // Sent by a commit later in this turn, not by `turn_on`.
-        let focused = baseline.host_focused;
         if let StartOutcome::Abandoned(to) = view::start_move(
             &mut self.state.choice,
             &mut self.write_stream,
-            &self.state.shell,
-            &baseline,
+            shell,
+            baseline,
             &mut self.next_view_serial,
             now,
         ) {
@@ -82,16 +82,11 @@ impl ClientLoop {
             present_notice(&mut self.state, message);
         }
         view::send_focus(&mut self.state.choice, &mut self.write_stream);
-        let size = self.state.shell.surface_size(
-            self.state.reported_geometry.cols(),
-            self.state.reported_geometry.rows(),
-        );
         match view::commit_move(
             &mut self.state.choice,
             &mut self.write_stream,
             &mut self.state.shell,
             focused,
-            size,
         ) {
             Ok(Some(committed)) => {
                 if let Some(previous) = committed.previous {

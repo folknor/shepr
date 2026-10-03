@@ -83,6 +83,20 @@ impl StateEvent {
     }
 }
 
+fn warn_unrecognized_hook_identity(
+    pane_id: shepr_core::layout::PaneId,
+    origin: &shepr_agent::agent::ReportOrigin,
+) {
+    if origin.official_agent().is_none() {
+        tracing::warn!(
+            pane = pane_id.raw(),
+            source = %origin.source(),
+            agent_label = %origin.label(),
+            "hook report uses a custom source or agent label"
+        );
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Event handling
 // ---------------------------------------------------------------------------
@@ -166,6 +180,7 @@ impl AppState {
                 seq,
                 session_ref,
             } => self.update_terminal_state(pane_id, |terminal| {
+                warn_unrecognized_hook_identity(pane_id, &origin);
                 terminal.set_hook_report_at(origin, state, session_ref, seq, sample)
             }),
             StateEvent::AgentSessionReported {
@@ -176,6 +191,7 @@ impl AppState {
                 session_ref,
                 session_start_source,
             } => self.update_terminal_state(pane_id, |terminal| {
+                warn_unrecognized_hook_identity(pane_id, &origin);
                 terminal.set_agent_session_ref_for_typed_start_source_at(
                     origin,
                     session_ref,

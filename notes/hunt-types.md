@@ -581,12 +581,12 @@ server-serving.
 
 `PaneTerminalCore::content_revision`, `detection_content_seq`,
 `synchronized_output_epoch`, `history_epoch`, `default_color_generation`;
-`PaneRuntime::content_seq() -> u64` (returning `0` for a poisoned core, which
-the server reads as an even, stable revision);
-`synchronized_output_state() -> Option<(bool, u64)>` where `None` means poisoned
-and callers (`render_pane_surface`, `workspace_surface_held`) decode the three
-states by hand; `TerminalDirtyPatchSnapshot::content_revision: u64`; the server
-computes `| 1`, `is_multiple_of(2)` and before/after equality on them.
+`PaneRuntime::content_seq() -> u64` (a poisoned core now reads as an odd, torn
+revision, and full-draw certification is one `surface_content_revision`
+function); `synchronized_output_state() -> Option<(bool, u64)>` where `None`
+means poisoned and callers (`render_pane_surface`, `workspace_surface_held`)
+decode the three states by hand; `TerminalDirtyPatchSnapshot::content_revision:
+u64`. The parity rule is still arithmetic on a bare `u64`.
 `PaneHistoryCache::revision: u64` uses `0` for "never held anything". Proposal:
 newtypes per counter (`ContentRevision`, `DetectionSeq`, `SyncEpoch`,
 `HistoryEpoch`, `DefaultColorGeneration`) with `bump`, `is_stable`,
@@ -694,13 +694,6 @@ counter "never reaches the top bit": two files partition one integer space;
 Restored(u64)}`. Reported by mux-panes and mux-state.
 
 ## Workspace, persistence and Git
-
-## TYP-038 - The server hands the history digest to persist as text
-
-Persist now has `HistoryDigest`, `LayoutFingerprint` and `SavedLayout`, but the
-server-facing entry points kept their string forms: `App::with_paths`
-(`crates/shepr-server/src/app/mod.rs`) passes the loaded digest to
-`load_history` as `&str`. Carry the typed digest across. (mux-state)
 
 ## TYP-039 - The workspace branch is an option that means three things
 

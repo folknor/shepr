@@ -60,7 +60,7 @@ pub(crate) fn dispatch_lifecycle_messages(
     for message in messages {
         let event = match message {
             shepr_protocol::ClientMessage::ClientShellResize { geometry } => {
-                crate::server::client_transport::ServerEvent::ClientShellResize {
+                crate::server::client_transport::ServerEvent::ShellResize {
                     client_id,
                     cell_width_px: geometry.width(),
                     cell_height_px: geometry.height(),
@@ -70,31 +70,23 @@ pub(crate) fn dispatch_lifecycle_messages(
                 }
             }
             shepr_protocol::ClientMessage::ClientShellFocus { focused } => {
-                crate::server::client_transport::ServerEvent::ClientShellFocus {
-                    client_id,
-                    focused,
-                }
+                crate::server::client_transport::ServerEvent::ShellFocus { client_id, focused }
             }
             shepr_protocol::ClientMessage::ClientShellEndpointRequest {
                 boot_id,
                 request_id,
                 command,
-            } => crate::server::client_transport::ServerEvent::ClientShellEndpointRequest {
+            } => crate::server::client_transport::ServerEvent::ShellEndpointRequest {
                 client_id,
                 boot_id,
                 request_id,
                 command: Box::new(command),
             },
             shepr_protocol::ClientMessage::ClientShellHostTheme { update } => {
-                crate::server::client_transport::ServerEvent::ClientShellHostTheme {
-                    client_id,
-                    update,
-                }
+                crate::server::client_transport::ServerEvent::ShellHostTheme { client_id, update }
             }
             shepr_protocol::ClientMessage::ReplayHostEffects => {
-                crate::server::client_transport::ServerEvent::ClientShellReplayHostEffects {
-                    client_id,
-                }
+                crate::server::client_transport::ServerEvent::ShellReplayHostEffects { client_id }
             }
             other => panic!("unhandled lifecycle message: {other:?}"),
         };
@@ -322,11 +314,9 @@ async fn last_shell_disconnect_restores_headless_pane_size() {
     let (_control, _render) = connect_test_shell(&mut server, 7, 112, 36);
     let client_size = server.app.test_runtime(pane_id).current_size();
 
-    assert!(
-        server.test_handle_server_event(ServerEvent::ClientDisconnected {
-            client_id: ClientId::test_new(7),
-        })
-    );
+    assert!(server.test_handle_server_event(ServerEvent::Disconnected {
+        client_id: ClientId::test_new(7),
+    }));
 
     let target = server
         .app
@@ -361,8 +351,8 @@ fn disconnect_after_detach_has_no_render_impact() {
     let _snapshot = client_shell_snapshot(&control);
     let client_id = ClientId::test_new(8);
 
-    assert!(server.test_handle_server_event(ServerEvent::ClientDetach { client_id }));
-    assert!(!server.test_handle_server_event(ServerEvent::ClientDisconnected { client_id }));
+    assert!(server.test_handle_server_event(ServerEvent::Detached { client_id }));
+    assert!(!server.test_handle_server_event(ServerEvent::Disconnected { client_id }));
     assert!(!server.clients.contains_key(&client_id));
     shutdown_test_runtimes(&mut server);
 }
@@ -450,7 +440,7 @@ fn server_stop_interrupts_server_event_backlog() {
     for client_id in 1..=64 {
         server
             .server_event_tx
-            .try_send(ServerEvent::ClientDisconnected {
+            .try_send(ServerEvent::Disconnected {
                 client_id: client_id.into(),
             })
             .expect("test precondition");
@@ -485,7 +475,7 @@ fn server_event_drain_is_bounded_and_keeps_remaining_events_in_order() {
     for index in 0..event_count {
         server
             .server_event_tx
-            .try_send(ServerEvent::ClientPasteRejected {
+            .try_send(ServerEvent::PasteRejected {
                 client_id: ClientId::test_new(42),
                 size: index + 1,
             })
@@ -598,7 +588,7 @@ async fn an_endpoint_request_queued_at_shutdown_is_answered() {
     let (control, _render) = connect_matching_test_shell(&mut server, 44);
     server
         .server_event_tx
-        .try_send(ServerEvent::ClientShellEndpointRequest {
+        .try_send(ServerEvent::ShellEndpointRequest {
             client_id: ClientId::test_new(44),
             boot_id: server.client_shell_boot_id.clone(),
             request_id: "at-stop".into(),
@@ -662,7 +652,7 @@ async fn a_queued_new_client_gets_its_endpoint_refusal_before_shutdown() {
     assert!(
         server
             .server_event_tx
-            .try_send(ServerEvent::ClientShellConnected {
+            .try_send(ServerEvent::ShellConnected {
                 client_id,
                 surface_cols: 80,
                 surface_rows: 23,
@@ -678,7 +668,7 @@ async fn a_queued_new_client_gets_its_endpoint_refusal_before_shutdown() {
     assert!(
         server
             .server_event_tx
-            .try_send(ServerEvent::ClientShellEndpointRequest {
+            .try_send(ServerEvent::ShellEndpointRequest {
                 client_id,
                 boot_id,
                 request_id: "new-client-command".into(),
@@ -745,7 +735,7 @@ async fn a_dequeued_new_client_waits_for_queued_commands_before_shutdown() {
     assert!(
         server
             .server_event_tx
-            .try_send(ServerEvent::ClientShellEndpointRequest {
+            .try_send(ServerEvent::ShellEndpointRequest {
                 client_id,
                 boot_id: server.client_shell_boot_id.clone(),
                 request_id: "dequeued-client-command".into(),
@@ -1204,11 +1194,9 @@ async fn promoted_client_window_title_uses_its_own_view() {
     drain_window_titles(&survivor_control);
     drain_window_titles(&disconnected_control);
 
-    assert!(
-        server.test_handle_server_event(ServerEvent::ClientDisconnected {
-            client_id: ClientId::test_new(2)
-        })
-    );
+    assert!(server.test_handle_server_event(ServerEvent::Disconnected {
+        client_id: ClientId::test_new(2)
+    }));
     server.sync_window_title();
 
     assert_eq!(
@@ -1278,7 +1266,7 @@ async fn client_shell_attach_seeds_workspace() {
     let (writer, _control_rx, _render_rx) = test_client_writer();
 
     assert!(
-        server.test_handle_server_event(ServerEvent::ClientShellConnected {
+        server.test_handle_server_event(ServerEvent::ShellConnected {
             client_id: ClientId::test_new(6),
             surface_cols: 80,
             surface_rows: 23,
@@ -1339,7 +1327,7 @@ async fn client_shell_snapshot_presents_unknown_agent_as_idle() {
         );
 
     let (writer, control_rx, _render_rx) = test_client_writer();
-    server.test_handle_server_event(ServerEvent::ClientShellConnected {
+    server.test_handle_server_event(ServerEvent::ShellConnected {
         client_id: ClientId::test_new(78),
         surface_cols: 80,
         surface_rows: 24,
@@ -1372,7 +1360,7 @@ async fn client_shell_endpoint_request_uses_the_selected_connection() {
     let (writer, control_rx, _render_rx) = test_client_writer();
     let client_id = ClientId::test_new(41);
     assert!(
-        server.test_handle_server_event(ServerEvent::ClientShellConnected {
+        server.test_handle_server_event(ServerEvent::ShellConnected {
             client_id,
             surface_cols: 80,
             surface_rows: 23,
@@ -1398,7 +1386,7 @@ async fn client_shell_endpoint_request_uses_the_selected_connection() {
             },
         ));
         assert!(
-            server.test_handle_server_event(ServerEvent::ClientShellEndpointRequest {
+            server.test_handle_server_event(ServerEvent::ShellEndpointRequest {
                 client_id,
                 boot_id: boot_id.clone(),
                 request_id: request_id.into(),
@@ -1459,7 +1447,7 @@ async fn immediate_endpoint_replies_stay_after_earlier_commands() {
     let current_boot = server.client_shell_boot_id.clone();
     let workspace_id = server.app.state.workspaces[0].id.clone();
 
-    server.test_handle_server_event(ServerEvent::ClientShellEndpointRequest {
+    server.test_handle_server_event(ServerEvent::ShellEndpointRequest {
         client_id,
         boot_id: current_boot.clone(),
         request_id: "held".into(),
@@ -1470,7 +1458,7 @@ async fn immediate_endpoint_replies_stay_after_earlier_commands() {
             },
         )),
     });
-    server.test_handle_server_event(ServerEvent::ClientShellEndpointRequest {
+    server.test_handle_server_event(ServerEvent::ShellEndpointRequest {
         client_id,
         boot_id: shepr_test_fixtures::fixed_boot_id(2),
         request_id: "stale".into(),
@@ -1480,7 +1468,7 @@ async fn immediate_endpoint_replies_stay_after_earlier_commands() {
             },
         )),
     });
-    server.test_handle_server_event(ServerEvent::ClientShellEndpointRequest {
+    server.test_handle_server_event(ServerEvent::ShellEndpointRequest {
         client_id,
         boot_id: current_boot.clone(),
         request_id: "deactivate".into(),
@@ -1488,7 +1476,7 @@ async fn immediate_endpoint_replies_stay_after_earlier_commands() {
             shepr_protocol::command::ClientShellSurfaceSetParams { active: false },
         )),
     });
-    server.test_handle_server_event(ServerEvent::ClientShellEndpointRequest {
+    server.test_handle_server_event(ServerEvent::ShellEndpointRequest {
         client_id,
         boot_id: current_boot.clone(),
         request_id: "inactive".into(),
@@ -1498,7 +1486,7 @@ async fn immediate_endpoint_replies_stay_after_earlier_commands() {
             },
         )),
     });
-    server.test_handle_server_event(ServerEvent::ClientShellEndpointRequest {
+    server.test_handle_server_event(ServerEvent::ShellEndpointRequest {
         client_id,
         boot_id: current_boot.clone(),
         request_id: "activate".into(),
@@ -1569,7 +1557,7 @@ async fn endpoint_requests_dirty_immediate_sources_for_view_changes_only() {
     let boot_id = server.client_shell_boot_id.clone();
     let client_id = ClientId::test_new(45);
 
-    server.test_handle_server_event(ServerEvent::ClientShellEndpointRequest {
+    server.test_handle_server_event(ServerEvent::ShellEndpointRequest {
         client_id,
         boot_id: boot_id.clone(),
         request_id: "scroll".into(),
@@ -1586,7 +1574,7 @@ async fn endpoint_requests_dirty_immediate_sources_for_view_changes_only() {
     );
 
     let second_workspace = server.app.state.workspaces[1].id.clone();
-    server.test_handle_server_event(ServerEvent::ClientShellEndpointRequest {
+    server.test_handle_server_event(ServerEvent::ShellEndpointRequest {
         client_id,
         boot_id,
         request_id: "focus-workspace".into(),
@@ -1601,7 +1589,7 @@ async fn endpoint_requests_dirty_immediate_sources_for_view_changes_only() {
         "moving a client to another workspace changes the immediate PTY sources"
     );
     server.immediate_pty_sources_dirty = false;
-    server.test_handle_server_event(ServerEvent::ClientShellEndpointRequest {
+    server.test_handle_server_event(ServerEvent::ShellEndpointRequest {
         client_id,
         boot_id: server.client_shell_boot_id.clone(),
         request_id: "deactivate-surface".into(),
@@ -1645,7 +1633,7 @@ async fn slow_checkout_root_worker_does_not_hold_other_clients() {
     }));
 
     let started = std::time::Instant::now();
-    server.test_handle_server_event(ServerEvent::ClientShellEndpointRequest {
+    server.test_handle_server_event(ServerEvent::ShellEndpointRequest {
         client_id: client_a,
         boot_id: boot_id.clone(),
         request_id: "slow-checkout".into(),
@@ -1662,7 +1650,7 @@ async fn slow_checkout_root_worker_does_not_hold_other_clients() {
         .expect("checkout worker should have started");
 
     let workspace_id = server.app.state.workspaces[0].id.clone();
-    server.test_handle_server_event(ServerEvent::ClientShellEndpointRequest {
+    server.test_handle_server_event(ServerEvent::ShellEndpointRequest {
         client_id: client_a,
         boot_id: boot_id.clone(),
         request_id: "after-slow".into(),
@@ -1672,7 +1660,7 @@ async fn slow_checkout_root_worker_does_not_hold_other_clients() {
             },
         )),
     });
-    server.test_handle_server_event(ServerEvent::ClientShellEndpointRequest {
+    server.test_handle_server_event(ServerEvent::ShellEndpointRequest {
         client_id: client_b,
         boot_id,
         request_id: "other-client".into(),
@@ -1851,7 +1839,7 @@ async fn an_endpoint_error_reply_is_held_until_the_flush() {
     let (writer, control_rx, _render_rx) = test_client_writer();
     let client_id = ClientId::test_new(42);
     assert!(
-        server.test_handle_server_event(ServerEvent::ClientShellConnected {
+        server.test_handle_server_event(ServerEvent::ShellConnected {
             client_id,
             surface_cols: 80,
             surface_rows: 23,
@@ -1867,7 +1855,7 @@ async fn an_endpoint_error_reply_is_held_until_the_flush() {
 
     // Focusing a pane that does not exist fails; its error is held like
     // any other reply until the loop flushes.
-    server.test_handle_server_event(ServerEvent::ClientShellEndpointRequest {
+    server.test_handle_server_event(ServerEvent::ShellEndpointRequest {
         client_id,
         boot_id: server.client_shell_boot_id.clone(),
         request_id: "missing-pane".into(),
@@ -1900,7 +1888,7 @@ async fn an_endpoint_reply_for_a_departed_client_is_dropped() {
     let (writer, control_rx, _render_rx) = test_client_writer();
     let client_id = ClientId::test_new(43);
     assert!(
-        server.test_handle_server_event(ServerEvent::ClientShellConnected {
+        server.test_handle_server_event(ServerEvent::ShellConnected {
             client_id,
             surface_cols: 80,
             surface_rows: 23,
@@ -1914,7 +1902,7 @@ async fn an_endpoint_reply_for_a_departed_client_is_dropped() {
     );
     let _initial_snapshot = client_shell_snapshot(&control_rx);
     let workspace_id = server.app.state.workspaces[0].id.clone();
-    server.test_handle_server_event(ServerEvent::ClientShellEndpointRequest {
+    server.test_handle_server_event(ServerEvent::ShellEndpointRequest {
         client_id,
         boot_id: server.client_shell_boot_id.clone(),
         request_id: "then-left".into(),
@@ -1925,7 +1913,7 @@ async fn an_endpoint_reply_for_a_departed_client_is_dropped() {
             },
         )),
     });
-    assert!(server.test_handle_server_event(ServerEvent::ClientDetach { client_id }));
+    assert!(server.test_handle_server_event(ServerEvent::Detached { client_id }));
     server.release_endpoint_replies(ReleaseMode::WithinBudget);
     assert!(
         server
@@ -1956,7 +1944,7 @@ async fn client_shell_receives_metadata_then_shell_free_pane_surface() {
 
     let (writer, control_rx, render_rx) = test_client_writer();
     assert!(
-        server.test_handle_server_event(ServerEvent::ClientShellConnected {
+        server.test_handle_server_event(ServerEvent::ShellConnected {
             client_id: ClientId::test_new(7),
             surface_cols: 80,
             surface_rows: 23,
@@ -2129,7 +2117,7 @@ fn connect_test_shell(
 ) -> (std::sync::mpsc::Receiver<Vec<u8>>, RenderLaneReceiver) {
     let (writer, control, render) = test_client_writer();
     assert!(
-        server.test_handle_server_event(ServerEvent::ClientShellConnected {
+        server.test_handle_server_event(ServerEvent::ShellConnected {
             client_id: client_id.into(),
             surface_cols,
             surface_rows,
@@ -2354,11 +2342,9 @@ async fn cwd_report_and_slow_probe_refresh_shell_projection() {
     );
 
     // The timer only runs while a shell client is connected.
-    assert!(
-        server.test_handle_server_event(ServerEvent::ClientDisconnected {
-            client_id: ClientId::test_new(7),
-        })
-    );
+    assert!(server.test_handle_server_event(ServerEvent::Disconnected {
+        client_id: ClientId::test_new(7),
+    }));
     age_cache(&mut server);
     assert_eq!(server.shell_cwd_refresh_deadline(), None);
     shutdown_test_runtimes(&mut server);
@@ -2483,11 +2469,9 @@ async fn a_reconnecting_shell_is_seeded_again_and_gets_later_changes() {
     let (control, _render) = connect_matching_test_shell(&mut server, 7);
     let _ = client_shell_snapshot(&control);
     server.render_now();
-    assert!(
-        server.test_handle_server_event(ServerEvent::ClientDisconnected {
-            client_id: ClientId::test_new(7),
-        })
-    );
+    assert!(server.test_handle_server_event(ServerEvent::Disconnected {
+        client_id: ClientId::test_new(7),
+    }));
 
     // The shared cache outlives the connection; the new one is seeded fresh
     // and still receives subsequent changes.
@@ -3929,7 +3913,7 @@ async fn client_shell_workspaces_render_accept_input_and_resize_independently() 
         first_size
     );
 
-    server.test_handle_server_event(ServerEvent::ClientShellPaneInput {
+    server.test_handle_server_event(ServerEvent::ShellPaneInput {
         client_id: ClientId::test_new(22),
         pane_id: second_pane_id.parse().expect("test precondition"),
         events: vec![shepr_protocol::ClientPaneInputEvent::TextCommit(
@@ -3953,16 +3937,14 @@ async fn client_shell_workspaces_render_accept_input_and_resize_independently() 
     assert!(frame_text(&first_surface.frame).contains("FIRST_WORKSPACE"));
     assert!(frame_text(&second_surface.frame).contains("SECOND_WORKSPACE"));
 
-    assert!(
-        server.test_handle_server_event(ServerEvent::ClientShellResize {
-            client_id: ClientId::test_new(22),
-            surface_cols: 60,
-            surface_rows: 16,
-            cell_width_px: 0,
-            cell_height_px: 0,
-            pixel_mouse: false,
-        })
-    );
+    assert!(server.test_handle_server_event(ServerEvent::ShellResize {
+        client_id: ClientId::test_new(22),
+        surface_cols: 60,
+        surface_rows: 16,
+        cell_width_px: 0,
+        cell_height_px: 0,
+        pixel_mouse: false,
+    }));
     let resized_second = server.app.test_runtime(second_pane).current_size();
     assert_ne!(resized_second, second_size);
     assert_eq!(
@@ -4125,7 +4107,7 @@ async fn workspace_focus_replaces_the_client_shell_projection() {
 
     let (writer, control_rx, render_rx) = test_client_writer();
     assert!(
-        server.test_handle_server_event(ServerEvent::ClientShellConnected {
+        server.test_handle_server_event(ServerEvent::ShellConnected {
             client_id: ClientId::test_new(9),
             surface_cols: 80,
             surface_rows: 23,
@@ -4182,7 +4164,7 @@ async fn client_shell_input_targets_runtime_without_server_shell_classification(
     let _writer_lanes = attach_test_writer(&mut server, 11);
 
     assert!(
-        server.test_handle_server_event(ServerEvent::ClientShellPaneInput {
+        server.test_handle_server_event(ServerEvent::ShellPaneInput {
             client_id: ClientId::test_new(11),
             pane_id: pane_id.parse().expect("test precondition"),
             events: vec![
@@ -4300,7 +4282,7 @@ async fn client_shell_hidden_pane_rejects_presses_but_accepts_releases() {
     };
 
     assert!(
-        !server.test_handle_server_event(ServerEvent::ClientShellPaneInput {
+        !server.test_handle_server_event(ServerEvent::ShellPaneInput {
             client_id: ClientId::test_new(11),
             pane_id: pane_id.parse().expect("test precondition"),
             events: vec![key(shepr_protocol::ClientKeyKind::Press)],
@@ -4308,7 +4290,7 @@ async fn client_shell_hidden_pane_rejects_presses_but_accepts_releases() {
     );
     assert!(input_rx.try_recv().is_err());
     assert!(
-        !server.test_handle_server_event(ServerEvent::ClientShellPaneInput {
+        !server.test_handle_server_event(ServerEvent::ShellPaneInput {
             client_id: ClientId::test_new(11),
             pane_id: pane_id.parse().expect("test precondition"),
             events: vec![key(shepr_protocol::ClientKeyKind::Release)],
@@ -4361,7 +4343,7 @@ async fn client_shell_text_input_renders_only_when_resetting_scrollback() {
         .clients
         .set_foreground_client_id(Some(ClientId::test_new(11)));
 
-    let render_impact = server.test_handle_server_event(ServerEvent::ClientShellPaneInput {
+    let render_impact = server.test_handle_server_event(ServerEvent::ShellPaneInput {
         client_id: ClientId::test_new(11),
         pane_id: public_pane_id.parse().expect("test precondition"),
         events: vec![shepr_protocol::ClientPaneInputEvent::TextCommit(
@@ -4384,7 +4366,7 @@ async fn client_shell_text_input_renders_only_when_resetting_scrollback() {
         Some(0)
     );
 
-    let render_impact = server.test_handle_server_event(ServerEvent::ClientShellPaneInput {
+    let render_impact = server.test_handle_server_event(ServerEvent::ShellPaneInput {
         client_id: ClientId::test_new(11),
         pane_id: public_pane_id.parse().expect("test precondition"),
         events: vec![shepr_protocol::ClientPaneInputEvent::TextCommit(
@@ -4420,7 +4402,7 @@ async fn client_shell_mouse_motion_delivers_without_render_when_foreground() {
         .set_foreground_client_id(Some(ClientId::test_new(11)));
     assert!(server.claim_unowned_shell_workspace_geometry(ClientId::test_new(11), false));
 
-    let render_impact = server.test_handle_server_event(ServerEvent::ClientShellPaneInput {
+    let render_impact = server.test_handle_server_event(ServerEvent::ShellPaneInput {
         client_id: ClientId::test_new(11),
         pane_id: pane_id.parse().expect("test precondition"),
         events: vec![shepr_protocol::ClientPaneInputEvent::Mouse {
@@ -4457,7 +4439,7 @@ async fn client_shell_mouse_motion_promotes_and_requests_render() {
     );
     let _writer_lanes = attach_test_writer(&mut server, 11);
 
-    let render_impact = server.test_handle_server_event(ServerEvent::ClientShellPaneInput {
+    let render_impact = server.test_handle_server_event(ServerEvent::ShellPaneInput {
         client_id: ClientId::test_new(11),
         pane_id: pane_id.parse().expect("test precondition"),
         events: vec![shepr_protocol::ClientPaneInputEvent::Mouse {
@@ -4505,7 +4487,7 @@ async fn client_shell_input_dropped_on_a_full_pty_queue_is_reported_to_the_clien
         .into_iter()
         .map(|text| shepr_protocol::ClientPaneInputEvent::TextCommit(text.to_owned()))
         .collect();
-    server.test_handle_server_event(ServerEvent::ClientShellPaneInput {
+    server.test_handle_server_event(ServerEvent::ShellPaneInput {
         client_id: ClientId::test_new(11),
         pane_id: pane_id.parse().expect("test precondition"),
         events,
@@ -4626,7 +4608,7 @@ fn client_shell_host_theme_follows_foreground_client() {
         b: 200,
     };
     assert!(
-        server.test_handle_server_event(ServerEvent::ClientShellHostTheme {
+        server.test_handle_server_event(ServerEvent::ShellHostTheme {
             client_id: ClientId::test_new(1),
             update: shepr_protocol::ClientHostThemeUpdate::DefaultColor {
                 kind: shepr_protocol::ClientHostDefaultColorKind::Background,
@@ -4635,12 +4617,12 @@ fn client_shell_host_theme_follows_foreground_client() {
         })
     );
     assert!(
-        server.test_handle_server_event(ServerEvent::ClientShellHostTheme {
+        server.test_handle_server_event(ServerEvent::ShellHostTheme {
             client_id: ClientId::test_new(1),
             update: shepr_protocol::ClientHostThemeUpdate::PaletteColors(vec![(4, blue)]),
         })
     );
-    server.test_handle_server_event(ServerEvent::ClientShellHostTheme {
+    server.test_handle_server_event(ServerEvent::ShellHostTheme {
         client_id: ClientId::test_new(1),
         update: shepr_protocol::ClientHostThemeUpdate::Appearance(
             shepr_protocol::ClientHostAppearance::Dark,
@@ -4666,7 +4648,7 @@ fn client_shell_host_theme_follows_foreground_client() {
         b: 220,
     };
     assert!(
-        !server.test_handle_server_event(ServerEvent::ClientShellHostTheme {
+        !server.test_handle_server_event(ServerEvent::ShellHostTheme {
             client_id: ClientId::test_new(2),
             update: shepr_protocol::ClientHostThemeUpdate::DefaultColor {
                 kind: shepr_protocol::ClientHostDefaultColorKind::Background,
@@ -4735,7 +4717,7 @@ fn resizing_a_background_shell_does_not_change_foreground_or_host_theme() {
         (ClientId::test_new(1), first_background),
         (ClientId::test_new(2), second_background),
     ] {
-        server.test_handle_server_event(ServerEvent::ClientShellHostTheme {
+        server.test_handle_server_event(ServerEvent::ShellHostTheme {
             client_id,
             update: shepr_protocol::ClientHostThemeUpdate::DefaultColor {
                 kind: shepr_protocol::ClientHostDefaultColorKind::Background,
@@ -4748,16 +4730,14 @@ fn resizing_a_background_shell_does_not_change_foreground_or_host_theme() {
         Some(first_background.into())
     );
 
-    assert!(
-        server.test_handle_server_event(ServerEvent::ClientShellResize {
-            client_id: ClientId::test_new(2),
-            surface_cols: 100,
-            surface_rows: 30,
-            cell_width_px: 0,
-            cell_height_px: 0,
-            pixel_mouse: false,
-        })
-    );
+    assert!(server.test_handle_server_event(ServerEvent::ShellResize {
+        client_id: ClientId::test_new(2),
+        surface_cols: 100,
+        surface_rows: 30,
+        cell_width_px: 0,
+        cell_height_px: 0,
+        pixel_mouse: false,
+    }));
     assert_eq!(
         server.clients.foreground_client_id(),
         Some(ClientId::test_new(1))
@@ -4803,7 +4783,7 @@ async fn every_rejected_paste_is_reported_to_the_client_shell() {
 
     // Every rejected paste is its own user action and is reported.
     for _ in 0..2 {
-        server.test_handle_server_event(ServerEvent::ClientPasteRejected {
+        server.test_handle_server_event(ServerEvent::PasteRejected {
             client_id: ClientId::test_new(7),
             size: 2_000_000,
         });
@@ -5115,16 +5095,14 @@ async fn pane_death_reconciles_each_client_view_and_focus() {
         Some(ClientId::test_new(71))
     );
     let before_resize = server.app.test_runtime(second_pane).current_size();
-    assert!(
-        server.test_handle_server_event(ServerEvent::ClientShellResize {
-            client_id: ClientId::test_new(71),
-            surface_cols: 90,
-            surface_rows: 25,
-            cell_width_px: 0,
-            cell_height_px: 0,
-            pixel_mouse: false,
-        })
-    );
+    assert!(server.test_handle_server_event(ServerEvent::ShellResize {
+        client_id: ClientId::test_new(71),
+        surface_cols: 90,
+        surface_rows: 25,
+        cell_width_px: 0,
+        cell_height_px: 0,
+        pixel_mouse: false,
+    }));
     assert_ne!(
         server.app.test_runtime(second_pane).current_size(),
         before_resize
@@ -5739,7 +5717,7 @@ async fn client_shell_release_cleanup_does_not_promote_and_survives_disconnect()
     };
 
     assert!(
-        server.test_handle_server_event(ServerEvent::ClientShellPaneInput {
+        server.test_handle_server_event(ServerEvent::ShellPaneInput {
             client_id: ClientId::test_new(1),
             pane_id: pane_id.parse().expect("test precondition"),
             events: vec![key(shepr_protocol::ClientKeyKind::Press)],
@@ -5749,7 +5727,7 @@ async fn client_shell_release_cleanup_does_not_promote_and_survives_disconnect()
     assert!(server.promote_client_to_foreground(ClientId::test_new(2)));
 
     assert!(
-        !server.test_handle_server_event(ServerEvent::ClientShellPaneInput {
+        !server.test_handle_server_event(ServerEvent::ShellPaneInput {
             client_id: ClientId::test_new(1),
             pane_id: pane_id.parse().expect("test precondition"),
             events: vec![key(shepr_protocol::ClientKeyKind::Release)],
@@ -5762,7 +5740,7 @@ async fn client_shell_release_cleanup_does_not_promote_and_survives_disconnect()
     );
 
     assert!(
-        server.test_handle_server_event(ServerEvent::ClientShellPaneInput {
+        server.test_handle_server_event(ServerEvent::ShellPaneInput {
             client_id: ClientId::test_new(1),
             pane_id: pane_id.parse().expect("test precondition"),
             events: vec![key(shepr_protocol::ClientKeyKind::Press)],
@@ -5775,11 +5753,9 @@ async fn client_shell_release_cleanup_does_not_promote_and_survives_disconnect()
             .expect("second encoded press")
             .is_empty()
     );
-    assert!(
-        server.test_handle_server_event(ServerEvent::ClientDisconnected {
-            client_id: ClientId::test_new(1)
-        })
-    );
+    assert!(server.test_handle_server_event(ServerEvent::Disconnected {
+        client_id: ClientId::test_new(1)
+    }));
     assert!(
         !input_rx
             .recv()
@@ -5878,12 +5854,10 @@ fn client_shell_focus_promotes_and_reaches_reporting_pane() {
             (30, 99)
         );
 
-        assert!(
-            server.test_handle_server_event(ServerEvent::ClientShellFocus {
-                client_id: ClientId::test_new(1),
-                focused: true,
-            })
-        );
+        assert!(server.test_handle_server_event(ServerEvent::ShellFocus {
+            client_id: ClientId::test_new(1),
+            focused: true,
+        }));
         assert_eq!(
             server.clients.foreground_client_id(),
             Some(ClientId::test_new(1))
@@ -5906,32 +5880,26 @@ fn client_shell_focus_promotes_and_reaches_reporting_pane() {
             Bytes::from_static(b"\x1b[I")
         );
 
-        assert!(
-            server.test_handle_server_event(ServerEvent::ClientShellFocus {
-                client_id: ClientId::test_new(2),
-                focused: true,
-            })
-        );
+        assert!(server.test_handle_server_event(ServerEvent::ShellFocus {
+            client_id: ClientId::test_new(2),
+            focused: true,
+        }));
         assert!(
             input_rx.try_recv().is_err(),
             "second viewer duplicated focus gain"
         );
-        assert!(
-            server.test_handle_server_event(ServerEvent::ClientShellFocus {
-                client_id: ClientId::test_new(1),
-                focused: false,
-            })
-        );
+        assert!(server.test_handle_server_event(ServerEvent::ShellFocus {
+            client_id: ClientId::test_new(1),
+            focused: false,
+        }));
         assert!(
             input_rx.try_recv().is_err(),
             "remaining viewer lost pane focus"
         );
-        assert!(
-            server.test_handle_server_event(ServerEvent::ClientShellFocus {
-                client_id: ClientId::test_new(2),
-                focused: false,
-            })
-        );
+        assert!(server.test_handle_server_event(ServerEvent::ShellFocus {
+            client_id: ClientId::test_new(2),
+            focused: false,
+        }));
         assert_eq!(
             outer_terminal_focus(server, ClientId::test_new(2)),
             Some(false)

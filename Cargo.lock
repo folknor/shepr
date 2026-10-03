@@ -1461,7 +1461,6 @@ dependencies = [
  "shepr-platform",
  "shepr-protocol",
  "shepr-pty",
- "shepr-remote",
  "shepr-termio",
  "shepr-test-fixtures",
  "shepr-test-support",

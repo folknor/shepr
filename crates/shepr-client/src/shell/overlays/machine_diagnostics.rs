@@ -78,11 +78,12 @@ impl ClientShellState {
             self.machine_diagnostics.errors.insert(
                 id.clone(),
                 MachineDiagnostic {
-                    // The diagnostic owns terminal sanitization. Preserve line breaks
-                    // while bounding the notice body.
+                    // RemoteText keeps tabs readable in logs, but the card renderer has no
+                    // stable tab-stop origin. Replace them before drawing and preserve lines.
                     message: message
                         .chars()
                         .take(crate::limits::MAX_MACHINE_DIAGNOSTIC_CHARS)
+                        .map(|character| if character == '\t' { ' ' } else { character })
                         .collect(),
                     requires_authentication,
                 },

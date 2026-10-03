@@ -817,7 +817,10 @@ impl PtyIoActorRunner {
                         Err(payload) => {
                             error!(
                                 pane = self.pane_id.raw(),
-                                panic = panic_payload_message(&*payload),
+                                panic = shepr_core::panic_message(
+                                    &*payload,
+                                    "non-string panic payload"
+                                ),
                                 "PTY read callback panicked; closing the pane"
                             );
                             self.raise_exit(ReaderExit::Panicked);
@@ -870,7 +873,8 @@ impl PtyIoActorRunner {
                     if let Err(payload) = effects_result {
                         error!(
                             pane = self.pane_id.raw(),
-                            panic = panic_payload_message(&*payload),
+                            panic =
+                                shepr_core::panic_message(&*payload, "non-string panic payload"),
                             "PTY post-read effects panicked; closing the pane"
                         );
                         self.raise_exit(ReaderExit::Panicked);
@@ -970,16 +974,6 @@ impl PtyIoActorRunner {
 
 fn resize_pty(fd: RawFd, resize: PtyResize) -> std::io::Result<()> {
     fd::resize_pty_fd(fd, resize.geometry)
-}
-
-fn panic_payload_message(payload: &(dyn std::any::Any + Send)) -> &str {
-    if let Some(message) = payload.downcast_ref::<&'static str>() {
-        message
-    } else if let Some(message) = payload.downcast_ref::<String>() {
-        message.as_str()
-    } else {
-        "non-string panic payload"
-    }
 }
 
 #[cfg(test)]

@@ -19,47 +19,24 @@ raw reports are in the commit that precedes this file's.
 
 ## Defects
 
-## BUG-014 - Remote bridge launch failures are retried forever
+## BUG-014 - Remote launch failures without a daemon exit class are retried forever
 
-The remote bridge host (`remote/host.rs`) documents that a launch failure on
-the remote host reaches the client only as stderr and an exit status, which it
-classifies as an ordinary retryable failure. A remote `shepr-server` that
-refuses its config is retried silently forever. Suggested: answer a launch
-refusal the way a build mismatch is answered, with a typed refusal preamble
-carrying the `DaemonExit` class, so the client can show Attention. (edges)
-
-## BUG-040 - A line selection does not cover columns added by a widening resize
-
-`Selection::line_range(pane, anchor_row, cursor_row, end_col)` encodes whole
-lines as columns `0..end_col` taken at creation (the server API passes
-`width.saturating_sub(1)`), so the selection no longer knows it is a line
-selection. The client keeps that fact elsewhere (`ClientCopySelection::Line`).
-Suggested `SelectionShape::{Range, Lines}` on `Selection`. (terminal)
-
-## BUG-041 - `AbsRow::viewport_row` clamps silently
-
-Rows above the viewport saturate to 0 and far below to `u16::MAX`, and the
-client clamps again. A drag anchor scrolled above the viewport compares equal
-to viewport row 0. The client also uses `AbsRow(0)` as "no scroll metrics" for
-the drag anchor (`mouse.rs`). Suggested `ViewportPosition::{Above,
-At(ViewportRow), Below}`. (terminal)
+A remote daemon boot exit now carries its `DaemonExit` class through the bridge
+(`remote/host.rs`, `remote/bridge.rs`), and `ConfigRefused` and `Failed` map to
+`EndpointFailure::Repair`. Launch failures that end before a daemon boot exit
+exists (a missing or non-executable sibling, a launch lock or boot timeout, an
+unresponsive occupant) still reach the client only as stderr and an exit
+status and are retried as ordinary failures. (edges)
 
 ## Latent defects
 
-## BUG-076 - Machine diagnostic cards keep tabs
+## BUG-077 - A line selection copied outside copy mode would copy one column
 
-Remote text is now sanitized once as `RemoteText`, which keeps tabs and
-newlines, and the client's machine diagnostics no longer filter it again, so a
-tab in remote output reaches the diagnostic card and may render oddly there.
-(wave-8 review)
-
-## BUG-073 - The unrecognized hook identity warning no longer names its pane
-
-`AgentOwnership::warn_unrecognized_hook_identity` lost its `pane_id` field when
-the ownership machine moved into shepr-agent, so the custom-source warning
-does not say which pane reported. Log it at the server's `HookStateReported`
-and `AgentSessionReported` call sites, or run those inside a pane span.
-(wave-3 review)
+`request_selection_copy` in the client shell resolves a `SelectionShape::Lines`
+selection to the pane's current width from the copy hit or copy mode, and falls
+back to width 1 when it has neither. Only copy mode builds line selections
+today, and copy-mode exit copies before taking `copy_mode`, so this is
+unreachable; a linewise mouse gesture would hit it. (wave-1 review)
 
 ## BUG-071 - Parked hook starts have no expiry or process attribution
 
@@ -119,17 +96,6 @@ by server-app and mux-state.
 `set_split_ratio_at` and `resize_pane` re-prove layout and record agreement (a
 `Vec` and a `HashSet`) per mouse-drag event. It disappears with a pane tree
 that owns both (filed among the structure findings). (mux-state)
-
-## BUG-063 - The client composes twice per input and recomputes connect options per turn
-
-`handle_stdin_input`, the response arm of `handle_server_message` and
-`handle_timer` compose a frame when `outcome.repaint`, then
-`finish_client_shell_input` composes again and discards the first when
-`dispatch_client_shell_actions` reports a repaint. `run_until_exit` builds
-`EndpointConnectOptions` (including a layout computation for
-`shell.surface_size`) before every wait, and `reconcile` computes
-`view_geometry` and `surface_size` again even when no attempt or move is due.
-Both run per pane patch event. (client-core)
 
 ## BUG-065 - `ValidatedClientConfig::live_keybinds()` clones the whole keymap per call
 

@@ -108,31 +108,10 @@ pub fn shell_quote(value: &str) -> String {
     shepr_core::shell_quote::quote(value)
 }
 
-pub fn interactive_shell_command(argv: &[String]) -> Option<String> {
-    (!argv.is_empty()).then(|| shepr_core::shell_quote::join_argv(argv))
-}
-
 #[cfg(test)]
 mod shell_command_tests {
     use super::*;
     use std::io::Write as _;
-
-    #[test]
-    fn interactive_shell_command_quotes_posix_arguments() {
-        let argv = vec![
-            "pi".into(),
-            String::new(),
-            "two words".into(),
-            "a'b".into(),
-            "$HOME".into(),
-            "semi;colon".into(),
-            "@options".into(),
-        ];
-        assert_eq!(
-            interactive_shell_command(&argv).as_deref(),
-            Some("pi '' 'two words' 'a'\\''b' '$HOME' 'semi;colon' @options")
-        );
-    }
 
     #[test]
     fn status_probe_runs_under_posix_sh() {

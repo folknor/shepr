@@ -16,6 +16,7 @@ pub enum SurfaceDecodeError {
     InvalidDimensions,
     InvalidCellCount,
     InvalidRows(&'static str),
+    UnexpectedMessage,
     Delta(super::surface_delta::SurfaceDeltaError),
     /// Identifies the surface whose validation failed.
     WithSubject {
@@ -71,6 +72,9 @@ impl std::fmt::Display for SurfaceDecodeError {
                 f.write_str("pane surface cell count does not match its size")
             }
             Self::InvalidRows(reason) => f.write_str(reason),
+            Self::UnexpectedMessage => {
+                f.write_str("unexpected handshake or undecoded surface message after handshake")
+            }
             Self::Delta(error) => write!(f, "{error}"),
             Self::WithSubject { subject, source } => write!(f, "{subject}: {source}"),
         }
@@ -376,16 +380,95 @@ impl CellBaseline {
     }
 }
 
-/// Connection-local decoding happens before activation and presentation filtering, so
-/// switching endpoints cannot discard a baseline needed by the next wire message. The
-/// exact-build preamble guarantees that surface deltas are supported by both peers.
-///
-/// The result is client-side state after interpreting a wire message. It is deliberately
-/// separate from `ServerMessage`, whose variants are exactly the messages sent on the wire.
+/// General surface decoding happens before activation and presentation filtering, so switching
+/// endpoints cannot discard a baseline needed by the next wire message. The exact-build
+/// preamble guarantees that surface deltas are supported by both peers. Protocol readers that
+/// also inspect the handshake retain the wire wrapper; the client connection uses
+/// `decode_client` and its narrower output type.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DecodedServerMessage {
     Wire(ServerMessage),
     /// A client-local patch produced while decoding a wire `SurfaceUpdate`.
+    PaneSurfacePatch(PaneSurfacePatch),
+}
+
+/// The wire messages the client loop may receive after the handshake. The welcome is consumed
+/// by the handshake reader and surface updates are expanded by `Decoder`, so neither can be
+/// represented here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DecodedWireServerMessage {
+    ServerShutdown {
+        reason: Option<super::ShutdownReason>,
+    },
+    Clipboard {
+        data: String,
+    },
+    WindowTitle {
+        title: Option<String>,
+    },
+    MouseCapture {
+        enabled: bool,
+        sgr_pixels: bool,
+    },
+    PaneSurface(PaneSurfaceFrame),
+    ClientShellError {
+        kind: super::NoticeKind,
+    },
+    ClientShellKeyboardReportAll {
+        enabled: bool,
+    },
+    ClientShellEndpointResponse {
+        boot_id: BootId,
+        request_id: super::RequestId,
+        result: Result<super::command::EndpointReply, super::command::EndpointError>,
+    },
+    EndpointSnapshot(Box<super::ClientShellSnapshot>),
+    HealthPong,
+}
+
+impl TryFrom<ServerMessage> for DecodedWireServerMessage {
+    type Error = SurfaceDecodeError;
+
+    fn try_from(message: ServerMessage) -> Result<Self, Self::Error> {
+        match message {
+            ServerMessage::ServerShutdown { reason } => Ok(Self::ServerShutdown { reason }),
+            ServerMessage::Clipboard { data } => Ok(Self::Clipboard { data }),
+            ServerMessage::WindowTitle { title } => Ok(Self::WindowTitle { title }),
+            ServerMessage::MouseCapture {
+                enabled,
+                sgr_pixels,
+            } => Ok(Self::MouseCapture {
+                enabled,
+                sgr_pixels,
+            }),
+            ServerMessage::PaneSurface(surface) => Ok(Self::PaneSurface(surface)),
+            ServerMessage::ClientShellError { kind } => Ok(Self::ClientShellError { kind }),
+            ServerMessage::ClientShellKeyboardReportAll { enabled } => {
+                Ok(Self::ClientShellKeyboardReportAll { enabled })
+            }
+            ServerMessage::ClientShellEndpointResponse {
+                boot_id,
+                request_id,
+                result,
+            } => Ok(Self::ClientShellEndpointResponse {
+                boot_id,
+                request_id,
+                result,
+            }),
+            ServerMessage::EndpointSnapshot(snapshot) => Ok(Self::EndpointSnapshot(snapshot)),
+            ServerMessage::HealthPong => Ok(Self::HealthPong),
+            ServerMessage::EndpointWelcome(_) | ServerMessage::SurfaceUpdate(_) => {
+                Err(SurfaceDecodeError::UnexpectedMessage)
+            }
+        }
+    }
+}
+
+/// A client connection message after surface deltas have been decoded and handshake-only
+/// variants have been rejected.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DecodedClientServerMessage {
+    Wire(DecodedWireServerMessage),
     PaneSurfacePatch(PaneSurfacePatch),
 }
 
@@ -666,6 +749,22 @@ impl Decoder {
         }
         Ok(DecodedServerMessage::Wire(message))
     }
+
+    /// Decodes one message for the post-handshake client connection. The general decoder also
+    /// serves protocol-level readers, while the client loop receives only this narrower type.
+    pub fn decode_client(
+        &mut self,
+        message: ServerMessage,
+    ) -> Result<DecodedClientServerMessage, SurfaceDecodeError> {
+        match self.decode(message)? {
+            DecodedServerMessage::Wire(message) => Ok(DecodedClientServerMessage::Wire(
+                DecodedWireServerMessage::try_from(message)?,
+            )),
+            DecodedServerMessage::PaneSurfacePatch(patch) => {
+                Ok(DecodedClientServerMessage::PaneSurfacePatch(patch))
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -700,6 +799,15 @@ mod tests {
             panes: Vec::new(),
             splits: Vec::new(),
         }
+    }
+
+    #[test]
+    fn client_decoder_rejects_a_second_endpoint_welcome() {
+        let mut decoder = Decoder::default();
+        let result = decoder.decode_client(ServerMessage::EndpointWelcome(
+            crate::endpoint::EndpointServerWelcome::accepted(),
+        ));
+        assert!(matches!(result, Err(SurfaceDecodeError::UnexpectedMessage)));
     }
 
     #[test]

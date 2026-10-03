@@ -2,6 +2,10 @@
 
 use std::io;
 
+/// Marker on the first stderr line for a daemon that exited during boot. The
+/// local bridge consumes the record into the endpoint failure vocabulary.
+pub(super) const DAEMON_BOOT_EXIT_MARKER: &str = "shepr-remote-daemon-boot-exit:";
+
 /// Relays this process's stdio to the server socket until either side
 /// closes or the idle watchdog fires. The outcome goes back to the binary: on
 /// [`shepr_platform::RemoteBridgeOutcome::IdleExpired`] it must end the
@@ -34,7 +38,7 @@ pub fn run_remote_client_bridge(
             )
         })?;
 
-    shepr_platform::forward_remote_bridge_stdio(stream, true)
+    shepr_platform::forward_remote_bridge_stdio(stream)
 }
 
 /// Starts the server when none is listening, through the launcher the local
@@ -43,16 +47,30 @@ pub fn run_remote_client_bridge(
 /// running server of another build is returned, not refused: the bridge then
 /// answers the client with that build's preamble, so the client reports a
 /// typed mismatch, which it classifies as needing attention, whatever socket
-/// layout that server has. Failing here instead would reach the client only as
-/// this command's stderr and exit status, which it classifies as an ordinary
-/// retryable failure. Launch failures reach the client that way, as stderr
-/// text: the launcher's messages carry the daemon's boot output.
+/// layout that server has. Any other failure here reaches the client only as
+/// this command's stderr and exit status, which it treats as an ordinary
+/// retryable failure. A daemon that exited during boot is the exception: its
+/// exit class leads the error as a [`DAEMON_BOOT_EXIT_MARKER`] record, which
+/// the client's SSH bridge turns into a typed endpoint failure (a refused
+/// configuration or failed start needs attention), keeping the daemon output
+/// as its diagnostic.
 fn ensure_remote_server_running(
     paths: &shepr_config::AppPaths,
 ) -> io::Result<shepr_api::RuntimeStatus> {
-    super::local_server::ensure_running(
+    match super::local_server::ensure_running(
         paths,
         super::local_server::SERVER_READY_TIMEOUT,
         super::local_server::BuildCheck::AtClientHandshake,
-    )
+    ) {
+        Err(error) => {
+            let Some(class) = super::local_server::daemon_boot_exit_class(&error) else {
+                return Err(error);
+            };
+            Err(io::Error::new(
+                error.kind(),
+                format!("{DAEMON_BOOT_EXIT_MARKER}{}\n{error}", class.code()),
+            ))
+        }
+        result => result,
+    }
 }

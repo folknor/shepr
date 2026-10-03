@@ -211,13 +211,15 @@ impl Workspace {
         panes: HashMap<PaneId, WorkspacePane>,
         next_public_pane_number: usize,
     ) -> Self {
-        let mut workspace = Self {
+        let cached_auto_label = fallback_label_from_cwd(&identity_cwd);
+        let cached_git_status_key = identity_cwd.clone();
+        Self {
             id,
             custom_name,
             identity_cwd,
             cached_identity_cwd: PathBuf::new(),
-            cached_auto_label: String::new(),
-            cached_git_status_key: PathBuf::new(),
+            cached_auto_label,
+            cached_git_status_key,
             cached_git_branch: None,
             cached_git_ahead_behind: None,
             next_public_pane_number,
@@ -225,9 +227,7 @@ impl Workspace {
             layout,
             panes,
             zoomed: false,
-        };
-        workspace.mark_identity_undiscovered();
-        workspace
+        }
     }
 
     /// Check a pane tree when it enters a workspace. These checks run on

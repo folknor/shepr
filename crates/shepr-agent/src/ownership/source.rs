@@ -826,16 +826,6 @@ struct StaleFullLifecycleHookSession {
 }
 
 impl AgentOwnership {
-    fn warn_unrecognized_hook_identity(&self, origin: &ReportOrigin) {
-        if origin.official_agent().is_none() {
-            tracing::warn!(
-                source = %origin.source(),
-                agent_label = %origin.label(),
-                "hook report uses a custom source or agent label"
-            );
-        }
-    }
-
     fn hook_authority_not_newer_than(&self, observed_at: Instant) -> bool {
         self.hook_authority
             .as_ref()

@@ -773,16 +773,8 @@ impl Drop for IsolatedEnv {
 mod tests {
     use super::*;
 
-    fn panic_message(payload: &(dyn std::any::Any + Send)) -> String {
-        payload
-            .downcast_ref::<String>()
-            .cloned()
-            .or_else(|| {
-                payload
-                    .downcast_ref::<&str>()
-                    .map(|text| (*text).to_owned())
-            })
-            .unwrap_or_default()
+    fn panic_message(payload: &(dyn std::any::Any + Send)) -> &str {
+        shepr_core::panic_message(payload, "")
     }
 
     fn mode(path: &Path) -> u32 {

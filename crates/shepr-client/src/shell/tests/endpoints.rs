@@ -24,7 +24,7 @@ use crate::shell::state::ClientShellState;
 
 use crossterm::event::MouseEvent;
 
-use crate::shell::tests::{cell_bg, cell_fg, frame_cell, snapshot, surface};
+use crate::shell::tests::{cell_bg, cell_fg, frame_cell, frame_rows, snapshot, surface};
 use ratatui::layout::Rect;
 
 use crate::tests::{test_pane_id, test_workspace_id};
@@ -389,6 +389,44 @@ fn machine_diagnostic_badge_reopens_notice_without_collapsing_machine() {
                 .expect("test precondition")
         )
     );
+}
+
+#[test]
+fn machine_diagnostic_card_replaces_tabs_and_preserves_lines() {
+    let (mut state, id) = state_with_remote();
+    state.set_endpoint_status(&id, ClientEndpointStatus::Attention);
+    state.set_machine_diagnostic(
+        &id,
+        &shepr_remote::SshFailureDiagnostic::from_message(
+            "failure\twith fields\nretry\twith a key".to_owned(),
+        ),
+    );
+
+    state.compose(120, 40).expect("diagnostic badge");
+    let badge = state
+        .hits
+        .machines
+        .iter()
+        .find(|hit| hit.endpoint_id == id)
+        .expect("diagnostic badge hit");
+    let mouse = MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: badge.status_badge.x,
+        row: badge.status_badge.y,
+        modifiers: KeyModifiers::NONE,
+    };
+    let outcome = state.handle_raw_events(vec![RawInputEvent::Mouse(mouse)]);
+    assert!(outcome.repaint);
+    assert_eq!(
+        state.notices.visible().expect("diagnostic card").body,
+        "failure with fields\nretry with a key"
+    );
+
+    let frame = state.compose(120, 40).expect("rendered diagnostic card");
+    let rows = frame_rows(&frame);
+    assert!(rows.iter().any(|row| row.contains("failure with fields")));
+    assert!(rows.iter().any(|row| row.contains("retry with a key")));
+    assert!(rows.iter().all(|row| !row.contains('\t')));
 }
 
 fn state_with_scrollable_agents() -> (ClientShellState, ClientEndpointId) {

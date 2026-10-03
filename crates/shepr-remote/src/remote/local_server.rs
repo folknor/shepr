@@ -51,6 +51,29 @@ const LAUNCH_LOCK_FILE_NAME: &str = "launch.lock";
 /// directory.
 const BOOT_LOG_FILE_NAME: &str = "server-boot.log";
 
+/// Retains the daemon's startup exit class across the launcher boundary so
+/// the SSH bridge can report it as an endpoint failure.
+#[derive(Debug)]
+struct DaemonBootFailure {
+    class: DaemonExit,
+    message: String,
+}
+
+impl std::fmt::Display for DaemonBootFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for DaemonBootFailure {}
+
+pub(super) fn daemon_boot_exit_class(error: &io::Error) -> Option<DaemonExit> {
+    error
+        .get_ref()?
+        .downcast_ref::<DaemonBootFailure>()
+        .map(|failure| failure.class)
+}
+
 /// A direct client checks the build before attaching. An SSH bridge accepts a
 /// running server of another build and answers the client with that build's
 /// preamble itself, so the client still reports a typed mismatch.
@@ -774,7 +797,7 @@ fn boot_failure(files: &LaunchFiles<'_>, status: ExitStatus) -> io::Error {
         class.describe_boot_end()
     );
     append_boot_log(&mut message, files);
-    io::Error::other(message)
+    io::Error::other(DaemonBootFailure { class, message })
 }
 
 /// The daemon printed more than [`BOOT_LOG_MAX_BYTES`] while booting; the

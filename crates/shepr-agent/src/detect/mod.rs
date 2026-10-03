@@ -80,10 +80,10 @@ pub struct AgentDetection {
     /// scrollback and may override a non-blocked integration state.
     pub visible_blocker: bool,
     /// True when the current screen visibly shows live working chrome. The
-    /// pane detector uses this internally to track screen evidence and refresh
-    /// its local state, but does not forward the flag in `StateChanged`. Screen
-    /// detection can supply a `Working` state when source arbitration accepts
-    /// it, but screen working evidence never overrides a hook's report.
+    /// pane detector carries this through its publish decision to track screen
+    /// evidence and refresh its local state. Screen detection can supply a
+    /// `Working` state when source arbitration accepts it, but screen working
+    /// evidence never overrides a hook's report.
     pub visible_working: bool,
 }
 

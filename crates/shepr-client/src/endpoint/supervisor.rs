@@ -203,9 +203,12 @@ impl EndpointSupervisors {
     pub(crate) fn spawn_due(
         &mut self,
         now: Instant,
-        options: EndpointConnectOptions,
+        make_options: impl Fn() -> EndpointConnectOptions,
         event_tx: &tokio::sync::mpsc::Sender<ClientLoopEvent>,
     ) {
+        // Built only when an attempt is due: deriving the shell layout on
+        // every loop pass would repeat that work for nothing.
+        let mut options = None;
         for (endpoint_id, state) in &mut self.endpoints {
             if state.in_flight || state.next_attempt.is_none_or(|deadline| deadline > now) {
                 continue;
@@ -237,6 +240,7 @@ impl EndpointSupervisors {
                     AttemptTarget::Ssh { connector }
                 }
             };
+            let options = *options.get_or_insert_with(&make_options);
             state.in_flight = true;
             state.attempt_started = Some(now);
             state.next_attempt = None;

@@ -91,8 +91,7 @@ impl ViewEvidence {
         self.surface.as_ref().filter(|surface| {
             self.snapshot_revision == Some(surface.projection_revision.get())
                 && surface.projection_revision.get() >= minimum_revision
-                && surface.frame.width == size.cols
-                && surface.frame.height == size.rows
+                && surface.is_sized_for(size)
         })
     }
 }
@@ -145,13 +144,15 @@ impl Preparing {
     }
     /// The surface to commit, once the on acknowledgement's floor is known, nothing was
     /// rejected, the focus lane is settled and the evidence holds a coherent pair at or above
-    /// the floor that shows the requested navigation. `size` is the client's current surface
-    /// size, passed at call time so a resize cannot leave a stale copy.
-    pub fn ready(&self, size: ClientSurfaceSize) -> Option<&PaneSurfaceFrame> {
+    /// the floor that shows the requested navigation. The current size comes from the geometry
+    /// recorded with the preparation and updated on each host resize.
+    pub fn ready(&self) -> Option<&PaneSurfaceFrame> {
         if self.rejection.is_some() || !self.focus_lane.settled() {
             return None;
         }
-        let surface = self.evidence.coherent_surface(self.floor?, size)?;
+        let surface = self
+            .evidence
+            .coherent_surface(self.floor?, self.geometry.surface_size())?;
         let matches = match &self.focus_lane.desired {
             Some(ClientEndpointFocusTarget::Pane(id)) => {
                 self.evidence.focused_pane_id.as_ref() == Some(id)
@@ -236,11 +237,9 @@ impl Preparing {
         endpoint: &ClientEndpointId,
         generation: u64,
         surface: PaneSurfaceFrame,
-        size: ClientSurfaceSize,
     ) -> PrepareProgress {
         if !self.matches(endpoint, generation, &surface.boot_id)
-            || surface.frame.width != size.cols
-            || surface.frame.height != size.rows
+            || !surface.is_sized_for(self.geometry.surface_size())
         {
             return PrepareProgress::Stale;
         }
@@ -289,9 +288,6 @@ impl Preparing {
 mod tests {
     use super::super::tests::{geometry, lease, preparing, remote};
     use super::*;
-    fn size() -> ClientSurfaceSize {
-        ClientSurfaceSize { cols: 80, rows: 24 }
-    }
     fn snapshot(revision: u64) -> ClientShellSnapshot {
         ClientShellSnapshot {
             boot_id: lease().boot_id,
@@ -338,23 +334,23 @@ mod tests {
     }
     fn pair(p: &mut Preparing, revision: u64) {
         p.receive_snapshot(&remote(), 7, &snapshot(revision));
-        p.receive_surface(&remote(), 7, surface(revision), size());
+        p.receive_surface(&remote(), 7, surface(revision));
     }
     #[test]
     fn ready_needs_the_ack_the_focus_and_an_exact_snapshot_surface_pair() {
         let mut c = preparing();
         let p = c.preparing_mut().expect("preparing");
         pair(p, 2);
-        assert!(p.ready(size()).is_none());
+        assert!(p.ready().is_none());
         acknowledge(p, 2);
-        assert!(p.ready(size()).is_some());
+        assert!(p.ready().is_some());
         p.receive_snapshot(&remote(), 7, &snapshot(3));
-        assert!(p.ready(size()).is_none());
+        assert!(p.ready().is_none());
         p.retarget_focus(Some(ClientEndpointFocusTarget::Workspace(
             crate::tests::test_workspace_id("w1"),
         )));
         pair(p, 3);
-        assert!(p.ready(size()).is_none());
+        assert!(p.ready().is_none());
     }
     #[test]
     fn the_ack_floor_rejects_older_epoch_surfaces() {
@@ -362,9 +358,9 @@ mod tests {
         let p = c.preparing_mut().expect("preparing");
         pair(p, 2);
         acknowledge(p, 3);
-        assert!(p.ready(size()).is_none());
+        assert!(p.ready().is_none());
         pair(p, 3);
-        assert!(p.ready(size()).is_some());
+        assert!(p.ready().is_some());
     }
     #[test]
     fn stale_generation_and_boot_are_not_evidence() {
@@ -376,12 +372,9 @@ mod tests {
         assert_eq!(p.receive_snapshot(&remote(), 7, &s), PrepareProgress::Stale);
         let mut s = surface(2);
         s.boot_id = crate::tests::test_boot_id("old-boot");
-        assert_eq!(
-            p.receive_surface(&remote(), 7, s, size()),
-            PrepareProgress::Stale
-        );
+        assert_eq!(p.receive_surface(&remote(), 7, s), PrepareProgress::Stale);
         acknowledge(p, 2);
-        assert!(p.ready(size()).is_none());
+        assert!(p.ready().is_none());
     }
     #[test]
     fn a_response_for_another_boot_is_not_consumed() {
@@ -432,7 +425,7 @@ mod tests {
         );
         acknowledge_after_rejection(p);
         pair(p, 2);
-        assert!(p.ready(size()).is_none());
+        assert!(p.ready().is_none());
     }
     fn acknowledge_after_rejection(p: &mut Preparing) {
         p.receive_response(
@@ -454,11 +447,8 @@ mod tests {
         p.receive_snapshot(&remote(), 7, &snapshot(2));
         let mut s = surface(2);
         s.frame.width = 79;
-        assert_eq!(
-            p.receive_surface(&remote(), 7, s, size()),
-            PrepareProgress::Stale
-        );
-        assert!(p.ready(size()).is_none());
+        assert_eq!(p.receive_surface(&remote(), 7, s), PrepareProgress::Stale);
+        assert!(p.ready().is_none());
     }
     #[test]
     fn a_patch_without_a_baseline_waits_for_a_full_surface() {
@@ -476,9 +466,9 @@ mod tests {
             cursor: None,
         };
         p.receive_patch(&remote(), 7, &patch);
-        assert!(p.ready(size()).is_none());
-        p.receive_surface(&remote(), 7, surface(2), size());
-        assert!(p.ready(size()).is_some());
+        assert!(p.ready().is_none());
+        p.receive_surface(&remote(), 7, surface(2));
+        assert!(p.ready().is_some());
     }
     #[test]
     fn a_changed_geometry_drops_the_recorded_surface() {
@@ -487,7 +477,7 @@ mod tests {
         acknowledge(p, 2);
         pair(p, 2);
         assert!(p.update_geometry(TerminalGeometry::new(81, 24, 8, 16, false)));
-        assert!(p.ready(size()).is_none());
+        assert!(p.ready().is_none());
     }
     #[test]
     fn an_unchanged_geometry_keeps_the_recorded_surface() {
@@ -496,6 +486,6 @@ mod tests {
         acknowledge(p, 2);
         pair(p, 2);
         assert!(!p.update_geometry(geometry()));
-        assert!(p.ready(size()).is_some());
+        assert!(p.ready().is_some());
     }
 }
