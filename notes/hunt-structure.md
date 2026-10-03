@@ -23,36 +23,17 @@ file's.
 
 ## STR-002 - Platform hosts policy that is not platform
 
-- `ChildExitReason` and its checkpoint policy belong to mux (see the pane exit
-  consolidation).
-- The SSH bridge relay (`remote_bridge.rs`, `remote_bridge_io.rs`) is
-  shepr-remote's protocol, its idle timeout defined by client heartbeats; because
-  it sits in platform, `shepr-core/src/limits.rs` owns `BRIDGE_IDLE_TIMEOUT`,
-  `HEARTBEAT_INTERVAL`, `SSH_ROUND_TRIP_TIMEOUT`, `SSH_ATTEMPT_SLACK` and
-  `SSH_CONNECTION_ATTEMPT_BUDGET`. Its only caller is `remote/host.rs`; move it
-  and the timing to remote, and core loses its only network-timing knowledge.
 - `ssh_paths.rs` (OpenSSH `%C` expansion, control path naming) is SSH policy;
   the generic piece is the owned runtime directory.
-- `config_file.rs` is half of agent integration's atomic replace.
-- After those moves, group the flat platform modules by seam (`fs`, `ipc`,
-  `process`, `host_terminal`) with re-exports per group; today client-only
-  pieces (clipboard, `terminal_grid_size`, SIGWINCH watcher, OSC 52 preference,
-  `begin_cli_output`), server-only pieces and filesystem and IPC primitives are
-  mixed. The clipboard route is a `prefers_osc52_clipboard()` bool threaded
-  through five client layers to termio, which decides `!prefers_osc52 &&
+- The clipboard route is a `prefers_osc52_clipboard()` bool threaded through
+  five client layers to termio, which decides `!prefers_osc52 &&
   write_clipboard(bytes)`; a `ClipboardRoute::{Osc52, Helpers(session)}` from
   platform would carry the decision.
 
 (foundation)
 
-Decided: move the bridge relay, its watchdog and the SSH attempt timing into
-remote, keeping the heartbeat cadence and bridge expiry related through one
-shared connection-health constant with the assertion in remote. The
-suspend-aware `CLOCK_BOOTTIME` clock stays in platform. `ChildExitReason`
-stays in platform (shepr-detect ownership consumes it, and AGENTS.md assigns
-exit classification there); platform stays flat; `config_file.rs`'s
-ownership, permission and xattr primitives stay in platform. Last of the crate
-waves.
+Platform stays a flat module layout, so the clipboard route is not part of a
+regrouping by seam; it stands or falls on its own.
 
 ## Terminal emulation
 

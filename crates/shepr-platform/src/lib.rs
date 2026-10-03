@@ -3,6 +3,7 @@
 //! The modules stay flat by responsibility; higher-level rules belong to the
 //! crates that consume these primitives.
 
+mod boot_clock;
 mod child_io;
 mod client_stream;
 mod clipboard;
@@ -22,12 +23,12 @@ mod process;
 mod process_identity;
 pub mod publish_file;
 mod random;
-mod remote_bridge;
-mod remote_bridge_io;
 mod ssh_paths;
 mod stderr_null;
+mod stream_wake;
 mod terminal_environment;
 
+pub use boot_clock::boot_time_nanos;
 pub use child_io::{
     ChildExitReason, classify_child_exit, poll_fd_readable, poll_timeout_until, read_fd,
     set_cloexec, set_fd_nonblocking, set_nonblocking,
@@ -56,9 +57,6 @@ pub use process::{
     session_member_handles, session_members, wait_for_process_exits,
 };
 pub use random::unpredictable_token;
-pub use remote_bridge_io::{
-    RemoteBridgeOutcome, RemoteBridgeWake, answer_remote_bridge, forward_remote_bridge_stdio,
-};
 pub use ssh_paths::UnsafeSshRuntimeDirectory;
 pub use ssh_paths::{
     RemoteSshConfigPaths, SshControlKey, SshRuntimeError, create_remote_ssh_config_dir,
@@ -67,6 +65,7 @@ pub use ssh_paths::{
     validate_ssh_runtime_dir,
 };
 pub use stderr_null::redirect_stderr_to_null;
+pub use stream_wake::StreamWake;
 pub use terminal_environment::prefers_osc52_clipboard;
 
 /// Whether a presence variable (`shepr_core::env::EnvKind::Presence`) is set,
@@ -99,12 +98,8 @@ use process::process_exists;
 #[cfg(test)]
 use process::session_and_tty_from_stat;
 #[cfg(test)]
-use remote_bridge_io::forward_remote_bridge_stdio_with_timeout;
-#[cfg(test)]
 use ssh_paths::{validate_shared_ssh_dir, with_name_token};
 
-#[cfg(test)]
-mod remote_bridge_tests;
 #[cfg(test)]
 mod resize_signal_tests;
 #[cfg(test)]

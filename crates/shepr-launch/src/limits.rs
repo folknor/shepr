@@ -1,6 +1,11 @@
-//! Timeouts and capacity bounds of launching, probing and stopping a server.
+//! Timeouts and capacity bounds of launching, probing and stopping a server,
+//! and the heartbeat cadence of a connection to one.
 
 use std::time::Duration;
+
+/// A connected client probes an endpoint after this much silence.
+/// The interval leaves room for routine SSH and server scheduling delays.
+pub const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
 
 /// How often a launching client checks its spawned server and the launch lock.
 /// The interval notices a daemon that died during boot and makes startup

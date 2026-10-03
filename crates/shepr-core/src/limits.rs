@@ -1,6 +1,4 @@
-//! Shared timing, geometry, and layout limits owned by the core crate.
-
-use std::time::Duration;
+//! Shared geometry, layout and encoding limits owned by the core crate.
 
 /// Bytes in one binary kibibyte, the unit byte budgets are written in. A
 /// defined unit, not a tunable.
@@ -35,38 +33,6 @@ pub const MAX_HOST_CELL_PX: u32 = 4096;
 /// This bounds both configured headless terminals and client-requested pane
 /// surfaces, independently of the per-axis limit.
 pub const MAX_TERMINAL_GRID_CELLS: usize = 1 << 22;
-
-/// An SSH bridge must outlive several client heartbeat cycles while idle.
-/// This gives a healthy bridge multiple chances to answer endpoint probes;
-/// its minimum cycle ratio is checked below.
-pub const BRIDGE_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
-/// A connected client probes an endpoint after this much silence.
-/// The interval leaves room for routine SSH and server scheduling delays.
-pub const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
-/// One cold SSH round trip, including a remote command or status probe.
-/// This bounds a slow startup without letting a hung host block the caller.
-pub const SSH_ROUND_TRIP_TIMEOUT: Duration = Duration::from_secs(15);
-/// What [`SSH_CONNECTION_ATTEMPT_BUDGET`] allows beyond one cold SSH round trip,
-/// for the remaining discovery commands, the bridge and the handshake.
-pub const SSH_ATTEMPT_SLACK: Duration = Duration::from_secs(10);
-/// The longest one connection attempt to a configured machine may run: one cold
-/// SSH round trip plus [`SSH_ATTEMPT_SLACK`]. The client's per-attempt deadline
-/// and the startup check of every machine both take it from here, so the two
-/// cannot drift apart.
-pub const SSH_CONNECTION_ATTEMPT_BUDGET: Duration =
-    SSH_ROUND_TRIP_TIMEOUT.saturating_add(SSH_ATTEMPT_SLACK);
-
-/// Minimum number of client heartbeat intervals that a quiet bridge survives.
-/// Several cycles allow delayed probes before the bridge is considered
-/// idle.
-pub(crate) const BRIDGE_IDLE_MIN_HEARTBEAT_CYCLES: u32 = 3;
-
-const _: () = assert!(
-    BRIDGE_IDLE_TIMEOUT.as_millis()
-        >= HEARTBEAT_INTERVAL
-            .saturating_mul(BRIDGE_IDLE_MIN_HEARTBEAT_CYCLES)
-            .as_millis()
-);
 
 /// Total share represented by both children of a normalized split, covering
 /// the full layout area.

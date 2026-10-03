@@ -86,16 +86,53 @@ pub(crate) const BRIDGE_WRITE_CHUNK_BYTES: usize = 4 * 1024;
 /// command shape; `Vec` still grows if a command needs more.
 pub(crate) const REMOTE_COMMAND_ARGS_INITIAL_CAPACITY: usize = 6;
 
-/// SSH command budget, shared with the core SSH request budget so retries and
-/// discovery use the same time limit.
-pub(crate) const SSH_COMMAND_TIMEOUT: Duration = shepr_core::limits::SSH_ROUND_TRIP_TIMEOUT;
+/// One cold SSH round trip, including a remote command or status probe: the
+/// budget of every bounded SSH command, retries and discovery alike. This
+/// bounds a slow startup without letting a hung host block the caller.
+pub(crate) const SSH_COMMAND_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// What [`SSH_CONNECTION_ATTEMPT_BUDGET`] allows beyond one cold SSH round trip,
+/// for the remaining discovery commands, the bridge and the handshake.
+pub(crate) const SSH_ATTEMPT_SLACK: Duration = Duration::from_secs(10);
+
+/// The longest one connection attempt to a configured machine may run: one cold
+/// SSH round trip plus [`SSH_ATTEMPT_SLACK`]. The client's per-attempt deadline
+/// and the startup check of every machine both take it from here, so the two
+/// cannot drift apart.
+pub const SSH_CONNECTION_ATTEMPT_BUDGET: Duration =
+    SSH_COMMAND_TIMEOUT.saturating_add(SSH_ATTEMPT_SLACK);
 
 /// How long the startup check of every configured machine may take in all. The
 /// checks run concurrently, so this is a bound on the whole phase, not per
-/// machine. It is the client's per-attempt connection budget, owned by
-/// `shepr-core` so both crates read one value.
-pub(crate) const PREFLIGHT_CHECK_BUDGET: Duration =
-    shepr_core::limits::SSH_CONNECTION_ATTEMPT_BUDGET;
+/// machine. It is the client's per-attempt connection budget.
+pub(crate) const PREFLIGHT_CHECK_BUDGET: Duration = SSH_CONNECTION_ATTEMPT_BUDGET;
+
+/// An SSH bridge must outlive several client heartbeat cycles while idle.
+/// This gives a healthy bridge multiple chances to answer endpoint probes;
+/// its minimum cycle ratio is checked below.
+pub(crate) const BRIDGE_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Minimum number of client heartbeat intervals that a quiet bridge survives.
+/// Several cycles allow delayed probes before the bridge is considered
+/// idle.
+const BRIDGE_IDLE_MIN_HEARTBEAT_CYCLES: u32 = 3;
+
+// The client's heartbeat is what keeps an idle bridge's watchdog renewed, so
+// bridge expiry must comfortably exceed the cadence the client probes at.
+const _: () = assert!(
+    BRIDGE_IDLE_TIMEOUT.as_millis()
+        >= shepr_launch::connection_health::HEARTBEAT_INTERVAL
+            .saturating_mul(BRIDGE_IDLE_MIN_HEARTBEAT_CYCLES)
+            .as_millis()
+);
+
+/// Maximum time between checks by the idle SSH bridge watchdog.
+/// The interval bounds idle-expiry detection without busy polling.
+pub(crate) const BRIDGE_WATCHDOG_POLL_INTERVAL: Duration = Duration::from_secs(1);
+
+/// Read chunk size for the remote host's bridge stdio relay. It amortizes
+/// read overhead while keeping each stack buffer small.
+pub(crate) const REMOTE_BRIDGE_COPY_BUFFER_BYTES: usize = 16 * 1024;
 
 /// OpenSSH option limiting connection establishment. This
 /// leaves room for ordinary network setup while bounding unreachable hosts.

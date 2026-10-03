@@ -183,10 +183,10 @@ fn launch_tui(
 /// A bridge that ended on its idle watchdog logs the measured idle duration
 /// and ends the process with status 1. Its relay threads may still hold stdin
 /// and stdout, so the caller must not join them or write to stdout.
-fn finish_bridge(outcome: shepr_platform::RemoteBridgeOutcome) -> CliResult<ProcessExit> {
+fn finish_bridge(outcome: shepr_remote::RemoteBridgeOutcome) -> CliResult<ProcessExit> {
     match outcome {
-        shepr_platform::RemoteBridgeOutcome::Closed => Ok(ProcessExit::Success),
-        shepr_platform::RemoteBridgeOutcome::IdleExpired { idle_for } => {
+        shepr_remote::RemoteBridgeOutcome::Closed => Ok(ProcessExit::Success),
+        shepr_remote::RemoteBridgeOutcome::IdleExpired { idle_for } => {
             tracing::warn!(idle_for = ?idle_for, "remote bridge idle timeout expired");
             Err(CliError::BridgeIdle)
         }

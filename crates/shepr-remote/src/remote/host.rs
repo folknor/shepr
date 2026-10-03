@@ -5,27 +5,27 @@ use std::io;
 use shepr_launch::local_server::{self, BuildCheck, SERVER_READY_TIMEOUT};
 use shepr_launch::status::RuntimeStatus;
 
+use crate::relay::{RemoteBridgeOutcome, answer_remote_bridge, forward_remote_bridge_stdio};
+
 /// Marker on the first stderr line for a daemon that exited during boot. The
 /// local bridge consumes the record into the endpoint failure vocabulary.
 pub(super) const DAEMON_BOOT_EXIT_MARKER: &str = "shepr-remote-daemon-boot-exit:";
 
 /// Relays this process's stdio to the server socket until either side
 /// closes or the idle watchdog fires. The outcome goes back to the binary: on
-/// [`shepr_platform::RemoteBridgeOutcome::IdleExpired`] it must end the
+/// [`RemoteBridgeOutcome::IdleExpired`] it must end the
 /// process promptly with status 1, without writing to stdout.
-pub fn run_remote_client_bridge(
-    paths: &shepr_paths::AppPaths,
-) -> io::Result<shepr_platform::RemoteBridgeOutcome> {
+pub fn run_remote_client_bridge(paths: &shepr_paths::AppPaths) -> io::Result<RemoteBridgeOutcome> {
     let status = ensure_remote_server_running(paths)?;
     // A server of another build is answered here, never connected to: its
     // socket may not speak this build's client protocol at all, and the
     // client must still read a typed mismatch rather than an EOF it would
     // retry forever.
     if !status.build_id.is_this_build() {
-        shepr_platform::answer_remote_bridge(&shepr_protocol::preamble::preamble_for(
+        answer_remote_bridge(&shepr_protocol::preamble::preamble_for(
             &status.build_id.to_string(),
         ))?;
-        return Ok(shepr_platform::RemoteBridgeOutcome::Closed);
+        return Ok(RemoteBridgeOutcome::Closed);
     }
 
     let socket_path = paths.server_address().socket().to_path_buf();
@@ -41,7 +41,7 @@ pub fn run_remote_client_bridge(
             )
         })?;
 
-    shepr_platform::forward_remote_bridge_stdio(stream.into_local_stream())
+    forward_remote_bridge_stdio(stream.into_local_stream())
 }
 
 /// Starts the server when none is listening, through the launcher the local

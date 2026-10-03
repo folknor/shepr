@@ -214,10 +214,10 @@ exclude = [
     "crates/shepr-mux/src/persist/actor.rs",
     "crates/shepr-mux/src/persist/writer.rs",
     "crates/shepr-platform/src/host.rs",
-    "crates/shepr-platform/src/remote_bridge_tests.rs",
     "crates/shepr-platform/src/resize_signal_tests.rs",
     "crates/shepr-pty/src/actor.rs",
     "crates/shepr-pty/src/command.rs",
+    "crates/shepr-remote/src/remote/relay_tests.rs",
     "crates/shepr-server/src/server/headless/tests/already_running.rs",
     "crates/shepr-server/src/server/headless/tests/server_stop.rs",
     "crates/shepr-test-support/src/fixture.rs",
@@ -294,7 +294,7 @@ message = "spell a logged error's kind as the error_kind field"
 name = "exits-from-main"
 pattern = '\bprocess::exit\s*\('
 paths = ["crates/**/*.rs", "src/**/*.rs", "build.rs"]
-exclude = ["src/main.rs", "crates/shepr-platform/src/remote_bridge_tests.rs"]
+exclude = ["src/main.rs", "crates/shepr-remote/src/remote/relay_tests.rs"]
 region = "code"
 message = "exit only from src/main.rs; return the status or error instead"
 
@@ -913,10 +913,11 @@ kinds = ["normal"]
 
 # The server lifecycle seen from outside the server: launch, probe, restart
 # and stop, the invocation and exit vocabulary shepr processes share, operator
-# guidance, and the endpoint failure vocabulary. Above api, whose client it
-# drives, and below remote and the client, so the TUI takes the failure
-# vocabulary without the SSH crate and the daemon takes its invocation grammar
-# without remote.
+# guidance, the endpoint failure vocabulary and the connection heartbeat
+# cadence the client keeps and the SSH bridge expiry outlasts. Above api, whose
+# client it drives, and below remote and the client, so the TUI takes the
+# failure vocabulary and the heartbeat without the SSH crate and the daemon
+# takes its invocation grammar without remote.
 [[dependency_rule]]
 name = "shepr-launch-layer"
 from = "shepr-launch"

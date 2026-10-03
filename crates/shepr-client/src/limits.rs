@@ -120,8 +120,9 @@ pub(super) const REMOTE_HANDSHAKE_READ_TIMEOUT: Duration = Duration::from_secs(6
 pub(super) const ENDPOINT_COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
 /// How long a move may stay Preparing before it fails and the shown endpoint stays.
 pub(super) const ENDPOINT_MOVE_TIMEOUT: Duration = Duration::from_secs(5);
-/// Endpoint heartbeat interval shared with the server's core timing policy.
-pub(super) const HEARTBEAT_INTERVAL: Duration = shepr_core::limits::HEARTBEAT_INTERVAL;
+/// Endpoint heartbeat interval, the connection-health cadence the remote
+/// host's SSH bridge expiry is checked against.
+pub(super) const HEARTBEAT_INTERVAL: Duration = shepr_launch::connection_health::HEARTBEAT_INTERVAL;
 /// Expire an endpoint after this much transport silence, measured when the reader receives a
 /// complete frame rather than when the client loop processes it.
 ///
@@ -151,13 +152,13 @@ pub(super) const ATTENTION_RETRY_DELAY: Duration = MAX_RETRY_DELAY;
 /// The longest one connection attempt may run: the SSH discovery commands, the bridge and
 /// the endpoint handshake all stop at this deadline. Without it an attempt against a host
 /// that stalls could hold the endpoint indefinitely (each discovery command may
-/// take `shepr_core::limits::SSH_ROUND_TRIP_TIMEOUT`, the handshake
+/// take one SSH command timeout, the handshake
 /// `REMOTE_HANDSHAKE_READ_TIMEOUT`), and the next attempt waited for it, which broke the
 /// retry bound. `do_handshake_for_endpoint` takes this deadline and stops at whichever
 /// of it and the handshake timeout comes first.
 ///
 /// A healthy attempt needs far less: every discovery command already had
-/// to fit a cold SSH connect into `SSH_ROUND_TRIP_TIMEOUT`. It stays below
+/// to fit a cold SSH connect into one SSH command timeout. It stays below
 /// `MAX_RETRY_DELAY` to leave room for tearing a timed-out bridge down.
 ///
 /// The budget is the same for every attempt, including one that has to run full
@@ -175,13 +176,14 @@ pub(super) const ATTENTION_RETRY_DELAY: Duration = MAX_RETRY_DELAY;
 /// or a full-round-trip timeout that may be waiting for authentication. SSH process
 /// failures and remote command errors clear that progress. It also keeps a freshly
 /// discovered executable when only the bridge ran out of time. No discovery round trip
-/// may take longer than `SSH_ROUND_TRIP_TIMEOUT`, and the budget exceeds it by
-/// `shepr_core::limits::SSH_ATTEMPT_SLACK`, so every attempt that starts with discovery
-/// completes at least one, and discovery finishes after a bounded number of attempts;
+/// may take longer than one SSH command timeout, and the budget, which
+/// `shepr_remote` defines as that timeout plus a fixed slack, exceeds it, so every
+/// attempt that starts with discovery completes at least one, and discovery
+/// finishes after a bounded number of attempts;
 /// after that the bridge and the handshake need to fit one attempt, as on every
 /// ordinary reconnect. A larger discovery budget would stretch the retry bound exactly where
 /// the link is slowest, and would still fail on an even slower link.
-pub(super) const ATTEMPT_BUDGET: Duration = shepr_core::limits::SSH_CONNECTION_ATTEMPT_BUDGET;
+pub(super) const ATTEMPT_BUDGET: Duration = shepr_remote::SSH_CONNECTION_ATTEMPT_BUDGET;
 
 /// Maximum queued frame batches waiting for the endpoint writer.
 ///

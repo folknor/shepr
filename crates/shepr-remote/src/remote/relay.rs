@@ -1,11 +1,15 @@
-use super::*;
+//! The remote host's SSH bridge relay: this process's stdio carried to the
+//! local server socket, ended by an idle watchdog.
+
 use std::{
     io::{Read, Write},
-    os::fd::AsRawFd,
     time::Duration,
 };
 
-use crate::ipc::{StreamFailure, classify_stream_error};
+use shepr_platform::ipc::{LocalStream, StreamFailure, classify_stream_error};
+
+#[path = "relay_watchdog.rs"]
+mod watchdog;
 
 /// How a stdio relay ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,24 +33,24 @@ enum RelayEvent {
 
 /// Relay the SSH bridge's stdio to the local server socket. Every remote
 /// keystroke and paste passes through here as raw bytes: input content must
-/// stay out of logs and error messages here and in `remote_bridge` (log byte
+/// stay out of logs and error messages here and in the watchdog (log byte
 /// counts or error kinds, never the buffers).
 ///
-/// A watchdog ends the relay after `remote_bridge::IDLE_TIMEOUT` without
+/// A watchdog ends the relay after `limits::BRIDGE_IDLE_TIMEOUT` without
 /// traffic and this returns [`RemoteBridgeOutcome::IdleExpired`]; see that
 /// variant for what the caller owes.
-pub fn forward_remote_bridge_stdio(
-    stream: crate::ipc::LocalStream,
+pub(crate) fn forward_remote_bridge_stdio(
+    stream: LocalStream,
 ) -> std::io::Result<RemoteBridgeOutcome> {
-    forward_remote_bridge_stdio_with_timeout(stream, remote_bridge::IDLE_TIMEOUT)
+    forward_remote_bridge_stdio_with_timeout(stream, crate::limits::BRIDGE_IDLE_TIMEOUT)
 }
 
-pub(super) fn forward_remote_bridge_stdio_with_timeout(
-    stream: crate::ipc::LocalStream,
+fn forward_remote_bridge_stdio_with_timeout(
+    stream: LocalStream,
     idle_timeout: Duration,
 ) -> std::io::Result<RemoteBridgeOutcome> {
-    use remote_bridge::{Activity, TrackedIo};
     use std::os::fd::AsFd as _;
+    use watchdog::{Activity, TrackedIo};
 
     let (events, relay) = std::sync::mpsc::channel();
     let expired = events.clone();
@@ -111,7 +115,7 @@ pub(super) fn forward_remote_bridge_stdio_with_timeout(
 }
 
 fn copy_flush<R: Read, W: Write>(reader: &mut R, writer: &mut W) -> std::io::Result<()> {
-    let mut buffer = [0_u8; super::limits::REMOTE_BRIDGE_COPY_BUFFER_BYTES];
+    let mut buffer = [0_u8; crate::limits::REMOTE_BRIDGE_COPY_BUFFER_BYTES];
     loop {
         let read = match reader.read(&mut buffer) {
             Ok(0) => return Ok(()),
@@ -124,54 +128,15 @@ fn copy_flush<R: Read, W: Write>(reader: &mut R, writer: &mut W) -> std::io::Res
     }
 }
 
-pub struct RemoteBridgeWake {
-    reader: std::os::unix::net::UnixStream,
-    writer: std::os::unix::net::UnixStream,
-}
-
-impl RemoteBridgeWake {
-    pub fn new() -> std::io::Result<Self> {
-        let (reader, writer) = std::os::unix::net::UnixStream::pair()?;
-        Ok(Self { reader, writer })
-    }
-
-    pub fn cancel(&self) -> std::io::Result<()> {
-        // EOF stays readable, including when cancellation precedes the wait.
-        self.writer.shutdown(std::net::Shutdown::Write)
-    }
-
-    pub fn wait(&self, stream: &crate::ipc::LocalStream) -> std::io::Result<()> {
-        use std::os::fd::AsFd as _;
-        let mut descriptors = [
-            libc::pollfd {
-                fd: stream.as_fd().as_raw_fd(),
-                events: libc::POLLIN,
-                revents: 0,
-            },
-            libc::pollfd {
-                fd: self.reader.as_raw_fd(),
-                events: libc::POLLIN,
-                revents: 0,
-            },
-        ];
-        loop {
-            // SAFETY: both descriptors remain borrowed and the array has two entries.
-            if unsafe { libc::poll(descriptors.as_mut_ptr(), 2, -1) } >= 0 {
-                return Ok(());
-            }
-            let error = std::io::Error::last_os_error();
-            if error.kind() != std::io::ErrorKind::Interrupted {
-                return Err(error);
-            }
-        }
-    }
-}
-
 /// Answers a bridge client directly through the bridge's byte-stream stdout.
-pub fn answer_remote_bridge(bytes: &[u8]) -> std::io::Result<()> {
+pub(crate) fn answer_remote_bridge(bytes: &[u8]) -> std::io::Result<()> {
     use std::os::fd::AsFd as _;
     // stdout-handoff-ok: fd 1 is taken over whole, not written as text.
     let mut stdout = std::fs::File::from(std::io::stdout().as_fd().try_clone_to_owned()?);
     stdout.write_all(bytes)?;
     stdout.flush()
 }
+
+#[cfg(test)]
+#[path = "relay_tests.rs"]
+mod relay_tests;

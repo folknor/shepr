@@ -289,14 +289,14 @@ impl Drop for BridgeSocketStartupCleanup {
 
 pub(super) struct BridgeUploadStop {
     stopped: AtomicBool,
-    pub(super) wake: shepr_platform::RemoteBridgeWake,
+    pub(super) wake: shepr_platform::StreamWake,
 }
 
 impl BridgeUploadStop {
     pub(super) fn new() -> io::Result<Self> {
         Ok(Self {
             stopped: AtomicBool::new(false),
-            wake: shepr_platform::RemoteBridgeWake::new()?,
+            wake: shepr_platform::StreamWake::new()?,
         })
     }
 
@@ -760,7 +760,7 @@ trait UploadReadStream {
         buffer: &mut [u8],
     ) -> io::Result<shepr_platform::ipc::LocalStreamReadCount>;
 
-    fn wait_for_input(&self, wake: &shepr_platform::RemoteBridgeWake) -> io::Result<()>;
+    fn wait_for_input(&self, wake: &shepr_platform::StreamWake) -> io::Result<()>;
 }
 
 impl UploadReadStream for shepr_platform::ipc::LocalStream {
@@ -771,7 +771,7 @@ impl UploadReadStream for shepr_platform::ipc::LocalStream {
         shepr_platform::ipc::poll_local_stream_read_count(self, buffer)
     }
 
-    fn wait_for_input(&self, wake: &shepr_platform::RemoteBridgeWake) -> io::Result<()> {
+    fn wait_for_input(&self, wake: &shepr_platform::StreamWake) -> io::Result<()> {
         wake.wait(self)
     }
 }

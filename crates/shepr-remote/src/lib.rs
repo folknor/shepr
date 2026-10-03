@@ -20,6 +20,8 @@ mod machine_ssh;
 mod preflight;
 #[path = "remote/process.rs"]
 mod process;
+#[path = "remote/relay.rs"]
+mod relay;
 #[path = "remote/server_lifecycle.rs"]
 mod server_lifecycle;
 #[path = "remote/shell_command.rs"]
@@ -43,11 +45,13 @@ pub use crate::machine::SshTarget;
 pub use args::RemoteCliCommand;
 pub use host::run_remote_client_bridge;
 pub use launch::shell_quote;
+pub use limits::SSH_CONNECTION_ATTEMPT_BUDGET;
 pub use machine_ssh::*;
 pub use preflight::{
     AuthenticationError, MachineCheck, MachineSshPreflight, PreflightOutcome, PreflightSsh,
     RestartDecider, classify_check, preflight, restart_different_builds,
 };
+pub use relay::RemoteBridgeOutcome;
 pub use server_lifecycle::{DifferentBuildServer, MachineSshCheck};
 pub use ssh::{release_ssh_resources_before_exit, ssh_authentication_command};
 

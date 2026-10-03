@@ -45,14 +45,6 @@ pub(super) const CLIENT_STREAM_POLL_INTERVAL_MS: i32 = 100;
 /// The delay gives desktop helpers time to claim a selection.
 pub(super) const CLIPBOARD_OWNER_STARTUP_WAIT: Duration = Duration::from_millis(100);
 
-/// Maximum time between checks by the idle SSH bridge watchdog.
-/// The interval bounds idle-expiry detection without busy polling.
-pub(super) const BRIDGE_WATCHDOG_POLL_INTERVAL: Duration = Duration::from_secs(1);
-
-/// Read chunk size for SSH bridge forwarding. It amortizes read overhead while
-/// keeping each stack buffer small.
-pub(super) const REMOTE_BRIDGE_COPY_BUFFER_BYTES: usize = 16 * 1024;
-
 /// Read chunk size for bounded child output. It keeps reads efficient without
 /// tying memory to the cap.
 pub(super) const LIMITED_READ_BUFFER_BYTES: usize = 8 * 1024;

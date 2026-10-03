@@ -199,15 +199,18 @@ orientation, and nothing checks them:
   boot log, the different-build policy), presence probing, conditional stop,
   the restart offer, the invocation grammar and exit codes shepr processes
   share (the server's arguments and `DaemonExit`, the CLI's command words),
-  the operator text naming the commands that reach a server, and the endpoint
-  failure vocabulary with its one disposition table, for every endpoint.
+  the operator text naming the commands that reach a server, the endpoint
+  failure vocabulary with its one disposition table, for every endpoint, and
+  the connection heartbeat cadence the client keeps and the SSH bridge's idle
+  expiry is checked against.
 - `shepr-termio`: host terminal I/O: host input framing and parsing, the
   fixed and configured key tables the client's modes and overlays route by,
   copy-mode keys, the one-line text editor prompts edit with, frame blitting
   and host terminal modes, title, clipboard and theme queries.
-- `shepr-remote`: configured machines and SSH connections, startup preflight,
-  and the remote-host side of the SSH bridge, which ensures its local server
-  through `shepr-launch`. It classifies OpenSSH output into launch's failure
+- `shepr-remote`: configured machines and SSH connections, the SSH attempt
+  timing, startup preflight, and the remote-host side of the SSH bridge (its
+  stdio relay and idle watchdog), which ensures its local server through
+  `shepr-launch`. It classifies OpenSSH output into launch's failure
   vocabulary at its boundary and keeps discovery evidence to itself.
 - `shepr-git`: Git status as one subsystem: checkout discovery, the Git
   command runner with its environment and deadline policy, config dependency

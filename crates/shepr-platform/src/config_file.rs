@@ -1,3 +1,8 @@
+//! File primitives under agent integration's atomic config replace: link
+//! counts, the temporary's creation, and copying ownership, permissions and
+//! extended attributes onto it. The replace policy is integration's; these are
+//! the syscalls it stands on.
+
 use std::{
     io::Write,
     os::fd::{AsRawFd, RawFd},

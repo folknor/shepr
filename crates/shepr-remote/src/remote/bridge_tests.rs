@@ -145,7 +145,7 @@ fn bridge_upload_idle_waits_without_repeated_reads_and_cancels() {
             shepr_platform::ipc::poll_local_stream_read_count(&mut self.stream, buffer)
         }
 
-        fn wait_for_input(&self, wake: &shepr_platform::RemoteBridgeWake) -> io::Result<()> {
+        fn wait_for_input(&self, wake: &shepr_platform::StreamWake) -> io::Result<()> {
             wake.wait(&self.stream)
         }
     }

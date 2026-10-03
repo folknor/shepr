@@ -56,7 +56,7 @@ impl Bridge {
                 // crate-private bridge code. libtest selection and uncaptured
                 // stdout are required for its stdio protocol.
                 "--exact",
-                "remote_bridge_tests::bridge_subprocess_entry_point",
+                "relay::relay_tests::bridge_subprocess_entry_point",
                 "--ignored",
                 "--nocapture",
             ])

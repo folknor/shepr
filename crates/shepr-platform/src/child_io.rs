@@ -5,6 +5,9 @@ use std::{
     time::Instant,
 };
 
+/// How a pane's child ended, and whether that needs a final session
+/// checkpoint. It lives here rather than in mux because exit classification is
+/// platform's job and detection's pane ownership consumes it below mux.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChildExitReason {
     Exited,

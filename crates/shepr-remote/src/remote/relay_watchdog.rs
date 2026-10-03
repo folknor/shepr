@@ -11,29 +11,14 @@ use std::sync::{
 use std::time::Duration;
 
 // Every client bridge runs this watchdog. The client health-checks the endpoint
-// on the far side of the bridge: it sends HealthPing
-// after `shepr_core::limits::HEARTBEAT_INTERVAL` without received data, and the
-// server answers HealthPong. The timing relation is asserted in shepr-core.
-// That heartbeat renews this byte-level watchdog, so a healthy idle bridge
-// stays connected while a dead client's bridge exits.
-pub(crate) use shepr_core::limits::BRIDGE_IDLE_TIMEOUT as IDLE_TIMEOUT;
+// on the far side of the bridge: it sends HealthPing after
+// `shepr_launch::connection_health::HEARTBEAT_INTERVAL` without received data,
+// and the server answers HealthPong. The timing relation is asserted beside
+// `BRIDGE_IDLE_TIMEOUT` in this crate's limits. That heartbeat renews this
+// byte-level watchdog, so a healthy idle bridge stays connected while a dead
+// client's bridge exits.
 
 type BootClock = Arc<dyn Fn() -> io::Result<u64> + Send + Sync>;
-
-fn now() -> io::Result<u64> {
-    let mut time = libc::timespec {
-        tv_sec: 0,
-        tv_nsec: 0,
-    };
-    // This clock includes suspend, so short maintenance wakes can reap old bridges.
-    // SAFETY: clock_gettime(2) writes one timespec into a live local.
-    if unsafe { libc::clock_gettime(libc::CLOCK_BOOTTIME, &mut time) } != 0 {
-        return Err(io::Error::last_os_error());
-    }
-    let secs = u64::try_from(time.tv_sec).unwrap_or(0);
-    let nanos = u64::try_from(time.tv_nsec).unwrap_or(0);
-    Ok(secs * 1_000_000_000 + nanos)
-}
 
 #[derive(Clone)]
 pub(super) struct Activity {
@@ -52,7 +37,9 @@ impl Activity {
         timeout: Duration,
         expired: impl FnOnce(Option<Duration>) + Send + 'static,
     ) -> io::Result<Self> {
-        Self::start_with_clock(timeout, Arc::new(now), expired)
+        // The boot clock includes suspend, so short maintenance wakes can reap
+        // old bridges.
+        Self::start_with_clock(timeout, Arc::new(shepr_platform::boot_time_nanos), expired)
     }
 
     fn start_with_clock(
@@ -69,7 +56,7 @@ impl Activity {
             .spawn(move || {
                 loop {
                     match stopped
-                        .recv_timeout(timeout.min(super::limits::BRIDGE_WATCHDOG_POLL_INTERVAL))
+                        .recv_timeout(timeout.min(crate::limits::BRIDGE_WATCHDOG_POLL_INTERVAL))
                     {
                         Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => return,
                         Err(mpsc::RecvTimeoutError::Timeout) => {}
@@ -151,6 +138,7 @@ impl<T: Write> Write for TrackedIo<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::limits::BRIDGE_IDLE_TIMEOUT as IDLE_TIMEOUT;
 
     #[test]
     fn idle_deadline_counts_elapsed_sleep_and_only_positive_io_renews_it() {
