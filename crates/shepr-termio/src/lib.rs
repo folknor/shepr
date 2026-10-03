@@ -19,17 +19,18 @@ pub use input::raw_input;
 mod test_config {
     use std::path::Path;
 
-    use shepr_config::{AppPaths, ClientConfig, ValidatedClientConfig};
+    use shepr_config::{ClientConfig, ValidatedClientConfig};
+    use shepr_paths::AppPaths;
 
     /// `source` as a config document, validated as a launch would validate
     /// it, on paths that cannot be written to.
     pub(crate) fn validated(source: &str) -> ValidatedClientConfig {
         let config: ClientConfig = toml::from_str(source).expect("test config parses");
         let root = Path::new("/nonexistent/shepr-test-config");
-        ValidatedClientConfig::from_values(
-            config,
+        ValidatedClientConfig::validate(
+            &config,
             Some(source),
-            AppPaths::rooted_at(root, Some(root), None),
+            AppPaths::rooted_at(root, Some(root), None).expect("short test root"),
         )
         .expect("test config is valid")
     }

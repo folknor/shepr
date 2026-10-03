@@ -10,9 +10,9 @@ fn failed_before_remote_result(error: &io::Error) -> bool {
 
 /// Paths whose root doubles as the XDG runtime root; the managed config
 /// directories are created in the profile runtime directory under it.
-fn test_app_paths() -> shepr_config::AppPaths {
+fn test_app_paths() -> shepr_paths::AppPaths {
     let root = shepr_test_support::ScratchDir::new("remote-ssh");
-    shepr_config::AppPaths::rooted_at(&root, Some(&root), None)
+    shepr_paths::AppPaths::rooted_at(&root, Some(&root), None).expect("scratch roots fit a socket")
 }
 
 /// The control socket's directory. These tests render config text and
@@ -24,7 +24,7 @@ fn test_control_dir() -> &'static Path {
 
 fn write_test_managed_ssh_config(
     target: &SshTarget,
-    paths: &shepr_config::AppPaths,
+    paths: &shepr_paths::AppPaths,
     control_dir: &Path,
 ) -> io::Result<ManagedSshConfig> {
     let runtime_dir = ensure_ssh_runtime_dir(paths)?;

@@ -164,7 +164,7 @@ pub enum BuildCheck {
 /// whatever the policy: the policy governs only a server that was already
 /// running.
 pub fn ensure_running(
-    paths: &shepr_config::AppPaths,
+    paths: &shepr_paths::AppPaths,
     timeout: Duration,
     build_check: BuildCheck,
 ) -> Result<RuntimeStatus, LaunchError> {
@@ -224,7 +224,7 @@ pub fn ensure_running(
 /// restart offer reads a different-build server through this. A live
 /// listener that does not answer, or a socket that cannot be judged, is an
 /// error, as it is for a launch.
-pub fn running_server_status(paths: &shepr_config::AppPaths) -> io::Result<Option<RuntimeStatus>> {
+pub fn running_server_status(paths: &shepr_paths::AppPaths) -> io::Result<Option<RuntimeStatus>> {
     match probe_server(paths)? {
         Probed::Running(status) => Ok(Some(status)),
         // There is no stable server status to offer; the launch that follows
@@ -253,7 +253,7 @@ enum Probed {
     Stopping,
 }
 
-fn probe_server(paths: &shepr_config::AppPaths) -> io::Result<Probed> {
+fn probe_server(paths: &shepr_paths::AppPaths) -> io::Result<Probed> {
     probe_server_at(paths.server_address().socket())
 }
 
@@ -281,7 +281,7 @@ fn probe_server_at(socket: &Path) -> io::Result<Probed> {
 /// lock while waiting, so another shepr client cannot start a competing
 /// successor in this interval.
 fn wait_for_server_socket_to_settle_until(
-    paths: &shepr_config::AppPaths,
+    paths: &shepr_paths::AppPaths,
     deadline: Instant,
     timeout: Duration,
 ) -> Result<Probed, LaunchError> {
@@ -302,7 +302,7 @@ fn wait_for_server_socket_to_settle_until(
     }
 }
 
-fn server_transition_timeout(paths: &shepr_config::AppPaths, timeout: Duration) -> LaunchError {
+fn server_transition_timeout(paths: &shepr_paths::AppPaths, timeout: Duration) -> LaunchError {
     LaunchError::TransitionTimeout {
         timeout,
         message: format!(
@@ -317,7 +317,7 @@ fn server_transition_timeout(paths: &shepr_config::AppPaths, timeout: Duration) 
 /// server is transitioning, wait for it to become attachable or disappear
 /// before reporting the stable result.
 fn wait_for_overridden_server(
-    paths: &shepr_config::AppPaths,
+    paths: &shepr_paths::AppPaths,
     timeout: Duration,
     build_check: BuildCheck,
 ) -> Result<RuntimeStatus, LaunchError> {
@@ -338,7 +338,7 @@ fn wait_for_overridden_server(
     }
 }
 
-fn unresponsive_error(paths: &shepr_config::AppPaths) -> LaunchError {
+fn unresponsive_error(paths: &shepr_paths::AppPaths) -> LaunchError {
     LaunchError::Unresponsive {
         message: format!(
             "a shepr server is listening at {}, but it is not answering status requests, so its build cannot be confirmed and no second server is started.\n\n{}\nIf that fails, stop the server process manually.",
@@ -350,7 +350,7 @@ fn unresponsive_error(paths: &shepr_config::AppPaths) -> LaunchError {
 
 /// Applies the caller's policy to a running server's build.
 fn accept_running(
-    paths: &shepr_config::AppPaths,
+    paths: &shepr_paths::AppPaths,
     status: RuntimeStatus,
     build_check: BuildCheck,
 ) -> Result<RuntimeStatus, LaunchError> {
@@ -363,7 +363,7 @@ fn accept_running(
     }
 }
 
-fn running_build_mismatch(paths: &shepr_config::AppPaths, status: &RuntimeStatus) -> LaunchError {
+fn running_build_mismatch(paths: &shepr_paths::AppPaths, status: &RuntimeStatus) -> LaunchError {
     let summary = if paths.server_address().is_runtime_address() {
         "the running shepr server is a different build; restart it before attaching."
     } else {
@@ -382,17 +382,15 @@ fn running_build_mismatch(paths: &shepr_config::AppPaths, status: &RuntimeStatus
     }
 }
 
-fn build_mismatch_guidance(paths: &shepr_config::AppPaths) -> String {
-    paths
-        .server_address()
-        .build_mismatch_guidance(&shepr_config::operator_entrypoint())
+fn build_mismatch_guidance(paths: &shepr_paths::AppPaths) -> String {
+    paths.server_address().build_mismatch_guidance()
 }
 
 /// A client starts a server only for its profile's own runtime address. A
 /// socket override names a server that is already running (a pane's own, or a
 /// test's); a server started for it would only meet the data directory lease
 /// the profile's real server holds.
-fn require_own_runtime_address(paths: &shepr_config::AppPaths) -> Result<(), LaunchError> {
+fn require_own_runtime_address(paths: &shepr_paths::AppPaths) -> Result<(), LaunchError> {
     let address = paths.server_address();
     if address.is_runtime_address() {
         return Ok(());
@@ -400,7 +398,7 @@ fn require_own_runtime_address(paths: &shepr_config::AppPaths) -> Result<(), Lau
     Err(no_server_at_override(paths))
 }
 
-fn no_server_at_override(paths: &shepr_config::AppPaths) -> LaunchError {
+fn no_server_at_override(paths: &shepr_paths::AppPaths) -> LaunchError {
     let address = paths.server_address();
     let selected_by = EnvVar::SheprSocketPath;
     LaunchError::OverrideMissing {
@@ -586,7 +584,7 @@ fn read_server_version_line(server: &Path, timeout: Duration) -> io::Result<Stri
 /// The lock is keyed to the profile, not to a socket path: socket overrides
 /// move only the socket, so every server of one profile competes for the same
 /// data directory lease anyway.
-fn acquire_launch_lock(paths: &shepr_config::AppPaths, wait: Duration) -> io::Result<FlockLock> {
+fn acquire_launch_lock(paths: &shepr_paths::AppPaths, wait: Duration) -> io::Result<FlockLock> {
     shepr_platform::create_private_directory_all(paths.runtime_dir()).map_err(|error| {
         io::Error::new(
             error.kind(),
@@ -661,7 +659,7 @@ struct LaunchFiles<'a> {
 }
 
 fn launch_daemon(
-    paths: &shepr_config::AppPaths,
+    paths: &shepr_paths::AppPaths,
     server: &Path,
     timeout: Duration,
 ) -> Result<RuntimeStatus, LaunchError> {
@@ -955,7 +953,7 @@ fn sibling_build_mismatch(files: &LaunchFiles<'_>, status: &RuntimeStatus) -> La
 /// against it, not against this working directory. Home rather than `/` in
 /// case a launch hands over no directory, since the server then falls back
 /// to its own.
-fn server_daemon_working_dir(paths: &shepr_config::AppPaths) -> PathBuf {
+fn server_daemon_working_dir(paths: &shepr_paths::AppPaths) -> PathBuf {
     paths
         .home_dir()
         .map_or_else(|| PathBuf::from("/"), Path::to_path_buf)
@@ -972,7 +970,7 @@ fn build_server_daemon_command(
     exe: &Path,
     working_dir: &Path,
     startup_cwd: Option<&Path>,
-    paths: &shepr_config::AppPaths,
+    paths: &shepr_paths::AppPaths,
 ) -> Command {
     let mut command = shepr_platform::child_command(exe, working_dir);
     command

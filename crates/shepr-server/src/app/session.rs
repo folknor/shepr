@@ -1471,7 +1471,7 @@ mod tests {
         };
 
         let scratch = crate::test_support::ScratchDir::new("dropped-workspace-backup");
-        let paths = shepr_config::AppPaths::test_at(&scratch);
+        let paths = shepr_paths::AppPaths::test_at(&scratch);
         let config = shepr_config::ValidatedServerConfig::test_from_config_with_paths(
             shepr_config::ServerConfig::default(),
             paths.clone(),
@@ -1605,7 +1605,7 @@ mod tests {
         use crate::test_support::{AppPathsFixture as _, ValidatedServerConfigFixture as _};
 
         let scratch = crate::test_support::ScratchDir::new("unusable-session-notice");
-        let paths = shepr_config::AppPaths::test_at(&scratch);
+        let paths = shepr_paths::AppPaths::test_at(&scratch);
         let config = shepr_config::ValidatedServerConfig::test_from_config_with_paths(
             shepr_config::ServerConfig::default(),
             paths.clone(),
@@ -1651,7 +1651,7 @@ mod tests {
         use crate::test_support::{AppPathsFixture as _, ValidatedServerConfigFixture as _};
 
         let scratch = crate::test_support::ScratchDir::new("fresh-start-no-notice");
-        let paths = shepr_config::AppPaths::test_at(&scratch);
+        let paths = shepr_paths::AppPaths::test_at(&scratch);
         let config = shepr_config::ValidatedServerConfig::test_from_config_with_paths(
             shepr_config::ServerConfig::default(),
             paths.clone(),

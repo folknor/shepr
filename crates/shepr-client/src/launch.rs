@@ -39,24 +39,21 @@ struct Launched {
     event_rx: tokio::sync::mpsc::Receiver<ClientLoopEvent>,
     settings: ClientSettings,
     shell_config: shell::ClientShellConfig,
-    paths: shepr_config::AppPaths,
+    paths: shepr_paths::AppPaths,
     local_mismatch_guidance: Arc<str>,
 }
 
 impl Launched {
     fn prepare(
         config: &shepr_config::ValidatedClientConfig,
-        paths: &shepr_config::AppPaths,
+        paths: &shepr_paths::AppPaths,
         connectors: Vec<shepr_remote::MachineSshConnector>,
     ) -> Result<Self, ClientRunError> {
         let settings = ClientSettings::resolve(config).map_err(io::Error::from)?;
         let socket_path = paths.server_address().socket().to_path_buf();
         let shell_config = shell::ClientShellConfig::from_validated_config(config)
             .with_local_endpoint(paths.state_dir(), &socket_path)?;
-        let mismatch_guidance: Arc<str> = paths
-            .server_address()
-            .build_mismatch_guidance(&shepr_config::operator_entrypoint())
-            .into();
+        let mismatch_guidance: Arc<str> = paths.server_address().build_mismatch_guidance().into();
 
         crate::logging::startup();
         info!(path = %socket_path.display(), "connecting to server");
@@ -148,7 +145,7 @@ impl Launched {
 /// holds one connector per machine.
 pub(crate) fn run_launched_client(
     config: &shepr_config::ValidatedClientConfig,
-    paths: &shepr_config::AppPaths,
+    paths: &shepr_paths::AppPaths,
     connectors: Vec<shepr_remote::MachineSshConnector>,
 ) -> Result<ClientExit, ClientRunError> {
     // A panic on any thread from here on ends the client through the one finalization
@@ -490,17 +487,43 @@ enum LocalLaunchState {
 mod tests {
     use super::*;
     use shepr_test_fixtures::{AppPathsFixture as _, ValidatedClientConfigFixture as _};
+    use std::os::unix::ffi::OsStrExt as _;
     use std::os::unix::fs::PermissionsExt as _;
 
     #[test]
     fn impossible_connector_paths_fail_in_the_preterminal_phase() {
         let _env = shepr_test_support::IsolatedEnv::new();
         let scratch = shepr_test_support::ScratchDir::new("launch-admission");
-        let root = scratch.join("x".repeat(120));
-        std::fs::create_dir_all(&root).expect("test runtime directory");
-        std::fs::set_permissions(&root, std::fs::Permissions::from_mode(0o700))
-            .expect("test private runtime directory");
-        let paths = shepr_config::AppPaths::test_at(&root);
+        // Size the root so `root/runtime/shepr.sock` is exactly the longest
+        // path Linux accepts: the server socket fits, and any SSH bridge
+        // socket name beside it (longer than `shepr.sock`) cannot.
+        let server_socket_tail = "/runtime/shepr.sock";
+        let scratch_len = scratch.as_os_str().as_bytes().len();
+        let root_len = shepr_core::socket_path::UNIX_SOCKET_PATH_MAX - server_socket_tail.len();
+        let padding = root_len
+            .checked_sub(scratch_len + 1)
+            .filter(|padding| *padding > 0)
+            .expect("scratch directory leaves room for a root component");
+        let root = scratch.join("x".repeat(padding));
+        std::fs::create_dir_all(root.join("runtime")).expect("test runtime directory");
+        for dir in [root.clone(), root.join("runtime")] {
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))
+                .expect("test private runtime directory");
+        }
+        assert!(
+            shepr_paths::AppPaths::rooted_at(&root, None, None).is_ok(),
+            "the server socket path fits"
+        );
+        assert!(
+            shepr_platform::validate_remote_bridge_endpoint_path(
+                &root.join("runtime"),
+                "bridge.sock",
+                "b.sock"
+            )
+            .is_err(),
+            "bridge socket paths do not fit"
+        );
+        let paths = shepr_paths::AppPaths::test_at(&root);
         let config = shepr_config::ValidatedClientConfig::test_from_config_with_paths(
             shepr_config::ClientConfig {
                 machines: vec![shepr_config::MachineConfig {

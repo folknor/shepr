@@ -438,14 +438,14 @@ pub fn restart_different_builds(
 /// control socket, and a conditional remote stop over the probe's transport.
 /// [`Self::into_connectors`] hands each probe to the client's connector.
 pub struct MachineSshPreflight<'a> {
-    paths: &'a shepr_config::AppPaths,
+    paths: &'a shepr_paths::AppPaths,
     deadline: Mutex<Instant>,
     probes: Mutex<HashMap<MachineLabel, Arc<Mutex<MachineProbe>>>>,
 }
 
 impl<'a> MachineSshPreflight<'a> {
     /// The deadline for the first round of checks starts now.
-    pub fn new(paths: &'a shepr_config::AppPaths) -> Self {
+    pub fn new(paths: &'a shepr_paths::AppPaths) -> Self {
         Self {
             paths,
             deadline: Mutex::new(round_deadline()),

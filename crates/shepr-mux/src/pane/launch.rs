@@ -91,7 +91,7 @@ pub(super) fn apply_pane_launch_env(cmd: &mut PtyCommand, launch_env: &PaneLaunc
     // profile started inside it does not follow the socket variable above.
     cmd.env(
         EnvVar::SheprBuildProfile,
-        shepr_config::BuildProfile::current().marker(),
+        shepr_paths::BuildProfile::current().marker(),
     );
     cmd.env_remove(ChildEnv::SheprBinPath);
     if let Some(executable) = launch_executable() {

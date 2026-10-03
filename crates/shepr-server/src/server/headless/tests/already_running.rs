@@ -61,7 +61,7 @@ fn already_running_subprocess_entry_point() {
 
     let _env = IsolatedEnv::new();
     let scratch = ScratchDir::new("already-running-server");
-    let paths = shepr_config::AppPaths::test_at(&scratch);
+    let paths = shepr_paths::AppPaths::test_at(&scratch);
     let config = shepr_config::ValidatedServerConfig::test_from_config_with_paths(
         shepr_config::ServerConfig::default(),
         paths.clone(),
@@ -96,7 +96,7 @@ fn already_running_subprocess_entry_point() {
 fn refuse_a_held_data_dir_lease() {
     let _env = IsolatedEnv::new();
     let scratch = ScratchDir::new("already-running-data-dir");
-    let paths = shepr_config::AppPaths::test_at(&scratch);
+    let paths = shepr_paths::AppPaths::test_at(&scratch);
     let config = shepr_config::ValidatedServerConfig::test_from_config_with_paths(
         shepr_config::ServerConfig::default(),
         paths.clone(),

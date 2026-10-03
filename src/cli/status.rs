@@ -39,7 +39,7 @@ pub(super) fn parse(matches: &clap::ArgMatches) -> Option<ParsedCommand> {
 
 pub(super) fn run_status_command(
     command: Command,
-    paths: &shepr_config::AppPaths,
+    paths: &shepr_paths::AppPaths,
 ) -> super::CliResult<i32> {
     match command {
         Command::Overview { json } => print_full_status(paths, json),
@@ -47,7 +47,7 @@ pub(super) fn run_status_command(
     }
 }
 
-fn print_full_status(paths: &shepr_config::AppPaths, json: bool) -> super::CliResult<i32> {
+fn print_full_status(paths: &shepr_paths::AppPaths, json: bool) -> super::CliResult<i32> {
     let server = read_server_runtime_status(paths)?;
 
     if json {
@@ -74,7 +74,7 @@ fn print_full_status(paths: &shepr_config::AppPaths, json: bool) -> super::CliRe
     Ok(0)
 }
 
-fn print_server_status(paths: &shepr_config::AppPaths, json: bool) -> super::CliResult<i32> {
+fn print_server_status(paths: &shepr_paths::AppPaths, json: bool) -> super::CliResult<i32> {
     let server = read_server_runtime_status(paths)?;
     if json {
         print_json(&server_status_json(paths, &server))?;
@@ -130,7 +130,7 @@ fn print_client_status_body(status: &ClientStatusJson, indent: &str) {
 }
 
 fn print_server_status_body(
-    paths: &shepr_config::AppPaths,
+    paths: &shepr_paths::AppPaths,
     server: &ServerPresence,
     indent: &str,
     compatible: Option<bool>,
@@ -175,7 +175,7 @@ fn print_runtime_identity(status: &RuntimeStatus, indent: &str) {
     println!("{indent}boot_id: {}", status.boot_id);
 }
 
-fn read_server_runtime_status(paths: &shepr_config::AppPaths) -> super::CliResult<ServerPresence> {
+fn read_server_runtime_status(paths: &shepr_paths::AppPaths) -> super::CliResult<ServerPresence> {
     Ok(shepr_api::read_server_presence_at(
         paths.server_address().socket(),
         crate::limits::STATUS_ANSWER_TIMEOUT,
@@ -211,7 +211,7 @@ fn client_status_json() -> ClientStatusJson {
     }
 }
 
-fn server_status_json(paths: &shepr_config::AppPaths, server: &ServerPresence) -> ServerStatusJson {
+fn server_status_json(paths: &shepr_paths::AppPaths, server: &ServerPresence) -> ServerStatusJson {
     use shepr_api::schema::{ServerIdentity, ServerStatus};
     let identity = |status: &RuntimeStatus| ServerIdentity {
         version: status.version.clone(),
@@ -286,8 +286,8 @@ mod tests {
         ServerPresence::Running(runtime_status(version, build_id))
     }
 
-    fn test_paths() -> shepr_config::AppPaths {
-        shepr_config::AppPaths::test_default()
+    fn test_paths() -> shepr_paths::AppPaths {
+        shepr_paths::AppPaths::test_default()
     }
 
     #[test]

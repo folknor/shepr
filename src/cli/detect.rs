@@ -59,7 +59,7 @@ pub(super) fn parse(matches: &ArgMatches) -> Option<Command> {
 
 pub(super) fn run_detect_command(
     command: Command,
-    paths: &shepr_config::AppPaths,
+    paths: &shepr_paths::AppPaths,
 ) -> super::CliResult<i32> {
     match command {
         Command::Capture { pane } => capture(paths, &pane),
@@ -84,7 +84,7 @@ fn capture_request(pane: &shepr_protocol::PublicPaneId) -> Request {
 }
 
 fn capture(
-    paths: &shepr_config::AppPaths,
+    paths: &shepr_paths::AppPaths,
     pane: &shepr_protocol::PublicPaneId,
 ) -> super::CliResult<i32> {
     let response = decode_response(super::send_request(paths, &capture_request(pane))?)?;
@@ -103,7 +103,7 @@ fn capture(
 }
 
 pub(super) fn explain(
-    paths: &shepr_config::AppPaths,
+    paths: &shepr_paths::AppPaths,
     target: &shepr_protocol::PublicPaneId,
     json: bool,
     verbose: bool,

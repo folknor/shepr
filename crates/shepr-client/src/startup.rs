@@ -9,7 +9,7 @@ use crate::launch::run_launched_client;
 /// failed run is a [`ClientRunError`], after which the binary exits nonzero.
 pub fn run_client(
     config: &shepr_config::ValidatedClientConfig,
-    paths: &shepr_config::AppPaths,
+    paths: &shepr_paths::AppPaths,
 ) -> Result<ClientExit, ClientRunError> {
     let connectors = EndpointSupervisors::fresh_connectors(paths, config.machines());
     run_launched_client(config, paths, connectors)
@@ -21,7 +21,7 @@ pub fn run_client(
 /// have run: the client takes the terminal and connects with `BatchMode`.
 pub fn run_client_with_connectors(
     config: &shepr_config::ValidatedClientConfig,
-    paths: &shepr_config::AppPaths,
+    paths: &shepr_paths::AppPaths,
     connectors: Vec<shepr_remote::MachineSshConnector>,
 ) -> Result<ClientExit, ClientRunError> {
     run_launched_client(config, paths, connectors)

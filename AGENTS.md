@@ -161,6 +161,12 @@ orientation, and nothing checks them:
 - `shepr-vt`: terminal emulation and read formatting; it re-exports the
   `shepr-term` vocabulary it speaks.
 - `shepr-pty`: PTY process launch and IO, using `shepr-platform` for fd plumbing, socket admission and process identities.
+- `shepr-paths`: runtime layout and server address policy: `AppPaths` (XDG
+  directories, `SHEPR_STARTUP_CWD`), `BuildProfile` and the pane markers,
+  `ServerAddress` and the socket override rule, the data-directory lease file
+  name, and the operator text naming the commands that reach a server. It reads
+  no config file, so api, remote and the CLI get the layout without the
+  settings.
 - `shepr-test-support`: shared environment isolation, scratch directories and hook asset capture for tests.
 - `shepr-agent`: agent identity: the descriptor table, report origins,
   session and resume vocabulary, `AgentState` and label normalization.
@@ -169,7 +175,9 @@ orientation, and nothing checks them:
   arbitration between screen detection and integration reports.
 - `shepr-integration`: the agent integration installer and its bundled hook
   assets; only the server links it.
-- `shepr-config`: configuration parsing and validation.
+- `shepr-config`: configuration parsing and validation: one validate step per
+  file, on the launch's `shepr-paths` layout, into validated types that hold
+  only validated values.
 - `shepr-protocol`: compact wire types and codec; it uses `shepr-core` for
   shared grid and input-batch resource budgets that config also borrows, and
   `shepr-agent` for the agent identity the client projection carries.

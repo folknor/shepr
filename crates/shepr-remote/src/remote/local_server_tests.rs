@@ -332,7 +332,7 @@ fn serve_starting_until_released(
 #[test]
 fn repeated_socket_transitions_share_one_wait_deadline() {
     let _env = IsolatedEnv::new();
-    let paths = shepr_config::AppPaths::resolve().expect("paths");
+    let paths = shepr_paths::AppPaths::resolve().expect("paths");
     let socket = runtime_socket(&paths);
     let (release, server) = serve_starting_until_released(&socket);
     let timeout = Duration::from_millis(500);
@@ -548,7 +548,7 @@ fn the_launch_lock_wait_is_bounded_and_its_file_persists() {
 #[test]
 fn the_running_server_status_never_starts_a_server() {
     let _env = IsolatedEnv::new();
-    let paths = shepr_config::AppPaths::resolve().expect("isolated paths resolve");
+    let paths = shepr_paths::AppPaths::resolve().expect("isolated paths resolve");
     assert!(
         running_server_status(&paths)
             .expect("an absent server is no error")
@@ -571,7 +571,7 @@ fn the_running_server_status_never_starts_a_server() {
 #[test]
 fn a_stopping_server_is_offered_no_restart() {
     let _env = IsolatedEnv::new();
-    let paths = shepr_config::AppPaths::resolve().expect("isolated paths resolve");
+    let paths = shepr_paths::AppPaths::resolve().expect("isolated paths resolve");
     let socket = runtime_socket(&paths);
     let server = serve_pong_once(
         UnixListener::bind(&socket).expect("test precondition"),
@@ -967,12 +967,12 @@ fn a_symlinked_boot_log_refuses_the_launch_before_spawning() {
 // ---------------------------------------------------------------------------
 
 /// The server socket with its runtime directory created.
-fn runtime_socket(paths: &shepr_config::AppPaths) -> PathBuf {
+fn runtime_socket(paths: &shepr_paths::AppPaths) -> PathBuf {
     std::fs::create_dir_all(paths.runtime_dir()).expect("create runtime");
     paths.server_address().socket().to_path_buf()
 }
 
-fn assert_nothing_was_launched(paths: &shepr_config::AppPaths) {
+fn assert_nothing_was_launched(paths: &shepr_paths::AppPaths) {
     for name in [LAUNCH_LOCK_FILE_NAME, BOOT_LOG_FILE_NAME] {
         assert!(
             !paths
@@ -990,7 +990,7 @@ fn a_socket_override_never_starts_a_server() {
     let env = IsolatedEnv::new();
     let socket = env.path().join("named.sock");
     env.set(EnvVar::SheprSocketPath, &socket);
-    let paths = shepr_config::AppPaths::resolve().expect("isolated paths resolve");
+    let paths = shepr_paths::AppPaths::resolve().expect("isolated paths resolve");
 
     let error = ensure_running(&paths, Duration::from_secs(1), BuildCheck::BeforeAttach)
         .expect_err("an override only reaches a running server");
@@ -1006,7 +1006,7 @@ fn a_starting_server_at_a_socket_override_is_waited_on_not_refused() {
     let env = IsolatedEnv::new();
     let socket = env.path().join("starting.sock");
     env.set(EnvVar::SheprSocketPath, &socket);
-    let paths = shepr_config::AppPaths::resolve().expect("isolated paths resolve");
+    let paths = shepr_paths::AppPaths::resolve().expect("isolated paths resolve");
     let (release, server) = serve_starting_until_released(&socket);
 
     let error = ensure_running(&paths, Duration::from_millis(300), BuildCheck::BeforeAttach)
@@ -1024,7 +1024,7 @@ fn a_starting_server_at_a_socket_override_is_waited_on_not_refused() {
 #[test]
 fn a_listener_that_does_not_answer_is_never_replaced() {
     let _env = IsolatedEnv::new();
-    let paths = shepr_config::AppPaths::resolve().expect("isolated paths resolve");
+    let paths = shepr_paths::AppPaths::resolve().expect("isolated paths resolve");
     let socket = runtime_socket(&paths);
     let _listener = UnixListener::bind(&socket).expect("test precondition");
 
@@ -1041,7 +1041,7 @@ fn a_listener_that_does_not_answer_is_never_replaced() {
 #[test]
 fn a_running_server_of_this_build_is_used_without_a_launch() {
     let _env = IsolatedEnv::new();
-    let paths = shepr_config::AppPaths::resolve().expect("isolated paths resolve");
+    let paths = shepr_paths::AppPaths::resolve().expect("isolated paths resolve");
     let socket = runtime_socket(&paths);
     let server = serve_status_once(
         UnixListener::bind(&socket).expect("test precondition"),
@@ -1057,7 +1057,7 @@ fn a_running_server_of_this_build_is_used_without_a_launch() {
 #[test]
 fn a_running_server_of_another_build_is_refused_before_attaching() {
     let _env = IsolatedEnv::new();
-    let paths = shepr_config::AppPaths::resolve().expect("isolated paths resolve");
+    let paths = shepr_paths::AppPaths::resolve().expect("isolated paths resolve");
     let socket = runtime_socket(&paths);
     let server = serve_status_once(
         UnixListener::bind(&socket).expect("test precondition"),
@@ -1077,7 +1077,7 @@ fn a_mismatched_server_at_a_socket_override_is_not_promised_a_restart() {
     let env = IsolatedEnv::new();
     let socket = env.path().join("custom.sock");
     env.set(EnvVar::SheprSocketPath, &socket);
-    let paths = shepr_config::AppPaths::resolve().expect("isolated paths resolve");
+    let paths = shepr_paths::AppPaths::resolve().expect("isolated paths resolve");
     let server = serve_status_once(
         UnixListener::bind(&socket).expect("test precondition"),
         other_build_id(),
@@ -1102,7 +1102,7 @@ fn a_mismatched_server_at_a_socket_override_is_not_promised_a_restart() {
 #[test]
 fn ensure_running_hands_back_a_running_mismatch_for_the_bridge() {
     let _env = IsolatedEnv::new();
-    let paths = shepr_config::AppPaths::resolve().expect("isolated paths resolve");
+    let paths = shepr_paths::AppPaths::resolve().expect("isolated paths resolve");
     let socket = runtime_socket(&paths);
     let server = serve_status_once(
         UnixListener::bind(&socket).expect("test precondition"),
@@ -1126,7 +1126,7 @@ fn ensure_running_hands_back_a_running_mismatch_for_the_bridge() {
 
 #[test]
 fn server_daemon_command_marks_the_client_spawn_and_nothing_else() {
-    let paths = shepr_config::AppPaths::test_default();
+    let paths = shepr_paths::AppPaths::test_default();
     let command = build_server_daemon_command(
         &PathBuf::from("/tmp/shepr-server-test"),
         Path::new("/"),
@@ -1140,7 +1140,7 @@ fn server_daemon_command_marks_the_client_spawn_and_nothing_else() {
 #[test]
 fn server_daemon_command_passes_current_dir_as_startup_cwd() {
     let expected = Path::new("/home/test");
-    let paths = shepr_config::AppPaths::test_default();
+    let paths = shepr_paths::AppPaths::test_default();
     let command = build_server_daemon_command(
         &PathBuf::from("/tmp/shepr-test"),
         Path::new("/"),
@@ -1157,7 +1157,7 @@ fn server_daemon_command_passes_current_dir_as_startup_cwd() {
 #[test]
 fn server_daemon_runs_in_home_not_the_launch_directory() {
     let scratch = ScratchDir::new("daemon-working-dir");
-    let paths = shepr_config::AppPaths::test_at(scratch.path());
+    let paths = shepr_paths::AppPaths::test_at(scratch.path());
     let working_dir = server_daemon_working_dir(&paths);
     assert_eq!(
         Some(working_dir.as_path()),

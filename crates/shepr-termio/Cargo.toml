@@ -16,6 +16,7 @@ shepr-term = { path = "../shepr-term" }
 tracing = { workspace = true }
 
 [dev-dependencies]
+shepr-paths = { path = "../shepr-paths" }
 # The batched-diff test replays blitted bytes through the emulator to check
 # the screen they produce.
 shepr-vt = { path = "../shepr-vt" }

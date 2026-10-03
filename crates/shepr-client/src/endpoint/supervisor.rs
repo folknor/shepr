@@ -186,7 +186,7 @@ impl EndpointSupervisors {
     /// Connectors for a launch that ran no preflight: each starts with no verified
     /// transport or executable.
     pub(crate) fn fresh_connectors(
-        paths: &shepr_config::AppPaths,
+        paths: &shepr_paths::AppPaths,
         machines: &[shepr_config::MachineConfig],
     ) -> Vec<shepr_remote::MachineSshConnector> {
         machines
@@ -608,12 +608,13 @@ mod tests {
     /// connector's runtime directory check with a plain `NotFound`, which is transient, not
     /// launch-fatal, and it is checked before any path length, so nothing is created or bound
     /// and the production launch check is untouched. Nothing reads the developer's config.
-    fn short_runtime_paths() -> shepr_config::AppPaths {
-        shepr_config::AppPaths::rooted_at(
+    fn short_runtime_paths() -> shepr_paths::AppPaths {
+        shepr_paths::AppPaths::rooted_at(
             std::path::Path::new("/nonexistent/shepr-supervisor-tests"),
             None,
             None,
         )
+        .expect("short test root")
     }
 
     /// `_env` is held by the caller only to keep the process environment isolated.
@@ -955,13 +956,10 @@ mod tests {
     #[test]
     fn a_local_build_mismatch_names_the_restart_guidance() {
         let _env = shepr_test_support::IsolatedEnv::new();
-        let paths = shepr_config::AppPaths::resolve().expect("isolated paths resolve");
+        let paths = shepr_paths::AppPaths::resolve().expect("isolated paths resolve");
         let now = Instant::now();
         let mut supervisors = EndpointSupervisors::new(Vec::new(), now).expect("test precondition");
-        let guidance: Arc<str> = paths
-            .server_address()
-            .build_mismatch_guidance(&shepr_config::operator_entrypoint())
-            .into();
+        let guidance: Arc<str> = paths.server_address().build_mismatch_guidance().into();
         supervisors.add_local(paths.server_address().socket().into(), guidance, None, now);
         let ConnectTarget::Local {
             mismatch_guidance, ..
@@ -977,7 +975,7 @@ mod tests {
         let message = diagnostic.to_string();
         // The commands name this build's own entry point, which for a test
         // build is its running executable rather than the installed `shepr`.
-        let entrypoint = shepr_config::operator_entrypoint();
+        let entrypoint = shepr_paths::operator_entrypoint();
         for expected in [
             "handshake failed".to_owned(),
             "00000000deadbeef".to_owned(),

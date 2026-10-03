@@ -43,8 +43,8 @@ Root command recognition reads clap's subcommands and remote stop guidance
 renders the producer's argv. Still open: the clap schema in `src/cli/spec.rs`
 and the typed parsers remain separate copies; the daemon invocation producer
 (`--client-spawned`, `--version` in shepr-remote `local_server.rs`) and the
-daemon parser are separate; `ServerAddress::stop_command` spells the local stop
-argv itself. A complete invocation model needs a home below config and remote.
+daemon parser are separate; `ServerAddress`'s stop guidance (shepr-paths
+`guidance.rs`) spells the local stop argv itself. A complete invocation model needs a home below config and remote.
 (edges, contracts)
 
 ## CON-109 - The client still reconstructs the server split tree

@@ -1,4 +1,3 @@
-mod address;
 mod agent;
 mod diagnostic;
 mod io;
@@ -14,8 +13,6 @@ mod theme_config;
 mod validated;
 mod window_title;
 
-pub use self::address::ServerAddress;
-pub use self::address::operator_entrypoint;
 pub use self::agent::ConfigAgent;
 pub use self::limits::{
     DEFAULT_HEADLESS_COLS, DEFAULT_HEADLESS_ROWS, DEFAULT_MOUSE_SCROLL_LINES,
@@ -26,17 +23,12 @@ pub use self::machine::{
 };
 /// Role-specific raw values. Runtime code receives a [`ValidatedClientConfig`]
 /// or [`ValidatedServerConfig`], constructed through validation at launch or
-/// through that role's `from_values` seam.
+/// through that role's `validate`.
 pub use self::model::{ClientConfig, ServerConfig};
 pub use self::theme_config::CustomThemeColors;
 pub use self::{
-    diagnostic::{
-        ConfigDiagnostic, ConfigDiagnosticKind, ConfigKeyPath, ConfigKeyPathSegment, PathsError,
-    },
-    io::{
-        AppPaths, BuildProfile, DATA_DIR_LEASE_FILE_NAME, load_client_validated,
-        load_server_validated,
-    },
+    diagnostic::{ConfigDiagnostic, ConfigDiagnosticKind, ConfigKeyPath, ConfigKeyPathSegment},
+    io::{load_client_validated, load_server_validated},
     keybinds::{
         ActionKeybinds, BindingConfig, IndexedKeybind, Keybinds, LiveKeybindConfig,
         format_key_chord, parse_key_chord,
@@ -54,7 +46,8 @@ pub use self::{
     theme_config::ThemeConfig,
     validated::{
         ConfigProvenance, NewTerminalCwd, Setting, ValidatedClientConfig, ValidatedClientUiConfig,
-        ValidatedServerConfig, ValidatedServerUiConfig, ValidatedTerminalConfig,
+        ValidatedExperimentalConfig, ValidatedServerConfig, ValidatedServerUiConfig,
+        ValidatedSessionConfig, ValidatedTerminalConfig,
     },
     window_title::{WindowTitlePart, WindowTitleTemplate, WindowTitleToken},
 };
@@ -76,12 +69,27 @@ impl ServerConfig {
     }
 }
 
+/// Absolute like resolved launch paths, and identical across calls, so two
+/// test configs compare equal.
+/// The root cannot be created by an unprivileged user: a test that writes
+/// through these paths fails instead of leaving files in a shared location.
+#[cfg(test)]
+pub(crate) fn test_paths() -> shepr_paths::AppPaths {
+    let root = std::path::Path::new("/nonexistent/shepr-test-config");
+    shepr_paths::AppPaths::rooted_at(root, Some(root), None).expect("short test root")
+}
+
+/// Paths under `root`, with no home or current directory.
+#[cfg(test)]
+pub(crate) fn test_paths_at(root: &std::path::Path) -> shepr_paths::AppPaths {
+    shepr_paths::AppPaths::rooted_at(root, None, None).expect("scratch roots fit a socket")
+}
+
 #[cfg(test)]
 impl ClientConfig {
     pub fn collect_diagnostics(&self) -> Vec<String> {
-        let provenance = ConfigProvenance::from_document(None);
         // Client document validation has no shell or working-directory lookup.
-        validated::parse_client_config(self, &provenance)
+        ValidatedClientConfig::validate(self, None, test_paths())
             .err()
             .unwrap_or_default()
             .into_iter()
@@ -93,7 +101,7 @@ impl ClientConfig {
 #[cfg(test)]
 impl ServerConfig {
     pub fn collect_diagnostics(&self) -> Vec<String> {
-        validated::parse_server_config(self, &AppPaths::default())
+        ValidatedServerConfig::validate(self, test_paths())
             .err()
             .unwrap_or_default()
             .into_iter()
@@ -167,7 +175,7 @@ mod tests {
         // them unset even though the documented template spells them out, so
         // the documented values are checked against the validated defaults.
         let validated =
-            ValidatedClientConfig::from_values(ClientConfig::default(), None, AppPaths::default())
+            ValidatedClientConfig::validate(&ClientConfig::default(), None, test_paths())
                 .expect("built-in client defaults validate");
         assert_eq!(
             documented.ui.sidebar_width,

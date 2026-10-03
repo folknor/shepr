@@ -34,7 +34,7 @@ enum ProbeExecutable {
 impl MachineProbe {
     pub(crate) fn check(
         &mut self,
-        paths: &shepr_config::AppPaths,
+        paths: &shepr_paths::AppPaths,
         target: &SshTarget,
         deadline: std::time::Instant,
     ) -> io::Result<MachineSshCheck> {
@@ -49,7 +49,7 @@ impl MachineProbe {
         result
     }
 
-    fn ensure_ssh(&mut self, paths: &shepr_config::AppPaths, target: &SshTarget) -> io::Result<()> {
+    fn ensure_ssh(&mut self, paths: &shepr_paths::AppPaths, target: &SshTarget) -> io::Result<()> {
         let missing = match &self.ssh {
             Some(ssh) => !ssh.options().config_path.try_exists()?,
             None => true,
@@ -62,7 +62,7 @@ impl MachineProbe {
 
     pub(crate) fn stop_server(
         &mut self,
-        paths: &shepr_config::AppPaths,
+        paths: &shepr_paths::AppPaths,
         target: &SshTarget,
         server: &super::DifferentBuildServer,
     ) -> io::Result<super::RemoteStop> {
@@ -227,7 +227,7 @@ pub struct MachineSshStream {
 /// Partial discovery survives transient network failures and authentication waits
 /// so a slow host can be resolved over several bounded attempts.
 pub struct MachineSshConnector {
-    paths: shepr_config::AppPaths,
+    paths: shepr_paths::AppPaths,
     label: MachineLabel,
     target: SshTarget,
     state: ConnectorState,
@@ -243,7 +243,7 @@ struct ConnectorState {
 fn ensure_managed_ssh_config(
     state: &mut ConnectorState,
     target: &SshTarget,
-    paths: &shepr_config::AppPaths,
+    paths: &shepr_paths::AppPaths,
 ) -> io::Result<()> {
     let must_rebuild = match state.ssh.as_ref() {
         Some(ssh) => !ssh.options().config_path.try_exists()?,
@@ -275,7 +275,7 @@ impl StoredSetupError {
 }
 
 impl MachineSshConnector {
-    pub fn new(paths: &shepr_config::AppPaths, label: &MachineLabel, target: &SshTarget) -> Self {
+    pub fn new(paths: &shepr_paths::AppPaths, label: &MachineLabel, target: &SshTarget) -> Self {
         let mut connector = Self {
             paths: paths.clone(),
             label: label.clone(),
@@ -287,7 +287,7 @@ impl MachineSshConnector {
     }
 
     pub(crate) fn from_preflight(
-        paths: &shepr_config::AppPaths,
+        paths: &shepr_paths::AppPaths,
         machine: &shepr_config::MachineConfig,
         mut probe: MachineProbe,
     ) -> Self {
@@ -443,7 +443,7 @@ impl MachineSshConnector {
     }
 
     fn attempt<T>(
-        paths: &shepr_config::AppPaths,
+        paths: &shepr_paths::AppPaths,
         label: &MachineLabel,
         ssh: &RemoteSsh,
         target: &SshTarget,
@@ -584,7 +584,8 @@ mod tests {
         // directory is; this covers how the missing root is classified.
         let scratch = shepr_test_support::ScratchDir::new("machine-runtime-root-recovery");
         let xdg_runtime = scratch.join("xdg-runtime");
-        let paths = shepr_config::AppPaths::rooted_at(&xdg_runtime, None, None);
+        let paths = shepr_paths::AppPaths::rooted_at(&xdg_runtime, None, None)
+            .expect("scratch roots fit a socket");
         let target = SshTarget::parse("build.example").expect("test precondition");
         let mut state = ConnectorState::default();
 
@@ -610,7 +611,8 @@ mod tests {
     #[test]
     fn connector_reuses_the_executable_verified_by_preflight() {
         let scratch = shepr_test_support::ScratchDir::new("preflight-connector");
-        let paths = shepr_config::AppPaths::rooted_at(&scratch, Some(&scratch), None);
+        let paths = shepr_paths::AppPaths::rooted_at(&scratch, Some(&scratch), None)
+            .expect("scratch roots fit a socket");
         let machine = shepr_config::MachineConfig {
             label: MachineLabel::parse("build").expect("test label"),
             ssh: SshTarget::parse("build.example").expect("test target"),
@@ -644,7 +646,8 @@ mod tests {
     }
 
     fn cache_in(scratch: &shepr_test_support::ScratchDir) -> SshMetadataCache {
-        let paths = shepr_config::AppPaths::rooted_at(scratch, None, None);
+        let paths = shepr_paths::AppPaths::rooted_at(scratch, None, None)
+            .expect("scratch roots fit a socket");
         SshMetadataCache::new(
             &paths,
             &SshTarget::parse("build.example").expect("test precondition"),

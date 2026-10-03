@@ -688,6 +688,7 @@ packages = [
     "shepr-detect",
     "shepr-integration",
     "shepr-mux",
+    "shepr-paths",
     "shepr-platform",
     "shepr-pty",
     "shepr-protocol",
@@ -795,7 +796,7 @@ kinds = ["normal", "build"]
 [[dependency_rule]]
 name = "shepr-test-fixtures-layer"
 from = "shepr-test-fixtures"
-allow = ["bytes", "serde", "shepr-config", "shepr-core", "shepr-protocol", "shepr-pty", "shepr-termio", "tokio"]
+allow = ["bytes", "serde", "shepr-config", "shepr-core", "shepr-paths", "shepr-protocol", "shepr-pty", "shepr-termio", "tokio"]
 kinds = ["normal"]
 
 # The dev-edge side of the rule above: every workspace crate the fixtures
@@ -803,7 +804,7 @@ kinds = ["normal"]
 # allow list widens this list by the new crate's own closure.
 [[dependency_rule]]
 name = "test-fixtures-only-above-its-closure"
-from = ["shepr-agent", "shepr-config", "shepr-core", "shepr-platform", "shepr-protocol", "shepr-pty", "shepr-term", "shepr-termio"]
+from = ["shepr-agent", "shepr-config", "shepr-core", "shepr-paths", "shepr-platform", "shepr-protocol", "shepr-pty", "shepr-term", "shepr-termio"]
 forbid = "shepr-test-fixtures"
 kinds = ["dev"]
 
@@ -853,10 +854,20 @@ from = "*"
 forbid = "shepr-integration"
 except = ["shepr-server"]
 
+# Runtime layout and server address policy: the XDG directories, the build
+# profile and its pane markers, the socket override and the guidance naming
+# the commands that reach a server. Below config and api, so a crate that only
+# needs to know where things live does not link the settings.
+[[dependency_rule]]
+name = "shepr-paths-layer"
+from = "shepr-paths"
+allow = ["shepr-core", "shepr-platform"]
+kinds = ["normal"]
+
 [[dependency_rule]]
 name = "shepr-config-layer"
 from = "shepr-config"
-allow = ["crossterm", "ratatui", "serde", "serde_ignored", "shepr-agent", "shepr-core", "shepr-platform", "shepr-term", "toml"]
+allow = ["crossterm", "ratatui", "serde", "serde_ignored", "shepr-agent", "shepr-core", "shepr-paths", "shepr-platform", "shepr-term", "toml"]
 kinds = ["normal"]
 
 # Protocol takes the grid and input-batch resource budgets from core, which
@@ -870,7 +881,7 @@ kinds = ["normal"]
 [[dependency_rule]]
 name = "shepr-api-layer"
 from = "shepr-api"
-allow = ["serde", "serde_json", "shepr-agent", "shepr-config", "shepr-core", "shepr-detect", "shepr-platform", "shepr-protocol", "tokio", "tracing"]
+allow = ["serde", "serde_json", "shepr-agent", "shepr-core", "shepr-detect", "shepr-paths", "shepr-platform", "shepr-protocol", "tokio", "tracing"]
 kinds = ["normal"]
 
 [[dependency_rule]]
@@ -882,13 +893,13 @@ kinds = ["normal"]
 [[dependency_rule]]
 name = "shepr-remote-layer"
 from = "shepr-remote"
-allow = ["serde", "serde_json", "shepr-api", "shepr-config", "shepr-core", "shepr-platform", "shepr-protocol", "tracing"]
+allow = ["serde", "serde_json", "shepr-api", "shepr-config", "shepr-core", "shepr-paths", "shepr-platform", "shepr-protocol", "tracing"]
 kinds = ["normal"]
 
 [[dependency_rule]]
 name = "shepr-client-layer"
 from = "shepr-client"
-allow = ["base64", "crossterm", "ctrlc", "ratatui", "serde", "serde_json", "shepr-config", "shepr-core", "shepr-platform", "shepr-protocol", "shepr-remote", "shepr-term", "shepr-termio", "tokio", "toml", "tracing", "unicode-segmentation", "unicode-width"]
+allow = ["base64", "crossterm", "ctrlc", "ratatui", "serde", "serde_json", "shepr-config", "shepr-core", "shepr-paths", "shepr-platform", "shepr-protocol", "shepr-remote", "shepr-term", "shepr-termio", "tokio", "toml", "tracing", "unicode-segmentation", "unicode-width"]
 kinds = ["normal"]
 
 # Git command environment and deadline policy are owned by mux, which uses the
@@ -896,7 +907,7 @@ kinds = ["normal"]
 [[dependency_rule]]
 name = "shepr-mux-layer"
 from = "shepr-mux"
-allow = ["bytes", "crossterm", "ratatui", "regex", "serde", "serde_json", "sha2", "shepr-agent", "shepr-config", "shepr-core", "shepr-detect", "shepr-platform", "shepr-protocol", "shepr-pty", "shepr-term", "shepr-vt", "tokio", "tracing", "unicode-width"]
+allow = ["bytes", "crossterm", "ratatui", "regex", "serde", "serde_json", "sha2", "shepr-agent", "shepr-config", "shepr-core", "shepr-detect", "shepr-paths", "shepr-platform", "shepr-protocol", "shepr-pty", "shepr-term", "shepr-vt", "tokio", "tracing", "unicode-width"]
 kinds = ["normal"]
 
 # The client binary launches the server executable as a sibling process and
@@ -904,14 +915,14 @@ kinds = ["normal"]
 [[dependency_rule]]
 name = "shepr-binary-layer"
 from = "shepr"
-allow = ["clap", "serde", "serde_json", "shepr-api", "shepr-client", "shepr-config", "shepr-core", "shepr-detect", "shepr-platform", "shepr-protocol", "shepr-remote", "tracing"]
+allow = ["clap", "serde", "serde_json", "shepr-api", "shepr-client", "shepr-config", "shepr-core", "shepr-detect", "shepr-paths", "shepr-platform", "shepr-protocol", "shepr-remote", "tracing"]
 kinds = ["normal"]
 
 # The server executable links the server and not the client.
 [[dependency_rule]]
 name = "shepr-daemon-layer"
 from = "shepr-daemon"
-allow = ["shepr-api", "shepr-config", "shepr-platform", "shepr-protocol", "shepr-server"]
+allow = ["shepr-api", "shepr-config", "shepr-paths", "shepr-platform", "shepr-protocol", "shepr-server"]
 kinds = ["normal"]
 
 # Only the server watches logind and owns the checkpoint policy. The monitor's
@@ -919,5 +930,5 @@ kinds = ["normal"]
 [[dependency_rule]]
 name = "shepr-server-layer"
 from = "shepr-server"
-allow = ["base64", "bytes", "crossterm", "ctrlc", "futures-util", "libc", "ratatui", "serde", "serde_json", "shepr-agent", "shepr-api", "shepr-config", "shepr-core", "shepr-detect", "shepr-integration", "shepr-mux", "shepr-platform", "shepr-protocol", "shepr-pty", "shepr-term", "shepr-vt", "tokio", "tracing", "unicode-width", "zbus"]
+allow = ["base64", "bytes", "crossterm", "ctrlc", "futures-util", "libc", "ratatui", "serde", "serde_json", "shepr-agent", "shepr-api", "shepr-config", "shepr-core", "shepr-detect", "shepr-integration", "shepr-mux", "shepr-paths", "shepr-platform", "shepr-protocol", "shepr-pty", "shepr-term", "shepr-vt", "tokio", "tracing", "unicode-width", "zbus"]
 kinds = ["normal"]

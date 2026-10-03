@@ -1,490 +1,12 @@
-use std::io;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-use shepr_core::env::EnvVar;
+use shepr_paths::AppPaths;
 
-use super::validated::{
-    ValidatedClientValues, ValidatedServerValues, parse_client_config, parse_server_config,
-};
+use super::validated::{validate_client, validate_server};
 use super::{
     ClientConfig, ConfigDiagnostic, ConfigKeyPath, ConfigKeyPathSegment, ConfigProvenance,
-    PathsError, ServerConfig, ValidatedClientConfig, ValidatedServerConfig,
+    ServerConfig, ValidatedClientConfig, ValidatedServerConfig,
 };
-
-include!(concat!(env!("OUT_DIR"), "/build_profile.rs"));
-
-use shepr_core::env::SHARED_APP_DIR_NAME;
-
-/// The lease file inside the data directory. The server locks it for as long as
-/// it owns the directory (`shepr-mux`'s `DataDirLease`), and a stop waits for
-/// its release. One name for both.
-pub const DATA_DIR_LEASE_FILE_NAME: &str = "session.lock";
-
-/// The build profile a binary was compiled with, which decides where it keeps
-/// its runtime sockets and its saved layout and history.
-///
-/// A release build uses the default XDG locations. Every other build (the
-/// cargo dev profile) uses `shepr-dev` in place of `shepr` for the runtime
-/// directory and the saved-layout directory, so a dev server and the installed
-/// release server hold different sockets, locks and saved layouts without any
-/// flag. Both config files and the client-owned state stay shared by every
-/// profile.
-/// A server of another build is still refused by the build-identity checks,
-/// which is what tells the two apart once they can no longer collide.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BuildProfile {
-    Release,
-    Dev,
-}
-
-impl BuildProfile {
-    /// The profile this crate was built with, from cargo's `PROFILE`.
-    pub const fn current() -> Self {
-        Self::from_cargo_profile(BUILD_PROFILE)
-    }
-
-    /// `release` (and any profile inheriting from it) is [`Release`](Self::Release);
-    /// everything else is [`Dev`](Self::Dev).
-    pub(crate) const fn from_cargo_profile(profile: &str) -> Self {
-        // A const fn cannot compare strs with `==`.
-        match profile.as_bytes() {
-            b"release" => Self::Release,
-            _ => Self::Dev,
-        }
-    }
-
-    /// The value a pane exports as `SHEPR_BUILD_PROFILE` to name the profile of
-    /// the server that owns it.
-    pub const fn marker(self) -> &'static str {
-        match self {
-            Self::Release => "release",
-            Self::Dev => "dev",
-        }
-    }
-
-    fn from_marker(value: &str) -> Option<Self> {
-        match value {
-            "release" => Some(Self::Release),
-            "dev" => Some(Self::Dev),
-            _ => None,
-        }
-    }
-
-    /// The directory name this profile uses under the XDG runtime directory
-    /// and beside the shared state directory.
-    pub const fn app_dir_name(self) -> &'static str {
-        match self {
-            Self::Release => SHARED_APP_DIR_NAME,
-            Self::Dev => "shepr-dev",
-        }
-    }
-}
-
-/// The relationship between this process and the server named by its pane
-/// markers. Unknown profile markers are refused while reading the marker, so
-/// a pane cannot quietly be treated as an unrelated build.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PaneOwner {
-    NotInPane,
-    SameProfile,
-    OtherProfile,
-}
-
-/// Typed values read once from the two environment markers. The profile also
-/// guides socket selection when a script sets the marker without `SHEPR_ENV`.
-#[derive(Debug, Clone, Copy)]
-struct PaneMarker {
-    in_pane: bool,
-    owner_profile: Option<BuildProfile>,
-}
-
-impl PaneMarker {
-    fn read(diagnostics: &mut Vec<ConfigDiagnostic>) -> Self {
-        let in_pane = match shepr_core::env::read_text(EnvVar::SheprEnv) {
-            Ok(value) => value.as_deref() == Some(shepr_core::env::SHEPR_ENV_IN_PANE),
-            Err(error) => {
-                diagnostics.push(ConfigDiagnostic::path(error.to_string()));
-                false
-            }
-        };
-        let owner_profile = Self::read_profile(diagnostics);
-        Self {
-            in_pane,
-            owner_profile,
-        }
-    }
-
-    fn read_profile(diagnostics: &mut Vec<ConfigDiagnostic>) -> Option<BuildProfile> {
-        match shepr_core::env::read_text(EnvVar::SheprBuildProfile) {
-            Ok(Some(marker)) => match BuildProfile::from_marker(&marker) {
-                Some(profile) => Some(profile),
-                None => {
-                    diagnostics.push(ConfigDiagnostic::path(format!(
-                        "{} must be `release` or `dev`, got `{marker}`",
-                        EnvVar::SheprBuildProfile
-                    )));
-                    None
-                }
-            },
-            Ok(None) => None,
-            Err(error) => {
-                diagnostics.push(ConfigDiagnostic::path(error.to_string()));
-                None
-            }
-        }
-    }
-
-    fn owner(self, current_profile: BuildProfile) -> PaneOwner {
-        if !self.in_pane {
-            PaneOwner::NotInPane
-        } else if self
-            .owner_profile
-            .is_some_and(|owner| owner != current_profile)
-        {
-            PaneOwner::OtherProfile
-        } else {
-            PaneOwner::SameProfile
-        }
-    }
-}
-
-/// Paths and the local target resolved once at the process boundary and
-/// passed to consumers. Production constructors reject unresolved path inputs
-/// that would put files relative to the working directory.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AppPaths {
-    config_dir: PathBuf,
-    state_dir: PathBuf,
-    data_dir: PathBuf,
-    xdg_runtime_dir: PathBuf,
-    runtime_dir: PathBuf,
-    home_dir: Option<PathBuf>,
-    current_dir: Option<PathBuf>,
-    startup_cwd: Option<PathBuf>,
-    server_address: super::ServerAddress,
-}
-
-impl AppPaths {
-    pub fn config_dir(&self) -> &Path {
-        &self.config_dir
-    }
-
-    /// The state directory shared by every build profile. It holds the
-    /// client-owned state; the saved layout and
-    /// history live in [`data_dir`](Self::data_dir).
-    pub fn state_dir(&self) -> &Path {
-        &self.state_dir
-    }
-
-    /// The directory of the saved layout, pane history, server log and the
-    /// lease that keeps one server per directory. For a release build it is
-    /// [`state_dir`](Self::state_dir) itself; a dev build gets a `shepr-dev`
-    /// sibling of it.
-    pub fn data_dir(&self) -> &Path {
-        &self.data_dir
-    }
-
-    /// The server log in this build profile's data directory.
-    pub fn server_log(&self) -> PathBuf {
-        shepr_platform::logging::server_log_path(self.data_dir())
-    }
-
-    /// The lease file inside [`data_dir`](Self::data_dir): the server that holds
-    /// an exclusive lock on it owns the directory. It is never removed, so every
-    /// contender locks the same inode.
-    pub fn data_dir_lease_path(&self) -> PathBuf {
-        self.data_dir.join(DATA_DIR_LEASE_FILE_NAME)
-    }
-
-    /// The client-owned state directory beneath the shared application state
-    /// directory. Shared by every build profile.
-    pub fn client_state_dir(&self) -> PathBuf {
-        self.state_dir.join("client")
-    }
-
-    /// The XDG runtime root before the application-specific directory is added.
-    pub fn xdg_runtime_dir(&self) -> &Path {
-        &self.xdg_runtime_dir
-    }
-
-    /// The build profile's runtime directory: `shepr` under the XDG runtime
-    /// directory for a release build, `shepr-dev` for a dev build.
-    pub fn runtime_dir(&self) -> &Path {
-        &self.runtime_dir
-    }
-
-    pub fn client_config_file(&self) -> PathBuf {
-        self.config_dir.join("client.toml")
-    }
-
-    pub fn server_config_file(&self) -> PathBuf {
-        self.config_dir.join("server.toml")
-    }
-
-    pub fn home_dir(&self) -> Option<&Path> {
-        self.home_dir.as_deref()
-    }
-
-    pub fn current_dir(&self) -> Option<&Path> {
-        self.current_dir.as_deref()
-    }
-
-    /// Last-resort server cwd, captured at launch without later filesystem IO.
-    pub fn fallback_cwd(&self) -> &Path {
-        self.current_dir().unwrap_or_else(|| Path::new("/"))
-    }
-
-    /// The absolute `SHEPR_STARTUP_CWD` handed to the server, when present.
-    /// The server's own working directory is not a startup handoff.
-    pub fn startup_cwd(&self) -> Option<&Path> {
-        self.startup_cwd.as_deref()
-    }
-
-    pub fn server_address(&self) -> &super::ServerAddress {
-        &self.server_address
-    }
-
-    /// Resolve XDG directories and the local socket target once from the
-    /// inherited process environment, for this build's profile.
-    pub fn resolve() -> Result<Self, PathsError> {
-        resolve_paths_from_env(BuildProfile::current(), CurrentDirOrigin::Process)
-    }
-
-    /// Resolve paths for a TUI or its internal client launch. A client launched
-    /// from a pane owned by this build profile is refused before path or config
-    /// loading; `None` represents that refusal.
-    pub fn resolve_for_client() -> Result<Option<Self>, PathsError> {
-        let profile = BuildProfile::current();
-        let mut diagnostics = Vec::new();
-        let marker = PaneMarker::read(&mut diagnostics);
-        if !diagnostics.is_empty() {
-            return Err(PathsError::new(diagnostics));
-        }
-        if marker.owner(profile) == PaneOwner::SameProfile {
-            return Ok(None);
-        }
-        resolve_paths_from_env_with_marker(profile, CurrentDirOrigin::Process, marker, Vec::new())
-            .map(Some)
-    }
-
-    /// Resolve paths for the headless server process. The server daemon runs
-    /// in the home directory so it never pins the directory it was launched
-    /// from, but its current directory is still the one the user launched
-    /// `shepr` from: the spawning client hands that over as
-    /// `SHEPR_STARTUP_CWD`, and it is what `terminal.new_cwd = "current"`, a
-    /// relative `terminal.new_cwd` and the new-terminal fallback resolve
-    /// against. A server started without the handoff (by hand, from a shell)
-    /// uses its own working directory.
-    pub fn resolve_for_server() -> Result<Self, PathsError> {
-        resolve_paths_from_env(BuildProfile::current(), CurrentDirOrigin::StartupHandoff)
-    }
-
-    /// Paths laid out under one directory: `config`, `state` and `runtime`
-    /// below `root`, with `root` as the XDG runtime directory, the saved
-    /// layout in the state directory (the release profile's layout, whatever
-    /// profile built the caller) and every value's source the default. Nothing
-    /// is resolved or checked, so the caller passes absolute paths; this is
-    /// how a caller that is not a launch, which resolves from the
-    /// environment, places a config somewhere it chose.
-    pub fn rooted_at(root: &Path, home_dir: Option<&Path>, current_dir: Option<&Path>) -> Self {
-        Self {
-            config_dir: root.join("config"),
-            state_dir: root.join("state"),
-            data_dir: root.join("state"),
-            xdg_runtime_dir: root.to_path_buf(),
-            runtime_dir: root.join("runtime"),
-            home_dir: home_dir.map(Path::to_path_buf),
-            current_dir: current_dir.map(Path::to_path_buf),
-            startup_cwd: None,
-            // A root too long to host a Unix socket still lays out the other
-            // paths (a caller may be exercising exactly that); its server
-            // address is then the short placeholder runtime directory `/`,
-            // since an address always holds a checked socket path.
-            server_address: super::ServerAddress::resolve_paths_checked(
-                &root.join("runtime"),
-                None,
-            )
-            .or_else(|_| super::ServerAddress::resolve_paths_checked(Path::new("/"), None))
-            .unwrap_or_else(|error| unreachable!("`/shepr.sock` fits a Unix socket: {error}")),
-        }
-    }
-}
-
-fn socket_path_override(
-    variable: EnvVar,
-    diagnostics: &mut Vec<ConfigDiagnostic>,
-) -> Option<PathBuf> {
-    shepr_core::env::read_path(variable).unwrap_or_else(|error| {
-        diagnostics.push(ConfigDiagnostic::path(error.to_string()));
-        None
-    })
-}
-
-/// Where a process's resolved current directory comes from.
-#[derive(Clone, Copy)]
-enum CurrentDirOrigin {
-    /// The process's own working directory.
-    Process,
-    /// The launch directory a spawning client handed the server as
-    /// `SHEPR_STARTUP_CWD`, falling back to the process's own directory when
-    /// the variable is unset.
-    StartupHandoff,
-}
-
-fn resolve_current_dir(
-    origin: CurrentDirOrigin,
-) -> Result<(Option<PathBuf>, Option<PathBuf>), String> {
-    let process = || std::env::current_dir().ok();
-    match origin {
-        CurrentDirOrigin::Process => Ok((process(), None)),
-        CurrentDirOrigin::StartupHandoff => {
-            match shepr_core::env::read_path(EnvVar::SheprStartupCwd) {
-                Ok(Some(path)) if path.is_absolute() => Ok((Some(path.clone()), Some(path))),
-                Ok(Some(path)) => Err(format!(
-                    "{} must be an absolute path, got {}",
-                    EnvVar::SheprStartupCwd,
-                    path.display()
-                )),
-                Ok(None) => Ok((process(), None)),
-                Err(error) => Err(error.to_string()),
-            }
-        }
-    }
-}
-
-fn resolve_paths_from_env(
-    profile: BuildProfile,
-    current_dir_origin: CurrentDirOrigin,
-) -> Result<AppPaths, PathsError> {
-    let mut target_env_diagnostics = Vec::new();
-    let pane_marker = PaneMarker {
-        in_pane: false,
-        owner_profile: PaneMarker::read_profile(&mut target_env_diagnostics),
-    };
-    resolve_paths_from_env_with_marker(
-        profile,
-        current_dir_origin,
-        pane_marker,
-        target_env_diagnostics,
-    )
-}
-
-fn resolve_paths_from_env_with_marker(
-    profile: BuildProfile,
-    current_dir_origin: CurrentDirOrigin,
-    pane_marker: PaneMarker,
-    mut target_env_diagnostics: Vec<ConfigDiagnostic>,
-) -> Result<AppPaths, PathsError> {
-    let mut socket_override =
-        socket_path_override(EnvVar::SheprSocketPath, &mut target_env_diagnostics);
-    // A pane names the profile of the server that owns it next to the socket
-    // variable it exports. A process of another profile started in that pane
-    // would otherwise follow it to the wrong server, so it drops it. With
-    // no marker the variable came from a user or a script and applies as given.
-    if pane_marker
-        .owner_profile
-        .is_some_and(|owner| owner != profile)
-    {
-        socket_override = None;
-    }
-    if !target_env_diagnostics.is_empty() {
-        return Err(PathsError::new(target_env_diagnostics));
-    }
-
-    let home_dir = shepr_core::pathutil::home_dir()
-        .map_err(|error| PathsError::one(ConfigDiagnostic::path(error.to_string())))?;
-    let (current_dir, startup_cwd) = resolve_current_dir(current_dir_origin)
-        .map_err(|error| PathsError::one(ConfigDiagnostic::path(error)))?;
-    let read_base = |variable| {
-        if variable == EnvVar::Home {
-            Ok(Some(home_dir.clone()))
-        } else {
-            shepr_core::env::read_path(variable).map_err(io::Error::from)
-        }
-    };
-    let config_dir =
-        shepr_core::env::xdg_config_home_with(read_base).map(|path| path.join(SHARED_APP_DIR_NAME));
-    let state_dir =
-        shepr_core::env::xdg_state_home_with(read_base).map(|path| path.join(SHARED_APP_DIR_NAME));
-    // XDG_RUNTIME_DIR has no base-directory fallback in the XDG spec. Unset
-    // and empty are an error for shepr because its runtime sockets need a
-    // user-private runtime directory; a relative value is refused by the
-    // environment policy.
-    let xdg_runtime_dir = shepr_core::env::read_path(EnvVar::XdgRuntimeDir);
-    let runtime_dir = match &xdg_runtime_dir {
-        Ok(Some(path)) => Ok(path.join(profile.app_dir_name())),
-        Ok(None) => Err(io::Error::other(
-            "XDG_RUNTIME_DIR must be set to an absolute path",
-        )),
-        Err(error) => Err(io::Error::other(error.to_string())),
-    };
-    let xdg_runtime_dir = xdg_runtime_dir.ok().flatten();
-
-    let mut diagnostics = Vec::new();
-    let config_dir = match config_dir {
-        Ok(path) => Some(path),
-        Err(error) => {
-            diagnostics.push(ConfigDiagnostic::path(format!(
-                "config directory error: {error}"
-            )));
-            None
-        }
-    };
-
-    let state_dir = match state_dir {
-        Ok(path) => Some(path),
-        Err(error) => {
-            diagnostics.push(ConfigDiagnostic::path(format!(
-                "state directory error: {error}"
-            )));
-            None
-        }
-    };
-    let runtime_dir = match runtime_dir {
-        Ok(path) => Some(path),
-        Err(error) => {
-            diagnostics.push(ConfigDiagnostic::path(format!(
-                "runtime directory error: {error}"
-            )));
-            None
-        }
-    };
-
-    match (config_dir, state_dir, xdg_runtime_dir, runtime_dir) {
-        (Some(config_dir), Some(state_dir), Some(xdg_runtime_dir), Some(runtime_dir))
-            if diagnostics.is_empty() =>
-        {
-            // Fail before socket setup when either selected endpoint is too long.
-            let server_address = super::ServerAddress::resolve_paths_checked(
-                &runtime_dir,
-                socket_override.as_deref(),
-            )
-            .map_err(|error| {
-                PathsError::one(ConfigDiagnostic::path(format!(
-                    "server socket path error: {error}"
-                )))
-            })?;
-            // The saved layout sits beside the shared state directory under the
-            // profile's directory name: the state directory itself for release.
-            let data_dir = state_dir.with_file_name(profile.app_dir_name());
-            Ok(AppPaths {
-                config_dir,
-                state_dir,
-                data_dir,
-                xdg_runtime_dir,
-                runtime_dir,
-                home_dir: Some(home_dir),
-                current_dir,
-                startup_cwd,
-                server_address,
-            })
-        }
-        _ if diagnostics.is_empty() => Err(PathsError::one(ConfigDiagnostic::path(
-            "paths could not be resolved; no path-specific error was reported",
-        ))),
-        _ => Err(PathsError::new(diagnostics)),
-    }
-}
 
 /// Normalize UTF-8 byte-order marks in config text.
 ///
@@ -534,157 +56,125 @@ fn read_optional_config(path: &Path) -> std::io::Result<Option<String>> {
     }
 }
 
+/// One role's config file, read and deserialized but not yet validated. A
+/// missing file is the empty document: the role's defaults with nothing
+/// configured.
 #[derive(Debug)]
-struct LoadedConfig<C, V> {
+struct Document<C> {
     config: C,
-    resolution: Result<V, Vec<ConfigDiagnostic>>,
+    provenance: ConfigProvenance,
+    /// Unknown keys and sections. They fail the load like a validation
+    /// problem, and are reported ahead of the role's own diagnostics.
+    unknown: Vec<ConfigDiagnostic>,
 }
 
-impl<C: Default, V> LoadedConfig<C, V> {
-    fn failed(diagnostics: Vec<ConfigDiagnostic>) -> Self {
-        Self {
-            config: C::default(),
-            resolution: Err(diagnostics),
+impl<C> Document<C>
+where
+    C: Default + serde::de::DeserializeOwned,
+{
+    fn read(path: &Path) -> Result<Self, Vec<ConfigDiagnostic>> {
+        match read_optional_config(path) {
+            Ok(Some(content)) => Self::parse(&content),
+            Ok(None) => Ok(Self {
+                config: C::default(),
+                provenance: ConfigProvenance::from_document(None),
+                unknown: Vec::new(),
+            }),
+            Err(error) => Err(vec![ConfigDiagnostic::read(error.to_string())]),
         }
     }
 
-    fn into_validated_with<O>(
-        self,
-        paths: AppPaths,
-        construct: impl FnOnce(C, V, AppPaths) -> O,
-    ) -> Result<O, Vec<ConfigDiagnostic>> {
-        self.resolution
-            .map(|values| construct(self.config, values, paths))
-    }
-}
-
-impl LoadedConfig<ClientConfig, ValidatedClientValues> {
-    fn into_validated(
-        self,
-        paths: AppPaths,
-    ) -> Result<ValidatedClientConfig, Vec<ConfigDiagnostic>> {
-        self.into_validated_with(paths, ValidatedClientConfig::from_loaded)
-    }
-}
-
-impl LoadedConfig<ServerConfig, ValidatedServerValues> {
-    fn into_validated(
-        self,
-        paths: AppPaths,
-    ) -> Result<ValidatedServerConfig, Vec<ConfigDiagnostic>> {
-        self.into_validated_with(paths, |config, values, paths| {
-            ValidatedServerConfig::from_loaded(config, values, paths)
+    fn parse(content: &str) -> Result<Self, Vec<ConfigDiagnostic>> {
+        let table = content
+            .parse::<toml::Table>()
+            .map_err(|error| vec![ConfigDiagnostic::parse(error.to_string())])?;
+        let document = toml::Value::Table(table);
+        let (config, ignored_keys) = deserialize_with_ignored::<C, _>(document.clone())
+            .map_err(|error| vec![ConfigDiagnostic::parse(error.to_string())])?;
+        let provenance = ConfigProvenance::from_document(Some(&document));
+        let (unknown_sections, mut unknown) = unknown_top_level_sections(&document, &ignored_keys);
+        unknown.extend(unknown_config_key_diagnostics(
+            ignored_keys
+                .into_iter()
+                .filter(|path| {
+                    !matches!(path.segments(), [ConfigKeyPathSegment::Key(key)] if unknown_sections.contains(key))
+                })
+                .collect(),
+        ));
+        Ok(Self {
+            config,
+            provenance,
+            unknown,
         })
     }
 }
 
-fn resolve_client_config(
-    config: &ClientConfig,
-    provenance: &ConfigProvenance,
-    _paths: &AppPaths,
-) -> Result<ValidatedClientValues, Vec<ConfigDiagnostic>> {
-    parse_client_config(config, provenance)
-}
-
-fn resolve_server_config(
-    config: &ServerConfig,
-    _provenance: &ConfigProvenance,
-    paths: &AppPaths,
-) -> Result<ValidatedServerValues, Vec<ConfigDiagnostic>> {
-    parse_server_config(config, paths)
-}
-
-fn load_config_from_path<C, V>(
-    path: &Path,
-    paths: &AppPaths,
-    resolve: impl Fn(&C, &ConfigProvenance, &AppPaths) -> Result<V, Vec<ConfigDiagnostic>>,
-) -> LoadedConfig<C, V>
-where
-    C: Default + serde::de::DeserializeOwned,
-{
-    match read_optional_config(path) {
-        Ok(Some(content)) => load_config_from_str(&content, paths, resolve),
-        Ok(None) => {
-            let config = C::default();
-            let provenance = ConfigProvenance::from_document(None);
-            let resolution = resolve(&config, &provenance, paths);
-            LoadedConfig { config, resolution }
+impl<C> Document<C> {
+    /// The role's validated config, or every problem the document has: its
+    /// unknown keys first, then what the role's validation reported.
+    fn validate<V>(
+        self,
+        validate: impl FnOnce(&C, &ConfigProvenance) -> Result<V, Vec<ConfigDiagnostic>>,
+    ) -> Result<V, Vec<ConfigDiagnostic>> {
+        let Self {
+            config,
+            provenance,
+            mut unknown,
+        } = self;
+        match validate(&config, &provenance) {
+            Ok(validated) if unknown.is_empty() => Ok(validated),
+            Ok(_) => Err(unknown),
+            Err(mut diagnostics) => {
+                unknown.append(&mut diagnostics);
+                Err(unknown)
+            }
         }
-        Err(error) => LoadedConfig::failed(vec![ConfigDiagnostic::read(error.to_string())]),
     }
 }
 
-fn load_config_from_str<C, V>(
-    content: &str,
-    paths: &AppPaths,
-    resolve: impl Fn(&C, &ConfigProvenance, &AppPaths) -> Result<V, Vec<ConfigDiagnostic>>,
-) -> LoadedConfig<C, V>
-where
-    C: Default + serde::de::DeserializeOwned,
-{
-    let table = match content.parse::<toml::Table>() {
-        Ok(table) => table,
-        Err(error) => {
-            return LoadedConfig::failed(vec![ConfigDiagnostic::parse(error.to_string())]);
-        }
-    };
-    let document = toml::Value::Table(table);
-    let (config, ignored_keys) = match deserialize_with_ignored::<C, _>(document.clone()) {
-        Ok(config) => config,
-        Err(error) => {
-            return LoadedConfig::failed(vec![ConfigDiagnostic::parse(error.to_string())]);
-        }
-    };
-    let provenance = ConfigProvenance::from_document(Some(&document));
-    let resolution = resolve(&config, &provenance, paths);
-    let (unknown_sections, unknown_diagnostics) =
-        unknown_top_level_sections(&document, &ignored_keys);
-    let mut unknown_diagnostics = unknown_diagnostics;
-    unknown_diagnostics.extend(unknown_config_key_diagnostics(
-        ignored_keys
-            .into_iter()
-            .filter(|path| {
-                !matches!(path.segments(), [ConfigKeyPathSegment::Key(key)] if unknown_sections.contains(key))
-            })
-            .collect(),
-    ));
-    let resolution = match resolution {
-        Ok(values) if unknown_diagnostics.is_empty() => Ok(values),
-        Ok(_) => Err(unknown_diagnostics),
-        Err(mut diagnostics) => {
-            unknown_diagnostics.append(&mut diagnostics);
-            Err(unknown_diagnostics)
-        }
-    };
-    LoadedConfig { config, resolution }
+impl Document<ClientConfig> {
+    fn validate_client(
+        self,
+        paths: &AppPaths,
+    ) -> Result<ValidatedClientConfig, Vec<ConfigDiagnostic>> {
+        self.validate(|config, provenance| validate_client(config, provenance, paths.clone()))
+    }
 }
 
+impl Document<ServerConfig> {
+    fn validate_server(
+        self,
+        paths: &AppPaths,
+    ) -> Result<ValidatedServerConfig, Vec<ConfigDiagnostic>> {
+        self.validate(|config, _| validate_server(config, paths.clone()))
+    }
+}
+
+fn in_file(diagnostics: Vec<ConfigDiagnostic>, path: &Path) -> Vec<ConfigDiagnostic> {
+    diagnostics
+        .into_iter()
+        .map(|diagnostic| diagnostic.with_file(path))
+        .collect()
+}
+
+/// Read and validate `client.toml` from `paths`' config directory.
 pub fn load_client_validated(
     paths: &AppPaths,
 ) -> Result<ValidatedClientConfig, Vec<ConfigDiagnostic>> {
     let path = paths.client_config_file();
-    load_config_from_path(&path, paths, resolve_client_config)
-        .into_validated(paths.clone())
-        .map_err(|diagnostics| {
-            diagnostics
-                .into_iter()
-                .map(|diagnostic| diagnostic.with_file(&path))
-                .collect()
-        })
+    Document::<ClientConfig>::read(&path)
+        .and_then(|document| document.validate_client(paths))
+        .map_err(|diagnostics| in_file(diagnostics, &path))
 }
 
+/// Read and validate `server.toml` from `paths`' config directory.
 pub fn load_server_validated(
     paths: &AppPaths,
 ) -> Result<ValidatedServerConfig, Vec<ConfigDiagnostic>> {
     let path = paths.server_config_file();
-    load_config_from_path(&path, paths, resolve_server_config)
-        .into_validated(paths.clone())
-        .map_err(|diagnostics| {
-            diagnostics
-                .into_iter()
-                .map(|diagnostic| diagnostic.with_file(&path))
-                .collect()
-        })
+    Document::<ServerConfig>::read(&path)
+        .and_then(|document| document.validate_server(paths))
+        .map_err(|diagnostics| in_file(diagnostics, &path))
 }
 
 fn unknown_top_level_sections(
@@ -757,54 +247,20 @@ where
 }
 
 #[cfg(test)]
-type LoadedClientConfig = LoadedConfig<ClientConfig, ValidatedClientValues>;
-#[cfg(test)]
-type LoadedServerConfig = LoadedConfig<ServerConfig, ValidatedServerValues>;
-
-#[cfg(test)]
-impl ClientConfig {
-    fn load_from_path(path: &Path) -> LoadedClientConfig {
-        load_config_from_path(path, &AppPaths::default(), resolve_client_config)
-    }
-
-    fn load_from_str(content: &str) -> LoadedClientConfig {
-        load_config_from_str(content, &AppPaths::default(), resolve_client_config)
-    }
-}
-
-#[cfg(test)]
-impl ServerConfig {
-    fn load_from_path(path: &Path) -> LoadedServerConfig {
-        load_config_from_path(path, &AppPaths::default(), resolve_server_config)
-    }
-
-    fn load_from_str(content: &str) -> LoadedServerConfig {
-        load_config_from_str(content, &AppPaths::default(), resolve_server_config)
-    }
-}
-
-/// Absolute like resolved launch paths, and identical across calls, so two
-/// test configs compare equal.
-/// The root cannot be created by an unprivileged user: a test that writes
-/// through these paths fails instead of leaving files in a shared location.
-#[cfg(test)]
-impl Default for AppPaths {
-    fn default() -> Self {
-        let root = Path::new("/nonexistent/shepr-test-config");
-        Self::rooted_at(root, Some(root), None)
-    }
-}
-
-#[cfg(test)]
-impl AppPaths {
-    pub fn test_at(root: &Path) -> Self {
-        Self::rooted_at(root, None, None)
-    }
-}
-
-#[cfg(test)]
 mod tests {
+    use shepr_core::env::EnvVar;
+
     use super::*;
+
+    fn client_from_str(content: &str) -> Result<ValidatedClientConfig, Vec<ConfigDiagnostic>> {
+        Document::<ClientConfig>::parse(content)
+            .and_then(|document| document.validate_client(&crate::test_paths()))
+    }
+
+    fn server_from_str(content: &str) -> Result<ValidatedServerConfig, Vec<ConfigDiagnostic>> {
+        Document::<ServerConfig>::parse(content)
+            .and_then(|document| document.validate_server(&crate::test_paths()))
+    }
 
     #[test]
     fn misplaced_settings_and_retired_settings_fail_only_the_owning_launch() {
@@ -825,15 +281,8 @@ mod tests {
             "[ui]\nshow_agent_labels_on_pane_borders = true\n",
             "[ui]\nwindow_title = '{hostname}'\n",
         ] {
-            assert!(
-                ServerConfig::load_from_str(source)
-                    .into_validated(AppPaths::default())
-                    .is_ok(),
-                "{source}"
-            );
-            let errors = ClientConfig::load_from_str(source)
-                .into_validated(AppPaths::default())
-                .expect_err("server setting in client file");
+            assert!(server_from_str(source).is_ok(), "{source}");
+            let errors = client_from_str(source).expect_err("server setting in client file");
             assert!(
                 errors.iter().any(|error| matches!(
                     error.kind(),
@@ -850,15 +299,8 @@ mod tests {
             "[ui]\nsidebar_width = 26\n",
             "[ui.sidebar.spaces]\nrows = [['workspace']]\n",
         ] {
-            assert!(
-                ClientConfig::load_from_str(source)
-                    .into_validated(AppPaths::default())
-                    .is_ok(),
-                "{source}"
-            );
-            let errors = ServerConfig::load_from_str(source)
-                .into_validated(AppPaths::default())
-                .expect_err("client setting in server file");
+            assert!(client_from_str(source).is_ok(), "{source}");
+            let errors = server_from_str(source).expect_err("client setting in server file");
             assert!(
                 errors.iter().any(|error| matches!(
                     error.kind(),
@@ -872,16 +314,8 @@ mod tests {
             "[experimental]\nallow_nested = true\n",
             "[ui]\naccent = 'cyan'\n",
         ] {
-            assert!(
-                ClientConfig::load_from_str(source)
-                    .into_validated(AppPaths::default())
-                    .is_err()
-            );
-            assert!(
-                ServerConfig::load_from_str(source)
-                    .into_validated(AppPaths::default())
-                    .is_err()
-            );
+            assert!(client_from_str(source).is_err());
+            assert!(server_from_str(source).is_err());
         }
     }
 
@@ -889,7 +323,8 @@ mod tests {
     fn each_program_reads_only_its_file_and_never_the_retired_file() {
         let env = shepr_test_support::IsolatedEnv::new();
         let scratch = shepr_test_support::ScratchDir::new("role-config-load");
-        let paths = AppPaths::rooted_at(scratch.path(), Some(scratch.path()), Some(scratch.path()));
+        let paths = AppPaths::rooted_at(scratch.path(), Some(scratch.path()), Some(scratch.path()))
+            .expect("scratch roots fit a socket");
         std::fs::create_dir_all(paths.config_dir()).expect("create config directory");
         std::fs::write(paths.config_dir().join("config.toml"), "broken = [")
             .expect("retired file fixture");
@@ -942,8 +377,8 @@ mod tests {
     #[test]
     fn server_launch_collects_chrome_grid_and_terminal_errors() {
         let _env = shepr_test_support::IsolatedEnv::new();
-        let errors = ServerConfig::load_from_str("[server]\nheadless_cols = 0\n[ui]\nwindow_title = '{unknown}'\n[terminal]\ndefault_shell = '/missing/zsh'\nnew_cwd = 'missing'\n")
-            .into_validated(AppPaths::default()).expect_err("invalid server settings");
+        let errors = server_from_str("[server]\nheadless_cols = 0\n[ui]\nwindow_title = '{unknown}'\n[terminal]\ndefault_shell = '/missing/zsh'\nnew_cwd = 'missing'\n")
+            .expect_err("invalid server settings");
         for setting in [
             "server.headless_cols",
             "ui.window_title",
@@ -959,31 +394,25 @@ mod tests {
         }
     }
 
+    /// A document that does not parse reports only its parse error: nothing
+    /// validates the placeholder a failed parse would leave behind.
     #[test]
     fn load_diagnostics_keep_their_kind() {
         let _env = shepr_test_support::IsolatedEnv::new();
-        let parse = ClientConfig::load_from_str("[keys\nprefix = 'ctrl+a'");
-        assert!(matches!(parse.resolution, Err(ref errors)
+        let parse = client_from_str("[keys\nprefix = 'ctrl+a'");
+        assert!(matches!(parse, Err(ref errors)
             if matches!(errors.as_slice(), [diagnostic]
                 if matches!(diagnostic.kind(), super::super::ConfigDiagnosticKind::Parse(_)))));
 
-        let unknown = ClientConfig::load_from_str("[keys]\nunknown_binding = 'ctrl+a'");
-        assert!(matches!(unknown.resolution, Err(ref errors)
+        let unknown = client_from_str("[keys]\nunknown_binding = 'ctrl+a'");
+        assert!(matches!(unknown, Err(ref errors)
             if matches!(errors.as_slice(), [diagnostic]
                 if matches!(diagnostic.kind(),
                     super::super::ConfigDiagnosticKind::UnknownKey
                         | super::super::ConfigDiagnosticKind::UnknownSection { .. }))));
 
-        let invalid = ClientConfig::load_from_str("[keys]\nprefix = 'ctrl+'");
-        assert!(invalid.resolution.as_ref().is_err());
-    }
-
-    #[test]
-    fn failed_load_does_not_resolve_the_placeholder_config() {
-        let _env = shepr_test_support::IsolatedEnv::new();
-        let loaded = ClientConfig::load_from_str("[broken");
-
-        assert!(loaded.resolution.is_err());
+        let invalid = client_from_str("[keys]\nprefix = 'ctrl+'");
+        assert!(invalid.is_err());
     }
 
     #[test]
@@ -991,14 +420,14 @@ mod tests {
         let _env = shepr_test_support::IsolatedEnv::new();
         // A directory where the config file should be cannot be read.
         let scratch = shepr_test_support::ScratchDir::new("config");
-        let startup = ClientConfig::load_from_path(scratch.path());
-        let server = ServerConfig::load_from_path(scratch.path());
-        assert!(server.into_validated(AppPaths::default()).is_err());
-        assert!(startup.resolution.as_ref().is_err_and(|diagnostics| {
-            diagnostics
-                .iter()
-                .any(|diagnostic| diagnostic.to_string().contains("config read error"))
-        }));
+        assert!(Document::<ServerConfig>::read(scratch.path()).is_err());
+        assert!(
+            Document::<ClientConfig>::read(scratch.path()).is_err_and(|diagnostics| {
+                diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic.to_string().contains("config read error"))
+            })
+        );
     }
 
     #[test]
@@ -1044,13 +473,9 @@ mod tests {
             ),
         ] {
             let errors = if content.contains("[server]") || content.contains("window_title") {
-                ServerConfig::load_from_str(content)
-                    .into_validated(AppPaths::default())
-                    .expect_err("invalid server config")
+                server_from_str(content).expect_err("invalid server config")
             } else {
-                ClientConfig::load_from_str(content)
-                    .into_validated(AppPaths::default())
-                    .expect_err("invalid client config")
+                client_from_str(content).expect_err("invalid client config")
             };
             assert!(
                 errors
@@ -1060,14 +485,13 @@ mod tests {
             );
         }
 
-        let parse_error = ServerConfig::load_from_str("[server]\nheadless_cols = \"wide\"\n");
-        assert!(parse_error.into_validated(AppPaths::default()).is_err());
+        assert!(server_from_str("[server]\nheadless_cols = \"wide\"\n").is_err());
     }
 
     #[test]
     fn machines_load_in_config_order() {
         let _env = shepr_test_support::IsolatedEnv::new();
-        let loaded = ClientConfig::load_from_str(
+        let validated = client_from_str(
             r#"
 [[machines]]
 label = "build"
@@ -1077,10 +501,8 @@ ssh = "dev@build"
 label = "gpu"
 ssh = "ssh://gpu.example"
 "#,
-        );
-        let validated = loaded
-            .into_validated(AppPaths::default())
-            .expect("valid machines load");
+        )
+        .expect("valid machines load");
         let machines: Vec<_> = validated
             .machines()
             .iter()
@@ -1091,9 +513,7 @@ ssh = "ssh://gpu.example"
             [("build", "dev@build"), ("gpu", "ssh://gpu.example")]
         );
 
-        let none = ClientConfig::load_from_str("")
-            .into_validated(AppPaths::default())
-            .expect("no machines is valid");
+        let none = client_from_str("").expect("no machines is valid");
         assert!(none.machines().is_empty());
     }
 
@@ -1131,9 +551,7 @@ ssh = "ssh://gpu.example"
                 "unknown config key machines[0].host",
             ),
         ] {
-            let errors = ClientConfig::load_from_str(content)
-                .into_validated(AppPaths::default())
-                .expect_err("invalid machines must not launch");
+            let errors = client_from_str(content).expect_err("invalid machines must not launch");
             assert!(
                 errors
                     .iter()
@@ -1147,7 +565,7 @@ ssh = "ssh://gpu.example"
     fn config_check_collects_all_semantic_diagnostics() {
         let _env = shepr_test_support::IsolatedEnv::new();
         let scratch = shepr_test_support::ScratchDir::new("config-diagnostics");
-        let paths = AppPaths::test_at(scratch.path());
+        let paths = crate::test_paths_at(scratch.path());
         std::fs::create_dir_all(paths.config_dir()).expect("create config dir");
         std::fs::write(
             paths.client_config_file(),
@@ -1190,7 +608,7 @@ sidebar_max_width = 36
     fn load_validated_rejects_bad_config_file_and_accepts_missing_file() {
         let _env = shepr_test_support::IsolatedEnv::new();
         let scratch = shepr_test_support::ScratchDir::new("config-load");
-        let paths = AppPaths::test_at(scratch.path());
+        let paths = crate::test_paths_at(scratch.path());
         let path = paths.client_config_file();
         std::fs::create_dir_all(paths.config_dir()).expect("create config dir");
 
@@ -1217,7 +635,7 @@ sidebar_max_width = 36
         let scratch = shepr_test_support::ScratchDir::new("config-cwd");
         // Launch paths without a home directory: what resolution captures
         // when HOME is missing or relative.
-        let paths = AppPaths::test_at(scratch.path());
+        let paths = crate::test_paths_at(scratch.path());
         assert!(paths.home_dir().is_none());
         let path = paths.server_config_file();
         std::fs::create_dir_all(paths.config_dir()).expect("create config dir");
@@ -1233,35 +651,12 @@ sidebar_max_width = 36
     }
 
     #[test]
-    fn role_config_paths_use_the_xdg_config_directory() {
-        let env = shepr_test_support::IsolatedEnv::new();
-        let paths = AppPaths::resolve().expect("default paths resolve");
-        let directory = env.home().join(".config").join(SHARED_APP_DIR_NAME);
-        assert_eq!(paths.client_config_file(), directory.join("client.toml"));
-        assert_eq!(paths.server_config_file(), directory.join("server.toml"));
-    }
-
-    #[test]
-    fn server_current_dir_is_the_handed_over_launch_directory() {
+    fn new_cwd_resolves_against_the_handed_over_launch_directory() {
         let env = shepr_test_support::IsolatedEnv::new();
         let launch = env.path().join("launch");
         std::fs::create_dir_all(launch.join("project")).expect("create launch directory");
-        let process_dir = std::env::current_dir().ok();
-        assert_ne!(process_dir.as_deref(), Some(launch.as_path()));
-
-        // Without the handoff the server uses its own working directory.
-        let paths = AppPaths::resolve_for_server().expect("server paths resolve");
-        assert_eq!(paths.current_dir(), process_dir.as_deref());
-        assert_eq!(paths.startup_cwd(), None);
-
         env.set(EnvVar::SheprStartupCwd, &launch);
         let paths = AppPaths::resolve_for_server().expect("server paths resolve");
-        assert_eq!(paths.current_dir(), Some(launch.as_path()));
-        assert_eq!(paths.startup_cwd(), Some(launch.as_path()));
-        // Only the server reads the handoff; any other process keeps its own.
-        let cli = AppPaths::resolve().expect("CLI paths resolve");
-        assert_eq!(cli.current_dir(), process_dir.as_deref());
-        assert_eq!(cli.startup_cwd(), None);
 
         // `current` and a relative new_cwd resolve against the launch directory.
         std::fs::create_dir_all(paths.config_dir()).expect("create config dir");
@@ -1283,154 +678,12 @@ sidebar_max_width = 36
         let config = load_server_validated(&paths).expect("current new_cwd validates");
         assert_eq!(config.terminal().new_cwd, crate::NewTerminalCwd::Current);
         assert_eq!(config.paths().current_dir(), Some(launch.as_path()));
-
-        env.set(EnvVar::SheprStartupCwd, "relative/launch");
-        let errors = AppPaths::resolve_for_server().expect_err("a relative handoff is refused");
-        assert!(
-            errors
-                .diagnostics()
-                .iter()
-                .any(|error| error.to_string().contains("SHEPR_STARTUP_CWD")
-                    && error.to_string().contains("absolute")),
-            "{errors:?}"
-        );
-    }
-
-    #[test]
-    fn invalid_socket_environment_fails_resolution() {
-        let env = shepr_test_support::IsolatedEnv::new();
-        let variable = EnvVar::SheprSocketPath;
-        for (value, expected) in [
-            ("", "set but empty"),
-            ("rel.sock", "absolute path"),
-            (" /abs.sock", "whitespace"),
-        ] {
-            env.set(variable, value);
-            let errors = AppPaths::resolve().expect_err("invalid socket override");
-            assert!(
-                errors
-                    .diagnostics()
-                    .iter()
-                    .any(|error| error.to_string().contains(variable.name())
-                        && error.to_string().contains(expected)),
-                "{variable}={value:?}: {errors:?}"
-            );
-        }
-        env.remove(variable);
-    }
-
-    #[test]
-    fn release_profile_keeps_the_default_locations_and_dev_gets_its_own() {
-        let env = shepr_test_support::IsolatedEnv::new();
-        let release = resolve_paths_from_env(BuildProfile::Release, CurrentDirOrigin::Process)
-            .expect("release paths resolve");
-        let dev = resolve_paths_from_env(BuildProfile::Dev, CurrentDirOrigin::Process)
-            .expect("dev paths resolve");
-        let state = env.home().join(".local/state");
-        let runtime = env.path().join("runtime");
-
-        // Release: exactly the locations every release install has used.
-        assert_eq!(release.data_dir(), state.join("shepr"));
-        assert_eq!(release.data_dir(), release.state_dir());
-        assert_eq!(release.runtime_dir(), runtime.join("shepr"));
-        assert_eq!(
-            release.server_address().socket(),
-            runtime.join("shepr/shepr.sock")
-        );
-
-        // Dev: its own runtime and saved layout, distinct sockets.
-        assert_eq!(dev.data_dir(), state.join("shepr-dev"));
-        assert_eq!(dev.runtime_dir(), runtime.join("shepr-dev"));
-        assert_eq!(
-            dev.server_address().socket(),
-            runtime.join("shepr-dev/shepr.sock")
-        );
-
-        // Both config files, the shared state directory (with the client state
-        // below it) and the XDG runtime root are the same in both profiles.
-        assert_eq!(release.config_dir(), dev.config_dir());
-        assert_eq!(release.client_config_file(), dev.client_config_file());
-        assert_eq!(release.server_config_file(), dev.server_config_file());
-        assert_eq!(release.state_dir(), dev.state_dir());
-        assert_eq!(release.client_state_dir(), dev.client_state_dir());
-        assert_eq!(release.xdg_runtime_dir(), dev.xdg_runtime_dir());
-    }
-
-    #[test]
-    fn a_socket_override_beats_the_profile_runtime_directory() {
-        let env = shepr_test_support::IsolatedEnv::new();
-        env.set(EnvVar::SheprSocketPath, env.path().join("api.sock"));
-        for profile in [BuildProfile::Release, BuildProfile::Dev] {
-            let paths = resolve_paths_from_env(profile, CurrentDirOrigin::Process)
-                .expect("override resolves");
-            assert_eq!(paths.server_address().socket(), env.path().join("api.sock"));
-            assert_eq!(
-                paths.runtime_dir().file_name(),
-                Some(std::ffi::OsStr::new(profile.app_dir_name()))
-            );
-        }
-    }
-
-    #[test]
-    fn a_socket_override_with_a_matching_marker_wins() {
-        let env = shepr_test_support::IsolatedEnv::new();
-        env.set(EnvVar::SheprSocketPath, env.path().join("api.sock"));
-        for profile in [BuildProfile::Release, BuildProfile::Dev] {
-            env.set(EnvVar::SheprBuildProfile, profile.marker());
-            let paths = resolve_paths_from_env(profile, CurrentDirOrigin::Process)
-                .expect("override resolves");
-            assert_eq!(paths.server_address().socket(), env.path().join("api.sock"));
-        }
-    }
-
-    #[test]
-    fn a_socket_override_with_another_profiles_marker_is_ignored() {
-        let env = shepr_test_support::IsolatedEnv::new();
-        env.set(EnvVar::SheprSocketPath, env.path().join("api.sock"));
-        for (profile, owner) in [
-            (BuildProfile::Dev, BuildProfile::Release),
-            (BuildProfile::Release, BuildProfile::Dev),
-        ] {
-            env.set(EnvVar::SheprBuildProfile, owner.marker());
-            let paths =
-                resolve_paths_from_env(profile, CurrentDirOrigin::Process).expect("paths resolve");
-            let runtime = env.path().join("runtime").join(profile.app_dir_name());
-            assert_eq!(paths.server_address().socket(), runtime.join("shepr.sock"));
-        }
-    }
-
-    #[test]
-    fn an_unknown_profile_marker_fails_resolution() {
-        let env = shepr_test_support::IsolatedEnv::new();
-        env.set(EnvVar::SheprBuildProfile, "staging");
-        let errors = resolve_paths_from_env(BuildProfile::Dev, CurrentDirOrigin::Process)
-            .expect_err("an unknown marker is refused");
-        assert!(
-            errors
-                .diagnostics()
-                .iter()
-                .any(|error| error.to_string().contains("SHEPR_BUILD_PROFILE")
-                    && error.to_string().contains("staging")),
-            "{errors:?}"
-        );
-    }
-
-    #[test]
-    fn cargo_profile_names_map_to_build_profiles() {
-        assert_eq!(
-            BuildProfile::from_cargo_profile("release"),
-            BuildProfile::Release
-        );
-        assert_eq!(BuildProfile::from_cargo_profile("debug"), BuildProfile::Dev);
-        assert_eq!(BuildProfile::from_cargo_profile(""), BuildProfile::Dev);
-        assert_eq!(BuildProfile::Release.app_dir_name(), "shepr");
-        assert_eq!(BuildProfile::Dev.app_dir_name(), "shepr-dev");
     }
 
     #[test]
     fn config_load_reports_unknown_keys_and_parses_known_siblings() {
         let _env = shepr_test_support::IsolatedEnv::new();
-        let loaded = ClientConfig::load_from_str(
+        let document = Document::<ClientConfig>::parse(
             r##"
 plugin = []
 
@@ -1446,13 +699,14 @@ mouse_capture = false
 mouse_captur = true
 "foo.bar" = true
 "##,
-        );
+        )
+        .expect("the document parses");
+        assert!(!document.config.ui.mouse_capture);
 
         assert_eq!(
-            loaded
-                .resolution
-                .as_ref()
-                .expect_err("unknown keys fail the resolution")
+            document
+                .validate_client(&crate::test_paths())
+                .expect_err("unknown keys fail the load")
                 .iter()
                 .map(ToString::to_string)
                 .collect::<Vec<_>>(),
@@ -1464,28 +718,28 @@ mouse_captur = true
                 "unknown config key ui.mouse_captur",
             ]
         );
-        assert!(!loaded.config.ui.mouse_capture);
     }
 
     #[test]
     fn config_load_keeps_optional_ui_values_explicit() {
         let _env = shepr_test_support::IsolatedEnv::new();
-        let loaded = ClientConfig::load_from_str(
+        let document = Document::<ClientConfig>::parse(
             r#"
 [ui]
 sidebar_width = 26
 agent_panel_sort = "priority"
 "#,
-        );
-        assert!(loaded.resolution.is_ok());
-        assert_eq!(loaded.config.ui.sidebar_width, Some(26));
+        )
+        .expect("the document parses");
+        assert_eq!(document.config.ui.sidebar_width, Some(26));
         assert_eq!(
-            loaded.config.ui.agent_panel_sort,
+            document.config.ui.agent_panel_sort,
             Some(super::super::AgentPanelSortConfig::Priority)
         );
-        assert_eq!(loaded.config.ui.sidebar_start_collapsed, None);
+        assert_eq!(document.config.ui.sidebar_start_collapsed, None);
+        assert!(document.validate_client(&crate::test_paths()).is_ok());
 
-        let empty = ClientConfig::load_from_str("");
+        let empty = Document::<ClientConfig>::parse("").expect("the empty document parses");
         assert_eq!(empty.config.ui.sidebar_width, None);
     }
 
@@ -1507,104 +761,18 @@ agent_panel_sort = "priority"
     #[test]
     fn config_load_reports_unknown_top_level_sections() {
         let _env = shepr_test_support::IsolatedEnv::new();
-        let loaded = ClientConfig::load_from_str(
+        let errors = client_from_str(
             r#"
 [[plugin]]
 id = "example"
 "#,
-        );
+        )
+        .expect_err("the unknown section fails the load");
 
         assert_eq!(
-            loaded
-                .resolution
-                .as_ref()
-                .expect_err("the unknown section fails resolution")
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>(),
+            errors.iter().map(ToString::to_string).collect::<Vec<_>>(),
             vec!["unknown config section [[plugin]]"]
         );
-    }
-
-    #[test]
-    fn xdg_paths_use_separate_roots_ignore_empty_and_refuse_relative_base_dirs() {
-        let env = shepr_test_support::IsolatedEnv::new();
-        let paths = AppPaths::resolve().expect("default paths resolve");
-        assert_eq!(
-            paths.config_dir(),
-            env.home().join(".config").join(SHARED_APP_DIR_NAME)
-        );
-        assert_eq!(
-            paths.state_dir(),
-            env.home().join(".local/state").join(SHARED_APP_DIR_NAME)
-        );
-        assert_eq!(paths.xdg_runtime_dir(), env.path().join("runtime"));
-        assert_eq!(
-            paths.runtime_dir(),
-            env.path()
-                .join("runtime")
-                .join(BuildProfile::current().app_dir_name())
-        );
-
-        for (key, suffix) in [
-            ("XDG_CONFIG_HOME", ".config"),
-            ("XDG_STATE_HOME", ".local/state"),
-        ] {
-            env.set(key, "");
-            let paths = AppPaths::resolve().expect("an empty XDG base reads as unset");
-            let expected = env.home().join(suffix).join(SHARED_APP_DIR_NAME);
-            let actual = if key == "XDG_CONFIG_HOME" {
-                paths.config_dir()
-            } else {
-                paths.state_dir()
-            };
-            assert_eq!(actual, expected, "{key} empty");
-            for refused in ["relative/path", " /padded"] {
-                env.set(key, refused);
-                let errors = AppPaths::resolve().expect_err("an invalid XDG base is refused");
-                assert!(
-                    errors
-                        .diagnostics()
-                        .iter()
-                        .any(|error| error.to_string().contains(key)),
-                    "{key}={refused:?}: {errors:?}"
-                );
-            }
-            env.set(key, env.path().join(key));
-            let paths = AppPaths::resolve().expect("absolute XDG base is accepted");
-            let expected = env.path().join(key).join(SHARED_APP_DIR_NAME);
-            let actual = if key == "XDG_CONFIG_HOME" {
-                paths.config_dir()
-            } else {
-                paths.state_dir()
-            };
-            assert_eq!(actual, expected);
-            env.remove(key);
-        }
-
-        for (invalid, expected) in [
-            ("", "XDG_RUNTIME_DIR must be set"),
-            ("relative/path", "relative path"),
-        ] {
-            env.set("XDG_RUNTIME_DIR", invalid);
-            let errors = AppPaths::resolve().expect_err("runtime dir has no XDG default");
-            assert!(
-                errors
-                    .diagnostics()
-                    .iter()
-                    .any(|error| error.to_string().contains("XDG_RUNTIME_DIR")
-                        && error.to_string().contains(expected)),
-                "XDG_RUNTIME_DIR={invalid:?}: {errors:?}"
-            );
-        }
-        env.remove("XDG_RUNTIME_DIR");
-        assert!(AppPaths::resolve().is_err());
-        for invalid in ["", "relative/home"] {
-            env.set("HOME", invalid);
-            assert!(AppPaths::resolve().is_err());
-        }
-        env.remove("HOME");
-        assert!(AppPaths::resolve().is_err());
     }
 
     #[test]

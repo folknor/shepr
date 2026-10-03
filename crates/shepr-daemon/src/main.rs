@@ -56,9 +56,9 @@ fn usage_error(message: &str) -> ExitCode {
 /// panic hook `run_server` installs. A foreground server keeps its stderr, and
 /// so does a client-spawned one whose log file could not be opened.
 fn serve(client_spawned: bool) -> ExitCode {
-    let paths = match shepr_config::AppPaths::resolve_for_server() {
+    let paths = match shepr_paths::AppPaths::resolve_for_server() {
         Ok(paths) => paths,
-        Err(errors) => return config_error(errors.diagnostics()),
+        Err(errors) => return config_error(errors.messages()),
     };
     let config = match shepr_config::load_server_validated(&paths) {
         Ok(config) => config,

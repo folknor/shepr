@@ -470,7 +470,7 @@ fn remote_compatibility_error(
         || "unknown".into(),
         |identity| identity.build_id.to_string(),
     );
-    let advice = if shepr_config::BuildProfile::current() == shepr_config::BuildProfile::Dev {
+    let advice = if shepr_paths::BuildProfile::current() == shepr_paths::BuildProfile::Dev {
         "This is a dev client, which needs a dev build of shepr on the remote host; discovery only finds installed builds (normally release), so install a dev build there and retry"
     } else {
         "Install the same Shepr build on the host and retry"

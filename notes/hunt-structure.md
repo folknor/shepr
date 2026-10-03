@@ -54,48 +54,6 @@ exit classification there); platform stays flat; `config_file.rs`'s
 ownership, permission and xattr primitives stay in platform. Last of the crate
 waves.
 
-## STR-010 - shepr-config does four unrelated jobs
-
-1. TOML model, loading, unknown-key detection, validation.
-2. Process runtime layout: `AppPaths` (XDG, `SHEPR_STARTUP_CWD`),
-   `BuildProfile` and the marker policy, `ServerAddress` and the socket override
-   rule, `DATA_DIR_LEASE_FILE_NAME`, `operator_entrypoint`, and operator guidance
-   prose (`ServerAddress::build_mismatch_guidance`). `shepr-api` depends on config
-   only for `AppPaths`; remote, the client and the CLI use it for layout, not
-   settings.
-3. Keybinding runtime matching, run per keypress in the client.
-4. A theme library (eighteen palettes) plus `sanitize_window_title_text`, render
-   sanitizing used by the server.
-
-`io.rs` alone holds the build profile, path resolution, the loader pipeline, BOM
-repair and unknown-key reporting. The validated types keep raw config:
-`ValidatedClientConfig` stores the whole raw `ClientConfig` only to answer
-`machines()`, and `ValidatedServerConfig` hands out `session()`, `advanced()` and
-`experimental()` unvalidated. The loader machinery (`LoadedConfig<C, R>`, trait
-`ConfigResolution`, the resolution structs, `from_values`/`from_loaded`/
-`from_resolution`, two `resolve_*_config` wrappers taking unused arguments, a
-test-only `parse_document` faking `/bin/sh`) is generic over two roles differing
-only in their validate step. `AppSettings` copies a dozen fields out of
-`ValidatedServerConfig`. Proposal: a small layout crate (or platform module) for
-job 2, matching moved to termio, config left as "parse and validate the two
-files" with one `validate(raw, &LaunchContext) -> Result<Validated,
-Vec<ConfigDiagnostic>>` per role and validated types owning validated values
-only. Every caller of `build_mismatch_guidance` and `attach_command` passes
-`operator_entrypoint()` (the parameter exists for tests); a default method with a
-test seam would stop five call sites restating the choice. Reported by contracts
-and server-app.
-
-Decided: runtime layout and address policy (`AppPaths`, `BuildProfile` and the
-marker policy, `ServerAddress` and the socket override, the lease file name,
-`operator_entrypoint`) move to their own crate below api, so api, remote and
-the CLI stop depending on settings. Key matching already lives in
-`shepr-term`'s key module. The named theme library stays in config. Operator guidance prose
-goes with the lifecycle crate (STR-012). Validated types own validated values
-only (no second raw representation exposed as the runtime interface), the
-generic `LoadedConfig` gives way to one validate per role (the
-`ConfigResolution` trait and resolution structs are already gone), and
-`operator_entrypoint` becomes a default with a test seam.
-
 ## STR-011 - shepr-protocol mixes the wire with policy and state
 
 Wire types, codec, framing and preamble are its job. Allocators are not:
@@ -136,7 +94,10 @@ the listener a pure classifier and dispatcher. (contracts)
 Decided, with STR-013 and STR-014: one lifecycle crate, `shepr-launch`, above
 api and below remote and the client. It holds `local_server`, conditional stop,
 presence probing, `DaemonExit`, operator guidance, the server invocation grammar
-and the neutral endpoint failure vocabulary. Two traps: `ApiClient::status()`
+and the neutral endpoint failure vocabulary. The address guidance
+(`ServerAddress::build_mismatch_guidance`, `attach_command`) waits in
+shepr-paths `guidance.rs` until then; the client cannot link api, so it could
+not go there. Two traps: `ApiClient::status()`
 returns `RuntimeStatus`, so the decoded ping result stays below launch (api
 returns a typed pong, launch builds its lifecycle status); and stop and presence
 use crate-private deadline APIs, so api exposes a real deadline-aware request

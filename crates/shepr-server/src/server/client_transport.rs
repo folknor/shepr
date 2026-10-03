@@ -923,7 +923,7 @@ mod tests {
         use crate::test_support::AppPathsFixture as _;
         use std::io::Read;
         let scratch = shepr_test_support::ScratchDir::new("foreign-gate");
-        let paths = shepr_config::AppPaths::test_at(&scratch);
+        let paths = shepr_paths::AppPaths::test_at(&scratch);
         let (tx, _rx) = mpsc::channel(crate::limits::API_REQUEST_CHANNEL_CAPACITY);
         let stop = Arc::new(shepr_api::ServerStopSignal::default());
         let api = shepr_api::start_server(tx, Arc::clone(&stop), &paths).expect("shared socket");

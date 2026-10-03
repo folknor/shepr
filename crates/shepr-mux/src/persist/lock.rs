@@ -4,7 +4,7 @@ use std::path::Path;
 
 /// Config owns the lease filename used to build API paths; platform is below
 /// config in the crate layers and owns opening and locking that path.
-pub(super) const LOCK_FILE_NAME: &str = shepr_config::DATA_DIR_LEASE_FILE_NAME;
+pub(super) const LOCK_FILE_NAME: &str = shepr_paths::DATA_DIR_LEASE_FILE_NAME;
 
 /// Acquired before restore and held through the final save. Possession of this
 /// value is required to construct a session writer.

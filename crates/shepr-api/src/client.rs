@@ -17,7 +17,7 @@ pub struct ApiClient {
 }
 
 impl ApiClient {
-    pub fn local(paths: &shepr_config::AppPaths) -> Self {
+    pub fn local(paths: &shepr_paths::AppPaths) -> Self {
         Self::for_socket(paths.server_address().socket().to_path_buf())
     }
 
@@ -271,7 +271,7 @@ mod tests {
     #[test]
     fn local_client_targets_the_build_runtime_socket() {
         let _env = shepr_test_support::IsolatedEnv::new();
-        let paths = shepr_config::AppPaths::resolve().expect("isolated paths resolve");
+        let paths = shepr_paths::AppPaths::resolve().expect("isolated paths resolve");
         let client = ApiClient::local(&paths);
         assert_eq!(client.socket_path(), paths.runtime_dir().join("shepr.sock"));
     }

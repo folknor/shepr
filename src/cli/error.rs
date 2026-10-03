@@ -18,7 +18,7 @@ pub(crate) enum CliError {
     Config(Vec<shepr_config::ConfigDiagnostic>),
     /// The application paths (XDG directories, socket target, pane markers)
     /// could not be resolved.
-    Paths(shepr_config::PathsError),
+    Paths(shepr_paths::PathsError),
     /// A TUI or client launch inside a pane of a server of this build profile.
     /// `quip` is the closing line.
     Nested {
@@ -77,7 +77,7 @@ impl CliError {
             }
             Self::Paths(error) => {
                 eprintln!("shepr: application paths could not be resolved:");
-                for diagnostic in error.diagnostics() {
+                for diagnostic in error.messages() {
                     eprintln!("  {diagnostic}");
                 }
             }
@@ -150,7 +150,7 @@ impl std::fmt::Display for CliError {
             }
             Self::Paths(error) => {
                 f.write_str("application paths could not be resolved:")?;
-                for diagnostic in error.diagnostics() {
+                for diagnostic in error.messages() {
                     write!(f, "\n  {diagnostic}")?;
                 }
                 Ok(())
@@ -181,8 +181,8 @@ impl From<std::io::Error> for CliError {
     }
 }
 
-impl From<shepr_config::PathsError> for CliError {
-    fn from(error: shepr_config::PathsError) -> Self {
+impl From<shepr_paths::PathsError> for CliError {
+    fn from(error: shepr_paths::PathsError) -> Self {
         Self::Paths(error)
     }
 }

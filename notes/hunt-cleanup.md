@@ -49,12 +49,6 @@ visibility pass would make the module tree mean something. (wave-7 review)
   a fact; the mux workspace test could assert through the public id types and
   the helpers could narrow.
 
-- `AppPaths::rooted_at` (`crates/shepr-config/src/io.rs`) is documented as
-  unchecked, but `ServerAddress` now holds a checked `SocketPath`; for a root
-  too long to host a socket it falls back to `/` as a placeholder runtime
-  directory. A fallible `rooted_at` or a separate unchecked address would say
-  what it does.
-
 (wave-11 review and gate)
 
 ## Test-only twins and test seams in production

@@ -79,7 +79,7 @@ impl std::fmt::Display for ConfigKeyPath {
     }
 }
 
-/// The category and detail of one config or path resolution problem.
+/// The category and detail of one config problem.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConfigDiagnosticKind {
     Read(String),
@@ -130,10 +130,6 @@ impl ConfigDiagnostic {
             None,
             Some(key),
         )
-    }
-
-    pub fn path(reason: impl Into<String>) -> Self {
-        Self::new(ConfigDiagnosticKind::Path(reason.into()), None, None)
     }
 
     pub fn path_at(key: ConfigKeyPath, reason: impl Into<String>) -> Self {
@@ -266,40 +262,6 @@ impl std::fmt::Display for ConfigDiagnostic {
         }
     }
 }
-
-/// A path-resolution failure, kept separate from loading a config file.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PathsError {
-    diagnostics: Vec<ConfigDiagnostic>,
-}
-
-impl PathsError {
-    pub(crate) fn new(diagnostics: Vec<ConfigDiagnostic>) -> Self {
-        Self { diagnostics }
-    }
-
-    pub(crate) fn one(diagnostic: ConfigDiagnostic) -> Self {
-        Self::new(vec![diagnostic])
-    }
-
-    pub fn diagnostics(&self) -> &[ConfigDiagnostic] {
-        &self.diagnostics
-    }
-}
-
-impl std::fmt::Display for PathsError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        for (index, diagnostic) in self.diagnostics.iter().enumerate() {
-            if index > 0 {
-                f.write_str("; ")?;
-            }
-            write!(f, "{diagnostic}")?;
-        }
-        Ok(())
-    }
-}
-
-impl std::error::Error for PathsError {}
 
 #[cfg(test)]
 mod tests {

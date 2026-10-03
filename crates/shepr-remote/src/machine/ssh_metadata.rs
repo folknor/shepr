@@ -22,14 +22,14 @@ pub struct SshMetadataCache {
 }
 
 impl SshMetadataCache {
-    pub fn new(paths: &shepr_config::AppPaths, target: &SshTarget) -> Self {
-        Self::for_profile(paths, target, shepr_config::BuildProfile::current())
+    pub fn new(paths: &shepr_paths::AppPaths, target: &SshTarget) -> Self {
+        Self::for_profile(paths, target, shepr_paths::BuildProfile::current())
     }
 
     fn for_profile(
-        paths: &shepr_config::AppPaths,
+        paths: &shepr_paths::AppPaths,
         target: &SshTarget,
-        profile: shepr_config::BuildProfile,
+        profile: shepr_paths::BuildProfile,
     ) -> Self {
         Self {
             path: paths
@@ -163,7 +163,8 @@ mod tests {
     #[test]
     fn metadata_path_is_keyed_by_ssh_target() {
         let scratch = shepr_test_support::ScratchDir::new("ssh-metadata-key");
-        let paths = shepr_config::AppPaths::rooted_at(&scratch, None, None);
+        let paths = shepr_paths::AppPaths::rooted_at(&scratch, None, None)
+            .expect("scratch roots fit a socket");
         let target = |value: &str| SshTarget::parse(value).expect("test precondition");
         let build = SshMetadataCache::new(&paths, &target("dev@build.example"));
         let again = SshMetadataCache::new(&paths, &target("dev@build.example"));
@@ -176,11 +177,12 @@ mod tests {
     #[test]
     fn metadata_path_differs_per_build_profile() {
         let scratch = shepr_test_support::ScratchDir::new("ssh-metadata-profile");
-        let paths = shepr_config::AppPaths::rooted_at(&scratch, None, None);
+        let paths = shepr_paths::AppPaths::rooted_at(&scratch, None, None)
+            .expect("scratch roots fit a socket");
         let target = SshTarget::parse("dev@build.example").expect("test precondition");
         let release =
-            SshMetadataCache::for_profile(&paths, &target, shepr_config::BuildProfile::Release);
-        let dev = SshMetadataCache::for_profile(&paths, &target, shepr_config::BuildProfile::Dev);
+            SshMetadataCache::for_profile(&paths, &target, shepr_paths::BuildProfile::Release);
+        let dev = SshMetadataCache::for_profile(&paths, &target, shepr_paths::BuildProfile::Dev);
         assert_ne!(release.path(), dev.path());
         assert!(dev.path().starts_with(paths.client_state_dir()));
     }

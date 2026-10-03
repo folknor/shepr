@@ -20,6 +20,7 @@ shepr-core = { path = "../shepr-core" }
 shepr-detect = { path = "../shepr-detect" }
 shepr-integration = { path = "../shepr-integration" }
 shepr-mux = { path = "../shepr-mux" }
+shepr-paths = { path = "../shepr-paths" }
 shepr-platform = { path = "../shepr-platform" }
 shepr-protocol = { path = "../shepr-protocol" }
 shepr-pty = { path = "../shepr-pty" }

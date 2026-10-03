@@ -224,7 +224,7 @@ pub struct SshAuthenticationCommand {
 }
 
 pub fn ssh_authentication_command(
-    paths: &shepr_config::AppPaths,
+    paths: &shepr_paths::AppPaths,
     target: &SshTarget,
 ) -> io::Result<SshAuthenticationCommand> {
     let control_dir = SshControlDir::runtime(paths).map_err(|error| {
@@ -278,7 +278,7 @@ pub(crate) struct RemoteSsh {
 
 impl RemoteSsh {
     /// For long-lived callers that already hold the launch-time config.
-    pub(crate) fn new(target: SshTarget, paths: &shepr_config::AppPaths) -> io::Result<Self> {
+    pub(crate) fn new(target: SshTarget, paths: &shepr_paths::AppPaths) -> io::Result<Self> {
         let control_dir = SshControlDir::runtime(paths).map_err(|error| {
             crate::local_setup_error("could not prepare local SSH configuration", error)
         })?;
@@ -539,7 +539,7 @@ pub(super) struct SshControlDir<'a> {
 
 impl<'a> SshControlDir<'a> {
     /// The private profile runtime directory under the XDG runtime root.
-    pub(super) fn runtime(app_paths: &'a shepr_config::AppPaths) -> io::Result<Self> {
+    pub(super) fn runtime(app_paths: &'a shepr_paths::AppPaths) -> io::Result<Self> {
         let path = ensure_ssh_runtime_dir(app_paths)?;
         Ok(Self { path })
     }
@@ -548,7 +548,7 @@ impl<'a> SshControlDir<'a> {
 /// Creates shepr's per-profile runtime directory below the validated XDG root,
 /// then checks the resulting directory before SSH names sockets or config files
 /// under it.
-pub(super) fn ensure_ssh_runtime_dir(app_paths: &shepr_config::AppPaths) -> io::Result<&Path> {
+pub(super) fn ensure_ssh_runtime_dir(app_paths: &shepr_paths::AppPaths) -> io::Result<&Path> {
     // Keep bridge sockets, SSH control sockets and managed configs under the
     // same validated XDG runtime root. A missing root returns its local setup
     // error, which the connector reports as Attention and retries; do not move
@@ -565,7 +565,7 @@ pub(super) fn ensure_ssh_runtime_dir(app_paths: &shepr_config::AppPaths) -> io::
 /// OpenSSH's first-value-wins behavior preserves explicit user keepalives.
 pub(super) fn write_managed_ssh_config(
     target: &SshTarget,
-    app_paths: &shepr_config::AppPaths,
+    app_paths: &shepr_paths::AppPaths,
     control_dir: SshControlDir<'_>,
 ) -> io::Result<ManagedSshConfig> {
     let config_file = app_paths.client_config_file();

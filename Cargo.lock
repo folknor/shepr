@@ -1257,6 +1257,7 @@ dependencies = [
  "shepr-config",
  "shepr-core",
  "shepr-detect",
+ "shepr-paths",
  "shepr-platform",
  "shepr-protocol",
  "shepr-remote",
@@ -1283,8 +1284,8 @@ dependencies = [
  "serde",
  "serde_json",
  "shepr-agent",
- "shepr-config",
  "shepr-detect",
+ "shepr-paths",
  "shepr-platform",
  "shepr-protocol",
  "shepr-test-support",
@@ -1303,6 +1304,7 @@ dependencies = [
  "serde_json",
  "shepr-config",
  "shepr-core",
+ "shepr-paths",
  "shepr-platform",
  "shepr-protocol",
  "shepr-remote",
@@ -1326,6 +1328,7 @@ dependencies = [
  "serde_ignored",
  "shepr-agent",
  "shepr-core",
+ "shepr-paths",
  "shepr-platform",
  "shepr-term",
  "shepr-test-support",
@@ -1345,6 +1348,7 @@ version = "0.1.0"
 dependencies = [
  "shepr-api",
  "shepr-config",
+ "shepr-paths",
  "shepr-platform",
  "shepr-protocol",
  "shepr-server",
@@ -1399,6 +1403,7 @@ dependencies = [
  "shepr-config",
  "shepr-core",
  "shepr-detect",
+ "shepr-paths",
  "shepr-platform",
  "shepr-protocol",
  "shepr-pty",
@@ -1409,6 +1414,15 @@ dependencies = [
  "shepr-vt",
  "tokio",
  "tracing",
+]
+
+[[package]]
+name = "shepr-paths"
+version = "0.1.0"
+dependencies = [
+ "shepr-core",
+ "shepr-platform",
+ "shepr-test-support",
 ]
 
 [[package]]
@@ -1458,6 +1472,7 @@ dependencies = [
  "shepr-api",
  "shepr-config",
  "shepr-core",
+ "shepr-paths",
  "shepr-platform",
  "shepr-protocol",
  "shepr-test-fixtures",
@@ -1485,6 +1500,7 @@ dependencies = [
  "shepr-detect",
  "shepr-integration",
  "shepr-mux",
+ "shepr-paths",
  "shepr-platform",
  "shepr-protocol",
  "shepr-pty",
@@ -1518,6 +1534,7 @@ dependencies = [
  "ratatui",
  "shepr-config",
  "shepr-core",
+ "shepr-paths",
  "shepr-platform",
  "shepr-protocol",
  "shepr-term",
@@ -1534,6 +1551,7 @@ dependencies = [
  "serde",
  "shepr-config",
  "shepr-core",
+ "shepr-paths",
  "shepr-protocol",
  "shepr-pty",
  "shepr-termio",

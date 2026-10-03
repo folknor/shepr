@@ -162,7 +162,7 @@ pub(crate) fn print_help() {
     if !help.ends_with("\n\n") {
         println!();
     }
-    match shepr_config::AppPaths::resolve() {
+    match shepr_paths::AppPaths::resolve() {
         Ok(paths) => {
             println!("Client config: {}", paths.client_config_file().display());
             println!("Server config: {}", paths.server_config_file().display());
@@ -205,16 +205,16 @@ pub(crate) fn run(command: &CliCommand) -> CliResult<i32> {
     }
 }
 
-fn run_with_paths(run: impl FnOnce(&shepr_config::AppPaths) -> CliResult<i32>) -> CliResult<i32> {
+fn run_with_paths(run: impl FnOnce(&shepr_paths::AppPaths) -> CliResult<i32>) -> CliResult<i32> {
     let paths = resolve_app_paths()?;
     run(&paths)
 }
 
-fn resolve_app_paths() -> CliResult<shepr_config::AppPaths> {
-    shepr_config::AppPaths::resolve().map_err(CliError::from)
+fn resolve_app_paths() -> CliResult<shepr_paths::AppPaths> {
+    shepr_paths::AppPaths::resolve().map_err(CliError::from)
 }
 
-fn send_request(paths: &shepr_config::AppPaths, request: &Request) -> CliResult<serde_json::Value> {
+fn send_request(paths: &shepr_paths::AppPaths, request: &Request) -> CliResult<serde_json::Value> {
     let client = ApiClient::local(paths);
     ensure_server_build_matches(paths, &client, &request.id)?;
     client
@@ -223,7 +223,7 @@ fn send_request(paths: &shepr_config::AppPaths, request: &Request) -> CliResult<
 }
 
 fn ensure_server_build_matches(
-    paths: &shepr_config::AppPaths,
+    paths: &shepr_paths::AppPaths,
     client: &ApiClient,
     request_id: &str,
 ) -> CliResult<()> {
@@ -241,9 +241,7 @@ fn ensure_server_build_matches(
                 "this shepr client (build {}) differs from the running server (build {}); restart the server with this build before using this command. {}",
                 shepr_protocol::BUILD_ID,
                 status.build_id,
-                paths
-                    .server_address()
-                    .build_mismatch_guidance(&shepr_config::operator_entrypoint())
+                paths.server_address().build_mismatch_guidance()
             ),
         ),
     };
@@ -261,7 +259,7 @@ pub(super) fn server_not_running_error(socket_path: &std::path::Path) -> CliResu
 
 /// Classify a socket failure before it reaches the CLI printer.
 fn map_server_not_running_or_io(
-    paths: &shepr_config::AppPaths,
+    paths: &shepr_paths::AppPaths,
     err: ApiClientError,
     request_id: &str,
     client: &ApiClient,
@@ -271,9 +269,7 @@ fn map_server_not_running_or_io(
             if server_not_running_error(&client.socket_path()).unwrap_or(false) =>
         {
             let socket_path = client.socket_path();
-            let attach_command = paths
-                .server_address()
-                .attach_command(&shepr_config::operator_entrypoint());
+            let attach_command = paths.server_address().attach_command();
             let message = shepr_api::guidance::operator_guidance(
                 shepr_api::guidance::OperatorGuidance::ServerNotRunning {
                     socket_path: &socket_path,
@@ -546,7 +542,7 @@ mod tests {
         use shepr_api::client::{ApiClient, ApiClientError};
 
         let scratch = crate::test_support::ScratchDir::new("cli-socket-error");
-        let paths = shepr_config::AppPaths::test_at(scratch.path());
+        let paths = shepr_paths::AppPaths::test_at(scratch.path());
         let client = ApiClient::local(&paths);
         let socket = client.socket_path().display().to_string();
 
@@ -574,7 +570,7 @@ mod tests {
         use shepr_api::client::{ApiClient, ApiClientError};
 
         let scratch = crate::test_support::ScratchDir::new("cli-socket-classifier");
-        let paths = shepr_config::AppPaths::test_at(scratch.path());
+        let paths = shepr_paths::AppPaths::test_at(scratch.path());
         std::fs::create_dir_all(paths.runtime_dir()).expect("create test runtime directory");
         let client = ApiClient::local(&paths);
         let _listener = shepr_platform::ipc::bind_local_listener(&client.socket_path())

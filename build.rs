@@ -308,7 +308,7 @@ pub(crate) fn build_id(root: &Path, profile: &ProfileInputs) -> Result<String, B
 ///
 /// Emitted as its own constant, independent of the build identity, because the
 /// identity only tells two builds apart while nothing in it says which paths a
-/// build should use. `shepr-config` reads it to give dev builds a runtime and
+/// build should use. `shepr-paths` reads it to give dev builds a runtime and
 /// saved-layout namespace of their own, so a dev server and the installed
 /// release server neither share sockets nor overwrite each other's layout.
 pub(crate) fn profile_constant_source(profile: &str) -> String {
@@ -333,12 +333,12 @@ pub(crate) fn main() -> Result<(), Box<dyn Error>> {
     let manifest_dir = PathBuf::from(
         std::env::var_os("CARGO_MANIFEST_DIR").ok_or("CARGO_MANIFEST_DIR is not set")?,
     );
-    // Only the build scripts of shepr-protocol and shepr-config include this
+    // Only the build scripts of shepr-protocol and shepr-paths include this
     // one (the root package has none), so the workspace root is two levels up.
     let crate_dir_name = manifest_dir.file_name().and_then(|name| name.to_str());
-    // shepr-config includes this script only for the profile constant, so it
+    // shepr-paths includes this script only for the profile constant, so it
     // skips the identity, which would hash the whole tree a second time.
-    let stamps_identity = crate_dir_name != Some("shepr-config");
+    let stamps_identity = crate_dir_name != Some("shepr-paths");
     let root = manifest_dir
         .parent()
         .and_then(Path::parent)

@@ -140,7 +140,7 @@ enum ClientLaunch {
 fn launch_client(mode: ClientLaunch) -> CliResult<ProcessExit> {
     // Resolve the typed pane markers before reading client.toml. A same-profile
     // pane is refused even when the file is broken.
-    let paths = shepr_config::AppPaths::resolve_for_client()
+    let paths = shepr_paths::AppPaths::resolve_for_client()
         .map_err(CliError::from)?
         .ok_or_else(|| CliError::Nested {
             quip: random_nested_message(),
@@ -160,7 +160,7 @@ fn launch_client(mode: ClientLaunch) -> CliResult<ProcessExit> {
 
 fn launch_tui(
     loaded_config: &shepr_config::ValidatedClientConfig,
-    paths: &shepr_config::AppPaths,
+    paths: &shepr_paths::AppPaths,
 ) -> CliResult<ProcessExit> {
     autodetect::ensure_terminal_geometry()
         .map_err(|error| CliError::Client(shepr_client::ClientRunError::Launch(error)))?;
@@ -199,7 +199,7 @@ fn finish_bridge(outcome: shepr_platform::RemoteBridgeOutcome) -> CliResult<Proc
 /// of its own. The bridge writes to the host's client log, never stdout, which
 /// carries the relayed stream. A log file that cannot be opened is reported on
 /// stderr.
-fn init_client_logging(paths: &shepr_config::AppPaths) -> io::Result<()> {
+fn init_client_logging(paths: &shepr_paths::AppPaths) -> io::Result<()> {
     let logging_config = shepr_platform::logging::FileLoggingConfig::from_environment()?;
     let outcome =
         shepr_platform::logging::init_client_file_logging(paths.data_dir(), logging_config)?;
@@ -213,8 +213,8 @@ fn init_client_logging(paths: &shepr_config::AppPaths) -> io::Result<()> {
     Ok(())
 }
 
-fn resolve_bridge_paths() -> CliResult<shepr_config::AppPaths> {
-    shepr_config::AppPaths::resolve().map_err(CliError::from)
+fn resolve_bridge_paths() -> CliResult<shepr_paths::AppPaths> {
+    shepr_paths::AppPaths::resolve().map_err(CliError::from)
 }
 
 #[cfg(test)]
@@ -230,7 +230,7 @@ mod tests {
         let env = crate::test_support::IsolatedEnv::new();
         env.set(EnvVar::SheprEnv, SHEPR_ENV_IN_PANE);
         assert!(
-            shepr_config::AppPaths::resolve_for_client()
+            shepr_paths::AppPaths::resolve_for_client()
                 .expect("resolve marker")
                 .is_none()
         );
@@ -242,10 +242,10 @@ mod tests {
         env.set(EnvVar::SheprEnv, SHEPR_ENV_IN_PANE);
         env.set(
             EnvVar::SheprBuildProfile,
-            shepr_config::BuildProfile::current().marker(),
+            shepr_paths::BuildProfile::current().marker(),
         );
         assert!(
-            shepr_config::AppPaths::resolve_for_client()
+            shepr_paths::AppPaths::resolve_for_client()
                 .expect("resolve marker")
                 .is_none()
         );
@@ -255,7 +255,7 @@ mod tests {
     fn nested_shepr_does_not_block_without_env() {
         let _env = crate::test_support::IsolatedEnv::new();
         assert!(
-            shepr_config::AppPaths::resolve_for_client()
+            shepr_paths::AppPaths::resolve_for_client()
                 .expect("resolve paths")
                 .is_some()
         );
@@ -266,7 +266,7 @@ mod tests {
         let env = crate::test_support::IsolatedEnv::new();
         let scratch = shepr_test_support::ScratchDir::new("broken-launch-config");
         env.set(EnvVar::XdgConfigHome, scratch.path());
-        let paths = shepr_config::AppPaths::resolve().expect("resolve paths");
+        let paths = shepr_paths::AppPaths::resolve().expect("resolve paths");
         std::fs::create_dir_all(paths.config_dir()).expect("create config directory");
         let config = paths.client_config_file();
         std::fs::write(&config, "this = [not valid TOML").expect("write broken config");
@@ -289,9 +289,9 @@ mod tests {
         env.set(EnvVar::SheprEnv, SHEPR_ENV_IN_PANE);
         env.set(
             EnvVar::SheprBuildProfile,
-            shepr_config::BuildProfile::current().marker(),
+            shepr_paths::BuildProfile::current().marker(),
         );
-        let paths = shepr_config::AppPaths::resolve().expect("resolve paths");
+        let paths = shepr_paths::AppPaths::resolve().expect("resolve paths");
         std::fs::create_dir_all(paths.config_dir()).expect("create config directory");
         std::fs::write(paths.client_config_file(), "this = [not valid TOML")
             .expect("write broken client config");
@@ -307,13 +307,13 @@ mod tests {
     fn a_different_profile_pane_does_not_block_nesting() {
         let env = crate::test_support::IsolatedEnv::new();
         env.set(EnvVar::SheprEnv, SHEPR_ENV_IN_PANE);
-        let other_profile = match shepr_config::BuildProfile::current() {
-            shepr_config::BuildProfile::Release => "dev",
-            shepr_config::BuildProfile::Dev => "release",
+        let other_profile = match shepr_paths::BuildProfile::current() {
+            shepr_paths::BuildProfile::Release => "dev",
+            shepr_paths::BuildProfile::Dev => "release",
         };
         env.set(EnvVar::SheprBuildProfile, other_profile);
         assert!(
-            shepr_config::AppPaths::resolve_for_client()
+            shepr_paths::AppPaths::resolve_for_client()
                 .expect("resolve paths")
                 .is_some()
         );

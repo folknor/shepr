@@ -136,7 +136,7 @@ pub struct App {
     pane_teardowns: Arc<shepr_mux::pane::PaneTeardownTracker>,
     pane_launcher: shepr_mux::pane::PaneLauncher,
     pub(crate) render_dirty: Arc<shepr_mux::render_signal::RenderSignal>,
-    pub(crate) paths: shepr_config::AppPaths,
+    pub(crate) paths: shepr_paths::AppPaths,
     /// Set when this boot's restore did not bring the saved session back in
     /// full; sent to every client that connects, for the life of the boot.
     pub(crate) restore_notice: Option<shepr_protocol::SessionRestoreNotice>,
@@ -149,7 +149,7 @@ impl App {
     /// bounded receiver; the app holds no API channel.
     pub(crate) fn with_paths(
         config: &shepr_config::ValidatedServerConfig,
-        paths: &shepr_config::AppPaths,
+        paths: &shepr_paths::AppPaths,
         lease: shepr_mux::persist::DataDirLease,
         policy: AppPolicy,
         clock: AppClock,
@@ -165,7 +165,7 @@ impl App {
         let save_finished = std::sync::Arc::new(tokio::sync::Notify::new());
         // The launch settings go from the validated config straight to the
         // launcher, their one holder; `AppSettings` keeps no copy.
-        let pane_scrollback_limit_bytes = config.advanced().scrollback_limit_bytes;
+        let pane_scrollback_limit_bytes = config.scrollback_limit_bytes();
         let pane_launcher = shepr_mux::pane::PaneLauncher::new(
             shepr_mux::pane::PaneSpawnHandles {
                 events: event_tx.clone(),
@@ -276,7 +276,7 @@ impl App {
             git_refresh: git_refresh::GitRefreshScheduler::new(clock.now),
             resume_schedule: resume_schedule::ResumeSchedule::new(
                 PENDING_AGENT_RESUME_THEME_WAIT,
-                Duration::from_millis(config.session().startup_per_agent_delay_ms.into()),
+                config.session().startup_per_agent_delay,
             ),
             live_host_theme_reported: false,
             default_workspace_retry_at: None,
@@ -431,7 +431,7 @@ mod tests {
         pub(crate) fn new(config: &ServerConfig, policy: AppPolicy) -> Self {
             use crate::test_support::{AppPathsFixture as _, ValidatedServerConfigFixture as _};
             let scratch = crate::test_support::ScratchDir::new("app");
-            let paths = shepr_config::AppPaths::test_at(&scratch);
+            let paths = shepr_paths::AppPaths::test_at(&scratch);
             let config = shepr_config::ValidatedServerConfig::test_from_config_with_paths(
                 config.clone(),
                 paths.clone(),
@@ -563,7 +563,7 @@ mod tests {
         };
 
         let scratch = crate::test_support::ScratchDir::new("pruned-pane-backup");
-        let paths = shepr_config::AppPaths::test_at(&scratch);
+        let paths = shepr_paths::AppPaths::test_at(&scratch);
         let config = shepr_config::ValidatedServerConfig::test_from_config_with_paths(
             ServerConfig::default(),
             paths.clone(),

@@ -228,14 +228,14 @@ impl From<io::Error> for ServerStopError {
 /// When there is no server to stop, the stop request fails, the named server
 /// does not stop answering in time, or a different boot answers.
 pub fn stop_active_server(
-    paths: &shepr_config::AppPaths,
+    paths: &shepr_paths::AppPaths,
     expected_boot_id: Option<&BootId>,
 ) -> Result<(), ServerStopError> {
     stop_active_server_with_timeout(paths, expected_boot_id, STOP_WAIT_TIMEOUT)
 }
 
 fn stop_active_server_with_timeout(
-    paths: &shepr_config::AppPaths,
+    paths: &shepr_paths::AppPaths,
     expected_boot_id: Option<&BootId>,
     timeout: Duration,
 ) -> Result<(), ServerStopError> {
@@ -708,9 +708,9 @@ mod tests {
 
     /// An isolated environment with config and state directories under its
     /// scratch HOME.
-    fn isolated_config_env() -> (IsolatedEnv, shepr_config::AppPaths) {
+    fn isolated_config_env() -> (IsolatedEnv, shepr_paths::AppPaths) {
         let env = IsolatedEnv::new();
-        let paths = shepr_config::AppPaths::resolve().expect("isolated paths resolve");
+        let paths = shepr_paths::AppPaths::resolve().expect("isolated paths resolve");
         (env, paths)
     }
 

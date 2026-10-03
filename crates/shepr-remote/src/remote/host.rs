@@ -11,7 +11,7 @@ pub(super) const DAEMON_BOOT_EXIT_MARKER: &str = "shepr-remote-daemon-boot-exit:
 /// [`shepr_platform::RemoteBridgeOutcome::IdleExpired`] it must end the
 /// process promptly with status 1, without writing to stdout.
 pub fn run_remote_client_bridge(
-    paths: &shepr_config::AppPaths,
+    paths: &shepr_paths::AppPaths,
 ) -> io::Result<shepr_platform::RemoteBridgeOutcome> {
     let status = ensure_remote_server_running(paths)?;
     // A server of another build is answered here, never connected to: its
@@ -55,7 +55,7 @@ pub fn run_remote_client_bridge(
 /// configuration or failed start needs attention), keeping the daemon output
 /// as its diagnostic.
 fn ensure_remote_server_running(
-    paths: &shepr_config::AppPaths,
+    paths: &shepr_paths::AppPaths,
 ) -> io::Result<shepr_api::RuntimeStatus> {
     match super::local_server::ensure_running(
         paths,

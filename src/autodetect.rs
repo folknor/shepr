@@ -22,12 +22,12 @@ use std::time::Duration;
 /// run, its own result is handed back untouched for the caller to report.
 pub(crate) fn auto_detect_launch<T>(
     config: &shepr_config::ValidatedClientConfig,
-    paths: &shepr_config::AppPaths,
+    paths: &shepr_paths::AppPaths,
     server_ready_timeout: Duration,
     connectors: Vec<shepr_remote::MachineSshConnector>,
     run_client: impl FnOnce(
         &shepr_config::ValidatedClientConfig,
-        &shepr_config::AppPaths,
+        &shepr_paths::AppPaths,
         Vec<shepr_remote::MachineSshConnector>,
     ) -> T,
 ) -> Result<T, shepr_remote::local_server::LaunchError> {

@@ -72,6 +72,16 @@ impl SshTarget {
     pub fn control_key(&self) -> shepr_platform::SshControlKey<'_> {
         shepr_platform::SshControlKey::from_identity_bytes(self.0.as_bytes())
     }
+
+    /// Append this checked destination as one command-line argument.
+    pub fn append_to(&self, command: &mut std::process::Command) {
+        command.arg(self.as_str());
+    }
+
+    /// Render this destination as one POSIX shell word for operator guidance.
+    pub fn shell_word(&self) -> String {
+        shepr_core::shell_quote::quote(self.as_str())
+    }
 }
 
 impl<'de> Deserialize<'de> for SshTarget {

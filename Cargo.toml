@@ -157,6 +157,7 @@ shepr-client = { path = "crates/shepr-client" }
 shepr-config = { path = "crates/shepr-config" }
 shepr-core = { path = "crates/shepr-core" }
 shepr-detect = { path = "crates/shepr-detect" }
+shepr-paths = { path = "crates/shepr-paths" }
 shepr-platform = { path = "crates/shepr-platform" }
 shepr-protocol = { path = "crates/shepr-protocol" }
 shepr-remote = { path = "crates/shepr-remote" }

@@ -110,7 +110,7 @@ impl std::fmt::Display for ServerReady {
 /// server listens. It runs on the tokio runtime, so it must not block.
 pub fn run_server(
     config: &shepr_config::ValidatedServerConfig,
-    paths: &shepr_config::AppPaths,
+    paths: &shepr_paths::AppPaths,
     on_ready: impl FnOnce(&ServerReady),
 ) -> Result<(), RunServerError> {
     let socket = paths.server_address().socket().to_path_buf();
@@ -227,7 +227,7 @@ fn log_panics() {
 /// this server's compiled profile decides, before agent paths are resolved or
 /// any file IO starts; the inherited pane marker does not.
 fn spawn_integration_install() {
-    if !integration_install_enabled(shepr_config::BuildProfile::current()) {
+    if !integration_install_enabled(shepr_paths::BuildProfile::current()) {
         info!("agent integration installation skipped; only release servers own agent configs");
         return;
     }
@@ -242,8 +242,8 @@ fn spawn_integration_install() {
     }
 }
 
-fn integration_install_enabled(profile: shepr_config::BuildProfile) -> bool {
-    profile == shepr_config::BuildProfile::Release
+fn integration_install_enabled(profile: shepr_paths::BuildProfile) -> bool {
+    profile == shepr_paths::BuildProfile::Release
 }
 
 fn seed_startup_workspace_if_empty(app: &mut app::App, startup_cwd: Option<PathBuf>) {
@@ -308,11 +308,9 @@ mod startup_tests {
     #[test]
     fn only_release_servers_install_shared_agent_integrations() {
         assert!(integration_install_enabled(
-            shepr_config::BuildProfile::Release
+            shepr_paths::BuildProfile::Release
         ));
-        assert!(!integration_install_enabled(
-            shepr_config::BuildProfile::Dev
-        ));
+        assert!(!integration_install_enabled(shepr_paths::BuildProfile::Dev));
     }
 
     #[tokio::test]
@@ -321,7 +319,7 @@ mod startup_tests {
         use std::io::Write;
         let _env = shepr_test_support::IsolatedEnv::new();
         let scratch = shepr_test_support::ScratchDir::new("bootstrap-gate");
-        let paths = shepr_config::AppPaths::test_at(&scratch);
+        let paths = shepr_paths::AppPaths::test_at(&scratch);
         let config = shepr_config::ValidatedServerConfig::test_from_config_with_paths(
             shepr_config::ServerConfig::default(),
             paths.clone(),

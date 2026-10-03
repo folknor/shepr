@@ -7,13 +7,11 @@ use shepr_core::limits::{
     MAX_INPUT_EVENT_BATCH, MAX_TERMINAL_GRID_CELLS, MAX_TERMINAL_GRID_DIMENSION,
 };
 use shepr_core::shell::ResolvedShell;
+use shepr_paths::AppPaths;
 
 use super::{
-    AppPaths, ClientConfig, SidebarBounds,
-    model::{
-        AdvancedConfig, ClientUiConfig, ExperimentalConfig, NewTerminalCwdConfig, SessionConfig,
-        TerminalConfig,
-    },
+    ClientConfig, SidebarBounds,
+    model::{ClientUiConfig, ImeCursorShape, NewTerminalCwdConfig, TerminalConfig},
     window_title::WindowTitleTemplate,
 };
 use crate::limits::{DEFAULT_SIDEBAR_WIDTH, MIN_MOUSE_SCROLL_LINES};
@@ -398,13 +396,6 @@ impl ValidatedClientUiConfig {
     }
 }
 
-#[derive(Debug, Clone)]
-pub(crate) struct ValidatedClientValues {
-    pub(crate) palette: crate::theme::Palette,
-    pub(crate) live_keybinds: super::LiveKeybindConfig,
-    pub(crate) ui: ValidatedClientUiConfig,
-}
-
 /// One diagnostic per machine whose label an earlier entry already uses. Labels
 /// are the machines' identifiers, so they must be unique; blank labels and
 /// malformed SSH targets cannot reach here, as the types refuse them.
@@ -435,10 +426,14 @@ fn machine_label_diagnostics(machines: &[super::MachineConfig]) -> Vec<super::Co
     diagnostics
 }
 
-pub(crate) fn parse_client_config(
+/// Validate the client's values against its launch paths. `provenance` says
+/// which keys the document set. The document's unknown keys are the loader's
+/// to report.
+pub(crate) fn validate_client(
     config: &ClientConfig,
     provenance: &ConfigProvenance,
-) -> Result<ValidatedClientValues, Vec<super::ConfigDiagnostic>> {
+    paths: AppPaths,
+) -> Result<ValidatedClientConfig, Vec<super::ConfigDiagnostic>> {
     let keybind_validation = config.compute_keybind_validation(|field| {
         provenance.key_is_configured(&super::ConfigKeyPath::root().key("keys").key(field))
     });
@@ -521,7 +516,8 @@ pub(crate) fn parse_client_config(
             Some(sidebar_bounds),
             Some(sidebar_width),
             Some(mouse_scroll_lines),
-        ) => Ok(ValidatedClientValues {
+        ) => Ok(ValidatedClientConfig {
+            paths,
             palette,
             live_keybinds,
             ui: ValidatedClientUiConfig::from_config(
@@ -530,6 +526,7 @@ pub(crate) fn parse_client_config(
                 sidebar_width,
                 mouse_scroll_lines,
             ),
+            machines: config.machines.clone(),
         }),
         _ => Err(vec![super::ConfigDiagnostic::internal(
             "configuration resolution could not produce validated client values",
@@ -541,11 +538,12 @@ pub(crate) fn parse_client_config(
 /// Runtime preferences continue to live in their own mutable state.
 #[derive(Debug, Clone)]
 pub struct ValidatedClientConfig {
-    config: ClientConfig,
     paths: AppPaths,
-    resolved_palette: crate::theme::Palette,
+    palette: crate::theme::Palette,
     live_keybinds: super::LiveKeybindConfig,
     ui: ValidatedClientUiConfig,
+    /// In config order, with unique labels.
+    machines: Vec<super::MachineConfig>,
 }
 
 impl ValidatedClientConfig {
@@ -554,8 +552,8 @@ impl ValidatedClientConfig {
     /// own unset state. `None` makes every keybinding a built-in default. The
     /// document is not checked for unknown keys; a launch load does that
     /// before it gets here.
-    pub fn from_values(
-        config: ClientConfig,
+    pub fn validate(
+        config: &ClientConfig,
         source: Option<&str>,
         paths: AppPaths,
     ) -> Result<Self, Vec<super::ConfigDiagnostic>> {
@@ -568,24 +566,7 @@ impl ValidatedClientConfig {
             })
             .transpose()?;
         let provenance = ConfigProvenance::from_document(document.as_ref());
-        let values = parse_client_config(&config, &provenance)?;
-        Ok(Self::from_loaded(config, values, paths))
-    }
-
-    /// Build from a load whose diagnostics, including checked terminal paths,
-    /// are already empty.
-    pub(crate) fn from_loaded(
-        config: ClientConfig,
-        values: ValidatedClientValues,
-        paths: AppPaths,
-    ) -> Self {
-        Self {
-            config,
-            paths,
-            resolved_palette: values.palette,
-            live_keybinds: values.live_keybinds,
-            ui: values.ui,
-        }
+        validate_client(config, &provenance, paths)
     }
 
     pub fn paths(&self) -> &AppPaths {
@@ -593,7 +574,7 @@ impl ValidatedClientConfig {
     }
 
     pub fn palette(&self) -> &crate::theme::Palette {
-        &self.resolved_palette
+        &self.palette
     }
 
     pub fn ui(&self) -> &ValidatedClientUiConfig {
@@ -602,7 +583,7 @@ impl ValidatedClientConfig {
 
     /// The configured machines, in config order. Labels are unique.
     pub fn machines(&self) -> &[super::MachineConfig] {
-        &self.config.machines
+        &self.machines
     }
 
     pub fn live_keybinds(&self) -> super::LiveKeybindConfig {
@@ -621,25 +602,40 @@ pub struct ValidatedServerUiConfig {
     pub window_title: Option<WindowTitleTemplate>,
 }
 
-#[derive(Debug, Clone)]
-pub(crate) struct ValidatedServerValues {
-    pub(crate) headless_size: shepr_core::geometry::GridSize,
-    pub(crate) palette: crate::theme::Palette,
-    pub(crate) ui: ValidatedServerUiConfig,
-    pub(crate) terminal: ValidatedTerminalConfig,
+/// Session restore resolved by the server at launch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ValidatedSessionConfig {
+    /// Resume supported agent panes into their own conversations on restore.
+    pub resume_agents_on_restore: bool,
+    /// The spacing between automatic agent resumes; zero disables spacing.
+    pub startup_per_agent_delay: std::time::Duration,
 }
 
-pub(crate) fn parse_server_config(
+/// The `[experimental]` settings resolved by the server at launch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ValidatedExperimentalConfig {
+    pub pane_history: bool,
+    pub reveal_hidden_cursor_for_cjk_ime: bool,
+    /// Agents the cursor reveal is restricted to, without duplicates; empty
+    /// means every focused pane.
+    pub cjk_ime_agents: Vec<crate::ConfigAgent>,
+    pub cjk_ime_cursor_shape: ImeCursorShape,
+}
+
+/// Validate the server's values against its launch paths. The server
+/// document has no settings whose meaning depends on which keys it set, and
+/// its unknown keys are the loader's to report.
+pub(crate) fn validate_server(
     config: &super::ServerConfig,
-    paths: &AppPaths,
-) -> Result<ValidatedServerValues, Vec<super::ConfigDiagnostic>> {
+    paths: AppPaths,
+) -> Result<ValidatedServerConfig, Vec<super::ConfigDiagnostic>> {
     let palette = config.resolve_palette();
     let headless_size =
         BoundedGridSize::new(config.server.headless_cols, config.server.headless_rows)
             .ok()
             .map(BoundedGridSize::grid);
     let window_title = WindowTitleTemplate::parse(&config.ui.window_title);
-    let terminal = ValidatedTerminalConfig::parse(&config.terminal, paths);
+    let terminal = ValidatedTerminalConfig::parse(&config.terminal, &paths);
     let mut diagnostics = Vec::new();
     if let Err(errors) = &palette {
         diagnostics.extend(errors.iter().cloned());
@@ -672,7 +668,8 @@ pub(crate) fn parse_server_config(
 
     match (palette, headless_size, window_title, terminal) {
         (Ok(palette), Some(headless_size), Ok(window_title), Ok(terminal)) => {
-            Ok(ValidatedServerValues {
+            Ok(ValidatedServerConfig {
+                paths,
                 palette,
                 headless_size,
                 terminal,
@@ -683,6 +680,21 @@ pub(crate) fn parse_server_config(
                     pane_gaps: config.ui.pane_gaps,
                     show_agent_labels_on_pane_borders: config.ui.show_agent_labels_on_pane_borders,
                     window_title,
+                },
+                session: ValidatedSessionConfig {
+                    resume_agents_on_restore: config.session.resume_agents_on_restore,
+                    startup_per_agent_delay: std::time::Duration::from_millis(
+                        config.session.startup_per_agent_delay_ms.into(),
+                    ),
+                },
+                scrollback_limit_bytes: config.advanced.scrollback_limit_bytes,
+                experimental: ValidatedExperimentalConfig {
+                    pane_history: config.experimental.pane_history,
+                    reveal_hidden_cursor_for_cjk_ime: config
+                        .experimental
+                        .reveal_hidden_cursor_for_cjk_ime,
+                    cjk_ime_agents: config.experimental.cjk_ime_agents.clone(),
+                    cjk_ime_cursor_shape: config.experimental.cjk_ime_cursor_shape,
                 },
             })
         }
@@ -695,56 +707,50 @@ pub(crate) fn parse_server_config(
 /// Immutable server configuration, with no client settings.
 #[derive(Debug, Clone)]
 pub struct ValidatedServerConfig {
-    config: super::ServerConfig,
     paths: AppPaths,
-    values: ValidatedServerValues,
+    palette: crate::theme::Palette,
+    headless_size: shepr_core::geometry::GridSize,
+    ui: ValidatedServerUiConfig,
+    terminal: ValidatedTerminalConfig,
+    session: ValidatedSessionConfig,
+    scrollback_limit_bytes: usize,
+    experimental: ValidatedExperimentalConfig,
 }
 
 impl ValidatedServerConfig {
     /// Validate server values against the launch context. A launch loader also
     /// checks unknown document keys before constructing this value. Server
     /// validation has no fields that depend on the source document.
-    pub fn from_values(
-        config: super::ServerConfig,
+    pub fn validate(
+        config: &super::ServerConfig,
         paths: AppPaths,
     ) -> Result<Self, Vec<super::ConfigDiagnostic>> {
-        let values = parse_server_config(&config, &paths)?;
-        Ok(Self::from_loaded(config, values, paths))
-    }
-    pub(crate) fn from_loaded(
-        config: super::ServerConfig,
-        values: ValidatedServerValues,
-        paths: AppPaths,
-    ) -> Self {
-        Self {
-            config,
-            paths,
-            values,
-        }
+        validate_server(config, paths)
     }
     pub fn paths(&self) -> &AppPaths {
         &self.paths
     }
     pub fn palette(&self) -> &crate::theme::Palette {
-        &self.values.palette
+        &self.palette
     }
     pub fn headless_size(&self) -> shepr_core::geometry::GridSize {
-        self.values.headless_size
+        self.headless_size
     }
     pub fn ui(&self) -> &ValidatedServerUiConfig {
-        &self.values.ui
+        &self.ui
     }
     pub fn terminal(&self) -> &ValidatedTerminalConfig {
-        &self.values.terminal
+        &self.terminal
     }
-    pub fn session(&self) -> &SessionConfig {
-        &self.config.session
+    pub fn session(&self) -> &ValidatedSessionConfig {
+        &self.session
     }
-    pub fn advanced(&self) -> &AdvancedConfig {
-        &self.config.advanced
+    /// The per-pane scrollback budget in bytes; see `advanced.scrollback_limit_bytes`.
+    pub fn scrollback_limit_bytes(&self) -> usize {
+        self.scrollback_limit_bytes
     }
-    pub fn experimental(&self) -> &ExperimentalConfig {
-        &self.config.experimental
+    pub fn experimental(&self) -> &ValidatedExperimentalConfig {
+        &self.experimental
     }
 }
 
@@ -756,16 +762,6 @@ impl ValidatedClientConfig {
 }
 
 #[cfg(test)]
-impl ValidatedServerConfig {
-    pub fn new(
-        config: super::ServerConfig,
-        paths: AppPaths,
-    ) -> Result<Self, Vec<super::ConfigDiagnostic>> {
-        Self::from_values(config, paths)
-    }
-}
-
-#[cfg(test)]
 mod tests {
     use super::*;
     use crate::ServerConfig;
@@ -773,9 +769,10 @@ mod tests {
     #[test]
     fn optional_chrome_settings_keep_their_default_or_explicit_origin() {
         let scratch = shepr_test_support::ScratchDir::new("validated-client-chrome-origin");
-        let paths = AppPaths::rooted_at(scratch.path(), Some(scratch.path()), None);
+        let paths = AppPaths::rooted_at(scratch.path(), Some(scratch.path()), None)
+            .expect("scratch roots fit a socket");
         let defaults =
-            ValidatedClientConfig::from_values(ClientConfig::default(), None, paths.clone())
+            ValidatedClientConfig::validate(&ClientConfig::default(), None, paths.clone())
                 .expect("built-in chrome defaults are valid");
         assert_eq!(defaults.ui().sidebar_width().value(), 26);
         assert!(!defaults.ui().sidebar_width_is_explicit());
@@ -786,8 +783,8 @@ mod tests {
         config.ui.sidebar_width = Some(31);
         config.ui.sidebar_start_collapsed = Some(true);
         config.ui.agent_panel_sort = Some(super::super::AgentPanelSortConfig::Priority);
-        let configured = ValidatedClientConfig::from_values(
-            config,
+        let configured = ValidatedClientConfig::validate(
+            &config,
             Some(
                 "[ui]\nsidebar_width = 31\nsidebar_start_collapsed = true\nagent_panel_sort = \"priority\"\n",
             ),
@@ -806,10 +803,11 @@ mod tests {
         let scratch = shepr_test_support::ScratchDir::new("accent-value");
         let mut config = ClientConfig::default();
         config.theme.accent = Some("#123456".into());
-        let validated = ValidatedClientConfig::from_values(
-            config,
+        let validated = ValidatedClientConfig::validate(
+            &config,
             None,
-            AppPaths::rooted_at(scratch.path(), Some(scratch.path()), None),
+            AppPaths::rooted_at(scratch.path(), Some(scratch.path()), None)
+                .expect("scratch roots fit a socket"),
         )
         .expect("valid accent");
         assert_eq!(
@@ -829,10 +827,11 @@ mod tests {
         config.server.headless_rows = 31;
         config.ui.window_title = "{hostname}: {workspace}".to_owned();
         config.terminal.new_cwd = NewTerminalCwdConfig::Path("relative/worktree".to_owned());
-        let paths = AppPaths::rooted_at(scratch.path(), Some(scratch.path()), Some(scratch.path()));
+        let paths = AppPaths::rooted_at(scratch.path(), Some(scratch.path()), Some(scratch.path()))
+            .expect("scratch roots fit a socket");
 
         let validated =
-            ValidatedServerConfig::new(config, paths).expect("test configuration is valid");
+            ValidatedServerConfig::validate(&config, paths).expect("test configuration is valid");
 
         assert_eq!(
             validated.headless_size(),
@@ -855,9 +854,10 @@ mod tests {
             .expect("the shared grid budget fits in u16 rows");
         config.server.headless_cols = cols;
         config.server.headless_rows = rows;
-        let paths = AppPaths::rooted_at(scratch.path(), Some(scratch.path()), Some(scratch.path()));
+        let paths = AppPaths::rooted_at(scratch.path(), Some(scratch.path()), Some(scratch.path()))
+            .expect("scratch roots fit a socket");
 
-        let validated = ValidatedServerConfig::new(config, paths)
+        let validated = ValidatedServerConfig::validate(&config, paths)
             .expect("the exact shared terminal cell budget is valid");
 
         assert_eq!(
@@ -875,10 +875,11 @@ mod tests {
         std::fs::create_dir_all(&configured_cwd).expect("create home cwd");
         let mut config = ServerConfig::default();
         config.terminal.new_cwd = NewTerminalCwdConfig::Path("~/work".to_owned());
-        let paths = AppPaths::rooted_at(scratch.path(), Some(&home), Some(scratch.path()));
+        let paths = AppPaths::rooted_at(scratch.path(), Some(&home), Some(scratch.path()))
+            .expect("scratch roots fit a socket");
 
         let validated =
-            ValidatedServerConfig::new(config, paths).expect("test configuration is valid");
+            ValidatedServerConfig::validate(&config, paths).expect("test configuration is valid");
 
         assert_eq!(
             validated.terminal().new_cwd,
@@ -890,12 +891,13 @@ mod tests {
     fn validated_config_rejects_empty_and_missing_new_cwd_paths() {
         let _env = shepr_test_support::IsolatedEnv::new();
         let scratch = shepr_test_support::ScratchDir::new("validated-config-invalid-cwd");
-        let paths = AppPaths::rooted_at(scratch.path(), Some(scratch.path()), Some(scratch.path()));
+        let paths = AppPaths::rooted_at(scratch.path(), Some(scratch.path()), Some(scratch.path()))
+            .expect("scratch roots fit a socket");
 
         for (path, expected) in [("", "must not be empty"), ("missing", "unavailable")] {
             let mut config = ServerConfig::default();
             config.terminal.new_cwd = NewTerminalCwdConfig::Path(path.to_owned());
-            let error = ValidatedServerConfig::new(config.clone(), paths.clone())
+            let error = ValidatedServerConfig::validate(&config, paths.clone())
                 .expect_err("invalid cwd must fail config parsing");
             assert!(
                 error
@@ -910,12 +912,13 @@ mod tests {
     fn validation_reports_shell_and_new_cwd_errors_together() {
         let _env = shepr_test_support::IsolatedEnv::new();
         let scratch = shepr_test_support::ScratchDir::new("validated-config-multiple-path-errors");
-        let paths = AppPaths::rooted_at(scratch.path(), Some(scratch.path()), Some(scratch.path()));
+        let paths = AppPaths::rooted_at(scratch.path(), Some(scratch.path()), Some(scratch.path()))
+            .expect("scratch roots fit a socket");
         let mut config = ServerConfig::default();
         config.terminal.default_shell = scratch.join("missing/zsh").to_string_lossy().into_owned();
         config.terminal.new_cwd = NewTerminalCwdConfig::Path("missing-cwd".to_owned());
 
-        let errors = ValidatedServerConfig::new(config.clone(), paths)
+        let errors = ValidatedServerConfig::validate(&config, paths)
             .expect_err("both invalid terminal paths should be reported");
 
         assert!(
@@ -936,7 +939,8 @@ mod tests {
     fn launch_rejects_a_configured_shell_that_is_missing_or_unrecognised() {
         let _env = shepr_test_support::IsolatedEnv::new();
         let scratch = shepr_test_support::ScratchDir::new("validated-config-shell");
-        let paths = AppPaths::rooted_at(scratch.path(), Some(scratch.path()), Some(scratch.path()));
+        let paths = AppPaths::rooted_at(scratch.path(), Some(scratch.path()), Some(scratch.path()))
+            .expect("scratch roots fit a socket");
         let not_a_shell = shepr_test_support::fixture::stand_in(scratch.path(), "not-a-shell", &[]);
         let non_executable_shell = scratch.join("zsh");
         std::fs::write(&non_executable_shell, "not launched").expect("test precondition");
@@ -956,7 +960,7 @@ mod tests {
         ] {
             let mut config = ServerConfig::default();
             config.terminal.default_shell = shell.to_string_lossy().into_owned();
-            let error = ValidatedServerConfig::new(config.clone(), paths.clone())
+            let error = ValidatedServerConfig::validate(&config, paths.clone())
                 .expect_err("an unusable configured shell fails the launch");
             assert!(
                 error
@@ -971,7 +975,8 @@ mod tests {
     fn a_configured_shell_wins_over_an_unusable_inherited_shell() {
         let env = shepr_test_support::IsolatedEnv::new();
         let scratch = shepr_test_support::ScratchDir::new("validated-config-shell-override");
-        let paths = AppPaths::rooted_at(scratch.path(), Some(scratch.path()), Some(scratch.path()));
+        let paths = AppPaths::rooted_at(scratch.path(), Some(scratch.path()), Some(scratch.path()))
+            .expect("scratch roots fit a socket");
         let inherited = scratch.join("missing/inherited-shell");
         env.set("SHELL", &inherited);
         let configured = shepr_test_support::fixture::stand_in(scratch.path(), "zsh", &[]);
@@ -979,7 +984,7 @@ mod tests {
         let mut config = ServerConfig::default();
         config.terminal.default_shell = configured_shell.clone();
 
-        let validated = ValidatedServerConfig::new(config.clone(), paths)
+        let validated = ValidatedServerConfig::validate(&config, paths)
             .expect("a configured shell takes precedence over inherited SHELL");
 
         assert_eq!(
@@ -994,12 +999,13 @@ mod tests {
         let scratch = shepr_test_support::ScratchDir::new("validated-config-bare-shell");
         let shell = shepr_test_support::fixture::stand_in(scratch.path(), "zsh", &[]);
         env.set("PATH", scratch.path());
-        let paths = AppPaths::rooted_at(scratch.path(), Some(scratch.path()), Some(scratch.path()));
+        let paths = AppPaths::rooted_at(scratch.path(), Some(scratch.path()), Some(scratch.path()))
+            .expect("scratch roots fit a socket");
         let mut config = ServerConfig::default();
         config.terminal.default_shell = "zsh".into();
 
         let validated =
-            ValidatedServerConfig::new(config, paths).expect("a shell on PATH resolves");
+            ValidatedServerConfig::validate(&config, paths).expect("a shell on PATH resolves");
 
         assert_eq!(validated.terminal().default_shell.path(), shell.as_path());
     }
@@ -1008,7 +1014,8 @@ mod tests {
     fn shell_inputs_reject_surrounding_whitespace_without_trimming() {
         let env = shepr_test_support::IsolatedEnv::new();
         let scratch = shepr_test_support::ScratchDir::new("shell-whitespace");
-        let paths = AppPaths::rooted_at(scratch.path(), Some(scratch.path()), Some(scratch.path()));
+        let paths = AppPaths::rooted_at(scratch.path(), Some(scratch.path()), Some(scratch.path()))
+            .expect("scratch roots fit a socket");
         for value in [" /bin/sh", "/bin/sh\t", " ", "\u{2003}/bin/sh"] {
             assert!(
                 resolve_default_shell(value, &paths)
@@ -1033,7 +1040,8 @@ mod tests {
         std::fs::create_dir(&directory).expect("create non-UTF-8 directory");
         let shell = shepr_test_support::fixture::stand_in(&directory, "zsh", &[]);
         env.set("SHELL", &shell);
-        let paths = AppPaths::rooted_at(scratch.path(), Some(scratch.path()), Some(scratch.path()));
+        let paths = AppPaths::rooted_at(scratch.path(), Some(scratch.path()), Some(scratch.path()))
+            .expect("scratch roots fit a socket");
         assert_eq!(
             resolve_default_shell("", &paths)
                 .expect("valid shell")
@@ -1049,9 +1057,10 @@ mod tests {
     fn an_empty_shell_setting_takes_the_inherited_shell_and_rejects_an_unusable_one() {
         let env = shepr_test_support::IsolatedEnv::new();
         let scratch = shepr_test_support::ScratchDir::new("validated-config-inherited-shell");
-        let paths = AppPaths::rooted_at(scratch.path(), Some(scratch.path()), Some(scratch.path()));
+        let paths = AppPaths::rooted_at(scratch.path(), Some(scratch.path()), Some(scratch.path()))
+            .expect("scratch roots fit a socket");
         let config = ServerConfig::default();
-        let validate = || ValidatedServerConfig::new(config.clone(), paths.clone());
+        let validate = || ValidatedServerConfig::validate(&config, paths.clone());
 
         let zsh = shepr_test_support::fixture::stand_in(scratch.path(), "zsh", &[]);
         env.set("SHELL", &zsh);

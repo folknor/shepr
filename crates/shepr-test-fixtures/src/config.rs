@@ -3,9 +3,8 @@
 
 use std::path::Path;
 
-use shepr_config::{
-    AppPaths, ClientConfig, ServerConfig, ValidatedClientConfig, ValidatedServerConfig,
-};
+use shepr_config::{ClientConfig, ServerConfig, ValidatedClientConfig, ValidatedServerConfig};
+use shepr_paths::AppPaths;
 
 /// Absolute, so a config built on these paths survives the resolved-path
 /// check on the wire, and identical across calls, so two test configs compare
@@ -30,11 +29,11 @@ pub trait AppPathsFixture: Sized {
 impl AppPathsFixture for AppPaths {
     fn test_default() -> Self {
         let root = Path::new(UNWRITABLE_ROOT);
-        Self::rooted_at(root, Some(root), None)
+        Self::rooted_at(root, Some(root), None).expect("the unwritable root is short")
     }
 
     fn test_at(root: &Path) -> Self {
-        Self::rooted_at(root, None, None)
+        Self::rooted_at(root, None, None).expect("test roots fit the server socket")
     }
 }
 
@@ -44,7 +43,7 @@ pub trait ValidatedClientConfigFixture: Sized {
 
     /// `config`, validated on [`AppPathsFixture::test_default`] paths.
     /// `source` is the document the values stand for; see
-    /// `ValidatedClientConfig::from_values`. An invalid config is a broken test and
+    /// `ValidatedClientConfig::validate`. An invalid config is a broken test and
     /// panics.
     fn test_from_config(config: ClientConfig, source: Option<&str>) -> Self;
 
@@ -70,7 +69,7 @@ impl ValidatedClientConfigFixture for ValidatedClientConfig {
         source: Option<&str>,
         paths: AppPaths,
     ) -> Self {
-        Self::from_values(config, source, paths).expect("test config is valid")
+        Self::validate(&config, source, paths).expect("test config is valid")
     }
 }
 
@@ -96,7 +95,7 @@ impl ValidatedServerConfigFixture for ValidatedServerConfig {
     }
 
     fn test_from_config_with_paths(mut config: ServerConfig, paths: AppPaths) -> Self {
-        // `from_values` reads `SHELL` and `PATH` even with an explicit shell.
+        // `validate` reads `SHELL` and `PATH` even with an explicit shell.
         // This fixed absolute path makes both values irrelevant for default
         // fixtures; callers testing a relative shell must isolate their env.
         // Do not acquire `IsolatedEnv` here: callers may already hold its
@@ -104,6 +103,6 @@ impl ValidatedServerConfigFixture for ValidatedServerConfig {
         if config.terminal.default_shell.trim().is_empty() {
             config.terminal.default_shell = FIXTURE_SHELL.to_owned();
         }
-        Self::from_values(config, paths).expect("test config is valid")
+        Self::validate(&config, paths).expect("test config is valid")
     }
 }

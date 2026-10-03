@@ -105,7 +105,7 @@ impl ServerHandle {
 pub fn start_server(
     api_tx: ApiRequestSender,
     server_stop: Arc<crate::ServerStopSignal>,
-    paths: &shepr_config::AppPaths,
+    paths: &shepr_paths::AppPaths,
 ) -> Result<ServerHandle, shepr_platform::ipc::BindError> {
     let path = paths.server_address().socket().to_path_buf();
     let (listener, socket_file, startup_lock) =

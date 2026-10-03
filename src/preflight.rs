@@ -32,7 +32,7 @@ use shepr_remote::{
 /// running is reported with what to do about it.
 pub(crate) fn run(
     config: &shepr_config::ValidatedClientConfig,
-    paths: &shepr_config::AppPaths,
+    paths: &shepr_paths::AppPaths,
 ) -> Vec<shepr_remote::MachineSshConnector> {
     // Questions go to stderr and answers come from stdin, and ssh prompts use
     // the terminal too, so asking needs both to be a terminal.
@@ -103,7 +103,7 @@ pub(crate) fn run(
 /// not an address this client can launch for, so it gets no restart offer. A
 /// server that cannot be read is also left for the launch that follows to
 /// report.
-fn local_server_status(paths: &shepr_config::AppPaths) -> Option<RuntimeStatus> {
+fn local_server_status(paths: &shepr_paths::AppPaths) -> Option<RuntimeStatus> {
     if !paths.server_address().is_runtime_address() {
         return None;
     }
