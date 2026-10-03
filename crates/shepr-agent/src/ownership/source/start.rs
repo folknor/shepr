@@ -18,9 +18,9 @@ impl AgentOwnership {
         let Some(persisted_session) = origin.session(session_ref.clone()) else {
             return HookOutcome::Rejected(HookRejection::InvalidSession);
         };
-        let source = origin.source().clone();
-        let agent_label = origin.agent().clone();
-        if self.known_agent_label_conflicts_with_detected_agent(origin) {
+        let source = *origin.source();
+        let agent = origin.agent();
+        if self.origin_conflicts_with_detected_agent(origin) {
             return HookOutcome::Rejected(HookRejection::DetectedAgentConflict);
         }
         let owner_conflicts = self.current_session_owner_conflicts(origin);
@@ -33,10 +33,8 @@ impl AgentOwnership {
         if owner_conflicts && !foreground_takeover_allowed {
             return HookOutcome::Rejected(HookRejection::OwnerConflict);
         }
-        let known_agent = origin.known_agent();
-        let process_present = known_agent.is_some()
-            && self.detected_agent == known_agent
-            && self.process_evidence.exit().is_none();
+        let process_present =
+            self.detected_agent == Some(agent) && self.process_evidence.exit().is_none();
         let full_lifecycle_source = origin.is_full_lifecycle();
         let session_anchored = self.hook_authority.as_ref().is_some_and(|authority| {
             authority.origin == *origin && authority.session_ref.is_some()
@@ -48,7 +46,7 @@ impl AgentOwnership {
             let empty_source = HookSourceState::default();
             let record = self.hook_sources.get(&source).unwrap_or(&empty_source);
             record.start_route(
-                &agent_label,
+                agent,
                 process_present,
                 session_anchored,
                 unsequenced_selection,
@@ -68,15 +66,12 @@ impl AgentOwnership {
                         .filter(|session| origin.owns(session))
                         .map(|session| session.session_ref.clone())
                 });
-            if !self.hook_report_sequence_has_room(&source) || !self.prepare_hook_source(&source) {
-                return HookOutcome::Rejected(HookRejection::SourceCapacity);
-            }
             self.hook_sources
                 .entry(source)
                 .or_default()
                 .transition(HookSourceEvent::ParkStart(
                     SuppressedFullLifecycleHookReport {
-                        agent_label,
+                        agent,
                         session_ref: previous_session_ref,
                         observed_at: now,
                         pending_start: None,
@@ -96,22 +91,14 @@ impl AgentOwnership {
             if !self.hook_report_order_allows(&source, Some(seq), sample) {
                 return HookOutcome::Rejected(HookRejection::OutOfOrder);
             }
-            if !self.hook_report_sequence_has_room(&source) {
-                return HookOutcome::Rejected(HookRejection::SourceCapacity);
-            }
 
-            let previous_agent_label = self.effective_agent_label().map(str::to_string);
+            let previous_agent = self.effective_agent();
             let previous_state = self.state;
             let previous_session = self.current_session_identity_for_persistence();
-            if !self.prepare_hook_source(&source) {
-                return HookOutcome::Rejected(HookRejection::SourceCapacity);
-            }
-            self.hook_sources
-                .entry(source.clone())
-                .or_default()
-                .transition(HookSourceEvent::ParkOrderedStart(
+            self.hook_sources.entry(source).or_default().transition(
+                HookSourceEvent::ParkOrderedStart(
                     SuppressedFullLifecycleHookReport {
-                        agent_label: agent_label.clone(),
+                        agent,
                         session_ref: None,
                         observed_at: now,
                         pending_start: None,
@@ -120,18 +107,19 @@ impl AgentOwnership {
                     persisted_session,
                     seq,
                     sample,
-                ));
+                ),
+            );
 
             if process_present {
                 self.clear_full_lifecycle_hook_suppression_for_detected_agent(
                     None,
-                    known_agent,
+                    Some(agent),
                     now,
                 );
                 let current_session = self.current_session_identity_for_persistence();
                 return HookOutcome::Applied(AgentOwnershipMutation {
                     effective_state_change: self
-                        .recompute_effective_state(previous_agent_label.as_deref(), previous_state),
+                        .recompute_effective_state(previous_agent, previous_state),
                     session_ref_changed: previous_session != current_session,
                     agent_released: false,
                 });
@@ -139,17 +127,10 @@ impl AgentOwnership {
             return HookOutcome::Parked;
         }
         let session_replacement_allowed = origin.allows_session_replacement(session_start_source);
-        let Some(session_agent) = origin.official_agent() else {
-            return HookOutcome::Rejected(HookRejection::UnsupportedOrigin);
-        };
         let replacing_identity_only_session =
-            session_agent
-                .descriptor()
-                .integration
-                .is_some_and(|integration| {
-                    integration.capability == crate::agent::IntegrationCapability::IdentityOnly
-                })
-                && session_replacement_allowed
+            agent.descriptor().integration.is_some_and(|integration| {
+                integration.capability == crate::agent::IntegrationCapability::IdentityOnly
+            }) && session_replacement_allowed
                 && self
                     .current_session_identity_for_persistence()
                     .is_some_and(|current| {
@@ -179,16 +160,11 @@ impl AgentOwnership {
         if !unsequenced_selection && !self.hook_report_order_allows(&source, seq, sample) {
             return HookOutcome::Rejected(HookRejection::OutOfOrder);
         }
-        if seq.is_some()
-            && (!self.hook_report_sequence_has_room(&source) || !self.prepare_hook_source(&source))
-        {
-            return HookOutcome::Rejected(HookRejection::SourceCapacity);
-        }
         let selection = selection_can_reconcile.then(|| {
             self.current_session_identity_for_persistence()
                 .is_some_and(|current| origin.owns(&current) && current.session_ref == session_ref)
         });
-        let previous_agent_label = self.effective_agent_label().map(str::to_string);
+        let previous_agent = self.effective_agent();
         let previous_state = self.state;
         let previous_session = self.current_session_identity_for_persistence();
         let replacement_clears_authority = session_replacement_allowed
@@ -234,8 +210,7 @@ impl AgentOwnership {
         self.checkpoint_candidate = None;
         let current_session = self.current_session_identity_for_persistence();
         HookOutcome::Applied(AgentOwnershipMutation {
-            effective_state_change: self
-                .recompute_effective_state(previous_agent_label.as_deref(), previous_state),
+            effective_state_change: self.recompute_effective_state(previous_agent, previous_state),
             session_ref_changed: previous_session != current_session,
             agent_released: false,
         })

@@ -27,21 +27,8 @@ only their parent module uses them, and `OverlayRender` and
 `render_client_overlay` in `overlays/mod.rs` are `pub(crate)`; an item-level
 visibility pass would make the module tree mean something. (wave-7 review)
 
-## CLN-030 - The server tracks custom report origins the TUI no longer shows
-
-The server still accepts and tracks free-label custom report origins
-(`ReportedAgent::Custom`, non-`shepr:` sources in `ReportOrigin::parse`, the API
-agent label in pane info), though the TUI projection carries only a known
-`Agent` and shepr installs no third-party reporter. Rejecting non-official
-sources at `app/api/panes/reports.rs` and deleting `ReportedAgent::Custom` would
-make the server agree with the TUI; it cuts across shepr-agent ownership, mux
-persistence and their tests. (wave-7 adjudication)
-
 ## CLN-031 - Leftovers from the eleventh light-loop wave
 
-- `EndpointError::Rejected` (`crates/shepr-protocol/src/command.rs`) has no
-  server producer now that every refusal has a typed category; only client tests
-  build it. Remove it, or keep it as a documented policy-refusal category.
 - `crates/shepr-platform/src/config_file.rs`: `create_config_temporary` and
   `write_config_temporary` are used only by platform tests now that the agent
   integration publishes through `PreparedFile`.
@@ -53,8 +40,6 @@ persistence and their tests. (wave-7 adjudication)
   duplicates `ensure_managed_ssh_config` for the connector state.
 - `crates/shepr-client/src/shell/ledger.rs`: the endpoint-response handler keeps
   an unused `_now: Instant` parameter.
-- `crates/shepr-server/src/app/api/endpoint.rs`: `endpoint_rejected` returns
-  `InvalidArgument`; its name no longer matches the category.
 - `crates/shepr-server/src/app/api/detect.rs`: `handle_detect_capture` repeats
   `json_pane`'s parse and error because it needs the parsed id.
 - `crates/shepr-protocol/src/identity.rs`: `RequestId::allocate` uses a plain

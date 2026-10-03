@@ -556,7 +556,7 @@ mod tests {
                 *terminal = shepr_mux::terminal::TerminalState::new(terminal.id.clone(), missing);
             }
             let session = shepr_agent::agent::resume::PersistedAgentSession::new(
-                shepr_agent::agent::AgentSource::parse("shepr:codex"),
+                shepr_agent::agent::AgentSource::parse("shepr:codex").expect("bundled source"),
                 shepr_agent::agent::Agent::Codex,
                 shepr_agent::agent::resume::AgentSessionRef::id("resume-test")
                     .expect("test precondition"),
@@ -597,7 +597,7 @@ mod tests {
             assert!(terminal.restore_error().is_some());
             // No process will ever run here: the seeded detection goes.
             assert_eq!(terminal.ownership().detected_agent(), None);
-            assert_eq!(terminal.ownership().effective_known_agent(), None);
+            assert_eq!(terminal.ownership().effective_agent(), None);
             assert!(!app.has_pending_agent_resumes());
             assert!(!app.start_pending_agent_resumes(now));
         }

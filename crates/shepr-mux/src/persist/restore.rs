@@ -763,7 +763,7 @@ fn persisted_agent_session_from_snapshot(
     session: &PaneAgentSessionSnapshot,
 ) -> Option<shepr_agent::agent::resume::PersistedAgentSession> {
     shepr_agent::agent::resume::PersistedAgentSession::new(
-        session.source().clone(),
+        *session.source(),
         session.agent(),
         session.session_ref().clone(),
     )
@@ -919,7 +919,7 @@ mod tests {
         session_ref: shepr_agent::agent::resume::AgentSessionRef,
     ) -> shepr_agent::agent::resume::PersistedAgentSession {
         shepr_agent::agent::resume::PersistedAgentSession::new(
-            shepr_agent::agent::AgentSource::parse(source),
+            shepr_agent::agent::AgentSource::parse(source).expect("bundled test source"),
             agent,
             session_ref,
         )
@@ -1646,7 +1646,7 @@ mod tests {
 
         assert!(
             shepr_agent::agent::resume::PersistedAgentSession::new(
-                shepr_agent::agent::AgentSource::parse("shepr:claude"),
+                shepr_agent::agent::AgentSource::parse("shepr:claude").expect("bundled source"),
                 shepr_agent::agent::Agent::Claude,
                 shepr_agent::agent::resume::AgentSessionRef::path(test_session_path(
                     "claude-session",
@@ -2203,7 +2203,7 @@ mod tests {
         assert!(
             terminals[terminal_id]
                 .ownership()
-                .effective_agent_label()
+                .effective_agent()
                 .is_none()
         );
     }

@@ -456,7 +456,7 @@ mod tests {
             7,
             &lease().boot_id,
             &"client-shell-view:1:on".into(),
-            Err(EndpointError::Rejected("denied".into())),
+            Err(EndpointError::ShuttingDown),
         );
         acknowledge_after_rejection(p);
         pair(p, 2);

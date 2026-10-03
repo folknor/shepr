@@ -183,7 +183,7 @@ fn new_workspace_label_answer_keeps_a_user_edit_and_a_failure_keeps_the_suggesti
         &boot_id,
         &request,
         Err(ClientShellEndpointError::Server(
-            shepr_protocol::command::EndpointError::Rejected("git failed".into()),
+            shepr_protocol::command::EndpointError::ResourceFailure("git failed".into()),
         )),
         state.now,
     );

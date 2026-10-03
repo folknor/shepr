@@ -4,7 +4,7 @@
 mod report;
 pub mod resume;
 
-pub use report::{HookAuthorityClass, ReportOrigin, ReportOriginError, ReportedAgent};
+pub use report::{HookAuthorityClass, ReportOrigin, ReportOriginError};
 
 use std::collections::HashMap;
 use std::fmt;
@@ -981,41 +981,73 @@ impl IntegrationTarget {
     pub const fn hook_events(self) -> &'static [IntegrationHookEvent] {
         self.agent().integration_hook_events()
     }
+
+    /// The integration this target names. Total: `TARGETS_HAVE_INTEGRATIONS`
+    /// proves at compile time that every target's agent carries a descriptor
+    /// for that same target, so the panic arm cannot be reached.
+    pub const fn integration(self) -> IntegrationDescriptor {
+        // Naming the check here forces its evaluation into every build.
+        let () = TARGETS_HAVE_INTEGRATIONS;
+        match self.agent().descriptor().integration {
+            Some(integration) => integration,
+            None => panic!("integration target without an integration descriptor"),
+        }
+    }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum AgentSource {
-    Official(IntegrationTarget),
-    Custom(String),
-}
+/// Every descriptor's integration names a target whose inverse is that
+/// descriptor's agent, and as many descriptors carry one as there are targets.
+/// Together these make `IntegrationTarget::agent` and the descriptor table
+/// inverses, which `IntegrationTarget::integration` relies on.
+const TARGETS_HAVE_INTEGRATIONS: () = {
+    let mut index = 0;
+    let mut integrations = 0;
+    while index < AGENTS.len() {
+        if let Some(integration) = AGENTS[index].integration {
+            assert!(integration.target.agent() as usize == index);
+            integrations += 1;
+        }
+        index += 1;
+    }
+    // `Grok` is the last `IntegrationTarget` variant.
+    assert!(integrations == IntegrationTarget::Grok as usize + 1);
+};
+
+/// The reporting identity of a bundled integration: its `shepr:`-prefixed
+/// source string, which names exactly one agent. shepr accepts reports and
+/// saved session identities from no other source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct AgentSource(IntegrationTarget);
 
 impl AgentSource {
-    pub fn parse(value: &str) -> Self {
+    pub const fn new(target: IntegrationTarget) -> Self {
+        Self(target)
+    }
+
+    /// The bundled integration whose source string is exactly `value`.
+    pub fn parse(value: &str) -> Option<Self> {
         Agent::parse_source(value)
             .and_then(Agent::integration_target)
-            .map_or_else(|| Self::Custom(value.to_owned()), Self::Official)
+            .map(Self)
     }
 
-    // Persisted string inputs and resume constructors still need an
-    // exact official source/label pair. Live report arbitration uses the typed
-    // ReportOrigin and does not use this narrower identity predicate.
+    /// An exact source and canonical agent label pair, as persisted string
+    /// inputs and resume constructors carry it.
     pub fn from_pair(source: &str, agent_label: &str) -> Option<Self> {
         let target = Agent::parse_canonical_label(agent_label)?.integration_target()?;
-        (target.source() == source).then_some(Self::Official(target))
+        (target.source() == source).then_some(Self(target))
     }
 
-    pub fn as_str(&self) -> &str {
-        match self {
-            Self::Official(target) => target.source(),
-            Self::Custom(source) => source,
-        }
+    pub const fn as_str(self) -> &'static str {
+        self.0.source()
     }
 
-    pub const fn agent(&self) -> Option<Agent> {
-        match self {
-            Self::Official(target) => Some(target.agent()),
-            Self::Custom(_) => None,
-        }
+    pub const fn target(self) -> IntegrationTarget {
+        self.0
+    }
+
+    pub const fn agent(self) -> Agent {
+        self.0.agent()
     }
 }
 
@@ -1102,13 +1134,14 @@ impl<'de> Deserialize<'de> for AgentSource {
         impl Visitor<'_> for SourceVisitor {
             type Value = AgentSource;
             fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-                formatter.write_str("an integration source string")
+                formatter.write_str("a bundled integration source string")
             }
             fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
             where
                 E: serde::de::Error,
             {
-                Ok(AgentSource::parse(value))
+                AgentSource::parse(value)
+                    .ok_or_else(|| E::custom(format!("unsupported agent source: {value}")))
             }
         }
         deserializer.deserialize_str(SourceVisitor)
@@ -1122,8 +1155,9 @@ mod tests {
     #[test]
     fn official_sources_round_trip_with_nonempty_names() {
         for target in IntegrationTarget::all() {
-            let source = AgentSource::Official(target);
+            let source = AgentSource::new(target);
             assert!(!source.as_str().is_empty());
+            assert_eq!(AgentSource::parse(source.as_str()), Some(source));
             assert_eq!(target.agent().integration_source(), Some(target.source()));
             let json = serde_json::to_string(&source).expect("serialize source");
             assert_eq!(
@@ -1155,7 +1189,7 @@ mod tests {
             if let Some(source) = agent.integration_source() {
                 assert_eq!(
                     AgentSource::from_pair(source, descriptor.label),
-                    agent.integration_target().map(AgentSource::Official)
+                    agent.integration_target().map(AgentSource::new)
                 );
             }
         }
@@ -1205,12 +1239,15 @@ mod tests {
                 expected
             );
             let authority = match expected {
-                Some(ScreenOwnedSession | IdentityOnly) => HookAuthorityClass::SessionOnly,
-                Some(FullLifecycle) => HookAuthorityClass::FullLifecycle,
-                Some(PartialState) | None => HookAuthorityClass::PartialState,
+                Some(ScreenOwnedSession | IdentityOnly) => Some(HookAuthorityClass::SessionOnly),
+                Some(FullLifecycle) => Some(HookAuthorityClass::FullLifecycle),
+                Some(PartialState) => Some(HookAuthorityClass::PartialState),
+                None => None,
             };
             assert_eq!(
-                descriptor.hook_authority_class(),
+                descriptor
+                    .integration
+                    .map(|integration| integration.authority_class()),
                 authority,
                 "{}",
                 descriptor.label

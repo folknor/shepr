@@ -1,8 +1,7 @@
 use super::*;
 
-pub(super) struct EffectiveAgent<'a> {
-    pub(super) label: Option<&'a str>,
-    pub(super) known_agent: Option<Agent>,
+pub(super) struct EffectiveRow {
+    pub(super) agent: Option<Agent>,
     pub(super) state: AgentState,
     pub(super) source: EffectiveStateSource,
 }
@@ -22,23 +21,23 @@ impl AgentOwnership {
     /// - without an effective hook, detection supplies identity and state.
     ///
     /// Process exits withdraw detector identity; suspension does not.
-    pub(super) fn effective_agent(&self) -> EffectiveAgent<'_> {
+    pub(super) fn effective_row(&self) -> EffectiveRow {
         let hook = self.hook_authority.as_ref().and_then(|authority| {
-            let known = authority.origin.known_agent();
+            let agent = authority.origin.agent();
             let full = authority.origin.is_full_lifecycle();
-            (!full || (known == self.detected_agent && self.process_evidence.exit().is_none()))
-                .then_some((authority, known, full))
+            (!full
+                || (Some(agent) == self.detected_agent && self.process_evidence.exit().is_none()))
+            .then_some((authority, agent, full))
         });
         match hook {
-            Some((authority, known_agent, full_lifecycle_hook)) => {
+            Some((authority, agent, full_lifecycle_hook)) => {
                 let visible_blocker = !full_lifecycle_hook
                     && self.fallback_visible_blocker
                     && self.fallback_not_older_than_hook()
-                    && known_agent == self.detected_agent
+                    && Some(agent) == self.detected_agent
                     && authority.state != AgentState::Blocked;
-                EffectiveAgent {
-                    label: Some(authority.origin.label()),
-                    known_agent,
+                EffectiveRow {
+                    agent: Some(agent),
                     state: if visible_blocker {
                         AgentState::Blocked
                     } else {
@@ -53,33 +52,27 @@ impl AgentOwnership {
                     },
                 }
             }
-            None => {
-                let known_agent = self
+            None => EffectiveRow {
+                agent: self
                     .process_evidence
                     .exit()
                     .is_none()
                     .then_some(self.detected_agent)
-                    .flatten();
-                EffectiveAgent {
-                    label: known_agent.map(Agent::label),
-                    known_agent,
-                    state: self.fallback_state,
-                    source: if self.pane_ended || self.process_evidence.exit().is_some() {
-                        EffectiveStateSource::ProcessExit
-                    } else {
-                        EffectiveStateSource::Screen
-                    },
-                }
-            }
+                    .flatten(),
+                state: self.fallback_state,
+                source: if self.pane_ended || self.process_evidence.exit().is_some() {
+                    EffectiveStateSource::ProcessExit
+                } else {
+                    EffectiveStateSource::Screen
+                },
+            },
         }
     }
 
-    pub fn effective_agent_label(&self) -> Option<&str> {
-        self.effective_agent().label
-    }
-
-    pub fn effective_known_agent(&self) -> Option<Agent> {
-        self.effective_agent().known_agent
+    /// The agent the pane presents: the effective hook's, else the detected
+    /// one while its process is present.
+    pub fn effective_agent(&self) -> Option<Agent> {
+        self.effective_row().agent
     }
 
     pub fn unchanged_effective_state_change(&self) -> EffectiveStateChange {

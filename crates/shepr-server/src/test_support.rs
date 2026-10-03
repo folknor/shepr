@@ -350,7 +350,7 @@ pub(crate) fn test_codex_plan(
     use shepr_agent::agent::{AgentSource, IntegrationTarget};
     let session_id = identity.rsplit('\0').next().unwrap_or(identity);
     let session = PersistedAgentSession::new(
-        AgentSource::Official(IntegrationTarget::Codex),
+        AgentSource::new(IntegrationTarget::Codex),
         Agent::Codex,
         AgentSessionRef::id(session_id).expect("test session id is valid"),
     )

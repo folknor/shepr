@@ -83,7 +83,7 @@ impl App {
                     ScreenDetectionSkipReason::HookAuthority
                 };
             let explain = DetectionExplanation::hook_authority(
-                authority.origin.label(),
+                authority.origin.agent().label(),
                 terminal.ownership().state(),
                 authority.origin.source().as_str(),
                 skip_reason,
@@ -92,7 +92,7 @@ impl App {
         }
         let Some(agent) = terminal
             .ownership()
-            .effective_known_agent()
+            .effective_agent()
             .or(terminal.ownership().detected_agent())
         else {
             return failure(

@@ -27,12 +27,14 @@ Kept:
 - Agent detection from bundled manifests (`crates/shepr-agent/src/detect/manifests/*.toml`),
   compiled into the binary
 - Agent integrations (`crates/shepr-agent/src/integration/`): hooks installed into each agent's
-  own config that report state and session IDs back to shepr. A release server
-  installs or updates them at launch for every agent whose config directory
-  exists on its host. Dev servers log that integration installation is skipped
-  and use screen detection; release hooks report only from release panes.
-  Agent session IDs and hook-only states are therefore unavailable in dev
-  panes. There is no install or uninstall command
+  own config that report state and session IDs back to shepr. The server
+  accepts a report only from these integrations, each under its own
+  `shepr:<agent>` source naming its agent; any other source is refused. A
+  release server installs or updates them at launch for every agent whose
+  config directory exists on its host. Dev servers log that integration
+  installation is skipped and use screen detection; release hooks report only
+  from release panes. Agent session IDs and hook-only states are therefore
+  unavailable in dev panes. There is no install or uninstall command
 - Session restore (layout saved to disk, rebuilt with fresh shells) and agent
   resume on restore
 - Git status in the sidebar (branch, ahead/behind)

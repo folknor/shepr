@@ -1,14 +1,15 @@
-use crate::limits::{MAX_HOOK_REPORT_SOURCES, MAX_STALE_FULL_LIFECYCLE_HOOK_SESSIONS_PER_SOURCE};
+use crate::limits::MAX_STALE_FULL_LIFECYCLE_HOOK_SESSIONS_PER_SOURCE;
 use std::collections::HashMap;
 use std::time::{Instant, SystemTime};
 
 // Effective state arbitration is intentionally centralized here. Full lifecycle
 // Shepr hook integrations are hook-authoritative while live; screen recovery
-// remains only for session-only/custom hook paths and fallback detection.
-// Confirmed process-exit updates clear matching authority before recomputing state.
+// remains only for session-only and partial-state hook paths and fallback
+// detection. Confirmed process-exit updates clear matching authority before
+// recomputing state.
 
 use crate::agent::resume::{AgentSessionStartSource, ReportedSessionStart};
-use crate::agent::{AgentSource, ReportOrigin, ReportedAgent};
+use crate::agent::{AgentSource, ReportOrigin};
 use crate::detect::{Agent, AgentState};
 
 /// One caller-sampled clock pair used throughout a report's validation and commit.
@@ -67,9 +68,7 @@ pub enum HookRejection {
     UnrecognizedStart,
     MissingSequence,
     OutOfOrder,
-    SourceCapacity,
     ProcessRequired,
-    UnsupportedOrigin,
 }
 
 impl HookOutcome {
@@ -142,8 +141,8 @@ pub struct AgentOwnership {
     // per-source copies would create competing owners and equality invariants.
     hook_authority: Option<HookAuthority>,
     persisted_agent_session: Option<crate::agent::resume::PersistedAgentSession>,
-    // Sequence numbers belong to a reporter, even if its custom label changes.
-    // Keying by the complete origin would let a renamed label bypass ordering.
+    // Sequence numbers, release gates and retired identities belong to one
+    // integration source.
     hook_sources: HashMap<AgentSource, HookSourceState>,
     state: AgentState,
     last_agent_state_change_seq: Option<u64>,

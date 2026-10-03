@@ -7,12 +7,11 @@ use super::common::PaneAgentState;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaneReportAgentParams {
     pub pane_id: String,
-    /// The shepr: namespace is reserved for bundled integrations, whose source
-    /// must match the resolved agent. Other names are custom state reporters
-    /// and cannot own a resume identity.
+    /// The source of a bundled integration (`shepr:<agent>`). Any other
+    /// source is refused with `invalid_agent`.
     pub source: String,
-    /// Resolved and validated with source before internal dispatch. The JSON
-    /// boundary retains strings so custom reporter names remain an open set.
+    /// The agent the source belongs to, resolved and validated with source
+    /// before internal dispatch; a label naming another agent is refused.
     pub agent: String,
     pub state: PaneAgentState,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -29,10 +28,9 @@ pub struct PaneReportAgentParams {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PaneReportAgentSessionParams {
     pub pane_id: String,
-    /// The same reserved namespace and source/agent validation as a state report.
+    /// The same source and agent validation as a state report.
     pub source: String,
-    /// Resolved and validated with source before internal dispatch. The JSON
-    /// boundary retains strings so custom reporter names remain an open set.
+    /// Resolved and validated with source before internal dispatch.
     pub agent: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seq: Option<u64>,
@@ -89,8 +87,8 @@ mod tests {
     fn state_report_ignores_extra_message_without_storing_or_serializing_it() {
         let params: PaneReportAgentParams = serde_json::from_value(serde_json::json!({
             "pane_id": "w1:p1",
-            "source": "custom:state",
-            "agent": "custom",
+            "source": "shepr:codex",
+            "agent": "codex",
             "state": "working",
             "message": "unused integration annotation"
         }))

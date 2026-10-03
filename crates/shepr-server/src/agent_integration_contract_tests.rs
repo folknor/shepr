@@ -427,19 +427,19 @@ fn replay_and_assert_contract(
     let origin =
         ReportOrigin::official(contract.agent).expect("a bundled asset has an integration");
     let expected_session =
-        PersistedAgentSession::new(origin.source().clone(), contract.agent, session_ref)
+        PersistedAgentSession::new(*origin.source(), contract.agent, session_ref)
             .expect("supported agent session identity");
 
     for (index, request) in requests.iter().enumerate() {
-        // The App accepts custom sources too; a bundled asset must report
-        // under its own official one.
+        // Another bundled source would be accepted too; a bundled asset must
+        // report under its own.
         let source = request
             .pointer("/params/source")
             .and_then(Value::as_str)
             .unwrap_or_else(|| panic!("{} request {index} names no source", contract.asset));
         assert_eq!(
-            &AgentSource::parse(source),
-            origin.source(),
+            AgentSource::parse(source).as_ref(),
+            Some(origin.source()),
             "{} request {index} used another source",
             contract.asset
         );

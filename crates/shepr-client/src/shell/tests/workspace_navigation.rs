@@ -810,7 +810,9 @@ fn failed_local_navigation_releases_only_its_own_highlight() {
                     ClientShellEndpointError::Timeout
                 } else {
                     ClientShellEndpointError::Server(
-                        shepr_protocol::command::EndpointError::Rejected("focus failed".into()),
+                        shepr_protocol::command::EndpointError::WorkspaceGone(
+                            "w3".parse().expect("workspace id"),
+                        ),
                     )
                 }),
             );
@@ -953,7 +955,9 @@ fn directional_pane_focus_releases_an_accepted_workspace_highlight() {
             assert_local_highlight(&mut state, "w1");
             let result = if rejected {
                 Err(ClientShellEndpointError::Server(
-                    shepr_protocol::command::EndpointError::Rejected("focus rejected".into()),
+                    shepr_protocol::command::EndpointError::WorkspaceGone(
+                        "w3".parse().expect("workspace id"),
+                    ),
                 ))
             } else {
                 Ok(EndpointReply::Done)

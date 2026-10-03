@@ -579,8 +579,6 @@ pub enum EndpointReply {
 /// Why an [`EndpointCommand`] failed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EndpointError {
-    /// A policy refusal whose message is for the user.
-    Rejected(String),
     WorkspaceGone(WorkspaceId),
     PaneGone(PublicPaneId),
     SplitGone,
@@ -603,8 +601,7 @@ pub enum EndpointError {
 impl std::fmt::Display for EndpointError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Rejected(message)
-            | Self::InvalidArgument(message)
+            Self::InvalidArgument(message)
             | Self::Busy(message)
             | Self::ResourceFailure(message)
             | Self::Internal(message)

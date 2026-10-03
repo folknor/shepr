@@ -4,7 +4,11 @@ impl TerminalState {
     pub fn border_label(&self, show_agent_labels: bool) -> Option<Label> {
         self.manual_label.clone().or_else(|| {
             show_agent_labels
-                .then(|| self.ownership.effective_agent_label().and_then(Label::new))
+                .then(|| {
+                    self.ownership
+                        .effective_agent()
+                        .and_then(|agent| Label::new(agent.label()))
+                })
                 .flatten()
         })
     }

@@ -1,53 +1,22 @@
 use super::resume::{AgentSessionRef, PersistedAgentSession, ReportedSessionStart};
 use super::{Agent, AgentSource};
 
-/// A report label is either a resolved built-in agent or an open custom name.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum ReportedAgent {
-    Known(Agent),
-    Custom(String),
-}
-
-impl ReportedAgent {
-    pub fn parse(label: &str) -> Option<Self> {
-        let label = label.trim();
-        if label.is_empty() {
-            return None;
-        }
-        Some(
-            crate::detect::parse_agent_label(label)
-                .map_or_else(|| Self::Custom(label.to_owned()), Self::Known),
-        )
-    }
-
-    pub fn label(&self) -> &str {
-        match self {
-            Self::Known(agent) => agent.label(),
-            Self::Custom(label) => label,
-        }
-    }
-
-    pub const fn known(&self) -> Option<Agent> {
-        match self {
-            Self::Known(agent) => Some(*agent),
-            Self::Custom(_) => None,
-        }
-    }
-}
-
-/// Validated ownership shared by state and session reports. Its fields are
-/// private so an official source cannot claim a different agent.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// Validated ownership shared by state and session reports: a bundled
+/// integration's source and the agent it names. The field is private so a
+/// report cannot claim a different agent than its source belongs to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ReportOrigin {
     source: AgentSource,
-    agent: ReportedAgent,
 }
 
+/// Why a report's source and agent label were refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReportOriginError {
     EmptyAgent,
+    /// The source is not a bundled integration's.
+    UnsupportedSource,
+    /// The label does not name the agent the source belongs to.
     MismatchedAgent,
-    UnknownOfficialSource,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,28 +37,20 @@ impl HookAuthorityClass {
 
 impl ReportOrigin {
     pub fn parse(source: &str, label: &str) -> Result<Self, ReportOriginError> {
-        let agent = ReportedAgent::parse(label).ok_or(ReportOriginError::EmptyAgent)?;
-        Self::new(AgentSource::parse(source), agent)
-    }
-
-    fn new(source: AgentSource, agent: ReportedAgent) -> Result<Self, ReportOriginError> {
-        if let Some(official) = source.agent() {
-            if agent.known() != Some(official) {
-                return Err(ReportOriginError::MismatchedAgent);
-            }
-        } else if source.as_str().starts_with("shepr:") {
-            // This namespace belongs to bundled integrations. A misspelled
-            // built-in source must not silently become a custom state owner.
-            return Err(ReportOriginError::UnknownOfficialSource);
+        let label = label.trim();
+        if label.is_empty() {
+            return Err(ReportOriginError::EmptyAgent);
         }
-        Ok(Self { source, agent })
+        let source = AgentSource::parse(source).ok_or(ReportOriginError::UnsupportedSource)?;
+        if crate::detect::parse_agent_label(label) != Some(source.agent()) {
+            return Err(ReportOriginError::MismatchedAgent);
+        }
+        Ok(Self { source })
     }
 
     pub fn official(agent: Agent) -> Option<Self> {
-        let target = agent.integration_target()?;
         Some(Self {
-            source: AgentSource::Official(target),
-            agent: ReportedAgent::Known(agent),
+            source: AgentSource::new(agent.integration_target()?),
         })
     }
 
@@ -97,27 +58,12 @@ impl ReportOrigin {
         &self.source
     }
 
-    pub fn agent(&self) -> &ReportedAgent {
-        &self.agent
-    }
-
-    pub fn label(&self) -> &str {
-        self.agent.label()
-    }
-
-    pub const fn known_agent(&self) -> Option<Agent> {
-        self.agent.known()
-    }
-
-    pub const fn official_agent(&self) -> Option<Agent> {
+    pub const fn agent(&self) -> Agent {
         self.source.agent()
     }
 
-    pub fn authority_class(&self) -> HookAuthorityClass {
-        match self.official_agent() {
-            Some(agent) => agent.descriptor().hook_authority_class(),
-            None => HookAuthorityClass::PartialState,
-        }
+    pub const fn authority_class(&self) -> HookAuthorityClass {
+        self.source.target().integration().authority_class()
     }
 
     pub fn is_full_lifecycle(&self) -> bool {
@@ -125,35 +71,29 @@ impl ReportOrigin {
     }
 
     pub fn allows_session_replacement(&self, start: ReportedSessionStart) -> bool {
-        self.official_agent().is_some_and(|agent| {
-            agent
-                .descriptor()
-                .hook_session_policy()
-                .allows_replacement(start)
-        })
+        self.agent()
+            .descriptor()
+            .hook_session_policy()
+            .allows_replacement(start)
     }
 
     pub fn owns(&self, session: &PersistedAgentSession) -> bool {
-        self.source == session.source && self.known_agent() == Some(session.agent)
+        self.source == session.source && self.agent() == session.agent
     }
 
     pub fn session(&self, session_ref: AgentSessionRef) -> Option<PersistedAgentSession> {
-        // A custom source naming a built-in agent keeps a resume identity for
-        // that agent; an official source's agent is validated at construction.
-        PersistedAgentSession::new(self.source.clone(), self.known_agent()?, session_ref)
+        PersistedAgentSession::new(self.source, self.agent(), session_ref)
     }
 }
 
-impl super::AgentDescriptor {
-    pub const fn hook_authority_class(&self) -> HookAuthorityClass {
-        match self.integration {
-            Some(integration) => match integration.capability {
-                super::IntegrationCapability::ScreenOwnedSession
-                | super::IntegrationCapability::IdentityOnly => HookAuthorityClass::SessionOnly,
-                super::IntegrationCapability::FullLifecycle => HookAuthorityClass::FullLifecycle,
-                super::IntegrationCapability::PartialState => HookAuthorityClass::PartialState,
-            },
-            None => HookAuthorityClass::PartialState,
+impl super::IntegrationDescriptor {
+    /// The authority this integration's reports hold.
+    pub const fn authority_class(&self) -> HookAuthorityClass {
+        match self.capability {
+            super::IntegrationCapability::ScreenOwnedSession
+            | super::IntegrationCapability::IdentityOnly => HookAuthorityClass::SessionOnly,
+            super::IntegrationCapability::FullLifecycle => HookAuthorityClass::FullLifecycle,
+            super::IntegrationCapability::PartialState => HookAuthorityClass::PartialState,
         }
     }
 }
@@ -163,28 +103,42 @@ mod tests {
     use super::*;
 
     #[test]
-    fn origin_validates_the_reserved_namespace_and_normalizes_labels_once() {
+    fn origin_accepts_only_bundled_sources_and_normalizes_labels_once() {
         assert_eq!(
             ReportOrigin::parse("shepr:claud", "claude"),
-            Err(ReportOriginError::UnknownOfficialSource)
+            Err(ReportOriginError::UnsupportedSource)
         );
         assert_eq!(
             ReportOrigin::parse("shepr:claude", "codex"),
             Err(ReportOriginError::MismatchedAgent)
         );
         assert_eq!(
+            ReportOrigin::parse("shepr:claude", "local bot"),
+            Err(ReportOriginError::MismatchedAgent)
+        );
+        assert_eq!(
+            ReportOrigin::parse("shepr:claude", " "),
+            Err(ReportOriginError::EmptyAgent)
+        );
+        assert_eq!(
             ReportOrigin::parse("shepr:claude", " Claude ")
                 .expect("normalized label")
-                .known_agent(),
-            Some(Agent::Claude)
+                .agent(),
+            Agent::Claude
         );
         assert!(ReportOrigin::official(Agent::Gemini).is_none());
-        assert_eq!(
-            ReportOrigin::parse("custom:status", "local bot")
-                .expect("custom origin")
-                .label(),
-            "local bot"
-        );
+        for (source, label) in [
+            ("custom:status", "local bot"),
+            ("custom:claude", "claude"),
+            ("myagent", "myagent"),
+            ("", "pi"),
+        ] {
+            assert_eq!(
+                ReportOrigin::parse(source, label),
+                Err(ReportOriginError::UnsupportedSource),
+                "{source}"
+            );
+        }
     }
 
     #[test]

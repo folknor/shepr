@@ -46,14 +46,9 @@ pub struct ClientShellPane {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClientShellAgent {
     pub pane_id: PublicPaneId,
-    /// The bundled agent the pane runs, if any. A hook report from a custom
-    /// source with a free label (one that names no bundled agent) still
-    /// drives the pane's state, but the TUI presents that pane without an
-    /// agent name. This is deliberate: shepr installs only its own
-    /// integrations, so a custom reporter is never something it ships, and a
-    /// `Known(Agent) | Custom(String)` projection or a separate custom-label
-    /// field would bring an open string back to the wire and to the sidebar's
-    /// per-agent row lookup for a source the owner does not use.
+    /// The bundled agent the pane runs, if any. The server accepts hook
+    /// reports only from shepr's own integrations, each of which names a
+    /// bundled agent, so there is no free-label agent to project.
     pub agent: Option<shepr_agent::agent::Agent>,
     pub terminal_title: Option<String>,
     pub terminal_title_stripped: Option<String>,

@@ -1355,9 +1355,9 @@ mod tests {
         use shepr_agent::agent::resume::AgentSessionRef;
         for (source, label, live_ref) in [
             (
-                "unrecognised-source",
-                "unrecognised-agent",
-                AgentSessionRef::id("live-session").expect("test session ref"),
+                "shepr:codex",
+                "codex",
+                AgentSessionRef::path("/codex-session").expect("test session ref"),
             ),
             (
                 "shepr:claude",
@@ -1382,9 +1382,7 @@ mod tests {
                 session_ref: Some(live_ref),
             }));
             let expected = shepr_agent::agent::resume::PersistedAgentSession::new(
-                shepr_agent::agent::AgentSource::Official(
-                    shepr_agent::agent::IntegrationTarget::Claude,
-                ),
+                shepr_agent::agent::AgentSource::new(shepr_agent::agent::IntegrationTarget::Claude),
                 shepr_agent::agent::Agent::Claude,
                 saved_ref.clone(),
             )

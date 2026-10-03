@@ -10,6 +10,10 @@ fn test_terminal() -> AgentOwnership {
     AgentOwnership::new()
 }
 
+fn bundled_source(value: &str) -> AgentSource {
+    AgentSource::parse(value).expect("bundled integration source")
+}
+
 fn set_codex_hook_state(terminal: &mut AgentOwnership, state: AgentState) {
     terminal
         .set_hook_authority_with_session_ref(
@@ -121,36 +125,8 @@ fn hook_authority_overrides_fallback_for_same_agent() {
 
     assert_eq!(terminal.detected_agent, Some(Agent::Pi));
     assert_eq!(terminal.fallback_state, AgentState::Idle);
-    assert_eq!(terminal.effective_agent_label(), Some("pi"));
+    assert_eq!(terminal.effective_agent(), Some(Agent::Pi));
     assert_eq!(terminal.state, AgentState::Working);
-}
-
-#[test]
-fn custom_state_reports_apply_beside_an_official_session_identity() {
-    let mut terminal = test_terminal();
-    terminal.set_detected_state(Some(Agent::Claude), AgentState::Idle);
-    let session = crate::agent::resume::PersistedAgentSession::from_report(
-        "shepr:claude",
-        "claude",
-        crate::agent::resume::AgentSessionRef::id("claude-session").expect("test precondition"),
-    )
-    .expect("test precondition");
-    terminal.set_persisted_agent_session(session.clone());
-
-    for (source, label) in [("custom:status", "status-agent"), ("myagent", "myagent")] {
-        let mutation = terminal.set_hook_authority(source, label, AgentState::Working, None);
-
-        assert!(mutation.is_some(), "{source}");
-        assert_eq!(terminal.effective_agent_label(), Some(label));
-        assert_eq!(terminal.state, AgentState::Working);
-        // The report updates state only; the resume identity stays Claude's.
-        assert_eq!(
-            terminal.current_session_identity_for_persistence(),
-            Some(session.clone()),
-            "{source}"
-        );
-        terminal.seed_hook_authority_for_test(None);
-    }
 }
 
 #[test]
@@ -186,18 +162,6 @@ fn process_exit_suppresses_only_full_lifecycle_sources() {
 }
 
 #[test]
-fn hook_authority_can_override_with_unknown_agent_label() {
-    let mut terminal = test_terminal();
-    terminal.set_detected_state(Some(Agent::Pi), AgentState::Idle);
-    terminal.set_hook_authority("custom:status", "custom-agent", AgentState::Working, None);
-
-    assert_eq!(terminal.detected_agent, Some(Agent::Pi));
-    assert_eq!(terminal.effective_agent_label(), Some("custom-agent"));
-    assert_eq!(terminal.effective_known_agent(), None);
-    assert_eq!(terminal.state, AgentState::Working);
-}
-
-#[test]
 fn omp_hook_authority_overrides_detected_fallback() {
     let mut terminal = test_terminal();
     terminal.set_detected_state(Some(Agent::Omp), AgentState::Idle);
@@ -217,8 +181,7 @@ fn omp_hook_authority_overrides_detected_fallback() {
     );
 
     assert_eq!(terminal.detected_agent, Some(Agent::Omp));
-    assert_eq!(terminal.effective_agent_label(), Some("omp"));
-    assert_eq!(terminal.effective_known_agent(), Some(Agent::Omp));
+    assert_eq!(terminal.effective_agent(), Some(Agent::Omp));
     assert_eq!(terminal.state, AgentState::Working);
 
     let change = terminal.set_detected_state_with_visible_blocker(
@@ -294,7 +257,7 @@ fn session_only_state_reports_keep_identity_without_owning_state() {
         let session_ref = AgentSessionRef::id("current-session").expect("session id");
         let mutation = terminal
             .set_hook_report_at(
-                origin.clone(),
+                origin,
                 AgentState::Blocked,
                 Some(session_ref.clone()),
                 Some(10),
@@ -318,7 +281,7 @@ fn session_only_state_reports_keep_identity_without_owning_state() {
             assert!(
                 terminal
                     .set_hook_report_at(
-                        origin.clone(),
+                        origin,
                         AgentState::Working,
                         incoming,
                         Some(seq),
@@ -616,7 +579,7 @@ fn pi_startup_adopts_persisted_session_without_live_authority() {
     terminal.set_detected_state(Some(Agent::Pi), AgentState::Idle);
     terminal.set_persisted_agent_session(
         crate::agent::resume::PersistedAgentSession::new(
-            AgentSource::parse("shepr:pi"),
+            bundled_source("shepr:pi"),
             crate::agent::Agent::Pi,
             crate::agent::resume::AgentSessionRef::path(old_session)
                 .expect("test session path should be valid"),
@@ -1458,39 +1421,21 @@ fn hook_blocked_wins_over_visible_blocker() {
 }
 
 #[test]
-fn visible_blocker_does_not_override_different_agent_hook() {
-    let mut terminal = test_terminal();
-    terminal.set_detected_state(None, AgentState::Unknown);
-    terminal.set_hook_authority("custom:agent", "custom-agent", AgentState::Working, None);
-
-    terminal.set_detected_state_with_visible_blocker(
-        Some(Agent::Codex),
-        AgentState::Blocked,
-        true,
-        false,
-        false,
-    );
-
-    assert_eq!(terminal.effective_agent_label(), Some("custom-agent"));
-    assert_eq!(terminal.state, AgentState::Working);
-}
-
-#[test]
 fn fallback_idle_does_not_override_hook_working() {
     let now = Instant::now();
     let mut terminal = test_terminal();
-    terminal.set_detected_state(Some(Agent::Claude), AgentState::Working);
+    terminal.set_detected_state(Some(Agent::Codex), AgentState::Working);
     terminal.set_hook_authority_at(
-        "custom:claude",
-        "claude",
+        "shepr:codex",
+        "codex",
         AgentState::Working,
-        None,
+        crate::agent::resume::AgentSessionRef::id("codex-session"),
         None,
         now,
     );
 
     terminal.set_detected_state_with_screen_signals_at(
-        Some(Agent::Claude),
+        Some(Agent::Codex),
         AgentState::Idle,
         false,
         false,
@@ -1537,11 +1482,18 @@ fn fallback_idle_does_not_override_full_lifecycle_hook_working() {
 fn visible_working_does_not_override_hook_idle_for_same_agent() {
     let now = Instant::now();
     let mut terminal = test_terminal();
-    terminal.set_detected_state(Some(Agent::Claude), AgentState::Idle);
-    terminal.set_hook_authority_at("custom:claude", "claude", AgentState::Idle, None, None, now);
+    terminal.set_detected_state(Some(Agent::Codex), AgentState::Idle);
+    terminal.set_hook_authority_at(
+        "shepr:codex",
+        "codex",
+        AgentState::Idle,
+        crate::agent::resume::AgentSessionRef::id("codex-session"),
+        None,
+        now,
+    );
 
     let change = terminal.set_detected_state_with_screen_signals_at(
-        Some(Agent::Claude),
+        Some(Agent::Codex),
         AgentState::Working,
         false,
         false,
@@ -1622,11 +1574,11 @@ fn detected_working_fallback_is_ignored_under_full_lifecycle_hook_authority() {
 }
 
 #[test]
-fn visible_working_does_not_hold_against_newer_claude_hook_idle() {
+fn visible_working_does_not_hold_against_newer_hook_idle() {
     let now = Instant::now();
     let mut terminal = test_terminal();
     terminal.set_detected_state_with_screen_signals_at(
-        Some(Agent::Claude),
+        Some(Agent::Codex),
         AgentState::Working,
         false,
         false,
@@ -1634,10 +1586,10 @@ fn visible_working_does_not_hold_against_newer_claude_hook_idle() {
     );
 
     let change = terminal.set_hook_authority_at(
-        "custom:claude",
-        "claude",
+        "shepr:codex",
+        "codex",
         AgentState::Idle,
-        None,
+        crate::agent::resume::AgentSessionRef::id("codex-session"),
         None,
         now + Duration::from_millis(100),
     );
@@ -1711,39 +1663,44 @@ fn fallback_idle_does_not_override_other_agent_hook_working() {
 fn known_hook_authority_does_not_override_different_detected_agent() {
     let mut terminal = test_terminal();
     terminal.set_detected_state(Some(Agent::Grok), AgentState::Working);
-    let change = terminal.set_hook_authority("custom:claude", "claude", AgentState::Blocked, None);
+    let change = terminal.set_hook_authority_with_session_ref(
+        "shepr:codex",
+        "codex",
+        AgentState::Blocked,
+        crate::agent::resume::AgentSessionRef::id("codex-session"),
+        None,
+    );
 
     assert!(change.is_none());
     assert!(terminal.hook_authority.is_none());
     assert_eq!(terminal.detected_agent, Some(Agent::Grok));
-    assert_eq!(terminal.effective_agent_label(), Some("grok"));
+    assert_eq!(terminal.effective_agent(), Some(Agent::Grok));
     assert_eq!(terminal.state, AgentState::Working);
 }
 
 #[test]
 fn detected_agent_clears_conflicting_known_hook_authority() {
     let mut terminal = test_terminal();
-    terminal.set_hook_authority("custom:claude", "claude", AgentState::Blocked, None);
+    set_codex_hook_state(&mut terminal, AgentState::Blocked);
 
     terminal.set_detected_state(Some(Agent::Grok), AgentState::Working);
 
     assert!(terminal.hook_authority.is_none());
     assert_eq!(terminal.detected_agent, Some(Agent::Grok));
-    assert_eq!(terminal.effective_agent_label(), Some("grok"));
+    assert_eq!(terminal.effective_agent(), Some(Agent::Grok));
     assert_eq!(terminal.state, AgentState::Working);
 }
 
 #[test]
-fn hook_authority_survives_unrelated_detected_agent_clear() {
+fn hook_authority_survives_a_detector_that_never_saw_its_agent() {
     let mut terminal = test_terminal();
-    terminal.set_detected_state(Some(Agent::Pi), AgentState::Idle);
-    terminal.set_hook_authority("custom:status", "custom-agent", AgentState::Working, None);
+    set_codex_hook_state(&mut terminal, AgentState::Working);
 
     terminal.set_detected_state(None, AgentState::Unknown);
 
     assert!(terminal.hook_authority.is_some());
     assert_eq!(terminal.detected_agent, None);
-    assert_eq!(terminal.effective_agent_label(), Some("custom-agent"));
+    assert_eq!(terminal.effective_agent(), Some(Agent::Codex));
     assert_eq!(terminal.state, AgentState::Working);
 }
 
@@ -1786,31 +1743,19 @@ fn full_lifecycle_hook_authority_ignores_detected_agent_clear_without_process_ex
 
 #[test]
 fn detected_agent_clear_clears_matching_hook_authority() {
-    let mut terminal = test_terminal();
-    terminal.set_detected_state(Some(Agent::Cursor), AgentState::Idle);
-    terminal.set_hook_authority("custom:cursor", "cursor", AgentState::Idle, None);
+    for state in [AgentState::Idle, AgentState::Working] {
+        let mut terminal = test_terminal();
+        terminal.set_detected_state(Some(Agent::Codex), state);
+        set_codex_hook_state(&mut terminal, state);
 
-    terminal.set_detected_state(None, AgentState::Unknown);
+        terminal.set_detected_state(None, AgentState::Unknown);
 
-    assert!(terminal.hook_authority.is_none());
-    assert_eq!(terminal.detected_agent, None);
-    assert_eq!(terminal.fallback_state, AgentState::Unknown);
-    assert_eq!(terminal.effective_agent_label(), None);
-    assert_eq!(terminal.state, AgentState::Unknown);
-}
-
-#[test]
-fn detected_agent_clear_clears_matching_working_hook_authority() {
-    let mut terminal = test_terminal();
-    terminal.set_detected_state(Some(Agent::Codex), AgentState::Working);
-    set_codex_hook_state(&mut terminal, AgentState::Working);
-
-    terminal.set_detected_state(None, AgentState::Unknown);
-
-    assert!(terminal.hook_authority.is_none());
-    assert_eq!(terminal.detected_agent, None);
-    assert_eq!(terminal.effective_agent_label(), None);
-    assert_eq!(terminal.state, AgentState::Unknown);
+        assert!(terminal.hook_authority.is_none());
+        assert_eq!(terminal.detected_agent, None);
+        assert_eq!(terminal.fallback_state, AgentState::Unknown);
+        assert_eq!(terminal.effective_agent(), None);
+        assert_eq!(terminal.state, AgentState::Unknown);
+    }
 }
 
 #[test]
@@ -1829,7 +1774,7 @@ fn process_exit_clears_matching_hook_authority_before_reporting_idle() {
 
     assert!(terminal.hook_authority.is_none());
     assert_eq!(terminal.detected_agent, Some(Agent::Codex));
-    assert_eq!(terminal.effective_agent_label(), None);
+    assert_eq!(terminal.effective_agent(), None);
     assert_eq!(terminal.state, AgentState::Idle);
 }
 
@@ -1838,23 +1783,23 @@ fn stale_visible_screen_signal_does_not_override_newer_hook_authority() {
     let mut terminal = test_terminal();
     let observed = Instant::now();
     terminal.set_detected_state_with_screen_signals_at(
-        Some(Agent::Claude),
+        Some(Agent::Codex),
         AgentState::Working,
         false,
         false,
         observed,
     );
     terminal.set_hook_authority_at(
-        "custom:claude",
-        "claude",
+        "shepr:codex",
+        "codex",
         AgentState::Working,
-        None,
+        crate::agent::resume::AgentSessionRef::id("codex-session"),
         Some(1),
         observed + Duration::from_secs(1),
     );
 
     terminal.set_detected_state_with_screen_signals_at(
-        Some(Agent::Claude),
+        Some(Agent::Codex),
         AgentState::Idle,
         false,
         false,
@@ -1865,59 +1810,21 @@ fn stale_visible_screen_signal_does_not_override_newer_hook_authority() {
 }
 
 #[test]
-fn stale_process_exit_preserves_newer_custom_authority() {
+fn partial_state_authority_reanchors_sequence_after_process_restart() {
     let mut terminal = test_terminal();
     let observed = Instant::now();
-    terminal.set_detected_state_with_screen_signals_at(
-        Some(Agent::Pi),
-        AgentState::Idle,
-        false,
-        false,
-        observed,
-    );
+    let session = || crate::agent::resume::AgentSessionRef::id("codex-session");
+    terminal.set_detected_state(Some(Agent::Codex), AgentState::Idle);
     terminal.set_hook_authority_at(
-        "custom:pi",
-        "pi",
+        "shepr:codex",
+        "codex",
         AgentState::Working,
-        None,
-        Some(100),
-        observed + Duration::from_secs(1),
-    );
-
-    let mutation = terminal.confirmed_detection_for_test(
-        Some(Agent::Pi),
-        AgentState::Idle,
-        false,
-        true,
-        observed,
-    );
-
-    assert!(!mutation.agent_released);
-    assert_eq!(terminal.state, AgentState::Working);
-    assert_eq!(
-        terminal
-            .hook_authority
-            .as_ref()
-            .map(|hook| hook.origin.source().as_str()),
-        Some("custom:pi")
-    );
-}
-
-#[test]
-fn custom_authority_reanchors_sequence_after_process_restart() {
-    let mut terminal = test_terminal();
-    let observed = Instant::now();
-    terminal.set_detected_state(Some(Agent::Pi), AgentState::Idle);
-    terminal.set_hook_authority_at(
-        "custom:pi",
-        "pi",
-        AgentState::Working,
-        None,
+        session(),
         Some(100),
         observed,
     );
     terminal.confirmed_detection_for_test(
-        Some(Agent::Pi),
+        Some(Agent::Codex),
         AgentState::Idle,
         false,
         true,
@@ -1933,11 +1840,17 @@ fn custom_authority_reanchors_sequence_after_process_restart() {
 
     assert!(
         terminal
-            .set_hook_authority("custom:pi", "pi", AgentState::Working, Some(1),)
+            .set_hook_authority_with_session_ref(
+                "shepr:codex",
+                "codex",
+                AgentState::Working,
+                session(),
+                Some(1),
+            )
             .is_none()
     );
     terminal.set_detected_state_with_screen_signals_at(
-        Some(Agent::Pi),
+        Some(Agent::Codex),
         AgentState::Idle,
         false,
         false,
@@ -1945,7 +1858,13 @@ fn custom_authority_reanchors_sequence_after_process_restart() {
     );
     assert!(
         terminal
-            .set_hook_authority("custom:pi", "pi", AgentState::Working, Some(1),)
+            .set_hook_authority_with_session_ref(
+                "shepr:codex",
+                "codex",
+                AgentState::Working,
+                session(),
+                Some(1),
+            )
             .is_some()
     );
 }
@@ -1961,24 +1880,20 @@ fn process_exit_clears_newer_same_agent_hook_authority() {
         false,
         observed,
     );
-    terminal.set_hook_authority_at(
-        "shepr:codex",
-        "codex",
-        AgentState::Working,
-        None,
-        Some(1),
-        observed,
-    );
-    terminal.set_hook_authority_at(
-        "shepr:codex",
-        "codex",
-        AgentState::Working,
-        None,
-        Some(2),
-        observed + Duration::from_secs(1),
-    );
+    for (seq, reported_at) in [(1, observed), (2, observed + Duration::from_secs(1))] {
+        terminal
+            .set_hook_authority_at(
+                "shepr:codex",
+                "codex",
+                AgentState::Working,
+                crate::agent::resume::AgentSessionRef::id("codex-session"),
+                Some(seq),
+                reported_at,
+            )
+            .expect("Codex report");
+    }
 
-    terminal.confirmed_detection_for_test(
+    let mutation = terminal.confirmed_detection_for_test(
         Some(Agent::Codex),
         AgentState::Idle,
         false,
@@ -1986,9 +1901,10 @@ fn process_exit_clears_newer_same_agent_hook_authority() {
         observed,
     );
 
+    assert!(mutation.agent_released);
     assert!(terminal.hook_authority.is_none());
     assert_eq!(terminal.state, AgentState::Idle);
-    assert_eq!(terminal.effective_agent_label(), None);
+    assert_eq!(terminal.effective_agent(), None);
 }
 
 #[test]
@@ -2001,7 +1917,7 @@ fn detected_agent_change_clears_previous_matching_hook_authority() {
 
     assert!(terminal.hook_authority.is_none());
     assert_eq!(terminal.detected_agent, Some(Agent::OpenCode));
-    assert_eq!(terminal.effective_agent_label(), Some("opencode"));
+    assert_eq!(terminal.effective_agent(), Some(Agent::OpenCode));
     assert_eq!(terminal.state, AgentState::Working);
 }
 
@@ -2197,7 +2113,7 @@ fn different_same_agent_session_ref_is_ignored_until_current_session_clears() {
     assert_eq!(
         terminal
             .hook_sources
-            .get(&AgentSource::parse("shepr:claude"))
+            .get(&bundled_source("shepr:claude"))
             .and_then(HookSourceState::sequence_value),
         Some(20)
     );
@@ -2511,12 +2427,12 @@ fn opencode_tui_selection_anchors_after_process_detection() {
 
     terminal
         .hook_sources
-        .entry(AgentSource::parse("shepr:opencode"))
+        .entry(bundled_source("shepr:opencode"))
         .or_default()
         .transition(HookSourceEvent::Release(
             FullLifecycleHookSuppressionReason::AwaitingProcess,
             SuppressedFullLifecycleHookReport {
-                agent_label: ReportedAgent::Known(Agent::OpenCode),
+                agent: Agent::OpenCode,
                 session_ref: None,
                 observed_at: Instant::now(),
                 pending_start: None,
@@ -2545,7 +2461,7 @@ fn opencode_tui_selection_anchors_after_process_detection() {
     assert!(
         !terminal
             .hook_sources
-            .get(&AgentSource::parse("shepr:opencode"))
+            .get(&bundled_source("shepr:opencode"))
             .is_some_and(|record| record.sequence_value().is_some())
     );
 }
@@ -2654,7 +2570,7 @@ fn opencode_tui_selection_reanchors_full_lifecycle_authority() {
     assert_eq!(
         terminal
             .hook_sources
-            .get(&AgentSource::parse("shepr:opencode"))
+            .get(&bundled_source("shepr:opencode"))
             .and_then(HookSourceState::sequence_value),
         None
     );
@@ -2828,7 +2744,7 @@ fn grok_new_session_does_not_replace_a_different_owner() {
     let mut terminal = test_terminal();
     terminal.set_persisted_agent_session(
         crate::agent::resume::PersistedAgentSession::new(
-            AgentSource::parse("shepr:claude"),
+            bundled_source("shepr:claude"),
             crate::agent::Agent::Claude,
             crate::agent::resume::AgentSessionRef::id("claude-session").expect("test precondition"),
         )
@@ -2861,7 +2777,7 @@ fn foreground_agent_session_replaces_stale_different_owner_session_ref() {
         let mut terminal = test_terminal();
         terminal.set_persisted_agent_session(
             crate::agent::resume::PersistedAgentSession::new(
-                AgentSource::parse("shepr:codex"),
+                bundled_source("shepr:codex"),
                 crate::agent::Agent::Codex,
                 crate::agent::resume::AgentSessionRef::id("codex-session")
                     .expect("test precondition"),
@@ -2899,7 +2815,7 @@ fn foreground_agent_session_requires_lifecycle_source_to_replace_different_owner
         let mut terminal = test_terminal();
         terminal.set_persisted_agent_session(
             crate::agent::resume::PersistedAgentSession::new(
-                AgentSource::parse("shepr:codex"),
+                bundled_source("shepr:codex"),
                 crate::agent::Agent::Codex,
                 crate::agent::resume::AgentSessionRef::id("codex-session")
                     .expect("test precondition"),
@@ -2938,7 +2854,7 @@ fn different_owner_session_ref_requires_matching_detected_agent() {
             let mut terminal = test_terminal();
             terminal.set_persisted_agent_session(
                 crate::agent::resume::PersistedAgentSession::new(
-                    AgentSource::parse("shepr:codex"),
+                    bundled_source("shepr:codex"),
                     crate::agent::Agent::Codex,
                     crate::agent::resume::AgentSessionRef::id("codex-session")
                         .expect("test precondition"),
@@ -2969,38 +2885,6 @@ fn different_owner_session_ref_requires_matching_detected_agent() {
             );
         }
     }
-}
-
-#[test]
-fn custom_session_report_does_not_replace_different_owner_session_ref() {
-    let mut terminal = test_terminal();
-    terminal.set_persisted_agent_session(
-        crate::agent::resume::PersistedAgentSession::new(
-            AgentSource::parse("shepr:codex"),
-            crate::agent::Agent::Codex,
-            crate::agent::resume::AgentSessionRef::id("codex-session").expect("test precondition"),
-        )
-        .expect("test session should be valid"),
-    );
-    terminal.set_detected_state(Some(Agent::Claude), AgentState::Idle);
-
-    let mutation = terminal.set_agent_session_ref_for_session_start(
-        "custom:claude",
-        "claude",
-        crate::agent::resume::AgentSessionRef::id("claude-session"),
-        Some(21),
-        Some("resume"),
-    );
-
-    assert!(mutation.is_none());
-    assert_eq!(
-        terminal.persisted_agent_session.as_ref().map(|session| (
-            session.source.as_str(),
-            session.agent.label(),
-            session.session_ref.value_str()
-        )),
-        Some(("shepr:codex", "codex", "codex-session"))
-    );
 }
 
 #[test]
@@ -3224,7 +3108,7 @@ fn process_exit_clears_matching_persisted_session_ref() {
         .expect("test precondition");
     terminal.set_persisted_agent_session(
         crate::agent::resume::PersistedAgentSession::new(
-            AgentSource::parse("shepr:pi"),
+            bundled_source("shepr:pi"),
             crate::agent::Agent::Pi,
             session_ref.clone(),
         )
@@ -3253,7 +3137,7 @@ fn process_exit_preserves_foreign_persisted_session_ref() {
     let mut terminal = test_terminal();
     terminal.set_persisted_agent_session(
         crate::agent::resume::PersistedAgentSession::new(
-            AgentSource::parse("shepr:claude"),
+            bundled_source("shepr:claude"),
             crate::agent::Agent::Claude,
             crate::agent::resume::AgentSessionRef::id("claude-session").expect("test precondition"),
         )
@@ -3329,7 +3213,7 @@ fn detected_agent_disappearance_does_not_clear_full_lifecycle_hook_session_ref()
     assert!(!mutation.session_ref_changed);
     assert!(terminal.hook_authority.is_some());
     assert!(terminal.persisted_agent_session.is_none());
-    assert_eq!(terminal.effective_agent_label(), Some("kimi"));
+    assert_eq!(terminal.effective_agent(), Some(Agent::Kimi));
 }
 
 #[test]
@@ -3337,7 +3221,7 @@ fn detected_agent_disappearance_preserves_matching_persisted_session_ref() {
     let mut terminal = test_terminal();
     terminal.set_persisted_agent_session(
         crate::agent::resume::PersistedAgentSession::new(
-            AgentSource::parse("shepr:opencode"),
+            bundled_source("shepr:opencode"),
             crate::agent::Agent::OpenCode,
             crate::agent::resume::AgentSessionRef::id("opencode-session")
                 .expect("test precondition"),
@@ -3359,7 +3243,7 @@ fn initial_unknown_detection_preserves_restored_session_ref() {
     let mut terminal = test_terminal();
     terminal.set_persisted_agent_session(
         crate::agent::resume::PersistedAgentSession::new(
-            AgentSource::parse("shepr:codex"),
+            bundled_source("shepr:codex"),
             crate::agent::Agent::Codex,
             crate::agent::resume::AgentSessionRef::id("codex-session").expect("test precondition"),
         )
@@ -3404,122 +3288,20 @@ fn unsequenced_hook_report_is_ignored_after_source_uses_sequence() {
 }
 
 #[test]
-fn changing_a_custom_label_does_not_reset_its_reporter_sequence() {
+fn same_sequence_from_different_sources_is_independent() {
     let mut terminal = test_terminal();
     // clock-io-ok: synthetic observations for report ordering.
     let now = Instant::now();
-    terminal
-        .set_hook_authority_at(
-            "custom:status",
-            "first label",
-            AgentState::Working,
-            None,
-            Some(10),
-            now,
-        )
-        .expect("initial report");
-    assert!(
-        terminal
-            .set_hook_authority_at(
-                "custom:status",
-                "second label",
-                AgentState::Idle,
-                None,
-                Some(9),
-                now + Duration::from_millis(1),
-            )
-            .is_none()
-    );
-    assert_eq!(terminal.effective_agent_label(), Some("first label"));
-    terminal
-        .set_hook_authority_at(
-            "custom:status",
-            "second label",
-            AgentState::Idle,
-            None,
-            Some(11),
-            now + Duration::from_millis(2),
-        )
-        .expect("newer report");
-    assert_eq!(terminal.effective_agent_label(), Some("second label"));
-    assert_eq!(terminal.hook_sources.len(), 1);
-}
-
-#[test]
-fn same_sequence_from_different_sources_is_independent() {
-    let mut terminal = test_terminal();
-    terminal.set_detected_state(Some(Agent::Pi), AgentState::Idle);
-    terminal.set_hook_authority_with_session_ref(
-        "shepr:pi",
-        "pi",
-        AgentState::Working,
-        pi_root_session_ref(),
-        Some(20),
-    );
-
-    terminal.set_hook_authority("custom:pi", "pi", AgentState::Idle, Some(19));
-
-    assert_eq!(terminal.state, AgentState::Idle);
+    assert!(terminal.accept_hook_report_at("shepr:pi", Some(20), now));
+    assert!(terminal.accept_hook_report_at("shepr:kimi", Some(19), now));
+    assert!(!terminal.accept_hook_report_at("shepr:pi", Some(19), now));
     assert_eq!(
-        terminal
-            .hook_authority
-            .as_ref()
-            .expect("test precondition")
-            .origin
-            .source()
-            .as_str(),
-        "custom:pi"
+        terminal.hook_sources[&bundled_source("shepr:kimi")].sequence_value(),
+        Some(19)
     );
-}
-
-/// A pane's hook ordering marks stay bounded: once the source cap is reached,
-/// unprotected records can be evicted for a new source, while a protected
-/// source retains its ordering mark.
-#[test]
-fn hook_report_sources_are_capped_and_ordering_is_one_record() {
-    let mut terminal = test_terminal();
-    let now = Instant::now();
-    terminal.set_detected_state(Some(Agent::Pi), AgentState::Idle);
-    terminal.set_hook_authority("custom:kept", "pi", AgentState::Idle, Some(1));
     assert_eq!(
-        terminal
-            .hook_authority
-            .as_ref()
-            .map(|authority| authority.origin.source().as_str()),
-        Some("custom:kept"),
-        "test precondition"
-    );
-    assert!(
-        terminal
-            .hook_sources
-            .get(&AgentSource::parse("custom:kept"))
-            .is_some_and(|record| record.sequence_value().is_some())
-    );
-    for index in 1..MAX_HOOK_REPORT_SOURCES {
-        assert!(terminal.accept_hook_report_at(&format!("custom:{index}"), Some(1), now));
-    }
-    assert_eq!(terminal.hook_sources.len(), MAX_HOOK_REPORT_SOURCES);
-
-    assert!(terminal.accept_hook_report_at("custom:new", Some(1), now));
-    assert!(terminal.hook_sources.len() <= MAX_HOOK_REPORT_SOURCES);
-    assert!(
-        terminal
-            .hook_sources
-            .get(&AgentSource::parse("custom:kept"))
-            .is_some_and(|record| record.sequence_value().is_some())
-    );
-    assert!(
-        terminal
-            .hook_sources
-            .get(&AgentSource::parse("custom:new"))
-            .is_some_and(|record| record.sequence_value().is_some())
-    );
-    terminal.clear_hook_report_sequence("custom:new");
-    assert!(
-        terminal
-            .hook_sources
-            .get(&AgentSource::parse("custom:new"))
-            .is_some_and(|record| record.sequence_value().is_none())
+        terminal.hook_sources[&bundled_source("shepr:pi")].sequence_value(),
+        Some(20)
     );
 }
 
@@ -3531,15 +3313,15 @@ fn stale_full_lifecycle_sessions_are_capped_per_source() {
     for index in 0..total {
         terminal
             .hook_sources
-            .entry(AgentSource::parse("shepr:codex"))
+            .entry(bundled_source("shepr:codex"))
             .or_default()
             .transition(HookSourceEvent::Retire(StaleFullLifecycleHookSession {
-                agent_label: ReportedAgent::Known(Agent::Codex),
+                agent: Agent::Codex,
                 session_ref: crate::agent::resume::AgentSessionRef::id(format!("session-{index}"))
                     .expect("test precondition"),
             }));
     }
-    let sessions = terminal.hook_sources[&AgentSource::parse("shepr:codex")].stale_sessions();
+    let sessions = terminal.hook_sources[&bundled_source("shepr:codex")].stale_sessions();
     assert_eq!(
         sessions.len(),
         MAX_STALE_FULL_LIFECYCLE_HOOK_SESSIONS_PER_SOURCE

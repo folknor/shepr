@@ -40,10 +40,12 @@ impl App {
             params.agent_session_id,
             params.agent_session_path,
         )?;
-        // An unknown source keeps the report: its session identity is what
-        // resume on restore needs, and agents can send new start values
-        // before shepr knows them. It is not an omitted source either; the
-        // policy never lets it replace a session (`ReportedSessionStart`).
+        // The report's own source was validated above. An unknown session
+        // start source from that integration keeps the report: its session
+        // identity is what resume on restore needs, and agents can send new
+        // start values before shepr knows them. It is not an omitted start
+        // either; the policy never lets it replace a session
+        // (`ReportedSessionStart`).
         let session_start_source = match params.session_start_source {
             Some(Ok(source)) => ReportedSessionStart::Known(source),
             Some(Err(source)) => {
@@ -95,14 +97,17 @@ impl App {
         let origin = match shepr_agent::agent::ReportOrigin::parse(source_text, agent_text) {
             Ok(origin) => origin,
             Err(shepr_agent::agent::ReportOriginError::EmptyAgent) => return invalid_agent(),
+            Err(shepr_agent::agent::ReportOriginError::UnsupportedSource) => {
+                return failure(
+                    ApiErrorCode::InvalidAgent,
+                    "report source is not a bundled shepr integration",
+                );
+            }
             Err(shepr_agent::agent::ReportOriginError::MismatchedAgent) => {
                 return failure(
                     ApiErrorCode::InvalidAgent,
                     "report source does not match agent label",
                 );
-            }
-            Err(shepr_agent::agent::ReportOriginError::UnknownOfficialSource) => {
-                return failure(ApiErrorCode::InvalidAgent, "unknown official report source");
             }
         };
         let session_ref = parse_origin_session_ref(&origin, id, path)?;
@@ -110,8 +115,7 @@ impl App {
     }
 }
 
-/// Raw JSON options stop here. A supplied reference must select one kind;
-/// custom reports cannot mint a resumable identity.
+/// Raw JSON options stop here. A supplied reference must select one kind.
 fn parse_origin_session_ref(
     origin: &shepr_agent::agent::ReportOrigin,
     id: Option<String>,
@@ -123,11 +127,9 @@ fn parse_origin_session_ref(
             "supply either agent_session_id or agent_session_path, not both",
         );
     }
-    let Some(agent) = origin.official_agent() else {
-        return Ok(None);
-    };
     let supplied = id.is_some() || path.is_some();
-    let session_ref = shepr_agent::agent::resume::session_ref_for_agent_report(agent, id, path);
+    let session_ref =
+        shepr_agent::agent::resume::session_ref_for_agent_report(origin.agent(), id, path);
     if supplied && session_ref.is_none() {
         return failure(
             ApiErrorCode::InvalidRequest,
@@ -139,12 +141,12 @@ fn parse_origin_session_ref(
 
 #[cfg(test)]
 fn parse_report_session_ref(
-    source: &shepr_agent::agent::AgentSource,
+    source: &str,
     agent_label: &str,
     id: Option<String>,
     path: Option<String>,
 ) -> Result<Option<shepr_agent::agent::resume::AgentSessionRef>, shepr_api::error::ApiError> {
-    let (_, session) = App::parse_agent_report_identity(source.as_str(), agent_label, id, path)?;
+    let (_, session) = App::parse_agent_report_identity(source, agent_label, id, path)?;
     Ok(session)
 }
 
@@ -175,110 +177,74 @@ mod tests {
 
     #[test]
     fn a_report_cannot_select_two_session_reference_kinds() {
-        for source in ["shepr:pi", "custom:status"] {
-            let error = App::parse_agent_report_identity(
-                source,
-                "pi",
-                Some("session-id".into()),
-                Some("/sessions/pi.jsonl".into()),
-            )
-            .expect_err("ambiguous reference");
-            assert_eq!(error.code, ApiErrorCode::InvalidRequest);
-        }
+        let error = App::parse_agent_report_identity(
+            "shepr:pi",
+            "pi",
+            Some("session-id".into()),
+            Some("/sessions/pi.jsonl".into()),
+        )
+        .expect_err("ambiguous reference");
+        assert_eq!(error.code, ApiErrorCode::InvalidRequest);
     }
 
     #[test]
-    fn unknown_official_sources_fail_before_dispatch() {
-        let error = App::parse_agent_report_identity("shepr:claud", "claude", None, None)
-            .expect_err("misspelled reserved source");
-        assert_eq!(error.code, ApiErrorCode::InvalidAgent);
+    fn unsupported_sources_fail_before_dispatch() {
+        for (source, label) in [
+            ("shepr:claud", "claude"),
+            ("custom:status", "status-agent"),
+            ("custom:pi", "pi"),
+            ("myagent", "myagent"),
+        ] {
+            let error = App::parse_agent_report_identity(source, label, Some("id".into()), None)
+                .expect_err("only bundled integrations report");
+            assert_eq!(error.code, ApiErrorCode::InvalidAgent, "{source}");
+            assert!(
+                error
+                    .into_message()
+                    .contains("not a bundled shepr integration"),
+                "{source}"
+            );
+        }
     }
 
     #[test]
     fn missing_session_ref_is_distinct_from_invalid_supplied_ref() {
         assert!(
-            parse_report_session_ref(
-                &shepr_agent::agent::AgentSource::parse("shepr:kimi"),
-                "kimi",
-                None,
-                None
-            )
-            .expect("state-only report")
-            .is_none()
+            parse_report_session_ref("shepr:kimi", "kimi", None, None)
+                .expect("state-only report")
+                .is_none()
         );
+        assert!(parse_report_session_ref("shepr:kimi", "kimi", Some(String::new()), None).is_err());
         assert!(
-            parse_report_session_ref(
-                &shepr_agent::agent::AgentSource::parse("shepr:kimi"),
-                "kimi",
-                Some(String::new()),
-                None
-            )
-            .is_err()
-        );
-        assert!(
-            parse_report_session_ref(
-                &shepr_agent::agent::AgentSource::parse("shepr:kimi"),
-                "kimi",
-                None,
-                Some("/session.jsonl".into())
-            )
-            .is_err()
+            parse_report_session_ref("shepr:kimi", "kimi", None, Some("/session.jsonl".into()))
+                .is_err()
         );
     }
 
     #[test]
     fn official_source_cannot_claim_another_agent() {
         assert!(
-            parse_report_session_ref(
-                &shepr_agent::agent::AgentSource::parse("shepr:kimi"),
-                "kilo",
-                Some("session".into()),
-                None
-            )
-            .is_err()
+            parse_report_session_ref("shepr:kimi", "kilo", Some("session".into()), None).is_err()
         );
         assert!(
-            parse_report_session_ref(
-                &shepr_agent::agent::AgentSource::parse("shepr:kimi"),
-                "kimi",
-                Some("session".into()),
-                None
-            )
-            .expect("official identity")
-            .is_some()
+            parse_report_session_ref("shepr:kimi", "kimi", Some("session".into()), None)
+                .expect("official identity")
+                .is_some()
         );
     }
 
     #[test]
     fn official_report_accepts_a_supported_path_session() {
-        let session_ref = parse_report_session_ref(
-            &shepr_agent::agent::AgentSource::parse("shepr:pi"),
-            "pi",
-            None,
-            Some("/sessions/pi.jsonl".into()),
-        )
-        .expect("supported path session")
-        .expect("report carries a session reference");
+        let session_ref =
+            parse_report_session_ref("shepr:pi", "pi", None, Some("/sessions/pi.jsonl".into()))
+                .expect("supported path session")
+                .expect("report carries a session reference");
 
         assert_eq!(
             session_ref.kind(),
             shepr_agent::agent::resume::AgentSessionRefKind::Path
         );
         assert_eq!(session_ref.value_str(), "/sessions/pi.jsonl");
-    }
-
-    #[test]
-    fn custom_state_report_does_not_mint_a_resume_identity() {
-        assert!(
-            parse_report_session_ref(
-                &shepr_agent::agent::AgentSource::parse("custom:state"),
-                "kimi",
-                Some("session".into()),
-                None
-            )
-            .expect("custom state report")
-            .is_none()
-        );
     }
 
     #[test]

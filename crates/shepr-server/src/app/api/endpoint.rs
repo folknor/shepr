@@ -271,7 +271,7 @@ impl Handled {
     }
 }
 
-pub(crate) fn endpoint_rejected<T>(message: impl Into<String>) -> Result<T, EndpointError> {
+pub(crate) fn invalid_argument<T>(message: impl Into<String>) -> Result<T, EndpointError> {
     Err(EndpointError::InvalidArgument(message.into()))
 }
 

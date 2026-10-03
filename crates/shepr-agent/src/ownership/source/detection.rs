@@ -64,30 +64,23 @@ impl AgentOwnership {
         process_exited: bool,
         now: Instant,
     ) -> AgentOwnershipMutation {
-        let previous_agent_label = self.effective_agent_label().map(str::to_string);
+        let previous_agent = self.effective_agent();
         let previous_state = self.state;
         let previous_detected_agent = self.detected_agent;
         let previous_session = self.current_session_identity_for_persistence();
-        let newer_custom_authority = process_exited
-            && self.hook_authority.as_ref().is_some_and(|authority| {
-                authority.origin.known_agent() == agent
-                    && authority.origin.official_agent().is_none()
-                    && authority.reported_at > now
-            });
-        let agent_released =
-            process_exited && !newer_custom_authority && previous_agent_label.is_some();
+        let agent_released = process_exited && previous_agent.is_some();
         if self.should_ignore_detected_state_under_full_lifecycle_hook(agent, process_exited) {
             if self
                 .hook_authority
                 .as_ref()
-                .and_then(|authority| authority.origin.known_agent())
+                .map(|authority| authority.origin.agent())
                 == agent
             {
                 self.detected_agent = agent;
             }
             return AgentOwnershipMutation {
                 effective_state_change: self
-                    .recompute_effective_state(previous_agent_label.as_deref(), previous_state),
+                    .recompute_effective_state(previous_agent, previous_state),
                 session_ref_changed: previous_session
                     != self.current_session_identity_for_persistence(),
                 agent_released: false,
@@ -102,7 +95,7 @@ impl AgentOwnership {
         if !process_exited && self.detected_state_observed_before_release_suppression(agent, now) {
             return AgentOwnershipMutation {
                 effective_state_change: self
-                    .recompute_effective_state(previous_agent_label.as_deref(), previous_state),
+                    .recompute_effective_state(previous_agent, previous_state),
                 session_ref_changed: previous_session
                     != self.current_session_identity_for_persistence(),
                 agent_released: false,
@@ -135,7 +128,7 @@ impl AgentOwnership {
         }
         if process_exited {
             if let Some(target) = agent.and_then(Agent::integration_target)
-                && let Some(record) = self.hook_sources.get_mut(&AgentSource::Official(target))
+                && let Some(record) = self.hook_sources.get_mut(&AgentSource::new(target))
             {
                 record.transition(HookSourceEvent::ProcessExited(now));
             }
@@ -143,14 +136,11 @@ impl AgentOwnership {
             let official_session = self
                 .hook_authority
                 .as_ref()
-                .filter(|authority| {
-                    authority.origin.official_agent().is_some()
-                        && authority.origin.known_agent() == agent
-                })
-                .map(|authority| (authority.origin.clone(), authority.session_ref.clone()))
+                .filter(|authority| Some(authority.origin.agent()) == agent)
+                .map(|authority| (authority.origin, authority.session_ref.clone()))
                 .or_else(|| {
                     self.persisted_agent_session.as_ref().and_then(|session| {
-                        if session.source.agent() != agent || Some(session.agent) != agent {
+                        if Some(session.agent) != agent {
                             return None;
                         }
                         Some((
@@ -172,8 +162,7 @@ impl AgentOwnership {
                 );
             }
             let cleared_hook_source = self.hook_authority.as_ref().and_then(|authority| {
-                (authority.origin.known_agent() == agent && !newer_custom_authority)
-                    .then(|| authority.origin.source().clone())
+                (Some(authority.origin.agent()) == agent).then_some(*authority.origin.source())
             });
             if let Some(source) = cleared_hook_source {
                 self.clear_hook_source_sequence(&source);
@@ -182,11 +171,10 @@ impl AgentOwnership {
                     persisted: self.persisted_agent_session.clone(),
                 });
             }
-            if !newer_custom_authority
-                && self
-                    .persisted_agent_session
-                    .as_ref()
-                    .is_some_and(|session| Some(session.agent) == agent)
+            if self
+                .persisted_agent_session
+                .as_ref()
+                .is_some_and(|session| Some(session.agent) == agent)
             {
                 // An exit under a live shell clears the completed agent. Pane
                 // death retains the pre-release identity when interrupted.
@@ -201,7 +189,7 @@ impl AgentOwnership {
                 || (previous_detected_agent.is_some()
                     && agent != previous_detected_agent
                     && self.hook_authority.as_ref().is_some_and(|authority| {
-                        authority.origin.known_agent() == previous_detected_agent
+                        Some(authority.origin.agent()) == previous_detected_agent
                     })))
         {
             // The authority withdrawn here never belongs to the agent the
@@ -235,8 +223,7 @@ impl AgentOwnership {
                 persisted: durable_session,
             });
         }
-        let effective_state_change =
-            self.recompute_effective_state(previous_agent_label.as_deref(), previous_state);
+        let effective_state_change = self.recompute_effective_state(previous_agent, previous_state);
         AgentOwnershipMutation {
             effective_state_change,
             session_ref_changed: previous_session
@@ -254,7 +241,7 @@ impl AgentOwnership {
             return AgentOwnershipMutation::default();
         }
         let previous_session = self.current_session_identity_for_persistence();
-        let agent = self.effective_known_agent().or(self.detected_agent);
+        let agent = self.effective_agent().or(self.detected_agent);
         // A pane's own death is never a candidate: it is resolved here.
         let candidate = self.checkpoint_candidate.take();
         self.pane_ended = true;

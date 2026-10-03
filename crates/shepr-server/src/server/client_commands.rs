@@ -88,7 +88,8 @@ mod tests {
     #[test]
     fn server_errors_keep_their_variant_and_message() {
         for error in [
-            EndpointError::Rejected("pane w1:p7 not found".into()),
+            EndpointError::PaneGone(shepr_test_fixtures::id("w1:p7")),
+            EndpointError::InvalidArgument("not a directory".into()),
             EndpointError::ShuttingDown,
             EndpointError::StaleBoot,
             EndpointError::SurfaceInactive,

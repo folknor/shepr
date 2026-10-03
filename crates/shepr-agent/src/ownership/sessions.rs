@@ -69,10 +69,10 @@ impl AgentOwnership {
     /// with (persistence tests use it for malformed identities). Production
     /// code never calls it; reports enter through `report_hook_outcome_at`.
     pub fn with_initial_hook_authority(mut self, authority: Option<HookAuthority>) -> Self {
-        let previous_label = self.effective_agent_label().map(str::to_owned);
+        let previous_agent = self.effective_agent();
         let previous_state = self.state;
         self.hook_authority = authority;
-        self.recompute_effective_state(previous_label.as_deref(), previous_state);
+        self.recompute_effective_state(previous_agent, previous_state);
         self
     }
 }
@@ -80,9 +80,9 @@ impl AgentOwnership {
 #[cfg(test)]
 impl AgentOwnership {
     pub(super) fn seed_hook_authority_for_test(&mut self, authority: Option<HookAuthority>) {
-        let previous_label = self.effective_agent_label().map(str::to_owned);
+        let previous_agent = self.effective_agent();
         let previous_state = self.state;
         self.hook_authority = authority;
-        self.recompute_effective_state(previous_label.as_deref(), previous_state);
+        self.recompute_effective_state(previous_agent, previous_state);
     }
 }

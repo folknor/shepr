@@ -238,16 +238,10 @@ impl<'de> Deserialize<'de> for AbsoluteSessionPath {
 }
 
 impl PersistedAgentSession {
-    // Custom reporters can record a built-in agent's session identity through
-    // ReportOrigin::session, but only bundled official integrations may launch
-    // an automatic resume. A stored identity is therefore wider than a plan.
+    /// The source must belong to the agent and the reference must be one the
+    /// agent's resume support accepts, so every identity can plan a resume.
     fn is_valid_identity(&self) -> bool {
-        self.source.agent().is_none_or(|agent| agent == self.agent)
-            && self.session_ref.accepted_for(self.agent)
-    }
-
-    pub fn is_resumable(&self) -> bool {
-        self.source.agent() == Some(self.agent) && self.is_valid_identity()
+        self.source.agent() == self.agent && self.session_ref.accepted_for(self.agent)
     }
 
     pub fn source(&self) -> &AgentSource {
@@ -277,19 +271,19 @@ impl PersistedAgentSession {
         session_ref: AgentSessionRef,
     ) -> Option<Self> {
         let agent = Agent::parse_canonical_label(agent_label)?;
-        let source = AgentSource::parse(source);
+        let source = AgentSource::parse(source)?;
         Self::new(source, agent, session_ref)
     }
 }
 
 impl AgentResumePlan {
     fn with_argv(session: &PersistedAgentSession, argv: Vec<String>) -> Option<Self> {
-        (session.is_resumable() && argv.first().is_some_and(|program| !program.is_empty())).then(
-            || Self {
+        argv.first()
+            .is_some_and(|program| !program.is_empty())
+            .then(|| Self {
                 session: session.clone(),
                 argv,
-            },
-        )
+            })
     }
 
     pub fn agent(&self) -> Agent {
@@ -345,10 +339,6 @@ pub fn session_ref_for_agent_report(
 pub fn plan(session: &PersistedAgentSession) -> Option<AgentResumePlan> {
     let agent = session.agent;
     let descriptor = agent.descriptor();
-    if !session.is_resumable() {
-        return None;
-    }
-
     let executable = agent.executable().to_owned();
     let argv = match (descriptor.resume_support?.resume_args, &session.session_ref) {
         (ResumeArgs::FlagValue(flag), reference) => {
@@ -433,7 +423,7 @@ mod tests {
         agent_session_path: Option<String>,
     ) -> Option<AgentSessionRef> {
         let source = AgentSource::from_pair(source, agent_label)?;
-        session_ref_for_agent_report(source.agent()?, agent_session_id, agent_session_path)
+        session_ref_for_agent_report(source.agent(), agent_session_id, agent_session_path)
     }
 
     fn plan_for_labels(
@@ -442,7 +432,7 @@ mod tests {
         session_ref: &AgentSessionRef,
     ) -> Option<AgentResumePlan> {
         let source = AgentSource::from_pair(source, agent_label)?;
-        let agent = source.agent()?;
+        let agent = source.agent();
         let session = PersistedAgentSession::new(source, agent, session_ref.clone())?;
         plan(&session)
     }
@@ -453,6 +443,7 @@ mod tests {
             ("shepr:codex", "claude", "id", "session"),
             ("shepr:claude", "claude", "path", "/sessions/claude"),
             ("shepr:removed-agent", "removed-agent", "id", "session"),
+            ("custom:codex", "codex", "id", "session"),
         ] {
             let saved = serde_json::json!({
                 "source": source,
@@ -467,18 +458,13 @@ mod tests {
             AgentSessionRef::id("session").expect("session ID"),
         )
         .expect("official session");
-        let custom = PersistedAgentSession::from_report(
-            "custom:codex",
-            "codex",
-            AgentSessionRef::id("session").expect("session ID"),
-        )
-        .expect("custom reporters can record a built-in agent session");
-        assert!(plan(&custom).is_none());
-        let saved_custom = serde_json::to_value(&custom).expect("encode custom identity");
-        assert_eq!(
-            serde_json::from_value::<PersistedAgentSession>(saved_custom)
-                .expect("decode custom identity"),
-            custom,
+        assert!(
+            PersistedAgentSession::from_report(
+                "custom:codex",
+                "codex",
+                AgentSessionRef::id("session").expect("session ID"),
+            )
+            .is_none()
         );
         let saved = serde_json::to_value(&session).expect("encode session");
         assert_eq!(
@@ -490,7 +476,7 @@ mod tests {
     #[test]
     fn a_plan_with_nothing_to_run_is_refused() {
         let session = PersistedAgentSession::new(
-            AgentSource::Official(crate::agent::IntegrationTarget::Codex),
+            AgentSource::new(crate::agent::IntegrationTarget::Codex),
             Agent::Codex,
             AgentSessionRef::id("abc").expect("test precondition"),
         )
@@ -507,7 +493,7 @@ mod tests {
         value: &str,
     ) -> Option<PersistedAgentSession> {
         let source = AgentSource::from_pair(source, agent_label)?;
-        let agent = source.agent()?;
+        let agent = source.agent();
         let session_ref = match kind {
             AgentSessionRefKind::Id => AgentSessionRef::id(value)?,
             AgentSessionRefKind::Path => AgentSessionRef::path(value.to_owned())?,
@@ -667,7 +653,7 @@ mod tests {
     }
 
     #[test]
-    fn planner_rejects_custom_and_unsupported_path_refs() {
+    fn planner_rejects_unbundled_sources_and_unsupported_path_refs() {
         let claude_session = absolute_test_path("claude-session");
         assert!(
             plan_for_labels(

@@ -427,7 +427,7 @@ fn failed_selection_copy_does_not_send_terminal_input() {
         })),
         None,
         Some(Err(ClientShellEndpointError::Server(
-            shepr_protocol::command::EndpointError::Rejected(
+            shepr_protocol::command::EndpointError::Unavailable(
                 "selection text is unavailable".into(),
             ),
         ))),
@@ -476,7 +476,8 @@ fn server_errors_become_unavailable_or_rejected_notices() {
     assert_eq!(body, EndpointError::ShuttingDown.to_string());
 
     for error in [
-        EndpointError::Rejected("no such pane".into()),
+        EndpointError::PaneGone(test_pane_id("w1:p9")),
+        EndpointError::InvalidArgument("not a directory".into()),
         EndpointError::StaleBoot,
         EndpointError::SurfaceInactive,
         EndpointError::LimitExceeded(shepr_protocol::LimitExceeded::new(

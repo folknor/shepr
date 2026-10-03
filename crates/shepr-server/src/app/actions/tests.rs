@@ -556,7 +556,7 @@ fn visible_blocker_overrides_hook_working() {
         shepr_agent::agent::ReportOrigin::parse("shepr:codex", "codex").expect("test origin"),
         AgentState::Working,
         Some(1),
-        None,
+        shepr_agent::agent::resume::AgentSessionRef::id("codex-session"),
     );
     state.handle_app_event(AppEvent::StateChanged {
         pane_id: bg_pane_id,
@@ -669,38 +669,35 @@ fn devin_state_report_refreshes_session_without_overriding_screen_state() {
 }
 
 #[test]
-fn hidden_custom_session_ref_only_update_marks_session_dirty_without_visible_update() {
+fn session_ref_only_update_marks_session_dirty_without_visible_update() {
     let mut state = app_with_workspaces(&["active"]);
     let pane_id = *state.workspaces[0]
         .panes()
         .keys()
         .next()
         .expect("test precondition");
-    let test_dir = ScratchDir::new("custom-session-refs");
-    let first_session = test_dir.path().join("one.jsonl").display().to_string();
-    let second_session = test_dir.path().join("two.jsonl").display().to_string();
 
-    let first_update = report_hook_state(
-        &mut state,
+    state.handle_app_event(AppEvent::StateChanged {
         pane_id,
-        shepr_agent::agent::ReportOrigin::parse("custom:pi", "pi").expect("test origin"),
-        AgentState::Working,
-        Some(20),
-        shepr_agent::agent::resume::AgentSessionRef::path(first_session),
-    );
-    assert_eq!(first_update, StateUpdate::Changed);
+        agent: Some(Agent::Claude),
+        detection: shepr_agent::detect::Detection::new(AgentState::Working, false),
+        process_exited: false,
+        observed_at: std::time::Instant::now(),
+    });
     state.session_dirty = false;
 
-    let second_update = report_hook_state(
+    // A session-only integration's state report records its session and
+    // leaves the screen-detected state as it was.
+    let update = report_hook_state(
         &mut state,
         pane_id,
-        shepr_agent::agent::ReportOrigin::parse("custom:pi", "pi").expect("test origin"),
-        AgentState::Working,
-        Some(21),
-        shepr_agent::agent::resume::AgentSessionRef::path(second_session),
+        shepr_agent::agent::ReportOrigin::official(Agent::Claude).expect("Claude integration"),
+        AgentState::Blocked,
+        Some(20),
+        shepr_agent::agent::resume::AgentSessionRef::id("claude-session"),
     );
 
-    assert_eq!(second_update, StateUpdate::Unchanged);
+    assert_eq!(update, StateUpdate::Unchanged);
     assert!(state.session_dirty);
 }
 

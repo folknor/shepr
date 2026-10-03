@@ -131,9 +131,6 @@ pub(crate) const HOOK_SEQUENCE_REANCHOR_AFTER: Duration = Duration::from_secs(5)
 /// temporal attribution rather than proving identity. Both ends are monotonic
 /// `Instant`s, so a wall-clock step cannot expire or extend a start.
 pub(crate) const PARKED_START_LIFETIME: Duration = Duration::from_secs(120);
-/// Maximum distinct hook sources tracked by a terminal, preventing arbitrary
-/// source names from growing the ordering map without bound.
-pub(crate) const MAX_HOOK_REPORT_SOURCES: usize = 64;
 /// Maximum stale lifecycle sessions remembered per hook source, bounding
 /// deduplication memory while retaining recent reports.
 pub(crate) const MAX_STALE_FULL_LIFECYCLE_HOOK_SESSIONS_PER_SOURCE: usize = 64;
