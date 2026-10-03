@@ -44,7 +44,7 @@ pub(super) fn render_pane_scrollbar(
     info: &PaneInfo,
     rt: &shepr_mux::pane::PaneRuntime,
 ) {
-    let Some(metrics) = rt.scroll_metrics() else {
+    let Some(metrics) = rt.read().scroll_metrics() else {
         return;
     };
     let Some(track) = pane_scrollbar_rect(info) else {

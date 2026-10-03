@@ -18,13 +18,15 @@ mod tests {
     #[test]
     fn border_label_prefers_manual_label_over_agent_label() {
         let mut terminal = TerminalState::new(TerminalId::alloc(), "/".into());
-        terminal.ownership_mut().set_detected_state_with_screen_signals_at(
-            Some(Agent::Claude),
-            AgentState::Idle,
-            false,
-            false,
-            Instant::now(),
-        );
+        terminal
+            .ownership_mut()
+            .set_detected_state_with_screen_signals_at(
+                Some(Agent::Claude),
+                AgentState::Idle,
+                false,
+                false,
+                Instant::now(),
+            );
 
         assert_eq!(terminal.border_label(false), None);
         assert_eq!(terminal.border_label(true).as_deref(), Some("claude"));

@@ -12,23 +12,21 @@ pub(crate) use self::surface::{
 
 use shepr_mux::pane::PaneRuntimeRegistry;
 
-/// Marks the explicit geometry application paths that resize PTYs; drawing
-/// functions take the registry instead. This separates the two in every
-/// signature, but it is not a compile-time barrier: `PaneRuntime::resize`
-/// takes `&self`, so code holding a runtime could still call it.
+/// Exclusive access for explicit geometry application. Drawing holds shared
+/// access to the registry and cannot resize a runtime.
 pub(crate) struct PaneResizer<'a> {
-    runtimes: &'a PaneRuntimeRegistry,
+    runtimes: &'a mut PaneRuntimeRegistry,
 }
 
 impl<'a> PaneResizer<'a> {
-    pub(crate) fn new(runtimes: &'a PaneRuntimeRegistry) -> Self {
+    pub(crate) fn new(runtimes: &'a mut PaneRuntimeRegistry) -> Self {
         Self { runtimes }
     }
 
     fn runtime(
-        &self,
+        &mut self,
         terminal_id: &shepr_protocol::TerminalId,
-    ) -> Option<&shepr_mux::pane::PaneRuntime> {
-        self.runtimes.get(terminal_id)
+    ) -> Option<&mut shepr_mux::pane::PaneRuntime> {
+        self.runtimes.get_mut(terminal_id)
     }
 }

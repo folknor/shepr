@@ -58,7 +58,7 @@ pub(crate) fn compute_surface_for(
 /// `area`: the explicit geometry path the server's PTY size rule runs through.
 pub(crate) fn resize_surface(
     app: &AppState,
-    resizer: &PaneResizer<'_>,
+    resizer: &mut PaneResizer<'_>,
     workspace_index: usize,
     area: Rect,
     cell_size: shepr_termio::host_term::cell_size::HostCellSize,
@@ -94,7 +94,7 @@ pub(crate) fn surface_cursor(
     let ws_idx = app.workspace_index(surface.target?)?;
     let info = surface.pane_infos.iter().find(|info| info.is_focused)?;
     let runtime = app.runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, info.id)?;
-    if runtime.synchronized_output_active() {
+    if runtime.read().synchronized_output_active() {
         return None;
     }
     let scrolled_back = super::panes::pane_is_scrolled_back(runtime);
@@ -114,7 +114,7 @@ pub(crate) fn surface_cursor(
             })
         });
 
-    if let Some(cursor) = runtime.cursor_state(info.inner_rect) {
+    if let Some(cursor) = runtime.read().cursor_state(info.inner_rect) {
         let visible = if reveal {
             !scrolled_back
         } else {

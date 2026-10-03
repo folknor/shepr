@@ -1,12 +1,9 @@
-use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
 
-use tokio::sync::{Notify, mpsc};
+use tokio::sync::Notify;
 
-use crate::events::AppEvent;
-use crate::pane::{PaneRuntime, PaneShellConfig, PaneTeardownTracker};
-use crate::render_signal::RenderSignal;
+use crate::pane::{PaneLauncher, PaneRuntime};
 use crate::terminal::TerminalState;
 use crate::workspace::PaneGeometry;
 use crate::workspace::Workspace;
@@ -16,7 +13,7 @@ use super::actor::SessionPersister;
 use super::lock::DataDirLease;
 use super::restore::RestoredSession;
 use super::snapshot::HistoryCarry;
-use super::{SessionLoad, load, load_history, restore, session_backup_directory};
+use super::{SessionLoad, load, load_history, plan_restore, session_backup_directory};
 
 /// Whether a server restores and saves the session, or only holds its
 /// directory lease while running without persistence.
@@ -31,14 +28,8 @@ pub struct SessionOpenOptions<'a> {
     pub policy: SessionOpenPolicy,
     pub pane_history: bool,
     pub geometry: PaneGeometry,
-    pub scrollback_limit_bytes: usize,
-    pub shell_config: PaneShellConfig<'a>,
-    pub socket_path: &'a Path,
+    pub launcher: &'a PaneLauncher,
     pub resume_agents_on_restore: bool,
-    pub events: &'a mpsc::Sender<AppEvent>,
-    pub render_notify: &'a Arc<Notify>,
-    pub render_dirty: &'a Arc<RenderSignal>,
-    pub pane_teardowns: &'a Arc<PaneTeardownTracker>,
     pub now: Instant,
 }
 
@@ -98,20 +89,14 @@ pub fn open_session(
                     .pane_history
                     .then(|| load_history(&lease, history_digest.as_ref()))
                     .flatten();
-                let restored_session = restore(
+                let restored_session = plan_restore(
                     &snapshot,
                     history.as_ref(),
                     options.geometry,
-                    options.scrollback_limit_bytes,
-                    options.shell_config,
-                    options.socket_path,
                     options.resume_agents_on_restore,
-                    options.events,
-                    options.render_notify,
-                    options.render_dirty,
-                    options.pane_teardowns,
                     options.now,
-                );
+                )
+                .launch(options.launcher);
                 let RestoredSession {
                     workspaces,
                     terminals,

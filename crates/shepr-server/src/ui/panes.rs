@@ -17,7 +17,8 @@ use shepr_mux::workspace::{PaneChromeInfo as PaneInfo, pane_inner_rect};
 use shepr_protocol::{CellData, FrameData, WireColor};
 
 pub(crate) fn pane_is_scrolled_back(rt: &PaneRuntime) -> bool {
-    rt.scroll_metrics()
+    rt.read()
+        .scroll_metrics()
         .is_some_and(|metrics| metrics.offset_from_bottom > 0)
 }
 
@@ -48,7 +49,7 @@ fn terminal_inner_rect(rt: &PaneRuntime, pane_inner: Rect, pane_scrollbars: bool
     shepr_mux::workspace::terminal_content_rect(
         pane_inner,
         pane_scrollbars,
-        pane_scrollbars && rt.alternate_screen_active(),
+        pane_scrollbars && rt.read().alternate_screen_active(),
     )
 }
 
@@ -68,6 +69,7 @@ fn stable_scrollbar_gutter(
         pane_inner.height,
     );
     let scrollbar_rect = rt
+        .read()
         .scroll_metrics()
         .filter(|metrics| should_show_scrollbar(*metrics))
         .map(|_| gutter);
@@ -78,7 +80,7 @@ fn stable_scrollbar_gutter(
 /// Apply a computed pane layout to every runtime it contains.
 pub(super) fn resize_pane_infos(
     app: &AppState,
-    resizer: &PaneResizer<'_>,
+    resizer: &mut PaneResizer<'_>,
     ws_idx: usize,
     pane_infos: &[PaneInfo],
     cell_size: shepr_termio::host_term::cell_size::HostCellSize,
@@ -168,7 +170,7 @@ pub(super) fn render_panes(
 
     for info in pane_infos {
         if let Some(rt) = app.runtime_for_pane_in_workspace(terminal_runtimes, ws_idx, info.id) {
-            rt.render_into(frame, info.inner_rect);
+            rt.read().render_into(frame, info.inner_rect);
             render_pane_scrollbar(app, frame, info, rt);
         } else if let Some(reason) = ws
             .terminal_id(info.id)

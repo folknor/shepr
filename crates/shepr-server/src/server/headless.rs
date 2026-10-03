@@ -1408,9 +1408,9 @@ impl HeadlessServer {
                     if let Some(client) = self.clients.get_mut(&client_id) {
                         client.track_shell_input(&pane_id, &releases);
                     }
-                    let scroll_before = runtime.scroll_metrics();
+                    let scroll_before = runtime.read().scroll_metrics();
                     let result = apply_client_pane_input_events(runtime, &releases);
-                    let scrolled = runtime.scroll_metrics() != scroll_before;
+                    let scrolled = runtime.read().scroll_metrics() != scroll_before;
                     if let Err(failures) = result {
                         self.report_client_shell_input_failures(client_id, &pane_id, &failures);
                     }
@@ -1437,9 +1437,9 @@ impl HeadlessServer {
                 ) else {
                     return;
                 };
-                let scroll_before = runtime.scroll_metrics();
+                let scroll_before = runtime.read().scroll_metrics();
                 let result = apply_client_pane_input_events(runtime, &events);
-                let scrolled = runtime.scroll_metrics() != scroll_before;
+                let scrolled = runtime.read().scroll_metrics() != scroll_before;
                 if let Err(failures) = result {
                     self.report_client_shell_input_failures(client_id, &pane_id, &failures);
                 }

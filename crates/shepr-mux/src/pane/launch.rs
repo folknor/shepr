@@ -151,41 +151,25 @@ pub(super) fn apply_pane_terminal_env(cmd: &mut PtyCommand) {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PaneLaunchEnv {
+pub(super) struct PaneLaunchEnv {
     /// The public id of a managed pane. When absent, `SHEPR_PANE_ID` stays
     /// unset rather than inheriting an enclosing pane's id.
     pane_id: Option<PublicPaneId>,
-    kind: LaunchKind,
     /// Resolved server socket exported to every pane.
     socket_path: std::path::PathBuf,
 }
 
 impl PaneLaunchEnv {
-    pub fn new(socket_path: std::path::PathBuf) -> Self {
+    pub(super) fn new(socket_path: std::path::PathBuf) -> Self {
         Self {
             socket_path,
             pane_id: None,
-            kind: LaunchKind::Fresh,
         }
     }
 
-    pub fn for_agent_resume(mut self) -> Self {
-        self.kind = LaunchKind::AgentResume;
-        self
-    }
-
-    pub fn for_restore(mut self) -> Self {
-        self.kind = LaunchKind::Restored;
-        self
-    }
-
-    pub fn with_pane_id(mut self, pane_id: PublicPaneId) -> Self {
+    pub(super) fn with_pane_id(mut self, pane_id: PublicPaneId) -> Self {
         self.pane_id = Some(pane_id);
         self
-    }
-
-    pub(super) fn kind(&self) -> LaunchKind {
-        self.kind
     }
 }
 

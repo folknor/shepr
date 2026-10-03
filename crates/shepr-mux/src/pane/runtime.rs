@@ -1,4 +1,15 @@
-use std::cell::Cell;
+mod cwd;
+mod input;
+mod read;
+mod read_effects;
+mod spawn;
+
+pub use cwd::PaneCwdProbe;
+use cwd::*;
+pub use read::PaneRead;
+use read_effects::*;
+pub use spawn::{LaunchPresentation, PaneLaunchRequest, PaneLauncher, PaneSpawnHandles};
+
 use std::sync::{
     Arc, Condvar, Mutex,
     atomic::{AtomicBool, Ordering},
@@ -16,6 +27,7 @@ use super::process_probe::*;
 use super::teardown::*;
 use super::terminal::{
     DefaultColorGeneration, PaneTerminal, ProcessBytesEffects, ProcessBytesResult, RenderRequest,
+    TerminalDirtyPatchSnapshot,
 };
 use super::*;
 use crate::UsableCwd;
@@ -28,124 +40,9 @@ use shepr_pty::actor::{
     PtyIoActor, PtyIoActorConfig, PtyIoActorHandle, PtyReadEffects, PtyReadResult, ReaderExit,
 };
 
-pub struct TerminalDirtyPatchSnapshot {
-    /// `None` means the terminal is clean. An unavailable or fallback read
-    /// produces no snapshot.
-    pub patch: Option<TerminalDirtyPatch>,
-    pub content_revision: u64,
-    pub scroll_metrics: ScrollMetrics,
-    pub mouse_reporting: bool,
-    pub sgr_pixel_mouse: bool,
-    pub alternate_screen_active: bool,
-}
-
 // ---------------------------------------------------------------------------
 // PaneRuntime - PTY, parser, channels, background tasks
 // ---------------------------------------------------------------------------
-
-/// The render a pane needs once a synchronized update (mode 2026) that never
-/// ended is force-flushed by its timeout. Every PTY read inside the update
-/// asks for it; one sleeping task per pane serves all of those requests
-/// instead of one task per read.
-#[derive(Debug, Default)]
-struct SyncTimeoutRender {
-    /// The latest wake-up asked for, while a task is armed; `None` when no
-    /// task is sleeping.
-    latest: Mutex<Option<std::time::Instant>>,
-}
-
-impl SyncTimeoutRender {
-    /// Ask for a render at `at`. Returns the instant a new task must first
-    /// wake at, or `None` when the armed task will cover it.
-    fn arm(&self, at: std::time::Instant) -> Option<std::time::Instant> {
-        let mut latest = shepr_vt::lock_auxiliary(&self.latest);
-        match *latest {
-            Some(armed) => {
-                if at > armed {
-                    *latest = Some(at);
-                }
-                None
-            }
-            None => {
-                *latest = Some(at);
-                Some(at)
-            }
-        }
-    }
-
-    /// Called by the armed task after waking for `woke_for`. Returns a later
-    /// instant to sleep until when a later update asked for one meanwhile;
-    /// otherwise disarms and returns `None`, and the task renders. Skipping
-    /// the earlier wake is safe: a newer update only begins after the earlier
-    /// one ended, and ending an update requests its own render.
-    fn next_wake(&self, woke_for: std::time::Instant) -> Option<std::time::Instant> {
-        let mut latest = shepr_vt::lock_auxiliary(&self.latest);
-        match *latest {
-            Some(later) if later > woke_for => Some(later),
-            _ => {
-                *latest = None;
-                None
-            }
-        }
-    }
-}
-
-/// OSC reports and save observations belong to one cwd arbitration state.
-/// Keep the locks separate: a /proc read never holds either, and callers that
-/// need both take reported before remembered.
-#[derive(Default)]
-struct PaneCwdState {
-    reported: Mutex<Option<ReportedCwd>>,
-    remembered: Mutex<Option<PersistedCwd>>,
-}
-
-impl PaneCwdState {
-    fn remembered_cwd(&self) -> Option<std::path::PathBuf> {
-        let reported = shepr_vt::lock_auxiliary(&self.reported);
-        let remembered = shepr_vt::lock_auxiliary(&self.remembered);
-        remembered_cwd_for_save(reported.clone(), remembered.clone())
-    }
-
-    fn resolve(&self, shell_cwd: Option<std::path::PathBuf>) -> Option<std::path::PathBuf> {
-        ReportedCwd::resolve(shepr_vt::lock_auxiliary(&self.reported).as_ref(), shell_cwd)
-    }
-}
-
-/// Reads a pane shell's live working directory from any thread, so a save can
-/// take the probe on the event loop and do the /proc read where the save runs.
-pub struct PaneCwdProbe {
-    child_liveness: Arc<ChildLiveness>,
-    cwd: Arc<PaneCwdState>,
-}
-
-impl PaneCwdProbe {
-    /// The best cwd known for this save. A usable /proc read is arbitrated
-    /// against OSC 7 exactly as it is for a live pane, then remembered. If the
-    /// child is gone or its cwd cannot be used, retain the saved observation
-    /// rather than replacing it with an unavailable process path.
-    pub fn read(&self) -> Option<std::path::PathBuf> {
-        let Some(pid) = self.child_liveness.live_pid() else {
-            return self.remembered_cwd();
-        };
-        let Some(shell_cwd) = super::process_probe::usable_process_cwd(pid) else {
-            return self.remembered_cwd();
-        };
-        if self.child_liveness.live_pid() != Some(pid) {
-            return self.remembered_cwd();
-        }
-        let reported = shepr_vt::lock_auxiliary(&self.cwd.reported).clone();
-        let cwd = ReportedCwd::resolve(reported.as_ref(), Some(shell_cwd.into_path_buf()))?;
-        *shepr_vt::lock_auxiliary(&self.cwd.remembered) = Some(PersistedCwd {
-            path: cwd.clone(),
-            report_generation: reported.map(|reported| reported.generation),
-        });
-        Some(cwd)
-    }
-
-    fn remembered_cwd(&self) -> Option<std::path::PathBuf> {
-        self.cwd.remembered_cwd()
-    }
-}
 
 /// PTY runtime for a pane. Owns the terminal and PTY I/O. Dropping it aborts
 /// the async detection loop and shuts down PTY I/O. A running blocking detection
@@ -166,7 +63,7 @@ pub struct PaneRuntime {
     pane_id: PaneId,
     terminal: Arc<PaneTerminal>,
     io: Box<dyn ChildIo>,
-    current_size: Cell<shepr_core::geometry::PaneGeometry>,
+    current_size: shepr_core::geometry::PaneGeometry,
     child_liveness: Arc<ChildLiveness>,
     teardown_tracker: Arc<super::teardown::PaneTeardownTracker>,
     /// Shared with the child watcher and the PTY reader; dropping the runtime
@@ -243,686 +140,15 @@ impl PaneOutputWrite<'_> {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WheelRouting {
-    HostScroll,
-    MouseReport,
-    AlternateScroll,
-}
-
-/// The last accepted OSC 7 report, with the pane shell's /proc cwd sampled
-/// when it arrived.
-///
-/// OSC 7 carries what /proc cannot: a logical path through symlinks, or the
-/// directory of a program the pane shell's /proc entry does not describe (a
-/// nested shell, a root shell under `sudo`). It goes stale when the shell
-/// changes directory without emitting a new report. The sample tells the two
-/// apart: while the shell's /proc cwd still equals it, nothing the shell did
-/// is newer than the report.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct ReportedCwd {
-    path: std::path::PathBuf,
-    shell_cwd_at_report: Option<std::path::PathBuf>,
-    generation: u64,
-}
-
-/// A save's last cwd observation and the OSC 7 report current when it read
-/// /proc. The generation lets a report that arrived later replace this older
-/// fallback even when the next /proc read is unavailable.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct PersistedCwd {
-    path: std::path::PathBuf,
-    report_generation: Option<u64>,
-}
-
-impl ReportedCwd {
-    /// The pane cwd given the shell's current /proc cwd: the report while the
-    /// shell has not moved since it arrived, otherwise the shell's own cwd.
-    fn resolve(
-        reported: Option<&Self>,
-        shell_cwd: Option<std::path::PathBuf>,
-    ) -> Option<std::path::PathBuf> {
-        match (shell_cwd, reported) {
-            (Some(shell_cwd), Some(reported))
-                if reported.shell_cwd_at_report.as_ref() == Some(&shell_cwd) =>
-            {
-                Some(reported.path.clone())
-            }
-            (Some(shell_cwd), _) => Some(shell_cwd),
-            (None, reported) => reported.map(|reported| reported.path.clone()),
-        }
-    }
-}
-
-fn remembered_cwd_for_save(
-    reported: Option<ReportedCwd>,
-    persisted: Option<PersistedCwd>,
-) -> Option<std::path::PathBuf> {
-    match (reported, persisted) {
-        (Some(reported), Some(persisted)) => {
-            let report_is_newer = persisted
-                .report_generation
-                .is_none_or(|generation| reported.generation > generation);
-            if report_is_newer {
-                Some(reported.path)
-            } else {
-                ReportedCwd::resolve(Some(&reported), Some(persisted.path))
-            }
-        }
-        (Some(reported), None) => Some(reported.path),
-        (None, Some(persisted)) => Some(persisted.path),
-        (None, None) => None,
-    }
-}
-
-fn follow_cwd_from_processes(
-    shell_pid: Option<shepr_platform::Pid>,
-    foreground_pgid: Option<shepr_platform::Pgid>,
-    pane_cwd: impl FnOnce() -> Option<std::path::PathBuf>,
-    foreground_group_cwd: impl FnOnce(shepr_platform::Pgid) -> Option<std::path::PathBuf>,
-) -> Option<std::path::PathBuf> {
-    match (shell_pid, foreground_pgid) {
-        (Some(shell_pid), Some(foreground_pgid))
-            if shepr_platform::Pgid::led_by(shell_pid) != foreground_pgid =>
-        {
-            foreground_group_cwd(foreground_pgid).or_else(pane_cwd)
-        }
-        _ => pane_cwd(),
-    }
-}
-
-fn publish_reported_cwd(
-    pane_id: PaneId,
-    child_liveness: &ChildLiveness,
-    cwd: std::path::PathBuf,
-    reported_cwd: &Mutex<Option<ReportedCwd>>,
-    events: &crate::events::EventSender,
-) {
-    let Some(cwd) = UsableCwd::new(cwd) else {
-        return;
-    };
-    // One readlink per OSC 7, sampled before taking the lock.
-    let shell_cwd_at_report = child_liveness.live_pid().and_then(|pid| {
-        let shell_cwd = readlink_process_cwd(pid);
-        (child_liveness.live_pid() == Some(pid))
-            .then_some(shell_cwd)
-            .flatten()
-    });
-    let mut last_reported = shepr_vt::lock_auxiliary(reported_cwd);
-    if let Some(last) = last_reported.as_mut()
-        && last.path == cwd.as_path()
-    {
-        // A repeated report is not a new event, but it is fresh evidence
-        // that the path is current wherever the shell now is.
-        last.shell_cwd_at_report = shell_cwd_at_report;
-        last.generation = last.generation.saturating_add(1);
-        return;
-    }
-    // The dedupe slot is updated only once the event is queued: if the shared
-    // channel is full, the next identical OSC 7 must retry instead of being
-    // swallowed as a duplicate of a report AppState never saw. Keep the lock
-    // through the nonblocking enqueue and store so concurrent publishers queue
-    // cwd changes in the same order they update the dedupe slot.
-    match events.try_send(AppEvent::TerminalCwdReported {
-        pane_id,
-        cwd: cwd.clone(),
-    }) {
-        Ok(()) => {
-            let generation = last_reported
-                .as_ref()
-                .map_or(0, |last| last.generation.saturating_add(1));
-            *last_reported = Some(ReportedCwd {
-                path: cwd.into_path_buf(),
-                shell_cwd_at_report,
-                generation,
-            });
-        }
-        Err(err) => {
-            drop(last_reported);
-            warn!(
-                pane = pane_id.raw(),
-                error = %err,
-                "failed to send terminal cwd report"
-            );
-        }
-    }
-}
-
-/// What a pane's PTY read callback and its synchronized-output timer share,
-/// behind one `Arc`: a read that defers work clones one pointer, not a dozen.
-// Effects have their own lifetime: the sleeping timer upgrades a Weak to this
-// bundle, while child reaping and detection remain independently owned tasks.
-struct PaneReadEffects {
-    pane_id: PaneId,
-    terminal: Arc<PaneTerminal>,
-    render_notify: Arc<Notify>,
-    render_dirty: Arc<RenderSignal>,
-    cwd: Arc<PaneCwdState>,
-    events: crate::events::EventSender,
-    child_liveness: Arc<ChildLiveness>,
-    sync_timeout_render: SyncTimeoutRender,
-    deferred_effect_order: Arc<DeferredEffectOrder>,
-    /// The PTY actor's handle, set once the actor exists; the timer queues
-    /// the replies of a flushed frame through it.
-    timer_writer: std::sync::OnceLock<PtyIoActorHandle>,
-    timer_reply_drop_reported: AtomicBool,
-    rt: tokio::runtime::Handle,
-}
-
-/// The effects of a terminal write that may block: the `/proc` scan for the
-/// default-colour owner and the readlink behind an OSC 7 report. They run
-/// with no terminal or reply-order lock held.
-struct DeferredEffects {
-    ticket: DeferredEffectTicket,
-    default_color_generation: Option<DefaultColorGeneration>,
-    reported_cwd: Option<std::path::PathBuf>,
-}
-
-/// Serializes the blocking effects produced by ordered terminal writes. The
-/// reply-order lock assigns tickets; this gate waits for earlier effects to
-/// finish after that lock has been released. Only a write with deferred
-/// effects takes a ticket, so the common read never touches it.
-#[derive(Default)]
-struct DeferredEffectOrder {
-    state: Mutex<DeferredEffectOrderState>,
-    ready: Condvar,
-}
-
-#[derive(Default)]
-struct DeferredEffectOrderState {
-    next_reserved: u64,
-    next_to_apply: u64,
-    /// Tickets finished out of turn: dropped without being applied (a panic
-    /// or early return between reservation and application). The sequence
-    /// skips them once every earlier ticket has finished.
-    finished_early: std::collections::BTreeSet<u64>,
-    /// Tickets parked in `apply` for an earlier one. Counted under the lock
-    /// before waiting, so a finishing ticket only wakes the condvar when
-    /// someone is parked on it.
-    waiting: usize,
-}
-
-impl DeferredEffectOrderState {
-    fn finish(&mut self, seq: u64) {
-        if seq != self.next_to_apply {
-            self.finished_early.insert(seq);
-            return;
-        }
-        self.next_to_apply = self.next_to_apply.wrapping_add(1);
-        while self.finished_early.remove(&self.next_to_apply) {
-            self.next_to_apply = self.next_to_apply.wrapping_add(1);
-        }
-    }
-}
-
-/// One reserved place in the deferred-effect order. Dropping it finishes
-/// that place, whether its effect ran, panicked or was never started, so a
-/// lost ticket can never block later effects.
-struct DeferredEffectTicket {
-    order: Arc<DeferredEffectOrder>,
-    seq: u64,
-}
-
-impl Drop for DeferredEffectTicket {
-    fn drop(&mut self) {
-        let mut state = shepr_vt::lock_auxiliary(&self.order.state);
-        state.finish(self.seq);
-        let parked = state.waiting > 0;
-        drop(state);
-        if parked {
-            self.order.ready.notify_all();
-        }
-    }
-}
-
-impl DeferredEffectOrder {
-    /// Called while the terminal reply-order lock is held.
-    fn reserve(self: &Arc<Self>) -> DeferredEffectTicket {
-        let mut state = shepr_vt::lock_auxiliary(&self.state);
-        let seq = state.next_reserved;
-        state.next_reserved = state.next_reserved.wrapping_add(1);
-        DeferredEffectTicket {
-            order: Arc::clone(self),
-            seq,
-        }
-    }
-}
-
-impl DeferredEffectTicket {
-    /// Runs the effect after every earlier ticket has finished, then
-    /// finishes this one (also when the effect panics).
-    fn apply(self, effect: impl FnOnce()) {
-        let mut state = shepr_vt::lock_auxiliary(&self.order.state);
-        if state.next_to_apply != self.seq {
-            state.waiting += 1;
-            while state.next_to_apply != self.seq {
-                state = match self.order.ready.wait(state) {
-                    Ok(state) => state,
-                    Err(poisoned) => shepr_vt::recover_auxiliary_poison(poisoned),
-                };
-            }
-            state.waiting -= 1;
-        }
-        drop(state);
-        effect();
-    }
-}
-
-fn has_deferred_effects(result: &ProcessBytesEffects) -> bool {
-    result.default_color_generation.is_some() || result.reported_cwd.is_some()
-}
-
-/// The initial screen for a child-I/O fixture is state, not output from a
-/// live child. Clear every queued parser effect before later writes can collect
-/// it as though the child had just produced it.
-fn discard_initial_terminal_effects(terminal: &mut shepr_vt::Terminal) {
-    drop(terminal.take_effects());
-}
-
-impl PaneReadEffects {
-    fn read(self: &Arc<Self>, output: &PaneOutputWriter, bytes: &[u8]) -> PtyReadResult {
-        let write = output.begin();
-        // Ticks an expired synchronized update first, then parses; the
-        // core lock is released when this returns.
-        let mut result = match write.process(bytes, std::time::Instant::now()) {
-            Ok(result) => result,
-            Err(_) => return PtyReadResult::CoreBroken,
-        };
-        let deferred_ticket = self.reserve_deferred(&result);
-        let terminal_responses = std::mem::take(&mut result.terminal_responses);
-        if let RenderRequest::After(delay) = result.render_request {
-            self.arm_sync_timeout(delay);
-        }
-        let after_response_order: Option<Box<dyn FnOnce() + Send>> = self
-            .apply_immediate(result, deferred_ticket)
-            .map(|deferred| {
-                let effects = Arc::clone(self);
-                let run: Box<dyn FnOnce() + Send> =
-                    Box::new(move || effects.apply_deferred(deferred));
-                run
-            });
-        PtyReadResult::Effects(PtyReadEffects {
-            terminal_responses,
-            after_response_order,
-        })
-    }
-
-    /// Applies the effects that never block (render and title requests,
-    /// clipboard writes) and returns the ones that may, if any. A read with
-    /// nothing to defer, the common case, allocates nothing for them.
-    /// `ticket` is the write's place in the deferred-effect order, reserved
-    /// under the reply-order lock exactly when `has_deferred_effects` held.
-    fn apply_immediate(
-        &self,
-        result: ProcessBytesEffects,
-        ticket: Option<DeferredEffectTicket>,
-    ) -> Option<DeferredEffects> {
-        let pane_id = self.pane_id;
-        let title_requested =
-            result.terminal_title_changed && self.render_dirty.request_terminal_title(pane_id);
-        let render_requested = matches!(result.render_request, RenderRequest::Now)
-            && self
-                .render_dirty
-                .request_pty_coalesced(pane_id, &self.terminal.render_queued);
-        if title_requested || render_requested {
-            self.render_notify.notify_one();
-        }
-        for content in result.clipboard_writes {
-            if let Err(err) = self
-                .events
-                .try_send(AppEvent::ClipboardWrite { pane_id, content })
-            {
-                warn!(
-                    pane = pane_id.raw(),
-                    error = %err,
-                    "failed to send OSC 52 clipboard write"
-                );
-            }
-        }
-        ticket.map(|ticket| DeferredEffects {
-            ticket,
-            default_color_generation: result.default_color_generation,
-            reported_cwd: result.reported_cwd,
-        })
-    }
-
-    /// Reserves the write's place in the deferred-effect order when it has
-    /// deferred effects. Called under the reply-order lock.
-    fn reserve_deferred(&self, result: &ProcessBytesEffects) -> Option<DeferredEffectTicket> {
-        has_deferred_effects(result).then(|| self.deferred_effect_order.reserve())
-    }
-
-    fn apply_deferred(&self, deferred: DeferredEffects) {
-        // This still blocks the PTY actor after the reply-order lock is
-        // released. Moving it off-thread needs a bounded queue ordered by
-        // ticket reservation, including timer flushes. OSC 10/11 scans /proc,
-        // and OSC 7 validates its path with stat, which can block on a remote
-        // mount. An unbounded queue behind one blocked operation could grow
-        // without limit; a bounded nonblocking queue needs a policy for
-        // coalescing or dropping cwd reports while retaining their order.
-        deferred.ticket.apply(|| {
-            if let Some(generation) = deferred.default_color_generation {
-                self.terminal.resolve_default_color_owner(
-                    self.pane_id,
-                    &self.child_liveness,
-                    generation,
-                );
-            }
-            if let Some(cwd) = deferred.reported_cwd {
-                publish_reported_cwd(
-                    self.pane_id,
-                    &self.child_liveness,
-                    cwd,
-                    &self.cwd.reported,
-                    &self.events,
-                );
-            }
-        });
-    }
-
-    /// Makes sure a task will flush the synchronized update this read began
-    /// or continued once `delay` passes, so a child that goes quiet inside an
-    /// update it never ends still gets its frame shown and its queries
-    /// answered. One task per pane serves every read's request.
-    fn arm_sync_timeout(self: &Arc<Self>, delay: std::time::Duration) {
-        let Some(first_wake) = self
-            .sync_timeout_render
-            .arm(std::time::Instant::now() + delay)
-        else {
-            return;
-        };
-        let effects = Arc::downgrade(self);
-        self.rt.spawn(async move {
-            let mut wake_at = first_wake;
-            loop {
-                tokio::time::sleep_until(tokio::time::Instant::from_std(wake_at)).await;
-                let Some(current_effects) = effects.upgrade() else {
-                    return;
-                };
-                match current_effects.sync_timeout_render.next_wake(wake_at) {
-                    Some(later) => {
-                        wake_at = later;
-                        drop(current_effects);
-                    }
-                    None => {
-                        // The weak reference keeps the pane alive only while
-                        // the timer is actively flushing, not while it sleeps.
-                        // Once queued, this blocking flush cannot be aborted.
-                        // It may tick a detached terminal; late events are
-                        // rejected by generation after runtime removal.
-                        tokio::task::spawn_blocking(move || {
-                            current_effects.flush_expired_synchronized_output();
-                        });
-                        return;
-                    }
-                }
-            }
-        });
-    }
-
-    /// The timer's half of the runtime tick: flush an expired update, queue
-    /// its replies at one point in the reply order (taken before the core
-    /// lock, as the reader does), then apply its effects with no lock held.
-    fn flush_expired_synchronized_output(&self) {
-        let mut tick_result: Option<ProcessBytesResult> = None;
-        let mut deferred_ticket = None;
-        let mut tick = || match self.terminal.tick(std::time::Instant::now()) {
-            Ok(mut result) => {
-                deferred_ticket = self.reserve_deferred(&result);
-                let replies = std::mem::take(&mut result.terminal_responses);
-                tick_result = Some(Ok(result));
-                replies
-            }
-            Err(poisoned) => {
-                tick_result = Some(Err(poisoned));
-                Vec::new()
-            }
-        };
-        match self.timer_writer.get() {
-            Some(writer) => writer.write_terminal_responses(tick),
-            // The actor is set right after it spawns, so this is only a timer
-            // that beat that store. Flush anyway: the frame must not stay
-            // hidden until the child's next output. Its replies have no route.
-            None => {
-                let replies = tick();
-                if !replies.is_empty()
-                    && !self.timer_reply_drop_reported.swap(true, Ordering::Relaxed)
-                {
-                    warn!(
-                        pane = self.pane_id.raw(),
-                        dropped_replies = replies.len(),
-                        "synchronized update replies had no PTY actor route"
-                    );
-                }
-                drop(replies);
-            }
-        }
-        let Some(Ok(result)) = tick_result else {
-            // The PTY actor checks the poisoned core on every loop, including
-            // idle polls, and reports that exit through its broken-core path.
-            return;
-        };
-        if let Some(deferred) = self.apply_immediate(result, deferred_ticket) {
-            self.apply_deferred(deferred);
-        }
-    }
-}
-
-// Every pane ending is recorded with the pane's exit arbiter, and the launch
-// coordinator publishes the first one. Reader failure can leave a live child
-// without an output reader, so it decides at once and the app tears the pane
-// down; IO failure checkpoints the usable terminal, a core panic does not. A
-// closed terminal is how a pane normally ends, so the child watcher gets
-// `closed_grace` (`TERMINAL_CLOSED_EXIT_GRACE` in production) to record the
-// real exit. If it has not by then, the pane ends anyway: usually the child
-// closed its terminal and kept going, though a watcher that was merely slow
-// looks the same. The reader never knows the child is gone, so its endings
-// are unconfirmed. The actor calls this after closing the PTY master, so the
-// wait holds none.
-fn reader_exit_callback(
-    pane_id: PaneId,
-    arbiter: Arc<PaneExitArbiter>,
-    closed_grace: std::time::Duration,
-) -> Box<dyn FnOnce(ReaderExit) + Send> {
-    // clock-io-ok: when the reader saw the ending (a closed terminal ends
-    // when it closed, not when its grace runs out).
-    let ending = |reason| PaneEnding::Observed {
-        reason,
-        child_exit_confirmed: false,
-        ended_at: std::time::Instant::now(),
-    };
-    Box::new(move |exit| match exit {
-        ReaderExit::ShutdownRequested => {}
-        ReaderExit::Closed => {
-            let closed = ending(shepr_platform::ChildExitReason::TerminalClosed);
-            if arbiter.decide_after(closed_grace, closed) {
-                warn!(
-                    pane = pane_id.raw(),
-                    "pane terminal closed and its child's exit was not reported in time; ending the pane"
-                );
-            }
-        }
-        ReaderExit::Panicked => {
-            arbiter.decide(ending(shepr_platform::ChildExitReason::ReaderPanicked));
-        }
-        ReaderExit::IoFailed => {
-            arbiter.decide(ending(shepr_platform::ChildExitReason::ReaderIoFailed));
-        }
-    })
-}
-
-fn prepare_terminal(
-    pane_id: PaneId,
-    geometry: shepr_core::geometry::PaneGeometry,
-    scrollback_limit_bytes: usize,
-    host_terminal_theme: shepr_termio::host_term::theme::TerminalTheme,
-    host_terminal_appearance: Option<shepr_termio::host_term::theme::HostAppearance>,
-    initial_history_ansi: Option<&str>,
-) -> Arc<PaneTerminal> {
-    let cols = geometry.cols();
-    let rows = geometry.rows();
-    let terminal = shepr_vt::Terminal::new(cols, rows, scrollback_limit_bytes);
-    let pane_terminal = PaneTerminal::new_with_pane_id(pane_id, terminal);
-    // The cached size below claims the cell size, so the terminal learns it
-    // now: a later `resize` to the same geometry is a no-op and would never
-    // tell it. Nothing has enabled in-band size reports on a fresh
-    // terminal, so there is no reply to route.
-    let _ = pane_terminal.resize(geometry);
-    pane_terminal.apply_host_terminal_theme(host_terminal_theme);
-    let _ = pane_terminal.apply_host_terminal_appearance(host_terminal_appearance);
-    if let Some(ansi) = initial_history_ansi {
-        // Seeding records row provenance before the child can write. The
-        // detector excludes unchanged saved rows from its live snapshot.
-        pane_terminal.seed_history_ansi(ansi);
-    }
-    Arc::new(pane_terminal)
-}
-
-/// Startup borrows the owners it wires into the actor. On success the caller
-/// starts the child watcher; on failure this path tears down and reaps first.
-struct PtySetup<'a> {
-    pane_id: PaneId,
-    geometry: shepr_core::geometry::PaneGeometry,
-    cmd: &'a shepr_pty::PtyCommand,
-    terminal: &'a Arc<PaneTerminal>,
-    cwd_state: &'a Arc<PaneCwdState>,
-    events: &'a crate::events::EventSender,
-    render_notify: &'a Arc<Notify>,
-    render_dirty: &'a Arc<RenderSignal>,
-    teardown_tracker: &'a Arc<PaneTeardownTracker>,
-    exit_arbiter: &'a Arc<PaneExitArbiter>,
-}
-
-struct StartedPty {
-    child: shepr_pty::backend::PaneChild,
-    child_liveness: Arc<ChildLiveness>,
-    io: Box<dyn ChildIo>,
-    launch: super::launch_status::LaunchStatus,
-}
-
-impl PtySetup<'_> {
-    fn start(self) -> std::io::Result<StartedPty> {
-        let Self {
-            pane_id,
-            geometry,
-            cmd,
-            terminal,
-            cwd_state,
-            events,
-            render_notify,
-            render_dirty,
-            teardown_tracker,
-            exit_arbiter,
-        } = self;
-        let (status_sender, status_channel) = tokio::sync::oneshot::channel();
-        // The fork returns at once; the child changes directory and execs on
-        // its own and reports through its status channel (`launch_status`).
-        let spawned = shepr_pty::backend::spawn_pty(
-            geometry,
-            cmd,
-            Box::new(move |channel| {
-                // A launch whose runtime is gone has no reader for it.
-                status_sender.send(channel).ok();
-            }),
-        )
-        .inspect_err(|err| error!(pane = pane_id.raw(), error = %err, "failed to spawn shell"))?;
-
-        let mut child = spawned.child;
-        let master_fd = spawned.master_fd;
-        let launch = super::launch_status::LaunchStatus {
-            channel: status_channel,
-            registration: spawned.status,
-            cwd_candidates: spawned.cwd_candidates,
-            program: cmd.program().to_string_lossy().into_owned(),
-        };
-        let pid = child.id();
-        crate::logging::pane_spawned(pane_id.raw(), pid);
-        let child_liveness = Arc::new(ChildLiveness::launching(child.process_id(), child.handle()));
-        let io: Box<dyn ChildIo> = {
-            // Failure cleanup and read effects use the same child identity.
-            let startup_child_liveness = Arc::clone(&child_liveness);
-            let health_terminal = Arc::clone(terminal);
-            let effects = Arc::new(PaneReadEffects {
-                pane_id,
-                terminal: Arc::clone(terminal),
-                render_notify: Arc::clone(render_notify),
-                render_dirty: Arc::clone(render_dirty),
-                cwd: Arc::clone(cwd_state),
-                events: events.clone(),
-                child_liveness: Arc::clone(&child_liveness),
-                sync_timeout_render: SyncTimeoutRender::default(),
-                deferred_effect_order: Arc::default(),
-                timer_writer: std::sync::OnceLock::new(),
-                timer_reply_drop_reported: AtomicBool::new(false),
-                rt: tokio::runtime::Handle::current(),
-            });
-            let read_effects = Arc::clone(&effects);
-            let output = PaneOutputWriter {
-                pane_id,
-                terminal: Arc::clone(terminal),
-            };
-            let on_read = Box::new(move |bytes: &[u8]| read_effects.read(&output, bytes));
-            let on_reader_exit = reader_exit_callback(
-                pane_id,
-                Arc::clone(exit_arbiter),
-                crate::limits::TERMINAL_CLOSED_EXIT_GRACE,
-            );
-            let actor = PtyIoActor::spawn(PtyIoActorConfig {
-                pane_id,
-                master_fd,
-                on_read,
-                on_reader_exit,
-                // A render, detection or API read that panicked while holding
-                // the core lock breaks it for good; end the pane within the
-                // actor's idle poll even if the child never prints again.
-                core_broken: Box::new(move || health_terminal.core_poisoned()),
-            });
-            let actor = match actor {
-                Ok(actor) => actor,
-                Err(err) => {
-                    // Actor startup consumes and closes the PTY master on
-                    // failure, but the child and any session members still
-                    // need the pane teardown sequence before we return.
-                    shutdown_pane_processes(
-                        pane_id,
-                        Arc::clone(&startup_child_liveness),
-                        teardown_tracker,
-                    );
-                    if let Err(kill_err) = child.kill() {
-                        warn!(
-                            pane = pane_id.raw(),
-                            pid,
-                            error = %kill_err,
-                            "failed to kill pane child after PTY actor startup failed"
-                        );
-                    }
-                    // Startup is synchronous on its caller. Keep a delayed
-                    // child exit from stalling the server loop by handing it
-                    // to the child watcher's detached reaper.
-                    super::child_watcher::reap_after_startup_failure(
-                        pane_id,
-                        child,
-                        Some(startup_child_liveness),
-                    );
-                    return Err(err);
-                }
-            };
-            // `timer_writer` was created empty above and this is its only
-            // `set`, so it cannot already hold a handle.
-            effects.timer_writer.set(actor.clone()).ok();
-            Box::new(actor)
-        };
-
-        Ok(StartedPty {
-            child,
-            child_liveness,
-            io,
-            launch,
-        })
-    }
-}
-
 impl PaneRuntime {
+    /// Narrow terminal access for drawing, detection snapshots and copy reads.
+    /// This handle has no PTY, cwd, child, or input capabilities.
+    pub fn read(&self) -> PaneRead<'_> {
+        PaneRead {
+            terminal: &self.terminal,
+        }
+    }
+
     pub fn generation(&self) -> crate::events::RuntimeGeneration {
         self.generation
     }
@@ -938,159 +164,6 @@ impl PaneRuntime {
         write_terminal_response(self.io.as_ref(), || {
             self.terminal.apply_host_terminal_appearance(appearance)
         });
-    }
-
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "runtime construction threads PTY geometry, host context, launch policy, and render hooks"
-    )]
-    pub fn spawn(
-        pane_id: PaneId,
-        geometry: shepr_core::geometry::PaneGeometry,
-        cwd: &std::path::Path,
-        scrollback_limit_bytes: usize,
-        host_terminal_theme: shepr_termio::host_term::theme::TerminalTheme,
-        host_terminal_appearance: Option<shepr_termio::host_term::theme::HostAppearance>,
-        shell_config: PaneShellConfig<'_>,
-        launch_env: &PaneLaunchEnv,
-        events: &mpsc::Sender<AppEvent>,
-        render_notify: &Arc<Notify>,
-        render_dirty: &Arc<RenderSignal>,
-        pane_teardowns: &Arc<PaneTeardownTracker>,
-    ) -> std::io::Result<Self> {
-        Self::spawn_with_initial_history(
-            pane_id,
-            geometry,
-            cwd,
-            scrollback_limit_bytes,
-            host_terminal_theme,
-            host_terminal_appearance,
-            shell_config,
-            launch_env,
-            None,
-            events,
-            render_notify,
-            render_dirty,
-            pane_teardowns,
-        )
-    }
-
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "runtime construction needs to thread PTY size, environment, theme, and render hooks together"
-    )]
-    pub(crate) fn spawn_with_initial_history(
-        pane_id: PaneId,
-        geometry: shepr_core::geometry::PaneGeometry,
-        cwd: &std::path::Path,
-        scrollback_limit_bytes: usize,
-        host_terminal_theme: shepr_termio::host_term::theme::TerminalTheme,
-        host_terminal_appearance: Option<shepr_termio::host_term::theme::HostAppearance>,
-        shell_config: PaneShellConfig<'_>,
-        launch_env: &PaneLaunchEnv,
-        initial_history_ansi: Option<&str>,
-        events: &mpsc::Sender<AppEvent>,
-        render_notify: &Arc<Notify>,
-        render_dirty: &Arc<RenderSignal>,
-        pane_teardowns: &Arc<PaneTeardownTracker>,
-    ) -> std::io::Result<Self> {
-        let mut cmd = pane_shell_command_builder(shell_config, launch_env.kind());
-        cmd.cwd(cwd);
-        apply_pane_terminal_env(&mut cmd);
-        apply_pane_launch_env(&mut cmd, launch_env);
-        let launch_kind = launch_env.kind();
-        let teardown_tracker = Arc::clone(pane_teardowns);
-        // One geometry is what the PTY, the terminal and the cached size all
-        // start from, so the first `TIOCSWINSZ` carries the pixel dimensions
-        // and a later `resize` to the same size is a no-op.
-        let rows = geometry.rows();
-        let cols = geometry.cols();
-        crate::logging::pane_spawn_started(pane_id.raw(), rows, cols, scrollback_limit_bytes);
-
-        let terminal = prepare_terminal(
-            pane_id,
-            geometry,
-            scrollback_limit_bytes,
-            host_terminal_theme,
-            host_terminal_appearance,
-            initial_history_ansi,
-        );
-
-        let generation = crate::events::RuntimeGeneration::alloc();
-        let events = crate::events::EventSender::runtime(events.clone(), pane_id, generation);
-        let cwd_state = Arc::new(PaneCwdState::default());
-        let full_lifecycle_authority_active = Arc::new(AtomicBool::new(false));
-        // Created before the actor, which may end before the watcher exists;
-        // the one instance goes to the actor, the watcher and the runtime.
-        let exit_arbiter = Arc::new(PaneExitArbiter::default());
-        let StartedPty {
-            child,
-            child_liveness,
-            io,
-            launch,
-        } = PtySetup {
-            pane_id,
-            geometry,
-            cmd: &cmd,
-            terminal: &terminal,
-            cwd_state: &cwd_state,
-            events: &events,
-            render_notify,
-            render_dirty,
-            teardown_tracker: &teardown_tracker,
-            exit_arbiter: &exit_arbiter,
-        }
-        .start()?;
-
-        // Actor setup failures reap the child above without publishing an exit
-        // for a pane that was never constructed: the coordinator, the pane's
-        // one publisher, starts only here. An ending the reader recorded
-        // before it existed is still published.
-        let launch = super::launch_status::spawn(
-            pane_id,
-            launch_kind,
-            launch,
-            Arc::clone(&child_liveness),
-            Arc::clone(&exit_arbiter),
-            events.clone(),
-        );
-        super::child_watcher::spawn(
-            pane_id,
-            child,
-            Arc::clone(&child_liveness),
-            Arc::clone(&exit_arbiter),
-        );
-
-        let detect_reset_notify = Arc::new(Notify::new());
-        let detect_handle = Some(super::detection_task::DetectionTask::spawn(
-            pane_id,
-            launch_kind,
-            launch,
-            super::detection_task::DetectionHandles {
-                terminal: Arc::clone(&terminal),
-                child_liveness: Arc::clone(&child_liveness),
-                lifecycle_authority: Arc::clone(&full_lifecycle_authority_active),
-                reset: Arc::clone(&detect_reset_notify),
-                events: events.clone(),
-                render_notify: Arc::clone(render_notify),
-                render_dirty: Arc::clone(render_dirty),
-            },
-        ));
-
-        Ok(Self {
-            generation,
-            pane_id,
-            terminal,
-            io,
-            current_size: Cell::new(geometry),
-            child_liveness,
-            teardown_tracker,
-            exit_arbiter,
-            cwd: cwd_state,
-            full_lifecycle_authority_active,
-            detect_reset_notify,
-            detect_handle,
-        })
     }
 
     /// A runtime whose child is reached through `io` instead of a spawned
@@ -1116,7 +189,7 @@ impl PaneRuntime {
             pane_id: PaneId::alloc(),
             terminal: Arc::new(PaneTerminal::new(terminal)),
             io,
-            current_size: Cell::new(shepr_core::geometry::PaneGeometry::new(cols, rows, 0, 0)),
+            current_size: shepr_core::geometry::PaneGeometry::new(cols, rows, 0, 0),
             child_liveness: Arc::new(ChildLiveness::absent()),
             // No child, so no teardown is ever started through this tracker.
             teardown_tracker: Arc::default(),
@@ -1137,15 +210,6 @@ impl PaneRuntime {
         }
     }
 
-    /// Run `hook` during the next dirty-patch collection attempt, including
-    /// when it falls back for synchronized output or a full render. The hook
-    /// runs while the terminal core lock is held, so it
-    /// must not call methods that acquire that lock. A poisoned core
-    /// prevents the hook from running.
-    pub fn on_next_dirty_collection(&self, hook: Box<dyn FnOnce() + Send>) {
-        self.terminal.on_next_dirty_collection(hook);
-    }
-
     pub fn set_full_lifecycle_authority_active(&self, active: bool) {
         let previous = self
             .full_lifecycle_authority_active
@@ -1161,12 +225,7 @@ impl PaneRuntime {
     }
 
     pub fn grid_size(&self) -> shepr_core::geometry::GridSize {
-        self.current_size.get().grid()
-    }
-
-    /// Odd means unavailable or torn; it must never certify a stable surface.
-    pub fn content_seq(&self) -> u64 {
-        shepr_vt::lock_terminal_core(&self.terminal.core).map_or(1, |core| core.content_revision)
+        self.current_size.grid()
     }
 
     /// A full draw spans multiple core holds. Only unchanged, available reads
@@ -1180,11 +239,11 @@ impl PaneRuntime {
     }
 
     /// Resize if the dimensions actually changed.
-    pub fn resize(&self, size: shepr_core::geometry::PaneGeometry) {
-        if self.current_size.get() == size {
+    pub fn resize(&mut self, size: shepr_core::geometry::PaneGeometry) {
+        if self.current_size == size {
             return;
         }
-        self.current_size.set(size);
+        self.current_size = size;
         self.io.resize(size, &mut || {
             // A PTY read holds the same actor reply-order lock while it
             // parses bytes and queues any replies. Resizing the terminal
@@ -1218,355 +277,9 @@ impl PaneRuntime {
         self.terminal.set_scroll_offset_from_bottom(lines)
     }
 
-    pub fn scroll_metrics(&self) -> Option<ScrollMetrics> {
-        self.terminal.scroll_metrics()
-    }
-
-    pub fn search_text_window(
-        &self,
-        query: &str,
-        case_sensitive: bool,
-        direction: crate::pane::TerminalSearchDirection,
-        cursor: crate::pane::TerminalTextPoint,
-        previous: Option<(
-            crate::pane::TerminalTextPoint,
-            crate::pane::TerminalTextPoint,
-        )>,
-        limit: usize,
-    ) -> crate::pane::TerminalSearchWindow {
-        self.terminal
-            .search_text_window(query, case_sensitive, direction, cursor, previous, limit)
-    }
-
-    pub fn word_motion_target(
-        &self,
-        row: shepr_vt::AbsRow,
-        col: u16,
-        motion: crate::pane::TerminalWordMotion,
-    ) -> Option<crate::pane::TerminalTextPoint> {
-        self.terminal.word_motion_target(row, col, motion)
-    }
-
-    pub fn terminal_dimensions(&self) -> Option<(u16, u16)> {
-        self.terminal.dimensions()
-    }
-
-    pub fn paragraph_motion_target(
-        &self,
-        row: shepr_vt::AbsRow,
-        direction: i8,
-    ) -> Option<crate::pane::TerminalTextPoint> {
-        self.terminal.paragraph_motion_target(row, direction)
-    }
-
-    pub fn bracketed_paste_enabled(&self) -> bool {
-        self.terminal.bracketed_paste_enabled()
-    }
-
-    /// Capture all pane input modes together for one routing and encoding
-    /// decision.
-    pub fn input_modes(&self) -> Option<shepr_vt::InputModes> {
-        self.terminal.input_modes()
-    }
-
-    pub fn focus_reporting_enabled(&self) -> bool {
-        self.terminal.focus_reporting_enabled()
-    }
-
-    pub fn mouse_reporting_enabled(&self) -> bool {
-        self.terminal.mouse_reporting_enabled()
-    }
-
-    pub fn sgr_pixel_mouse_enabled(&self) -> bool {
-        self.terminal.sgr_pixel_mouse_enabled()
-    }
-
-    pub fn plain_page_keys_use_host_scrollback(&self) -> Option<bool> {
-        self.terminal.plain_page_keys_use_host_scrollback()
-    }
-
-    pub fn alternate_screen_active(&self) -> bool {
-        self.terminal.alternate_screen_active()
-    }
-
-    /// Whether output has flipped the active screen since the last
-    /// `take_screen_flip`. A lock-free load, for the server's per-plan check.
-    pub fn screen_flip_pending(&self) -> bool {
-        self.terminal.screen_flip_pending()
-    }
-
     /// Takes the screen-flip flag; the caller is about to re-apply geometry.
     pub fn take_screen_flip(&self) -> bool {
         self.terminal.take_screen_flip()
-    }
-
-    pub fn cursor_state(&self, area: Rect) -> Option<TerminalCursorState> {
-        let cursor = self.terminal.cursor_state()?;
-        if cursor.x >= area.width || cursor.y >= area.height {
-            return None;
-        }
-        Some(TerminalCursorState {
-            x: area.x + cursor.x,
-            y: area.y + cursor.y,
-            visible: cursor.visible,
-            shape: cursor.shape,
-        })
-    }
-
-    pub fn synchronized_output_active(&self) -> bool {
-        self.terminal.synchronized_output_active()
-    }
-
-    /// Returns the synchronized-output flag and generation together. `None`
-    /// means the terminal core is poisoned, so render callers must defer the
-    /// frame instead of treating an invented state as a successful read.
-    pub fn synchronized_output_state(&self) -> Option<(bool, u64)> {
-        self.terminal.synchronized_output_state()
-    }
-
-    /// Live text returned by the server's detect capture API.
-    pub fn detection_text(&self) -> String {
-        self.terminal.detection_text()
-    }
-
-    pub fn terminal_title(&self) -> Option<String> {
-        self.terminal.terminal_title()
-    }
-
-    /// The screen text, OSC title and OSC progress the detector evaluates,
-    /// read together under one terminal lock like the live detection tick.
-    /// Unchanged seeded history rows are excluded from the screen text.
-    pub fn agent_detection_inputs(&self) -> super::AgentDetectionInputs {
-        self.terminal.agent_detection_inputs()
-    }
-
-    /// A handle that reads this pane's history from any thread, so a save
-    /// can take it on the event loop and format the history off it.
-    pub fn history_source(&self) -> super::PaneHistorySource {
-        super::PaneHistorySource(Arc::clone(&self.terminal))
-    }
-
-    pub fn extract_selection<P>(
-        &self,
-        selection: &shepr_vt::selection::Selection<P>,
-    ) -> Option<String> {
-        self.terminal.extract_selection(selection)
-    }
-
-    /// Draws the visible screen into `area` of a wire frame; see
-    /// [`PaneTerminal::render_into`].
-    pub fn render_into(&self, frame: &mut shepr_protocol::FrameData, area: Rect) {
-        self.terminal.render_into(frame, area);
-    }
-
-    pub fn collect_dirty_patch_snapshot(
-        &self,
-        area_width: u16,
-        area_height: u16,
-    ) -> Option<TerminalDirtyPatchSnapshot> {
-        // Patch, revision and metadata are read in one terminal-core hold.
-        self.terminal
-            .collect_dirty_patch_snapshot(area_width, area_height)
-    }
-
-    pub fn keyboard_protocol(&self) -> shepr_termio::input::KeyboardProtocol {
-        // Legacy only when the terminal core is unreadable (a poisoned lock).
-        self.terminal
-            .keyboard_protocol(shepr_termio::input::KeyboardProtocol::legacy())
-    }
-
-    pub fn modify_other_keys_level(&self) -> shepr_vt::ModifyOtherKeysLevel {
-        self.terminal.modify_other_keys_level()
-    }
-
-    pub fn encode_terminal_key(&self, key: shepr_termio::input::TerminalKey) -> Vec<u8> {
-        if let Some(modes) = self.input_modes() {
-            self.encode_terminal_key_with_modes(key, modes)
-        } else {
-            self.terminal
-                .encode_terminal_key(key, shepr_termio::input::KeyboardProtocol::legacy())
-        }
-    }
-
-    pub fn encode_terminal_key_with_modes(
-        &self,
-        key: shepr_termio::input::TerminalKey,
-        modes: shepr_vt::InputModes,
-    ) -> Vec<u8> {
-        self.terminal.encode_terminal_key_with_modes(key, modes)
-    }
-
-    pub fn try_send_bytes(&self, bytes: Bytes) -> Result<(), shepr_pty::ChildIoSendError> {
-        self.io.try_write_user_input(bytes)
-    }
-
-    pub fn try_send_paste(&self, text: String) -> Result<(), shepr_pty::ChildIoSendError> {
-        self.try_send_bytes(self.paste_payload(text))
-    }
-
-    fn paste_payload(&self, text: String) -> Bytes {
-        let bracketed = self.bracketed_paste_enabled();
-        let payload = if bracketed {
-            // Clipboard controls must not change how a child interprets the
-            // bracketed wrapper. Preserve ordinary pasted whitespace only.
-            let safe: String = text
-                .replace("\x1b[201~", "")
-                .replace("\x1b[200~", "")
-                .chars()
-                .filter(|ch| !ch.is_control() || matches!(*ch, '\t' | '\r' | '\n'))
-                .collect();
-            format!("\x1b[200~{safe}\x1b[201~")
-        } else {
-            text
-        };
-        Bytes::from(payload)
-    }
-
-    pub fn try_send_focus_event(&self, event: shepr_vt::FocusEvent) {
-        if !self.focus_reporting_enabled() {
-            return;
-        }
-
-        let bytes = shepr_vt::encode_focus(event);
-        if let Err(err) = self.try_send_bytes(Bytes::from_static(bytes)) {
-            warn!(error = %err, ?event, "failed to forward pane focus event");
-        }
-    }
-
-    pub fn wheel_routing(&self) -> Option<WheelRouting> {
-        self.terminal.wheel_routing()
-    }
-
-    pub fn wheel_routing_for_modes(&self, modes: shepr_vt::InputModes) -> WheelRouting {
-        PaneTerminal::wheel_routing_for_modes(modes)
-    }
-
-    pub fn encode_mouse_button(
-        &self,
-        kind: crossterm::event::MouseEventKind,
-        position: shepr_termio::input::mouse::Position,
-        modifiers: crossterm::event::KeyModifiers,
-    ) -> Option<Vec<u8>> {
-        self.encode_mouse_button_with_modes(self.input_modes()?, kind, position, modifiers)
-    }
-
-    pub fn encode_mouse_button_with_modes(
-        &self,
-        modes: shepr_vt::InputModes,
-        kind: crossterm::event::MouseEventKind,
-        position: shepr_termio::input::mouse::Position,
-        modifiers: crossterm::event::KeyModifiers,
-    ) -> Option<Vec<u8>> {
-        self.terminal
-            .encode_mouse_button_with_modes(modes, kind, position, modifiers)
-    }
-
-    pub fn encode_mouse_motion(
-        &self,
-        kind: crossterm::event::MouseEventKind,
-        position: shepr_termio::input::mouse::Position,
-        modifiers: crossterm::event::KeyModifiers,
-    ) -> Option<Vec<u8>> {
-        self.encode_mouse_motion_with_modes(self.input_modes()?, kind, position, modifiers)
-    }
-
-    pub fn encode_mouse_motion_with_modes(
-        &self,
-        modes: shepr_vt::InputModes,
-        kind: crossterm::event::MouseEventKind,
-        position: shepr_termio::input::mouse::Position,
-        modifiers: crossterm::event::KeyModifiers,
-    ) -> Option<Vec<u8>> {
-        self.terminal
-            .encode_mouse_motion_with_modes(modes, kind, position, modifiers)
-    }
-
-    pub fn encode_mouse_wheel(
-        &self,
-        kind: crossterm::event::MouseEventKind,
-        position: shepr_termio::input::mouse::Position,
-        modifiers: crossterm::event::KeyModifiers,
-    ) -> Option<Vec<u8>> {
-        self.encode_mouse_wheel_with_modes(self.input_modes()?, kind, position, modifiers)
-    }
-
-    pub fn encode_mouse_wheel_with_modes(
-        &self,
-        modes: shepr_vt::InputModes,
-        kind: crossterm::event::MouseEventKind,
-        position: shepr_termio::input::mouse::Position,
-        modifiers: crossterm::event::KeyModifiers,
-    ) -> Option<Vec<u8>> {
-        if self.wheel_routing_for_modes(modes) != WheelRouting::MouseReport {
-            return None;
-        }
-        self.terminal
-            .encode_mouse_wheel_with_modes(modes, kind, position, modifiers)
-    }
-
-    pub fn pixel_size(&self) -> Option<(u32, u32)> {
-        self.current_size
-            .get()
-            .text_area_px()
-            .map(|(width, height)| (u32::from(width), u32::from(height)))
-    }
-
-    pub fn encode_alternate_scroll(
-        &self,
-        kind: crossterm::event::MouseEventKind,
-    ) -> Option<Vec<u8>> {
-        self.encode_alternate_scroll_with_modes(self.input_modes()?, kind)
-    }
-
-    pub fn encode_alternate_scroll_with_modes(
-        &self,
-        modes: shepr_vt::InputModes,
-        kind: crossterm::event::MouseEventKind,
-    ) -> Option<Vec<u8>> {
-        if self.wheel_routing_for_modes(modes) != WheelRouting::AlternateScroll {
-            return None;
-        }
-        let key = match kind {
-            crossterm::event::MouseEventKind::ScrollUp => crossterm::event::KeyCode::Up,
-            crossterm::event::MouseEventKind::ScrollDown => crossterm::event::KeyCode::Down,
-            _ => return None,
-        };
-        Some(self.encode_terminal_key_with_modes(
-            shepr_termio::input::TerminalKey::new(key, crossterm::event::KeyModifiers::empty()),
-            modes,
-        ))
-    }
-
-    /// Get the current working directory of the child shell process.
-    ///
-    /// The latest OSC 7 report wins while the shell's /proc cwd is unchanged
-    /// since that report arrived; once the shell has moved without reporting,
-    /// its /proc cwd wins. One /proc readlink per call and no stat
-    /// (`readlink_process_cwd`): this runs on the event loop.
-    pub fn cwd(&self) -> Option<std::path::PathBuf> {
-        let shell_cwd = self.child_liveness.live_pid().and_then(|pid| {
-            let cwd = super::process_probe::readlink_process_cwd(pid);
-            (self.child_liveness.live_pid() == Some(pid))
-                .then_some(cwd)
-                .flatten()
-        });
-        self.cwd.resolve(shell_cwd)
-    }
-
-    /// The cwd a save can use without a /proc read, using the same OSC 7
-    /// arbitration as [`Self::cwd`]. A save's capture takes this on the event
-    /// loop and lets [`PaneCwdProbe::read`] refresh it where the save runs.
-    pub fn remembered_cwd(&self) -> Option<std::path::PathBuf> {
-        self.cwd.remembered_cwd()
-    }
-
-    /// What another thread needs to resolve this pane's best saved cwd (see
-    /// [`PaneCwdProbe`]); taking it reads nothing.
-    pub fn cwd_probe(&self) -> PaneCwdProbe {
-        PaneCwdProbe {
-            child_liveness: Arc::clone(&self.child_liveness),
-            cwd: Arc::clone(&self.cwd),
-        }
     }
 
     /// With a process handle, includes zombies before the watcher reaps them
@@ -1596,55 +309,6 @@ impl PaneRuntime {
     pub fn launched(&self) -> bool {
         self.child_liveness.is_launched()
     }
-
-    /// The cwd to inherit when a split or new workspace follows this pane.
-    /// The shell's OSC 7 arbitration applies while its own process group is in
-    /// the foreground; a foreground job's group leader takes precedence while
-    /// a different group owns the terminal.
-    pub fn follow_cwd(&self) -> Option<std::path::PathBuf> {
-        let shell_pid = self.child_liveness.live_process_id();
-        let foreground_pgid = shell_pid.and_then(|pid| {
-            let foreground_pgid = shepr_platform::ProcStat::read(pid)
-                .ok()
-                .and_then(|stat| stat.foreground_group);
-            (self.child_liveness.live_process_id() == Some(pid))
-                .then_some(foreground_pgid)
-                .flatten()
-        });
-        let cwd = follow_cwd_from_processes(
-            shell_pid,
-            foreground_pgid,
-            || self.cwd(),
-            |group| readlink_process_cwd(group.leader_pid().get()),
-        );
-        if shell_pid.is_some_and(|pid| self.child_liveness.live_process_id() != Some(pid)) {
-            None
-        } else {
-            cwd
-        }
-    }
-
-    /// Get the current working directory of the process group controlling the pane PTY.
-    pub fn foreground_cwd(&self) -> Option<std::path::PathBuf> {
-        let pid = self.child_liveness.live_pid()?;
-        let foreground_pgid = shepr_agent::detect::foreground_process_group_id(pid);
-        if self.child_liveness.live_pid() != Some(pid) {
-            return None;
-        }
-        let leader_cwd = foreground_pgid.and_then(readlink_process_cwd);
-
-        // The group leader's cwd is authoritative: a helper
-        // process that chdirs elsewhere inside the same foreground group
-        // must not override it. Scan other members only when the leader's
-        // cwd cannot be read as a usable path.
-        let cwd = leader_cwd.or_else(|| {
-            let shell_cwd = readlink_process_cwd(pid);
-            foreground_member_cwd_different_from_shell(pid, shell_cwd.as_ref())
-        });
-        (self.child_liveness.live_pid() == Some(pid))
-            .then_some(cwd)
-            .flatten()
-    }
 }
 
 impl Drop for PaneRuntime {
@@ -1673,6 +337,10 @@ impl Drop for PaneRuntime {
 
 #[cfg(test)]
 use shepr_agent::detect::AgentState;
+#[cfg(test)]
+use spawn::reader_exit_callback;
+#[cfg(test)]
+use std::cell::Cell;
 
 #[cfg(test)]
 impl PaneRuntime {
@@ -1760,8 +428,6 @@ mod tests {
         writer.begin().write(b"still usable");
     }
 
-    /// Runs the reader's exit callback and returns the ending it recorded,
-    /// `None` when it recorded nothing new.
     /// Runs the reader's exit callback and returns the reason it recorded and
     /// whether it was a confirmed exit, `None` when it recorded nothing new.
     fn reader_exit(
@@ -1896,13 +562,13 @@ mod tests {
     async fn output_writer_holds_the_core_without_announcing_an_unwritten_mutation() {
         let (runtime, _rx) = PaneRuntime::test_with_channel(20, 4);
         let writer = runtime.output_writer();
-        let before = runtime.content_seq();
+        let before = runtime.read().content_seq();
         let write = writer.begin();
         assert!(writer.try_begin().is_none());
         drop(write);
-        assert_eq!(runtime.content_seq(), before);
+        assert_eq!(runtime.read().content_seq(), before);
         writer.try_begin().expect("unlocked core").write(b"hello");
-        assert!(runtime.content_seq() > before);
+        assert!(runtime.read().content_seq() > before);
         assert!(runtime.visible_text().contains("hello"));
     }
 
@@ -1920,24 +586,28 @@ mod tests {
         let (runtime, _rx) =
             PaneRuntime::test_with_channel_and_scrollback_bytes(20, 4, 100_000, &[], 4);
         runtime.test_process_pty_bytes(b"one\r\ntwo\r\nthree\r\nfour\r\nfive");
-        let before = runtime.content_seq();
+        let before = runtime.read().content_seq();
         runtime.scroll_up(1);
         let snapshot = runtime
+            .read()
             .collect_dirty_patch_snapshot(20, 4)
             .expect("snapshot");
         assert!(snapshot.content_revision > before);
-        assert_eq!(snapshot.content_revision, runtime.content_seq());
-        assert_eq!(Some(snapshot.scroll_metrics), runtime.scroll_metrics());
+        assert_eq!(snapshot.content_revision, runtime.read().content_seq());
+        assert_eq!(
+            Some(snapshot.scroll_metrics),
+            runtime.read().scroll_metrics()
+        );
         let before_theme = snapshot.content_revision;
         runtime
             .terminal
             .apply_host_terminal_theme(shepr_termio::host_term::theme::TerminalTheme::default());
-        assert!(runtime.content_seq() > before_theme);
-        let before_appearance = runtime.content_seq();
+        assert!(runtime.read().content_seq() > before_theme);
+        let before_appearance = runtime.read().content_seq();
         let _ = runtime.terminal.apply_host_terminal_appearance(Some(
             shepr_termio::host_term::theme::HostAppearance::Dark,
         ));
-        assert!(runtime.content_seq() > before_appearance);
+        assert!(runtime.read().content_seq() > before_appearance);
     }
 
     #[tokio::test]
@@ -1949,15 +619,16 @@ mod tests {
             b"old\r\nold\r\nold\r\nold\r\nold\r\n\x1b[32m$ abcdefghijklmnop\x1b[1A\x1b[4G\x1b[",
             4,
         );
-        let before = runtime.content_seq();
+        let before = runtime.read().content_seq();
         runtime.scroll_up(1);
         runtime.clear_screen().expect("test precondition");
         let snapshot = runtime
+            .read()
             .collect_dirty_patch_snapshot(10, 5)
             .expect("test precondition");
         assert!(snapshot.content_revision > before);
         assert!(snapshot.patch.is_some());
-        let metrics = runtime.scroll_metrics().expect("test precondition");
+        let metrics = runtime.read().scroll_metrics().expect("test precondition");
         assert_eq!(metrics.max_offset_from_bottom, 0);
         assert_eq!(metrics.offset_from_bottom, 0);
         let text = runtime.recent_unwrapped_text(100);
@@ -1977,7 +648,7 @@ mod tests {
             b"one\r\ntwo\r\nthree\r\nfour\r\nfive\x1b[?1049halt app",
         );
         let before = runtime.visible_text();
-        let content_seq = runtime.content_seq();
+        let content_seq = runtime.read().content_seq();
         let detection_content_seq = shepr_vt::lock_terminal_core(&runtime.terminal.core)
             .expect("core")
             .detection_content_seq;
@@ -1986,7 +657,7 @@ mod tests {
             Err(PaneClearError::AlternateScreenActive)
         );
         assert_eq!(runtime.visible_text(), before);
-        assert_eq!(runtime.content_seq(), content_seq);
+        assert_eq!(runtime.read().content_seq(), content_seq);
         assert_eq!(
             shepr_vt::lock_terminal_core(&runtime.terminal.core)
                 .expect("core")
@@ -2004,43 +675,48 @@ mod tests {
     async fn dirty_patch_snapshot_keeps_clean_metadata_and_terminal_fallback() {
         let (runtime, _rx) = PaneRuntime::test_with_channel(20, 4);
         runtime
+            .read()
             .collect_dirty_patch_snapshot(20, 4)
             .expect("initial snapshot");
         runtime.test_process_pty_bytes(b"\x1b[?1003h\x1b[?1016h");
         let snapshot = runtime
+            .read()
             .collect_dirty_patch_snapshot(20, 4)
             .expect("mode snapshot");
         assert!(snapshot.patch.is_none());
-        assert_eq!(snapshot.content_revision, runtime.content_seq());
+        assert_eq!(snapshot.content_revision, runtime.read().content_seq());
         assert!(snapshot.content_revision.is_multiple_of(2));
         assert!(snapshot.mouse_reporting);
         assert!(snapshot.sgr_pixel_mouse);
         assert!(!snapshot.alternate_screen_active);
 
         runtime.test_process_pty_bytes(b"\x1b]8;;https://example.com\x1b\\link\x1b]8;;\x1b\\");
-        assert!(runtime.collect_dirty_patch_snapshot(20, 4).is_none());
+        assert!(runtime.read().collect_dirty_patch_snapshot(20, 4).is_none());
         assert!(runtime.terminal.core.try_lock().is_ok());
     }
 
     #[tokio::test]
     async fn dirty_patch_snapshot_tracks_serialized_scroll_and_resize() {
-        let runtime = PaneRuntime::test_with_scrollback_bytes(
+        let mut runtime = PaneRuntime::test_with_scrollback_bytes(
             20,
             4,
             100_000,
             b"one\r\ntwo\r\nthree\r\nfour\r\nfive\r\nsix",
         );
         runtime
+            .read()
             .collect_dirty_patch_snapshot(20, 4)
             .expect("live snapshot");
         runtime.scroll_up(1);
         let scrolled = runtime
+            .read()
             .collect_dirty_patch_snapshot(20, 4)
             .expect("scrolled snapshot");
         assert_eq!(scrolled.scroll_metrics.offset_from_bottom, 1);
         runtime.scroll_reset();
         runtime.resize(shepr_core::geometry::PaneGeometry::new(24, 5, 0, 0));
         let resized = runtime
+            .read()
             .collect_dirty_patch_snapshot(24, 5)
             .expect("resized snapshot");
         let metrics = resized.scroll_metrics;
@@ -2315,7 +991,7 @@ mod tests {
     #[tokio::test]
     async fn alternate_screen_does_not_replace_primary_saved_history() {
         let (runtime, _rx) = PaneRuntime::test_with_channel(80, 24);
-        let source = runtime.history_source();
+        let source = runtime.read().history_source();
         let mut history = PaneHistoryCache::default();
         runtime.test_process_pty_bytes(b"primary history");
         assert!(source.refresh(&mut history));
@@ -2883,7 +1559,7 @@ mod tests {
         let history = (1..=2_000)
             .map(|line| format!("{line:05} {suffix}\r\n"))
             .collect::<String>();
-        let runtime =
+        let mut runtime =
             PaneRuntime::test_with_scrollback_bytes(80, 45, 20_000_000, history.as_bytes());
 
         runtime.resize(shepr_core::geometry::PaneGeometry::new(80, 21, 0, 0));
@@ -2894,9 +1570,10 @@ mod tests {
         runtime.resize(shepr_core::geometry::PaneGeometry::new(80, 45, 0, 0));
 
         assert_eq!(runtime.current_size(), (45, 80));
-        assert_eq!(runtime.terminal_dimensions(), Some((80, 45)));
+        assert_eq!(runtime.read().terminal_dimensions(), Some((80, 45)));
         assert_eq!(
             runtime
+                .read()
                 .scroll_metrics()
                 .expect("test precondition")
                 .viewport_rows,
@@ -2919,7 +1596,7 @@ mod tests {
             pane_id,
             terminal,
             io: Box::new(io),
-            current_size: Cell::new(shepr_core::geometry::PaneGeometry::new(24, 80, 0, 0)),
+            current_size: shepr_core::geometry::PaneGeometry::new(24, 80, 0, 0),
             child_liveness: Arc::new(ChildLiveness::absent()),
             teardown_tracker: Arc::default(),
             exit_arbiter: Arc::default(),
@@ -2947,7 +1624,7 @@ mod tests {
             pane_id,
             terminal,
             io: Box::new(io),
-            current_size: Cell::new(shepr_core::geometry::PaneGeometry::new(24, 80, 0, 0)),
+            current_size: shepr_core::geometry::PaneGeometry::new(24, 80, 0, 0),
             child_liveness: Arc::new(ChildLiveness::absent()),
             teardown_tracker: Arc::default(),
             exit_arbiter: Arc::default(),
@@ -3018,12 +1695,12 @@ mod tests {
         let runtime = PaneRuntime::test_with_screen_bytes(80, 24, b"");
         runtime.test_process_pty_bytes(b"\x1b]2;startup title\x1b\\\x1b]9;4;1;\x1b\\");
 
-        let inputs = runtime.agent_detection_inputs();
+        let inputs = runtime.read().agent_detection_inputs();
         assert_eq!(inputs.osc_title, "startup title");
         assert_eq!(inputs.osc_progress, "4;1;");
 
         clear_osc_evidence_for_agent_transition(&runtime.terminal);
-        let inputs = runtime.agent_detection_inputs();
+        let inputs = runtime.read().agent_detection_inputs();
         assert_eq!(inputs.osc_title, "");
         assert_eq!(inputs.osc_progress, "");
     }

@@ -80,6 +80,7 @@ async fn clear_pane_mutates_endpoint_owned_history() {
         .expect("test precondition");
     assert_eq!(
         runtime
+            .read()
             .scroll_metrics()
             .expect("test precondition")
             .max_offset_from_bottom,
@@ -111,6 +112,7 @@ async fn pane_scroll_sets_and_clamps_endpoint_owned_history() {
         .runtime_for_pane_in_workspace(&app.terminal_runtimes, 0, pane_id)
         .expect("runtime");
     let max_offset = runtime
+        .read()
         .scroll_metrics()
         .expect("scroll metrics")
         .max_offset_from_bottom;
@@ -277,12 +279,14 @@ async fn copy_motion_and_search_keep_their_line_across_eviction() {
         .runtime_for_pane_in_workspace(&app.terminal_runtimes, 0, pane_id)
         .expect("test precondition");
     let origin_before = runtime
+        .read()
         .scroll_metrics()
         .expect("test precondition")
         .history_origin;
     runtime.test_process_pty_bytes(b"x\r\n");
     assert!(
         runtime
+            .read()
             .scroll_metrics()
             .expect("test precondition")
             .history_origin

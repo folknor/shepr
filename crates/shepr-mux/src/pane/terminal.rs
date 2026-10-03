@@ -117,6 +117,19 @@ pub enum TerminalDirtyPatchOutcome {
     Fallback,
 }
 
+/// A dirty patch with the revision and metadata read in the same terminal-core
+/// hold.
+pub struct TerminalDirtyPatchSnapshot {
+    /// `None` means the terminal is clean. An unavailable or fallback read
+    /// produces no snapshot.
+    pub patch: Option<TerminalDirtyPatch>,
+    pub content_revision: u64,
+    pub scroll_metrics: ScrollMetrics,
+    pub mouse_reporting: bool,
+    pub sgr_pixel_mouse: bool,
+    pub alternate_screen_active: bool,
+}
+
 pub(super) struct TerminalDirtyPatchCollection {
     pub outcome: TerminalDirtyPatchOutcome,
     pub fallback_reason: Option<&'static str>,
@@ -387,9 +400,11 @@ impl PaneTerminal {
 mod backend;
 mod helpers;
 mod history;
+mod input;
 mod text;
 
 pub use history::{HistoryPiece, PaneHistoryCache, PaneHistorySource};
+pub use input::WheelRouting;
 
 use helpers::*;
 use text::*;

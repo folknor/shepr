@@ -172,7 +172,7 @@ fn retained_cursor(
         pane.workspace_index,
         pane.identity.pane_id,
     )?;
-    if runtime.synchronized_output_active() {
+    if runtime.read().synchronized_output_active() {
         return None;
     }
     let area = Rect::new(
@@ -182,6 +182,7 @@ fn retained_cursor(
         pane.pane.inner_rect.height,
     );
     runtime
+        .read()
         .cursor_state(area)
         .map(|cursor| shepr_protocol::CursorState {
             x: cursor.x,
@@ -330,7 +331,7 @@ fn has_synchronized_pane(app: &app::App, panes: &[ResolvedRetainedPane<'_>]) -> 
                 pane.workspace_index,
                 pane.identity.pane_id,
             )
-            .is_some_and(shepr_mux::pane::PaneRuntime::synchronized_output_active)
+            .is_some_and(|runtime| runtime.read().synchronized_output_active())
     })
 }
 
@@ -499,7 +500,7 @@ impl HeadlessServer {
             ) else {
                 source_fallback!("runtime_missing", source);
             };
-            let Some(snapshot) = runtime.collect_dirty_patch_snapshot(width, height) else {
+            let Some(snapshot) = runtime.read().collect_dirty_patch_snapshot(width, height) else {
                 source_fallback!("terminal_snapshot", source);
             };
             // A fallback read yields no snapshot at all (`terminal_snapshot`

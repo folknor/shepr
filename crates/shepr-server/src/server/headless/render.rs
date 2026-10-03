@@ -238,9 +238,9 @@ impl HeadlessServer {
                     .then(|| self.shell_focused_runtime(client_id))
                     .flatten();
                 let child_requests_mouse =
-                    focused.is_some_and(|(runtime, _)| runtime.mouse_reporting_enabled());
+                    focused.is_some_and(|(runtime, _)| runtime.read().mouse_reporting_enabled());
                 let sgr_pixels = client.pixel_mouse
-                    && focused.is_some_and(|(runtime, _)| runtime.sgr_pixel_mouse_enabled());
+                    && focused.is_some_and(|(runtime, _)| runtime.read().sgr_pixel_mouse_enabled());
                 (
                     client_id,
                     presenting && (shell.mouse_capture || child_requests_mouse),
@@ -390,6 +390,7 @@ impl HeadlessServer {
             .into_iter()
             .any(|runtime| {
                 runtime
+                    .read()
                     .synchronized_output_state()
                     .is_none_or(|(active, _)| active)
             })

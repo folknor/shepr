@@ -218,15 +218,13 @@ impl App {
         geometry: shepr_core::geometry::PaneGeometry,
         now: Instant,
     ) -> AttemptOutcome {
-        let host_terminal_theme = self.state.host_terminal_theme;
-
         // Quote the planner's validated command before typing it into the shell.
         let resume_command = plan.to_shell_command();
-        // No launch env only when the pane or its workspace is gone, which no
-        // retry fixes.
-        let Some(launch_env) = self
+        // No public identity only when the pane or its workspace is gone,
+        // which no retry fixes.
+        let Some(public_id) = self
             .find_pane(pane_id)
-            .and_then(|(ws_idx, _)| self.pane_launch_env(ws_idx, pane_id))
+            .and_then(|(ws_idx, _)| self.public_pane_id(ws_idx, pane_id))
         else {
             tracing::warn!(
                 pane = pane_id.raw(),
@@ -237,29 +235,18 @@ impl App {
             self.abandon_resume(terminal_id, "the pane no longer exists", now);
             return AttemptOutcome::Abandoned;
         };
-        let launch_env = launch_env.for_agent_resume();
 
         // The launch returns once forked; the child enters the saved directory
         // itself (never falling back), so a directory that is gone or on a
         // hung mount holds only this pane. How it went arrives as the launch's
         // settlement (`pane_launch`), which types the command or abandons the
         // plan with the reason.
-        let runtime = match shepr_mux::pane::PaneRuntime::spawn(
+        let runtime = match self.launch_pane(
             pane_id,
+            public_id,
             geometry,
             cwd,
-            self.state.settings.pane_scrollback_limit_bytes,
-            host_terminal_theme,
-            self.state.host_terminal_appearance,
-            shepr_mux::pane::PaneShellConfig::new(
-                &self.state.settings.default_shell,
-                self.state.settings.login_shell,
-            ),
-            &launch_env,
-            &self.event_tx,
-            &self.render_notify,
-            &self.render_dirty,
-            &self.pane_teardowns,
+            shepr_mux::pane::LaunchKind::AgentResume,
         ) {
             Ok(runtime) => runtime,
             Err(err) => {
@@ -337,7 +324,6 @@ mod tests {
     use super::*;
     use crate::limits::PENDING_AGENT_RESUME_THEME_WAIT;
     use crate::test_support::*;
-    use shepr_test_support::fixture::resolved_shell as test_shell;
 
     fn test_app() -> App {
         App::new(
@@ -501,7 +487,7 @@ mod tests {
     async fn a_dispatched_resume_keeps_its_plan_until_the_launch_settles() {
         let _env = IsolatedEnv::new();
         let mut app = test_app();
-        app.state.settings.default_shell = test_shell(shepr_test_support::fixture::idle_shell());
+        app.set_test_shell(shepr_test_support::fixture::idle_shell());
         let workspace = shepr_mux::workspace::Workspace::test_new("restored");
         let pane_id = workspace.root_pane();
         let terminal_id = workspace
@@ -572,7 +558,7 @@ mod tests {
             app.state.set_bookmark_index(Some(0));
             app.state.ensure_test_terminals();
             if missing_shell {
-                app.state.settings.default_shell = test_shell("/__shepr_missing_resume_shell__");
+                app.set_test_shell("/__shepr_missing_resume_shell__");
             }
             let terminal = app
                 .state
@@ -647,7 +633,7 @@ mod tests {
             "resume-shell",
             &[Step::Sleep(std::time::Duration::from_secs(30))],
         );
-        app.state.settings.default_shell = test_shell(&shell);
+        app.set_test_shell(&shell);
 
         let workspace = shepr_mux::workspace::Workspace::test_new("restored");
         let pane_id = workspace.root_pane();
@@ -737,7 +723,7 @@ mod tests {
             .get(&terminal_id)
             .expect("pending resume should leave a shell runtime");
         let marker = "restored agent: shell quoted | marker";
-        let source = runtime.history_source();
+        let source = runtime.read().history_source();
         let mut history = shepr_mux::pane::PaneHistoryCache::default();
         for _ in 0..20 {
             if source.refresh(&mut history) && history.text().contains(marker) {

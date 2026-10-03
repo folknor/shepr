@@ -161,13 +161,13 @@ pub(super) fn render_pane_surface(
                 workspace_index,
                 pane.id,
             ) {
-                let Some((synchronized, epoch)) = runtime.synchronized_output_state() else {
+                let Some((synchronized, epoch)) = runtime.read().synchronized_output_state() else {
                     return Err(SurfaceRenderDeferred::Poisoned);
                 };
                 if synchronized {
                     return Err(SurfaceRenderDeferred::Synchronized);
                 }
-                let revision = runtime.content_seq();
+                let revision = runtime.read().content_seq();
                 content_revisions_before.insert(pane.id, (epoch, revision));
             }
         }
@@ -194,9 +194,9 @@ pub(super) fn render_pane_surface(
                 pane.id,
             );
             let mouse_reporting =
-                runtime.is_some_and(shepr_mux::pane::PaneRuntime::mouse_reporting_enabled);
+                runtime.is_some_and(|runtime| runtime.read().mouse_reporting_enabled());
             let sgr_pixel_mouse =
-                runtime.is_some_and(shepr_mux::pane::PaneRuntime::sgr_pixel_mouse_enabled);
+                runtime.is_some_and(|runtime| runtime.read().sgr_pixel_mouse_enabled());
             let (pixel_width, pixel_height) = if cell_size.is_known() {
                 (
                     u32::from(pane.inner_rect.width) * cell_size.width_px,
@@ -206,7 +206,7 @@ pub(super) fn render_pane_surface(
                 (0, 0)
             };
             let content_revision = runtime.map_or(0, |runtime| {
-                let after = runtime.content_seq();
+                let after = runtime.read().content_seq();
                 shepr_mux::pane::PaneRuntime::surface_content_revision(
                     content_revisions_before
                         .get(&pane.id)
@@ -220,12 +220,12 @@ pub(super) fn render_pane_surface(
                 rect: pane.rect.into(),
                 inner_rect: pane.inner_rect.into(),
                 scrollbar_rect: pane.scrollbar_rect.map(Into::into),
-                scroll: runtime.and_then(shepr_mux::pane::PaneRuntime::scroll_metrics),
+                scroll: runtime.and_then(|runtime| runtime.read().scroll_metrics()),
                 focused: pane.is_focused,
                 mouse_reporting,
                 sgr_pixel_mouse,
                 alternate_screen_active: runtime
-                    .is_some_and(shepr_mux::pane::PaneRuntime::alternate_screen_active),
+                    .is_some_and(|runtime| runtime.read().alternate_screen_active()),
                 pixel_width,
                 pixel_height,
             });
@@ -269,7 +269,8 @@ pub(super) fn render_pane_surface(
                 workspace_index,
                 pane_id,
             ) {
-                let Some((synchronized, after_epoch)) = runtime.synchronized_output_state() else {
+                let Some((synchronized, after_epoch)) = runtime.read().synchronized_output_state()
+                else {
                     return Err(SurfaceRenderDeferred::Poisoned);
                 };
                 if synchronized {

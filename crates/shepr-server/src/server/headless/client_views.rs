@@ -433,7 +433,7 @@ impl HeadlessServer {
         let previous = self.app.state.workspace_spawn_geometry(workspace_index);
         crate::ui::resize_surface(
             &self.app.state,
-            &crate::ui::PaneResizer::new(&self.app.terminal_runtimes),
+            &mut crate::ui::PaneResizer::new(&mut self.app.terminal_runtimes),
             workspace_index,
             geometry.area,
             geometry.cell_size,
@@ -477,7 +477,7 @@ impl HeadlessServer {
     ) -> bool {
         self.visible_pane_runtimes(target)
             .into_iter()
-            .any(shepr_mux::pane::PaneRuntime::synchronized_output_active)
+            .any(|runtime| runtime.read().synchronized_output_active())
     }
 
     /// The visible panes' PTY grid sizes, to tell whether a geometry
@@ -517,7 +517,7 @@ impl HeadlessServer {
                 && self
                     .visible_pane_runtimes(&workspace_id)
                     .into_iter()
-                    .any(shepr_mux::pane::PaneRuntime::screen_flip_pending);
+                    .any(|runtime| runtime.read().screen_flip_pending());
             if !missing_area && !flipped {
                 continue;
             }

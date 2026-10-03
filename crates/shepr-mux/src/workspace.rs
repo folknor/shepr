@@ -1,18 +1,13 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use tokio::sync::{Notify, mpsc};
-
-use crate::events::AppEvent;
 use crate::git::{AheadBehind, WorkspaceBranch, WorkspaceGitStatus, fallback_label_from_cwd};
 use crate::limits::FIRST_WORKSPACE_NUMBER;
-use crate::pane::{PaneLaunchEnv, PaneRuntime, PaneRuntimeRegistry, PaneState};
-use crate::render_signal::RenderSignal;
+use crate::pane::{PaneRuntimeRegistry, PaneState};
 use crate::terminal::TerminalState;
-use shepr_core::layout::{Direction, PaneId, TileLayout};
-use shepr_protocol::{PublicPaneId, TerminalId, WorkspaceId};
+use shepr_core::layout::{PaneId, TileLayout};
+use shepr_protocol::{TerminalId, WorkspaceId};
 
 /// Whether a pane mutation changed the surface its clients render.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -73,23 +68,7 @@ pub use self::geometry::{
     PaneChromeInfo, PaneGeometry, layout_rect, pane_inner_rect, spawn_geometry,
     terminal_content_rect,
 };
-pub use self::pane_tree::{NewPane, WorkspacePane};
-
-/// The channels a pane runtime reports through once it is spawned, plus the
-/// resolved server socket paths its child needs. `App` owns them and lends a
-/// copy to each call that spawns a pane, so the workspace tree itself holds no
-/// channels or async handles and stays plain data.
-#[derive(Clone)]
-pub struct PaneSpawnHandles {
-    pub events: mpsc::Sender<AppEvent>,
-    pub render_notify: Arc<Notify>,
-    pub render_dirty: Arc<RenderSignal>,
-    /// Counts this app's pane session teardowns, so its exit waits on them
-    /// and on no other app's.
-    pub pane_teardowns: Arc<crate::pane::PaneTeardownTracker>,
-    /// Resolved server socket passed into every pane launched by this app.
-    pub socket_path: PathBuf,
-}
+pub use self::pane_tree::{PreparedSplit, WorkspacePane};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PaneRemovalScope {
@@ -373,36 +352,10 @@ impl Workspace {
         }
     }
 
-    /// A new workspace with one shell pane whose PTY is spawned at `geometry`:
-    /// the grid it will have and the pixel size of one cell, so the shell's
-    /// first `TIOCSWINSZ` already carries pixel dimensions.
-    pub fn spawn(
-        initial_cwd: &Path,
-        geometry: shepr_core::geometry::PaneGeometry,
-        scrollback_limit_bytes: usize,
-        host_terminal_theme: shepr_termio::host_term::theme::TerminalTheme,
-        host_terminal_appearance: Option<shepr_termio::host_term::theme::HostAppearance>,
-        shell_config: crate::pane::PaneShellConfig<'_>,
-        spawn: &PaneSpawnHandles,
-    ) -> std::io::Result<(Self, TerminalState, PaneRuntime)> {
+    /// Prepare one pane and its plain terminal state without starting a child.
+    pub fn prepare(initial_cwd: &Path) -> (Self, TerminalState) {
         let id = generate_workspace_id();
-        let launch_env =
-            PaneLaunchEnv::new(spawn.socket_path.clone()).with_pane_id(PublicPaneId::new(&id, 1));
         let (layout, root_pane) = TileLayout::new();
-        let runtime = PaneRuntime::spawn(
-            root_pane,
-            geometry,
-            initial_cwd,
-            scrollback_limit_bytes,
-            host_terminal_theme,
-            host_terminal_appearance,
-            shell_config,
-            &launch_env,
-            &spawn.events,
-            &spawn.render_notify,
-            &spawn.render_dirty,
-            &spawn.pane_teardowns,
-        )?;
         let terminal_id = TerminalId::alloc();
         let terminal = TerminalState::new(terminal_id.clone(), initial_cwd.to_path_buf());
         let mut pane = WorkspacePane::new(PaneState::new(terminal_id));
@@ -416,53 +369,7 @@ impl Workspace {
             HashMap::from([(root_pane, pane)]),
             2,
         );
-        Ok((workspace, terminal, runtime))
-    }
-
-    /// Starts a shell in a new pane split off `pane_id`, sized from `geometry`
-    /// (the workspace's area and chrome) and `cell` (the pixel size of one
-    /// cell, `None` when unknown). The layout change is prepared on a clone and
-    /// installed by `commit_new_pane`.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "pane creation needs launch settings and spawn context"
-    )]
-    pub fn split_pane(
-        &self,
-        pane_id: PaneId,
-        direction: Direction,
-        geometry: &PaneGeometry,
-        cell: Option<shepr_core::geometry::CellPx>,
-        cwd: Option<PathBuf>,
-        default_cwd: PathBuf,
-        scrollback_limit_bytes: usize,
-        host_terminal_theme: shepr_termio::host_term::theme::TerminalTheme,
-        host_terminal_appearance: Option<shepr_termio::host_term::theme::HostAppearance>,
-        shell_config: crate::pane::PaneShellConfig<'_>,
-        focus_new_pane: bool,
-        spawn: &PaneSpawnHandles,
-    ) -> Option<std::io::Result<NewPane>> {
-        if !self.contains_pane(pane_id) {
-            return None;
-        }
-        let pane_number = self.next_public_pane_number;
-        let launch_env = self.launch_env_for_new_pane(pane_number, spawn);
-        Some(self.split_pane_shell(
-            pane_id,
-            focus_new_pane,
-            direction,
-            geometry,
-            cell,
-            cwd,
-            default_cwd,
-            scrollback_limit_bytes,
-            host_terminal_theme,
-            host_terminal_appearance,
-            shell_config,
-            &launch_env,
-            pane_number,
-            spawn,
-        ))
+        (workspace, terminal)
     }
 
     pub fn commit_new_pane(
@@ -480,15 +387,6 @@ impl Workspace {
         }
         self.advance_next_public_pane_number(public_number);
         Some(())
-    }
-
-    pub(crate) fn launch_env_for_new_pane(
-        &self,
-        pane_number: usize,
-        spawn: &PaneSpawnHandles,
-    ) -> PaneLaunchEnv {
-        PaneLaunchEnv::new(spawn.socket_path.clone())
-            .with_pane_id(PublicPaneId::new(&self.id, pane_number))
     }
 
     pub fn next_public_pane_number(&self) -> usize {
@@ -617,6 +515,11 @@ impl Workspace {
         self.next_public_pane_number = self.next_public_pane_number.max(number.saturating_add(1));
     }
 }
+
+#[cfg(test)]
+use shepr_core::layout::Direction;
+#[cfg(test)]
+use shepr_protocol::PublicPaneId;
 
 #[cfg(test)]
 impl Workspace {
@@ -777,6 +680,50 @@ impl Workspace {
 mod tests {
     use super::*;
     use shepr_protocol::{decode_public_number, encode_public_number};
+
+    #[test]
+    fn preparing_a_split_is_pure_and_commits_its_reserved_identity() {
+        let cwd = Path::new("/__shepr_split_missing_directory__");
+        let (mut workspace, _) = Workspace::prepare(cwd);
+        let root = workspace.root_pane();
+        let geometry = PaneGeometry {
+            area: ratatui::layout::Rect::new(0, 0, 80, 24),
+            pane_borders: shepr_config::PaneBordersConfig::Off,
+            pane_gaps: false,
+            pane_outer_borders: false,
+            pane_scrollbars: false,
+        };
+        let split = workspace
+            .prepare_split(
+                root,
+                Direction::Horizontal,
+                &geometry,
+                None,
+                cwd.to_path_buf(),
+                true,
+            )
+            .expect("split plan");
+        assert_eq!(workspace.pane_count(), 1);
+        assert_eq!(workspace.focused_pane_id(), root);
+        assert_eq!(workspace.next_public_pane_number(), 2);
+        assert_eq!(split.terminal.cwd(), cwd);
+        assert_eq!(split.geometry, spawn_geometry(24, 40, None));
+        assert_eq!(split.public_id, PublicPaneId::new(&workspace.id, 2));
+        assert_eq!(split.prepared_layout.focused(), split.pane_id);
+        assert!(
+            workspace
+                .commit_new_pane(
+                    split.pane_id,
+                    split.prepared_layout,
+                    split.terminal.id,
+                    split.public_number,
+                    true
+                )
+                .is_some()
+        );
+        assert_eq!(workspace.pane_count(), 2);
+        assert_eq!(workspace.next_public_pane_number(), 3);
+    }
 
     #[test]
     fn public_pane_ids_use_the_canonical_format() {

@@ -1003,6 +1003,22 @@ mod tests {
     }
 
     #[test]
+    fn a_bare_configured_shell_name_resolves_to_its_absolute_path() {
+        let env = shepr_test_support::IsolatedEnv::new();
+        let scratch = shepr_test_support::ScratchDir::new("validated-config-bare-shell");
+        let shell = shepr_test_support::fixture::stand_in(scratch.path(), "zsh", &[]);
+        env.set("PATH", scratch.path());
+        let paths = AppPaths::rooted_at(scratch.path(), Some(scratch.path()), Some(scratch.path()));
+        let mut config = ServerConfig::default();
+        config.terminal.default_shell = "zsh".into();
+
+        let validated =
+            ValidatedServerConfig::new(config, paths).expect("a shell on PATH resolves");
+
+        assert_eq!(validated.terminal().default_shell.path(), shell.as_path());
+    }
+
+    #[test]
     fn shell_inputs_reject_surrounding_whitespace_without_trimming() {
         let env = shepr_test_support::IsolatedEnv::new();
         let scratch = shepr_test_support::ScratchDir::new("shell-whitespace");

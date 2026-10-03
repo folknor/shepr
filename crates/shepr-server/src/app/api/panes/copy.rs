@@ -70,7 +70,7 @@ impl App {
             shepr_vt::Point::new(params.anchor.row, params.anchor.col),
             shepr_vt::Point::new(params.cursor.row, params.cursor.col),
         );
-        let Some(text) = runtime.extract_selection(&selection) else {
+        let Some(text) = runtime.read().extract_selection(&selection) else {
             return Err(EndpointError::Rejected(
                 "selection text is unavailable".to_owned(),
             ));
@@ -103,6 +103,7 @@ impl App {
         let target = match params.motion {
             PaneCopyMotion::Line(motion) => {
                 let width = runtime
+                    .read()
                     .terminal_dimensions()
                     .map_or(1, |(cols, _)| cols.max(1));
                 let selection = shepr_vt::selection::Selection::line_range(
@@ -110,7 +111,7 @@ impl App {
                     params.cursor.row,
                     params.cursor.row,
                 );
-                let Some(text) = runtime.extract_selection(&selection) else {
+                let Some(text) = runtime.read().extract_selection(&selection) else {
                     return rejected("terminal row is unavailable");
                 };
                 let col = match motion {
@@ -127,6 +128,7 @@ impl App {
                 }
             }
             PaneCopyMotion::Word(motion) => runtime
+                .read()
                 .word_motion_target(
                     params.cursor.row,
                     params.cursor.col,
@@ -137,6 +139,7 @@ impl App {
                     col: params.cursor.col,
                 }),
             PaneCopyMotion::Paragraph(motion) => runtime
+                .read()
                 .paragraph_motion_target(
                     params.cursor.row,
                     match motion {
@@ -198,7 +201,7 @@ impl App {
             PaneCopySearchDirection::Forward => shepr_mux::pane::TerminalSearchDirection::Forward,
             PaneCopySearchDirection::Backward => shepr_mux::pane::TerminalSearchDirection::Backward,
         };
-        let result = runtime.search_text_window(
+        let result = runtime.read().search_text_window(
             &params.query,
             params.query.chars().any(char::is_uppercase),
             direction,

@@ -109,17 +109,13 @@ impl App {
         geometry: SpawnGeometry,
     ) -> std::io::Result<usize> {
         let chrome = self.state.pane_geometry_in(geometry.area);
-        let (ws, terminal, runtime) = Workspace::spawn(
-            initial_cwd,
+        let (ws, terminal) = Workspace::prepare(initial_cwd);
+        let runtime = self.launch_pane(
+            ws.root_pane(),
+            shepr_protocol::PublicPaneId::new(&ws.id, 1),
             chrome.sole_pane_spawn_geometry(geometry.cell_px()),
-            self.state.settings.pane_scrollback_limit_bytes,
-            self.state.host_terminal_theme,
-            self.state.host_terminal_appearance,
-            shepr_mux::pane::PaneShellConfig::new(
-                &self.state.settings.default_shell,
-                self.state.settings.login_shell,
-            ),
-            &self.pane_spawn_handles(),
+            initial_cwd,
+            shepr_mux::pane::LaunchKind::Fresh,
         )?;
         let terminal_id = terminal.id.clone();
         let outcome = self.state.commit_workspace_creation(ws, terminal);
@@ -145,7 +141,7 @@ impl App {
         let scroll = self
             .state
             .runtime_for_pane_in_workspace(&self.terminal_runtimes, ws_idx, pane_id)
-            .and_then(shepr_mux::pane::PaneRuntime::scroll_metrics);
+            .and_then(|runtime| runtime.read().scroll_metrics());
         Some(shepr_protocol::command::PaneInfo {
             pane_id: self.public_pane_id(ws_idx, pane_id)?,
             scroll,

@@ -26,7 +26,7 @@ impl SpawnGeometry {
 /// All application state - pure data, no channels or async runtime.
 /// Testable without PTYs or a tokio runtime. Live pane runtimes and the
 /// channels they report through belong to `App` (`terminal_runtimes`,
-/// `pane_spawn_handles`); App-level code supplies runtime observations to
+/// `pane_launcher`); App-level code supplies runtime observations to
 /// reducers instead of having state perform process or filesystem probes.
 pub struct AppState {
     pub(crate) clock_now: std::time::Instant,
@@ -84,6 +84,11 @@ pub struct AppState {
 /// The sidebar settings are deliberately absent: each client draws its
 /// sidebar from its own config, and the Git refresh always computes both the
 /// branch and ahead/behind whatever any sidebar shows.
+///
+/// The pane launch settings (shell, login shell, scrollback limit) are absent
+/// too: `App::with_paths` hands them from the validated config straight to
+/// the `PaneLauncher`, their one holder. A copy here would be a second source
+/// that a test could change without the launcher noticing.
 #[derive(Debug, Clone)]
 pub(crate) struct AppSettings {
     /// Virtual terminal size (columns, rows) used when no client is attached.
@@ -101,10 +106,7 @@ pub(crate) struct AppSettings {
     pub(crate) cjk_ime_agents: Vec<shepr_config::ConfigAgent>,
     /// Resolved once to the protocol cursor shape used by surface rendering.
     pub(crate) cjk_ime_cursor_shape: shepr_protocol::CursorShapeParam,
-    pub(crate) default_shell: shepr_core::shell::ResolvedShell,
-    pub(crate) login_shell: bool,
     pub(crate) new_terminal_cwd: NewTerminalCwd,
-    pub(crate) pane_scrollback_limit_bytes: usize,
     pub(crate) palette: Palette,
 }
 
@@ -125,10 +127,7 @@ impl AppSettings {
             cjk_ime_cursor_shape: shepr_protocol::CursorShapeParam::from_decscusr(
                 experimental.cjk_ime_cursor_shape.to_decscusr(),
             ),
-            default_shell: terminal.default_shell.clone(),
-            login_shell: terminal.login_shell,
             new_terminal_cwd: terminal.new_cwd.clone(),
-            pane_scrollback_limit_bytes: config.advanced().scrollback_limit_bytes,
             palette: config.palette().clone(),
         }
     }
@@ -481,27 +480,6 @@ impl AppState {
 mod tests {
     use super::*;
     use crate::test_support::*;
-
-    #[test]
-    fn pane_settings_use_the_resolved_absolute_shell() {
-        let env = shepr_test_support::IsolatedEnv::new();
-        let scratch = shepr_test_support::ScratchDir::new("pane-resolved-shell");
-        let shell = shepr_test_support::fixture::stand_in(scratch.path(), "zsh", &[]);
-        env.set("PATH", scratch.path());
-        let mut values = shepr_config::ServerConfig::default();
-        values.terminal.default_shell = "zsh".into();
-        let paths = shepr_config::AppPaths::rooted_at(
-            scratch.path(),
-            Some(scratch.path()),
-            Some(scratch.path()),
-        );
-        let config = shepr_config::ValidatedServerConfig::from_values(values, paths)
-            .expect("shell resolves");
-        assert_eq!(
-            AppSettings::from_config(&config).default_shell.path(),
-            shell.as_path()
-        );
-    }
 
     #[test]
     fn an_unrecorded_workspace_is_laid_out_in_the_headless_area() {

@@ -32,7 +32,7 @@ pub use self::lock::{DataDirLease, DataDirLeaseHeld};
 pub use self::open::{
     OpenedRestore, OpenedSession, SessionOpenOptions, SessionOpenPolicy, open_session,
 };
-pub use self::restore::{RestoredSession, restore};
+pub use self::restore::{RestoredSession, SessionRestorePlan, plan_restore};
 pub use self::snapshot::{
     DirectionSnapshot, HistoryCarry, LayoutSnapshot, SessionHistorySnapshot, SessionSnapshot,
     WorkspaceSnapshot, capture,

@@ -955,7 +955,7 @@ fn pending_pane_history(
     runtime: Option<&crate::pane::PaneRuntime>,
 ) -> PendingPaneHistory {
     match runtime.filter(|runtime| runtime.launched()) {
-        Some(runtime) => PendingPaneHistory::Live(terminal, runtime.history_source()),
+        Some(runtime) => PendingPaneHistory::Live(terminal, runtime.read().history_source()),
         None => PendingPaneHistory::Runtimeless(terminal),
     }
 }

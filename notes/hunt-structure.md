@@ -255,23 +255,6 @@ public API. (terminal)
 
 ## Pane runtime and agent ownership
 
-## STR-021 - `PaneRuntime` is a 60-method facade, and `runtime.rs` holds five jobs
-
-About 60 public methods forward one-to-one to `PaneTerminal`, and a few carry
-policy that is easy to miss among them (`paste_payload` sanitising,
-`encode_mouse_button`'s extra gate, `encode_alternate_scroll`, `cursor_state`
-clipping, `try_send_focus_event` gating). `runtime.rs` (1,600 production lines)
-also holds cwd arbitration, the deferred-effect ticket order, the
-synchronized-output timer, read-effect dispatch and PTY setup. Suggested split:
-`pane/cwd.rs`, `pane/read_effects.rs`, `pane/spawn.rs` (with the spawner and
-`PaneSpawnHandles`, which lives in `workspace.rs` today), `pane/input.rs` (key,
-mouse, paste and focus policy, now split between `runtime.rs` and
-`terminal/backend.rs`); expose the terminal's read surface through one narrow
-handle. `PaneRuntime::resize` takes `&self` with `current_size:
-Cell<PaneGeometry>`, which makes the runtime `!Sync` and hides a mutation;
-it is only resized from the app thread, so `&mut self` says it honestly.
-(mux-panes)
-
 ## STR-022 - Dependency direction inside `pane/`
 
 - `pane/terminal/backend.rs` constructs `runtime::TerminalDirtyPatchSnapshot`
@@ -338,17 +321,6 @@ reserved number, spawn size) consumed by `commit`, capture and restore go throug
 `to_snapshot`/`from_snapshot` using only read methods, and a `SplitPath` type
 owns path-addressed ratio access. `display_name()` would return `&str`.
 Reported by mux-state and foundation.
-
-## STR-025 - Workspaces and restore launch processes
-
-`Workspace::spawn` and `split_pane`/`split_pane_shell` call `PaneRuntime::spawn`
-with a dozen arguments, and `persist::restore` does the same per pane through a
-`RestoreRuntimeContext` taking twelve parameters, though the documented principle
-is that state is plain data and runtimes are held by `App`. Proposal: workspace
-operations are pure plans (`PreparedSplit`, and `WorkspaceRestorePlan`, which is
-already pure), executed by one `PaneLauncher` in the app; restore becomes
-`plan(snapshot)` (testable without PTYs) plus `launch(plan, &launcher)`. See the
-launch consolidation. (mux-state)
 
 ## STR-026 - Pane chrome geometry is view code living in mux
 

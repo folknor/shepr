@@ -414,24 +414,34 @@ async fn capture_follows_live_cwd_arbitration_and_keeps_it_after_exit() {
             shepr_test_support::fixture::Step::Sleep(std::time::Duration::from_secs(30)),
         ],
     );
-    let runtime = shepr_mux::pane::PaneRuntime::spawn(
-        pane_id,
-        shepr_core::geometry::PaneGeometry::new(80, 24, 0, 0),
-        &old,
-        0,
-        Default::default(),
-        None,
+    let launcher = shepr_mux::pane::PaneLauncher::new(
+        shepr_mux::pane::PaneSpawnHandles {
+            events,
+            render_notify: std::sync::Arc::new(tokio::sync::Notify::new()),
+            render_dirty: std::sync::Arc::new(shepr_mux::render_signal::RenderSignal::new()),
+            pane_teardowns: std::sync::Arc::default(),
+            socket_path: "/run/user/1000/shepr-test.sock".into(),
+        },
         shepr_mux::pane::PaneShellConfig::new(
             &shepr_test_support::fixture::resolved_shell(&shell),
             false,
         ),
-        &shepr_mux::pane::PaneLaunchEnv::new("/run/user/1000/shepr-test.sock".into()),
-        &events,
-        &std::sync::Arc::new(tokio::sync::Notify::new()),
-        &std::sync::Arc::new(shepr_mux::render_signal::RenderSignal::new()),
-        &std::sync::Arc::default(),
-    )
-    .expect("test precondition");
+        0,
+    );
+    let runtime = launcher
+        .launch(shepr_mux::pane::PaneLaunchRequest {
+            pane_id,
+            public_id: shepr_protocol::PublicPaneId::new(&state.workspaces[0].id, 1),
+            geometry: shepr_core::geometry::PaneGeometry::new(80, 24, 0, 0),
+            cwd: &old,
+            kind: shepr_mux::pane::LaunchKind::Fresh,
+            initial_history: None,
+            presentation: shepr_mux::pane::LaunchPresentation::Live {
+                theme: Default::default(),
+                appearance: None,
+            },
+        })
+        .expect("test precondition");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     // The child is observable once its shell launched.
     let pid = loop {

@@ -292,25 +292,6 @@ helpers in `crates/shepr-mux/src/pane/agent_detection.rs` (free functions on
 `core.detection_content_seq` directly. The counter types are filed among the
 types. Reported by mux-panes, terminal and server-serving.
 
-## CON-055 - How is a pane launched?
-
-`PaneLaunchEnv::from_extra(Vec::new(), socket).with_pane_id(PublicPaneId::new(ws,
-n))` is written at four sites (`Workspace::spawn`,
-`Workspace::launch_env_for_new_pane`, `persist/restore.rs`,
-`App::pane_launch_env`). Every `PaneRuntime::spawn` and
-`spawn_with_initial_history` call threads the same settings (scrollback, host
-theme, host appearance, shell config) and four handles, which `workspace.rs`
-bundles as `PaneSpawnHandles` but the runtime does not accept;
-`start_pending_agent_resume` passes the four individually, and restore re-bundles
-them as its own `RestoreRuntimeContext` with twelve parameters. Restore passes
-host appearance `None` while every other site passes the current one, decided
-implicitly by one call site. `PaneShellConfig::new(&settings.default_shell,
-settings.login_shell)` is built at four sites. Owner: a `PaneSpawner` (or
-`PaneLauncher`) built once by the app with handles, socket and settings, and
-`spawn(PaneLaunchRequest { pane_id, public_id, geometry, cwd, kind,
-initial_history })`; workspaces and restore produce pure plans it executes.
-Reported by mux-panes, mux-state and server-app.
-
 ## CON-056 - What content rect does a pane's terminal get, and where is its scrollbar?
 
 The composition `visible_panes` then `pane_inner_rect` then

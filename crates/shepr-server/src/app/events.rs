@@ -598,8 +598,7 @@ mod runtime_generation_tests {
                 .expect("official identity"),
             );
             let _ = ownership.set_hook_report_at(
-                shepr_agent::agent::ReportOrigin::parse("shepr:omp", "omp")
-                    .expect("test origin"),
+                shepr_agent::agent::ReportOrigin::parse("shepr:omp", "omp").expect("test origin"),
                 shepr_agent::detect::AgentState::Idle,
                 shepr_agent::agent::resume::AgentSessionRef::id("session"),
                 None,

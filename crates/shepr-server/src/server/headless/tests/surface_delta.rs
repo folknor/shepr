@@ -218,6 +218,7 @@ async fn a_scroll_renders_only_the_viewers_of_the_scrolled_pane() {
         pair.server
             .app
             .test_runtime(pair.pane)
+            .read()
             .scroll_metrics()
             .is_some_and(|metrics| metrics.max_offset_from_bottom > 0)
     );

@@ -133,6 +133,7 @@ pub struct App {
     /// This app's pane session teardowns, handed to every pane it spawns and
     /// waited on at exit.
     pane_teardowns: Arc<shepr_mux::pane::PaneTeardownTracker>,
+    pane_launcher: shepr_mux::pane::PaneLauncher,
     pub(crate) render_dirty: Arc<shepr_mux::render_signal::RenderSignal>,
     pub(crate) paths: shepr_config::AppPaths,
     /// Set when this boot's restore did not bring the saved session back in
@@ -161,7 +162,23 @@ impl App {
 
         let paths = paths.clone();
         let save_finished = std::sync::Arc::new(tokio::sync::Notify::new());
-        let socket_path = paths.server_address().socket().to_path_buf();
+        // The launch settings go from the validated config straight to the
+        // launcher, their one holder; `AppSettings` keeps no copy.
+        let pane_scrollback_limit_bytes = config.advanced().scrollback_limit_bytes;
+        let pane_launcher = shepr_mux::pane::PaneLauncher::new(
+            shepr_mux::pane::PaneSpawnHandles {
+                events: event_tx.clone(),
+                render_notify: Arc::clone(&render_notify),
+                render_dirty: Arc::clone(&render_dirty),
+                pane_teardowns: Arc::clone(&pane_teardowns),
+                socket_path: paths.server_address().socket().to_path_buf(),
+            },
+            shepr_mux::pane::PaneShellConfig::new(
+                &config.terminal().default_shell,
+                config.terminal().login_shell,
+            ),
+            pane_scrollback_limit_bytes,
+        );
         let opened = shepr_mux::persist::open_session(
             lease,
             &shepr_mux::persist::SessionOpenOptions {
@@ -172,17 +189,8 @@ impl App {
                 },
                 pane_history: config.experimental().pane_history,
                 geometry: settings.pane_geometry_in(settings.headless_rect()),
-                scrollback_limit_bytes: settings.pane_scrollback_limit_bytes,
-                shell_config: shepr_mux::pane::PaneShellConfig::new(
-                    &settings.default_shell,
-                    settings.login_shell,
-                ),
-                socket_path: &socket_path,
+                launcher: &pane_launcher,
                 resume_agents_on_restore: config.session().resume_agents_on_restore,
-                events: &event_tx,
-                render_notify: &render_notify,
-                render_dirty: &render_dirty,
-                pane_teardowns: &pane_teardowns,
                 now: clock.now,
             },
             std::sync::Arc::clone(&save_finished),
@@ -221,7 +229,7 @@ impl App {
         };
 
         info!(
-            pane_scrollback_limit_bytes = settings.pane_scrollback_limit_bytes,
+            pane_scrollback_limit_bytes,
             "using pane scrollback configuration"
         );
 
@@ -287,6 +295,7 @@ impl App {
             policy,
             render_notify,
             pane_teardowns,
+            pane_launcher,
             render_dirty,
             paths,
             restore_notice,
@@ -304,17 +313,30 @@ impl App {
         self.state.clock_now = clock.now;
     }
 
-    /// The channels a newly spawned pane runtime reports through. Every call
-    /// that spawns a pane (workspace or split creation) takes these;
-    /// the workspace tree does not keep them.
-    pub(crate) fn pane_spawn_handles(&self) -> shepr_mux::workspace::PaneSpawnHandles {
-        shepr_mux::workspace::PaneSpawnHandles {
-            events: self.event_tx.clone(),
-            render_notify: Arc::clone(&self.render_notify),
-            render_dirty: Arc::clone(&self.render_dirty),
-            pane_teardowns: Arc::clone(&self.pane_teardowns),
-            socket_path: self.paths.server_address().socket().to_path_buf(),
-        }
+    /// Launches a pane shell for a live server: the current host theme and
+    /// appearance, no carried history. Restore launches through the same
+    /// launcher with its saved theme (`SessionRestorePlan::launch`).
+    pub(super) fn launch_pane(
+        &self,
+        pane_id: shepr_core::layout::PaneId,
+        public_id: shepr_protocol::PublicPaneId,
+        geometry: shepr_core::geometry::PaneGeometry,
+        cwd: &std::path::Path,
+        kind: shepr_mux::pane::LaunchKind,
+    ) -> std::io::Result<shepr_mux::pane::PaneRuntime> {
+        self.pane_launcher
+            .launch(shepr_mux::pane::PaneLaunchRequest {
+                pane_id,
+                public_id,
+                geometry,
+                cwd,
+                kind,
+                initial_history: None,
+                presentation: shepr_mux::pane::LaunchPresentation::Live {
+                    theme: self.state.host_terminal_theme,
+                    appearance: self.state.host_terminal_appearance,
+                },
+            })
     }
 
     /// Block until this app's pane session teardowns have finished, or
@@ -372,6 +394,20 @@ impl App {
 }
 
 #[cfg(test)]
+impl App {
+    /// Makes every later pane launch run `shell` as a non-login shell. The
+    /// launcher is the one holder of the shell, so this is the only way a
+    /// test changes it; there is no settings copy to fall out of step.
+    pub(crate) fn set_test_shell(&mut self, shell: impl AsRef<std::path::Path>) {
+        let shell = shepr_test_support::fixture::resolved_shell(shell);
+        self.pane_launcher = self
+            .pane_launcher
+            .clone()
+            .with_shell(shepr_mux::pane::PaneShellConfig::new(&shell, false));
+    }
+}
+
+#[cfg(test)]
 mod snapshot_tests;
 #[cfg(test)]
 pub(crate) use api::session::SnapshotAgent;
@@ -389,7 +425,6 @@ mod tests {
     use shepr_protocol::command::{
         EndpointCommand, EndpointReply, PaneSplitParams, PaneTarget, SplitDirection,
     };
-    use shepr_test_support::fixture::resolved_shell as test_shell;
 
     // Test constructors say why session restore and persistence are disabled;
     // the runtime policy name `Suspended` describes a different server state.
@@ -490,7 +525,7 @@ mod tests {
 
     fn test_app() -> App {
         let mut app = App::new(&ServerConfig::default(), crate::app::AppPolicy::Test);
-        app.state.settings.default_shell = test_shell(exiting_test_command());
+        app.set_test_shell(exiting_test_command());
         app
     }
 
@@ -868,7 +903,7 @@ mod tests {
         );
 
         let mut app = test_app();
-        app.state.settings.default_shell = test_shell(&shell);
+        app.set_test_shell(&shell);
         // Its next public number differs from both its raw pane ids and its
         // pane count, so only the number the split took can match.
         app.state.workspaces = vec![Workspace::test_adversarial_identity_state()];

@@ -43,12 +43,6 @@ impl App {
         let chrome = self.state.pane_geometry_in(geometry.area);
         let follow_cwd = self.launch_cwd_for_pane_in_workspace(ws_idx, target_pane_id);
         let split_cwd = self.resolve_new_terminal_cwd(follow_cwd);
-        let default_cwd = self.paths.fallback_cwd().to_path_buf();
-        let default_shell = self.state.settings.default_shell.clone();
-        let scrollback_limit_bytes = self.state.settings.pane_scrollback_limit_bytes;
-        let host_terminal_theme = self.state.host_terminal_theme;
-        let host_terminal_appearance = self.state.host_terminal_appearance;
-        let spawn = self.pane_spawn_handles();
         let Some(ws) = self.state.workspaces.get(ws_idx) else {
             return Err(pane_missing(&params.pane_id).into());
         };
@@ -60,36 +54,33 @@ impl App {
                 shepr_core::layout::Direction::Vertical
             }
         };
-        let shell_config =
-            shepr_mux::pane::PaneShellConfig::new(&default_shell, self.state.settings.login_shell);
-        let split_result = ws.split_pane(
+        let Some(prepared) = ws.prepare_split(
             target_pane_id,
             direction,
             &chrome,
             geometry.cell_px(),
-            Some(split_cwd),
-            default_cwd,
-            scrollback_limit_bytes,
-            host_terminal_theme,
-            host_terminal_appearance,
-            shell_config,
+            split_cwd,
             true,
-            &spawn,
-        );
-        let new_pane = match split_result {
-            Some(Ok(result)) => result,
-            Some(Err(err)) => {
-                return rejected(format!("the pane could not be split: {err}"));
-            }
-            None => return Err(pane_missing(&params.pane_id).into()),
+        ) else {
+            return Err(pane_missing(&params.pane_id).into());
         };
-        let shepr_mux::workspace::NewPane {
+        let runtime = match self.launch_pane(
+            prepared.pane_id,
+            prepared.public_id,
+            prepared.geometry,
+            prepared.terminal.cwd(),
+            shepr_mux::pane::LaunchKind::Fresh,
+        ) {
+            Ok(runtime) => runtime,
+            Err(err) => return rejected(format!("the pane could not be split: {err}")),
+        };
+        let shepr_mux::workspace::PreparedSplit {
             pane_id,
             terminal,
-            runtime,
             prepared_layout,
             public_number,
-        } = new_pane;
+            ..
+        } = prepared;
         let terminal_id = terminal.id.clone();
         let Some(outcome) =
             self.state

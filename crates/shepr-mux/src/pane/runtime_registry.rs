@@ -22,6 +22,10 @@ impl PaneRuntimeRegistry {
         self.runtimes.get(terminal_id)
     }
 
+    pub fn get_mut(&mut self, terminal_id: &TerminalId) -> Option<&mut PaneRuntime> {
+        self.runtimes.get_mut(terminal_id)
+    }
+
     pub fn insert(&mut self, terminal_id: TerminalId, runtime: PaneRuntime) -> Option<PaneRuntime> {
         self.runtimes.insert(terminal_id, runtime)
     }

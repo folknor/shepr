@@ -5,8 +5,8 @@ use std::collections::{HashMap, HashSet};
 use std::ops::{Deref, DerefMut};
 use std::path::PathBuf;
 
-use super::{PaneGeometry, PaneSpawnHandles, Workspace};
-use crate::pane::{PaneLaunchEnv, PaneRuntime, PaneRuntimeRegistry, PaneState};
+use super::{PaneGeometry, Workspace};
+use crate::pane::{PaneRuntime, PaneRuntimeRegistry, PaneState};
 use crate::terminal::TerminalState;
 use shepr_core::layout::{Direction, NavDirection, PaneId, TileLayout};
 use shepr_protocol::TerminalId;
@@ -41,13 +41,20 @@ impl WorkspacePane {
     }
 }
 
-pub struct NewPane {
+/// A split planned on a cloned layout: plain data, no child. The caller
+/// launches the pane from `geometry`, `public_id` and the terminal's cwd, then
+/// commits the rest with `commit_new_pane` in the same synchronous handler.
+pub struct PreparedSplit {
     pub pane_id: PaneId,
     pub terminal: TerminalState,
-    pub runtime: PaneRuntime,
+    /// The new pane's PTY size in the tiled layout, since a split unzooms.
+    pub geometry: shepr_core::geometry::PaneGeometry,
+    /// The id exported to the child as `SHEPR_PANE_ID`, built from
+    /// `public_number`.
+    pub public_id: shepr_protocol::PublicPaneId,
     pub prepared_layout: TileLayout,
-    /// The public pane number reserved at prepare time. The child's `SHEPR`
-    /// pane id was built from it, and the commit registers the pane under it.
+    /// The public pane number reserved at prepare time; the commit registers
+    /// the pane under it.
     pub public_number: usize,
 }
 
@@ -190,73 +197,39 @@ impl Workspace {
         self.has_consistent_panes() && self.layout.set_ratio_at(path, ratio)
     }
 
-    /// Prepare a shell split on a cloned layout and start its runtime. The
-    /// returned layout is installed by the workspace command after startup.
-    /// Focus moves only when `focus_new_pane` is set.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "a split threads target, geometry, host context, launch policy, and render hooks"
-    )]
-    pub(super) fn split_pane_shell(
+    /// Prepare a split without launching a child or changing this workspace.
+    pub fn prepare_split(
         &self,
         target: PaneId,
-        focus_new_pane: bool,
         direction: Direction,
         geometry: &PaneGeometry,
         cell: Option<shepr_core::geometry::CellPx>,
-        cwd: Option<PathBuf>,
-        default_cwd: PathBuf,
-        scrollback_limit_bytes: usize,
-        host_terminal_theme: shepr_termio::host_term::theme::TerminalTheme,
-        host_terminal_appearance: Option<shepr_termio::host_term::theme::HostAppearance>,
-        shell_config: crate::pane::PaneShellConfig<'_>,
-        launch_env: &PaneLaunchEnv,
-        public_number: usize,
-        spawn: &PaneSpawnHandles,
-    ) -> std::io::Result<NewPane> {
+        cwd: PathBuf,
+        focus_new_pane: bool,
+    ) -> Option<PreparedSplit> {
+        if !self.contains_pane(target) {
+            return None;
+        }
         let mut prepared_layout = self.layout.clone();
-        let Some(new_id) =
-            prepared_layout.split_pane(target, direction, shepr_core::layout::SplitRatio::EVEN)
-        else {
-            // `Workspace::split_pane` checks the pane record first. Keep this
-            // guard because the pane map and layout tree are separate state;
-            // disagreement must not create an unlaid-out pane record.
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                "split target pane is not in the layout",
-            ));
-        };
-        // The split un-zooms the workspace (below), so size against the tiled
-        // layout.
-        let spawn_geometry = geometry
+        // The pane map and the layout tree are separate state; a target the
+        // map has but the layout lacks must not produce an unlaid-out pane.
+        let new_id =
+            prepared_layout.split_pane(target, direction, shepr_core::layout::SplitRatio::EVEN)?;
+        // A split unzooms the workspace, so launch against the tiled layout.
+        let geometry = geometry
             .pane_spawn_geometry(&prepared_layout, false, new_id, cell)
             .unwrap_or_else(|| geometry.sole_pane_spawn_geometry(cell));
-        let actual_cwd = cwd.unwrap_or(default_cwd);
-        let runtime = PaneRuntime::spawn(
-            new_id,
-            spawn_geometry,
-            &actual_cwd,
-            scrollback_limit_bytes,
-            host_terminal_theme,
-            host_terminal_appearance,
-            shell_config,
-            launch_env,
-            &spawn.events,
-            &spawn.render_notify,
-            &spawn.render_dirty,
-            &spawn.pane_teardowns,
-        )?;
-        let terminal_id = TerminalId::alloc();
-        let terminal = TerminalState::new(terminal_id.clone(), actual_cwd);
+        let terminal = TerminalState::new(TerminalId::alloc(), cwd);
         if focus_new_pane {
             prepared_layout.focus_pane(new_id);
         }
-        Ok(NewPane {
+        Some(PreparedSplit {
             pane_id: new_id,
             terminal,
-            runtime,
+            geometry,
+            public_id: shepr_protocol::PublicPaneId::new(&self.id, self.next_public_pane_number),
             prepared_layout,
-            public_number,
+            public_number: self.next_public_pane_number,
         })
     }
 

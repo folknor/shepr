@@ -28,20 +28,6 @@ impl App {
         Some(shepr_protocol::PublicPaneId::new(&ws.id, pane_number))
     }
 
-    pub(super) fn pane_launch_env(
-        &self,
-        ws_idx: usize,
-        pane_id: shepr_core::layout::PaneId,
-    ) -> Option<shepr_mux::pane::PaneLaunchEnv> {
-        let workspace = self.state.workspaces.get(ws_idx)?;
-        let pane_number = workspace.public_pane_number(pane_id)?;
-        let pane_id = shepr_protocol::PublicPaneId::new(&workspace.id, pane_number);
-        Some(
-            shepr_mux::pane::PaneLaunchEnv::new(self.paths.server_address().socket().to_path_buf())
-                .with_pane_id(pane_id),
-        )
-    }
-
     /// Resolves a typed public workspace id (`w<n>`) to its current index.
     ///
     /// Only the exact stable id names a workspace. Positional forms (`w_N`,

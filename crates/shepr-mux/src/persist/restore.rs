@@ -1,13 +1,9 @@
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
 
-use tokio::sync::{Notify, mpsc};
 use tracing::{error, warn};
 
-use crate::events::AppEvent;
 use crate::pane::PaneRuntime;
-use crate::pane::{PaneLaunchEnv, PaneState};
-use crate::render_signal::RenderSignal;
+use crate::pane::PaneState;
 use crate::terminal::{RestoreFailure, TerminalState};
 use crate::workspace::Workspace;
 use shepr_agent::detect::AgentState;
@@ -37,20 +33,85 @@ struct PaneRestoreStartup<'a> {
     duplicate_agent_session: bool,
 }
 
-struct RestoreRuntimeContext<'a> {
-    /// The area each workspace is laid out in, with the pane chrome that decides
-    /// every pane's size.
+struct RestorePlanContext {
     geometry: crate::workspace::PaneGeometry,
-    scrollback_limit_bytes: usize,
     now: std::time::Instant,
-    host_theme: shepr_termio::host_term::theme::TerminalTheme,
-    shell_config: crate::pane::PaneShellConfig<'a>,
-    socket_path: &'a std::path::Path,
     resume_agents_on_restore: bool,
-    events: mpsc::Sender<AppEvent>,
-    render_notify: Arc<Notify>,
-    render_dirty: Arc<RenderSignal>,
-    pane_teardowns: Arc<crate::pane::PaneTeardownTracker>,
+}
+
+/// Validated state plus child launch descriptions. Building this plan requires
+/// no runtime, PTY, channels, or filesystem probes.
+pub struct SessionRestorePlan {
+    workspaces: Vec<Workspace>,
+    terminals: HashMap<TerminalId, TerminalState>,
+    active: Option<usize>,
+    history_carry: HistoryCarry,
+    restore_damage: bool,
+    dropped_workspaces: usize,
+    launches: Vec<RestoredLaunch>,
+    theme: shepr_termio::host_term::theme::TerminalTheme,
+    now: std::time::Instant,
+}
+
+struct RestoredLaunch {
+    pane_id: PaneId,
+    public_id: shepr_protocol::PublicPaneId,
+    terminal_id: TerminalId,
+    geometry: shepr_core::geometry::PaneGeometry,
+    saved: super::snapshot::PaneSnapshot,
+    initial_history: Option<String>,
+}
+
+impl SessionRestorePlan {
+    pub fn launch(mut self, launcher: &crate::pane::PaneLauncher) -> RestoredSession {
+        let mut terminal_runtimes = HashMap::new();
+        for launch in self.launches {
+            let result = launcher.launch(crate::pane::PaneLaunchRequest {
+                pane_id: launch.pane_id,
+                public_id: launch.public_id.clone(),
+                geometry: launch.geometry,
+                cwd: &launch.saved.cwd,
+                kind: crate::pane::LaunchKind::Restored,
+                initial_history: launch.initial_history.as_deref(),
+                presentation: crate::pane::LaunchPresentation::Saved(self.theme),
+            });
+            match result {
+                Ok(runtime) => {
+                    terminal_runtimes.insert(launch.terminal_id, runtime);
+                }
+                Err(err) => {
+                    error!(
+                        pane = %launch.public_id,
+                        pane_id = launch.pane_id.raw(),
+                        error = %err,
+                        "failed to restore pane"
+                    );
+                    // The planned terminal is replaced by one that keeps the
+                    // saved state verbatim, including a saved agent session a
+                    // running duplicate would have withdrawn. Only a pane with
+                    // a resume plan reserves its session, and such a pane has
+                    // no launch here, so the resumed-session set needs no
+                    // rollback.
+                    let terminal = restored_terminal(
+                        &launch.saved,
+                        launch.terminal_id.clone(),
+                        RestoredPaneStart::Unavailable(RestoreFailure::shell_start_failed(&err)),
+                        self.now,
+                    );
+                    self.terminals.insert(launch.terminal_id, terminal);
+                }
+            }
+        }
+        RestoredSession {
+            workspaces: self.workspaces,
+            terminals: self.terminals,
+            terminal_runtimes,
+            active: self.active,
+            history_carry: self.history_carry,
+            restore_damage: self.restore_damage,
+            dropped_workspaces: self.dropped_workspaces,
+        }
+    }
 }
 
 /// Everything a restore produces. Restore can drop saved workspaces (invalid
@@ -97,11 +158,7 @@ enum RestoredPaneStart {
     Unavailable(RestoreFailure),
 }
 
-type RestoredWorkspace = (
-    Workspace,
-    Vec<TerminalState>,
-    HashMap<TerminalId, PaneRuntime>,
-);
+type RestoredWorkspace = (Workspace, Vec<TerminalState>, Vec<RestoredLaunch>);
 
 // Plain validated data only: constructing these never launches children or
 // reserves agent sessions. The whole snapshot is planned before execution.
@@ -118,32 +175,20 @@ struct WorkspaceRestorePlan {
     restore_damage: bool,
 }
 
-/// Restore workspaces from a snapshot. Each pane gets a fresh shell in its
-/// saved cwd, started at its own size in its workspace laid out by `geometry`.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "restore threads geometry, launch policy and every handle a spawned pane reports through"
-)]
-pub fn restore(
+/// Plan the complete saved session before any child is launched.
+pub fn plan_restore(
     snapshot: &SessionSnapshot,
     history: Option<&SessionHistorySnapshot>,
     geometry: crate::workspace::PaneGeometry,
-    scrollback_limit_bytes: usize,
-    shell_config: crate::pane::PaneShellConfig<'_>,
-    socket_path: &std::path::Path,
     resume_agents_on_restore: bool,
-    events: &mpsc::Sender<AppEvent>,
-    render_notify: &Arc<Notify>,
-    render_dirty: &Arc<RenderSignal>,
-    pane_teardowns: &Arc<crate::pane::PaneTeardownTracker>,
     now: std::time::Instant,
-) -> RestoredSession {
+) -> SessionRestorePlan {
     // `history` is the one `load_history` found to be the history this
     // layout's own save serialized (its digest), so its keys are this
     // snapshot's workspace positions and pane IDs.
     let mut workspaces = Vec::new();
     let mut terminals = HashMap::new();
-    let mut terminal_runtimes = HashMap::new();
+    let mut launches = Vec::new();
     let mut resumed_agent_sessions = HashSet::new();
     let mut history_carry = HistoryCarry::default();
     let host_theme = snapshot.host_theme.to_theme();
@@ -177,32 +222,24 @@ pub fn restore(
             continue;
         };
         let workspace_id = restored_workspace_id(saved_id, &mut used_ids);
-        let runtime_context = RestoreRuntimeContext {
+        let plan_context = RestorePlanContext {
             geometry,
-            scrollback_limit_bytes,
             now,
-            host_theme,
-            shell_config,
-            socket_path,
             resume_agents_on_restore,
-            events: events.clone(),
-            render_notify: Arc::clone(render_notify),
-            render_dirty: Arc::clone(render_dirty),
-            pane_teardowns: Arc::clone(pane_teardowns),
         };
         let restored = restore_workspace(
             plan,
             workspace_id,
             history.and_then(|history| history.workspaces.get(idx)),
-            &runtime_context,
+            &plan_context,
             &mut history_carry,
             &mut resumed_agent_sessions,
         );
-        if let Some((workspace, restored_terminals, restored_runtimes)) = restored {
+        if let Some((workspace, restored_terminals, restored_launches)) = restored {
             for terminal in restored_terminals {
                 terminals.insert(terminal.id.clone(), terminal);
             }
-            terminal_runtimes.extend(restored_runtimes);
+            launches.extend(restored_launches);
             restored_index.push(Some(workspaces.len()));
             workspaces.push(workspace);
         } else {
@@ -213,14 +250,16 @@ pub fn restore(
     let active = snapshot
         .active
         .and_then(|active| remap_saved_index(active, &restored_index));
-    RestoredSession {
+    SessionRestorePlan {
         workspaces,
         terminals,
-        terminal_runtimes,
         active,
         history_carry,
         restore_damage,
         dropped_workspaces,
+        launches,
+        theme: host_theme,
+        now,
     }
 }
 
@@ -267,10 +306,11 @@ fn restored_workspace_id(
 ///   an earlier pane of this restore resumes.
 fn restored_terminal(
     pane: &super::snapshot::PaneSnapshot,
+    terminal_id: TerminalId,
     start: RestoredPaneStart,
     now: std::time::Instant,
 ) -> TerminalState {
-    let mut terminal = TerminalState::new(TerminalId::alloc(), pane.cwd.clone());
+    let mut terminal = TerminalState::new(terminal_id, pane.cwd.clone());
     if let Some(label) = pane.label.clone() {
         terminal.set_manual_label(label);
     }
@@ -494,14 +534,14 @@ fn plan_workspace(original: &WorkspaceSnapshot) -> Option<WorkspaceRestorePlan> 
     })
 }
 
-/// Starts the panes of one planned workspace. Every saved-file defect was
-/// found while planning; the `None` returns left here guard internal
-/// invariants only.
+/// Builds the state of one planned workspace and the launches its shell panes
+/// need; nothing is launched here. Every saved-file defect was found while
+/// planning; the `None` returns left here guard internal invariants only.
 fn restore_workspace(
     plan: WorkspaceRestorePlan,
     workspace_id: WorkspaceId,
     history: Option<&WorkspaceHistorySnapshot>,
-    runtime_context: &RestoreRuntimeContext<'_>,
+    plan_context: &RestorePlanContext,
     history_carry: &mut HistoryCarry,
     resumed_agent_sessions: &mut HashSet<shepr_agent::agent::resume::AgentResumeKey>,
 ) -> Option<RestoredWorkspace> {
@@ -528,7 +568,7 @@ fn restore_workspace(
         .collect();
     let mut panes = HashMap::new();
     let mut terminals = Vec::new();
-    let mut terminal_runtimes = HashMap::new();
+    let mut launches = Vec::new();
     for id in &pane_ids {
         let old_id = reverse_id_map.get(id);
         let Some(saved_pane) = old_id.and_then(|old_id| snap.panes.get(old_id)) else {
@@ -549,7 +589,7 @@ fn restore_workspace(
             duplicate_agent_session,
         } = {
             let mut agent_restore = AgentRestoreState {
-                enabled: runtime_context.resume_agents_on_restore,
+                enabled: plan_context.resume_agents_on_restore,
                 resumed_sessions: resumed_agent_sessions,
             };
             pane_restore_startup(
@@ -571,14 +611,12 @@ fn restore_workspace(
             );
             return None;
         };
-        let launch_env = PaneLaunchEnv::new(runtime_context.socket_path.to_path_buf())
-            .with_pane_id(pane_id)
-            .for_restore();
         if let Some(plan) = restore_plan {
             let terminal = restored_terminal(
                 saved_pane,
+                TerminalId::alloc(),
                 RestoredPaneStart::PendingResume(plan),
-                runtime_context.now,
+                plan_context.now,
             );
             // Native resume owns what this pane shows once it runs, so the
             // saved screen is not replayed. Until a runtime exists, though,
@@ -597,68 +635,36 @@ fn restore_workspace(
 
         // Restore runs before any client has attached, so there is no cell
         // size to give the shell; the first client geometry pass supplies it.
-        let (rows, cols) = restored_pane_size(&runtime_context.geometry, &layout, zoomed, *id);
-        let runtime_result = PaneRuntime::spawn_with_initial_history(
-            *id,
-            crate::workspace::spawn_geometry(rows, cols, None),
-            &saved_pane.cwd,
-            runtime_context.scrollback_limit_bytes,
-            runtime_context.host_theme,
-            None,
-            runtime_context.shell_config,
-            &launch_env,
-            initial_history_ansi,
-            &runtime_context.events,
-            &runtime_context.render_notify,
-            &runtime_context.render_dirty,
-            &runtime_context.pane_teardowns,
+        let (rows, cols) = restored_pane_size(&plan_context.geometry, &layout, zoomed, *id);
+        // Planned as running; a launch that fails replaces this terminal with
+        // an unavailable one under the same id (`SessionRestorePlan::launch`).
+        // No detected-agent seeding: a pane with a resume plan took the
+        // deferred branch above, so this shell has no agent until detection
+        // or a hook reports one.
+        let terminal = restored_terminal(
+            saved_pane,
+            TerminalId::alloc(),
+            RestoredPaneStart::Running {
+                duplicate_agent_session,
+            },
+            plan_context.now,
         );
-
-        match runtime_result {
-            Ok(runtime) => {
-                // No detected-agent seeding here: a pane with a resume plan
-                // took the deferred branch above, so this shell has no agent
-                // until detection or a hook reports one.
-                let terminal = restored_terminal(
-                    saved_pane,
-                    RestoredPaneStart::Running {
-                        duplicate_agent_session,
-                    },
-                    runtime_context.now,
-                );
-                // Its saves keep the saved screen until the shell launches,
-                // and keep it if the launch fails.
-                history_carry.carry_restored(&terminal.id, saved_history);
-                panes.insert(
-                    *id,
-                    crate::workspace::WorkspacePane::new(PaneState::new(terminal.id.clone())),
-                );
-                terminal_runtimes.insert(terminal.id.clone(), runtime);
-                terminals.push(terminal);
-            }
-            Err(e) => {
-                // Nothing to roll back in the resumed-session set: only a pane
-                // with a resume plan reserves its session, and such a pane
-                // took the deferred branch above without spawning anything.
-                error!(
-                    workspace = %workspace_id,
-                    pane_id = id.raw(),
-                    error = %e,
-                    "failed to restore pane"
-                );
-                let terminal = restored_terminal(
-                    saved_pane,
-                    RestoredPaneStart::Unavailable(RestoreFailure::shell_start_failed(&e)),
-                    runtime_context.now,
-                );
-                history_carry.carry_restored(&terminal.id, saved_history);
-                panes.insert(
-                    *id,
-                    crate::workspace::WorkspacePane::new(PaneState::new(terminal.id.clone())),
-                );
-                terminals.push(terminal);
-            }
-        }
+        // Its saves keep the saved screen until the shell launches, and keep
+        // it if the launch fails.
+        history_carry.carry_restored(&terminal.id, saved_history);
+        panes.insert(
+            *id,
+            crate::workspace::WorkspacePane::new(PaneState::new(terminal.id.clone())),
+        );
+        launches.push(RestoredLaunch {
+            pane_id: *id,
+            public_id: pane_id,
+            terminal_id: terminal.id.clone(),
+            geometry: crate::workspace::spawn_geometry(rows, cols, None),
+            saved: saved_pane.clone(),
+            initial_history: initial_history_ansi.map(str::to_owned),
+        });
+        terminals.push(terminal);
     }
 
     // Every surviving pane has a validated public number from the saved
@@ -688,7 +694,7 @@ fn restore_workspace(
         zoomed,
         next_public_pane_number,
     )?;
-    Some((workspace, terminals, terminal_runtimes))
+    Some((workspace, terminals, launches))
 }
 
 fn pane_restore_startup<'a>(
@@ -836,6 +842,48 @@ fn remap_inner(
 }
 
 #[cfg(test)]
+use crate::events::AppEvent;
+#[cfg(test)]
+use crate::render_signal::RenderSignal;
+#[cfg(test)]
+use std::sync::Arc;
+#[cfg(test)]
+use tokio::sync::{Notify, mpsc};
+
+#[cfg(test)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "lifecycle fixtures pass each launch capability explicitly"
+)]
+fn restore(
+    snapshot: &SessionSnapshot,
+    history: Option<&SessionHistorySnapshot>,
+    geometry: crate::workspace::PaneGeometry,
+    scrollback_limit_bytes: usize,
+    shell_config: crate::pane::PaneShellConfig<'_>,
+    socket_path: &std::path::Path,
+    resume_agents_on_restore: bool,
+    events: &mpsc::Sender<AppEvent>,
+    render_notify: &Arc<Notify>,
+    render_dirty: &Arc<RenderSignal>,
+    pane_teardowns: &Arc<crate::pane::PaneTeardownTracker>,
+    now: std::time::Instant,
+) -> RestoredSession {
+    let launcher = crate::pane::PaneLauncher::new(
+        crate::pane::PaneSpawnHandles {
+            events: events.clone(),
+            render_notify: Arc::clone(render_notify),
+            render_dirty: Arc::clone(render_dirty),
+            pane_teardowns: Arc::clone(pane_teardowns),
+            socket_path: socket_path.to_path_buf(),
+        },
+        shell_config,
+        scrollback_limit_bytes,
+    );
+    plan_restore(snapshot, history, geometry, resume_agents_on_restore, now).launch(&launcher)
+}
+
+#[cfg(test)]
 fn take_restore_plan_for_snapshot(
     session: &PaneAgentSessionSnapshot,
     resume_agents_on_restore: bool,
@@ -887,6 +935,80 @@ mod tests {
             pane_outer_borders: false,
             pane_scrollbars: false,
         }
+    }
+
+    #[test]
+    fn complete_restore_planning_needs_no_runtime_or_directory_access() {
+        let cwd = Path::new("/__shepr_plan_missing_directory__");
+        let (snapshot, history) = snapshot_with_saved_pane_history(cwd);
+        let plan = plan_restore(
+            &snapshot,
+            Some(&history),
+            test_geometry(12, 40),
+            false,
+            test_restore_now(),
+        );
+        assert_eq!(plan.workspaces.len(), 1);
+        assert_eq!(plan.terminals.len(), 1);
+        assert_eq!(plan.launches.len(), 1);
+        let launch = &plan.launches[0];
+        assert_eq!(launch.saved.cwd, cwd);
+        assert_eq!(
+            launch.geometry,
+            crate::workspace::spawn_geometry(12, 40, None)
+        );
+        assert_eq!(
+            launch.initial_history.as_deref(),
+            Some(history.workspaces[0].panes[&0].ansi.as_str())
+        );
+        assert_eq!(
+            plan.workspaces[0].terminal_id(launch.pane_id),
+            Some(&launch.terminal_id)
+        );
+        assert_eq!(plan.active, Some(0));
+    }
+
+    #[test]
+    fn complete_restore_plan_defers_one_resume_and_plans_duplicate_as_shell() {
+        let cwd = Path::new("/__shepr_plan_agent_directory__");
+        let (mut snapshot, history) = snapshot_with_saved_pane_history(cwd);
+        let workspace = &mut snapshot.workspaces[0];
+        let pane = workspace.panes.get_mut(&0).expect("saved pane");
+        pane.agent_session = Some(PaneAgentSessionSnapshot {
+            source: shepr_agent::agent::AgentSource::parse("shepr:codex"),
+            agent: shepr_agent::agent::Agent::Codex,
+            session_ref: shepr_agent::agent::resume::AgentSessionRef::id("planned-session")
+                .expect("session id"),
+        });
+        let mut duplicate = pane.clone();
+        duplicate.public_number = 2;
+        workspace.panes.insert(1, duplicate);
+        workspace.next_public_pane_number = 3;
+        workspace.layout = LayoutSnapshot::Split {
+            direction: DirectionSnapshot::Horizontal,
+            ratio: SavedSplitRatio::from_raw(0.5),
+            first: Box::new(LayoutSnapshot::Pane(0)),
+            second: Box::new(LayoutSnapshot::Pane(1)),
+        };
+        let plan = plan_restore(
+            &snapshot,
+            Some(&history),
+            test_geometry(12, 40),
+            true,
+            test_restore_now(),
+        );
+        assert_eq!(plan.terminals.len(), 2);
+        assert_eq!(
+            plan.terminals
+                .values()
+                .filter(|terminal| terminal.agent_resume().is_pending())
+                .count(),
+            1
+        );
+        assert_eq!(plan.launches.len(), 1);
+        assert!(plan.launches[0].initial_history.is_none());
+        let shell = &plan.terminals[&plan.launches[0].terminal_id];
+        assert!(shell.ownership().persisted_agent_session().is_none());
     }
 
     #[test]
@@ -2284,6 +2406,7 @@ mod tests {
 
         assert!(
             !runtime
+                .read()
                 .agent_detection_inputs()
                 .screen_text
                 .contains("RESTORED_HISTORY"),

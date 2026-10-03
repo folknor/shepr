@@ -11,7 +11,7 @@ use super::responses::{failure, success};
 /// One locked read of the detector's input, the same read the live detection
 /// tick takes, so the screen and OSC values describe one terminal state.
 fn detection_capture(pane: &shepr_mux::pane::PaneRuntime) -> DetectionCapture {
-    let inputs = pane.agent_detection_inputs();
+    let inputs = pane.read().agent_detection_inputs();
     DetectionCapture {
         screen: inputs.screen_text,
         osc_title: inputs.osc_title,
@@ -213,7 +213,7 @@ mod tests {
         let runtime =
             shepr_mux::pane::PaneRuntime::test_with_screen_bytes(80, 24, b"captured screen");
         runtime.test_process_pty_bytes(b"\x1b]2;Action Required\x1b\\\x1b]9;4;3;\x1b\\");
-        let detection_text = runtime.detection_text();
+        let detection_text = runtime.read().detection_text();
         app.terminal_runtimes.insert(terminal_id, runtime);
         let pane = app
             .public_pane_id(0, pane_id)

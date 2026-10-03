@@ -67,6 +67,23 @@ review)
 
 (wave-4 review)
 
+## CLN-028 - Leftovers from the pane launcher carve-up
+
+- `crates/shepr-server/src/app/creation.rs` `create_workspace` hard-codes
+  `PublicPaneId::new(&ws.id, 1)`, restating that `Workspace::prepare` gives the
+  root number 1; prepare could return the root's public id.
+- `PreparedSplit` carries both `public_id` and `public_number`; one derives from
+  the other plus the workspace id.
+- `PaneRead::on_next_dirty_collection` installs a closure into the terminal core
+  through a read handle, for `shepr-server/src/test_support.rs` only: a
+  mutation seam on the narrow read surface.
+- `PaneRuntime::wheel_routing_for_modes(&self, modes)` ignores `self`.
+- `RestoredLaunch` clones the whole `PaneSnapshot` when it needs the cwd and
+  what the failure placeholder reads.
+- `LaunchKind` derives `Default` with `Fresh`, which nothing may need now.
+
+(wave-5 review)
+
 ## Test-only twins and test seams in production
 
 ## CLN-016 - Production rules with a test-only twin that the tests exercise instead

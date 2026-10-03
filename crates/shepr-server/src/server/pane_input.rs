@@ -218,7 +218,7 @@ fn apply_client_pane_input_event(
         ..
     } = event
     {
-        let input_modes = runtime.input_modes();
+        let input_modes = runtime.read().input_modes();
         let kind = kind.to_host();
         let modifiers = modifiers.to_host();
         let position = match position {
@@ -294,7 +294,7 @@ fn apply_client_pane_input_event(
     match event.to_raw_input_event() {
         shepr_termio::input::raw_input::RawInputEvent::Key(key) => {
             let key_event = key.as_key_event();
-            let input_modes = runtime.input_modes();
+            let input_modes = runtime.read().input_modes();
             if matches!(key_event.code, KeyCode::PageUp | KeyCode::PageDown)
                 && key_event.modifiers.is_empty()
                 && input_modes

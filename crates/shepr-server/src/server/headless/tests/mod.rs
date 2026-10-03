@@ -132,9 +132,7 @@ pub(crate) fn client_shell_snapshot(
 pub(crate) fn test_headless_server() -> HeadlessServer {
     let config = shepr_config::ServerConfig::default();
     let mut app = crate::app::App::new(&config, crate::app::AppPolicy::Test);
-
-    app.state.settings.default_shell =
-        shepr_test_support::fixture::resolved_shell(crate::app::exiting_test_command());
+    app.set_test_shell(crate::app::exiting_test_command());
     let (server_event_tx, server_event_rx) = mpsc::channel(64);
     let (api_tx, api_request_rx) = mpsc::channel(crate::limits::API_REQUEST_CHANNEL_CAPACITY);
     // Production's listener holds the sender for the server's whole life; a
@@ -2882,7 +2880,7 @@ async fn retained_snapshot_survives_a_writer_waiting_for_the_terminal_core() {
             .runtime_for_pane_in_workspace(&server.app.terminal_runtimes, 0, pane_id)
             .expect("runtime");
         runtime.test_process_pty_bytes(b"\rAAAA\x1b[?1003h");
-        let revision = runtime.content_seq();
+        let revision = runtime.read().content_seq();
         let (release, writer) =
             runtime.test_contend_during_dirty_collection(b"\rBBBB\x1b[?1003l".to_vec());
         (release, writer, revision)
@@ -3739,9 +3737,13 @@ async fn pane_close_reapplies_controller_geometry() {
     let runtime = &server.app.test_runtime(first_pane);
     let grown = runtime.current_size();
     assert!(grown.0 > shrunk.0);
-    assert_eq!(runtime.terminal_dimensions(), Some((grown.1, grown.0)));
+    assert_eq!(
+        runtime.read().terminal_dimensions(),
+        Some((grown.1, grown.0))
+    );
     assert_eq!(
         runtime
+            .read()
             .scroll_metrics()
             .expect("test precondition")
             .viewport_rows,
@@ -4327,6 +4329,7 @@ async fn client_shell_text_input_renders_only_when_resetting_scrollback() {
     runtime.scroll_up(1);
     assert!(
         runtime
+            .read()
             .scroll_metrics()
             .is_some_and(|metrics| metrics.offset_from_bottom > 0)
     );
@@ -4371,7 +4374,7 @@ async fn client_shell_text_input_renders_only_when_resetting_scrollback() {
             .app
             .state
             .runtime_for_pane_in_workspace(&server.app.terminal_runtimes, 0, pane_id)
-            .and_then(shepr_mux::pane::PaneRuntime::scroll_metrics)
+            .and_then(|runtime| runtime.read().scroll_metrics())
             .map(|metrics| metrics.offset_from_bottom),
         Some(0)
     );
@@ -5181,9 +5184,13 @@ async fn pane_death_reapplies_controller_geometry() {
     let runtime = &server.app.test_runtime(first_pane);
     let grown = runtime.current_size();
     assert!(grown.0 > shrunk.0);
-    assert_eq!(runtime.terminal_dimensions(), Some((grown.1, grown.0)));
+    assert_eq!(
+        runtime.read().terminal_dimensions(),
+        Some((grown.1, grown.0))
+    );
     assert_eq!(
         runtime
+            .read()
             .scroll_metrics()
             .expect("test precondition")
             .viewport_rows,
@@ -5199,7 +5206,7 @@ fn client_pane_pixel_mouse_uses_runtime_pixel_encoding() {
         .build()
         .expect("test runtime");
     let _runtime_guard = rt.enter();
-    let (runtime, mut input_rx) =
+    let (mut runtime, mut input_rx) =
         shepr_mux::pane::PaneRuntime::test_with_channel_and_scrollback_bytes(
             20,
             5,
@@ -5241,7 +5248,7 @@ fn client_pane_pixel_mouse_stays_pixel_scaled_when_sgr_is_reasserted() {
         .build()
         .expect("test runtime");
     let _runtime_guard = rt.enter();
-    let (runtime, mut input_rx) =
+    let (mut runtime, mut input_rx) =
         shepr_mux::pane::PaneRuntime::test_with_channel_and_scrollback_bytes(
             80,
             24,
@@ -5283,7 +5290,7 @@ fn client_pane_pixel_mouse_falls_back_to_canonical_cell_position() {
         .build()
         .expect("test runtime");
     let _runtime_guard = rt.enter();
-    let (runtime, mut input_rx) =
+    let (mut runtime, mut input_rx) =
         shepr_mux::pane::PaneRuntime::test_with_channel_and_scrollback_bytes(
             20,
             5,
@@ -5353,6 +5360,7 @@ fn client_pane_wheel_input_accumulates_scrollback_offset() {
     .expect("second scroll up");
     assert_eq!(
         runtime
+            .read()
             .scroll_metrics()
             .expect("scroll metrics")
             .offset_from_bottom,
@@ -5366,6 +5374,7 @@ fn client_pane_wheel_input_accumulates_scrollback_offset() {
     .expect("scroll down");
     assert_eq!(
         runtime
+            .read()
             .scroll_metrics()
             .expect("scroll metrics")
             .offset_from_bottom,
@@ -5386,6 +5395,7 @@ fn client_pane_wheel_input_accumulates_scrollback_offset() {
     .expect("reported mouse motion");
     assert_eq!(
         runtime
+            .read()
             .scroll_metrics()
             .expect("scroll metrics")
             .offset_from_bottom,
@@ -5409,6 +5419,7 @@ fn client_pane_wheel_input_accumulates_scrollback_offset() {
     .expect("mouse button");
     assert_eq!(
         runtime
+            .read()
             .scroll_metrics()
             .expect("scroll metrics")
             .offset_from_bottom,
@@ -5481,6 +5492,7 @@ fn client_plain_page_keys_scroll_shell_transcript_by_pane_height() {
         .expect("pane PageUp");
         assert_eq!(
             runtime
+                .read()
                 .scroll_metrics()
                 .expect("scroll metrics")
                 .offset_from_bottom,
@@ -5498,6 +5510,7 @@ fn client_plain_page_keys_scroll_shell_transcript_by_pane_height() {
         .expect("pane PageUp release");
         assert_eq!(
             runtime
+                .read()
                 .scroll_metrics()
                 .expect("scroll metrics")
                 .offset_from_bottom,
@@ -5515,6 +5528,7 @@ fn client_plain_page_keys_scroll_shell_transcript_by_pane_height() {
         .expect("pane PageDown");
         assert_eq!(
             runtime
+                .read()
                 .scroll_metrics()
                 .expect("scroll metrics")
                 .offset_from_bottom,
@@ -5542,6 +5556,7 @@ fn client_page_keys_forward_when_modified_or_owned_by_application() {
         );
         assert_eq!(
             runtime
+                .read()
                 .scroll_metrics()
                 .expect("scroll metrics")
                 .offset_from_bottom,
@@ -5565,6 +5580,7 @@ fn client_page_keys_forward_when_modified_or_owned_by_application() {
         );
         assert_eq!(
             runtime
+                .read()
                 .scroll_metrics()
                 .expect("scroll metrics")
                 .offset_from_bottom,
@@ -5578,8 +5594,9 @@ async fn headless_scheduled_tasks_start_pending_agent_resume_without_foreground_
     let mut server = test_headless_server();
     // Keep a shell reading its PTY so the resume command cannot race the
     // default test shell, which exits at once, before the input is queued.
-    server.app.state.settings.default_shell =
-        shepr_test_support::fixture::resolved_shell(shepr_test_support::fixture::idle_shell());
+    server
+        .app
+        .set_test_shell(shepr_test_support::fixture::idle_shell());
     let workspace = shepr_mux::workspace::Workspace::test_new("restored");
     let pane_id = workspace.root_pane();
     let terminal_id = workspace
@@ -5628,8 +5645,9 @@ async fn headless_scheduled_tasks_keep_pending_agent_resume_deadline_across_tick
     let mut server = test_headless_server();
     // Keep a shell reading its PTY so the resume command cannot race the
     // default test shell, which exits at once, before the input is queued.
-    server.app.state.settings.default_shell =
-        shepr_test_support::fixture::resolved_shell(shepr_test_support::fixture::idle_shell());
+    server
+        .app
+        .set_test_shell(shepr_test_support::fixture::idle_shell());
     let workspace = shepr_mux::workspace::Workspace::test_new("restored");
     let pane_id = workspace.root_pane();
     let terminal_id = workspace

@@ -40,7 +40,7 @@ impl App {
             let Some(runtime) = self.terminal_runtimes.get(&terminal_id) else {
                 continue;
             };
-            observations.push((terminal_id, runtime.terminal_title()));
+            observations.push((terminal_id, runtime.read().terminal_title()));
         }
 
         let mut changes = TerminalTitleChanges::default();
