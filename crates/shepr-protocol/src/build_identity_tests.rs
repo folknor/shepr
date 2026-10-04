@@ -29,24 +29,10 @@ fn source_tree(label: &str) -> ScratchDir {
     root
 }
 
-/// The inputs cargo hands a build script for `profile`, with the resolved
-/// settings that profile has by default.
+/// The inputs the build script records for cargo profile `profile`.
 fn profile(profile: &str) -> ProfileInputs {
-    let (opt_level, debug) = match profile {
-        "release" => ("3", "false"),
-        _ => ("0", "true"),
-    };
-    let set = |name: &str, value: &str| (name.to_owned(), Some(OsString::from(value)));
     ProfileInputs {
-        vars: vec![
-            set("PROFILE", profile),
-            set("OPT_LEVEL", opt_level),
-            set("DEBUG", debug),
-            set("TARGET", "x86_64-unknown-linux-gnu"),
-            ("RUSTFLAGS".to_owned(), None),
-            set("CARGO_CFG_TARGET_OS", "linux"),
-        ],
-        rustc_version: Some("rustc 1.99.0 (fixture 2026-01-01)".to_owned()),
+        vars: vec![("PROFILE".to_owned(), Some(OsString::from(profile)))],
     }
 }
 
@@ -82,52 +68,27 @@ fn a_dev_and_a_release_build_of_one_tree_differ() {
     assert!(!builds_match(&dev, &release));
 }
 
+/// The profile is the only build setting in the identity. The compiler, its
+/// flags, wrappers and linker, profile overrides, the target and its cfg
+/// values change how the code is built, not the frames it exchanges, so hosts
+/// that build one tree with different toolchains, settings or architectures
+/// get one identity.
 #[test]
-fn every_profile_input_moves_the_identity() {
-    let tree = source_tree("identity-profile-inputs");
-    let base = id(&tree, &profile("debug"));
-    let mut changed = vec![
-        with_var(profile("debug"), "OPT_LEVEL", Some("1")),
-        with_var(profile("debug"), "DEBUG", Some("false")),
-        with_var(
-            profile("debug"),
-            "TARGET",
-            Some("aarch64-unknown-linux-gnu"),
-        ),
-        with_var(profile("debug"), "RUSTFLAGS", Some("-Ctarget-cpu=native")),
-        // Unset and empty are distinct inputs.
-        with_var(profile("debug"), "RUSTFLAGS", Some("")),
-        with_var(profile("debug"), "CARGO_CFG_TARGET_ENDIAN", Some("big")),
-        with_var(profile("debug"), "CARGO_PROFILE_DEV_LTO", Some("true")),
-    ];
-    let mut compiler = profile("debug");
-    compiler.rustc_version = Some("rustc 1.99.1 (fixture 2026-02-01)".to_owned());
-    changed.push(compiler);
-    for inputs in &changed {
-        let moved = id(&tree, inputs);
-        assert!(is_identifiable_build_id(&moved), "{moved}");
-        assert_ne!(moved, base, "{inputs:?}");
-    }
-}
-
-/// Inputs that name the builder rather than the build: the compiler's path and
-/// the build host, and target features that `-Ctarget-cpu=native` makes depend
-/// on the builder's CPU. The per-package cargo features are not a build input
-/// either. None of them is recorded, so none can move the identity.
-#[test]
-fn builder_specific_variables_are_not_profile_inputs() {
-    for recorded in [
-        "PROFILE",
-        "RUSTFLAGS",
-        "RUSTC_LINKER",
-        "CARGO_CFG_TARGET_OS",
-        "CARGO_PROFILE_DEV_LTO",
-    ] {
-        assert!(is_profile_input(recorded), "{recorded}");
-    }
+fn only_the_profile_is_a_build_setting_input() {
+    assert!(is_profile_input("PROFILE"));
     for ignored in [
         "RUSTC",
         "HOST",
+        "OPT_LEVEL",
+        "DEBUG",
+        "TARGET",
+        "RUSTFLAGS",
+        "CARGO_ENCODED_RUSTFLAGS",
+        "RUSTC_WRAPPER",
+        "RUSTC_WORKSPACE_WRAPPER",
+        "RUSTC_LINKER",
+        "CARGO_PROFILE_RELEASE_LTO",
+        "CARGO_CFG_TARGET_ARCH",
         "CARGO_CFG_TARGET_FEATURE",
         "CARGO_CFG_FEATURE",
     ] {
@@ -166,24 +127,14 @@ fn a_missing_required_input_refuses_the_build() {
 #[test]
 fn unestablished_profile_inputs_are_unidentifiable_and_match_nothing() {
     let tree = source_tree("identity-unidentifiable");
-    let mut no_compiler = profile("debug");
-    no_compiler.rustc_version = None;
-    for inputs in [
-        no_compiler,
-        with_var(profile("debug"), "PROFILE", None),
-        with_var(profile("debug"), "OPT_LEVEL", None),
-        with_var(profile("debug"), "DEBUG", None),
-        with_var(profile("debug"), "TARGET", None),
-    ] {
-        let unidentifiable = id(&tree, &inputs);
-        assert_eq!(unidentifiable, UNIDENTIFIABLE_BUILD_ID, "{inputs:?}");
-        assert!(!is_identifiable_build_id(&unidentifiable));
-        assert!(!builds_match(&unidentifiable, &unidentifiable));
-        assert!(!builds_match(
-            &unidentifiable,
-            &id(&tree, &profile("debug"))
-        ));
-    }
+    let unidentifiable = id(&tree, &with_var(profile("debug"), "PROFILE", None));
+    assert_eq!(unidentifiable, UNIDENTIFIABLE_BUILD_ID);
+    assert!(!is_identifiable_build_id(&unidentifiable));
+    assert!(!builds_match(&unidentifiable, &unidentifiable));
+    assert!(!builds_match(
+        &unidentifiable,
+        &id(&tree, &profile("debug"))
+    ));
 }
 
 /// The marker travels in the preamble's fixed sixteen-byte identity field, so

@@ -4,52 +4,39 @@
 //! not self-describing, so two builds that disagree on any message layout
 //! decode each other's frames into garbage instead of failing. A hand-bumped
 //! protocol number cannot guard that, because nothing forces anyone to bump
-//! it. This script fingerprints the source tree and the build settings that
-//! distinguish client-server wire layouts, then hands the result to the crate
-//! as `BUILD_ID`, which the handshake preamble, `ping`
-//! and `status` compare exactly. Any change to an observed input yields a new
-//! identity, so a stale server, a hand-copied remote binary, or a dev build
-//! meeting the installed release server is reported as a mismatch instead of
-//! passing as compatible.
+//! it. This script fingerprints what decides the wire layout, then hands the
+//! result to the crate as `BUILD_ID`, which the handshake preamble, `ping` and
+//! `status` compare exactly. Any change to an input yields a new identity, so
+//! a stale server, a hand-copied remote binary, or a dev build meeting the
+//! installed release server is reported as a mismatch instead of passing as
+//! compatible.
 //!
-//! The inputs come in two halves:
+//! The inputs are:
 //!
 //! - The source tree: the root manifest, the lockfile, this script and every
-//!   file under `src/` and `crates/`. Each named root input is required. A
-//!   missing or unreadable one fails the build rather than silently dropping
-//!   out of the identity, which would let two trees that differ in it hash
-//!   alike.
-//! - The build profile, as far as a build script can see it: `PROFILE`,
-//!   `OPT_LEVEL`, `DEBUG` and `TARGET` (which cargo always hands a build
-//!   script), the compiler's `--version`, the effective rustflags, the compiler
-//!   wrappers and linker, every `CARGO_PROFILE_*` override set through the
-//!   environment, and target cfg values except the per-package
-//!   `CARGO_CFG_FEATURE` and `CARGO_CFG_TARGET_FEATURE`. Cargo's `HOST` and
-//!   `RUSTC` identify the build-script machine and the compiler executable path;
-//!   neither affects this target's wire schema, so neither is hashed. The
-//!   compiler version is hashed instead of its path. `CARGO_CFG_TARGET_FEATURE`
-//!   includes features selected by `-Ctarget-cpu=native`, so hashing it would
-//!   make builds of the same source and profile differ across builder CPUs.
-//!   Target features change code generation, but this source has no
-//!   target-feature conditional wire types or codec behavior. Without the
-//!   remaining profile inputs, a dev and a release build of one tree would
-//!   share an identity, and a dev run would attach to the installed server as
-//!   if it were the same binary. Profile settings made in a config file that
-//!   surface in no build-script variable (`lto`, `codegen-units`) stay
-//!   invisible to any build script. A `CARGO_PROFILE_*` or `CARGO_CFG_*`
-//!   variable first added after the script last ran is also invisible until
-//!   another tracked input causes a rerun, because its name was not available
-//!   to register as a rerun trigger.
+//!   file under `src/` and `crates/`. The wire layout is defined here and
+//!   nowhere else. Each named root input is required. A missing or unreadable
+//!   one fails the build rather than silently dropping out of the identity,
+//!   which would let two trees that differ in it hash alike.
+//! - The cargo profile (`PROFILE`, release or debug). It does not change the
+//!   wire layout; it is an input so a dev build and the installed release
+//!   build of one tree refuse each other, and a dev run never attaches to the
+//!   installed server.
 //!
-//! When the profile half cannot be established (a variable cargo always sets
-//! is missing, or the compiler cannot answer `--version`), the identity is
+//! Nothing else is: the compiler and its version, rustflags, wrappers, linker,
+//! profile overrides, the target and its cfg values change how the code is
+//! built, not the frames it exchanges. The codec writes explicit
+//! little-endian frames and varints, and no wire type is conditional on the
+//! target, so one tree built on hosts with different toolchains, settings or
+//! architectures speaks one protocol and gets one identity.
+//!
+//! When cargo does not hand the script `PROFILE`, the identity is
 //! [`UNIDENTIFIABLE_BUILD_ID`]. It is not hex, so the comparison in
 //! `shepr-protocol` refuses it against every peer, itself included: a build
 //! whose inputs are unknown cannot prove it is the same build as anything.
 //!
 //! The hash is FNV-1a over labelled, length-prefixed records in a fixed
-//! order, so the same recorded source and wire-relevant profile inputs give
-//! the same identity on every host.
+//! order, so the same source and profile give the same identity on every host.
 
 use std::error::Error;
 use std::ffi::OsString;
@@ -68,41 +55,14 @@ const ROOT_INPUTS: [&str; 3] = ["Cargo.toml", "Cargo.lock", "build.rs"];
 /// hex, so it never compares equal to anything.
 pub(crate) const UNIDENTIFIABLE_BUILD_ID: &str = "unidentifiable--";
 
-/// Profile variables cargo sets for every build script. A build missing one
-/// cannot say how it was built.
-const REQUIRED_PROFILE_VARS: [&str; 4] = ["PROFILE", "OPT_LEVEL", "DEBUG", "TARGET"];
-
-/// Profile variables that may legitimately be unset; unset is itself an input.
-const OPTIONAL_PROFILE_VARS: [&str; 5] = [
-    "CARGO_ENCODED_RUSTFLAGS",
-    "RUSTFLAGS",
-    "RUSTC_WRAPPER",
-    "RUSTC_WORKSPACE_WRAPPER",
-    "RUSTC_LINKER",
-];
-
-/// Variable families folded in whole, in sorted order.
-const PROFILE_VAR_PREFIXES: [&str; 2] = ["CARGO_PROFILE_", "CARGO_CFG_"];
-
-/// Cargo features differ per package, while target features can vary with the
-/// builder CPU when `-Ctarget-cpu=native` is used. Neither changes this
-/// project's wire schema, so neither is part of the identity.
-const EXCLUDED_PROFILE_VARS: [&str; 2] = ["CARGO_CFG_FEATURE", "CARGO_CFG_TARGET_FEATURE"];
-
-/// Whether `key` belongs to a variable family folded into the identity.
-fn is_profile_family_var(key: &str) -> bool {
-    PROFILE_VAR_PREFIXES
-        .iter()
-        .any(|prefix| key.starts_with(prefix))
-        && !EXCLUDED_PROFILE_VARS.contains(&key)
-}
+/// The profile variables in the identity, each one cargo sets for every build
+/// script. A build missing one cannot say how it was built.
+const REQUIRED_PROFILE_VARS: [&str; 1] = ["PROFILE"];
 
 /// Whether `ProfileInputs::from_env` records the variable `name` at all.
 #[cfg(test)]
 pub(crate) fn is_profile_input(name: &str) -> bool {
     REQUIRED_PROFILE_VARS.contains(&name)
-        || OPTIONAL_PROFILE_VARS.contains(&name)
-        || is_profile_family_var(name)
 }
 
 struct Fnv(u64);
@@ -132,16 +92,13 @@ pub(crate) struct ProfileInputs {
     /// Every profile variable read, by name, with its raw value or `None` when
     /// unset. Order does not matter; the hash sorts them.
     pub vars: Vec<(String, Option<OsString>)>,
-    /// The compiler's `--version` line, or `None` when it could not be run.
-    pub rustc_version: Option<String>,
 }
 
 impl ProfileInputs {
-    /// Reads the profile inputs cargo hands this build script. The compiler is
-    /// asked for its version from `root`, the workspace root.
+    /// Reads the profile inputs cargo hands this build script.
     #[expect(
         clippy::disallowed_methods,
-        reason = "a build script reads cargo's own variables (shepr_core::env governs the variables shepr processes interpret) and runs the compiler with std's Command, stating its working directory; shepr_platform is not a build dependency"
+        reason = "a build script reads cargo's own variables; shepr_core::env governs the variables shepr processes interpret"
     )]
     #[cfg_attr(
         test,
@@ -150,46 +107,21 @@ impl ProfileInputs {
             reason = "unit tests include this script as a module and state their own inputs"
         )
     )]
-    fn from_env(root: &Path) -> Self {
-        let mut vars = REQUIRED_PROFILE_VARS
+    fn from_env() -> Self {
+        let vars = REQUIRED_PROFILE_VARS
             .iter()
-            .chain(OPTIONAL_PROFILE_VARS.iter())
             .map(|name| ((*name).to_owned(), std::env::var_os(name)))
-            .collect::<Vec<_>>();
-        for (key, value) in std::env::vars_os() {
-            let Some(key) = key.to_str() else {
-                continue;
-            };
-            if is_profile_family_var(key) {
-                vars.push((key.to_owned(), Some(value)));
-            }
-        }
-        // Cargo supplies its resolved compiler path as `RUSTC`. Its path may be
-        // different on each builder, so record the compiler version below,
-        // not this location.
-        let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
-        let rustc_version = std::process::Command::new(rustc)
-            .current_dir(root)
-            .arg("--version")
-            .output()
-            .ok()
-            .filter(|output| output.status.success())
-            .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
-            .filter(|version| !version.is_empty());
-        Self {
-            vars,
-            rustc_version,
-        }
+            .collect();
+        Self { vars }
     }
 
     /// Whether every input that is always present in a real build is present.
     pub(crate) fn is_established(&self) -> bool {
-        self.rustc_version.is_some()
-            && REQUIRED_PROFILE_VARS.iter().all(|required| {
-                self.vars
-                    .iter()
-                    .any(|(name, value)| name == required && value.is_some())
-            })
+        REQUIRED_PROFILE_VARS.iter().all(|required| {
+            self.vars
+                .iter()
+                .any(|(name, value)| name == required && value.is_some())
+        })
     }
 }
 
@@ -280,9 +212,6 @@ pub(crate) fn build_id(root: &Path, profile: &ProfileInputs) -> Result<String, B
     if !profile.is_established() {
         return Ok(UNIDENTIFIABLE_BUILD_ID.to_owned());
     }
-    if let Some(version) = &profile.rustc_version {
-        hash.write_record("rustc", version.as_bytes());
-    }
     let mut vars = profile.vars.clone();
     vars.sort();
     vars.dedup();
@@ -357,15 +286,7 @@ pub(crate) fn main() -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
 
-    let profile_inputs = ProfileInputs::from_env(&root);
-    for (name, _) in &profile_inputs.vars {
-        if PROFILE_VAR_PREFIXES
-            .iter()
-            .any(|prefix| name.starts_with(prefix))
-        {
-            println!("cargo:rerun-if-env-changed={name}");
-        }
-    }
+    let profile_inputs = ProfileInputs::from_env();
     let build_id = build_id(&root, &profile_inputs)?;
 
     fs::write(
@@ -382,10 +303,6 @@ pub(crate) fn main() -> Result<(), Box<dyn Error>> {
     println!("cargo:rerun-if-changed={}", root.join("crates").display());
     for name in ROOT_INPUTS {
         println!("cargo:rerun-if-changed={}", root.join(name).display());
-    }
-    // Inputs inherited from the invoking environment.
-    for name in OPTIONAL_PROFILE_VARS {
-        println!("cargo:rerun-if-env-changed={name}");
     }
     Ok(())
 }
