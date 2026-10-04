@@ -356,7 +356,7 @@ fn common_facts(spec: &AssetSpec) -> Vec<(&'static str, String)> {
 fn js_header(spec: &AssetSpec) -> String {
     format!(
         "// installed by shepr\n\
-         // managed by shepr; reinstalling or updating the integration overwrites this file.\n\
+         // managed by shepr; every release shepr server launch on this host rewrites this file.\n\
          // add custom hooks/plugins beside this file instead of editing it.\n\
          // SHEPR_INTEGRATION_ID={}\n\
          // SHEPR_INTEGRATION_VERSION={}\n",

@@ -1,6 +1,6 @@
 #!/bin/sh
 # installed by shepr
-# managed by shepr; reinstalling or updating the integration overwrites this file.
+# managed by shepr; every release shepr server launch on this host rewrites this file.
 # add custom hooks beside this file instead of editing it.
 # SHEPR_INTEGRATION_ID=claude
 # SHEPR_INTEGRATION_VERSION=6

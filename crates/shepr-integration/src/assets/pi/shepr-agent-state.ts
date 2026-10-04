@@ -1,5 +1,5 @@
 // installed by shepr
-// managed by shepr; reinstalling or updating the integration overwrites this file.
+// managed by shepr; every release shepr server launch on this host rewrites this file.
 // add custom hooks/plugins beside this file instead of editing it.
 // SHEPR_INTEGRATION_ID=pi
 // SHEPR_INTEGRATION_VERSION=3
