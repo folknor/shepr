@@ -610,7 +610,7 @@ fn read_server_version_line(server: &Path, timeout: Duration) -> io::Result<Stri
 /// move only the socket, so every server of one profile competes for the same
 /// data directory lease anyway.
 fn acquire_launch_lock(paths: &shepr_paths::AppPaths, wait: Duration) -> io::Result<FlockLock> {
-    shepr_platform::create_private_directory_all(paths.runtime_dir()).map_err(|error| {
+    shepr_platform::create_private_runtime_directory(paths.runtime_dir()).map_err(|error| {
         io::Error::new(
             error.kind(),
             format!(

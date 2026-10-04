@@ -20,6 +20,30 @@ pub fn create_private_directory_all(path: &Path) -> io::Result<()> {
         .create(path)
 }
 
+/// Creates shepr's own runtime directory `path` (and missing parents)
+/// owner-only, and tightens an existing one to the private mode when this user
+/// owns it and it is a real directory, not a symlink: whatever created it, the
+/// directory shepr's sockets live in is always private, and tightening only
+/// ever removes access. A directory
+/// someone else owns, or a symlink, is left as it is for the caller's own check
+/// to refuse.
+pub fn create_private_runtime_directory(path: &Path) -> io::Result<()> {
+    use std::os::unix::fs::MetadataExt as _;
+
+    create_private_directory_all(path)?;
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.is_dir()
+        && metadata.uid() == super::effective_uid()
+        && metadata.mode() & super::limits::PERMISSION_BITS != super::limits::PRIVATE_DIRECTORY_MODE
+    {
+        fs::set_permissions(
+            path,
+            fs::Permissions::from_mode(super::limits::PRIVATE_DIRECTORY_MODE),
+        )?;
+    }
+    Ok(())
+}
+
 /// Opens the file a launched daemon's stderr goes to, emptied. The daemon
 /// keeps it as its stderr only until its own log is running, then points
 /// stderr at `/dev/null`, so it holds only pre-logging output.

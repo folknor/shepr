@@ -184,6 +184,44 @@ fn private_directory_requirement_rejects_symlinks_and_public_modes() {
 }
 
 #[test]
+fn an_owned_runtime_directory_found_open_is_tightened() {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+    let scratch = shepr_test_support::ScratchDir::new("private-runtime-directory");
+    let runtime = scratch.join("shepr");
+    std::fs::create_dir(&runtime).expect("test precondition");
+    std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o755))
+        .expect("test precondition");
+
+    crate::create_private_runtime_directory(&runtime).expect("an owned directory is tightened");
+    assert!(require_private_directory(&runtime).is_ok());
+
+    // A missing directory is created private.
+    let fresh = scratch.join("fresh/shepr");
+    crate::create_private_runtime_directory(&fresh).expect("a missing directory is created");
+    assert!(require_private_directory(&fresh).is_ok());
+
+    // A symlink is neither followed nor changed; the caller's check refuses it.
+    let link = scratch.join("link");
+    symlink(&runtime, &link).expect("test precondition");
+    std::fs::set_permissions(&runtime, std::fs::Permissions::from_mode(0o755))
+        .expect("test precondition");
+    crate::create_private_runtime_directory(&link).expect("a symlink is left alone");
+    assert!(matches!(
+        require_private_directory(&link),
+        Err(PrivateDirError::Policy)
+    ));
+    assert_eq!(
+        std::fs::metadata(&runtime)
+            .expect("stat the target")
+            .permissions()
+            .mode()
+            & crate::limits::PERMISSION_BITS,
+        0o755,
+        "the symlink's target is not touched"
+    );
+}
+
+#[test]
 fn startup_sweeps_only_owned_paths_with_a_proven_dead_process() {
     use std::io::Write as _;
     use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};

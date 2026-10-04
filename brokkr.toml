@@ -452,17 +452,6 @@ pattern = '\b(?:AGENTS|CLAUDE)\.md\b'
 paths = ["crates/**", "src/**", "build.rs", "Cargo.toml", "clippy.toml"]
 message = "code does not cite the agent instruction files; state the reason in place"
 
-# shepr has never been run, so no older build, install or on-disk shape exists.
-# Deliberately not matched: "old server" (an in-place upgrade on a remote host
-# leaves the previous server running) and "legacy format" (kitty's name for the
-# legacy key encoding).
-[[textlint]]
-name = "no-predeployment-older-peer-compatibility"
-pattern = '(?i)\b(?:older|old|previous|earlier|legacy|pre-fork)\s+(?:builds?|binar(?:y|ies)|installs?|installations?|peers?|schemas?|shepr|herdr)\b|\bduring the migration\b|\blegacy (?:preferences|fields?|files?|sessions?)\b'
-paths = ["crates/**/*.rs", "src/**/*.rs"]
-region = "comment"
-message = "shepr has never been run: no older build, install or on-disk shape exists to stay compatible with; describe the current invariant or remove the code"
-
 # A work-item label is a citation of the notes folder in disguise, and an issue
 # number names herdr's tracker, which a hard fork does not have.
 [[textlint]]

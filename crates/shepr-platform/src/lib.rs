@@ -35,7 +35,10 @@ pub use child_io::{
 pub use client_stream::{ClientStreamReader, wait_client_stream_readable, write_client_stream};
 pub use clipboard::{ClipboardRoute, ClipboardSession, read_clipboard_text};
 pub use config_file::config_file_link_count;
-pub use daemon::{SpawnedDaemon, create_private_directory_all, open_boot_log, read_boot_log_tail};
+pub use daemon::{
+    SpawnedDaemon, create_private_directory_all, create_private_runtime_directory, open_boot_log,
+    read_boot_log_tail,
+};
 pub use data_directory_lease::{DataDirectoryLease, DataDirectoryLeaseHeld, LeaseAcquireError};
 pub use executable::{
     ExecutableStatus, classify_executable, has_execute_access, is_pane_shell_process_name,

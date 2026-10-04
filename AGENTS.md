@@ -10,9 +10,7 @@ There is no compatibility with upstream herdr installs. The fork is stripped
 hard: the goal is the smallest code surface that does what the owner uses,
 not parity with upstream.
 
-shepr has never been run: no config, session or other on-disk state
-exists anywhere, so there is nothing to stay compatible with. Remove legacy
-fields and migration code freely.
+Remove legacy fields and migration code freely.
 
 ## Scope
 
