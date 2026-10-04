@@ -522,7 +522,7 @@ ssh = "ssh://gpu.example"
     /// hostname, which a machine label may not repeat in any case. "Local" is
     /// an ordinary name.
     #[test]
-    fn the_local_server_is_named_by_its_label_or_the_hostname() {
+    fn the_local_server_is_named_by_its_label_or_the_hostname_and_skips_its_own_entry() {
         let _env = shepr_test_support::IsolatedEnv::new();
         let labelled = client_from_str("[local]\nlabel = \"desk\"\n").expect("a local label loads");
         assert_eq!(labelled.local_label().as_str(), "desk");
@@ -531,16 +531,33 @@ ssh = "ssh://gpu.example"
         let unset = client_from_str("").expect("the hostname names the local server");
         assert_eq!(unset.local_label().as_str(), hostname.short());
 
-        let errors = client_from_str(&format!(
-            "[[machines]]\nlabel = \"{}\"\nssh = \"h\"\n",
+        // One file listing every host: this host's own entry is skipped and
+        // lends the local server its palette.
+        let shared = client_from_str(&format!(
+            "[[machines]]\nlabel = \"{}\"\nssh = \"h\"\npalette = \"green\"\n\
+             [[machines]]\nlabel = \"other\"\nssh = \"o\"\n",
             hostname.short().to_ascii_uppercase()
         ))
-        .expect_err("a machine named like this host must not launch");
-        assert!(
-            errors
-                .iter()
-                .any(|error| error.to_string().contains("this host's name")),
-            "{errors:?}"
+        .expect("this host's own entry is skipped");
+        let labels: Vec<_> = shared
+            .machines()
+            .iter()
+            .map(|machine| machine.label.as_str())
+            .collect();
+        assert_eq!(labels, ["other"]);
+        assert_eq!(
+            shared.local().palette,
+            Some(shepr_term::host_tint::HostHue::Green)
+        );
+        let own_palette_wins = client_from_str(
+            "[local]\nlabel = \"desk\"\npalette = \"blue\"\n\
+             [[machines]]\nlabel = \"Desk\"\nssh = \"h\"\npalette = \"green\"\n",
+        )
+        .expect("this host's own entry is skipped");
+        assert!(own_palette_wins.machines().is_empty());
+        assert_eq!(
+            own_palette_wins.local().palette,
+            Some(shepr_term::host_tint::HostHue::Blue)
         );
 
         client_from_str(
@@ -631,10 +648,6 @@ ssh = "gpu"
             (
                 "[[machines]]\nlabel = \"  \"\nssh = \"h\"\n",
                 "machine label must not be blank",
-            ),
-            (
-                "[local]\nlabel = \"Desk\"\n[[machines]]\nlabel = \"desk\"\nssh = \"h\"\n",
-                "duplicates the local server's label (related: local.label)",
             ),
             (
                 "[local]\nlabel = \" desk\"\n",

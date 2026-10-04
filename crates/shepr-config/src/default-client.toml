@@ -193,10 +193,12 @@
 
 # Machines whose shepr servers this client shows next to the local one. Each
 # entry needs a unique label (how shepr names the machine: nonblank, no control
-# characters, no leading or trailing whitespace, and not the local server's
-# label in any case) and an ssh target (a host alias, user@host or ssh:// URL,
-# never with a password).
+# characters, no leading or trailing whitespace) and an ssh target (a host
+# alias, user@host or ssh:// URL, never with a password).
 # Read once at launch; a duplicate label or a malformed target fails the launch.
+# An entry whose label is the local server's label (in any case) is this host's
+# own entry and is skipped, so one client.toml listing every host can be copied
+# to all of them; its palette colours the local server unless [local] sets one.
 # Shepr runs ssh for a machine through a generated config that includes your
 # ~/.ssh/config first and adds ServerAliveInterval/ServerAliveCountMax as
 # fallbacks (values you set yourself win), and reuses the first authenticated

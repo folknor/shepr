@@ -104,8 +104,10 @@ Machines are configured in `client.toml` as `[[machines]]` entries (a `label`, a
 `ssh` target and an optional `palette`), read once at launch like the rest of the config; there are no
 commands to add, remove or list them. The client names the local server by
 the `[local]` table's `label`, or this host's short hostname when it is unset,
-never as "Local"; a machine label equal to it in any ASCII case fails the
-launch as a duplicate, and no name is reserved. The TUI connects to them without
+never as "Local", and no name is reserved. A machine entry whose label equals
+it in any ASCII case is this host's own entry: it is skipped, and its
+`palette` colours the local server unless `[local]` sets one, so one
+`client.toml` listing every host can be shared by all of them. The TUI connects to them without
 prompting (BatchMode), so at startup, before it takes the terminal, `shepr`
 checks every machine and runs interactive ssh for each one that needs
 authentication, one at a time, on shepr's own control socket, then checks those

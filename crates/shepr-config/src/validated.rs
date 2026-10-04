@@ -425,15 +425,20 @@ fn resolve_local_label(
     })
 }
 
-/// One diagnostic per machine whose label an earlier entry, or the local
-/// server, already uses. Labels are what the client names servers by, so they
-/// must be unique: a machine's apart from ASCII case from the local server's,
-/// so a sidebar rule matched with `ignore_case` never confuses the two. Blank
+/// Whether `machine` is this host's own entry: its label names the local server
+/// apart from ASCII case. One `client.toml` can then list every host and be
+/// shared by all of them; each host skips its own entry.
+fn is_local_entry(machine: &super::MachineConfig, local_label: &super::MachineLabel) -> bool {
+    local_label.same_name(&machine.label)
+}
+
+/// One diagnostic per machine whose label an earlier entry already uses.
+/// Labels are what the client names servers by, so they must be unique. This
+/// host's own entry (`is_local_entry`) is not a duplicate: it is skipped. Blank
 /// labels and malformed SSH targets cannot reach here, as the types refuse
 /// them.
 fn machine_label_diagnostics(
     machines: &[super::MachineConfig],
-    local: &super::LocalConfig,
     local_label: Option<&super::MachineLabel>,
 ) -> Vec<super::ConfigDiagnostic> {
     let label_path = |index: usize| {
@@ -445,20 +450,7 @@ fn machine_label_diagnostics(
     let mut seen = std::collections::HashMap::new();
     let mut diagnostics = Vec::new();
     for (index, machine) in machines.iter().enumerate() {
-        if local_label.is_some_and(|local_label| local_label.same_name(&machine.label)) {
-            let (related, whose) = if local.label.is_some() {
-                (
-                    vec![super::ConfigKeyPath::root().key("local").key("label")],
-                    "the local server's label",
-                )
-            } else {
-                (Vec::new(), "the local server's label (this host's name)")
-            };
-            diagnostics.push(super::ConfigDiagnostic::validation_related(
-                label_path(index),
-                related,
-                format!("label {:?} duplicates {whose}", machine.label.as_str()),
-            ));
+        if local_label.is_some_and(|local_label| is_local_entry(machine, local_label)) {
             continue;
         }
         let first = *seen.entry(&machine.label).or_insert(index);
@@ -554,7 +546,6 @@ pub(crate) fn validate_client(
     }
     diagnostics.extend(machine_label_diagnostics(
         &config.machines,
-        &config.local,
         local_label.as_ref().ok(),
     ));
     if !diagnostics.is_empty() {
@@ -576,20 +567,33 @@ pub(crate) fn validate_client(
             Some(sidebar_width),
             Some(mouse_scroll_lines),
             Ok(local_label),
-        ) => Ok(ValidatedClientConfig {
-            paths,
-            palette,
-            live_keybinds,
-            ui: ValidatedClientUiConfig::from_config(
-                &config.ui,
-                sidebar_bounds,
-                sidebar_width,
-                mouse_scroll_lines,
-            ),
-            local: config.local.clone(),
-            local_label,
-            machines: config.machines.clone(),
-        }),
+        ) => {
+            // This host's own entry is dropped; its palette colours the local
+            // server unless the local table sets one.
+            let (own, machines): (Vec<_>, Vec<_>) = config
+                .machines
+                .iter()
+                .cloned()
+                .partition(|machine| is_local_entry(machine, &local_label));
+            let mut local = config.local.clone();
+            if local.palette.is_none() {
+                local.palette = own.iter().find_map(|machine| machine.palette);
+            }
+            Ok(ValidatedClientConfig {
+                paths,
+                palette,
+                live_keybinds,
+                ui: ValidatedClientUiConfig::from_config(
+                    &config.ui,
+                    sidebar_bounds,
+                    sidebar_width,
+                    mouse_scroll_lines,
+                ),
+                local,
+                local_label,
+                machines,
+            })
+        }
         _ => Err(vec![super::ConfigDiagnostic::internal(
             "configuration resolution could not produce validated client values",
         )]),
@@ -608,7 +612,7 @@ pub struct ValidatedClientConfig {
     local: super::LocalConfig,
     /// The name the client shows for the local server, resolved at launch.
     local_label: super::MachineLabel,
-    /// In config order, with unique labels, none the local server's.
+    /// In config order, with unique labels, this host's own entry dropped.
     machines: Vec<super::MachineConfig>,
 }
 
