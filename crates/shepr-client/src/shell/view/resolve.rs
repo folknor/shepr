@@ -19,7 +19,7 @@ use crate::shell::view::{
 };
 
 /// What sidebar layout and drawing read, borrowed from the shell. `selected` is the workspace
-/// the sidebar highlights as selected, which resolution decides.
+/// or agent the sidebar highlights as selected, which resolution decides.
 pub(super) fn sidebar_inputs<'a>(
     state: &'a ClientShellState,
     selected: Option<&'a PinnedLocation>,
@@ -47,6 +47,7 @@ pub(super) fn sidebar_inputs<'a>(
         section_split: state.chrome.split(),
         dragged_workspace,
         drop_indicator_row,
+        host_pills: state.host_pills.as_ref(),
     }
 }
 

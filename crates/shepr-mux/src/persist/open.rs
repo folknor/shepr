@@ -366,7 +366,7 @@ mod tests {
         let first = layout.panes()[0].public_number;
         WorkspaceSnapshot {
             id: id.parse().expect("workspace id"),
-            custom_name: Some(name.into()),
+            name: name.into(),
             layout,
             next_public_pane_number: number(next),
             zoomed: false,
@@ -384,11 +384,11 @@ mod tests {
         }
     }
 
-    fn names(opened: &OpenedSession) -> Vec<Option<String>> {
+    fn names(opened: &OpenedSession) -> Vec<&str> {
         opened
             .workspaces
             .iter()
-            .map(|workspace| workspace.custom_name().map(str::to_owned))
+            .map(crate::workspace::Workspace::name)
             .collect()
     }
 
@@ -438,10 +438,7 @@ mod tests {
             Some(1),
         ));
         let (mut opened, summary) = open(lease, SessionOpenPolicy::Persist);
-        assert_eq!(
-            names(&opened),
-            vec![Some("first".to_owned()), Some("second".to_owned())]
-        );
+        assert_eq!(names(&opened), vec!["first", "second"]);
         assert_eq!(
             opened.workspaces.bookmark(),
             Some("w2".parse().expect("workspace id"))
@@ -541,7 +538,7 @@ mod tests {
         let (mut opened, summary) = open(lease, SessionOpenPolicy::Persist);
         assert_eq!(
             names(&opened),
-            vec![Some("healthy".to_owned())],
+            vec!["healthy"],
             "the saved session loaded and only the invalid workspace was dropped"
         );
         // Every client of this boot is told, naming where the original goes.
@@ -574,9 +571,9 @@ mod tests {
             saved
                 .workspaces
                 .iter()
-                .map(|workspace| workspace.custom_name.clone())
+                .map(|workspace| workspace.name.as_str())
                 .collect::<Vec<_>>(),
-            vec![Some("healthy".to_owned())]
+            vec!["healthy"]
         );
 
         save(&mut opened).expect("second save");
@@ -701,7 +698,7 @@ mod tests {
             Some(0),
         ));
         let (opened, summary) = open(lease, SessionOpenPolicy::Persist);
-        assert_eq!(names(&opened), vec![Some("kept".to_owned())]);
+        assert_eq!(names(&opened), vec!["kept"]);
         assert!(opened.terminal_runtimes.is_empty());
         assert_eq!(opened.restore_notice, None, "a launch failure is no loss");
         assert_eq!(

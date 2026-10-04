@@ -1,8 +1,17 @@
+use crate::shell::navigation::aggregate_navigation::AgentPanelRow;
 use crate::shell::presentation::status::status_glyph;
 use crate::shell::presentation::text::put_text;
+use crate::shell::sidebar::agent_sidebar::AgentEntryState;
 use crate::shell::sidebar::layout::{AgentPanelView, AgentSlot, SidebarInputs};
 use ratatui::buffer::Buffer;
 use ratatui::style::{Modifier, Style};
+
+/// Whether the sidebar's selection (the navigate-mode selection) is on `row`.
+fn selected(inputs: &SidebarInputs<'_>, row: &AgentPanelRow) -> bool {
+    inputs
+        .selected
+        .is_some_and(|target| target.matches_pane(&row.endpoint_id, &row.agent.pane_id))
+}
 
 /// Draws the collapsed sidebar's agent column, one glyph row per slot.
 pub(in crate::shell) fn draw_collapsed(
@@ -17,8 +26,21 @@ pub(in crate::shell) fn draw_collapsed(
         };
         let rect = slot.hit.rect;
         let focused = row.agent.focused && &row.endpoint_id == inputs.presented;
-        if focused {
-            buffer.set_style(rect, Style::default().bg(config.palette.active_row_bg));
+        if selected(inputs, row) {
+            buffer.set_style(
+                rect,
+                Style::default().bg(crate::shell::sidebar::workspace_selection_background(
+                    &config.palette,
+                )),
+            );
+        } else if focused {
+            buffer.set_style(
+                rect,
+                Style::default().bg(crate::shell::sidebar::workspace_active_background(
+                    &config.palette,
+                    inputs.selected.is_some(),
+                )),
+            );
         }
         let glyph = status_glyph(
             row.agent.status,
@@ -83,8 +105,25 @@ pub(super) fn draw_agent_panel(
         };
         let rect = slot.hit.rect;
         let focused = row.agent.focused && &row.endpoint_id == inputs.presented;
+        // An unreachable machine's entries lose its colours, like the rest of
+        // their highlight.
+        let look = crate::shell::sidebar::host_colors::PillLook::for_endpoint(
+            &config.host_hues,
+            inputs.host_pills,
+            &row.endpoint_id,
+        )
+        .filter(|_| !row.stale);
         crate::shell::sidebar::agent_sidebar::render_agent_row(
-            buffer, rect, &row.agent, focused, config,
+            buffer,
+            rect,
+            &row.agent,
+            AgentEntryState {
+                focused,
+                selected: selected(inputs, row),
+                navigating: inputs.selected.is_some(),
+                look,
+            },
+            config,
         );
         if row.stale {
             buffer.set_style(

@@ -34,3 +34,5 @@ Three standings:
 | `compare_tests.py` | diagnostic | test functions under the given paths in HEAD against the working tree: tests gone or new by name, and tests whose count of assertion-like calls or whose body changed, to check that moved tests kept their strength |
 | `narrow_visibility.py` | diagnostic | narrows `pub(crate)` and `pub(in crate::shell)` items of shepr-client one at a time, keeping each change only if `brokkr clippy -p shepr-client` stays clean; `--force` tries every declaration, not just those whose name no other module mentions (slow: one lint run per try) |
 | `fix_unwraps.py` | tool | one-off: replaced `.unwrap()` in test code for clippy's `unwrap_used` |
+| `replace_literal.py` | tool | replaces every occurrence of a literal string in the named files, for mechanical renames without `sed` |
+| `drop_rust_items.py` | tool | removes named top-level `fn` items, with their attributes and doc comments, from a Rust file, for deleting whole tests and helpers |

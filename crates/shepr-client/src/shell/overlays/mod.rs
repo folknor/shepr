@@ -24,12 +24,11 @@ pub(in crate::shell) mod text_editor;
 mod widgets;
 
 use crate::endpoint::ClientEndpointId;
-use crate::shell::ledger::{Submitted, Ticket, Work};
 use crate::shell::navigation::aggregate_navigation::NavigatorIndex;
 use crate::shell::navigation::location::{Location, LocationTarget};
 use crate::shell::presentation::status::panel_contrast_fg;
 use crate::shell::presentation::text::put_text;
-use crate::shell::state::{ClientShellInput, ClientShellMode, ClientShellState, Repaint};
+use crate::shell::state::{ClientShellInput, ClientShellMode, ClientShellState};
 use crate::shell::view::list::ListView;
 use crate::shell::view::resolve::overlay_context;
 use confirm_close::ConfirmCloseOverlay;
@@ -48,27 +47,6 @@ pub(in crate::shell) enum Overlay {
     Navigator(NavigatorOverlay),
     ContextMenu(ContextMenuOverlay),
     GlobalMenu(GlobalMenuOverlay),
-}
-
-fn apply_label_lookup(
-    overlay: &mut Option<Overlay>,
-    lookup: Ticket,
-    result: Option<shepr_protocol::command::WorkspaceCheckoutRootReply>,
-) -> Repaint {
-    match overlay.as_mut() {
-        Some(Overlay::Rename(rename)) => rename.apply_checkout_root(lookup, result),
-        _ => Repaint::Unchanged,
-    }
-}
-
-/// The rollback of a dropped checkout-root lookup: a prompt still holding `lookup` stops
-/// waiting for it and keeps its path-based suggestion. A prompt that is gone or was
-/// reopened since is untouched. Never needs a repaint.
-pub(in crate::shell) fn drop_label_lookup(
-    overlay: &mut Option<Overlay>,
-    lookup: Ticket,
-) -> Repaint {
-    apply_label_lookup(overlay, lookup, None)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -545,6 +523,9 @@ impl ClientShellState {
         self.overlay = Some(Overlay::Navigator(navigator));
     }
 
+    /// The workspace a workspace action applies to: the Navigate selection's (an
+    /// agent's own workspace when the selection is on an agent) while it is valid on
+    /// the presented endpoint, else the focused one.
     pub(in crate::shell) fn workspace_action_id(&self) -> Option<shepr_protocol::WorkspaceId> {
         self.mode
             .preview()
@@ -552,7 +533,14 @@ impl ClientShellState {
                 target.location.endpoint == *self.endpoints.presented()
                     && self.navigation_target_valid(target)
             })
-            .and_then(|target| target.location.workspace_id())
+            .and_then(|target| {
+                target.location.workspace_id().or_else(|| {
+                    target
+                        .location
+                        .pane_id()
+                        .map(|pane_id| *pane_id.workspace_id())
+                })
+            })
             .or_else(|| {
                 self.endpoints
                     .active
@@ -561,10 +549,10 @@ impl ClientShellState {
             })
     }
 
-    /// Opens the new-workspace name prompt with the path-based label and asks
-    /// the active endpoint's server, local or remote, for the cwd's checkout
-    /// root; the answer replaces the suggestion unless the user has edited it.
-    pub(in crate::shell) fn open_new_workspace_overlay(&mut self, outcome: &mut ClientShellInput) {
+    /// Opens the new-workspace name prompt, prefilled with the name of the
+    /// directory the workspace will start in. With no directory known it starts
+    /// empty, and the server names the workspace after the one it picks.
+    pub(in crate::shell) fn open_new_workspace_overlay(&mut self) {
         let source_workspace_id = self.workspace_action_id();
         let cwd = self.endpoints.active.snapshot().and_then(|snapshot| {
             let workspace_id = source_workspace_id.as_ref()?;
@@ -574,44 +562,13 @@ impl ClientShellState {
                 .find(|workspace| workspace.workspace_id == *workspace_id)
                 .and_then(|workspace| workspace.new_workspace_cwd.clone())
         });
-        let suggested_name = match cwd.as_ref() {
-            Some(cwd) => {
-                shepr_core::workspace_label::workspace_label_from_cwd(cwd.as_path(), None, None)
-            }
-            None => "workspace".to_owned(),
-        };
-        let mut label_lookup = None;
-        if let Some(cwd) = cwd.as_ref()
-            && self.endpoint_usable(self.endpoints.presented())
-        {
-            let lookup = self.ledger.ticket();
-            if self.submit(
-                shepr_protocol::command::EndpointCommand::WorkspaceCheckoutRoot(
-                    shepr_protocol::command::WorkspaceCheckoutRootParams { cwd: cwd.clone() },
-                ),
-                Work::WorkspaceLabel { lookup },
-                outcome,
-            ) == Submitted::Opened
-            {
-                label_lookup = Some(lookup);
-            }
-        }
+        let suggested_name = cwd.as_ref().map_or_else(String::new, |cwd| {
+            shepr_core::workspace_label::default_workspace_name(cwd.as_path())
+        });
         self.overlay = Some(Overlay::Rename(RenameOverlay::new_workspace(
             cwd,
-            suggested_name,
-            label_lookup,
+            &suggested_name,
         )));
-    }
-
-    /// Applies the answer to a `workspace.checkout_root` request. An answer for
-    /// an overlay that is gone or was reopened since is ignored, and a failed
-    /// lookup keeps the path-based suggestion. Returns a repaint decision.
-    pub(in crate::shell) fn complete_workspace_label_lookup(
-        &mut self,
-        lookup: Ticket,
-        result: Option<shepr_protocol::command::WorkspaceCheckoutRootReply>,
-    ) -> Repaint {
-        apply_label_lookup(&mut self.overlay, lookup, result)
     }
 
     pub(in crate::shell) fn open_rename_workspace_overlay(&mut self) {

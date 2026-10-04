@@ -259,10 +259,10 @@ mod tests {
                 "navigation",
                 vec![
                     ("esc", "back"),
-                    ("up / down", "workspace list"),
+                    ("up / down", "workspaces and agents"),
                     ("h / j / k / l / left / right", "move focus"),
                     ("tab / shift+tab", "cycle pane"),
-                    ("enter", "open workspace"),
+                    ("enter", "open selection"),
                     ("1..9", "switch workspace"),
                 ],
             ),

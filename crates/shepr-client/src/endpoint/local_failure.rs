@@ -44,6 +44,7 @@ mod tests {
         let machine = shepr_config::MachineConfig {
             label: shepr_config::MachineLabel::parse("Build").expect("test precondition"),
             ssh: shepr_config::SshTarget::parse("build").expect("test precondition"),
+            palette: None,
         };
         let policy = LocalFailurePolicy::for_machines(std::slice::from_ref(&machine));
         assert!(!policy.ends_client_for(EndpointPolicy::Local));

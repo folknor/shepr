@@ -279,7 +279,7 @@ fn capture_workspace(
     };
     Some(WorkspaceSnapshot {
         id: ws.id(),
-        custom_name: ws.custom_name().map(str::to_owned),
+        name: ws.name().to_owned(),
         next_public_pane_number: tree.next_number(),
         layout: LayoutSnapshot::from_shape(shape),
         zoomed: tree.zoomed(),

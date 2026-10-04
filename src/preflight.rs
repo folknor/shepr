@@ -216,6 +216,7 @@ mod tests {
             label: MachineLabel::parse(label).expect("test precondition"),
             ssh: shepr_config::SshTarget::parse(format!("{label}.example"))
                 .expect("test precondition"),
+            palette: None,
         }
     }
 

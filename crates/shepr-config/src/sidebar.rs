@@ -474,9 +474,10 @@ pub struct SpacesSidebarConfig {
 impl Default for SpacesSidebarConfig {
     fn default() -> Self {
         Self {
+            // The second line is left blank until there is something worth showing there.
             rows: vec![
                 vec![SpaceSidebarToken::StateIcon, SpaceSidebarToken::Workspace],
-                vec![SpaceSidebarToken::Branch, SpaceSidebarToken::GitStatus],
+                Vec::new(),
             ],
             row_gap: DEFAULT_SIDEBAR_ROW_GAP,
         }
@@ -518,7 +519,7 @@ mod tests {
             config.spaces.rows,
             vec![
                 vec![SpaceSidebarToken::StateIcon, SpaceSidebarToken::Workspace],
-                vec![SpaceSidebarToken::Branch, SpaceSidebarToken::GitStatus],
+                Vec::new(),
             ]
         );
         assert_eq!(config.spaces.row_gap, 0);

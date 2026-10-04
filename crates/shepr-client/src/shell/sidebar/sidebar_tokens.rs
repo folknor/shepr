@@ -122,7 +122,32 @@ pub(in crate::shell::sidebar) struct TokenStyles {
     pub(in crate::shell::sidebar) state_text: Style,
     pub(in crate::shell::sidebar) primary: Style,
     pub(in crate::shell::sidebar) secondary: Style,
+    /// The machine token, which a machine's sidebar colours draw in its accent.
+    pub(in crate::shell::sidebar) machine: Style,
     pub(in crate::shell::sidebar) terminal_title: Style,
+    /// The text between two tokens.
+    pub(in crate::shell::sidebar) separator: Style,
+}
+
+impl TokenStyles {
+    /// Styles whose machine token and separator take the theme's defaults: the
+    /// secondary style, and the theme's separator colour.
+    pub(in crate::shell::sidebar) fn themed(
+        state_text: Style,
+        primary: Style,
+        secondary: Style,
+        terminal_title: Style,
+        palette: &Palette,
+    ) -> Self {
+        Self {
+            state_text,
+            primary,
+            secondary,
+            machine: secondary,
+            terminal_title,
+            separator: Style::default().fg(palette.overlay0),
+        }
+    }
 }
 
 pub(in crate::shell::sidebar) fn resolved_token_spans(
@@ -246,7 +271,7 @@ pub(in crate::shell::sidebar) fn resolved_token_spans(
             let previous = &resolved[visible_indices[position - 1]];
             spans.push(Span::styled(
                 super::token_definitions::separator(previous, token),
-                Style::default().fg(palette.overlay0),
+                styles.separator,
             ));
         }
         match &token.kind {
@@ -262,8 +287,11 @@ pub(in crate::shell::sidebar) fn resolved_token_spans(
                 truncate_end(text, budgets[index]),
                 apply_token_style(styles.primary, token.style),
             )),
-            ResolvedTokenKind::Machine(text)
-            | ResolvedTokenKind::Pane(text)
+            ResolvedTokenKind::Machine(text) => spans.push(Span::styled(
+                truncate_end(text, budgets[index]),
+                apply_token_style(styles.machine, token.style),
+            )),
+            ResolvedTokenKind::Pane(text)
             | ResolvedTokenKind::Agent(text)
             | ResolvedTokenKind::Branch(text) => spans.push(Span::styled(
                 truncate_end(text, budgets[index]),
@@ -359,12 +387,13 @@ mod split_tests {
                 text: "●",
                 style: ratatui::style::Style::default(),
             },
-            super::TokenStyles {
-                state_text: ratatui::style::Style::default(),
-                primary: ratatui::style::Style::default(),
-                secondary: ratatui::style::Style::default(),
-                terminal_title: ratatui::style::Style::default(),
-            },
+            super::TokenStyles::themed(
+                ratatui::style::Style::default(),
+                ratatui::style::Style::default(),
+                ratatui::style::Style::default(),
+                ratatui::style::Style::default(),
+                &palette,
+            ),
             &palette,
             3,
         );

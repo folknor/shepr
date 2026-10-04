@@ -240,7 +240,6 @@ mod tests {
         let status = GitStatus {
             cwd: cwd.to_path_buf(),
             key: GitStatusKey::Checkout(key),
-            label: "test".into(),
             branch: GitBranch::OutsideRepository,
             ahead_behind: None,
         };
@@ -435,7 +434,7 @@ mod tests {
         app.handle_internal_event(event);
 
         assert!(!app.git_refresh.is_in_flight());
-        assert_eq!(app.state.ws(0).display_name(), "labelled");
+        assert_eq!(app.state.ws(0).name(), "labelled");
         assert_eq!(
             app.state.ws(0).branch_state(),
             Some(&GitBranch::OutsideRepository)
@@ -557,7 +556,7 @@ mod tests {
 
         // The first refresh blocks in a step on the stuck workspace's cwd, as
         // a filesystem call on a hung mount would, until released. Each
-        // outcome is labelled with the call that produced it.
+        // outcome's branch names the call that produced it.
         let (entered, entered_rx) = std::sync::mpsc::channel();
         let released = Arc::new(AtomicBool::new(false));
         let double_released = Arc::clone(&released);
@@ -590,8 +589,7 @@ mod tests {
                             status: GitStatus {
                                 key: GitStatusKey::Outside(target.cwd.clone()),
                                 cwd: target.cwd,
-                                label: format!("call-{call}"),
-                                branch: GitBranch::OutsideRepository,
+                                branch: GitBranch::Named(format!("call-{call}")),
                                 ahead_behind: None,
                             },
                         })
@@ -633,7 +631,10 @@ mod tests {
         assert!(app.git_refresh.is_in_flight());
         let outcome = refreshed(app.blocking_next_event());
         assert_eq!(owners(&outcome), [live_id]);
-        assert_eq!(outcome.statuses[0].status.label, "call-1");
+        assert_eq!(
+            outcome.statuses[0].status.branch,
+            GitBranch::Named("call-1".into())
+        );
         app.handle_internal_event(AppEvent::GitStatusRefreshed { outcome });
         assert!(!app.git_refresh.is_in_flight());
 
@@ -651,7 +652,7 @@ mod tests {
                 outcome
                     .statuses
                     .iter()
-                    .all(|status| status.status.label != "call-0"),
+                    .all(|status| status.status.branch != GitBranch::Named("call-0".into())),
                 "an abandoned refresh was published"
             );
             let refreshed_owners = owners(&outcome);
@@ -748,7 +749,6 @@ mod tests {
                             status: shepr_git::GitStatus {
                                 cwd: resolved_identity_cwd.clone(),
                                 key: shepr_git::GitStatusKey::Checkout(resolved_identity_cwd),
-                                label: "one".into(),
                                 branch: shepr_git::GitBranch::Named("render-dirty-test".into()),
                                 ahead_behind: Some(shepr_git::AheadBehind {
                                     ahead: 1,

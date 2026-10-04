@@ -1,18 +1,16 @@
 use crate::shell::config::ClientShellConfig;
-use crate::shell::ledger::Ticket;
 use crate::shell::overlays::Overlay;
 use crate::shell::overlays::rename::RenameTarget;
-use crate::shell::state::{ClientShellAction, ClientShellEndpointError};
+use crate::shell::state::ClientShellAction;
 use shepr_protocol::command::EndpointCommand;
 use shepr_term::key::TerminalKey;
 use shepr_termio::input::raw_input::RawInputEvent;
 
-use crate::shell::state::{ClientShellInput, ClientShellState};
+use crate::shell::state::ClientShellState;
 
 use crossterm::event::{KeyCode, KeyModifiers};
 use shepr_config::ClientConfig;
 use shepr_protocol::ClientShellPane;
-use shepr_protocol::command::EndpointReply;
 
 use crate::shell::tests::{
     fill_prompt, help_overlay, press, prompt_shell as shell, prompt_text as editor, rename_target,
@@ -33,104 +31,25 @@ fn all_six_fields_route_shared_text_editing() {
     }
 }
 
-/// Opens the new-workspace prompt and returns the checkout-root request it
-/// sent, with its request id and the overlay's matching id.
-fn open_new_workspace(state: &mut ClientShellState) -> (shepr_protocol::RequestId, Ticket, String) {
-    let mut outcome = ClientShellInput::default();
-    state.open_new_workspace_overlay(&mut outcome);
+#[test]
+fn the_new_workspace_prompt_suggests_the_directory_and_sends_a_blank_name_as_none() {
+    let mut state = shell(0);
+    state.open_new_workspace_overlay();
+    assert_eq!(editor(&state).as_str(), "repo");
+    assert!(matches!(
+        rename_target(&state),
+        Some(RenameTarget::NewWorkspace { cwd: Some(_) })
+    ));
+
+    press(&mut state, KeyCode::Char('c'), KeyModifiers::CONTROL);
+    let outcome = state.handle_input_bytes(b"\r");
     let [ClientShellAction::Endpoint { request, .. }] = outcome.actions.as_slice() else {
         panic!("expected one endpoint request, got {:?}", outcome.actions);
     };
-    let EndpointCommand::WorkspaceCheckoutRoot(params) = &request.command else {
-        panic!(
-            "expected a checkout root request, got {:?}",
-            request.command
-        );
+    let EndpointCommand::WorkspaceCreate(params) = &request.command else {
+        panic!("expected a workspace create, got {:?}", request.command);
     };
-    let Some(RenameTarget::NewWorkspace {
-        label_lookup: Some(lookup),
-        ..
-    }) = rename_target(state)
-    else {
-        panic!("the overlay awaits a label lookup");
-    };
-    (
-        request.id.clone(),
-        *lookup,
-        params.cwd.display_text().into_owned(),
-    )
-}
-
-fn checkout_root_answer(root: Option<&str>) -> EndpointReply {
-    EndpointReply::WorkspaceCheckoutRoot {
-        root: root.map(Into::into),
-        home: None,
-    }
-}
-
-#[test]
-fn new_workspace_label_comes_from_the_endpoint_and_stale_answers_are_ignored() {
-    let mut state = shell(0);
-    let boot_id = state
-        .endpoints
-        .active
-        .snapshot()
-        .expect("snapshot")
-        .boot_id
-        .clone();
-    let (stale_request, stale_id, cwd) = open_new_workspace(&mut state);
-    assert_eq!(cwd, "/repo");
-
-    let (current_request, current_id, _) = open_new_workspace(&mut state);
-    assert_ne!(stale_id, current_id);
-    state.answer_request(
-        &boot_id,
-        &stale_request,
-        Ok(checkout_root_answer(Some("/elsewhere/stale-label"))),
-        state.now,
-    );
-    assert_eq!(editor(&state).as_str(), "repo");
-
-    let outcome = state.answer_request(
-        &boot_id,
-        &current_request,
-        Ok(checkout_root_answer(Some("/srv/checkout-label"))),
-        state.now,
-    );
-    assert!(outcome.repaint);
-    assert_eq!(editor(&state).as_str(), "checkout-label");
-}
-
-#[test]
-fn new_workspace_label_answer_keeps_a_user_edit_and_a_failure_keeps_the_suggestion() {
-    let mut state = shell(0);
-    let boot_id = state
-        .endpoints
-        .active
-        .snapshot()
-        .expect("snapshot")
-        .boot_id
-        .clone();
-    let (request, _, _) = open_new_workspace(&mut state);
-    fill_prompt(&mut state, "mine");
-    state.answer_request(
-        &boot_id,
-        &request,
-        Ok(checkout_root_answer(Some("/srv/checkout-label"))),
-        state.now,
-    );
-    assert_eq!(editor(&state).as_str(), "mine");
-
-    let (request, _, _) = open_new_workspace(&mut state);
-    state.answer_request(
-        &boot_id,
-        &request,
-        Err(ClientShellEndpointError::Server(
-            shepr_protocol::command::EndpointError::ResourceFailure("git failed".into()),
-        )),
-        state.now,
-    );
-    assert_eq!(editor(&state).as_str(), "repo");
+    assert_eq!(params.label, None);
 }
 
 #[test]

@@ -79,7 +79,6 @@ impl GitStatusCacheEntry {
                 read_errors,
                 ..
             } => GitStatusSnapshot {
-                repo_root: repo_root.clone(),
                 branch: if repo_root.is_none() && read_errors.is_empty() {
                     GitBranch::OutsideRepository
                 } else {
@@ -92,7 +91,6 @@ impl GitStatusCacheEntry {
                 ahead_behind,
                 ..
             } => GitStatusSnapshot {
-                repo_root: Some(fingerprint.repository_context.info.repo_root.clone()),
                 // Preserve HEAD outcome at admission; presentation chooses
                 // whether to draw anything besides a named branch.
                 branch: head_branch(fingerprint),
@@ -324,7 +322,6 @@ fn git_status_snapshot(
     };
     let Some(repository_context) = repository_context else {
         let snapshot = GitStatusSnapshot {
-            repo_root: None,
             branch: if read_errors.is_empty() {
                 GitBranch::OutsideRepository
             } else {
@@ -344,7 +341,6 @@ fn git_status_snapshot(
     let repo_root = repository_context.info.repo_root.clone();
     let Some(fingerprint) = fingerprint(repository_context, &mut read_errors) else {
         let snapshot = GitStatusSnapshot {
-            repo_root: Some(repo_root.clone()),
             branch: GitBranch::ReadFailed,
             ahead_behind: None,
         };
@@ -367,7 +363,6 @@ fn git_status_snapshot(
     }) = cached.filter(|entry| entry.can_reuse_fingerprint(&fingerprint, now))
     {
         let snapshot = GitStatusSnapshot {
-            repo_root: Some(repo_root.clone()),
             branch: branch.clone(),
             ahead_behind: match ahead_behind {
                 AheadBehindState::Known(ahead_behind) => Some(*ahead_behind),
@@ -398,7 +393,6 @@ fn git_status_snapshot(
         None => AheadBehindState::NotComputed,
     };
     let snapshot = GitStatusSnapshot {
-        repo_root: Some(repo_root.clone()),
         branch: branch.clone(),
         ahead_behind: match ahead_behind {
             AheadBehindState::Known(ahead_behind) => Some(ahead_behind),
@@ -823,10 +817,7 @@ mod tests {
         let (snapshot, update) = git_status_snapshot_for_cwd(&root, None);
 
         assert_eq!(snapshot.branch, GitBranch::Detached);
-        assert!(
-            snapshot.repo_root.is_some(),
-            "a detached HEAD is still a repo"
-        );
+        // A detached HEAD is still a repo: the read is a hit on its HEAD.
         assert!(
             update
                 .and_then(|entry| match entry {
@@ -917,9 +908,19 @@ mod tests {
         let (_, cached) = git_status_snapshot_for_cwd(&root, None);
         std::fs::remove_file(root.join(".git/HEAD")).expect("test precondition");
 
-        let (snapshot, _) = git_status_snapshot_for_cwd(&root, cached.as_ref());
+        let (snapshot, update) = git_status_snapshot_for_cwd(&root, cached.as_ref());
 
-        assert_eq!(snapshot.repo_root, None);
+        assert!(snapshot.branch.as_deref().is_none(), "{snapshot:?}");
+        assert!(
+            matches!(
+                update,
+                Some(GitStatusCacheEntry::Miss {
+                    repo_root: None,
+                    ..
+                })
+            ),
+            "the cached repository identity is dropped: {update:?}"
+        );
     }
 
     #[test]
@@ -1084,25 +1085,6 @@ mod tests {
                 .as_ref()
                 .map(Oid::as_str),
             Some("2222222222222222222222222222222222222222")
-        );
-    }
-
-    #[test]
-    fn linked_worktree_refresh_keeps_checkout_name_as_auto_label() {
-        let _env = shepr_test_support::IsolatedEnv::new();
-        let (_, _, checkout) =
-            crate::test_support::create_repo_with_linked_worktree("linked-refresh-label");
-
-        let (snapshot, _) = git_status_snapshot_for_cwd(&checkout, None);
-        let status = snapshot.into_status(checkout.clone(), GitStatusKey::Outside(PathBuf::new()));
-
-        assert_eq!(
-            status.label,
-            checkout
-                .file_name()
-                .expect("test precondition")
-                .to_str()
-                .expect("test precondition")
         );
     }
 

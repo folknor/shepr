@@ -21,7 +21,7 @@ use std::sync::{
 use bytes::Bytes;
 use ratatui::layout::Rect;
 use tokio::sync::{Notify, mpsc};
-use tracing::{error, warn};
+use tracing::{debug, error, warn};
 
 use super::PaneClearError;
 use super::exit_arbiter::{PaneExitArbiter, RecordedEnding};
@@ -247,11 +247,25 @@ impl PaneRuntime {
         ContentRevision::certify(before, after)
     }
 
+    /// The size the pane's terminal grid and PTY were last given, cell size
+    /// included.
+    pub fn geometry(&self) -> shepr_core::geometry::PaneGeometry {
+        self.current_size
+    }
+
     /// Resize if the dimensions actually changed.
     pub fn resize(&mut self, size: shepr_core::geometry::PaneGeometry) {
         if self.current_size == size {
             return;
         }
+        debug!(
+            pane = %self.pane_id,
+            old_cols = self.current_size.cols(),
+            old_rows = self.current_size.rows(),
+            new_cols = size.cols(),
+            new_rows = size.rows(),
+            "resizing pane terminal and PTY"
+        );
         self.current_size = size;
         self.io.resize(size, &mut || {
             // A PTY read holds the same actor reply-order lock while it

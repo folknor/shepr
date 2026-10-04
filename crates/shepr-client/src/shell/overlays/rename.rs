@@ -12,17 +12,13 @@ use shepr_termio::text_editor::TextEditor;
 use super::widgets::{button, panel, panel_inner, popup, row};
 use super::{DialogView, OverlayCommand, OverlayEffect, OverlayPaint, text_editor};
 use crate::shell::input::hit_test::contains;
-use crate::shell::ledger::Ticket;
 use crate::shell::presentation::status::panel_contrast_fg;
 use crate::shell::presentation::text::put_text;
-use crate::shell::state::Repaint;
 
 #[derive(Clone, Debug)]
 pub(in crate::shell) enum RenameTarget {
     NewWorkspace {
         cwd: Option<shepr_protocol::RemotePath>,
-        suggested_name: String,
-        label_lookup: Option<Ticket>,
     },
     Workspace {
         workspace_id: shepr_protocol::WorkspaceId,
@@ -33,8 +29,8 @@ pub(in crate::shell) enum RenameTarget {
 }
 
 impl RenameTarget {
-    /// The command that applies a name to this target. An empty name clears a custom name, so
-    /// the automatic label returns; a new workspace keeps the suggestion unnamed.
+    /// The command that applies a name to this target. An empty name names a workspace after
+    /// its directory, and clears a pane's custom name.
     pub(super) fn into_command(
         self,
         label: Option<String>,
@@ -45,18 +41,14 @@ impl RenameTarget {
         };
 
         match self {
-            Self::NewWorkspace {
-                cwd,
-                suggested_name,
-                ..
-            } => EndpointCommand::WorkspaceCreate(WorkspaceCreateParams {
+            Self::NewWorkspace { cwd } => EndpointCommand::WorkspaceCreate(WorkspaceCreateParams {
                 // The prompt already resolved the directory the new workspace starts in; with
                 // none known the server picks.
                 source: match cwd {
                     Some(cwd) => WorkspaceCreateSource::Cwd(cwd),
                     None => WorkspaceCreateSource::Default,
                 },
-                label: label.filter(|label| *label != suggested_name),
+                label,
             }),
             Self::Workspace { workspace_id } => {
                 EndpointCommand::WorkspaceRename(WorkspaceRenameParams {
@@ -78,19 +70,14 @@ pub(in crate::shell) struct RenameOverlay {
 }
 
 impl RenameOverlay {
-    /// The new-workspace prompt, seeded with the path-based suggestion.
+    /// The new-workspace prompt, seeded with the directory-based suggestion.
     pub(super) fn new_workspace(
         cwd: Option<shepr_protocol::RemotePath>,
-        suggested_name: String,
-        label_lookup: Option<Ticket>,
+        suggested_name: &str,
     ) -> Self {
         Self {
-            input: TextEditor::new(&suggested_name, true),
-            target: RenameTarget::NewWorkspace {
-                cwd,
-                suggested_name,
-                label_lookup,
-            },
+            input: TextEditor::new(suggested_name, true),
+            target: RenameTarget::NewWorkspace { cwd },
         }
     }
 
@@ -117,47 +104,6 @@ impl RenameOverlay {
             RenameTarget::Workspace { .. } => "rename workspace",
             RenameTarget::Pane { .. } => "rename pane",
         }
-    }
-
-    /// Applies the answer to a `workspace.checkout_root` request. An answer for a lookup that
-    /// is not this prompt's, or for a prompt that was reopened since, is ignored, and a failed
-    /// lookup keeps the path-based suggestion.
-    pub(super) fn apply_checkout_root(
-        &mut self,
-        lookup: Ticket,
-        result: Option<shepr_protocol::command::WorkspaceCheckoutRootReply>,
-    ) -> Repaint {
-        let RenameTarget::NewWorkspace {
-            cwd,
-            suggested_name,
-            label_lookup,
-        } = &mut self.target
-        else {
-            return Repaint::Unchanged;
-        };
-        if *label_lookup != Some(lookup) {
-            return Repaint::Unchanged;
-        }
-        *label_lookup = None;
-        let Some(shepr_protocol::command::WorkspaceCheckoutRootReply { root, home }) = result
-        else {
-            return Repaint::Unchanged;
-        };
-        let Some(cwd) = cwd.as_ref() else {
-            return Repaint::Unchanged;
-        };
-        // Only a cwd outside Git can be labelled `~`.
-        let home = if root.is_none() { home } else { None };
-        let label = shepr_core::workspace_label::workspace_label_from_cwd(
-            cwd.as_path(),
-            root.as_ref().map(shepr_protocol::RemotePath::as_path),
-            home.as_ref().map(shepr_protocol::RemotePath::as_path),
-        );
-        if self.input.as_str() == suggested_name.as_str() {
-            self.input = TextEditor::new(&label, true);
-        }
-        *suggested_name = label;
-        Repaint::Needed
     }
 
     pub(super) fn layout(screen: Rect) -> Option<DialogView> {
@@ -275,8 +221,8 @@ impl RenameOverlay {
     }
 
     fn save(&self) -> OverlayEffect {
-        // An empty name clears the custom name, the same as the context menu's Clear, so the
-        // automatic label returns.
+        // An empty name is sent as none: the server names a workspace after its directory,
+        // and clears a pane's custom name, the same as the context menu's Clear.
         let trimmed = self.input.as_str().trim();
         let label = (!trimmed.is_empty()).then(|| trimmed.to_owned());
         OverlayEffect::Command(OverlayCommand::SaveRename {
@@ -317,7 +263,7 @@ mod tests {
 
     #[test]
     fn title_follows_the_target() {
-        let new = RenameOverlay::new_workspace(None, "workspace".to_owned(), None);
+        let new = RenameOverlay::new_workspace(None, "workspace");
         assert_eq!(new.title(), "new workspace");
         assert_eq!(new.input.as_str(), "workspace");
         let workspace = RenameOverlay::workspace(test_workspace_id("w1"), "client-shell");

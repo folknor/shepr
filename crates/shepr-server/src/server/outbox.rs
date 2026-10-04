@@ -17,7 +17,6 @@ use crate::limits::{
     CLIENT_CONTROL_QUEUE_MAX_BYTES, CLIENT_CONTROL_QUEUE_MAX_ITEMS, MAX_HELD_ENDPOINT_REPLIES,
     MAX_HELD_ENDPOINT_REPLY_BYTES,
 };
-use crate::server::ClientId;
 use shepr_platform::ipc::LocalStream;
 use shepr_protocol::ServerMessage;
 use shepr_term::mouse::HostMouseCapture;
@@ -451,19 +450,6 @@ impl OutboxQueue {
     }
 }
 
-/// A held endpoint reply's place in one client's reply queue.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct ReplySeq(u64);
-
-/// A held endpoint reply's identity, built by the server from the client id
-/// and the `ReplySeq` the client's outbox returned. A completion whose client
-/// has left finds no outbox and is dropped.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct ReplyTicket {
-    pub(crate) client_id: ClientId,
-    pub(crate) seq: ReplySeq,
-}
-
 /// How held replies enter the control lane.
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum ReleaseMode {
@@ -479,35 +465,9 @@ pub(crate) enum ReleaseMode {
 /// bytes, so their size is known while they are held.
 #[derive(Debug, Default)]
 struct ReplyQueue {
-    next_seq: u64,
-    entries: VecDeque<HeldReply>,
-    /// Sum of every held `ready` and `refusal` buffer.
+    entries: VecDeque<Vec<u8>>,
+    /// Sum of every held buffer.
     held_bytes: usize,
-}
-
-#[derive(Debug)]
-struct HeldReply {
-    seq: ReplySeq,
-    state: ReplyState,
-}
-
-#[derive(Debug)]
-enum ReplyState {
-    /// A worker will complete the reply. It holds every later entry of this
-    /// client. `refusal` is the shutdown refusal sent in its place if the
-    /// server stops first; dropped when the reply arrives.
-    Reserved { refusal: Vec<u8> },
-    /// The framed reply, ready to move onto the control lane.
-    Ready(Vec<u8>),
-}
-
-impl ReplyState {
-    fn len(&self) -> usize {
-        match self {
-            Self::Reserved { refusal } => refusal.len(),
-            Self::Ready(bytes) => bytes.len(),
-        }
-    }
 }
 
 impl ClientOutbox {
@@ -527,82 +487,28 @@ impl ClientOutbox {
         }
     }
 
-    /// Appends an entry within the held-reply bounds, or closes the outbox.
-    fn push_reply(&mut self, state: ReplyState) -> Option<ReplySeq> {
-        let total = self.replies.held_bytes.saturating_add(state.len());
-        if !self.admission(self.replies.entries.len().saturating_add(1), total) {
-            return None;
-        }
-        let seq = ReplySeq(self.replies.next_seq);
-        self.replies.next_seq = self.replies.next_seq.wrapping_add(1);
-        self.replies.held_bytes = total;
-        self.replies.entries.push_back(HeldReply { seq, state });
-        Some(seq)
-    }
-
-    /// Holds a ready reply behind any earlier one until the next release.
-    /// Encoding or held-budget failure closes the queue for the loop to reap.
+    /// Holds a reply behind any earlier one until the next release, within
+    /// the held-reply bounds. Encoding or held-budget failure closes the queue
+    /// for the loop to reap.
     pub(crate) fn hold_reply(&mut self, message: &ServerMessage) {
         let Some(bytes) = self.frame(message) else {
             return;
         };
-        let _ = self.push_reply(ReplyState::Ready(bytes));
-    }
-
-    /// Reserves the place of a reply a worker will complete, holding
-    /// `refusal` to send instead if the server stops first. `None` when the
-    /// outbox is closed or the reservation broke a bound (which closed it).
-    pub(crate) fn reserve_reply(&mut self, refusal: &ServerMessage) -> Option<ReplySeq> {
-        let bytes = self.frame(refusal)?;
-        self.push_reply(ReplyState::Reserved { refusal: bytes })
-    }
-
-    /// Fills a reserved entry and drops its refusal. A completion for an
-    /// entry already resolved (at shutdown) is ignored; encoding or held
-    /// budget failure closes the queue for the loop to reap.
-    pub(crate) fn complete_reply(&mut self, seq: ReplySeq, message: &ServerMessage) {
-        let Some(index) = self.replies.entries.iter().position(|entry| {
-            entry.seq == seq && matches!(entry.state, ReplyState::Reserved { .. })
-        }) else {
-            return;
-        };
-        let Some(bytes) = self.frame(message) else {
-            return;
-        };
-        let refusal_bytes = self.replies.entries[index].state.len();
-        let total = self
-            .replies
-            .held_bytes
-            .saturating_sub(refusal_bytes)
-            .saturating_add(bytes.len());
-        if !self.admission(self.replies.entries.len(), total) {
+        let total = self.replies.held_bytes.saturating_add(bytes.len());
+        if !self.admission(self.replies.entries.len().saturating_add(1), total) {
             return;
         }
-        self.replies.entries[index].state = ReplyState::Ready(bytes);
         self.replies.held_bytes = total;
+        self.replies.entries.push_back(bytes);
     }
 
-    /// Answers every reply still waiting on a worker with its shutdown
-    /// refusal; the bytes move from refusal to reply, the total unchanged.
-    pub(crate) fn resolve_replies_for_shutdown(&mut self) {
-        for entry in &mut self.replies.entries {
-            if let ReplyState::Reserved { refusal } = &mut entry.state {
-                entry.state = ReplyState::Ready(std::mem::take(refusal));
-            }
-        }
-    }
-
-    /// Moves the ready prefix of held replies onto the control lane, in
-    /// order, under `mode`. Stops at the first entry without a reply, and,
-    /// within budget, at the first reply the lane has no room for. A closed
-    /// queue wakes the loop to reap the client; a reply waiting for room also
-    /// wakes it when the writer drains the lane.
+    /// Moves held replies onto the control lane, in order, under `mode`.
+    /// Within budget, stops at the first reply the lane has no room for. A
+    /// closed queue wakes the loop to reap the client; a reply waiting for
+    /// room also wakes it when the writer drains the lane.
     pub(crate) fn release_replies(&mut self, mode: ReleaseMode) {
         while let Some(entry) = self.replies.entries.front_mut() {
-            let ReplyState::Ready(bytes) = &mut entry.state else {
-                break;
-            };
-            let bytes = std::mem::take(bytes);
+            let bytes = std::mem::take(entry);
             let len = bytes.len();
             let result = match mode {
                 ReleaseMode::WithinBudget => self.queue.try_send_control_within_budget(bytes),
@@ -615,7 +521,7 @@ impl ClientOutbox {
                 }
                 Err(bytes) => {
                     if let Some(entry) = self.replies.entries.front_mut() {
-                        entry.state = ReplyState::Ready(bytes);
+                        *entry = bytes;
                     }
                     break;
                 }
@@ -693,13 +599,6 @@ impl ClientOutbox {
 pub(crate) use tests::RenderLaneReceiver;
 
 #[cfg(test)]
-impl ReplySeq {
-    pub(crate) fn test_new(value: u64) -> Self {
-        Self(value)
-    }
-}
-
-#[cfg(test)]
 impl ClientOutbox {
     /// A closed outbox for fixtures. It follows the same reap policy as a
     /// connection whose writer has exited.
@@ -716,13 +615,6 @@ impl ClientOutbox {
 
     pub(crate) fn held_reply_count(&self) -> usize {
         self.replies.entries.len()
-    }
-
-    pub(crate) fn held_reply_message(&self, index: usize) -> Option<ServerMessage> {
-        let ReplyState::Ready(bytes) = &self.replies.entries.get(index)?.state else {
-            return None;
-        };
-        shepr_protocol::read_message(&mut bytes.as_slice()).ok()
     }
 
     pub(crate) fn told_mouse_capture(&self) -> Option<HostMouseCapture> {
@@ -1049,14 +941,12 @@ mod tests {
     }
 
     #[test]
-    fn held_replies_leave_in_command_order_behind_a_pending_ticket() {
+    fn held_replies_leave_in_command_order() {
         let mut outbox = queued_outbox();
-        let seq = outbox.reserve_reply(&title("refusal")).expect("reserve");
+        outbox.hold_reply(&title("first"));
         outbox.hold_reply(&title("second"));
-        outbox.release_replies(ReleaseMode::WithinBudget);
         assert_eq!(outbox.held_reply_count(), 2);
         assert!(outbox.queue.lock_state().control.is_empty());
-        outbox.complete_reply(seq, &title("first"));
         outbox.release_replies(ReleaseMode::WithinBudget);
         assert_eq!(outbox.held_reply_count(), 0);
         for expected in ["first", "second"] {
@@ -1085,38 +975,12 @@ mod tests {
 
     #[test]
     fn held_reply_bytes_over_the_bound_closes_the_outbox() {
-        for reserve in [false, true] {
-            let mut outbox = queued_outbox();
-            let message = title(&"x".repeat(MAX_HELD_ENDPOINT_REPLY_BYTES / 2));
-            if reserve {
-                assert!(outbox.reserve_reply(&message).is_some());
-                assert!(outbox.reserve_reply(&message).is_none());
-            } else {
-                outbox.hold_reply(&message);
-                assert!(!outbox.is_closed());
-                outbox.hold_reply(&message);
-            }
-            assert!(outbox.is_closed());
-        }
-    }
-
-    #[test]
-    fn completing_a_reply_drops_its_refusal_from_the_held_bytes() {
         let mut outbox = queued_outbox();
-        let seq = outbox
-            .reserve_reply(&title("long refusal"))
-            .expect("reserve");
-        outbox.complete_reply(seq, &title("ok"));
-        assert_eq!(
-            outbox.replies.held_bytes,
-            shepr_protocol::encode_message(&title("ok"))
-                .expect("frame")
-                .len()
-        );
-        assert!(matches!(
-            outbox.replies.entries[0].state,
-            ReplyState::Ready(_)
-        ));
+        let message = title(&"x".repeat(MAX_HELD_ENDPOINT_REPLY_BYTES / 2));
+        outbox.hold_reply(&message);
+        assert!(!outbox.is_closed());
+        outbox.hold_reply(&message);
+        assert!(outbox.is_closed());
     }
 
     #[tokio::test]
@@ -1147,19 +1011,6 @@ mod tests {
         assert!(!outbox.is_closed());
         outbox.release_replies(ReleaseMode::WithinBudget);
         assert!(outbox.is_closed());
-    }
-
-    #[test]
-    fn shutdown_resolves_pending_tickets_with_their_refusal() {
-        let mut outbox = queued_outbox();
-        let seq = outbox.reserve_reply(&title("refusal")).expect("reserve");
-        let bytes = outbox.replies.held_bytes;
-        outbox.resolve_replies_for_shutdown();
-        outbox.complete_reply(seq, &title("too late"));
-        assert_eq!(outbox.replies.held_bytes, bytes);
-        assert!(
-            matches!(outbox.held_reply_message(0), Some(ServerMessage::WindowTitle { title: Some(value) }) if value == "refusal")
-        );
     }
 
     #[test]

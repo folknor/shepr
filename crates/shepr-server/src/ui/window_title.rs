@@ -69,7 +69,7 @@ pub(crate) fn render_window_title(
             }
             WindowTitlePart::Token(WindowTitleToken::Workspace) => {
                 if let Some(workspace) = workspace {
-                    title.push_str(workspace.display_name());
+                    title.push_str(workspace.name());
                 }
             }
             WindowTitlePart::Token(WindowTitleToken::Pane) => {
@@ -128,7 +128,7 @@ mod tests {
             "herd"
         );
 
-        state.ws_mut(0).set_custom_name(Some("build".into()));
+        state.ws_mut(0).set_name("build".into());
         assert_eq!(
             render_window_title(&settings, &state, Some(&state.ws(0).id())),
             "build"

@@ -393,22 +393,49 @@ impl ClientShellState {
                 kind: shepr_term::host::DefaultColorKind::Background,
                 color,
             } => {
-                if self.host_background != Some(color) {
-                    self.host_background = Some(color);
+                if self.host_theme.background != Some(color) {
+                    self.host_theme.background = Some(color);
+                    // The selection highlight follows the background, and so do
+                    // the per-host sidebar colours.
+                    self.refresh_host_pills();
                     outcome.repaint = true;
+                }
+            }
+            RawInputEvent::HostDefaultColor {
+                kind: shepr_term::host::DefaultColorKind::Foreground,
+                color,
+            } => {
+                if self.host_theme.foreground != Some(color) {
+                    self.host_theme.foreground = Some(color);
+                    outcome.repaint |= self.refresh_host_pills();
+                }
+            }
+            RawInputEvent::HostPaletteColors { colors } => {
+                // The per-host colours read only the named ANSI slots, so the
+                // rest of the 256 replies do not rederive them.
+                let mut named_slot_changed = false;
+                for (index, color) in colors {
+                    let Some(slot) = self.host_theme.palette.get_mut(usize::from(index)) else {
+                        continue;
+                    };
+                    if *slot != Some(color) {
+                        *slot = Some(color);
+                        named_slot_changed |= usize::from(index) < shepr_term::NAMED_COLOR_COUNT;
+                    }
+                }
+                if named_slot_changed {
+                    outcome.repaint |= self.refresh_host_pills();
                 }
             }
             RawInputEvent::HostColorSchemeChanged(_) => {
                 // A dark/light switch changes the host's default and palette
-                // colours too. Re-query them so panes and the selection
-                // highlight (`host_background`) follow. The stdin framer arms
-                // itself for the replies whenever it tracks scheme changes.
+                // colours too. Re-query them so panes, the selection highlight
+                // and the per-host sidebar colours (both from `host_theme`)
+                // follow. The stdin framer arms itself for the replies
+                // whenever it tracks scheme changes.
                 outcome.query_host_theme = true;
             }
-            RawInputEvent::HostDefaultColor { .. }
-            | RawInputEvent::HostPaletteColors { .. }
-            | RawInputEvent::HostCellSizeReport { .. }
-            | RawInputEvent::Unsupported => {}
+            RawInputEvent::HostCellSizeReport { .. } | RawInputEvent::Unsupported => {}
         }
     }
 
@@ -745,17 +772,17 @@ impl ClientShellState {
                 return;
             }
             Some(NavigateAction::WorkspaceUp) => {
-                self.move_navigate_workspace(-1);
+                self.move_navigate_selection(-1);
                 outcome.repaint = true;
                 return;
             }
             Some(NavigateAction::WorkspaceDown) => {
-                self.move_navigate_workspace(1);
+                self.move_navigate_selection(1);
                 outcome.repaint = true;
                 return;
             }
             Some(NavigateAction::OpenWorkspace) => {
-                self.accept_navigate_workspace(outcome);
+                self.accept_navigate_selection(outcome);
                 return;
             }
             _ => {}
@@ -1151,7 +1178,7 @@ mod tests {
             ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
         // With no snapshot the new-workspace prompt opens on its default suggestion, which
         // the first typed or pasted text replaces.
-        state.open_new_workspace_overlay(&mut ClientShellInput::default());
+        state.open_new_workspace_overlay();
         let mut outcome = ClientShellInput::default();
         let key = shepr_term::key::TerminalKey::new(KeyCode::Char('v'), KeyModifiers::CONTROL);
 

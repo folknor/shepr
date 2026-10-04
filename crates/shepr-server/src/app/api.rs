@@ -1,4 +1,3 @@
-mod checkout_root;
 mod cwd;
 mod detect;
 mod endpoint;
@@ -326,11 +325,14 @@ mod tests {
     }
 
     #[test]
-    fn workspace_rename_trims_and_clears_and_renders_what_it_changed() {
+    fn workspace_rename_trims_defaults_and_renders_what_it_changed() {
         let mut app = App::new(&shepr_config::ServerConfig::default());
         app.state
             .test_set_workspaces(vec![shepr_mux::workspace::Workspace::test_new("rename")]);
         let workspace_id = app.state.ws(0).id();
+        let directory_name = shepr_core::workspace_label::default_workspace_name(
+            app.state.ws(0).identity_cwd().as_path(),
+        );
         let mut rename = |label: &str| {
             let before = app.state.shell_projection_revision;
             let outcome = app.handle_endpoint_command_with_render(
@@ -343,7 +345,7 @@ mod tests {
             assert!(outcome.result.is_ok(), "{label:?}");
             let view_changed = outcome.view_changed();
             (
-                app.state.ws(0).custom_name().map(str::to_owned),
+                app.state.ws(0).name().to_owned(),
                 outcome.effects,
                 view_changed,
                 before,
@@ -352,25 +354,26 @@ mod tests {
         };
 
         let (name, effects, render, before, after) = rename("  logs  ");
-        assert_eq!(name, Some("logs".to_owned()));
+        assert_eq!(name, "logs");
         assert!(effects.shell_projection_changed);
         assert!(render);
         assert_ne!(after, before);
 
         let (name, effects, render, before, after) = rename("logs");
-        assert_eq!(name, Some("logs".to_owned()));
+        assert_eq!(name, "logs");
         assert_eq!(effects, EndpointEffects::default());
         assert!(!render);
         assert_eq!(after, before);
 
+        // A blank name names the workspace after its directory.
         let (name, effects, render, before, after) = rename("   ");
-        assert_eq!(name, None);
+        assert_eq!(name, directory_name);
         assert!(effects.shell_projection_changed);
         assert!(render);
         assert_ne!(after, before);
 
         let (name, effects, render, before, after) = rename("");
-        assert_eq!(name, None);
+        assert_eq!(name, directory_name);
         assert_eq!(effects, EndpointEffects::default());
         assert!(!render);
         assert_eq!(after, before);

@@ -530,6 +530,7 @@ pub(crate) fn validate_client(
                 sidebar_width,
                 mouse_scroll_lines,
             ),
+            local: config.local.clone(),
             machines: config.machines.clone(),
         }),
         _ => Err(vec![super::ConfigDiagnostic::internal(
@@ -546,6 +547,8 @@ pub struct ValidatedClientConfig {
     palette: crate::theme::Palette,
     live_keybinds: super::LiveKeybindConfig,
     ui: ValidatedClientUiConfig,
+    /// The local server's own settings.
+    local: super::LocalConfig,
     /// In config order, with unique labels.
     machines: Vec<super::MachineConfig>,
 }
@@ -583,6 +586,11 @@ impl ValidatedClientConfig {
 
     pub fn ui(&self) -> &ValidatedClientUiConfig {
         &self.ui
+    }
+
+    /// The `[local]` settings, for the local server.
+    pub fn local(&self) -> &super::LocalConfig {
+        &self.local
     }
 
     /// The configured machines, in config order. Labels are unique.

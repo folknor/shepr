@@ -79,6 +79,14 @@ pub(in crate::shell) enum ClientChromeDrag {
     },
 }
 
+/// What a sidebar drag ended by a projection reset still owes: the preference save, and
+/// for a width drag that moved the edge, the endpoint resize. The shell settles it on its
+/// next timer pass (`ClientShellState::tick_timers`), which has an outcome to carry both.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::shell) struct OwedSidebarSettle {
+    pub(in crate::shell) resize: bool,
+}
+
 /// Every gesture the pointer has in flight, and the host's pixel mouse geometry.
 #[derive(Default)]
 pub(in crate::shell) struct Pointer {
@@ -87,13 +95,27 @@ pub(in crate::shell) struct Pointer {
     pub(in crate::shell) pane_mouse_gesture: Option<ClientPaneMouseGesture>,
     pub(super) last_sidebar_divider_click: Option<Instant>,
     pub(in crate::shell) host_mouse_pixels: Option<shepr_termio::input::mouse::HostPixels>,
+    /// A sidebar drag's owed work, kept when a projection reset ended the drag.
+    pub(in crate::shell) owed_sidebar_settle: Option<OwedSidebarSettle>,
 }
 
 impl Pointer {
     /// Drops what an endpoint projection described. The divider click history is the
-    /// pointer's own, so it survives.
+    /// pointer's own, so it survives. A sidebar drag is the client's own chrome: the
+    /// gesture ends, but what it owes (the width drag's endpoint resize, both drags'
+    /// preference save) is kept in `owed_sidebar_settle` instead of being dropped.
     pub(in crate::shell) fn reset_for_projection(&mut self) {
-        self.chrome_drag = None;
+        let owed = match self.chrome_drag.take() {
+            Some(ClientChromeDrag::SidebarWidth { resize_pending }) => Some(resize_pending),
+            Some(ClientChromeDrag::SidebarSection) => Some(false),
+            _ => None,
+        };
+        if let Some(resize) = owed {
+            let earlier = self.owed_sidebar_settle.is_some_and(|owed| owed.resize);
+            self.owed_sidebar_settle = Some(OwedSidebarSettle {
+                resize: resize || earlier,
+            });
+        }
         self.workspace_press = None;
         self.pane_mouse_gesture = None;
         self.host_mouse_pixels = None;

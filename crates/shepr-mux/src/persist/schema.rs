@@ -227,8 +227,7 @@ pub struct WorkspaceHistorySnapshot {
 pub struct WorkspaceSnapshot {
     /// Canonical identity; restore assigns a fresh identity to duplicates.
     pub id: shepr_protocol::WorkspaceId,
-    #[serde(deserialize_with = "required_nullable")]
-    pub custom_name: Option<String>,
+    pub name: String,
     /// Restore checks it against the panes' numbers.
     pub next_public_pane_number: PanePublicNumber,
     pub layout: LayoutSnapshot,
@@ -479,7 +478,7 @@ mod tests {
             host_theme: super::SavedHostTheme::default(),
             workspaces: vec![super::WorkspaceSnapshot {
                 id: "w1".parse().expect("id"),
-                custom_name: None,
+                name: "w".into(),
                 next_public_pane_number: shepr_protocol::PanePublicNumber::new(2)
                     .expect("nonzero literal"),
                 layout: super::LayoutSnapshot::Split {
@@ -515,7 +514,7 @@ mod tests {
             ("/snapshot/host_theme", "background"),
             ("/snapshot/host_theme", "palette"),
             (workspace, "id"),
-            (workspace, "custom_name"),
+            (workspace, "name"),
             (workspace, "next_public_pane_number"),
             (workspace, "layout"),
             (workspace, "zoomed"),
@@ -633,7 +632,7 @@ mod tests {
         let workspace = |layout: serde_json::Value, extra: Option<(&str, serde_json::Value)>| {
             let mut workspace = serde_json::json!({
                 "id": "w1",
-                "custom_name": null,
+                "name": "w",
                 "next_public_pane_number": 2,
                 "layout": layout,
                 "zoomed": false,

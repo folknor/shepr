@@ -116,4 +116,26 @@ mod tests {
         assert_eq!(parse_hex_component("800"), Some(128));
         assert_eq!(parse_hex_component("8000"), Some(128));
     }
+
+    /// Terminals answer OSC 10/11/4 with 16 bits per channel; each channel is
+    /// scaled to 8 bits with rounding, not cut to its first two digits.
+    #[test]
+    fn scales_sixteen_bit_components_instead_of_truncating() {
+        assert_eq!(parse_hex_component("ffff"), Some(255));
+        assert_eq!(parse_hex_component("0000"), Some(0));
+        // 0x00ff is 0.992 on the 8-bit scale; keeping the first two digits
+        // would give 0.
+        assert_eq!(parse_hex_component("00ff"), Some(1));
+        assert_eq!(
+            parse_default_color_response("\x1b]11;rgb:1e1e/1e1e/2e2e\x1b\\"),
+            Some((
+                DefaultColorKind::Background,
+                RgbColor {
+                    r: 0x1e,
+                    g: 0x1e,
+                    b: 0x2e,
+                },
+            ))
+        );
+    }
 }

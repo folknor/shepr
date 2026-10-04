@@ -137,11 +137,13 @@ impl<'a> SurfaceBaseline<'a> {
             return Err(SurfaceDecodeError::PatchBaselineMismatch);
         }
         shepr_protocol::FrameGrid::new(self.cells, self.width, self.height)?;
+        // A listed pane must keep the geometry the baseline presents it with, the same
+        // rule the client applies to every patch it receives.
         if patch.panes.iter().any(|updated| {
             !self
                 .panes
                 .iter()
-                .any(|existing| existing.pane_id == updated.pane_id)
+                .any(|existing| pane_geometry_matches(existing, updated))
         }) {
             return Err(SurfaceDecodeError::MetadataMismatch);
         }
@@ -197,6 +199,35 @@ impl From<shepr_protocol::FrameGridError> for SurfaceDecodeError {
             shepr_protocol::FrameGridError::InvalidHyperlink => Self::InvalidHyperlink,
         }
     }
+}
+
+/// Whether `updated` keeps what `existing` was presented with, as far as a patch may not
+/// change it: the pane, its outer and content rects, and its focus. A patch that lists a
+/// pane changes only its cells and per-pane metadata (scroll, scrollbar track, mouse modes,
+/// screen); anything here changing needs a full surface. The client checks every patch
+/// with this rule, so every path that turns a change into a patch checks it first.
+pub fn pane_geometry_matches(
+    existing: &shepr_protocol::PaneSurfacePane,
+    updated: &shepr_protocol::PaneSurfacePane,
+) -> bool {
+    existing.pane_id == updated.pane_id
+        && existing.rect == updated.rect
+        && existing.inner_rect == updated.inner_rect
+        && existing.focused == updated.focused
+}
+
+/// Whether `next` lists the panes of `last`, in order, each with its geometry kept
+/// (`pane_geometry_matches`): with an unchanged topology, the condition for describing the
+/// change as a patch rather than a full surface.
+fn panes_keep_geometry(
+    next: &[shepr_protocol::PaneSurfacePane],
+    last: &[shepr_protocol::PaneSurfacePane],
+) -> bool {
+    next.len() == last.len()
+        && next
+            .iter()
+            .zip(last)
+            .all(|(next, last)| pane_geometry_matches(last, next))
 }
 
 fn patch_error(patch: &PaneSurfacePatch, error: SurfaceDecodeError) -> SurfaceDecodeError {
@@ -346,14 +377,23 @@ impl<'a> Baseline<'a> {
             meta: Some(
                 if surface.projection_revision == last.projection_revision
                     && surface.topology().same_topology(&last.topology())
+                    && panes_keep_geometry(&surface.panes, &last.panes)
                 {
+                    // The decoder forwards these panes as the patch's own, so they
+                    // follow its rule: every pane a span touches is listed, as well
+                    // as every pane whose metadata changed.
                     shepr_protocol::SurfaceMeta::Patch(shepr_protocol::SurfacePatchMeta {
                         cursor: surface.frame.cursor().cloned(),
                         panes: surface
                             .panes
                             .iter()
                             .zip(&last.panes)
-                            .filter(|(next, old)| next != old)
+                            .filter(|(next, old)| {
+                                next != old
+                                    || spans.iter().any(|span| {
+                                        shepr_protocol::row_touches_rect(span, next.rect)
+                                    })
+                            })
                             .map(|(next, _)| next.clone())
                             .collect(),
                     })
@@ -602,14 +642,25 @@ impl Decoder {
                 if update.projection_revision == base.projection_revision
                     && let Some(previous) = &base.meta
                     && meta.topology().same_topology(&previous.topology())
+                    && panes_keep_geometry(&meta.panes, &previous.panes)
                 {
-                    let changed_panes = meta
-                        .panes
-                        .iter()
-                        .zip(&previous.panes)
-                        .filter(|(next, old)| next != old)
-                        .map(|(next, _)| next.clone())
-                        .collect();
+                    // A full-render delta's spans can land anywhere in the frame, so
+                    // the patch names every pane they touch as well as every pane
+                    // whose metadata changed: the client treats a listed pane as
+                    // patched (selection, copy mode, hits) and refuses a row on an
+                    // unlisted one.
+                    let changed_panes =
+                        meta.panes
+                            .iter()
+                            .zip(&previous.panes)
+                            .filter(|(next, old)| {
+                                next != old
+                                    || update.spans.iter().any(|span| {
+                                        shepr_protocol::row_touches_rect(span, next.rect)
+                                    })
+                            })
+                            .map(|(next, _)| next.clone())
+                            .collect();
                     let patch = PaneSurfacePatch {
                         boot_id: update.boot_id,
                         projection_revision: update.projection_revision,

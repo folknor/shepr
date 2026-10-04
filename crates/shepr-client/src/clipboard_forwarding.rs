@@ -19,6 +19,6 @@ mod tests {
         let mut output = Vec::new();
         forward_clipboard(b"test", shepr_platform::ClipboardRoute::Osc52, &mut output)
             .expect("clipboard bytes are written through OSC 52");
-        assert_eq!(output, b"\x1b]52;c;dGVzdA==\x07");
+        assert_eq!(output, b"\x1b]52;c;dGVzdA==\x07\x1b]52;p;dGVzdA==\x07");
     }
 }

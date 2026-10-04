@@ -294,6 +294,15 @@ pub fn validate_patch_rows(
         .try_for_each(|row| check.push(row.x, row.y, row.cells.len()))
 }
 
+/// Whether any cell of `row` lies inside `rect`.
+pub fn row_touches_rect(row: &PaneSurfacePatchRow, rect: SurfaceRect) -> bool {
+    let len = u16::try_from(row.cells.len()).unwrap_or(u16::MAX);
+    row.y >= rect.y
+        && row.y < rect.y.saturating_add(rect.height)
+        && row.x < rect.x.saturating_add(rect.width)
+        && row.x.saturating_add(len) > rect.x
+}
+
 /// Puts rows into the row-major order [`PatchSpanCheck`] requires.
 pub fn sort_patch_rows(rows: &mut [PaneSurfacePatchRow]) {
     rows.sort_unstable_by_key(|row| (row.y, row.x));
@@ -308,7 +317,7 @@ pub struct PaneSurfacePatch {
     pub base_surface_revision: SurfaceRevision,
     pub surface_revision: SurfaceRevision,
     pub rows: Vec<PaneSurfacePatchRow>,
-    /// Updated metadata for panes whose terminal content changed.
+    /// Current metadata for every pane a row touches or whose metadata changed.
     pub panes: Vec<PaneSurfacePane>,
     /// Final cursor relative to the pane surface.
     pub cursor: Option<CursorState>,

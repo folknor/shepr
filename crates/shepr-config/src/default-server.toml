@@ -92,7 +92,7 @@
 # run on even when attaching from a remote client.
 # The sanitized title is limited to 200 characters.
 # Set to "" to leave the outer terminal title alone.
-# window_title = "{hostname}: {workspace}"
+# window_title = "shepr: {hostname}"
 
 [session]
 # Resume supported AI-agent panes into their native conversation sessions after

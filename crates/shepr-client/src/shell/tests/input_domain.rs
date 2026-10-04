@@ -92,7 +92,7 @@ fn host_theme_updates_are_forwarded_to_the_server() {
         )]
     ));
     assert_eq!(
-        state.host_background,
+        state.host_theme.background,
         Some(shepr_term::host::RgbColor {
             r: 255,
             g: 255,

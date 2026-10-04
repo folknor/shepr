@@ -9,6 +9,7 @@ use shepr_protocol::{ClientShellAgent, ClientShellPane, PublicPaneId};
 use crate::shell::config::ClientShellConfig;
 use crate::shell::presentation::status::{status_glyph, status_text};
 use crate::shell::presentation::text::{put_spans, put_text};
+use crate::shell::sidebar::host_colors::PillLook;
 use crate::shell::sidebar::layout::AgentPanelView;
 use crate::shell::sidebar::sidebar_tokens::{
     AgentTokenContext, ResolvedToken, TokenStyles, resolved_token_spans, sidebar_agent_rows,
@@ -157,19 +158,51 @@ impl<'a> AgentRowIndex<'a> {
     }
 }
 
+/// What an agent entry is besides its content: which of the sidebar's highlights
+/// it takes, and the colours of its machine, if it has any.
+#[derive(Clone, Copy)]
+pub(super) struct AgentEntryState {
+    pub(super) focused: bool,
+    /// The navigate-mode selection is on this entry.
+    pub(super) selected: bool,
+    /// The sidebar highlights a selection somewhere.
+    pub(super) navigating: bool,
+    /// The machine's sidebar colours. The navigation cursor keeps its own
+    /// highlight, so a selected entry is drawn in the theme's plain look.
+    pub(super) look: Option<PillLook>,
+}
+
+/// Draws one agent entry. `state.look` is its machine's sidebar colours: a tint
+/// over the whole entry (the stronger one when focused), main text on the first
+/// line, dim text below, and the machine token in the accent. A selected entry
+/// takes the selection background a selected workspace does.
 pub(super) fn render_agent_row(
     buffer: &mut Buffer,
     rect: Rect,
     row: &AgentRow,
-    focused: bool,
+    state: AgentEntryState,
     config: &ClientShellConfig,
 ) {
+    let AgentEntryState {
+        focused,
+        selected,
+        navigating,
+        look,
+    } = state;
+    let look = look.filter(|_| !selected);
     let palette = &config.palette;
-    let row_style = if focused {
-        Style::default().bg(palette.active_row_bg)
-    } else {
-        Style::default()
+    let tint = look.and_then(|look| look.background(focused));
+    let row_style = match tint {
+        Some(tint) => Style::default().bg(tint),
+        None if focused => Style::default().bg(crate::shell::sidebar::workspace_active_background(
+            palette, navigating,
+        )),
+        None => Style::default(),
     };
+    if tint.is_some() {
+        // The whole entry, not only the lines its rows fill.
+        buffer.set_style(rect.intersection(buffer.area), row_style);
+    }
     let name_style = if focused {
         Style::default()
             .fg(palette.text)
@@ -194,15 +227,21 @@ pub(super) fn render_agent_row(
     for (index, tokens) in rows.iter().take(rect.height as usize).enumerate() {
         let indent = if index == 0 { 1 } else { 3 };
         let mut spans = vec![ratatui::text::Span::raw(" ".repeat(indent))];
+        let styles = match look {
+            Some(look) => TokenStyles {
+                state_text: status_style,
+                primary: look.text(name_style, index),
+                secondary: look.text(secondary, index),
+                machine: look.text(secondary, index).fg(look.accent()),
+                terminal_title: look.text(secondary, index),
+                separator: look.separator(palette, index),
+            },
+            None => TokenStyles::themed(status_style, name_style, secondary, secondary, palette),
+        };
         spans.extend(resolved_token_spans(
             tokens,
             glyph,
-            TokenStyles {
-                state_text: status_style,
-                primary: name_style,
-                secondary,
-                terminal_title: secondary,
-            },
+            styles,
             palette,
             usize::from(
                 rect.width
@@ -219,6 +258,14 @@ pub(super) fn render_agent_row(
             ),
             &spans,
             row_style,
+        );
+    }
+    if selected {
+        buffer.set_style(
+            rect.intersection(buffer.area),
+            Style::default().bg(crate::shell::sidebar::workspace_selection_background(
+                palette,
+            )),
         );
     }
 }

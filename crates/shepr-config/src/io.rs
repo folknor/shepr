@@ -515,6 +515,78 @@ ssh = "ssh://gpu.example"
 
         let none = client_from_str("").expect("no machines is valid");
         assert!(none.machines().is_empty());
+        assert_eq!(none.local().palette, None);
+    }
+
+    #[test]
+    fn machines_and_the_local_server_take_an_optional_palette() {
+        use shepr_term::host_tint::HostHue;
+
+        let _env = shepr_test_support::IsolatedEnv::new();
+        let validated = client_from_str(
+            r#"
+[local]
+palette = "purple"
+
+[[machines]]
+label = "build"
+ssh = "dev@build"
+palette = "green"
+
+[[machines]]
+label = "gpu"
+ssh = "gpu"
+"#,
+        )
+        .expect("palettes load");
+        assert_eq!(validated.local().palette, Some(HostHue::Purple));
+        let palettes: Vec<_> = validated
+            .machines()
+            .iter()
+            .map(|machine| machine.palette)
+            .collect();
+        assert_eq!(palettes, [Some(HostHue::Green), None]);
+
+        for hue in HostHue::ALL {
+            let source = format!("[local]\npalette = \"{}\"\n", hue.name());
+            let validated = client_from_str(&source).expect("every hue name loads");
+            assert_eq!(validated.local().palette, Some(hue), "{source}");
+        }
+    }
+
+    #[test]
+    fn an_unknown_palette_or_local_key_fails_the_launch() {
+        let _env = shepr_test_support::IsolatedEnv::new();
+        for (content, message) in [
+            (
+                "[[machines]]\nlabel = \"a\"\nssh = \"h\"\npalette = \"pink\"\n",
+                "pink",
+            ),
+            ("[local]\npalette = \"Green\"\n", "Green"),
+            ("[local]\npalette = 3\n", "invalid type"),
+            (
+                "[local]\nlabel = \"desk\"\n",
+                "unknown config key local.label",
+            ),
+        ] {
+            let errors = client_from_str(content).expect_err("invalid palette must not launch");
+            assert!(
+                errors
+                    .iter()
+                    .any(|diagnostic| diagnostic.to_string().contains(message)),
+                "expected {message:?} in {errors:?}"
+            );
+        }
+        let errors = server_from_str("[local]\npalette = \"green\"\n")
+            .expect_err("the server file has no local table");
+        assert!(
+            errors.iter().any(|error| matches!(
+                error.kind(),
+                super::super::ConfigDiagnosticKind::UnknownKey
+                    | super::super::ConfigDiagnosticKind::UnknownSection { .. }
+            )),
+            "{errors:?}"
+        );
     }
 
     #[test]

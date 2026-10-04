@@ -563,9 +563,9 @@ mod tests {
 
         let refused = set.insert(repeat).expect_err("the id is present");
 
-        assert_eq!(refused.display_name(), "repeat");
+        assert_eq!(refused.name(), "repeat");
         assert_eq!(set.len(), 1);
-        assert_eq!(set.as_slice()[0].display_name(), "a");
+        assert_eq!(set.as_slice()[0].name(), "a");
     }
 
     #[test]
@@ -696,8 +696,8 @@ mod tests {
         );
 
         assert_eq!(set.len(), 2);
-        assert_eq!(set.as_slice()[0].display_name(), "first");
-        assert_eq!(set.as_slice()[1].display_name(), "last");
+        assert_eq!(set.as_slice()[0].name(), "first");
+        assert_eq!(set.as_slice()[1].name(), "last");
         assert_eq!(set.bookmark_index(), Some(1));
         assert_eq!(set.bookmark(), Some(set.as_slice()[1].id));
     }

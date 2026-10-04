@@ -1,21 +1,11 @@
 use std::path::Path;
 
-/// The naming policy for both an admitted workspace identity and the client's
-/// new-workspace name suggestion. Use the actual cwd, not a Git cache key:
-/// a checkout rooted at `/` still needs the workspace's own cwd basename.
-/// `home_dir` is supplied by the caller after resolving it with
-/// `pathutil::home_dir`, keeping this helper independent of process state.
-pub fn workspace_label_from_cwd(
-    cwd: &Path,
-    repo_root: Option<&Path>,
-    home_dir: Option<&Path>,
-) -> String {
-    if repo_root.is_none() && home_dir.is_some_and(|home| home == cwd) {
-        return "~".to_owned();
-    }
-    repo_root
-        .and_then(Path::file_name)
-        .or_else(|| cwd.file_name())
+/// The name a workspace gets when it is given none, or a blank one: the name of
+/// the directory it is created (or renamed) in. The home directory is no
+/// exception, so it reads as the user's name. The root has no directory name and
+/// reads as `/`.
+pub fn default_workspace_name(cwd: &Path) -> String {
+    cwd.file_name()
         .and_then(|name| name.to_str())
         .filter(|name| !name.is_empty())
         .map_or_else(|| cwd.display().to_string(), str::to_owned)
@@ -26,29 +16,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn workspace_label_uses_discovered_git_root() {
+    fn the_default_name_is_the_directory_name() {
         assert_eq!(
-            workspace_label_from_cwd(
-                Path::new("/repos/example/nested"),
-                Some(Path::new("/repos/example")),
-                None,
-            ),
-            "example"
+            default_workspace_name(Path::new("/repos/example/nested")),
+            "nested"
         );
-    }
-
-    #[test]
-    fn workspace_label_is_tilde_only_for_home_outside_git() {
-        let home = Path::new("/home/user");
-        assert_eq!(workspace_label_from_cwd(home, None, Some(home)), "~");
-        assert_eq!(
-            workspace_label_from_cwd(home, Some(home), Some(home)),
-            "user"
-        );
-        assert_eq!(workspace_label_from_cwd(home, None, None), "user");
-        assert_eq!(
-            workspace_label_from_cwd(Path::new("/home/user/src"), None, Some(home)),
-            "src"
-        );
+        assert_eq!(default_workspace_name(Path::new("/home/user")), "user");
+        assert_eq!(default_workspace_name(Path::new("/")), "/");
     }
 }

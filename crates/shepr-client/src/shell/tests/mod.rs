@@ -245,7 +245,7 @@ pub(in crate::shell) fn prompt_shell(field: usize) -> ClientShellState {
     let mut state = presented_shell();
     state.compose(106, 30).expect("initial shell");
     match field {
-        0 => state.open_new_workspace_overlay(&mut ClientShellInput::default()),
+        0 => state.open_new_workspace_overlay(),
         1 => state.open_rename_workspace_overlay(),
         2 => state.open_rename_pane_overlay(),
         3 => {
@@ -388,14 +388,15 @@ pub(crate) fn pending_request() -> (ClientShellState, Vec<ClientShellAction>) {
     (state, outcome.actions)
 }
 
-/// A presented shell with two requests submitted, and their actions in order: the
-/// checkout-root read that opening the new-workspace prompt sends, a read whose loss
-/// reports no interruption, then the workspace creation the prompt's Enter sends.
+/// A presented shell with two requests submitted, and their actions in order: a pane
+/// scroll (a read whose loss reports no interruption), then the workspace creation the
+/// new-workspace prompt's Enter sends.
 pub(crate) fn read_then_command() -> (ClientShellState, Vec<ClientShellAction>) {
     let mut state = ready_shell();
     let mut out = ClientShellInput::default();
-    state.open_new_workspace_overlay(&mut out);
+    state.push_pane_scroll_offset(crate::tests::test_pane_id("w1:p1"), 3, &mut out);
     let mut actions = out.actions;
+    state.open_new_workspace_overlay();
     actions.extend(state.handle_input_bytes(b"\r").actions);
     assert_eq!(actions.len(), 2);
     (state, actions)
@@ -451,6 +452,7 @@ pub(in crate::shell) fn machine_named(label: &str, ssh: &str) -> shepr_config::M
     shepr_config::MachineConfig {
         label: shepr_config::MachineLabel::parse(label).expect("test precondition"),
         ssh: shepr_config::SshTarget::parse(ssh).expect("test precondition"),
+        palette: None,
     }
 }
 

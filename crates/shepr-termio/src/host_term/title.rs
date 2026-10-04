@@ -18,14 +18,21 @@ pub fn write_window_title<W: Write>(writer: &mut W, title: Option<&str>) -> io::
     writer.flush()
 }
 
+/// One OSC 52 write per selection, the clipboard and then the primary
+/// selection. A combined `cp` target is not used: terminals that honour only
+/// one target read it differently, and two writes set both wherever each is
+/// supported.
 fn osc52_sequence(bytes: &[u8]) -> String {
     use base64::Engine;
     let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
-    format!("\x1b]52;c;{encoded}\x07")
+    format!("\x1b]52;c;{encoded}\x07\x1b]52;p;{encoded}\x07")
 }
 
 /// Write clipboard bytes with the helpers `route` names when the host has a
 /// local clipboard, falling back to an OSC 52 write through the host terminal.
+/// Every copy sets both the clipboard and the primary selection, so text is
+/// ready for middle-click paste and for Ctrl+V (and the clipboard sync of a
+/// remote desktop session) alike.
 ///
 /// Remote and VS Code remote sessions route to OSC 52 so bytes reach the
 /// terminal on the user's machine. Some terminals still only honor BEL-
@@ -61,7 +68,10 @@ mod tests {
 
     #[test]
     fn osc52_sequence_uses_bel_terminator() {
-        assert_eq!(osc52_sequence(b"hello"), "\x1b]52;c;aGVsbG8=\x07");
+        assert_eq!(
+            osc52_sequence(b"hello"),
+            "\x1b]52;c;aGVsbG8=\x07\x1b]52;p;aGVsbG8=\x07"
+        );
     }
 
     #[test]

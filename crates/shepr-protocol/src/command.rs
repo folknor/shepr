@@ -48,6 +48,8 @@ pub enum WorkspaceCreateSource {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkspaceCreateParams {
     pub source: WorkspaceCreateSource,
+    /// The new workspace's name. `None`, or a label that is empty once
+    /// trimmed, names it after the directory it starts in.
     pub label: Option<String>,
 }
 
@@ -56,18 +58,12 @@ pub struct WorkspaceCloseParams {
     pub workspace_id: WorkspaceId,
 }
 
-/// `None` clears the custom name, as does a label that is empty once trimmed.
+/// `None`, or a label that is empty once trimmed, names the workspace after its
+/// current directory.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkspaceRenameParams {
     pub workspace_id: WorkspaceId,
     pub label: Option<String>,
-}
-
-/// Asks the server for the Git checkout root of a directory on the server's
-/// own host, which is what a new workspace's default label derives from.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WorkspaceCheckoutRootParams {
-    pub cwd: crate::RemotePath,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -391,11 +387,6 @@ define_endpoint_commands! {
             changes_topology: false,
             claims_shell_geometry: false,
         };
-        WorkspaceCheckoutRoot(WorkspaceCheckoutRootParams) => "workspace.checkout_root" {
-            changes_focus: false,
-            changes_topology: false,
-            claims_shell_geometry: false,
-        };
     }
     app_commands {
         WorkspaceCreate(WorkspaceCreateParams) => "workspace.create" {
@@ -514,13 +505,6 @@ pub enum EndpointReply {
     WorkspaceInfo {
         workspace: WorkspaceInfo,
     },
-    /// The Git checkout root of the asked directory, `None` outside any
-    /// repository, and the home directory of the server's host (`None` when it
-    /// has no usable one), which a directory outside Git is compared with.
-    WorkspaceCheckoutRoot {
-        root: Option<crate::RemotePath>,
-        home: Option<crate::RemotePath>,
-    },
     PaneSelection {
         pane_id: PublicPaneId,
         text: String,
@@ -606,7 +590,6 @@ macro_rules! endpoint_reply_payloads {
 }
 endpoint_reply_payloads! {
     PaneInfoReply => PaneInfo { pane: Box<PaneInfo> };
-    WorkspaceCheckoutRootReply => WorkspaceCheckoutRoot { root: Option<crate::RemotePath>, home: Option<crate::RemotePath> };
     PaneSelectionReply => PaneSelection { pane_id: PublicPaneId, text: String };
     PaneCopyMotionReply => PaneCopyMotion { pane_id: PublicPaneId, cursor: PaneTextPoint };
     PaneCopySearchReply => PaneCopySearch { pane_id: PublicPaneId, search: PaneCopySearch };
@@ -618,9 +601,6 @@ impl CommandKind {
         match self {
             Self::ClientShellSurfaceSet => {
                 matches!(reply, EndpointReply::ClientShellSurfaceSet { .. })
-            }
-            Self::WorkspaceCheckoutRoot => {
-                matches!(reply, EndpointReply::WorkspaceCheckoutRoot { .. })
             }
             Self::WorkspaceFocus | Self::WorkspaceRename => {
                 matches!(reply, EndpointReply::WorkspaceInfo { .. })
@@ -668,22 +648,18 @@ mod reply_contract_tests {
             PaneCopySearchReply::try_from(EndpointReply::Done),
             Err(EndpointError::Internal(_))
         ));
-        assert!(matches!(
-            WorkspaceCheckoutRootReply::try_from(EndpointReply::Done),
-            Err(EndpointError::Internal(_))
-        ));
     }
 
     #[test]
     fn command_contract_checks_even_acknowledgement_only_work() {
-        let checkout = EndpointReply::WorkspaceCheckoutRoot {
-            root: None,
-            home: None,
+        let selection = EndpointReply::PaneSelection {
+            pane_id: "w1:p1".parse().expect("pane id"),
+            text: String::new(),
         };
-        assert!(CommandKind::WorkspaceCheckoutRoot.accepts_reply(&checkout));
-        assert!(!CommandKind::WorkspaceCheckoutRoot.accepts_reply(&EndpointReply::Done));
+        assert!(CommandKind::PaneSelectionRead.accepts_reply(&selection));
+        assert!(!CommandKind::PaneSelectionRead.accepts_reply(&EndpointReply::Done));
         assert!(CommandKind::WorkspaceClose.accepts_reply(&EndpointReply::Done));
-        assert!(!CommandKind::WorkspaceClose.accepts_reply(&checkout));
+        assert!(!CommandKind::WorkspaceClose.accepts_reply(&selection));
     }
 
     #[test]

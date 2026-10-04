@@ -134,6 +134,24 @@ impl ChromeLayout {
         true
     }
 
+    /// Moves the sidebar edge to `width` during a drag. Below the minimum width
+    /// the sidebar snaps to collapsed; back at or past it, the same drag
+    /// expands it again at that width. Returns whether anything changed.
+    pub(in crate::shell) fn drag_edge_to(&mut self, width: u16) -> bool {
+        if width < self.bounds.min() {
+            if self.collapsed.value() {
+                return false;
+            }
+            self.set_collapsed(true);
+            return true;
+        }
+        let was_collapsed = self.collapsed.value();
+        if was_collapsed {
+            self.set_collapsed(false);
+        }
+        self.set_width(width) || was_collapsed
+    }
+
     /// Returns to the configured width, which is then no longer a user choice.
     pub(in crate::shell) fn reset_width(&mut self) {
         self.width = self.configured_width;
@@ -243,6 +261,29 @@ mod tests {
         assert!(chrome.set_width(0));
         assert_eq!(chrome.width(), MIN);
         assert_eq!(chrome.preferences().sidebar_width, Some(MIN));
+    }
+
+    #[test]
+    fn dragging_below_the_minimum_collapses_and_dragging_back_expands() {
+        let mut config = config(None);
+        config.sidebar_start_collapsed = false;
+        let mut chrome = ChromeLayout::new(&config);
+        assert!(chrome.drag_edge_to(MIN));
+        assert!(!chrome.collapsed());
+        assert_eq!(chrome.width(), MIN);
+
+        assert!(chrome.drag_edge_to(MIN - 1));
+        assert!(chrome.collapsed());
+        assert_eq!(chrome.width(), MIN, "the expanded width is kept");
+        assert!(!chrome.drag_edge_to(0), "already collapsed");
+        assert_eq!(chrome.preferences().sidebar_collapsed, Some(true));
+
+        assert!(chrome.drag_edge_to(MIN));
+        assert!(!chrome.collapsed());
+        assert_eq!(chrome.width(), MIN);
+        assert!(chrome.drag_edge_to(MIN + 3));
+        assert_eq!(chrome.width(), MIN + 3);
+        assert_eq!(chrome.preferences().sidebar_collapsed, Some(false));
     }
 
     #[test]

@@ -280,7 +280,6 @@ fn client_shell_commands_are_not_api_methods() {
         "workspace.create",
         "workspace.focus",
         "workspace.rename",
-        "workspace.checkout_root",
         "workspace.move",
         "workspace.close",
         "pane.split",

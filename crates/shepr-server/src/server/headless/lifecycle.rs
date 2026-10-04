@@ -347,11 +347,10 @@ impl HeadlessServer {
         }
         info!("server shutdown initiated");
 
-        // Resolve worker slots and hand every held reply to its client's
-        // FIFO control lane before shutdown cleanup queues the notice. The
-        // flush barrier must cover the notice without making earlier replies
-        // unreachable to clients that leave when they read it.
-        self.resolve_pending_endpoint_replies_for_shutdown();
+        // Hand every held reply to its client's FIFO control lane before
+        // shutdown cleanup queues the notice. The flush barrier must cover the
+        // notice without making earlier replies unreachable to clients that
+        // leave when they read it.
         self.release_endpoint_replies(ReleaseMode::Shutdown);
     }
 

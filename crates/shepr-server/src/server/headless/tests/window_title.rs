@@ -136,7 +136,7 @@ fn configured_window_title_reaches_each_client_once_per_change() {
         .app
         .test_state_mut()
         .ws_mut(0)
-        .set_custom_name(Some("build".into()));
+        .set_name("build".into());
     server.sync_window_title();
     assert_eq!(
         next_window_title(&control_rx),

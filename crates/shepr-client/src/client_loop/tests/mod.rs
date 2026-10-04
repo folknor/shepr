@@ -59,6 +59,7 @@ impl Fixture {
         let machines = vec![shepr_config::MachineConfig {
             label: shepr_config::MachineLabel::parse("build").expect("machine"),
             ssh: shepr_config::SshTarget::parse("host").expect("SSH"),
+            palette: None,
         }];
         // `test_new` reports a 100x30 host, the size `surface_size` is asked for below.
         let mut state = ClientState::test_new();

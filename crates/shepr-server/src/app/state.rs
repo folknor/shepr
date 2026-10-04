@@ -297,16 +297,17 @@ impl AppState {
             .unwrap_or(self.shell_projection_revision);
     }
 
-    /// The area `workspace` is laid out in: where the server last applied its
-    /// PTY geometry, or the headless area when it has not yet.
+    /// The area `workspace` is laid out in: the geometry the server last
+    /// recorded for it, or the headless area when it has none yet.
     pub(crate) fn layout_area(&self, workspace: &Workspace) -> Rect {
         workspace
             .spawn_geometry()
             .map_or_else(|| self.settings.headless_rect(), |geometry| geometry.area)
     }
 
-    /// Records the geometry the server just applied a workspace's PTYs in, or
-    /// spawned its first pane at.
+    /// Records the geometry a workspace is laid out in (its panes' PTYs
+    /// follow at once or once it settles; see `App::apply_workspace_geometry`),
+    /// or spawned its first pane at.
     pub(crate) fn record_workspace_geometry(&mut self, id: &WorkspaceId, geometry: SpawnGeometry) {
         if let Some(workspace) = self.workspaces.get_mut(id) {
             workspace.record_spawn_geometry(geometry);
@@ -526,11 +527,11 @@ mod tests {
             Some(second)
         );
         assert_eq!(
-            state.rename_workspace(&first, Some("renamed".to_string())),
+            state.rename_workspace(&first, "renamed".to_string()),
             Some(crate::app::actions::ViewMutation::Metadata)
         );
         assert_eq!(
-            state.workspace(&first).map(Workspace::display_name),
+            state.workspace(&first).map(Workspace::name),
             Some("renamed")
         );
     }
@@ -567,7 +568,7 @@ mod tests {
 
         assert!(state.workspace(&only).is_none());
         assert!(state.close_workspace(&only).is_none());
-        assert!(state.rename_workspace(&only, None).is_none());
+        assert!(state.rename_workspace(&only, "gone".into()).is_none());
     }
 
     #[test]

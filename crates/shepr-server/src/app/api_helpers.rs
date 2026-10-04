@@ -24,10 +24,10 @@ pub(super) fn presented_agent_status(
     state
 }
 
-/// A user-given workspace or pane label as the server stores it: trimmed, and
-/// one that is absent or empty once trimmed clears the custom name, so the
-/// automatic label returns. Every rename and create path goes through this, so
-/// no store ever holds an empty or padded label.
+/// A user-given workspace name or pane label as the server stores it: trimmed,
+/// and `None` when absent or empty once trimmed, which names a workspace after
+/// its directory and clears a pane's custom label. Every rename and create path
+/// goes through this, so no store ever holds an empty or padded name.
 pub(super) fn normalized_user_label(label: Option<String>) -> Option<String> {
     shepr_mux::terminal::Label::new(label?).map(shepr_mux::terminal::Label::into_string)
 }

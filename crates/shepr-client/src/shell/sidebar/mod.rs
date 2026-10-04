@@ -3,6 +3,7 @@ use ratatui::style::{Modifier, Style};
 pub(in crate::shell) mod agent_sidebar;
 mod endpoint_agents;
 pub(in crate::shell) mod endpoint_sidebar;
+pub(in crate::shell) mod host_colors;
 pub(in crate::shell) mod layout;
 pub(in crate::shell) mod preferences;
 pub(in crate::shell) mod scroll;
@@ -74,6 +75,20 @@ pub(in crate::shell::sidebar) fn workspace_rows(
     )
 }
 
+/// What a workspace entry is besides its content: which of the sidebar's
+/// highlights it takes, and the colours of its machine, if it has any.
+#[derive(Clone, Copy)]
+pub(in crate::shell::sidebar) struct WorkspaceEntryState {
+    pub(in crate::shell::sidebar) focused: bool,
+    pub(in crate::shell::sidebar) selected: bool,
+    pub(in crate::shell::sidebar) navigating: bool,
+    pub(in crate::shell::sidebar) dragged: bool,
+    /// The machine's sidebar colours. The navigation cursor and a drag keep
+    /// their own highlight, so a selected or dragged entry is drawn in the
+    /// theme's plain look; a focused one takes the stronger tint.
+    pub(in crate::shell::sidebar) look: Option<host_colors::PillLook>,
+}
+
 pub(in crate::shell::sidebar) fn render_workspace_rows(
     buffer: &mut Buffer,
     area: Rect,
@@ -81,15 +96,25 @@ pub(in crate::shell::sidebar) fn render_workspace_rows(
     status: shepr_protocol::AgentStatus,
     indicators: shepr_config::StatusIndicatorStyle,
     rows: &[Vec<ResolvedToken>],
-    focused: bool,
-    selected: bool,
-    navigating: bool,
-    dragged: bool,
+    state: WorkspaceEntryState,
     palette: &Palette,
 ) {
+    let WorkspaceEntryState {
+        focused,
+        selected,
+        navigating,
+        dragged,
+        look,
+    } = state;
+    let look = look.filter(|_| !selected && !dragged);
     // Callers' rects come from the sidebar layout; clip to the buffer anyway so nothing below
     // writes past it.
     let area = area.intersection(buffer.area);
+    // The tint goes down first so the text drawn over it keeps its own colours.
+    let tint = look.and_then(|look| look.background(focused));
+    if let Some(tint) = tint {
+        buffer.set_style(area, Style::default().bg(tint));
+    }
     let number = format!("{workspace_number:<2} ");
     let number_width = display_width(&number);
     for row_index in 0..rows.len().max(1) {
@@ -107,7 +132,7 @@ pub(in crate::shell::sidebar) fn render_workspace_rows(
                 y,
                 area.right().saturating_sub(number_x),
                 &number,
-                Style::default().fg(palette.overlay0),
+                Style::default().fg(look.map_or(palette.overlay0, host_colors::PillLook::accent)),
             );
         }
         let highlighted = focused || dragged;
@@ -128,15 +153,28 @@ pub(in crate::shell::sidebar) fn render_workspace_rows(
             palette.overlay0
         });
         let glyph = status_glyph(status, indicators, palette, false);
+        let themed = TokenStyles::themed(
+            glyph.style,
+            workspace_style,
+            secondary_style,
+            Style::default().fg(palette.overlay1),
+            palette,
+        );
+        let styles = match look {
+            Some(look) => TokenStyles {
+                state_text: glyph.style,
+                primary: look.text(workspace_style, row_index),
+                secondary: look.text(secondary_style, row_index),
+                machine: look.text(secondary_style, row_index),
+                terminal_title: look.text(themed.terminal_title, row_index),
+                separator: look.separator(palette, row_index),
+            },
+            None => themed,
+        };
         let spans = resolved_token_spans(
             rows.get(row_index).map_or(&[], Vec::as_slice),
             glyph,
-            TokenStyles {
-                state_text: glyph.style,
-                primary: workspace_style,
-                secondary: secondary_style,
-                terminal_title: Style::default().fg(palette.overlay1),
-            },
+            styles,
             palette,
             area.right().saturating_sub(2).saturating_sub(x) as usize,
         );
@@ -152,7 +190,8 @@ pub(in crate::shell::sidebar) fn render_workspace_rows(
         Some(workspace_selection_background(palette))
     } else if dragged {
         Some(palette.surface1)
-    } else if focused {
+    } else if focused && tint.is_none() {
+        // A tinted entry already took its focused tint above.
         Some(workspace_active_background(palette, navigating))
     } else {
         None

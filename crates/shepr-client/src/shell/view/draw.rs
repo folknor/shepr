@@ -118,7 +118,7 @@ pub(super) fn draw_frame(state: &ClientShellState, view: &ShellView) -> Option<D
                         hit.scroll,
                         palette,
                         shepr_term::host::TerminalTheme {
-                            background: state.host_background,
+                            background: state.host_theme.background,
                             ..Default::default()
                         },
                         &mut |x, y, style| {
@@ -426,7 +426,7 @@ fn render_mode_bar(
                         configured_key_labels(&[&navigate.workspace_up, &navigate.workspace_down]),
                         key,
                     ),
-                    (" workspace  ".to_owned(), base),
+                    (" workspace/agent  ".to_owned(), base),
                     (
                         configured_key_labels(&[
                             &navigate.cycle_pane_next,
@@ -782,7 +782,7 @@ mod tests {
             .collect::<Vec<_>>()
             .concat();
         assert!(row.contains("q back"), "{row}");
-        assert!(row.contains("u / d workspace"), "{row}");
+        assert!(row.contains("u / d workspace/agent"), "{row}");
         assert!(row.contains("n / p pane"), "{row}");
         assert!(!row.contains("esc back"), "{row}");
         assert!(!row.contains("↑/↓"), "{row}");

@@ -6,8 +6,6 @@ use crate::shell::config::ClientShellConfig;
 use crate::shell::ledger::{DropReason, Ledger, Submitted, Work};
 use crate::shell::navigation::location::LocationTarget;
 use crate::shell::notices::ClientEndpointNoticeKind;
-use crate::shell::overlays::Overlay;
-use crate::shell::overlays::rename::RenameTarget;
 use crate::shell::state::{
     ClientShellAction, ClientShellEndpointError, ClientShellInput, ClientShellState,
 };
@@ -268,16 +266,10 @@ fn start_word(s: &mut ClientShellState) -> shepr_protocol::RequestId {
     s.request_word_selection(&hit, hit.scroll.expect("scroll"), 0, 1, &mut out);
     request_id(&out.actions).to_owned()
 }
-fn start_label(s: &mut ClientShellState) -> shepr_protocol::RequestId {
-    let mut out = ClientShellInput::default();
-    s.open_new_workspace_overlay(&mut out);
-    request_id(&out.actions).to_owned()
-}
-
 /// The copy-mode motion and search requests have their own test in `copy`.
 #[test]
 fn a_dropped_request_runs_its_rollback_and_sends_nothing() {
-    for kind in 0..5 {
+    for kind in 0..4 {
         let mut s = copy_shell();
         let id = match kind {
             0 | 1 => {
@@ -298,8 +290,7 @@ fn a_dropped_request_runs_its_rollback_and_sends_nothing() {
                 );
                 request_id(&out.actions).to_owned()
             }
-            2 => start_label(&mut s),
-            3 => {
+            2 => {
                 let id = start_scroll(&mut s, 3);
                 s.push_pane_scroll_offset(
                     test_pane_id("w1:p1"),
@@ -316,20 +307,8 @@ fn a_dropped_request_runs_its_rollback_and_sends_nothing() {
         // Nothing removes an orphan: a rollback that opened a request would leave it here.
         assert_eq!(s.ledger.len(), count - 1);
         match kind {
-            2 => {
-                let Some(Overlay::Rename(rename)) = &s.overlay else {
-                    panic!("overlay")
-                };
-                assert!(matches!(
-                    rename.target(),
-                    RenameTarget::NewWorkspace {
-                        label_lookup: None,
-                        ..
-                    }
-                ));
-            }
-            3 => assert!(s.scroll_lanes.is_idle()),
-            4 => assert!(s.mouse_selection.word_gesture.is_none()),
+            2 => assert!(s.scroll_lanes.is_idle()),
+            3 => assert!(s.mouse_selection.word_gesture.is_none()),
             _ => {}
         }
     }
@@ -444,56 +423,12 @@ fn a_word_selection_answer_for_a_replaced_gesture_is_ignored() {
 }
 
 #[test]
-fn a_workspace_label_answer_for_a_reopened_overlay_is_ignored() {
-    let mut s = ready_shell();
-    let old = start_label(&mut s);
-    let current = start_label(&mut s);
-    let out = answer(
-        &mut s,
-        &old,
-        Ok(EndpointReply::WorkspaceCheckoutRoot {
-            root: Some("/different".into()),
-            home: None,
-        }),
-    );
-    assert!(!out.repaint);
-    let Some(Overlay::Rename(rename)) = s.overlay.as_ref() else {
-        panic!("overlay")
-    };
-    assert!(matches!(
-        rename.target(),
-        RenameTarget::NewWorkspace {
-            label_lookup: Some(_),
-            ..
-        }
-    ));
-    answer(
-        &mut s,
-        &current,
-        Ok(EndpointReply::WorkspaceCheckoutRoot {
-            root: Some("/different".into()),
-            home: None,
-        }),
-    );
-    let Some(Overlay::Rename(rename)) = s.overlay.as_ref() else {
-        panic!("overlay")
-    };
-    assert!(matches!(
-        rename.target(),
-        RenameTarget::NewWorkspace {
-            label_lookup: None,
-            ..
-        }
-    ));
-}
-
-#[test]
 fn a_projection_reset_drops_every_request_with_its_feature_state() {
     let mut s = copy_shell();
     copy_search(&mut s);
     start_word(&mut s);
     start_scroll(&mut s, 3);
-    start_label(&mut s);
+    s.open_new_workspace_overlay();
     // The presented server reboots, which resets the projection.
     let mut rebooted = snapshot();
     rebooted.boot_id = crate::tests::test_boot_id("rebooted");
@@ -515,7 +450,6 @@ fn a_reset_drops_requests_before_resetting_features() {
     request_id(&motion.actions);
     assert!(s.copy_in_flight());
     start_word(&mut s);
-    start_label(&mut s);
     assert!(!s.ledger.is_empty());
 
     // A reboot of the presented endpoint resets the projection, which drops every

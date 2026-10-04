@@ -34,7 +34,7 @@ use crate::server::clients::{
     ClientConnection, ClientDeparture, ClientRegistry, ClientShellLocationGeneration,
     ClientShellState, ShellSessionGeneration, render_targets,
 };
-use crate::server::outbox::{ClientOutbox, Delivery, ReleaseMode, ReplyTicket};
+use crate::server::outbox::{ClientOutbox, Delivery, ReleaseMode};
 use crate::server::pane_input::apply_client_pane_input_events;
 use crate::server::pane_surface::render_pane_surface as render_client_shell_pane_surface;
 use crate::server::render_stream::ViewEpoch;
@@ -51,7 +51,6 @@ mod render;
 mod retained_surface;
 mod schedule;
 mod surface_interest;
-mod worker;
 
 pub use bootstrap::{RunServerError, ServerReady, run_server};
 use lifecycle::UnexpectedPhase;
@@ -79,7 +78,6 @@ enum LoopEvent {
     Internal(AppEvent),
     Api(Box<shepr_api::ApiRequestMessage>),
     ServerEvent(ServerEvent),
-    WorkerCompletion(worker::WorkerCompletion),
 }
 
 /// What pulling the PTY-reported terminal titles changed.
@@ -111,9 +109,9 @@ struct ClientViewKey {
     host_cell: shepr_core::geometry::HostCell,
 }
 
-/// Coordinates the event loop without a real terminal. Lifecycle policy and
-/// asynchronous endpoint workers own their rules separately. Client geometry
-/// application stays here because it can start resumes and send focus reports;
+/// Coordinates the event loop without a real terminal. Lifecycle policy owns
+/// its rules separately. Client geometry application stays here because it
+/// can start resumes and send focus reports;
 /// render coordination settles each connection's location, baseline and outbox
 /// against the same app revision, rather than owning a second client registry.
 pub(crate) struct HeadlessServer {
@@ -198,7 +196,6 @@ pub(crate) struct HeadlessServer {
     /// writers after a render drains, and the host shutdown monitor. Wakes an
     /// idle loop to reap, release replies, refresh surfaces, or sync shutdown.
     outbox_wake: Arc<tokio::sync::Notify>,
-    workers: worker::EndpointWorkers,
     /// This server's `ui.window_title` and host name; `None` when window
     /// titles are disabled. Never part of `AppState`.
     window_title: Option<crate::ui::WindowTitleSettings>,
@@ -276,7 +273,6 @@ impl HeadlessServer {
             shutdown_flushes: Vec::new(),
             pending_checkpointed_pane_exits: VecDeque::new(),
             outbox_wake,
-            workers: worker::EndpointWorkers::new(),
             window_title,
         }
     }
@@ -403,10 +399,9 @@ impl HeadlessServer {
         loop {
             // If shutdown has been initiated, complete it and exit.
             if self.lifecycle.phase() == ShutdownPhase::Stopping {
-                // Finalize any reply still in the outbox before waiting for
-                // client flushes. Replies held when shutdown began were
-                // already queued ahead of the shutdown notice.
-                self.resolve_pending_endpoint_replies_for_shutdown();
+                // Release any reply still held before waiting for client
+                // flushes. Replies held when shutdown began were already
+                // queued ahead of the shutdown notice.
                 self.release_endpoint_replies(ReleaseMode::Shutdown);
                 if let Err(err) = self.complete_shutdown().await {
                     run_error.get_or_insert(RunServerError::Shutdown(err));
@@ -581,9 +576,8 @@ impl HeadlessServer {
                     // Already dequeued, so the shutdown drain would never see
                     // it; answer it here.
                     LoopEvent::Api(msg) => self.reject_api_request_for_shutdown(&msg),
-                    // A worker completion and a client endpoint request land
-                    // here: the shutdown flush answers a pending reply with
-                    // the shutdown refusal.
+                    // A client endpoint request lands here, its refusal
+                    // already queued above; nothing else needs an answer.
                     _ => {}
                 }
                 continue;
@@ -604,11 +598,6 @@ impl HeadlessServer {
                 }
                 LoopEvent::ServerEvent(ev) => {
                     self.handle_server_event(ev);
-                }
-                LoopEvent::WorkerCompletion(completion) => {
-                    if self.handle_worker_completion(completion) {
-                        self.mark_view_changed();
-                    }
                 }
             }
         }
@@ -694,12 +683,6 @@ impl HeadlessServer {
             // cloned to clients), so this cannot close while the loop runs.
             maybe_server_ev = self.server_event_rx.recv() => match maybe_server_ev {
                 Some(ev) => LoopEvent::ServerEvent(ev),
-                None => LoopEvent::Timer,
-            },
-            // The server keeps the worker sender it hands to jobs, so this
-            // cannot close while the loop runs.
-            maybe_worker = self.workers.recv() => match maybe_worker {
-                Some(completion) => LoopEvent::WorkerCompletion(completion),
                 None => LoopEvent::Timer,
             },
             _ = sleep_until_or_pending(next_deadline) => LoopEvent::Timer,
@@ -1104,29 +1087,6 @@ impl HeadlessServer {
         }
     }
 
-    fn reserve_endpoint_reply(
-        &mut self,
-        client_id: ClientId,
-        message: &ServerMessage,
-    ) -> Option<ReplyTicket> {
-        let seq = self
-            .clients
-            .get_mut(&client_id)?
-            .outbox
-            .reserve_reply(message)?;
-        Some(ReplyTicket { client_id, seq })
-    }
-
-    fn complete_endpoint_reply(&mut self, ticket: ReplyTicket, message: &ServerMessage) {
-        if let Some(outbox) = self
-            .clients
-            .get_mut(&ticket.client_id)
-            .map(|client| &mut client.outbox)
-        {
-            outbox.complete_reply(ticket.seq, message);
-        }
-    }
-
     /// Moves every client's ready held replies onto its control lane. Called
     /// after a render pass (which projected every stale or moved client, so a
     /// reply follows the snapshot its command changed on the control FIFO)
@@ -1136,12 +1096,6 @@ impl HeadlessServer {
     fn release_endpoint_replies(&mut self, mode: ReleaseMode) {
         for (_, client) in &mut self.clients {
             client.outbox.release_replies(mode);
-        }
-    }
-
-    fn resolve_pending_endpoint_replies_for_shutdown(&mut self) {
-        for (_, client) in &mut self.clients {
-            client.outbox.resolve_replies_for_shutdown();
         }
     }
 
@@ -1324,9 +1278,12 @@ impl HeadlessServer {
                 // pane-less clipboard destination.
                 // Geometry settlement invalidates the affected workspace's
                 // viewers; a resize must not advance unrelated clients' epoch.
+                // A host window or sidebar drag sends a run of these, so the
+                // panes' PTYs follow once the size settles.
                 self.resize_shell_workspaces_sized_for(
                     client_id,
                     client_views::PendingResumes::Start,
+                    crate::app::PaneResizeTiming::Settled,
                 );
             }
             ServerEvent::ShellHostTheme { client_id, update } => {
@@ -1529,6 +1486,10 @@ impl HeadlessServer {
 
         self.app.service_session_saves(now);
 
+        // Resized panes have only their viewers recompute (as a geometry
+        // settlement does), so this does not count as a shared view change.
+        self.apply_due_pane_resizes();
+
         let mut synced_host_shutdown_for_exits = false;
         for _ in 0..self.pending_checkpointed_pane_exits.len() {
             let Some(pending) = self.pending_checkpointed_pane_exits.pop_front() else {
@@ -1564,12 +1525,6 @@ impl HeadlessServer {
             self.sync_pane_focus_after(&resumed.replaced_runtimes);
         }
         changed | resumed.consumed
-    }
-
-    fn handle_worker_completion(&mut self, completion: worker::WorkerCompletion) -> bool {
-        let (ticket, message) = completion.into_reply();
-        self.complete_endpoint_reply(ticket, &message);
-        false
     }
 }
 

@@ -44,7 +44,6 @@ pub(in crate::shell) struct ExpandedSidebarView {
     pub(in crate::shell) area: Rect,
     pub(in crate::shell) divider: Rect,
     pub(in crate::shell) section_divider: Rect,
-    pub(in crate::shell) toggle: Rect,
     pub(in crate::shell) workspace_area: Rect,
     pub(in crate::shell) workspaces: ListView<ExpandedSlot>,
     pub(in crate::shell) drop_indicator: Option<u16>,
@@ -93,6 +92,9 @@ pub(in crate::shell) struct CollapsedSidebarView {
     pub(in crate::shell) workspaces: ListView<CollapsedSlot>,
     pub(super) divider_y: Option<u16>,
     pub(in crate::shell) agents: Vec<AgentSlot>,
+    /// How many agent rows the column has room for. It does not scroll, so navigate mode
+    /// reaches only these.
+    pub(in crate::shell) agent_capacity: usize,
     pub(in crate::shell) toggle: Rect,
 }
 
@@ -124,6 +126,8 @@ pub(in crate::shell) struct SidebarInputs<'a> {
     pub(in crate::shell) section_split: SectionSplit,
     pub(in crate::shell) dragged_workspace: Option<&'a shepr_protocol::WorkspaceId>,
     pub(in crate::shell) drop_indicator_row: Option<u16>,
+    /// The per-host colours derived from the host terminal's colours, if any.
+    pub(in crate::shell) host_pills: Option<&'a shepr_term::host_tint::HostPillPalette>,
 }
 
 impl SidebarInputs<'_> {
@@ -180,8 +184,8 @@ pub(super) fn endpoint_signal(
 }
 
 /// Lays out the sidebar in `area` and resolves the scroll state against that layout.
-/// `implied_selected_reveal` asks for the selected workspace to be revealed without a
-/// stored request (the size changed while navigating).
+/// `implied_selected_reveal` asks for the selected workspace or agent to be revealed
+/// without a stored request (the size changed while navigating).
 pub(in crate::shell) fn resolve_sidebar(
     area: Rect,
     form: SidebarForm,
@@ -426,6 +430,7 @@ fn resolve_collapsed(
             },
             divider_y,
             agents,
+            agent_capacity: usize::from(detail_area.height),
             toggle,
         },
         resolution,
@@ -611,13 +616,8 @@ fn resolve_expanded(
         }
     });
 
-    let (agents, agent_start, agent_consumed) = resolve_agent_panel(detail_area, inputs, scroll);
-    let toggle = Rect::new(
-        area.right().saturating_sub(2),
-        area.bottom().saturating_sub(1),
-        u16::from(area.width > 1),
-        u16::from(area.height > 0),
-    );
+    let (agents, agent_start, agent_consumed) =
+        resolve_agent_panel(detail_area, inputs, scroll, implied_selected_reveal);
     let resolution = SidebarScrollResolution {
         workspaces: list.start,
         agents: agent_start,
@@ -629,7 +629,6 @@ fn resolve_expanded(
             area,
             divider,
             section_divider,
-            toggle,
             workspace_area,
             workspaces: ListView {
                 body,
@@ -647,11 +646,13 @@ fn resolve_expanded(
 }
 
 /// Lays out the expanded agent section and resolves its list. Returns the view, the
-/// start to commit and whether the agent reveal was consumed.
+/// start to commit and whether the agent reveal was consumed. `implied_selected_reveal`
+/// also reveals a selected agent, as it does a selected workspace.
 fn resolve_agent_panel(
     area: Rect,
     inputs: &SidebarInputs<'_>,
     scroll: &SidebarScroll,
+    implied_selected_reveal: bool,
 ) -> (Option<AgentPanelView>, Option<usize>, bool) {
     if area.height == 0 {
         return (None, None, false);
@@ -696,7 +697,11 @@ fn resolve_agent_panel(
         }
     };
     let gaps = (0..rows.len()).map(gap_after).collect::<Vec<_>>();
-    let target = scroll.agent_reveal().and_then(|location| {
+    let implied = inputs
+        .selected
+        .filter(|_| implied_selected_reveal)
+        .map(|selected| &selected.location);
+    let target = scroll.agent_reveal().or(implied).and_then(|location| {
         rows.iter().position(|row| {
             row.endpoint_id == location.endpoint && Some(row.agent.pane_id) == location.pane_id()
         })
@@ -761,6 +766,7 @@ mod tests {
         let machine = shepr_config::MachineConfig {
             label: shepr_config::MachineLabel::parse("Build").expect("test precondition"),
             ssh: shepr_config::SshTarget::parse("dev@build.example").expect("test precondition"),
+            palette: None,
         };
         let remote = ClientEndpointId::Ssh(machine.label.clone());
         let mut state = ClientShellState::new(ClientShellConfig::from_config(
@@ -798,6 +804,7 @@ mod tests {
             section_split: SectionSplit::DEFAULT,
             dragged_workspace: None,
             drop_indicator_row: None,
+            host_pills: state.host_pills.as_ref(),
         }
     }
 

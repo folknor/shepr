@@ -159,7 +159,8 @@ pub(crate) trait WorkspaceFixture: Sized {
     /// neither the runner's cwd nor a git repository.
     fn test_new(name: &str) -> Self;
     /// One pane whose terminal reports `cwd`, which is also the workspace's
-    /// identity cwd; `label` is the workspace's custom name, if any.
+    /// identity cwd; `label` is the workspace's name, or `None` to name it
+    /// after `cwd`.
     fn test_at(label: Option<&str>, cwd: &Path) -> Self;
     /// Split the focused pane; returns the new pane.
     fn test_split(&mut self, direction: Direction) -> PaneId;

@@ -56,15 +56,6 @@ pub(super) fn add_linked_worktree(common_dir: &Path, name: &str, checkout: &Path
     );
 }
 
-pub(crate) fn create_repo_with_linked_worktree(name: &str) -> (PathBuf, PathBuf, PathBuf) {
-    let base = temp_test_dir(name);
-    let repo = base.join("shepr");
-    let checkout = base.join("testr56");
-    write_git_dir(&repo.join(".git"), "main", false);
-    add_linked_worktree(&repo.join(".git"), "testr56", &checkout);
-    (base, repo, checkout)
-}
-
 pub(crate) fn create_bare_repo_with_linked_worktree(name: &str) -> (PathBuf, PathBuf, PathBuf) {
     let base = temp_test_dir(name);
     let bare = base.join(".bare");

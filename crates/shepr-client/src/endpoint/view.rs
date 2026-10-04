@@ -297,6 +297,7 @@ mod tests {
             shell.set_machines(&[shepr_config::MachineConfig {
                 label: shepr_config::MachineLabel::parse("build").expect("machine"),
                 ssh: shepr_config::SshTarget::parse("host").expect("SSH"),
+                palette: None,
             }]);
             shell.endpoint_connected(&ClientEndpointId::Local, test_generation(1));
             shell.set_endpoint_snapshot_for_generation(

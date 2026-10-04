@@ -26,16 +26,6 @@ struct LocatedGitDir {
     from_gitfile: bool,
 }
 
-/// The label for a cwd outside any Git checkout: `~` for the home directory,
-/// the directory name otherwise. This runs when a workspace's identity cwd
-/// changes or its Git status is refreshed, never per frame, so `$HOME` is
-/// read here. Shared fallback naming stays in core; this wrapper only supplies
-/// the resolved home. An unusable `HOME` only means the `~` label is not offered.
-pub fn fallback_label_from_cwd(cwd: &Path) -> String {
-    let home = shepr_core::pathutil::home_dir().ok();
-    shepr_core::workspace_label::workspace_label_from_cwd(cwd, None, home.as_deref())
-}
-
 /// Status callers keep their `Option` plus accumulated-error boundary;
 /// this adapter delegates repository classification to the shared discovery.
 pub(super) fn git_worktree_info_with_errors(
@@ -54,14 +44,6 @@ pub(super) fn git_worktree_info_with_errors(
 
 pub(super) fn discover(cwd: &Path) -> Discovery {
     discover_below(cwd, &GitCeilings::from_env())
-}
-
-pub fn discover_checkout_root(cwd: &Path) -> Result<Option<PathBuf>, GitReadError> {
-    match discover(cwd) {
-        Discovery::Checkout(info) => Ok(Some(canonicalize_best_effort_path(&info.repo_root))),
-        Discovery::Outside => Ok(None),
-        Discovery::Unreadable(error) => Err(error),
-    }
 }
 
 fn discover_below(cwd: &Path, ceilings: &GitCeilings) -> Discovery {
@@ -643,13 +625,6 @@ pub(crate) fn git_worktree_info(cwd: &Path) -> Option<GitWorktreeInfo> {
     git_worktree_info_with_errors(cwd, &mut Vec::new())
 }
 
-/// Inside a Git checkout the label is the checkout root's name; the home
-/// directory is never consulted, so none is resolved.
-#[cfg(test)]
-pub(crate) fn automatic_workspace_label(cwd: &Path, repo_root: &Path) -> String {
-    shepr_core::workspace_label::workspace_label_from_cwd(cwd, Some(repo_root), None)
-}
-
 #[cfg(test)]
 fn git_worktree_location_below_with_errors(
     start: &Path,
@@ -679,14 +654,6 @@ pub(super) fn read_ref_oid_with_errors(
         return None;
     };
     read_ref_oid_for_full_ref(common_dir, &full_ref, errors).map(|oid| oid.as_str().to_owned())
-}
-
-#[cfg(test)]
-fn derive_label_from_cwd(cwd: &Path) -> String {
-    match git_repo_root(cwd) {
-        Some(repo_root) => automatic_workspace_label(cwd, &repo_root),
-        None => fallback_label_from_cwd(cwd),
-    }
 }
 
 #[cfg(test)]
@@ -1152,37 +1119,20 @@ mod tests {
     }
 
     #[test]
-    fn bare_source_and_linked_checkout_labels_use_each_checkout_root() {
+    fn bare_source_and_linked_checkout_each_have_their_own_root() {
         let _env = shepr_test_support::IsolatedEnv::new();
         let (_, bare, checkout) =
             crate::test_support::create_bare_repo_with_linked_worktree("bare-linked-labels");
 
         let bare_info = git_worktree_info(&bare).expect("test precondition");
         let checkout_info = git_worktree_info(&checkout).expect("test precondition");
-        let bare_auto_label = automatic_workspace_label(&bare, &bare_info.repo_root);
-        let checkout_auto_label = automatic_workspace_label(&checkout, &checkout_info.repo_root);
 
         assert_eq!(bare_info.repo_root, bare);
         assert_eq!(checkout_info.repo_root, checkout);
-        assert_eq!(
-            bare_auto_label,
-            bare.file_name()
-                .expect("test precondition")
-                .to_str()
-                .expect("test precondition")
-        );
-        assert_eq!(
-            checkout_auto_label,
-            checkout
-                .file_name()
-                .expect("test precondition")
-                .to_str()
-                .expect("test precondition")
-        );
     }
 
     #[test]
-    fn embedded_dot_bare_source_and_checkout_labels_use_each_checkout_root() {
+    fn embedded_dot_bare_source_and_checkout_each_have_their_own_root() {
         let _env = shepr_test_support::IsolatedEnv::new();
         let base = temp_test_dir("embedded-dot-bare");
         let repo = base.join("reported-repo");
@@ -1197,14 +1147,6 @@ mod tests {
 
         assert_eq!(source.repo_root, repo);
         assert_eq!(linked.repo_root, checkout);
-        assert_eq!(
-            automatic_workspace_label(&repo, &source.repo_root),
-            "reported-repo"
-        );
-        assert_eq!(
-            automatic_workspace_label(&checkout, &linked.repo_root),
-            "develop"
-        );
     }
 
     #[test]
@@ -1220,36 +1162,6 @@ mod tests {
             canonicalize_best_effort_path(&root.join(".git"))
         );
         assert_eq!(info.repo_root, root);
-    }
-
-    #[test]
-    fn derive_label_prefers_repo_root_name() {
-        let _env = shepr_test_support::IsolatedEnv::new();
-        let root = temp_test_dir("label-repo");
-        let nested = root.join("nested");
-        std::fs::create_dir_all(root.join(".git")).expect("test precondition");
-        std::fs::write(root.join(".git/HEAD"), "ref: refs/heads/main\n")
-            .expect("test precondition");
-        std::fs::create_dir_all(&nested).expect("test precondition");
-
-        assert_eq!(
-            derive_label_from_cwd(&nested),
-            root.file_name()
-                .and_then(|name| name.to_str())
-                .expect("test precondition")
-        );
-    }
-
-    #[test]
-    fn derive_label_uses_path_name_outside_git() {
-        let _env = shepr_test_support::IsolatedEnv::new();
-        let root = temp_test_dir("label-plain");
-        let label = root
-            .file_name()
-            .and_then(|name| name.to_str())
-            .expect("test precondition");
-
-        assert_eq!(derive_label_from_cwd(Path::new(&root)), label);
     }
 
     /// Production reads a reftable store through Git, and the store is a

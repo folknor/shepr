@@ -761,7 +761,7 @@ fn failed_wl_copy_uses_x11_fallback() {
     commands[0].program = fake_wl_copy;
     commands[1].program = fake_xclip;
 
-    let wrote = write_clipboard_with(&commands, b"clipboard fallback");
+    let wrote = write_clipboard_and_primary_with(&commands, &[], b"clipboard fallback");
     let recorded = std::fs::read(&payload);
 
     assert!(wrote);
@@ -786,6 +786,32 @@ fn finite_clipboard_commands_report_exit_status() {
         b"clipboard text",
         clipboard_deadline()
     ));
+}
+
+#[test]
+fn no_clipboard_helper_is_started_once_the_deadline_has_passed() {
+    let temp_dir = fake_clipboard_dir("late-helper");
+    let payload = temp_dir.join("payload");
+    let helper = ClipboardCommand {
+        program: fake_clipboard_program(
+            &temp_dir,
+            "xclip",
+            &[Step::To(payload.clone()), Step::Cat],
+        ),
+        args: &[],
+        owns_selection_after_exit: false,
+    };
+
+    // The real clock reads the deadline itself or later.
+    assert!(!run_clipboard_command(
+        &helper,
+        b"clipboard text",
+        Instant::now()
+    ));
+    assert!(
+        !payload.try_exists().expect("stat the payload path"),
+        "a helper started after the deadline ran"
+    );
 }
 
 #[test]

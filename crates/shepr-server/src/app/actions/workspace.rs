@@ -8,10 +8,10 @@ impl AppState {
     pub(crate) fn rename_workspace(
         &mut self,
         id: &shepr_protocol::WorkspaceId,
-        label: Option<String>,
+        name: String,
     ) -> Option<ViewMutation> {
         let workspace = self.workspaces.get_mut(id)?;
-        if !workspace.set_custom_name(label) {
+        if !workspace.set_name(name) {
             return Some(ViewMutation::Unchanged);
         }
         crate::logging::workspace_renamed(&workspace.id());

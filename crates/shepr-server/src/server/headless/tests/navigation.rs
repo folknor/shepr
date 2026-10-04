@@ -600,6 +600,7 @@ async fn pane_death_reconciles_each_client_view_and_focus() {
             shepr_core::geometry::HostCell::Unknown
         ),
     }));
+    assert!(settle_pane_resizes(&mut server));
     assert_ne!(
         server.app.test_runtime(second_pane).current_size(),
         before_resize

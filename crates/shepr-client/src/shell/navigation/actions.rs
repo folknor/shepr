@@ -74,7 +74,7 @@ impl ClientShellState {
                 }
                 if action == shepr_termio::input::KeybindAction::NewWorkspace {
                     if self.config.prompt_new_workspace_name {
-                        self.open_new_workspace_overlay(outcome);
+                        self.open_new_workspace_overlay();
                     } else {
                         self.push_endpoint_command(
                             EndpointCommand::WorkspaceCreate(

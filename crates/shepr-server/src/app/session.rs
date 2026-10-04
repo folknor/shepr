@@ -1505,7 +1505,7 @@ mod tests {
             let first = layout.panes()[0].public_number;
             WorkspaceSnapshot {
                 id: id.parse().expect("workspace id"),
-                custom_name: Some(name.into()),
+                name: name.into(),
                 layout,
                 next_public_pane_number: number(next),
                 zoomed: false,
@@ -1555,9 +1555,9 @@ mod tests {
             app.state
                 .workspaces
                 .iter()
-                .map(|workspace| workspace.custom_name().map(str::to_owned))
+                .map(shepr_mux::workspace::Workspace::name)
                 .collect::<Vec<_>>(),
-            vec![Some("healthy".to_owned())],
+            vec!["healthy"],
             "the saved session loaded and only the invalid workspace was dropped"
         );
         let backups = data_dir.join("session-backups");
@@ -2085,7 +2085,7 @@ mod tests {
                     .into_snapshot()
                     .expect("newer session should be saved");
                 assert_eq!(snapshot.workspaces.len(), 1);
-                assert_eq!(snapshot.workspaces[0].custom_name.as_deref(), Some("newer"));
+                assert_eq!(snapshot.workspaces[0].name, "newer");
             }
         }
     }

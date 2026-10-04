@@ -247,6 +247,7 @@ pub struct ClientConfig {
     pub theme: ThemeConfig,
     pub keys: KeysConfig,
     pub ui: ClientUiConfig,
+    pub local: super::LocalConfig,
     pub machines: Vec<super::MachineConfig>,
 }
 
@@ -363,7 +364,7 @@ pub struct ServerUiConfig {
     /// Show agent labels in split pane borders when no manual pane label is set. Default: false.
     pub show_agent_labels_on_pane_borders: bool,
     /// Format for the outer terminal window title. Empty leaves the title alone.
-    /// Default: "{hostname}: {workspace}".
+    /// Default: "shepr: {hostname}".
     pub window_title: String,
 }
 

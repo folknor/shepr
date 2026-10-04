@@ -287,15 +287,15 @@ macro_rules! keybinding_table {
             }
             navigate {
                 (navigate_back, back, Back, "esc", Navigation, "back", "Leave navigate mode.", None),
-                (navigate_workspace_up, workspace_up, WorkspaceUp, "up", Navigation, "workspace list", "Move the workspace selection up.", None),
-                (navigate_workspace_down, workspace_down, WorkspaceDown, "down", Navigation, "workspace list", "Move the workspace selection down.", None),
+                (navigate_workspace_up, workspace_up, WorkspaceUp, "up", Navigation, "workspaces and agents", "Move the selection up through the agent list, then the workspace list above it.", None),
+                (navigate_workspace_down, workspace_down, WorkspaceDown, "down", Navigation, "workspaces and agents", "Move the selection down the workspace list, then the agent list below it.", None),
                 (navigate_pane_left, pane_left, PaneLeft, "h", Navigation, "move focus", "Focus the pane to the left in navigate mode. The left arrow always does too.", Left),
                 (navigate_pane_down, pane_down, PaneDown, "j", Navigation, "move focus", "Focus the pane below in navigate mode.", None),
                 (navigate_pane_up, pane_up, PaneUp, "k", Navigation, "move focus", "Focus the pane above in navigate mode.", None),
                 (navigate_pane_right, pane_right, PaneRight, "l", Navigation, "move focus", "Focus the pane to the right in navigate mode. The right arrow always does too.", Right),
                 (navigate_cycle_pane_next, cycle_pane_next, CyclePaneNext, "tab", Navigation, "cycle pane", "Focus the next pane while navigate mode is open.", None),
                 (navigate_cycle_pane_previous, cycle_pane_previous, CyclePanePrevious, "shift+tab", Navigation, "cycle pane", "Focus the previous pane while navigate mode is open.", None),
-                (navigate_open_workspace, open_workspace, OpenWorkspace, "enter", Navigation, "open workspace", "Open the selected workspace.", None),
+                (navigate_open_workspace, open_workspace, OpenWorkspace, "enter", Navigation, "open selection", "Open the selected workspace, or focus the selected agent's pane.", None),
             }
             navigate_indexed {
                 (navigate_switch_workspace, switch_workspace, SwitchWorkspace, "1..9", Navigation, "switch workspace", "Switch to a workspace by index while navigate mode is open.", None),

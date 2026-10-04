@@ -6,7 +6,6 @@ use crate::shell::input::scroll_lanes::ScrollLanes;
 use crate::shell::input::selection::MouseSelection;
 use crate::shell::navigation::workspace_navigation::PendingWorkspaceHighlight;
 use crate::shell::notices::{ClientEndpointNoticeKind, NoticeCode};
-use crate::shell::overlays::{Overlay, drop_label_lookup};
 use crate::shell::state::ClientShellAction;
 use crate::shell::state::{
     ClientShellEndpointError, ClientShellInput, ClientShellState, Repaint, TypedText,
@@ -14,7 +13,7 @@ use crate::shell::state::{
 use crate::shell::{EndpointNotice, EndpointNoticeKind};
 use shepr_protocol::command::{
     CommandKind, EndpointCommand, EndpointError, EndpointReply, PaneCopyMotionReply,
-    PaneCopySearchReply, PaneInfoReply, PaneSelectionReply, WorkspaceCheckoutRootReply,
+    PaneCopySearchReply, PaneInfoReply, PaneSelectionReply,
 };
 use shepr_protocol::{BootId, RequestId};
 use std::collections::HashMap;
@@ -114,9 +113,6 @@ pub(in crate::shell) enum Work {
         highlight: Ticket,
     },
     SelectionCopy,
-    WorkspaceLabel {
-        lookup: Ticket,
-    },
     PaneScroll {
         pane_id: shepr_protocol::PublicPaneId,
         flight: Ticket,
@@ -149,7 +145,6 @@ struct Rollback<'a> {
     copy: &'a mut Option<CopySession>,
     mouse_selection: &'a mut MouseSelection,
     scroll_lanes: &'a mut ScrollLanes,
-    overlay: &'a mut Option<Overlay>,
     highlight: &'a mut Option<PendingWorkspaceHighlight>,
 }
 
@@ -182,9 +177,6 @@ impl Work {
             Self::SelectionCopy | Self::WordSelection { .. } => {
                 matches!(reply, EndpointReply::PaneSelection { .. })
             }
-            Self::WorkspaceLabel { .. } => {
-                matches!(reply, EndpointReply::WorkspaceCheckoutRoot { .. })
-            }
             Self::PaneScroll { .. } => matches!(reply, EndpointReply::PaneInfo { .. }),
             Self::CopyMotion { .. } => matches!(reply, EndpointReply::PaneCopyMotion { .. }),
             Self::CopySearch { .. } => matches!(reply, EndpointReply::PaneCopySearch { .. }),
@@ -206,7 +198,6 @@ impl Work {
                 PendingWorkspaceHighlight::release(parts.highlight, highlight);
                 Repaint::Needed
             }
-            Self::WorkspaceLabel { lookup } => drop_label_lookup(parts.overlay, lookup),
             Self::PaneScroll { pane_id, flight } => {
                 if parts.scroll_lanes.failed(&pane_id, flight) {
                     Repaint::Needed
@@ -250,10 +241,6 @@ impl Work {
                     Repaint::Unchanged
                 }
             }
-            Self::WorkspaceLabel { lookup } => shell.complete_workspace_label_lookup(
-                lookup,
-                decode_reply::<WorkspaceCheckoutRootReply>(result).ok(),
-            ),
             Self::PaneScroll { pane_id, flight } => shell.answer_pane_scroll(
                 flight,
                 &pane_id,
@@ -442,7 +429,6 @@ impl ClientShellState {
             copy: &mut self.copy,
             mouse_selection: &mut self.mouse_selection,
             scroll_lanes: &mut self.scroll_lanes,
-            overlay: &mut self.overlay,
             highlight: &mut self.pending_workspace_highlight,
         }
     }

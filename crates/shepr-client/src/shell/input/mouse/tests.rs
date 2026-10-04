@@ -2075,3 +2075,210 @@ fn selection_edge_drag_requests_scroll_and_timer_continues_it() {
             )
     ));
 }
+
+/// A split drag whose target is the presented surface, with `last_sent` as the ratio the
+/// endpoint was last sent.
+fn current_split_drag_state(last_sent: f32) -> ClientShellState {
+    let mut snapshot = crate::shell::tests::snapshot();
+    snapshot.revision = shepr_test_fixtures::counter_at::<shepr_protocol::ProjectionRevision>(1);
+    let boot_id = snapshot.boot_id.clone();
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
+    state.set_snapshot(Box::new(snapshot));
+    let epoch = shepr_core::layout::LayoutEpoch::default();
+    state.receive_pane_surface_from(
+        split_surface(boot_id, 1, epoch),
+        state
+            .endpoints
+            .active
+            .generation()
+            .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
+    );
+    state.pointer.chrome_drag = Some(ClientChromeDrag::PaneSplit {
+        hit: PaneSplitHit {
+            direction: shepr_protocol::PaneSurfaceSplitDirection::Horizontal,
+            pos: 40,
+            area: Rect::new(0, 0, 80, 19),
+            hit_rect: Rect::new(40, 0, 1, 19),
+            path: vec![SplitBranch::First],
+            epoch,
+        },
+        workspace_id: shepr_protocol::WorkspaceId::from_number(1)
+            .expect("one-based workspace number"),
+        grab_offset: 0,
+        last_sent_ratio: Some(shepr_core::layout::SplitRatio::clamped(last_sent)),
+        throttle: Throttle::new(MOUSE_DRAG_SEND_INTERVAL),
+    });
+    state
+}
+
+fn drag_split_to(state: &mut ClientShellState, column: u16) -> ClientShellInput {
+    let mut outcome = ClientShellInput::default();
+    state.handle_mouse(
+        MouseEvent {
+            kind: MouseEventKind::Drag(MouseButton::Left),
+            column,
+            row: 5,
+            modifiers: crossterm::event::KeyModifiers::empty(),
+        },
+        Instant::now(),
+        &mut outcome,
+    );
+    outcome
+}
+
+#[test]
+fn a_split_drag_does_not_resend_the_ratio_last_sent() {
+    let mut state = current_split_drag_state(0.5);
+
+    // Column 40 of an 80-column area is the ratio the endpoint already has.
+    assert!(drag_split_to(&mut state, 40).actions.is_empty());
+
+    let moved = drag_split_to(&mut state, 60);
+    assert!(matches!(
+        moved.actions.as_slice(),
+        [ClientShellAction::Endpoint { request, .. }]
+            if matches!(
+                &request.command,
+                EndpointCommand::LayoutSetSplitRatio(params)
+                    if (params.ratio.get() - 0.75).abs() < f32::EPSILON
+            )
+    ));
+    assert!(matches!(
+        state.pointer.chrome_drag,
+        Some(ClientChromeDrag::PaneSplit { last_sent_ratio: Some(ratio), .. })
+            if (ratio.get() - 0.75).abs() < f32::EPSILON
+    ));
+}
+
+#[test]
+fn a_projection_reset_settles_an_owed_sidebar_width_resize() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
+    assert_eq!(state.next_timer_deadline(), None);
+    state.pointer.chrome_drag = Some(ClientChromeDrag::SidebarWidth {
+        resize_pending: true,
+    });
+
+    state.pointer.reset_for_projection();
+
+    assert!(state.pointer.chrome_drag.is_none());
+    // Due at once: the next loop pass settles it.
+    assert_eq!(state.next_timer_deadline(), Some(state.now));
+    let now = state.now;
+    let settled = state.tick_timers(now);
+    assert!(
+        settled.resize,
+        "the endpoint is still owed the dragged width"
+    );
+    assert_eq!(state.next_timer_deadline(), None);
+    assert!(!state.tick_timers(now).resize, "settled once");
+}
+
+#[test]
+fn a_projection_reset_owes_nothing_for_an_unmoved_sidebar_or_another_drag() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
+    state.pointer.chrome_drag = Some(ClientChromeDrag::SidebarWidth {
+        resize_pending: false,
+    });
+    state.pointer.reset_for_projection();
+    // The preference save is still due, but no resize.
+    assert!(state.next_timer_deadline().is_some());
+    let now = state.now;
+    assert!(!state.tick_timers(now).resize);
+    assert_eq!(state.next_timer_deadline(), None);
+
+    state.pointer.chrome_drag = Some(ClientChromeDrag::WorkspaceScrollbar { grab_row_offset: 0 });
+    state.pointer.reset_for_projection();
+    assert!(state.pointer.chrome_drag.is_none());
+    assert_eq!(state.next_timer_deadline(), None);
+}
+
+/// The splits of a layout with pane 1 on top and panes 2 | 3 below, in a 100 by 40
+/// pane area: the root top/bottom split's divider on row 20 and the bottom row's left/right
+/// divider on column 50, laid out the way the server publishes them (`split_hit_rect`), with
+/// pane borders and, when `gaps`, pane gaps.
+fn junction_layout_splits(gaps: bool) -> Vec<PaneSplitHit> {
+    let epoch = shepr_core::layout::LayoutEpoch::default();
+    let widen = u16::from(gaps);
+    vec![
+        PaneSplitHit {
+            direction: PaneSurfaceSplitDirection::Horizontal,
+            pos: 50,
+            area: Rect::new(0, 20, 100, 20),
+            hit_rect: Rect::new(50 - widen, 20, 1 + widen, 20),
+            path: vec![SplitBranch::Second],
+            epoch,
+        },
+        PaneSplitHit {
+            direction: PaneSurfaceSplitDirection::Vertical,
+            pos: 20,
+            area: Rect::new(0, 0, 100, 40),
+            hit_rect: Rect::new(0, 20 - widen, 100, 1 + widen),
+            path: Vec::new(),
+            epoch,
+        },
+    ]
+}
+
+fn grabbed(splits: &[PaneSplitHit], point: (u16, u16)) -> Option<PaneSurfaceSplitDirection> {
+    super::split_hit_at(splits, point).map(|hit| hit.direction)
+}
+
+#[test]
+fn a_press_at_a_border_junction_grabs_the_outer_split() {
+    for gaps in [false, true] {
+        let splits = junction_layout_splits(gaps);
+        // The junction cell lies on both divider lines: the outer split wins, whichever
+        // order the surface lists them in.
+        assert_eq!(
+            grabbed(&splits, (50, 20)),
+            Some(PaneSurfaceSplitDirection::Vertical),
+            "gaps: {gaps}"
+        );
+        let reversed = splits.iter().rev().cloned().collect::<Vec<_>>();
+        assert_eq!(
+            grabbed(&reversed, (50, 20)),
+            Some(PaneSurfaceSplitDirection::Vertical),
+            "gaps: {gaps}"
+        );
+        // The top/bottom border away from the junction.
+        assert_eq!(
+            grabbed(&splits, (10, 20)),
+            Some(PaneSurfaceSplitDirection::Vertical),
+            "gaps: {gaps}"
+        );
+        assert_eq!(
+            grabbed(&splits, (80, 20)),
+            Some(PaneSurfaceSplitDirection::Vertical),
+            "gaps: {gaps}"
+        );
+        // The left/right border below the junction.
+        assert_eq!(
+            grabbed(&splits, (50, 30)),
+            Some(PaneSurfaceSplitDirection::Horizontal),
+            "gaps: {gaps}"
+        );
+        // Inside a pane, no split.
+        assert_eq!(grabbed(&splits, (25, 30)), None, "gaps: {gaps}");
+    }
+}
+
+#[test]
+fn a_press_in_a_gap_beside_the_junction_grabs_the_border_whose_line_it_is_on() {
+    let splits = junction_layout_splits(true);
+    // Column 49 is the left/right split's gap column, but row 20 is the top/bottom
+    // divider's own line.
+    assert_eq!(
+        grabbed(&splits, (49, 20)),
+        Some(PaneSurfaceSplitDirection::Vertical)
+    );
+    // Row 19 is the top/bottom split's gap row, above the left/right split's area.
+    assert_eq!(
+        grabbed(&splits, (50, 19)),
+        Some(PaneSurfaceSplitDirection::Vertical)
+    );
+    // The left/right gap column below the junction belongs to the left/right split.
+    assert_eq!(
+        grabbed(&splits, (49, 30)),
+        Some(PaneSurfaceSplitDirection::Horizontal)
+    );
+}

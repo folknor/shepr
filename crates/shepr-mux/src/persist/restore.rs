@@ -608,12 +608,10 @@ fn restore_workspace(
             launch.sized(crate::workspace::spawn_geometry(grid, None))
         })
         .collect();
-    let workspace = Workspace::from_tree(
-        workspace_id,
-        snapshot.custom_name.clone(),
-        identity_cwd,
-        tree,
-    );
+    // A saved name that is blank once trimmed (only a hand-edited file holds
+    // one) falls back to the directory name, as a blank rename does.
+    let name = crate::terminal::Label::new(&snapshot.name).map(crate::terminal::Label::into_string);
+    let workspace = Workspace::from_tree(workspace_id, name, identity_cwd, tree);
     Some((workspace, launches))
 }
 
@@ -863,7 +861,7 @@ mod tests {
         let highest = numbers.iter().map(|number| number.get()).max().unwrap_or(1);
         WorkspaceSnapshot {
             id: id.parse().expect("canonical workspace ID"),
-            custom_name: Some(name.into()),
+            name: name.into(),
             next_public_pane_number: number(highest + 1),
             layout,
             zoomed: false,
@@ -919,6 +917,27 @@ mod tests {
             .filter_map(|pane| workspace.tree().pane(pane))
             .map(|record| record.number().get())
             .collect()
+    }
+
+    #[test]
+    fn a_blank_saved_name_falls_back_to_the_directory_name() {
+        let snapshot = session(
+            vec![
+                one_pane_workspace("w1", "  ", 1),
+                one_pane_workspace("w2", " padded ", 1),
+            ],
+            Some(0),
+        );
+        let plan = plan_restore(
+            &snapshot,
+            None,
+            test_geometry(12, 40),
+            false,
+            test_restore_now(),
+            &mut crate::workspace::WorkspaceIdAllocator::new(),
+        );
+        let names: Vec<_> = plan.workspaces.iter().map(Workspace::name).collect();
+        assert_eq!(names, ["__shepr_missing_restore_directory__", "padded"]);
     }
 
     #[test]
@@ -1043,7 +1062,7 @@ mod tests {
         assert_eq!(plan.active, Some(0));
         let restored = &plan.workspaces[0];
         assert_eq!(restored.id(), id);
-        assert_eq!(restored.custom_name(), Some("round trip"));
+        assert_eq!(restored.name(), "round trip");
         assert_eq!(
             restored
                 .tree()
@@ -1316,12 +1335,8 @@ mod tests {
                 .dropped_workspaces(),
             1
         );
-        let names: Vec<_> = restored
-            .workspaces
-            .iter()
-            .map(Workspace::custom_name)
-            .collect();
-        assert_eq!(names, vec![Some("healthy")]);
+        let names: Vec<_> = restored.workspaces.iter().map(Workspace::name).collect();
+        assert_eq!(names, vec!["healthy"]);
     }
 
     #[test]
@@ -1339,12 +1354,8 @@ mod tests {
 
         let restored = restore_runtimeless(&snapshot);
 
-        let names: Vec<_> = restored
-            .workspaces
-            .iter()
-            .map(Workspace::custom_name)
-            .collect();
-        assert_eq!(names, vec![Some("kept"), Some("active")]);
+        let names: Vec<_> = restored.workspaces.iter().map(Workspace::name).collect();
+        assert_eq!(names, vec!["kept", "active"]);
         assert_eq!(
             restored
                 .restore_loss
@@ -1481,7 +1492,7 @@ mod tests {
 
         assert_eq!(plan.dropped_workspaces, 1);
         assert_eq!(plan.workspaces.len(), 1);
-        assert_eq!(plan.workspaces[0].custom_name(), Some("accepted"));
+        assert_eq!(plan.workspaces[0].name(), "accepted");
         assert!(
             root_terminal(&plan.workspaces[0])
                 .agent_resume()
@@ -1655,7 +1666,7 @@ mod tests {
                 "workspaces": [
                     {
                         "id": "w1",
-                        "custom_name": null,
+                        "name": "a",
                         "next_public_pane_number": 2,
                         "layout": { "Pane": { "cwd": "/tmp/shepr-restore-test-a", "public_number": 1, "label": null } },
                         "zoomed": false,
@@ -1664,7 +1675,7 @@ mod tests {
                     },
                     {
                         "id": "w2",
-                        "custom_name": null,
+                        "name": "b",
                         "next_public_pane_number": 2,
                         "layout": { "Pane": { "cwd": "/tmp/shepr-restore-test-b", "public_number": 1, "label": null } },
                         "zoomed": false,

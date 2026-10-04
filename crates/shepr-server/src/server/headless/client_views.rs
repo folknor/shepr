@@ -18,7 +18,7 @@
 //! all through `App`.
 
 use super::*;
-use crate::app::{DefaultWorkspace, SpawnGeometry};
+use crate::app::{DefaultWorkspace, PaneResizeTiming, SpawnGeometry};
 use crate::server::ClientId;
 use crate::server::clients::{ClientShellLocation, ClientShellTopology};
 
@@ -79,6 +79,9 @@ pub(super) enum GeometryClaimReason {
         claims: bool,
         topology: bool,
         navigated: bool,
+        /// The command can be one step of a drag (a split ratio or pane
+        /// resize), so the panes it resizes follow once it settles.
+        gesture_step: bool,
     },
 }
 
@@ -477,12 +480,14 @@ impl HeadlessServer {
         }
     }
 
-    /// Applies the PTY size rule to one workspace: resizes its visible panes
-    /// and records the geometry on the session. Returns whether the recorded
-    /// workspace geometry changed.
+    /// Applies the PTY size rule to one workspace: records the geometry on
+    /// the session and resizes its visible panes, now or once the geometry
+    /// settles (`timing`). Returns whether the recorded workspace geometry
+    /// changed.
     pub(super) fn apply_workspace_geometry(
         &mut self,
         workspace_id: &shepr_protocol::WorkspaceId,
+        timing: PaneResizeTiming,
     ) -> bool {
         if self.app.state().workspace(workspace_id).is_none() {
             return false;
@@ -490,7 +495,25 @@ impl HeadlessServer {
         let Some(geometry) = self.workspace_geometry(workspace_id) else {
             return false;
         };
-        self.app.apply_workspace_geometry(workspace_id, geometry)
+        self.app
+            .apply_workspace_geometry(workspace_id, geometry, timing)
+    }
+
+    /// Resizes the panes whose deferred resize came due (see
+    /// `App::apply_due_pane_resizes`) and has the viewers of each workspace
+    /// where a pane changed size recompute, as a geometry settlement does.
+    /// Returns whether any pane changed size.
+    pub(super) fn apply_due_pane_resizes(&mut self) -> bool {
+        let resized = self.app.apply_due_pane_resizes();
+        for workspace_id in &resized {
+            self.request_recompute_of_viewers(workspace_id);
+        }
+        if resized.is_empty() {
+            return false;
+        }
+        // The presented pane grid decides the host's mouse report mode.
+        self.host_input_modes_dirty = true;
+        true
     }
 
     /// The runtimes of the panes a surface of the workspace `target` names
@@ -593,7 +616,9 @@ impl HeadlessServer {
                 runtime.take_screen_flip();
             }
             let sizes_before = self.visible_pane_grid_sizes(&workspace_id);
-            let area_changed = self.apply_workspace_geometry(&workspace_id);
+            // A screen flip is a discrete change the child is waiting on.
+            let area_changed =
+                self.apply_workspace_geometry(&workspace_id, PaneResizeTiming::Immediate);
             if !area_changed && self.visible_pane_grid_sizes(&workspace_id) == sizes_before {
                 continue;
             }
@@ -615,10 +640,11 @@ impl HeadlessServer {
         }
     }
 
-    /// Applies the PTY size rule to every workspace. Pane runtimes ignore an
-    /// unchanged pane size; the result reports whether any pane size or
-    /// recorded workspace geometry changed.
-    pub(super) fn apply_all_workspace_geometry(&mut self) -> bool {
+    /// Applies the PTY size rule to every workspace, resizing panes now or
+    /// once the geometry settles (`timing`). Pane runtimes ignore an unchanged
+    /// pane size; the result reports whether any pane size or recorded
+    /// workspace geometry changed.
+    pub(super) fn apply_all_workspace_geometry(&mut self, timing: PaneResizeTiming) -> bool {
         let mut changed = false;
         // By position, re-read each step: applying geometry neither adds nor
         // moves workspaces.
@@ -633,7 +659,7 @@ impl HeadlessServer {
         {
             index += 1;
             let sizes_before = self.visible_pane_grid_sizes(&workspace_id);
-            let area_changed = self.apply_workspace_geometry(&workspace_id);
+            let area_changed = self.apply_workspace_geometry(&workspace_id, timing);
             let resized =
                 area_changed || self.visible_pane_grid_sizes(&workspace_id) != sizes_before;
             if resized {
@@ -666,8 +692,12 @@ impl HeadlessServer {
     /// Applies the PTY size rule to every workspace and has its viewers
     /// recompute when pane or recorded geometry changed. Pending resumes are
     /// settled even when this application repeats the current geometry.
-    fn apply_shell_geometry(&mut self, pending_resumes: PendingResumes) -> bool {
-        let geometry_changed = self.apply_all_workspace_geometry();
+    fn apply_shell_geometry(
+        &mut self,
+        pending_resumes: PendingResumes,
+        timing: PaneResizeTiming,
+    ) -> bool {
+        let geometry_changed = self.apply_all_workspace_geometry(timing);
         self.finish_shell_workspace_geometry_change(geometry_changed, pending_resumes)
     }
 
@@ -698,7 +728,7 @@ impl HeadlessServer {
                     .set_geometry_controller(workspace_id, client_id);
             }
         }
-        self.apply_shell_geometry(pending_resumes)
+        self.apply_shell_geometry(pending_resumes, PaneResizeTiming::Immediate)
     }
 
     /// Owns claim policy as well as the geometry settlement required by each reason.
@@ -712,8 +742,11 @@ impl HeadlessServer {
                 self.claim_unowned_shell_workspace_geometry(client_id, PendingResumes::Start)
             }
             GeometryClaimReason::Activate => {
-                let resized =
-                    self.resize_shell_workspaces_sized_for(client_id, PendingResumes::Start);
+                let resized = self.resize_shell_workspaces_sized_for(
+                    client_id,
+                    PendingResumes::Start,
+                    PaneResizeTiming::Immediate,
+                );
                 let focused_viewer =
                     self.shell_target_for_client(client_id)
                         .is_some_and(|workspace| {
@@ -734,6 +767,7 @@ impl HeadlessServer {
                 claims,
                 topology,
                 navigated,
+                gesture_step,
             } => {
                 if !claims {
                     return false;
@@ -747,8 +781,21 @@ impl HeadlessServer {
                     // Navigation must settle even when the destination remembers this owner.
                     self.reapply_controlled_shell_workspace_geometry(PendingResumes::Defer)
                 } else {
+                    // A split ratio or pane resize command can be one step of
+                    // a drag, so the panes follow once it settles; any other
+                    // command (a zoom, a swap) and a new controller are sized
+                    // at once.
+                    let timing = if gesture_step {
+                        PaneResizeTiming::Settled
+                    } else {
+                        PaneResizeTiming::Immediate
+                    };
                     self.claim_shell_workspace_geometry(client_id, PendingResumes::Defer)
-                        || self.resize_shell_workspaces_sized_for(client_id, PendingResumes::Defer)
+                        || self.resize_shell_workspaces_sized_for(
+                            client_id,
+                            PendingResumes::Defer,
+                            timing,
+                        )
                 }
             }
         }
@@ -767,7 +814,7 @@ impl HeadlessServer {
         if !self.clients.claim_geometry(workspace_id, client_id) {
             return false;
         }
-        self.apply_shell_geometry(pending_resumes)
+        self.apply_shell_geometry(pending_resumes, PaneResizeTiming::Immediate)
     }
 
     /// As `claim_shell_workspace_geometry`, for a workspace no client controls
@@ -783,20 +830,22 @@ impl HeadlessServer {
         if !self.clients.claim_unowned_geometry(workspace_id, client_id) {
             return false;
         }
-        self.apply_shell_geometry(pending_resumes)
+        self.apply_shell_geometry(pending_resumes, PaneResizeTiming::Immediate)
     }
 
     /// Re-applies the PTY size rule after `client_id`'s own geometry changed
-    /// (a resize, a new cell size), when some workspace is sized for it.
+    /// (a resize, a new cell size), when some workspace is sized for it. The
+    /// panes are resized now or once the geometry settles (`timing`).
     pub(super) fn resize_shell_workspaces_sized_for(
         &mut self,
         client_id: ClientId,
         pending_resumes: PendingResumes,
+        timing: PaneResizeTiming,
     ) -> bool {
         if !self.is_geometry_source(client_id) {
             return false;
         }
-        self.apply_shell_geometry(pending_resumes)
+        self.apply_shell_geometry(pending_resumes, timing)
     }
 }
 

@@ -323,7 +323,7 @@ async fn cwd_report_and_slow_probe_refresh_shell_projection() {
         .app
         .test_state_mut()
         .ws_mut(0)
-        .set_custom_name(Some("silent".into()));
+        .set_name("silent".into());
     server.render_now();
     assert!(control.try_recv().is_err(), "no event reported the change");
     age_cache(&mut server);
@@ -466,7 +466,6 @@ async fn each_kind_of_change_sends_a_new_projection_through_its_real_path() {
                     status: shepr_git::GitStatus {
                         cwd: cwd.clone(),
                         key: shepr_git::GitStatusKey::Checkout(cwd),
-                        label: "focus-reporting".into(),
                         branch: shepr_git::GitBranch::Named("feature".into()),
                         ahead_behind: None,
                     },
@@ -710,7 +709,6 @@ fn unchanged_git_refresh_does_not_request_headless_render() {
     let status = shepr_git::GitStatus {
         cwd: cwd.clone(),
         key: shepr_git::GitStatusKey::Outside(cwd.clone()),
-        label: "cached".into(),
         branch: shepr_git::GitBranch::OutsideRepository,
         ahead_behind: None,
     };
@@ -746,7 +744,6 @@ fn changed_git_refresh_requests_headless_render() {
                 status: shepr_git::GitStatus {
                     cwd: cwd.clone(),
                     key: shepr_git::GitStatusKey::Checkout(cwd),
-                    label: "one".into(),
                     branch: shepr_git::GitBranch::Named("changed".into()),
                     ahead_behind: None,
                 },

@@ -41,6 +41,25 @@ fn surface_has_split_of(surface: &shepr_protocol::PaneSurfaceFrame, hit: &PaneSp
         .any(|split| split.epoch == hit.epoch && split.path == hit.path)
 }
 
+/// The split a press at `point` grabs. Hit rects overlap where a border meets the borders
+/// of the splits inside it (the junction of a top/bottom border with the left/right border
+/// below it), and with gaps a hit rect is wider than the divider line. Of the splits whose
+/// hit rect holds the point, the one whose divider line is nearest the pressed cell along
+/// its own axis wins, and at an exact junction the outermost (shallowest) one, so a press on
+/// a border's own line never grabs a border crossing it.
+fn split_hit_at(splits: &[PaneSplitHit], point: (u16, u16)) -> Option<&PaneSplitHit> {
+    splits
+        .iter()
+        .filter(|hit| crate::shell::input::hit_test::contains(hit.hit_rect, point))
+        .min_by_key(|hit| {
+            let off_line = match hit.direction {
+                shepr_protocol::PaneSurfaceSplitDirection::Horizontal => point.0.abs_diff(hit.pos),
+                shepr_protocol::PaneSurfaceSplitDirection::Vertical => point.1.abs_diff(hit.pos),
+            };
+            (off_line, hit.path.len())
+        })
+}
+
 fn selection_cell(column: u16, row: u16, pane: Rect) -> (shepr_term::ViewportRow, u16) {
     let column = column.clamp(pane.x, pane.x.saturating_add(pane.width.saturating_sub(1)));
     let row = row.clamp(pane.y, pane.y.saturating_add(pane.height.saturating_sub(1)));
@@ -52,11 +71,12 @@ fn selection_cell(column: u16, row: u16, pane: Rect) -> (shepr_term::ViewportRow
 }
 
 impl ClientShellState {
-    /// Moves the sidebar edge during a width drag. The retained pane surface stays on screen,
+    /// Moves the sidebar edge during a width drag, collapsing the sidebar below its minimum
+    /// width (see `ChromeLayout::drag_edge_to`). The retained pane surface stays on screen,
     /// clipped to the new pane area; the endpoint resize waits for the release (see
     /// `ClientChromeDrag::SidebarWidth`).
     fn set_sidebar_width_from_column(&mut self, column: u16, outcome: &mut ClientShellInput) {
-        if self.chrome.set_width(column.saturating_add(1)) {
+        if self.chrome.drag_edge_to(column.saturating_add(1)) {
             outcome.repaint = true;
             if let Some(ClientChromeDrag::SidebarWidth { resize_pending }) =
                 self.pointer.chrome_drag.as_mut()
@@ -865,12 +885,13 @@ impl ClientShellState {
                     hit,
                     workspace_id,
                     grab_offset,
+                    last_sent_ratio,
                     throttle,
-                    ..
                 }) => {
                     let hit = hit.clone();
                     let workspace_id = *workspace_id;
                     let grab_offset = *grab_offset;
+                    let last_sent_ratio = *last_sent_ratio;
                     let mut next_throttle = *throttle;
                     match self.pane_split_target_is_current(&hit, &workspace_id) {
                         Some(true) => {}
@@ -881,6 +902,11 @@ impl ClientShellState {
                         None => return,
                     }
                     let ratio = Self::pane_split_ratio(&hit, grab_offset, point);
+                    // The endpoint already has this ratio; resending it would cost a
+                    // command round trip and the throttle slot the next change needs.
+                    if last_sent_ratio == Some(ratio) {
+                        return;
+                    }
                     let should_send = next_throttle.admit(now);
                     if should_send
                         && let Some(ClientChromeDrag::PaneSplit {
@@ -1218,9 +1244,6 @@ impl ClientShellState {
                 if crate::shell::input::hit_test::contains(
                     self.presentation.shown().sidebar_divider(),
                     point,
-                ) && !crate::shell::input::hit_test::contains(
-                    self.presentation.shown().sidebar_toggle(),
-                    point,
                 ) {
                     let double_click =
                         self.pointer.last_sidebar_divider_click.is_some_and(|last| {
@@ -1424,13 +1447,8 @@ impl ClientShellState {
                     }
                     return;
                 }
-                let split_hit = self
-                    .presentation
-                    .shown()
-                    .pane_splits()
-                    .iter()
-                    .find(|hit| crate::shell::input::hit_test::contains(hit.hit_rect, point))
-                    .cloned();
+                let split_hit =
+                    split_hit_at(self.presentation.shown().pane_splits(), point).cloned();
                 if let Some(hit) = split_hit {
                     let Some(workspace_id) = self
                         .endpoints

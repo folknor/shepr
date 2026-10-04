@@ -1250,7 +1250,7 @@ fn pane_close_request_closes_only_the_target_pane_when_others_remain() {
     assert!(matches!(result, Ok(EndpointReply::Done)));
     assert_eq!(app.state.workspaces.len(), 1);
     assert_eq!(app.state.ws(0).tree().len(), 1);
-    assert_eq!(app.state.ws(0).display_name(), "api-pane-close");
+    assert_eq!(app.state.ws(0).name(), "api-pane-close");
 }
 
 #[test]

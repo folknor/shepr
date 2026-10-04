@@ -39,10 +39,12 @@ impl App {
                 EndpointError::ResourceFailure(format!("the workspace could not be created: {err}"))
             })?;
         let workspace_id = outcome.workspace_id;
+        // A workspace created without a name, or with a blank one, keeps the
+        // name of its directory that it was given at creation.
         if let Some(label) = normalized_user_label(params.label)
             && let Some(workspace) = self.state.workspaces.get_mut(&workspace_id)
         {
-            workspace.set_custom_name(Some(label));
+            workspace.set_name(label);
             crate::logging::workspace_renamed(&workspace.id());
         }
         let effects = EndpointEffects::from(&outcome);
@@ -69,9 +71,24 @@ impl App {
         params: WorkspaceRenameParams,
     ) -> HandlerResult {
         let id = self.endpoint_workspace(&params.workspace_id)?;
+        // A blank name names the workspace after its current directory.
+        let name = match normalized_user_label(params.label) {
+            Some(name) => name,
+            None => {
+                let workspace = self
+                    .state
+                    .workspace(&id)
+                    .ok_or_else(|| workspace_missing(&params.workspace_id))?;
+                shepr_core::workspace_label::default_workspace_name(
+                    workspace
+                        .resolved_identity_cwd(&self.terminal_runtimes)
+                        .as_path(),
+                )
+            }
+        };
         let outcome = self
             .state
-            .rename_workspace(&id, normalized_user_label(params.label))
+            .rename_workspace(&id, name)
             .ok_or_else(|| workspace_missing(&params.workspace_id))?;
         let effects = outcome.into();
         let Some(workspace) = self.workspace_info(&id) else {
@@ -323,7 +340,7 @@ mod tests {
         assert_eq!(handled.reply, EndpointReply::Done);
         assert_eq!(handled.navigate, None);
         assert_eq!(app.state.ws(2).id(), moved_id);
-        assert_eq!(app.state.ws(2).display_name(), "one");
+        assert_eq!(app.state.ws(2).name(), "one");
     }
 
     #[test]
@@ -340,7 +357,7 @@ mod tests {
         })
         .expect("a no-op move succeeds");
         assert_eq!(app.state.ws(0).id(), moved_id);
-        assert_eq!(app.state.ws(0).display_name(), "one");
+        assert_eq!(app.state.ws(0).name(), "one");
 
         let missing = shepr_protocol::WorkspaceId::from_number(usize::MAX).expect("nonzero");
         assert!(
@@ -370,22 +387,22 @@ mod tests {
         assert!(app.state.move_workspace(&anchor, None).changed());
         app.handle_workspace_move(&command)
             .expect("live anchor resolves");
-        assert_eq!(app.state.ws(2).display_name(), "source");
-        assert_eq!(app.state.ws(3).display_name(), "anchor");
+        assert_eq!(app.state.ws(2).name(), "source");
+        assert_eq!(app.state.ws(3).name(), "anchor");
         // Another client then closes the anchor. No other workspace substitutes.
         app.state.close_workspace(&anchor);
         let order = app
             .state
             .workspaces
             .iter()
-            .map(|ws| ws.display_name().to_owned())
+            .map(|ws| ws.name().to_owned())
             .collect::<Vec<_>>();
         assert!(app.handle_workspace_move(&command).is_err());
         assert_eq!(
             app.state
                 .workspaces
                 .iter()
-                .map(|ws| ws.display_name().to_owned())
+                .map(|ws| ws.name().to_owned())
                 .collect::<Vec<_>>(),
             order
         );
@@ -406,7 +423,7 @@ mod tests {
 
         assert_eq!(handled.reply, EndpointReply::Done);
         assert_eq!(app.state.workspaces.len(), 1);
-        assert_eq!(app.state.ws(0).display_name(), "survivor");
+        assert_eq!(app.state.ws(0).name(), "survivor");
     }
 
     #[test]

@@ -626,13 +626,17 @@ impl ClientShellState {
         }
     }
 
+    /// Rebuilds the agent panel, keeping a Navigate selection on an agent through the
+    /// change.
     pub(in crate::shell) fn rebuild_agent_panel_model(&mut self) {
+        let selected_agent = self.navigate_agent_index();
         let model = AgentPanelModel::build(
             &self.endpoints,
             &self.config,
             self.agent_panel_sort_chrome.value(),
         );
         self.endpoints.agent_panel_model = model;
+        self.reconcile_navigate_agent(selected_agent);
     }
 
     /// Applies a sort chosen at runtime (the sidebar toggle) for this session and

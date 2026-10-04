@@ -1,7 +1,9 @@
 use std::collections::{HashMap, VecDeque};
 use std::time::Instant;
 
-use shepr_protocol::command::{EndpointError, EndpointReply};
+use shepr_protocol::command::{
+    EndpointCommand, EndpointError, EndpointReply, LayoutSetSplitRatioParams,
+};
 use shepr_protocol::{BootId, ClientMessage, ConnectionGeneration, RequestId};
 
 use super::{ClientEndpointId, EndpointRegistry, EndpointSendOutcome};
@@ -58,22 +60,40 @@ pub(crate) struct EndpointCommands {
 }
 
 impl EndpointCommands {
+    /// Queues `request` behind the lane's in-flight command. A split ratio supersedes a ratio
+    /// still queued for the same split (same workspace, path and layout epoch) on the same
+    /// connection and boot: a drag sends a ratio per step, and on a slow link only the newest
+    /// is worth sending, so the older one leaves the queue and is returned as unsent. The new
+    /// ratio joins the back of the queue, after everything issued before it. The in-flight
+    /// command is never touched.
     pub(crate) fn enqueue(
         &mut self,
         endpoint_id: ClientEndpointId,
         generation: ConnectionGeneration,
         boot_id: BootId,
         request: Box<ClientShellEndpointRequest>,
-    ) {
-        self.lanes
-            .entry(endpoint_id)
-            .or_default()
-            .queued
-            .push_back(QueuedCommand {
-                generation,
-                boot_id,
-                request,
-            });
+    ) -> EndpointCommandCancellation {
+        let lane = self.lanes.entry(endpoint_id).or_default();
+        let mut cancelled = EndpointCommandCancellation::default();
+        if let EndpointCommand::LayoutSetSplitRatio(params) = &request.command
+            && let Some(index) = lane.queued.iter().position(|queued| {
+                queued.generation == generation
+                    && queued.boot_id == boot_id
+                    && matches!(
+                        &queued.request.command,
+                        EndpointCommand::LayoutSetSplitRatio(older) if same_split(older, params)
+                    )
+            })
+            && let Some(superseded) = lane.queued.remove(index)
+        {
+            cancelled.unsent.push(superseded.request.id);
+        }
+        lane.queued.push_back(QueuedCommand {
+            generation,
+            boot_id,
+            request,
+        });
+        cancelled
     }
 
     pub(crate) fn send_next(
@@ -218,6 +238,12 @@ impl EndpointCommands {
     }
 }
 
+/// Whether two ratio commands set the same split: the same workspace, and the same path at
+/// the same layout epoch (a topology change can put another split at a path).
+fn same_split(a: &LayoutSetSplitRatioParams, b: &LayoutSetSplitRatioParams) -> bool {
+    a.workspace_id == b.workspace_id && a.path == b.path && a.epoch == b.epoch
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -285,6 +311,88 @@ mod tests {
                 ),
             }),
         }
+    }
+
+    fn ratio_request(
+        path: Vec<shepr_core::layout::SplitBranch>,
+        ratio: f32,
+    ) -> Box<ClientShellEndpointRequest> {
+        Box::new(ClientShellEndpointRequest {
+            id: RequestId::allocate(),
+            command: EndpointCommand::LayoutSetSplitRatio(LayoutSetSplitRatioParams {
+                workspace_id: shepr_test_fixtures::id("w1"),
+                path,
+                epoch: shepr_core::layout::LayoutEpoch::default(),
+                ratio: shepr_core::layout::SplitRatio::clamped(ratio),
+            }),
+        })
+    }
+
+    fn queued_ids(commands: &EndpointCommands) -> Vec<RequestId> {
+        commands
+            .lanes
+            .get(&endpoint())
+            .map_or_else(Vec::new, |lane| {
+                lane.queued
+                    .iter()
+                    .map(|command| command.request.id.clone())
+                    .collect()
+            })
+    }
+
+    #[test]
+    fn a_queued_split_ratio_is_replaced_by_a_newer_one_for_the_same_split() {
+        let mut commands = commands_with_in_flight();
+        let first = ratio_request(Vec::new(), 0.4);
+        let first_id = first.id.clone();
+        assert_eq!(
+            commands.enqueue(endpoint(), generation(1), boot_a(), first),
+            EndpointCommandCancellation::default()
+        );
+        let other_split = ratio_request(vec![shepr_core::layout::SplitBranch::Second], 0.3);
+        let other_id = other_split.id.clone();
+        assert_eq!(
+            commands.enqueue(endpoint(), generation(1), boot_a(), other_split),
+            EndpointCommandCancellation::default()
+        );
+        let newer = ratio_request(Vec::new(), 0.6);
+        let newer_id = newer.id.clone();
+
+        assert_eq!(
+            commands.enqueue(endpoint(), generation(1), boot_a(), newer),
+            EndpointCommandCancellation {
+                unsent: vec![first_id],
+                possibly_sent: Vec::new(),
+            }
+        );
+        assert_eq!(queued_ids(&commands), vec![other_id, newer_id]);
+        // The in-flight command is not part of the queue and stays in flight.
+        assert!(has_in_flight(&commands));
+    }
+
+    #[test]
+    fn a_split_ratio_queued_for_another_connection_or_boot_is_not_replaced() {
+        let mut commands = commands_with_in_flight();
+        let older_generation = ratio_request(Vec::new(), 0.4);
+        let older_generation_id = older_generation.id.clone();
+        let older_boot = ratio_request(Vec::new(), 0.45);
+        let older_boot_id = older_boot.id.clone();
+        let current = ratio_request(Vec::new(), 0.6);
+        let current_id = current.id.clone();
+        for (at, boot, request) in [
+            (generation(1), boot_a(), older_generation),
+            (generation(2), boot_b(), older_boot),
+            (generation(2), boot_a(), current),
+        ] {
+            assert_eq!(
+                commands.enqueue(endpoint(), at, boot, request),
+                EndpointCommandCancellation::default()
+            );
+        }
+        assert_eq!(
+            queued_ids(&commands),
+            vec![older_generation_id, older_boot_id, current_id]
+        );
     }
 
     #[test]

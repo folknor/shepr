@@ -274,12 +274,13 @@ rows = [[{ token = "workspace", rules = [{ equals = "long-workspace-name", fg = 
                     &shepr_config::theme::Palette::catppuccin(),
                     false,
                 ),
-                crate::shell::sidebar::sidebar_tokens::TokenStyles {
-                    state_text: theme,
-                    primary: theme,
-                    secondary: theme,
-                    terminal_title: theme,
-                },
+                crate::shell::sidebar::sidebar_tokens::TokenStyles::themed(
+                    theme,
+                    theme,
+                    theme,
+                    theme,
+                    &shepr_config::theme::Palette::catppuccin(),
+                ),
                 &shepr_config::theme::Palette::catppuccin(),
                 width,
             );

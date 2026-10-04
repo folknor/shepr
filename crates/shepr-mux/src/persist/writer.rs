@@ -424,7 +424,7 @@ mod tests {
             "host_theme": super::super::schema::SavedHostTheme::default(),
             "workspaces": [{
                 "id": "w1",
-                "custom_name": null,
+                "name": "w",
                 "next_public_pane_number": 2,
                 "layout": {
                     "Pane": {
@@ -531,7 +531,7 @@ mod tests {
         let saved = std::fs::read(&files[0].1).expect("test precondition");
         for i in 0..100 {
             let mut shrinking = snapshot();
-            shrinking.workspaces[0].custom_name = Some(format!("remaining pane {i}"));
+            shrinking.workspaces[0].name = format!("remaining pane {i}");
             writer.save_for_test(&shrinking, None).expect("save");
             let path = writer.path.clone();
             drop(writer);
@@ -653,7 +653,7 @@ mod tests {
                 .expect("lease"),
             SessionBackupPolicy::NoBackupNeeded,
         );
-        changed.workspaces[0].custom_name = Some("after restart".into());
+        changed.workspaces[0].name = "after restart".into();
         writer.save_for_test(&changed, None).expect("save");
         assert_eq!(
             snapshots(&writer).len(),
@@ -778,15 +778,12 @@ mod tests {
             "structural session was saved successfully"
         );
         let mut changed = snapshot();
-        changed.workspaces[0].custom_name = Some("latest layout".into());
+        changed.workspaces[0].name = "latest layout".into();
         assert!(writer.save_for_test(&changed, None).is_err());
         let saved: super::super::schema::SessionFile<SessionSnapshot> =
             serde_json::from_slice(&std::fs::read(&writer.path).expect("test precondition"))
                 .expect("test precondition");
-        assert_eq!(
-            saved.snapshot.workspaces[0].custom_name.as_deref(),
-            Some("latest layout")
-        );
+        assert_eq!(saved.snapshot.workspaces[0].name, "latest layout");
         std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))
             .expect("test precondition");
     }
@@ -946,7 +943,7 @@ mod tests {
         assert_eq!(file_digest(), digest_hex);
 
         let mut changed = snapshot();
-        changed.workspaces[0].custom_name = Some("layout only".into());
+        changed.workspaces[0].name = "layout only".into();
         let kept = writer
             .save_keeping_history(&changed, &digest, SystemTime::now())
             .expect("save");

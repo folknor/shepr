@@ -556,6 +556,7 @@ mod tests {
                 machines: vec![shepr_config::MachineConfig {
                     label: shepr_config::MachineLabel::parse("remote").expect("test label"),
                     ssh: shepr_config::SshTarget::parse("remote").expect("test target"),
+                    palette: None,
                 }],
                 ..Default::default()
             },
@@ -786,6 +787,7 @@ mod tests {
                 machines: vec![shepr_config::MachineConfig {
                     label: shepr_config::MachineLabel::parse("remote").expect("test label"),
                     ssh: shepr_config::SshTarget::parse("remote").expect("test target"),
+                    palette: None,
                 }],
                 ..Default::default()
             },

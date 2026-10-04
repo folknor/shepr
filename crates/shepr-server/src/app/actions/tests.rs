@@ -182,7 +182,6 @@ fn apply_workspace_git_statuses_updates_matching_workspace() {
             status: shepr_mux::git::GitStatus {
                 cwd: first_cwd.clone(),
                 key: shepr_mux::git::GitStatusKey::Checkout(first_cwd.clone()),
-                label: "one".into(),
                 branch: shepr_mux::git::GitBranch::Named("main".into()),
                 ahead_behind: Some(shepr_mux::git::AheadBehind {
                     ahead: 2,
@@ -215,7 +214,6 @@ fn apply_workspace_git_statuses_ignores_stale_cwd() {
         shepr_mux::git::GitStatus {
             cwd: cwd.clone(),
             key: shepr_mux::git::GitStatusKey::Checkout(cwd.clone()),
-            label: "one".into(),
             branch: shepr_mux::git::GitBranch::Named("old".into()),
             ahead_behind: Some(shepr_mux::git::AheadBehind {
                 ahead: 1,
@@ -234,7 +232,6 @@ fn apply_workspace_git_statuses_ignores_stale_cwd() {
                 key: shepr_mux::git::GitStatusKey::Checkout(std::path::PathBuf::from(
                     "/definitely/not/current",
                 )),
-                label: "stale".into(),
                 branch: shepr_mux::git::GitBranch::Named("main".into()),
                 ahead_behind: Some(shepr_mux::git::AheadBehind {
                     ahead: 0,
@@ -265,7 +262,6 @@ fn apply_workspace_git_statuses_clears_missing_git_status() {
         shepr_mux::git::GitStatus {
             cwd: cwd.clone(),
             key: shepr_mux::git::GitStatusKey::Checkout(cwd.clone()),
-            label: "one".into(),
             branch: shepr_mux::git::GitBranch::Named("main".into()),
             ahead_behind: Some(shepr_mux::git::AheadBehind {
                 ahead: 1,
@@ -281,7 +277,6 @@ fn apply_workspace_git_statuses_clears_missing_git_status() {
             status: shepr_mux::git::GitStatus {
                 cwd: cwd.clone(),
                 key: shepr_mux::git::GitStatusKey::Outside(cwd.clone()),
-                label: "one".into(),
                 branch: shepr_mux::git::GitBranch::OutsideRepository,
                 ahead_behind: None,
             },
@@ -330,7 +325,7 @@ fn move_workspace_reorders_and_the_bookmark_follows_its_workspace() {
     let names: Vec<_> = state
         .workspaces
         .iter()
-        .map(shepr_mux::workspace::Workspace::display_name)
+        .map(shepr_mux::workspace::Workspace::name)
         .collect();
     assert_eq!(names, vec!["b", "a", "c"]);
     assert_eq!(state.bookmark_index(), Some(0));
@@ -366,7 +361,7 @@ fn move_workspace_accepts_insert_at_end() {
     let names: Vec<_> = state
         .workspaces
         .iter()
-        .map(shepr_mux::workspace::Workspace::display_name)
+        .map(shepr_mux::workspace::Workspace::name)
         .collect();
     assert_eq!(names, vec!["b", "c", "a"]);
 }
@@ -382,7 +377,7 @@ fn closing_the_bookmarked_workspace_moves_the_bookmark_to_the_one_now_at_its_ind
 
     assert_eq!(state.workspaces.len(), 2);
     assert_eq!(state.bookmark_index(), Some(1));
-    assert_eq!(state.ws(1).custom_name(), Some("c"));
+    assert_eq!(state.ws(1).name(), "c");
     assert!(state.session_dirty);
 }
 
@@ -418,8 +413,8 @@ fn closing_another_workspace_keeps_the_bookmark() {
     state.close_workspace(&other);
 
     assert_eq!(state.workspaces.len(), 2);
-    assert_eq!(state.ws(0).display_name(), "a");
-    assert_eq!(state.ws(1).display_name(), "c");
+    assert_eq!(state.ws(0).name(), "a");
+    assert_eq!(state.ws(1).name(), "c");
     assert_eq!(state.bookmark_index(), Some(0));
 }
 
@@ -912,7 +907,7 @@ fn close_pane_last_pane_closes_the_panes_own_workspace_not_the_bookmarked_one() 
 
     assert_eq!(outcome.scope, PaneRemovalScope::Workspace);
     assert_eq!(state.workspaces.len(), 1);
-    assert_eq!(state.ws(0).display_name(), "other");
+    assert_eq!(state.ws(0).name(), "other");
     assert!(state.terminal(pane_id).is_none());
 }
 

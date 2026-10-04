@@ -257,7 +257,7 @@ fn client_owned_sidebar_dividers_resize_live() {
         .map(|cell| cell.symbol.as_str())
         .collect();
     assert!(
-        waiting_text.contains(" spaces"),
+        waiting_text.contains(" workspaces"),
         "local sidebar must keep spaces while resizing: {waiting_text}"
     );
     assert!(!waiting_text.contains(" machines"));
@@ -315,7 +315,7 @@ fn client_owned_sidebar_dividers_resize_live() {
         .iter()
         .map(|cell| cell.symbol.as_str())
         .collect();
-    assert!(recovered_text.contains(" spaces"));
+    assert!(recovered_text.contains(" workspaces"));
     assert!(recovered_text.contains("LIVE"));
     assert!(!state.pane_hits().is_empty());
     let section_divider = state.drawn().section_divider();

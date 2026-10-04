@@ -55,7 +55,7 @@ pub(crate) enum PatchRejection {
     DoesNotFollow,
     /// Patched pane is absent, or its geometry, focus or pixel size changed.
     PaneGeometry,
-    /// Empty row, outside the frame, or outside every patched pane.
+    /// Empty row, outside the frame, or touching a pane the patch does not list.
     RowOutsideFrame,
 }
 impl PaneSurfaces {
@@ -249,35 +249,22 @@ impl PaneSurfaces {
             else {
                 return Err(PatchRejection::PaneGeometry);
             };
-            if !pane_geometry_matches(existing, updated) {
+            if !shepr_surface::decode::pane_geometry_matches(existing, updated) {
                 return Err(PatchRejection::PaneGeometry);
             }
         }
+        // A row may span a pane's terminal cells, its scrollbar and its chrome, or lie
+        // between panes, but every pane it touches must be listed: selection, copy mode
+        // and hits treat only listed panes as patched.
         for row in &patch.rows {
             if !row_fits_frame(row, &current.frame)
                 || row.cells.is_empty()
-                || !patch.panes.iter().any(|pane| {
-                    let terminal_row = row.x >= pane.inner_rect.x
-                        && row.y >= pane.inner_rect.y
-                        && row.y < pane.inner_rect.y.saturating_add(pane.inner_rect.height)
-                        && row
-                            .x
-                            .saturating_add(u16::try_from(row.cells.len()).unwrap_or(u16::MAX))
-                            <= pane.inner_rect.x.saturating_add(pane.inner_rect.width);
-                    let scrollbar_rect = pane.scrollbar_rect.or_else(|| {
-                        current
+                || current.panes.iter().any(|pane| {
+                    shepr_protocol::row_touches_rect(row, pane.rect)
+                        && !patch
                             .panes
                             .iter()
-                            .find(|existing| existing.pane_id == pane.pane_id)
-                            .and_then(|existing| existing.scrollbar_rect)
-                    });
-                    let scrollbar_row = scrollbar_rect.is_some_and(|rect| {
-                        row.x == rect.x
-                            && row.y >= rect.y
-                            && row.y < rect.y.saturating_add(rect.height)
-                            && row.cells.len() == usize::from(rect.width)
-                    });
-                    terminal_row || scrollbar_row
+                            .any(|patched| patched.pane_id == pane.pane_id)
                 })
             {
                 return Err(PatchRejection::RowOutsideFrame);
@@ -343,16 +330,6 @@ fn row_fits_frame(row: &shepr_protocol::PaneSurfacePatchRow, frame: &FrameData) 
         && row.y < frame.height()
 }
 
-fn pane_geometry_matches(
-    left: &shepr_protocol::PaneSurfacePane,
-    right: &shepr_protocol::PaneSurfacePane,
-) -> bool {
-    left.pane_id == right.pane_id
-        && left.rect == right.rect
-        && left.inner_rect == right.inner_rect
-        && left.focused == right.focused
-}
-
 #[cfg(test)]
 impl PaneSurfaces {
     /// The shown connection's reader baseline, which every patch must follow.
@@ -409,6 +386,74 @@ mod tests {
         surfaces.pair(&boot, rev(1), generation);
         surfaces
     }
+    /// The server's delta planner, the client's decoder and this validation together: a
+    /// pane entering the alternate screen with pane scrollbars on drops its gutter, so its
+    /// content rect widens while the frame, splits and projection revision stay. A sparse
+    /// cell change then still plans as an update, and what the decoder hands the shell must
+    /// be something the shell accepts: a full surface, never a patch with new geometry.
+    #[test]
+    fn an_alternate_screen_gutter_change_reaches_the_shell_as_a_full_surface() {
+        use shepr_surface::decode::{
+            DecodedClientServerMessage, DecodedWireServerMessage, Decoder,
+        };
+        use shepr_surface::delta::SurfaceDeltaPlan;
+
+        let size = ClientSurfaceSize { cols: 40, rows: 20 };
+        let mut last =
+            crate::tests::endpoints::surface(&ClientEndpointId::Local, 1, size, "prompt");
+        // The primary screen reserves the last column for the scrollbar track.
+        last.panes[0].inner_rect.width = size.cols - 1;
+        let mut next = last.clone();
+        next.surface_revision = surface_rev(2);
+        next.panes[0].inner_rect.width = size.cols;
+        next.panes[0].alternate_screen_active = true;
+        next.frame.cells_mut()[0].symbol = "A".into();
+
+        let SurfaceDeltaPlan::Compact(update) =
+            shepr_surface::delta::message(&last, &next).expect("planning")
+        else {
+            panic!("a sparse change is planned as an update");
+        };
+        let mut decoder = Decoder::default();
+        decoder
+            .decode_client(shepr_protocol::ServerMessage::PaneSurface(last.clone()))
+            .expect("baseline");
+        let mut shell = PaneSurfaces::default();
+        shell.receive(last.clone(), g(1));
+        shell.pair(&last.boot_id, rev(1), g(1));
+
+        let full = match decoder
+            .decode_client(update)
+            .expect("the decoder takes the update")
+        {
+            DecodedClientServerMessage::Wire(DecodedWireServerMessage::PaneSurface(full)) => full,
+            other => panic!("a geometry change must not reach the shell as a patch: {other:?}"),
+        };
+        assert_eq!(full.panes, next.panes);
+        assert_eq!(full.frame, next.frame);
+        shell.receive(full, g(1));
+        shell.pair(&last.boot_id, rev(1), g(1));
+
+        // A sparse change that keeps the geometry is still a patch, and the shell takes it.
+        let mut later = next.clone();
+        later.surface_revision = surface_rev(3);
+        later.frame.cells_mut()[1].symbol = "B".into();
+        let SurfaceDeltaPlan::Compact(update) =
+            shepr_surface::delta::message(&next, &later).expect("planning")
+        else {
+            panic!("a sparse change is planned as an update");
+        };
+        let DecodedClientServerMessage::PaneSurfacePatch(patch) = decoder
+            .decode_client(update)
+            .expect("the decoder takes the update")
+        else {
+            panic!("an unchanged geometry keeps the patch path");
+        };
+        shell
+            .validate(&patch, g(1))
+            .expect("the shell accepts a patch the decoder forwards");
+    }
+
     #[test]
     fn a_generation_change_with_nothing_held_and_no_new_baseline_is_empty() {
         let mut s = PaneSurfaces::default();
@@ -562,6 +607,31 @@ mod tests {
         p.panes = vec![pane];
         assert_eq!(s.validate(&p, g(1)), Ok(()));
     }
+    #[test]
+    fn a_row_across_a_listed_panes_chrome_is_accepted_and_on_an_unlisted_one_refused() {
+        // A full-render delta's span can run from the terminal cells into the
+        // scrollbar column and the border, as when scrolling a full-width line.
+        let s = paired();
+        let baseline = s.baseline().expect("baseline");
+        let pane = baseline.panes[0].clone();
+        let width = usize::from(baseline.frame.width());
+        let start = usize::from(pane.rect.y) * width + usize::from(pane.rect.x);
+        let cells = baseline.frame.cells()[start..start + usize::from(pane.rect.width)].to_vec();
+        let mut p = patch(baseline);
+        p.rows.push(shepr_protocol::PaneSurfacePatchRow {
+            x: pane.rect.x,
+            y: pane.rect.y,
+            cells,
+        });
+        assert_eq!(
+            s.validate(&p, g(1)),
+            Err(PatchRejection::RowOutsideFrame),
+            "the pane the row touches is not listed"
+        );
+        p.panes.push(pane);
+        assert_eq!(s.validate(&p, g(1)), Ok(()));
+    }
+
     #[test]
     fn a_patch_without_a_baseline_is_rejected() {
         assert_eq!(

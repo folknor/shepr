@@ -87,7 +87,7 @@ use child_io::{LimitedRead, poll_fd, read_limited_reader};
 use clipboard::{
     ClipboardCommand, clipboard_commands, read_clipboard_text_commands,
     read_clipboard_text_with_command, read_clipboard_text_with_command_with_clock,
-    run_clipboard_command, run_clipboard_command_with_clock, write_clipboard_with,
+    run_clipboard_command, run_clipboard_command_with_clock, write_clipboard_and_primary_with,
 };
 #[cfg(test)]
 use config_file::write_config_temporary;

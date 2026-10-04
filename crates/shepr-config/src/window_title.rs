@@ -1,7 +1,7 @@
 use crate::limits::MAX_WINDOW_TITLE_CHARS;
 
 pub(crate) fn default_window_title() -> String {
-    "{hostname}: {workspace}".to_string()
+    "shepr: {hostname}".to_string()
 }
 
 pub fn sanitize_window_title_text(value: &str) -> Option<String> {

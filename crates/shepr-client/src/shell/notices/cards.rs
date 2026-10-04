@@ -22,6 +22,7 @@ pub(crate) enum EndpointNoticeKind {
     NotReady,
     WorkspaceActionBlocked { open_workspace: String },
     WorkspaceNoLongerAvailable,
+    AgentNoLongerAvailable,
     WaitingForSelection(Option<ClientEndpointStatus>),
     StatusFailure(String),
     MoveRejected(String),
@@ -50,6 +51,9 @@ impl EndpointNotice {
             ),
             EndpointNoticeKind::WorkspaceNoLongerAvailable => {
                 "Workspace is no longer available; select a connected workspace".to_owned()
+            }
+            EndpointNoticeKind::AgentNoLongerAvailable => {
+                "Agent is no longer available; select a connected agent".to_owned()
             }
             EndpointNoticeKind::WaitingForSelection(status) => match status {
                 Some(ClientEndpointStatus::Connecting) => {

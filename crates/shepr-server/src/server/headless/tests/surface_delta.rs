@@ -41,7 +41,7 @@ async fn surface_delta_reconstructs_metadata_text_and_hyperlinks() {
         .app
         .test_state_mut()
         .ws_mut(0)
-        .set_custom_name(Some("renamed workspace".into()));
+        .set_name("renamed workspace".into());
     server.app.test_state_mut().mark_shell_projection_dirty();
     write_shared_test_pane(
         &mut server,
@@ -212,7 +212,8 @@ async fn a_scroll_renders_only_the_viewers_of_the_scrolled_pane() {
         shepr_mux::pane::PaneRuntime::test_with_scrollback_bytes(80, 23, 10_000, b"BASE"),
     );
     let workspace_id = pair.server.app.state().ws(0).id();
-    pair.server.apply_workspace_geometry(&workspace_id);
+    pair.server
+        .apply_workspace_geometry(&workspace_id, crate::app::PaneResizeTiming::Immediate);
     let other = shepr_mux::workspace::Workspace::test_new("other");
     let other_id = other.id();
     pair.server.app.test_state_mut().test_push_workspace(other);

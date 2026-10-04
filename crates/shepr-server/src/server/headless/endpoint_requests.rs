@@ -3,13 +3,7 @@ use crate::app::EndpointContext;
 use crate::server::ClientId;
 use shepr_protocol::command::{
     EndpointAppCommand, EndpointCommand, EndpointError, EndpointLoopCommand, EndpointReply,
-    WorkspaceCheckoutRootParams,
 };
-
-enum AppOrCheckoutRoot {
-    App(EndpointAppCommand),
-    CheckoutRoot(WorkspaceCheckoutRootParams),
-}
 
 impl HeadlessServer {
     /// Runs one endpoint command from a client shell. Each answer enters that
@@ -36,10 +30,7 @@ impl HeadlessServer {
             return;
         }
         let command = match command.into_app_command() {
-            Ok(command) => AppOrCheckoutRoot::App(command),
-            Err(EndpointLoopCommand::WorkspaceCheckoutRoot(params)) => {
-                AppOrCheckoutRoot::CheckoutRoot(params)
-            }
+            Ok(command) => command,
             Err(EndpointLoopCommand::ClientShellSurfaceSet(params)) => {
                 let Some(surface_interest::SurfaceActivation {
                     changed,
@@ -76,36 +67,7 @@ impl HeadlessServer {
         }
 
         self.promote_client_to_foreground(client_id);
-        let result = match command {
-            AppOrCheckoutRoot::App(command) => {
-                self.handle_client_shell_app_command(client_id, command)
-            }
-            AppOrCheckoutRoot::CheckoutRoot(params) => {
-                if self.drain_all_internal_events_with_forwarding() {
-                    self.mark_view_changed();
-                }
-                match self.app.prepare_workspace_checkout_root(&params) {
-                    Ok((cwd, home)) => {
-                        self.dispatch_checkout_root(
-                            client_id,
-                            boot_id.clone(),
-                            request_id.clone(),
-                            cwd,
-                            home,
-                        );
-                    }
-                    Err(error) => self.queue_endpoint_reply(
-                        client_id,
-                        &crate::server::client_commands::response_message(
-                            boot_id,
-                            request_id,
-                            Err(error),
-                        ),
-                    ),
-                }
-                return;
-            }
-        };
+        let result = self.handle_client_shell_app_command(client_id, command);
         self.queue_endpoint_reply(
             client_id,
             &crate::server::client_commands::response_message(boot_id, request_id, result),
@@ -132,6 +94,10 @@ impl HeadlessServer {
         command: EndpointAppCommand,
     ) -> Result<EndpointReply, EndpointError> {
         let traits = command.traits();
+        let gesture_step = matches!(
+            command,
+            EndpointAppCommand::LayoutSetSplitRatio(_) | EndpointAppCommand::PaneResize(_)
+        );
 
         let mut changed = self.drain_all_internal_events_with_forwarding();
         changed |= self.sync_pending_terminal_titles();
@@ -174,6 +140,7 @@ impl HeadlessServer {
                 claims: traits.claims_shell_geometry,
                 topology: traits.changes_topology,
                 navigated,
+                gesture_step,
             },
         );
         self.sync_pane_focus();
@@ -194,7 +161,6 @@ impl HeadlessServer {
         boot_id: shepr_protocol::BootId,
         request_id: shepr_protocol::RequestId,
     ) {
-        self.resolve_pending_endpoint_replies_for_shutdown();
         self.queue_endpoint_reply(
             client_id,
             &crate::server::client_commands::error_message(

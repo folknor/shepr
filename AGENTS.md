@@ -83,8 +83,10 @@ client.) A setting belongs to whoever draws or interprets it, and lives in
 that program's file. The client applies its own config to everything it draws
 and interprets: keys, the sidebar, agent panel order, status indicators,
 prompts, mouse and copy behaviour and their colours, the same whichever
-machine is being presented. `client.toml` holds those `[ui]` settings,
-`[keys]` and `[[machines]]`. Each server applies its own config to what it
+machine is being presented, and the per-host sidebar colours derived from each
+machine's `palette` and the host terminal's theme. `client.toml` holds those
+`[ui]` settings, `[keys]`, `[local]` (the local server's own `palette`) and
+`[[machines]]`. Each server applies its own config to what it
 runs and to what it renders into pane cells: shell and working directory,
 session, pane borders, gaps and scrollbars, the colours of that pane chrome,
 the window title and the cursor it reveals for CJK input methods.
@@ -98,8 +100,8 @@ shows.
 
 Agent states are Working, Blocked and Idle. Unknown presents as Idle.
 
-Machines are configured in `client.toml` as `[[machines]]` entries (a `label` and
-an `ssh` target), read once at launch like the rest of the config; there are no
+Machines are configured in `client.toml` as `[[machines]]` entries (a `label`, an
+`ssh` target and an optional `palette`), read once at launch like the rest of the config; there are no
 commands to add, remove or list them. The TUI connects to them without
 prompting (BatchMode), so at startup, before it takes the terminal, `shepr`
 checks every machine and runs interactive ssh for each one that needs
@@ -158,7 +160,7 @@ orientation, and nothing checks them:
 - `shepr-term`: terminal vocabulary and pure encoding shared by the emulator,
   the server and the client: row and point coordinates, selections, scroll
   metrics and scrollbar geometry and paint rows, colours, DEC and keyboard
-  modes, display widths and text column geometry, the VT spellings shepr writes, the host's observed theme, key identity and chord matching, child-facing key and mouse
+  modes, display widths and text column geometry, the VT spellings shepr writes, the host's observed theme and the per-host sidebar colours derived from it (`host_tint`), key identity and chord matching, child-facing key and mouse
   encoding, and the pixel mouse eligibility rule (which connection, pane and
   report may carry pixel positions). It keeps `alacritty_terminal` and `vte` out of the client binary.
 - `shepr-vt`: terminal emulation and read formatting; it re-exports the
@@ -342,7 +344,12 @@ every agent integration reports through it.
   runtimes are resized by `App::apply_workspace_geometry`, from the same
   `PaneSurface` descriptions (`ui/pane_surface.rs`: rects, scrollbar gutter and
   track, cursor) that both the full render and the server's retained patches
-  consume, and surface drawing takes shared references and only draws. What
+  consume, and surface drawing takes shared references and only draws. Layout
+  follows a geometry change at once; a change that may be one step of a
+  gesture (a client surface resize, a split ratio or pane resize command)
+  reaches the PTYs only once it has held for `PANE_RESIZE_SETTLE`
+  (`app/pane_resize.rs`), and until then the old grid draws clipped or padded
+  in the new content rect. What
   each client was last sent is its `CommittedBaseline` (surface and pane
   identities, committed together), owned by `ClientRenderState`.
   The client shell composes the same way: `ClientShellState::compose_frame`

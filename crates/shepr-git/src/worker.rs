@@ -631,7 +631,6 @@ mod tests {
                     status: GitStatus {
                         key: GitStatusKey::Outside(target.cwd.clone()),
                         cwd: target.cwd,
-                        label: "double".into(),
                         branch: GitBranch::OutsideRepository,
                         ahead_behind: None,
                     },

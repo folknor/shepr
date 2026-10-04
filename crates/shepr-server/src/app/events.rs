@@ -624,7 +624,7 @@ mod pane_exit_event_tests {
         assert_eq!(
             app.state
                 .ws(app.state.bookmark_index().expect("active"))
-                .display_name(),
+                .name(),
             "c"
         );
         assert!(app.state.terminal(pane_id).is_none());

@@ -4,7 +4,8 @@
 //! This crate holds the values both sides of a pane speak about (row and
 //! point coordinates, selections, scroll metrics, colours, underline shapes,
 //! DEC modes, keyboard and mouse protocol modes, display widths, the host's
-//! observed theme, what a displayable title is and what a word
+//! observed theme and the per-host sidebar colours derived from it
+//! (`host_tint`), what a displayable title is and what a word
 //! is in pane text), the VT spellings shepr writes (`seq`), key
 //! identity and chord matching (`key`), and the child-facing key and mouse
 //! encoders. It holds no emulator state and no host terminal I/O: the
@@ -15,6 +16,7 @@ mod color;
 mod coords;
 pub mod copy_motion;
 pub mod host;
+pub mod host_tint;
 pub mod key;
 mod limits;
 mod modes;

@@ -170,11 +170,26 @@ impl<'de> Deserialize<'de> for MachineLabel {
     }
 }
 
-/// One `[[machines]]` entry: a label and the SSH target it reaches.
+/// One `[[machines]]` entry: a label, the SSH target it reaches and the hue
+/// its sidebar entries are drawn in, if any.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct MachineConfig {
     pub label: MachineLabel,
     pub ssh: SshTarget,
+    /// The hue the sidebar derives this machine's colours from. Unset keeps
+    /// the theme's plain sidebar look. An unknown name fails the parse.
+    #[serde(default)]
+    pub palette: Option<shepr_term::host_tint::HostHue>,
+}
+
+/// The `[local]` table: settings for the local server, which has no
+/// `[[machines]]` entry of its own.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+pub struct LocalConfig {
+    /// The hue the sidebar derives the local server's colours from, like a
+    /// machine's `palette`.
+    pub palette: Option<shepr_term::host_tint::HostHue>,
 }
 
 #[cfg(test)]

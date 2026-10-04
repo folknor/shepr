@@ -220,7 +220,13 @@ pub(crate) struct ClientShellState {
     pub(in crate::shell) host_reports_all_keys: bool,
     pub(in crate::shell) notices: crate::shell::notices::Notices,
     pub(in crate::shell) outer_focused: Option<bool>,
-    pub(in crate::shell) host_background: Option<shepr_term::host::RgbColor>,
+    /// The host terminal's default and ANSI colours as last reported, which
+    /// the selection highlight (its background) and the per-host sidebar
+    /// colours are derived from.
+    pub(in crate::shell) host_theme: shepr_term::host::TerminalTheme,
+    /// The per-host sidebar colours derived from `host_theme`; `None` while
+    /// no hue is configured or the terminal has reported no background.
+    pub(in crate::shell) host_pills: Option<shepr_term::host_tint::HostPillPalette>,
     pub(in crate::shell) endpoint_error: crate::shell::notices::transient_error::TransientError,
     /// The host terminal's cell as the client last observed it. A pixel mouse
     /// position is only built when it is exact.
@@ -275,7 +281,8 @@ impl ClientShellState {
             host_reports_all_keys: false,
             notices: Default::default(),
             outer_focused: None,
-            host_background: None,
+            host_theme: shepr_term::host::TerminalTheme::default(),
+            host_pills: None,
             endpoint_error: Default::default(),
             host_cell: shepr_core::geometry::HostCell::Unknown,
         }
@@ -434,6 +441,10 @@ const SHELL_TIMERS: &[ShellTimer] = &[
         deadline: endpoint_notice_deadline,
         tick: tick_endpoint_notice_timer,
     },
+    ShellTimer {
+        deadline: owed_sidebar_settle_deadline,
+        tick: tick_owed_sidebar_settle,
+    },
 ];
 
 fn selection_timer_deadline(shell: &ClientShellState) -> Option<std::time::Instant> {
@@ -459,6 +470,11 @@ fn endpoint_error_deadline(shell: &ClientShellState) -> Option<std::time::Instan
 
 fn endpoint_notice_deadline(shell: &ClientShellState) -> Option<std::time::Instant> {
     shell.notices.deadline()
+}
+
+/// Due at once: a sidebar drag a projection reset ended still owes its resize and save.
+fn owed_sidebar_settle_deadline(shell: &ClientShellState) -> Option<std::time::Instant> {
+    shell.pointer.owed_sidebar_settle.map(|_| shell.now)
 }
 
 fn tick_selection_timer(shell: &mut ClientShellState, now: std::time::Instant) -> ClientShellInput {
@@ -491,6 +507,20 @@ fn tick_endpoint_notice_timer(
     now: std::time::Instant,
 ) -> ClientShellInput {
     repaint_timer_outcome(shell.tick_transient_banners(now))
+}
+
+/// Does what a sidebar drag a projection reset ended still owed, as its release would
+/// have (`settle_chrome_drag`): the width drag's endpoint resize and the preference save.
+fn tick_owed_sidebar_settle(
+    shell: &mut ClientShellState,
+    _now: std::time::Instant,
+) -> ClientShellInput {
+    let mut outcome = ClientShellInput::default();
+    if let Some(owed) = shell.pointer.owed_sidebar_settle.take() {
+        outcome.resize = owed.resize;
+        shell.persist_chrome_preferences(&mut outcome);
+    }
+    outcome
 }
 
 fn repaint_timer_outcome(repaint: bool) -> ClientShellInput {

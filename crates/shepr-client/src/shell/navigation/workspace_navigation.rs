@@ -34,6 +34,14 @@ impl PinnedLocation {
     ) -> bool {
         self.matches(endpoint_id, LocationTarget::Workspace(*workspace_id))
     }
+
+    pub(in crate::shell) fn matches_pane(
+        &self,
+        endpoint_id: &ClientEndpointId,
+        pane_id: &shepr_protocol::PublicPaneId,
+    ) -> bool {
+        self.matches(endpoint_id, LocationTarget::Pane(*pane_id))
+    }
 }
 
 pub(super) fn workspace_navigation_targets(
@@ -144,22 +152,112 @@ impl ClientShellState {
         self.navigation_target(self.endpoints.presented(), workspace_id)
     }
 
+    /// Whether `target` still names something navigate mode can act on: a workspace, or
+    /// an agent's pane, of the snapshot it was pinned from on a usable endpoint.
     pub(in crate::shell) fn navigation_target_valid(&self, target: &PinnedLocation) -> bool {
-        let workspace_id = target.location.workspace_id();
         self.endpoints.iter().any(|endpoint| {
             endpoint.endpoint_id == target.location.endpoint
                 && endpoint.state.usable()
                 && endpoint.snapshot_generation() == Some(target.generation())
                 && endpoint.snapshot().is_some_and(|snapshot| {
                     snapshot.boot_id == *target.boot_id()
-                        && workspace_id.is_some_and(|workspace_id| {
-                            snapshot
+                        && match target.location.target {
+                            LocationTarget::Workspace(workspace_id) => snapshot
                                 .workspaces
                                 .iter()
-                                .any(|workspace| workspace.workspace_id == workspace_id)
-                        })
+                                .any(|workspace| workspace.workspace_id == workspace_id),
+                            LocationTarget::Pane(pane_id) => {
+                                snapshot.agents.iter().any(|agent| agent.pane_id == pane_id)
+                            }
+                            LocationTarget::Machine => false,
+                        }
                 })
         })
+    }
+
+    /// The agents navigate mode can select, after the workspaces, in the agent panel's
+    /// display order: the rows of usable machines, as many as the sidebar on screen can
+    /// show (`ShellView::agent_navigation_limit`).
+    fn agent_navigation_targets(&self) -> Vec<PinnedLocation> {
+        let rows = &self.endpoints.agent_panel_model.rows;
+        let limit = self
+            .view()
+            .and_then(crate::shell::view::ShellView::agent_navigation_limit)
+            .unwrap_or(rows.len());
+        rows.iter()
+            .take(limit)
+            .filter(|row| !row.stale)
+            .filter_map(|row| {
+                let endpoint = self
+                    .endpoints
+                    .iter()
+                    .find(|endpoint| endpoint.endpoint_id == row.endpoint_id)?;
+                Some(PinnedLocation::new(
+                    Location::pane(row.endpoint_id.clone(), row.agent.pane_id),
+                    endpoint.snapshot()?.boot_id.clone(),
+                    endpoint.snapshot_generation()?,
+                ))
+            })
+            .collect()
+    }
+
+    /// The Navigate selection's place among the selectable agents, when it is on one.
+    /// Read before the agent panel is rebuilt, for `reconcile_navigate_agent`.
+    pub(in crate::shell) fn navigate_agent_index(&self) -> Option<usize> {
+        let selected = self
+            .mode
+            .preview()
+            .filter(|selected| selected.location.pane_id().is_some())?;
+        self.agent_navigation_targets()
+            .iter()
+            .position(|target| target.location == selected.location)
+    }
+
+    /// Keeps a Navigate selection on an agent across a rebuild of the agent panel, given
+    /// its place `previous` before the rebuild. The selection stays on its agent while that
+    /// agent is still selectable on the same boot, pinned to the snapshot that now presents
+    /// it. An agent that went away, or whose machine went stale, hands the selection to the
+    /// agent now at its place (the last one when the list got shorter), or with no agents
+    /// left to the last workspace, where moving up from the first agent leads.
+    pub(in crate::shell) fn reconcile_navigate_agent(&mut self, previous: Option<usize>) {
+        let Some(selected) = self
+            .mode
+            .preview()
+            .filter(|selected| selected.location.pane_id().is_some())
+            .cloned()
+        else {
+            return;
+        };
+        let mut agents = self.agent_navigation_targets();
+        let kept = agents.iter().position(|target| {
+            target.location == selected.location && target.boot_id() == selected.boot_id()
+        });
+        let next = match kept {
+            Some(index) => Some(agents.swap_remove(index)),
+            None if agents.is_empty() => workspace_navigation_targets(&self.endpoints).pop(),
+            None => {
+                let index = previous.unwrap_or(0).min(agents.len().saturating_sub(1));
+                Some(agents.swap_remove(index))
+            }
+        };
+        if let Some(next) = next.as_ref()
+            && next.location != selected.location
+        {
+            self.reveal_navigate_selection(next);
+        }
+        self.mode.set_preview(next);
+    }
+
+    /// Brings a new Navigate selection into view in the list that draws it.
+    fn reveal_navigate_selection(&mut self, target: &PinnedLocation) {
+        match target.location.target {
+            LocationTarget::Pane(_) => self.sidebar_scroll.reveal_agent(target.location.clone()),
+            LocationTarget::Workspace(_) | LocationTarget::Machine => {
+                // A folded machine unfolds to show its selected workspace.
+                self.endpoints.collapsed.remove(&target.location.endpoint);
+                self.sidebar_scroll.reveal_selected_workspace();
+            }
+        }
     }
 
     pub(in crate::shell) fn workspace_preview_action_blocked(&self) -> bool {
@@ -169,8 +267,12 @@ impl ClientShellState {
         })
     }
 
-    pub(in crate::shell) fn move_navigate_workspace(&mut self, delta: isize) {
+    /// Moves the Navigate selection `delta` steps through one list: every workspace in
+    /// sidebar order, then every selectable agent in the agent panel's order, wrapping at
+    /// both ends. Moving only highlights; Enter acts.
+    pub(in crate::shell) fn move_navigate_selection(&mut self, delta: isize) {
         let mut targets = workspace_navigation_targets(&self.endpoints);
+        targets.extend(self.agent_navigation_targets());
         if targets.is_empty() {
             return;
         }
@@ -186,26 +288,43 @@ impl ClientShellState {
             return;
         };
         let target = targets.swap_remove(next);
-        self.endpoints.collapsed.remove(&target.location.endpoint);
+        self.reveal_navigate_selection(&target);
         self.mode.set_preview(Some(target));
-        self.sidebar_scroll.reveal_selected_workspace();
     }
 
-    pub(in crate::shell) fn accept_navigate_workspace(&mut self, outcome: &mut ClientShellInput) {
+    /// Enter in navigate mode: switches to the selected workspace, or to the selected
+    /// agent's machine and workspace with its pane focused, the way a click on the entry
+    /// does, and leaves navigate mode.
+    pub(in crate::shell) fn accept_navigate_selection(&mut self, outcome: &mut ClientShellInput) {
         let Some(target) = self.mode.preview().cloned() else {
             self.mode.set(self.copy_or_terminal_mode());
             outcome.repaint = true;
             return;
         };
+        let agent = target.location.pane_id().is_some();
         if !self.navigation_target_valid(&target) {
             self.receive_endpoint_unavailable(&EndpointNotice::new(
                 target.location.endpoint.clone(),
-                EndpointNoticeKind::WorkspaceNoLongerAvailable,
+                if agent {
+                    EndpointNoticeKind::AgentNoLongerAvailable
+                } else {
+                    EndpointNoticeKind::WorkspaceNoLongerAvailable
+                },
             ));
             outcome.repaint = true;
             return;
         }
         if self.focus_or_activate(target.location.clone(), outcome) {
+            if agent {
+                // As the agent keybindings do: the panel keeps the focused agent in view,
+                // once its machine is the one presented.
+                if target.location.endpoint == *self.endpoints.presented() {
+                    self.sidebar_scroll.reveal_agent(target.location);
+                } else {
+                    self.sidebar_scroll
+                        .reveal_agent_after_activation(target.location);
+                }
+            }
             self.mode.set(ClientShellMode::Terminal);
         }
         outcome.repaint = true;

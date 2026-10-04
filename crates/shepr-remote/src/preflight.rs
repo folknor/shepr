@@ -461,6 +461,7 @@ mod tests {
         MachineConfig {
             label: MachineLabel::parse(label).expect("test precondition"),
             ssh: SshTarget::parse(format!("{label}.example")).expect("test precondition"),
+            palette: None,
         }
     }
 

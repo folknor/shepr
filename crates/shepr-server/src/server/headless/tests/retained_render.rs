@@ -74,7 +74,7 @@ async fn unrelated_render_keeps_synchronized_pane_frame_committed() {
         .app
         .test_state_mut()
         .ws_mut(0)
-        .set_custom_name(Some("renamed during frame".into()));
+        .set_name("renamed during frame".into());
     server.app.test_state_mut().mark_shell_projection_dirty();
     server
         .clients

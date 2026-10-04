@@ -55,6 +55,16 @@ pub(crate) fn render_now(server: &mut HeadlessServer) {
     server.render_now();
 }
 
+/// Moves the app clock past the pane resize settle delay and applies every
+/// deferred pane resize that came due, as the loop's timer does. Returns
+/// whether any pane changed size.
+fn settle_pane_resizes(server: &mut HeadlessServer) -> bool {
+    let mut clock = server.app.clock();
+    clock.now += crate::limits::PANE_RESIZE_SETTLE;
+    server.app.set_clock(clock);
+    server.apply_due_pane_resizes()
+}
+
 /// Turns window titles on for `server`, as `ui.window_title` does.
 pub(crate) fn enable_window_title(server: &mut HeadlessServer, template: &str) {
     server.window_title = crate::ui::WindowTitleSettings::for_test(template);

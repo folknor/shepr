@@ -3,15 +3,14 @@ use shepr_protocol::command::EndpointError;
 
 use super::endpoint::invalid_argument;
 
-/// The launch cwd named by a client-shell command (`workspace.create`), or the
-/// directory `workspace.checkout_root` asks about.
+/// The launch cwd named by a client-shell command (`workspace.create`).
 ///
 /// A relative path is refused without a filesystem access: the server's cwd
 /// means nothing to the caller. Saved value defects are admitted by the strict
 /// session schema and dropped per pane during restore, rather than rejecting
 /// the whole saved layout at deserialization.
 /// This is lexical launch input, not a UsableCwd observation: filesystem
-/// admission belongs to the child or worker, so a hung mount cannot stall
+/// admission belongs to the child, so a hung mount cannot stall
 /// this event-loop boundary.
 pub(super) fn launch_cwd(raw: &shepr_protocol::RemotePath) -> Result<AbsolutePath, EndpointError> {
     match AbsolutePath::new(raw.as_path()) {

@@ -54,11 +54,6 @@ pub(crate) const SERVER_EVENT_DRAIN_LIMIT: usize = 64;
 /// Limit API requests per loop pass so client and scheduled work still get service.
 pub(crate) const API_REQUEST_DRAIN_LIMIT: usize = 64;
 
-/// Refuse new checkout-root work when this combined count of worker threads
-/// and queued completions reaches the limit. Resume checks add at most one
-/// completion per restored agent pane in a finite restore batch.
-pub(crate) const MAX_WORKER_COMPLETION_BACKLOG: usize = 8;
-
 // ---------------------------------------------------------------------------
 // Loop cadence
 // ---------------------------------------------------------------------------
@@ -122,12 +117,12 @@ const MAX_ENDPOINT_RESPONSE_FRAME_COUNT: usize =
 /// Encoded size cap of one endpoint response, leaving room for frame prefixes.
 pub(crate) const MAX_ENDPOINT_RESPONSE_ENCODED_BYTES: usize =
     CLIENT_CONTROL_QUEUE_MAX_BYTES - std::mem::size_of::<u32>() * MAX_ENDPOINT_RESPONSE_FRAME_COUNT;
-/// Most endpoint replies held for one client, ready or waiting on a worker. A
+/// Most endpoint replies held for one client until their release. A
 /// same-build client has one command in flight per endpoint, so a legitimate
 /// backlog is one or two entries; a client past this is dropped, not
 /// buffered for.
 pub(crate) const MAX_HELD_ENDPOINT_REPLIES: usize = 64;
-/// Most framed reply and refusal bytes held for one client. A held reply
+/// Most framed reply bytes held for one client. A held reply
 /// drains into the control lane, whose own byte budget is this size.
 pub(crate) const MAX_HELD_ENDPOINT_REPLY_BYTES: usize = CLIENT_CONTROL_QUEUE_MAX_BYTES;
 
@@ -143,6 +138,17 @@ pub(crate) const MAX_RETURNED_MATCHES: usize = 1024;
 // ---------------------------------------------------------------------------
 // Layout
 // ---------------------------------------------------------------------------
+
+/// How long a workspace's geometry must hold before its panes' terminal grids
+/// and PTYs follow a resize that may be one step of a gesture (a split border
+/// or host window being dragged, ratio commands replayed from a slow link).
+/// Every PTY resize sends its child a SIGWINCH, and a shell redraws its prompt
+/// on each one; the terminal reflows wrapped lines in between, so a burst of
+/// them leaves stacked prompt fragments behind. Long enough to span the gaps
+/// between a drag's steps (the client's drag send throttle is several times
+/// shorter), short enough that the pane settles about when the pointer stops.
+/// Layout and drawing follow at once; only the resize waits.
+pub(crate) const PANE_RESIZE_SETTLE: Duration = Duration::from_millis(120);
 
 /// The fraction of a split one resize step moves its edge by.
 pub(crate) const DEFAULT_PANE_RESIZE_AMOUNT: shepr_core::layout::RatioDelta =

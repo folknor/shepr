@@ -875,6 +875,7 @@ fn navigator_grouping_keeps_snapshot_order_with_interleaved_panes() {
     let remote = shepr_config::MachineConfig {
         label: shepr_config::MachineLabel::parse("Remote").expect("test precondition"),
         ssh: shepr_config::SshTarget::parse("dev@example.invalid").expect("test precondition"),
+        palette: None,
     };
     let remote_id = ClientEndpointId::Ssh(remote.label.clone());
     state.set_machines(&[remote]);

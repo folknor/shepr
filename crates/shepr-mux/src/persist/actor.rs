@@ -428,7 +428,7 @@ mod tests {
             "host_theme": super::super::schema::SavedHostTheme::default(),
             "workspaces": [{
                 "id": "w1",
-                "custom_name": null,
+                "name": "w",
                 "next_public_pane_number": 2,
                 "layout": {
                     "Pane": {

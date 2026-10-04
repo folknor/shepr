@@ -6,6 +6,7 @@ use shepr_config::theme::Palette;
 
 use shepr_protocol::ClientSurfaceSize;
 
+use crate::shell::sidebar::host_colors::HostHues;
 use crate::shell::sidebar::preferences;
 
 pub(crate) struct ClientShellConfig {
@@ -23,6 +24,8 @@ pub(crate) struct ClientShellConfig {
     pub(in crate::shell) status_indicators: shepr_config::StatusIndicatorStyle,
     pub(in crate::shell) copy_on_select: bool,
     pub(in crate::shell) palette: Palette,
+    /// The hue each endpoint's sidebar entries are drawn in, if any.
+    pub(in crate::shell) host_hues: HostHues,
     pub(in crate::shell) keybinds: LiveKeybindConfig,
     pub(in crate::shell) prompt_new_workspace_name: bool,
     pub(in crate::shell) confirm_close: bool,
@@ -46,6 +49,7 @@ impl ClientShellConfig {
             config.ui(),
             preferences::ConfiguredChrome::from_validated_config(config),
             config.palette().clone(),
+            HostHues::from_validated_config(config),
             config.live_keybinds().clone(),
         )
     }
@@ -54,6 +58,7 @@ impl ClientShellConfig {
         config: &shepr_config::ValidatedClientUiConfig,
         configured: preferences::ConfiguredChrome,
         palette: shepr_config::theme::Palette,
+        host_hues: HostHues,
         keybinds: LiveKeybindConfig,
     ) -> Self {
         Self {
@@ -67,6 +72,7 @@ impl ClientShellConfig {
             status_indicators: config.status_indicators,
             copy_on_select: config.copy_on_select,
             palette,
+            host_hues,
             // One validation pass; the launch already rejected invalid bindings.
             keybinds,
             prompt_new_workspace_name: config.prompt_new_workspace_name,
@@ -156,6 +162,7 @@ impl ClientShellConfig {
             validated.ui(),
             preferences::ConfiguredChrome::from_validated_config(&validated),
             validated.palette().clone(),
+            HostHues::from_validated_config(&validated),
             validated.live_keybinds().clone(),
         )
     }

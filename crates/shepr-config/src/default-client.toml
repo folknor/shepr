@@ -98,6 +98,8 @@
 
 # Navigate-mode movement. These local shortcuts win while navigate mode is open.
 # These are independent from focus_pane_* and do not include prefix+.
+# Up and down move one selection through the workspaces and then the agents
+# below them; enter opens a workspace or focuses an agent's pane.
 # navigate_back = "esc"
 # navigate_workspace_up = "up"
 # navigate_workspace_down = "down"
@@ -117,7 +119,8 @@
 # While unset, mouse or key changes to sidebar width are remembered by the client.
 # Once set, this value wins at every launch.
 
-# Minimum sidebar width when expanded (columns)
+# Minimum sidebar width when expanded (columns). Dragging the sidebar edge
+# below it collapses the sidebar; dragging back past it expands it again.
 # sidebar_min_width = 18
 
 # Maximum sidebar width when expanded (columns)
@@ -163,8 +166,9 @@
 # Ask for confirmation before closing a workspace
 # confirm_close = true
 
-# Ask for a workspace name before interactive creation.
-# Set false to create workspaces immediately with generated names.
+# Ask for a workspace name before interactive creation. The prompt starts with
+# the name of the new workspace's directory; a blank name keeps that name.
+# Set false to create workspaces immediately, named after their directory.
 # prompt_new_workspace_name = true
 
 # Agent panel ordering: "spaces" (grouped by space) or "priority" (attention queue).
@@ -194,7 +198,7 @@
 # [ui.sidebar.spaces]
 # Blank rows between space entries. Set to 1 to restore the previous spacing.
 # row_gap = 0
-# rows = [["state_icon", "workspace"], ["branch", "git_status"]]
+# rows = [["state_icon", "workspace"], []]
 
 # Machines whose shepr servers this client shows next to the local one. Each
 # entry needs a unique label (how shepr names the machine: nonblank, no control
@@ -210,6 +214,24 @@
 # limit applies to the private control socket. If XDG_RUNTIME_DIR is too long
 # to leave room for the profile runtime directory and generated OpenSSH staging
 # suffix, that machine's setup fails.
+# palette is optional: a hue name (red, orange, yellow, green, cyan, blue,
+# purple or magenta) the expanded sidebar draws this machine's workspace and
+# agent entries in. Shepr derives the colours from the background and
+# foreground your terminal reports, so they fit its theme: a tinted background
+# (stronger on the focused entry), first-line text, dimmer second-line text and
+# an accent (the workspace number, the machine name in agent entries), each
+# kept readable against the tint, with every host's accent equally bright.
+# Where your terminal reports its own colour of that name, its hue is used.
+# Without a reported background there is no tint: the accent is the terminal's
+# own ANSI colour and the second line is drawn dim. Entries of an unreachable
+# machine lose the colour. Token styles set in [ui.sidebar] still win. Unset,
+# the entries keep the theme's plain look. An unknown name fails the launch.
 # [[machines]]
 # label = "build"
 # ssh = "dev@build"
+# palette = "green"
+
+# Settings for the local server, which has no [[machines]] entry.
+# palette is the local server's hue, as for a machine above.
+# [local]
+# palette = "blue"

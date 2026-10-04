@@ -5,7 +5,6 @@ use shepr_core::absolute_path::AbsolutePath;
 use crate::git::{AheadBehind, GitBranch, GitStatus, GitStatusKey};
 use crate::pane::{PaneRuntime, PaneRuntimeRegistry};
 use shepr_core::layout::{NavDirection, PaneId, RatioDelta, SplitPath, SplitRatio};
-use shepr_git::fallback_label_from_cwd;
 use shepr_protocol::WorkspaceId;
 
 /// Whether a pane mutation changed the surface its clients render.
@@ -77,33 +76,26 @@ pub use self::set::{
 };
 pub use self::shape::Shape;
 
-/// Only admitted identities can supply a refresh cache hint. The fallback
-/// label has no cwd or Git key and cannot accidentally match an empty path.
+/// Only admitted identities can supply a refresh cache hint. An undiscovered
+/// identity has no cwd or Git key and cannot accidentally match an empty path.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum GitIdentity {
-    Undiscovered { fallback_label: String },
+    Undiscovered,
     Admitted(GitStatus),
 }
 
 impl GitIdentity {
-    fn label(&self) -> &str {
-        match self {
-            Self::Undiscovered { fallback_label } => fallback_label,
-            Self::Admitted(status) => &status.label,
-        }
-    }
-
     fn branch(&self) -> Option<&GitBranch> {
         match self {
             Self::Admitted(status) => Some(&status.branch),
-            Self::Undiscovered { .. } => None,
+            Self::Undiscovered => None,
         }
     }
 
     fn ahead_behind(&self) -> Option<AheadBehind> {
         match self {
             Self::Admitted(status) => status.ahead_behind,
-            Self::Undiscovered { .. } => None,
+            Self::Undiscovered => None,
         }
     }
 }
@@ -112,8 +104,8 @@ impl GitIdentity {
 pub struct Workspace {
     /// Stable public workspace identity, independent of display order.
     id: WorkspaceId,
-    /// User-provided label override; Git identity still refreshes.
-    custom_name: Option<String>,
+    /// The name, set at creation and changed only by a rename.
+    name: String,
     /// Fallback workspace identity source for a missing runtime, fixed at
     /// construction.
     identity_cwd: AbsolutePath,
@@ -129,25 +121,26 @@ pub struct Workspace {
 }
 
 impl Workspace {
-    /// A workspace around a pane tree. The Git identity (workspace label and
-    /// status) is left undiscovered: finding it walks the filesystem up to `/`
-    /// and can spawn `git`, which must not run on the server's main loop. The
-    /// background Git refresh discovers it, because an undiscovered identity
-    /// never matches the workspace's resolved cwd.
+    /// A workspace around a pane tree, named `name` or, without one, after
+    /// `identity_cwd` (`default_workspace_name`). The Git status is left
+    /// undiscovered: finding it walks the filesystem up to `/` and can spawn
+    /// `git`, which must not run on the server's main loop. The background Git
+    /// refresh discovers it, because an undiscovered identity never matches the
+    /// workspace's resolved cwd.
     pub(crate) fn from_tree(
         id: WorkspaceId,
-        custom_name: Option<String>,
+        name: Option<String>,
         identity_cwd: AbsolutePath,
         tree: pane_tree::PaneTree,
     ) -> Self {
-        let git = GitIdentity::Undiscovered {
-            fallback_label: fallback_label_from_cwd(&identity_cwd),
-        };
+        let name = name.unwrap_or_else(|| {
+            shepr_core::workspace_label::default_workspace_name(identity_cwd.as_path())
+        });
         Self {
             id,
-            custom_name,
+            name,
             identity_cwd,
-            git,
+            git: GitIdentity::Undiscovered,
             tree,
             spawn_geometry: None,
         }
@@ -166,14 +159,14 @@ impl Workspace {
     /// workspace's first pane is numbered.
     pub fn test_from_pane(
         id: WorkspaceId,
-        label: Option<String>,
+        name: Option<String>,
         identity_cwd: &AbsolutePath,
         pane: PaneId,
         terminal: crate::terminal::TerminalState,
     ) -> Self {
         Self::from_tree(
             id,
-            label,
+            name,
             identity_cwd.clone(),
             pane_tree::PaneTree::single(pane, terminal),
         )
@@ -184,14 +177,16 @@ impl Workspace {
         self.id
     }
 
-    pub fn custom_name(&self) -> Option<&str> {
-        self.custom_name.as_deref()
+    /// The workspace name every consumer (API workspace info, sidebar, window
+    /// title) reads.
+    pub fn name(&self) -> &str {
+        &self.name
     }
 
-    /// Sets or clears the label override. True when the name changed.
-    pub fn set_custom_name(&mut self, name: Option<String>) -> bool {
-        let changed = self.custom_name != name;
-        self.custom_name = name;
+    /// Renames the workspace. True when the name changed.
+    pub fn set_name(&mut self, name: String) -> bool {
+        let changed = self.name != name;
+        self.name = name;
         changed
     }
 
@@ -218,15 +213,14 @@ impl Workspace {
     pub fn git_status_key_for_cwd(&self, cwd: &Path) -> Option<&GitStatusKey> {
         match &self.git {
             GitIdentity::Admitted(status) if self.matches_identity_cwd(cwd) => Some(&status.key),
-            GitIdentity::Undiscovered { .. } | GitIdentity::Admitted(_) => None,
+            GitIdentity::Undiscovered | GitIdentity::Admitted(_) => None,
         }
     }
 
     /// Applies a Git status the refresh answered for this workspace, only
     /// while the cwd it was read for is still `current_cwd`. The caller has
     /// already matched the answer to this workspace. The return value
-    /// describes visible change, including the custom label override, rather
-    /// than changes to discovery bookkeeping.
+    /// describes visible change rather than changes to discovery bookkeeping.
     pub fn apply_git_status(
         &mut self,
         status: GitStatus,
@@ -236,9 +230,8 @@ impl Workspace {
             return SurfaceChange::Unchanged;
         }
         let next = GitIdentity::Admitted(status);
-        let changed = self.display_label(&self.git) != self.display_label(&next)
-            || self.git.branch().and_then(GitBranch::as_deref)
-                != next.branch().and_then(GitBranch::as_deref)
+        let changed = self.git.branch().and_then(GitBranch::as_deref)
+            != next.branch().and_then(GitBranch::as_deref)
             || self.git.ahead_behind() != next.ahead_behind();
         self.git = next;
         if changed {
@@ -246,22 +239,6 @@ impl Workspace {
         } else {
             SurfaceChange::Unchanged
         }
-    }
-
-    /// The workspace label: the custom name, else the automatic label cached
-    /// from the last admitted Git identity. Every consumer (API workspace
-    /// info, sidebar, window title) reads this one value, so they cannot
-    /// disagree. The cache follows the workspace's resolved cwd
-    /// (`resolved_identity_cwd`) through the background Git refresh, which
-    /// re-derives it whenever that cwd moves; reading it does no IO.
-    pub fn display_name(&self) -> &str {
-        self.display_label(&self.git)
-    }
-
-    fn display_label<'a>(&'a self, identity: &'a GitIdentity) -> &'a str {
-        self.custom_name
-            .as_deref()
-            .unwrap_or_else(|| identity.label())
     }
 
     pub fn branch(&self) -> Option<&str> {
@@ -456,8 +433,8 @@ mod tests {
         TerminalState::new(AbsolutePath::new(cwd).expect("test cwd is absolute"))
     }
 
-    /// A one-pane workspace with no custom name whose identity cwd is `cwd`
-    /// and whose root pane's terminal reports `terminal_cwd`.
+    /// A one-pane workspace created without a name (so named after
+    /// `identity_cwd`) whose root pane's terminal reports `terminal_cwd`.
     fn workspace_at(identity_cwd: &Path, terminal_cwd: &str) -> Workspace {
         Workspace::test_from_pane(
             test_workspace_id(),
@@ -613,40 +590,29 @@ mod tests {
     }
 
     #[test]
-    fn display_name_borrows_the_cached_label() {
-        let mut ws = Workspace::test_new("custom");
-        let name = ws.custom_name().expect("a named workspace");
-        assert!(std::ptr::eq(name.as_ptr(), ws.display_name().as_ptr()));
+    fn an_unnamed_workspace_is_named_after_its_cwd_and_keeps_that_name() {
+        let mut ws = workspace_at(Path::new("/home/someone"), "/elsewhere/entirely");
+        assert_eq!(ws.name(), "someone");
 
-        ws.set_custom_name(None);
-        let cwd = ws.identity_cwd().to_path_buf();
+        // A Git status for a moved cwd changes the branch, never the name.
+        let cwd = PathBuf::from("/elsewhere/entirely");
         let status = GitStatus {
             cwd: cwd.clone(),
             key: GitStatusKey::Checkout(cwd.clone()),
-            label: "cached-label".into(),
             branch: GitBranch::Detached,
             ahead_behind: None,
         };
         ws.apply_git_status(status, Some(&cwd));
-
-        let label = ws.display_name();
-        assert_eq!(label, "cached-label");
-        let GitIdentity::Admitted(admitted) = &ws.git else {
-            panic!("the status was admitted");
-        };
-        assert!(std::ptr::eq(label.as_ptr(), admitted.label.as_ptr()));
+        assert_eq!(ws.name(), "someone");
     }
 
     #[test]
     fn renaming_reports_whether_the_name_changed() {
         let mut ws = Workspace::test_new("first");
 
-        assert!(!ws.set_custom_name(Some("first".into())));
-        assert!(ws.set_custom_name(Some("second".into())));
-        assert_eq!(ws.custom_name(), Some("second"));
-        assert!(ws.set_custom_name(None));
-        assert!(!ws.set_custom_name(None));
-        assert_eq!(ws.custom_name(), None);
+        assert!(!ws.set_name("first".into()));
+        assert!(ws.set_name("second".into()));
+        assert_eq!(ws.name(), "second");
     }
 
     #[test]
@@ -665,49 +631,6 @@ mod tests {
             ws.resolved_identity_cwd(&registry),
             PathBuf::from("/shepr-test/pion")
         );
-    }
-
-    #[test]
-    fn display_name_reads_cached_identity_without_rechecking_filesystem() {
-        let root = crate::test_support::ScratchDir::new("label-cache");
-        let cwd = root.join("deep/nested");
-        std::fs::create_dir_all(&cwd).expect("create nested cwd");
-
-        let mut ws = workspace_at(&cwd, "/shepr-test/unused");
-        let status = shepr_git::GitStatusSnapshot {
-            repo_root: Some(PathBuf::from("/cached-repo")),
-            branch: GitBranch::Detached,
-            ahead_behind: None,
-        }
-        .into_status(cwd.clone(), GitStatusKey::Checkout(cwd.clone()));
-        ws.apply_git_status(status, Some(&cwd));
-
-        std::fs::remove_dir_all(root).expect("remove cwd after cache admission");
-
-        assert_eq!(ws.display_name(), "cached-repo");
-    }
-
-    #[test]
-    fn label_is_the_admitted_identity_even_when_the_live_cwd_has_moved() {
-        // A subdirectory `cd` without OSC 7 used to make the API show the
-        // subdirectory basename while the window title showed the repo name.
-        // Both now read the one cached label until the background refresh
-        // admits the new cwd.
-        let mut ws = workspace_at(Path::new("/old/workspace"), "/new/repo/deep");
-        let cwd = PathBuf::from("/new/repo");
-        let status = shepr_git::GitStatusSnapshot {
-            repo_root: Some(cwd.clone()),
-            branch: GitBranch::Detached,
-            ahead_behind: None,
-        }
-        .into_status(cwd.clone(), GitStatusKey::Checkout(cwd.clone()));
-        ws.apply_git_status(status, Some(&cwd));
-
-        assert_eq!(
-            ws.resolved_identity_cwd(&PaneRuntimeRegistry::new()),
-            PathBuf::from("/new/repo/deep")
-        );
-        assert_eq!(ws.display_name(), "repo");
     }
 
     #[test]
@@ -917,14 +840,13 @@ mod tests {
     }
 
     #[test]
-    fn hidden_label_and_cache_changes_are_admitted_without_surface_change() {
+    fn hidden_cache_changes_are_admitted_without_surface_change() {
         let _env = shepr_test_support::IsolatedEnv::new();
         let mut ws = Workspace::test_new("custom");
         let cwd = ws.identity_cwd().to_path_buf();
         let status = GitStatus {
             cwd: cwd.clone(),
             key: GitStatusKey::Checkout(PathBuf::from("/checkout")),
-            label: "automatic".into(),
             branch: GitBranch::Detached,
             ahead_behind: None,
         };
@@ -933,14 +855,12 @@ mod tests {
             ws.apply_git_status(status, Some(&cwd)),
             SurfaceChange::Unchanged
         );
-        assert_eq!(ws.display_name(), "custom");
+        assert_eq!(ws.name(), "custom");
         assert_eq!(
             ws.git_status_key_for_cwd(&cwd),
             Some(&GitStatusKey::Checkout(PathBuf::from("/checkout")))
         );
         assert_eq!(ws.branch_state(), Some(&GitBranch::Detached));
-        ws.set_custom_name(None);
-        assert_eq!(ws.display_name(), "automatic");
     }
 
     #[test]
@@ -951,7 +871,6 @@ mod tests {
         let mut status = GitStatus {
             cwd: cwd.clone(),
             key: GitStatusKey::Outside(cwd.clone()),
-            label: "automatic".into(),
             branch: GitBranch::Detached,
             ahead_behind: None,
         };
@@ -967,10 +886,10 @@ mod tests {
     }
 
     #[test]
-    fn undiscovered_identity_labels_by_basename_and_never_matches_a_cwd() {
+    fn undiscovered_identity_never_matches_a_cwd() {
         let ws = workspace_at(Path::new("/shepr-test/repo/sub"), "/shepr-test/repo/sub");
 
-        assert_eq!(ws.display_name(), "sub");
+        assert_eq!(ws.name(), "sub");
         assert_eq!(ws.branch(), None);
         assert!(!ws.matches_identity_cwd(ws.identity_cwd()));
         assert!(!ws.matches_identity_cwd(Path::new("")));
@@ -991,7 +910,7 @@ mod tests {
             terminal_at("/shepr-test-nonexistent/repo/sub"),
         );
 
-        assert_eq!(ws.display_name(), "sub");
+        assert_eq!(ws.name(), "sub");
         assert!(!ws.matches_identity_cwd(ws.identity_cwd()));
         assert_eq!(ws.tree().len(), 1);
         assert_eq!(number_of(&ws, pane), Some(1));

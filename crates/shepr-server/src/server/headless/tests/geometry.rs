@@ -173,9 +173,53 @@ async fn repeated_layout_action_reapplies_controller_geometry() {
     let changed = server.view_epoch != epoch_before;
     assert!(result.is_ok());
     assert!(changed);
+    // A ratio command can be one step of a drag: the PTYs wait for it to settle.
+    assert_eq!(server.app.test_runtime(first_pane).current_size(), before);
 
+    assert!(settle_pane_resizes(&mut server));
     let after = server.app.test_runtime(first_pane).current_size();
     assert_ne!(after, before);
+    shutdown_test_runtimes(&mut server);
+}
+
+#[tokio::test]
+async fn a_zoom_resizes_the_zoomed_pane_at_once() {
+    let mut server = test_headless_server();
+    let mut workspace = shepr_mux::workspace::Workspace::test_new("zoom-geometry");
+    let first_pane = workspace.tree().root();
+    let second_pane = workspace.test_split(shepr_core::layout::Direction::Horizontal);
+    server
+        .app
+        .test_state_mut()
+        .test_set_workspaces(vec![workspace]);
+    for pane in [first_pane, second_pane] {
+        server.app.insert_test_runtime(
+            pane,
+            shepr_mux::pane::PaneRuntime::test_with_screen_bytes(80, 24, b""),
+        );
+    }
+    server.app.test_state_mut().seed_bookmark_index(Some(0));
+    let (control, _) = connect_test_shell(&mut server, 66, 100, 30);
+    let _ = control.recv().expect("snapshot");
+    let before = server.app.test_runtime(first_pane).current_size();
+    let pane_id = server
+        .app
+        .state()
+        .pane(first_pane)
+        .expect("test pane")
+        .public_id();
+
+    let result = server.handle_client_shell_command(
+        ClientId::test_new(66),
+        shepr_protocol::command::EndpointCommand::PaneZoom(
+            shepr_protocol::command::PaneZoomParams { pane_id },
+        ),
+    );
+
+    assert!(result.is_ok());
+    // A zoom is one discrete change, not a step of a drag: no settle wait.
+    assert_ne!(server.app.test_runtime(first_pane).current_size(), before);
+    assert_eq!(server.app.pane_resize_deadline(), None);
     shutdown_test_runtimes(&mut server);
 }
 
@@ -458,6 +502,11 @@ async fn client_shell_workspaces_render_accept_input_and_resize_independently() 
             shepr_core::geometry::HostCell::Unknown
         ),
     }));
+    assert_eq!(
+        server.app.test_runtime(second_pane).current_size(),
+        second_size
+    );
+    assert!(settle_pane_resizes(&mut server));
     let resized_second = server.app.test_runtime(second_pane).current_size();
     assert_ne!(resized_second, second_size);
     assert_eq!(
@@ -534,4 +583,211 @@ async fn pane_death_reapplies_controller_geometry() {
         grown.0 as usize
     );
     shutdown_test_runtimes(&mut server);
+}
+
+/// The (rows, cols) the first workspace's only pane is laid out for in the
+/// geometry the workspace records.
+fn laid_out_pane_size(server: &HeadlessServer) -> (u16, u16) {
+    laid_out_pane_size_of(server, 0)
+}
+
+/// As `laid_out_pane_size`, for the workspace at `index`.
+fn laid_out_pane_size_of(server: &HeadlessServer, index: usize) -> (u16, u16) {
+    let view = server.app.render_view();
+    let area = view
+        .state
+        .ws(index)
+        .spawn_geometry()
+        .expect("recorded workspace geometry")
+        .area;
+    let layout = crate::ui::compute_surface_for(
+        view.state,
+        view.runtimes,
+        Some(crate::ui::SurfaceTarget {
+            index,
+            id: view.state.ws(index).id(),
+        }),
+        crate::ui::ratatui_rect(area),
+    );
+    let pane = layout.panes.first().expect("test pane geometry");
+    (pane.inner_rect.height, pane.inner_rect.width)
+}
+
+/// Moves the app clock forward by `by` without applying anything.
+fn advance_clock(server: &mut HeadlessServer, by: std::time::Duration) {
+    let mut clock = server.app.clock();
+    clock.now += by;
+    server.app.set_clock(clock);
+}
+
+#[tokio::test]
+async fn workspaces_settle_independently_and_an_unchanged_target_keeps_its_wait() {
+    let mut server = test_headless_server();
+    let first = shepr_mux::workspace::Workspace::test_new("settle-first");
+    let first_pane = first.tree().root();
+    let second = shepr_mux::workspace::Workspace::test_new("settle-second");
+    let second_pane = second.tree().root();
+    server
+        .app
+        .test_state_mut()
+        .test_set_workspaces(vec![first, second]);
+    for pane_id in [first_pane, second_pane] {
+        server.app.insert_test_runtime(
+            pane_id,
+            shepr_mux::pane::PaneRuntime::test_with_screen_bytes(80, 24, b""),
+        );
+    }
+    let first_id = server.app.state().ws(0).id();
+    let second_id = server.app.state().ws(1).id();
+    let settle = crate::limits::PANE_RESIZE_SETTLE;
+    set_headless_size(&mut server, 72, 18);
+    for workspace_id in [&first_id, &second_id] {
+        assert!(
+            server.apply_workspace_geometry(workspace_id, crate::app::PaneResizeTiming::Immediate)
+        );
+    }
+    let settled = server.app.test_runtime(first_pane).current_size();
+    assert_eq!(server.app.test_runtime(second_pane).current_size(), settled);
+
+    set_headless_size(&mut server, 60, 14);
+    assert!(server.apply_workspace_geometry(&first_id, crate::app::PaneResizeTiming::Settled));
+    advance_clock(&mut server, settle / 2);
+    // Reapplying the first workspace's unchanged target keeps its deadline, while the
+    // second workspace starts its own wait now.
+    assert!(!server.apply_workspace_geometry(&first_id, crate::app::PaneResizeTiming::Settled));
+    assert!(server.apply_workspace_geometry(&second_id, crate::app::PaneResizeTiming::Settled));
+
+    advance_clock(&mut server, settle / 2);
+    assert!(server.apply_due_pane_resizes());
+    assert_eq!(
+        server.app.test_runtime(first_pane).current_size(),
+        laid_out_pane_size_of(&server, 0)
+    );
+    assert_ne!(server.app.test_runtime(first_pane).current_size(), settled);
+    assert_eq!(
+        server.app.test_runtime(second_pane).current_size(),
+        settled,
+        "the second workspace still waits for its own deadline"
+    );
+
+    advance_clock(&mut server, settle / 2);
+    assert!(server.apply_due_pane_resizes());
+    assert_eq!(
+        server.app.test_runtime(second_pane).current_size(),
+        laid_out_pane_size_of(&server, 1)
+    );
+    assert_eq!(server.app.pane_resize_deadline(), None);
+    shutdown_test_runtimes(&mut server);
+}
+
+fn set_headless_size(server: &mut HeadlessServer, cols: u16, rows: u16) {
+    server.app.test_state_mut().settings_mut().headless_size =
+        shepr_core::geometry::GridSize::clamped(cols, rows);
+}
+
+#[tokio::test]
+async fn a_first_layout_sizes_its_panes_at_once_even_when_it_may_settle() {
+    let mut server = test_headless_server();
+    let pane_id = install_shared_view_test_runtime(&mut server);
+    let workspace_id = server.app.state().ws(0).id();
+    set_headless_size(&mut server, 72, 18);
+    let initial = server.app.test_runtime(pane_id).current_size();
+    assert_eq!(server.app.state().ws(0).spawn_geometry(), None);
+
+    assert!(server.apply_workspace_geometry(&workspace_id, crate::app::PaneResizeTiming::Settled));
+
+    let laid_out = laid_out_pane_size(&server);
+    assert_ne!(laid_out, initial);
+    assert_eq!(server.app.test_runtime(pane_id).current_size(), laid_out);
+    assert_eq!(server.app.pane_resize_deadline(), None);
+    shutdown_test_runtimes(&mut server);
+}
+
+#[tokio::test]
+async fn a_burst_of_geometry_changes_resizes_the_panes_once_at_the_final_size() {
+    let mut server = test_headless_server();
+    let pane_id = install_shared_view_test_runtime(&mut server);
+    let workspace_id = server.app.state().ws(0).id();
+    set_headless_size(&mut server, 72, 18);
+    assert!(
+        server.apply_workspace_geometry(&workspace_id, crate::app::PaneResizeTiming::Immediate)
+    );
+    let settled = server.app.test_runtime(pane_id).current_size();
+
+    // Each step of the burst is laid out at once, but the pane keeps its size.
+    for (cols, rows) in [(70, 17), (66, 16), (60, 14)] {
+        set_headless_size(&mut server, cols, rows);
+        assert!(
+            server.apply_workspace_geometry(&workspace_id, crate::app::PaneResizeTiming::Settled)
+        );
+        assert_eq!(server.app.test_runtime(pane_id).current_size(), settled);
+    }
+    let now = server.app.clock().now;
+    assert_eq!(
+        server.app.pane_resize_deadline(),
+        Some(now + crate::limits::PANE_RESIZE_SETTLE)
+    );
+    // The loop wakes for it: the app's deadline includes the deferred resize.
+    assert!(
+        server
+            .app
+            .next_deadline(false)
+            .is_some_and(|deadline| deadline <= now + crate::limits::PANE_RESIZE_SETTLE)
+    );
+    // Nothing is due before the delay has passed.
+    assert!(!server.apply_due_pane_resizes());
+    assert_eq!(server.app.test_runtime(pane_id).current_size(), settled);
+
+    assert!(settle_pane_resizes(&mut server));
+    let final_size = laid_out_pane_size(&server);
+    assert_ne!(final_size, settled);
+    assert_eq!(server.app.test_runtime(pane_id).current_size(), final_size);
+    assert_eq!(server.app.pane_resize_deadline(), None);
+    // Applied once: nothing is left to apply.
+    assert!(!settle_pane_resizes(&mut server));
+    shutdown_test_runtimes(&mut server);
+}
+
+#[tokio::test]
+async fn an_immediate_application_supersedes_a_deferred_resize() {
+    let mut server = test_headless_server();
+    let pane_id = install_shared_view_test_runtime(&mut server);
+    let workspace_id = server.app.state().ws(0).id();
+    set_headless_size(&mut server, 72, 18);
+    assert!(
+        server.apply_workspace_geometry(&workspace_id, crate::app::PaneResizeTiming::Immediate)
+    );
+
+    set_headless_size(&mut server, 60, 14);
+    assert!(server.apply_workspace_geometry(&workspace_id, crate::app::PaneResizeTiming::Settled));
+    assert!(server.app.pane_resize_deadline().is_some());
+    assert!(
+        !server.apply_workspace_geometry(&workspace_id, crate::app::PaneResizeTiming::Immediate)
+    );
+
+    assert_eq!(
+        server.app.test_runtime(pane_id).current_size(),
+        laid_out_pane_size(&server)
+    );
+    assert_eq!(server.app.pane_resize_deadline(), None);
+    shutdown_test_runtimes(&mut server);
+}
+
+#[tokio::test]
+async fn a_deferred_resize_of_a_closed_workspace_is_dropped() {
+    let mut server = test_headless_server();
+    let _pane_id = install_shared_view_test_runtime(&mut server);
+    let workspace_id = server.app.state().ws(0).id();
+    set_headless_size(&mut server, 72, 18);
+    assert!(
+        server.apply_workspace_geometry(&workspace_id, crate::app::PaneResizeTiming::Immediate)
+    );
+    set_headless_size(&mut server, 60, 14);
+    assert!(server.apply_workspace_geometry(&workspace_id, crate::app::PaneResizeTiming::Settled));
+
+    shutdown_test_runtimes(&mut server);
+    server.app.test_state_mut().test_set_workspaces(Vec::new());
+
+    assert!(!settle_pane_resizes(&mut server));
+    assert_eq!(server.app.pane_resize_deadline(), None);
 }

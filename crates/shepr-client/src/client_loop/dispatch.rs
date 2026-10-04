@@ -45,8 +45,8 @@ impl ClientLoop {
                         // The patch does not follow the shell's baseline, which mirrors the
                         // reader's. Either the two disagree about a baseline both derive from
                         // the same wire, or the server sent a patch the decoder accepts and the
-                        // shell does not (a pane geometry change, or a row outside every
-                        // patched pane; the decoder checks neither). Both are bugs, and
+                        // shell does not (a pane geometry change, or a row on a pane the
+                        // patch does not list; the decoder checks neither). Both are bugs, and
                         // reconnecting for a fresh full surface baseline is the one response.
                         tracing::error!(
                             endpoint = %endpoint_id,

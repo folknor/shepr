@@ -32,8 +32,8 @@ pub(in crate::shell) struct ShellView {
     has_surface: bool,
     placeholder: Option<Placeholder>,
     sidebar: SidebarView,
-    /// The workspace the sidebar highlights as selected: the Navigate preview, or the pending
-    /// focus highlight outside Navigate.
+    /// The entry the sidebar highlights as selected: the Navigate selection (a workspace or
+    /// an agent), or the pending workspace focus highlight outside Navigate.
     selected: Option<PinnedLocation>,
     /// The panes the surface drew, clipped to the pane area. Input aims at them only while
     /// `hits_live`; highlights and the copy cursor follow them either way.
@@ -194,6 +194,22 @@ impl ShellView {
         slots.iter().map(|slot| &slot.hit)
     }
 
+    /// How many leading agent panel rows navigate mode can select with this sidebar, or
+    /// `None` for all of them. The expanded panel scrolls to any row, unless it is
+    /// folded away or too short to show one, which leaves none. The collapsed column
+    /// does not scroll, so only the rows it has room for. A hidden sidebar shows no list,
+    /// and its agents stay selectable like its workspaces.
+    pub(in crate::shell) fn agent_navigation_limit(&self) -> Option<usize> {
+        match &self.sidebar {
+            SidebarView::Hidden => None,
+            SidebarView::Collapsed(view) => Some(view.agent_capacity),
+            SidebarView::Expanded(_) => {
+                let shows_rows = self.agent_list().is_some_and(|list| !list.body.is_empty());
+                (!shows_rows).then_some(0)
+            }
+        }
+    }
+
     /// The workspace list's body, collapsed or expanded.
     pub(in crate::shell) fn workspace_body(&self) -> Rect {
         match &self.sidebar {
@@ -288,11 +304,12 @@ impl ShellView {
         }
     }
 
+    /// The collapsed sidebar's expand button. The expanded sidebar has none: dragging its
+    /// edge below the minimum width collapses it.
     pub(in crate::shell) fn sidebar_toggle(&self) -> Rect {
         match &self.sidebar {
-            SidebarView::Hidden => Rect::default(),
             SidebarView::Collapsed(view) => view.toggle,
-            SidebarView::Expanded(view) => view.toggle,
+            SidebarView::Hidden | SidebarView::Expanded(_) => Rect::default(),
         }
     }
 
@@ -614,7 +631,6 @@ impl ShellView {
             area,
             divider: Rect::default(),
             section_divider: Rect::default(),
-            toggle: Rect::default(),
             workspace_area: area,
             workspaces: list::ListView {
                 body: area,
@@ -672,7 +688,7 @@ mod tests {
         let lifecycle_row = frame_row_text(&frame, 0);
         assert!(lifecycle_row.contains("reconnecting"));
         assert!(!lifecycle_row.contains("Local:"));
-        assert!(frame_row_text(&frame, 1).contains("spaces"));
+        assert!(frame_row_text(&frame, 1).contains("workspaces"));
         assert!(state.drawn().notification_toast().y >= 2);
     }
 
@@ -692,7 +708,7 @@ mod tests {
 
         let frame = state.compose(80, 12).expect("placeholder frame");
 
-        assert!(frame_row_text(&frame, 0).contains("spaces"));
+        assert!(frame_row_text(&frame, 0).contains("workspaces"));
         assert!(state.drawn().notification_toast().y >= 1);
     }
 }

@@ -61,6 +61,18 @@ as idle agents. A status signal ("hook interpreter missing") would make that
 visible. Nothing claims hooks work without `python3` or that a broken hook is
 reported.
 
+## Clear shell prompts on reflow (OSC 133)
+
+A width change reflows a pane's grid, and a shell that redraws its prompt on
+SIGWINCH (zsh with a right prompt, for one) then redraws at the wrong row,
+leaving old prompt fragments behind. Debouncing PTY resizes cuts the number of
+redraws, but any single width change can still leave one. Terminals such as
+kitty fix this with shell integration: the shell marks its prompt with OSC 133,
+and on reflow the terminal clears from the prompt start so the redraw lands
+clean. shepr would need to track OSC 133 marks per pane in shepr-vt and clear
+the marked prompt region on a width change, and the user's shell would need the
+integration that emits the marks.
+
 ## Faster startup with unreachable machines
 
 Preflight blocks the TUI until every check of a round finishes, up to

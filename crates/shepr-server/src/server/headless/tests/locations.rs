@@ -485,7 +485,7 @@ async fn workspace_create_sizes_the_first_pty_for_the_requester_and_navigates_it
         Some(client_id),
         "the requester controls what it navigated to"
     );
-    assert_eq!(server.app.state().ws(1).display_name(), "fresh");
+    assert_eq!(server.app.state().ws(1).name(), "fresh");
     shutdown_test_runtimes(&mut server);
 }
 

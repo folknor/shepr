@@ -19,7 +19,8 @@ pub use self::limits::{
     DEFAULT_SCROLLBACK_LIMIT_BYTES,
 };
 pub use self::machine::{
-    LOCAL_ENDPOINT_LABEL, MachineConfig, MachineLabel, MachineLabelError, SshTarget, SshTargetError,
+    LOCAL_ENDPOINT_LABEL, LocalConfig, MachineConfig, MachineLabel, MachineLabelError, SshTarget,
+    SshTargetError,
 };
 /// Role-specific raw values. Runtime code receives a [`ValidatedClientConfig`]
 /// or [`ValidatedServerConfig`], constructed through validation at launch or
@@ -130,11 +131,14 @@ mod tests {
             let content = line.strip_prefix("# ").unwrap_or(line);
             if content.starts_with('[') && content.ends_with(']') {
                 section = content.to_owned();
+                // The theme, machine and local sections hold examples, not the
+                // unset defaults.
                 if !matches!(
                     section.as_str(),
                     "[theme]"
                         | "[theme.custom]"
                         | "[ui.sidebar.agents.rows_by_agent]"
+                        | "[local]"
                         | "[[machines]]"
                 ) {
                     document.push_str(content);
@@ -144,7 +148,11 @@ mod tests {
             }
             if matches!(
                 section.as_str(),
-                "[theme]" | "[theme.custom]" | "[ui.sidebar.agents.rows_by_agent]" | "[[machines]]"
+                "[theme]"
+                    | "[theme.custom]"
+                    | "[ui.sidebar.agents.rows_by_agent]"
+                    | "[local]"
+                    | "[[machines]]"
             ) {
                 continue;
             }
@@ -246,6 +254,7 @@ mod tests {
         config.machines.push(MachineConfig {
             label: MachineLabel::parse("schema example").expect("valid test label"),
             ssh: SshTarget::parse("example.invalid").expect("valid test target"),
+            palette: None,
         });
         let fields = config_field_paths(config);
 
@@ -396,7 +405,11 @@ mod tests {
             theme => theme,
             keys => keys,
             ui => ui,
+            local => local,
             machines => machines,
+        });
+        record_config_fields!(fields, local, "local", LocalConfig {
+            palette => _,
         });
         record_config_fields!(fields, theme, "theme", ThemeConfig {
             name => _,
@@ -462,6 +475,7 @@ mod tests {
             record_config_fields!(fields, machine, "machines", MachineConfig {
                 label => _,
                 ssh => _,
+                palette => _,
             });
         }
         fields

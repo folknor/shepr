@@ -10,7 +10,7 @@ use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEventKind};
 use shepr_config::ClientConfig;
 use shepr_protocol::AgentStatus;
 use shepr_protocol::command::{EndpointCommand, EndpointReply};
-use shepr_protocol::{ClientShellSnapshot, SurfaceRect};
+use shepr_protocol::{ClientShellAgent, ClientShellPane, ClientShellSnapshot, SurfaceRect};
 use shepr_termio::input::raw_input::RawInputEvent;
 
 use crate::shell::state::ClientShellState;
@@ -1105,5 +1105,247 @@ fn navigation_highlight_ends_for_noop_focus_and_creation() {
         state.push_endpoint_command(command, &mut outcome);
         assert!(state.pending_workspace_highlight.is_none());
         assert_local_highlight(&mut state, "w1");
+    }
+}
+
+/// `projected` with an agent in pane 1 of each of `workspaces`, in that order, each
+/// pane listed.
+fn with_agents(mut projected: ClientShellSnapshot, workspaces: &[&str]) -> ClientShellSnapshot {
+    for workspace in workspaces {
+        let pane_id = crate::tests::test_pane_id(&format!("{workspace}:p1"));
+        if !projected.panes.iter().any(|pane| pane.pane_id == pane_id) {
+            projected.panes.push(ClientShellPane {
+                pane_id,
+                ..projected.panes[0].clone()
+            });
+        }
+        projected.agents.push(ClientShellAgent {
+            pane_id,
+            ..agent(AgentStatus::Idle, 1)
+        });
+    }
+    projected
+}
+
+/// A local shell showing `projected`, its sidebar expanded or `compact`, drawn once.
+fn agent_navigation_state(
+    projected: ClientShellSnapshot,
+    compact: bool,
+    rows: u16,
+) -> ClientShellState {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
+    state.chrome.set_collapsed(compact);
+    state.set_snapshot(Box::new(projected));
+    state.receive_pane_surface_from(
+        surface(),
+        state
+            .endpoints
+            .active
+            .generation()
+            .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
+    );
+    state.compose(100, rows).expect("test precondition");
+    state
+}
+
+/// The agent panel's entries, in the order it draws them.
+fn agent_targets(state: &ClientShellState) -> Vec<Location> {
+    state.endpoints.agent_panel_model.targets().to_vec()
+}
+
+fn assert_agent_selected(state: &ClientShellState, agent: &Location) {
+    assert_eq!(
+        state.mode.preview().map(|selected| &selected.location),
+        Some(agent)
+    );
+    assert!(state.navigation_target_valid(state.mode.preview().expect("test precondition")));
+}
+
+fn agent_rect(state: &ClientShellState, agent: &Location) -> Rect {
+    state
+        .drawn()
+        .agents()
+        .find(|hit| &hit.location == agent)
+        .map(|hit| hit.rect)
+        .expect("visible agent")
+}
+
+#[test]
+fn navigation_continues_from_the_last_workspace_into_the_agents_and_back() {
+    for compact in [false, true] {
+        let mut state =
+            agent_navigation_state(with_agents(workspaces(2), &["w1", "w2"]), compact, 28);
+        let agents = agent_targets(&state);
+        assert_eq!(agents.len(), 2);
+        enter_navigation(&mut state);
+        assert_selected(&state, &ClientEndpointId::Local, "w1");
+        preview_key(&mut state, b"\x1b[B");
+        assert_selected(&state, &ClientEndpointId::Local, "w2");
+        preview_key(&mut state, b"\x1b[B");
+        assert_agent_selected(&state, &agents[0]);
+        // Moving only highlights: nothing was focused.
+        assert_eq!(
+            state.focused_pane_id(),
+            Some(crate::tests::test_pane_id("w1:p1"))
+        );
+
+        // The selected agent takes the selected-workspace look, and only it.
+        let frame = state.compose(100, 28).expect("test precondition");
+        let palette = &state.config.palette;
+        let selection = if palette.selection_bg == ratatui::style::Color::Reset {
+            palette.active_row_bg
+        } else {
+            palette.selection_bg
+        };
+        let selected = agent_rect(&state, &agents[0]);
+        for y in selected.y..selected.bottom() {
+            for x in selected.x..selected.right() {
+                assert_eq!(
+                    cell_bg(&frame, (x, y)),
+                    selection,
+                    "compact={compact}, ({x}, {y})"
+                );
+            }
+        }
+        let other = agent_rect(&state, &agents[1]);
+        assert_ne!(cell_bg(&frame, (other.x, other.y)), selection);
+        for workspace in ["w1", "w2"] {
+            let rect = workspace_rect(&state, &ClientEndpointId::Local, workspace);
+            assert_ne!(
+                cell_bg(&frame, (rect.x, rect.y)),
+                selection,
+                "compact={compact}, {workspace}"
+            );
+        }
+
+        preview_key(&mut state, b"\x1b[B");
+        assert_agent_selected(&state, &agents[1]);
+        // Past the last agent the list wraps to the first workspace, and back.
+        preview_key(&mut state, b"\x1b[B");
+        assert_selected(&state, &ClientEndpointId::Local, "w1");
+        preview_key(&mut state, b"\x1b[A");
+        assert_agent_selected(&state, &agents[1]);
+        preview_key(&mut state, b"\x1b[A");
+        assert_agent_selected(&state, &agents[0]);
+        // Up from the first agent is the last workspace.
+        preview_key(&mut state, b"\x1b[A");
+        assert_selected(&state, &ClientEndpointId::Local, "w2");
+        assert_eq!(state.mode.kind(), ClientShellMode::Navigate);
+    }
+}
+
+#[test]
+fn enter_on_an_agent_focuses_its_pane_on_its_machine_and_workspace() {
+    // Both machines have an agent on w2 while w1 is focused.
+    let (mut state, remote) = navigation_state(
+        with_agents(workspaces(2), &["w2"]),
+        &ClientConfig::default(),
+    );
+    state.compose(100, 28).expect("test precondition");
+    let agents = agent_targets(&state);
+    assert_eq!(agents.len(), 2);
+    assert!(agents.iter().any(|agent| agent.endpoint == remote));
+    for (index, agent) in agents.iter().enumerate() {
+        enter_navigation(&mut state);
+        // Past both machines' two workspaces.
+        for _ in 0..4 + index {
+            preview_key(&mut state, b"\x1b[B");
+        }
+        assert_agent_selected(&state, agent);
+
+        let enter = state.handle_input_bytes(b"\r");
+        assert!(enter.requests.is_empty());
+        assert!(
+            matches!(enter.actions.as_slice(), [ClientShellAction::ActivateEndpoint(target)] if target == agent),
+            "{agent:?}"
+        );
+        assert_eq!(state.mode.kind(), ClientShellMode::Terminal);
+        assert!(state.mode.preview().is_none());
+        // The runtime focuses a presented machine's pick the way it does a click's: the
+        // pane focus moves its server to the pane's workspace.
+        if agent.endpoint == ClientEndpointId::Local {
+            let actions = state.focus_endpoint_target(agent.target);
+            assert!(
+                matches!(actions.as_slice(), [ClientShellAction::Endpoint { request, .. }]
+                    if matches!(&request.command, EndpointCommand::PaneFocus(target)
+                        if target.pane_id == crate::tests::test_pane_id("w2:p1")))
+            );
+        }
+    }
+}
+
+#[test]
+fn agent_selection_follows_its_agent_through_list_changes() {
+    let (mut state, remote) = navigation_state(
+        with_agents(workspaces(2), &["w1", "w2"]),
+        &ClientConfig::default(),
+    );
+    state.compose(100, 28).expect("test precondition");
+    let local_agent =
+        |pane: &str| Location::pane(ClientEndpointId::Local, crate::tests::test_pane_id(pane));
+    let selected = local_agent("w2:p1");
+    assert_eq!(agent_targets(&state)[1], selected);
+    enter_navigation(&mut state);
+    for _ in 0..4 + 1 {
+        preview_key(&mut state, b"\x1b[B");
+    }
+    assert_agent_selected(&state, &selected);
+
+    // An agent appearing ahead of it leaves the selection on its agent.
+    state.edit_endpoint_snapshot(&ClientEndpointId::Local, |snapshot| {
+        let pane_id = crate::tests::test_pane_id("w1:p2");
+        snapshot.panes.push(ClientShellPane {
+            pane_id,
+            ..snapshot.panes[0].clone()
+        });
+        snapshot.agents.insert(
+            0,
+            ClientShellAgent {
+                pane_id,
+                ..agent(AgentStatus::Working, 2)
+            },
+        );
+    });
+    assert_eq!(agent_targets(&state)[2], selected);
+    assert_agent_selected(&state, &selected);
+
+    // Its agent going away hands the selection to the agent now at its place.
+    state.edit_endpoint_snapshot(&ClientEndpointId::Local, |snapshot| {
+        snapshot
+            .agents
+            .retain(|agent| agent.pane_id != crate::tests::test_pane_id("w2:p1"));
+    });
+    let in_its_place = agent_targets(&state)[2].clone();
+    assert_eq!(
+        in_its_place,
+        Location::pane(remote.clone(), crate::tests::test_pane_id("w1:p1"))
+    );
+    assert_agent_selected(&state, &in_its_place);
+
+    // Its machine going stale hands it to the last agent still selectable.
+    state.set_endpoint_status(&remote, EndpointFailureStatus::Reconnecting);
+    assert_agent_selected(&state, &local_agent("w1:p1"));
+
+    // With no agent left, the selection is the last workspace, where moving up from the
+    // first agent leads; the stale machine's workspaces are not selectable.
+    state.edit_endpoint_snapshot(&ClientEndpointId::Local, |snapshot| snapshot.agents.clear());
+    assert_selected(&state, &ClientEndpointId::Local, "w2");
+    assert_eq!(state.mode.kind(), ClientShellMode::Navigate);
+}
+
+#[test]
+fn navigation_ends_at_the_workspaces_without_agents_to_select() {
+    // No agents at all, then agents in an agent panel too short to show a row.
+    let cases: [(&[&str], u16); 2] = [(&[], 28), (&["w1", "w2"], 6)];
+    for (agents, rows) in cases {
+        let mut state = agent_navigation_state(with_agents(workspaces(2), agents), false, rows);
+        assert_eq!(state.drawn().agents().count(), 0, "{agents:?}");
+        enter_navigation(&mut state);
+        preview_key(&mut state, b"\x1b[B");
+        assert_selected(&state, &ClientEndpointId::Local, "w2");
+        preview_key(&mut state, b"\x1b[B");
+        assert_selected(&state, &ClientEndpointId::Local, "w1");
+        preview_key(&mut state, b"\x1b[A");
+        assert_selected(&state, &ClientEndpointId::Local, "w2");
     }
 }

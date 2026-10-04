@@ -5,6 +5,7 @@ use ratatui::style::{Modifier, Style};
 use crate::shell::endpoints::{ClientShellEndpoint, endpoint_status_presentation};
 use crate::shell::notices::machine_diagnostics::MachineDiagnostics;
 use crate::shell::presentation::status::status_glyph;
+use crate::shell::sidebar::host_colors::PillLook;
 use crate::shell::sidebar::layout::{
     CollapsedSidebarView, CollapsedSlot, ExpandedSidebarView, ExpandedSlot, SidebarInputs,
     endpoint_signal,
@@ -183,7 +184,7 @@ pub(in crate::shell) fn draw_expanded(
         workspace_area.y,
         workspace_area.width,
         if single_endpoint {
-            " spaces"
+            " workspaces"
         } else {
             " machines"
         },
@@ -222,6 +223,7 @@ pub(in crate::shell) fn draw_expanded(
                     && inputs
                         .dragged_workspace
                         .is_some_and(|id| id == &workspace.workspace_id);
+                let stale = endpoint.state.stale();
                 crate::shell::sidebar::render_workspace_rows(
                     buffer,
                     *nested,
@@ -229,14 +231,25 @@ pub(in crate::shell) fn draw_expanded(
                     status,
                     config.status_indicators,
                     &tokens,
-                    endpoint_active
-                        && snapshot.focused_workspace_id.as_ref() == Some(&workspace.workspace_id),
-                    selected,
-                    inputs.selected.is_some(),
-                    dragged,
+                    crate::shell::sidebar::WorkspaceEntryState {
+                        focused: endpoint_active
+                            && snapshot.focused_workspace_id.as_ref()
+                                == Some(&workspace.workspace_id),
+                        selected,
+                        navigating: inputs.selected.is_some(),
+                        dragged,
+                        // An unreachable machine's entries lose its colours along
+                        // with the rest of their highlight.
+                        look: PillLook::for_endpoint(
+                            &config.host_hues,
+                            inputs.host_pills,
+                            &endpoint.endpoint_id,
+                        )
+                        .filter(|_| !stale),
+                    },
                     palette,
                 );
-                if endpoint.state.stale() {
+                if stale {
                     buffer.set_style(
                         hit.rect,
                         Style::default()
@@ -299,14 +312,6 @@ pub(in crate::shell) fn draw_expanded(
     if let Some(panel) = &view.agents {
         crate::shell::sidebar::endpoint_agents::draw_agent_panel(buffer, panel, inputs);
     }
-    put_text(
-        buffer,
-        view.toggle.x,
-        view.toggle.y,
-        view.toggle.width,
-        "«",
-        Style::default().fg(palette.overlay0),
-    );
 }
 
 /// Draws the expanded sidebar's row for the machine at `endpoint` in `inputs.endpoints`.

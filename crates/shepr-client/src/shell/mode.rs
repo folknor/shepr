@@ -1,4 +1,5 @@
-//! The input mode, with the Navigate workspace preview living only inside Navigate.
+//! The input mode, with the Navigate selection (a workspace or an agent's pane) living
+//! only inside Navigate.
 
 use crate::shell::navigation::location::PinnedLocation;
 use crate::shell::state::ClientShellMode;

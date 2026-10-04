@@ -273,7 +273,7 @@ mod tests {
     }
 
     #[test]
-    fn shared_root_repo_refresh_keeps_target_specific_labels() {
+    fn shared_root_repo_refresh_keeps_target_specific_cwds() {
         let cache_key = PathBuf::from("/");
         let cached = GitStatusCacheEntry::Miss {
             retry_after: Instant::now() + Duration::from_secs(30),
@@ -298,8 +298,8 @@ mod tests {
 
         assert_eq!(computed.cache_updates.len(), 1);
         assert_eq!(computed.statuses.len(), 2);
-        assert_eq!(computed.statuses[0].status.label, "alpha");
-        assert_eq!(computed.statuses[1].status.label, "beta");
+        assert_eq!(computed.statuses[0].status.cwd, PathBuf::from("/alpha"));
+        assert_eq!(computed.statuses[1].status.cwd, PathBuf::from("/beta"));
         assert_eq!(
             computed.statuses[0].status.branch,
             crate::GitBranch::ReadFailed

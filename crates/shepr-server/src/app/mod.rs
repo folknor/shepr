@@ -14,6 +14,7 @@ mod git_refresh;
 mod host_theme;
 mod outputs;
 mod pane_launch;
+mod pane_resize;
 mod resume_schedule;
 mod runtime;
 mod session;
@@ -21,6 +22,7 @@ pub(crate) mod state;
 mod terminal_titles;
 
 pub(crate) use events::{Admitted, PaneDeath, PaneExitPrepared, PreparedPaneExit};
+pub(crate) use pane_resize::PaneResizeTiming;
 pub(crate) use session::{CheckpointGeneration, HostCheckpointOutcome};
 
 use std::sync::Arc;
@@ -94,6 +96,9 @@ pub(crate) struct App {
     /// When deferred agent resumes may be attempted; see `resume_schedule`.
     resume_schedule: resume_schedule::ResumeSchedule,
     session_saver: session::SessionSaver,
+    /// Workspaces whose panes wait for their geometry to settle before their
+    /// PTYs are resized; see `pane_resize`.
+    pending_pane_resizes: pane_resize::PendingPaneResizes,
     /// Host names resolved once at startup, `None` when they could not be:
     /// the one answer for the window title (short form, via `host_names`) and,
     /// through the pane launcher, for matching OSC 7 cwd reports (full and
@@ -202,6 +207,7 @@ impl App {
                 persistence,
                 config.experimental().pane_history,
             ),
+            pending_pane_resizes: pane_resize::PendingPaneResizes::default(),
             hostname,
             pane_teardowns,
             pane_launcher,
@@ -302,13 +308,14 @@ impl App {
     }
 
     /// The earliest instant the app itself needs the loop awake: the Git
-    /// refresh (when `git_refresh` asks for it), the next pending agent resume
-    /// and the session save.
+    /// refresh (when `git_refresh` asks for it), the next pending agent
+    /// resume, the session save and the deferred pane resizes.
     pub(crate) fn next_deadline(&self, git_refresh: bool) -> Option<Instant> {
         [
             git_refresh.then(|| self.git_refresh_deadline()).flatten(),
             self.pending_agent_resume_wakeup(),
             self.session_saver.deadline(),
+            self.pane_resize_deadline(),
         ]
         .into_iter()
         .flatten()
@@ -364,42 +371,6 @@ impl App {
     /// the bookmark moved.
     pub(crate) fn navigate_bookmark(&mut self, workspace_id: &shepr_protocol::WorkspaceId) -> bool {
         self.state.set_bookmark(workspace_id)
-    }
-
-    /// Resizes the workspace's visible panes for `geometry` and records it.
-    /// Returns true when the recorded geometry changed; false too when the
-    /// workspace is gone.
-    pub(crate) fn apply_workspace_geometry(
-        &mut self,
-        workspace_id: &shepr_protocol::WorkspaceId,
-        geometry: SpawnGeometry,
-    ) -> bool {
-        let Some(workspace) = self.state.workspace(workspace_id) else {
-            return false;
-        };
-        let previous = workspace.spawn_geometry();
-        // Sized from the same description the surface draws: each visible
-        // pane's content rect in the area.
-        let panes = crate::ui::compute_pane_surfaces(
-            &self.state,
-            &self.terminal_runtimes,
-            workspace,
-            crate::ui::ratatui_rect(geometry.area),
-        );
-        for pane in panes {
-            if workspace.tree().pane(pane.id).is_none() {
-                continue;
-            }
-            if let Some(runtime) = self.terminal_runtimes.get_mut(&pane.id) {
-                runtime.resize(shepr_core::geometry::PaneGeometry::with_cell(
-                    pane.inner_rect.width,
-                    pane.inner_rect.height,
-                    geometry.cell,
-                ));
-            }
-        }
-        self.state.record_workspace_geometry(workspace_id, geometry);
-        previous != Some(geometry)
     }
 }
 

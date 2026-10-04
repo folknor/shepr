@@ -30,7 +30,6 @@ pub(crate) enum RefBackend {
 }
 
 pub use self::{
-    discovery::{discover_checkout_root, fallback_label_from_cwd},
     refresh::{RefreshOutcome, RefreshTarget, RefreshedStatus},
     worker::{GitStatusWorker, RefreshProgress},
 };
@@ -259,39 +258,29 @@ impl GitBranch {
     }
 }
 
-/// One cwd's Git answer: the key of the checkout it was read under, the
-/// automatic label derived from the cwd and that checkout, the HEAD outcome
-/// and the ahead/behind counts against the upstream.
+/// One cwd's Git answer: the key of the checkout it was read under, the HEAD
+/// outcome and the ahead/behind counts against the upstream.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GitStatus {
     pub cwd: PathBuf,
     pub key: GitStatusKey,
-    pub label: String,
     pub branch: GitBranch,
     pub ahead_behind: Option<AheadBehind>,
 }
 
 /// A checkout's status before it is bound to one cwd: every cwd in the same
-/// checkout shares it, and each derives its own label from it.
+/// checkout shares it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GitStatusSnapshot {
-    pub repo_root: Option<PathBuf>,
     pub branch: GitBranch,
     pub ahead_behind: Option<AheadBehind>,
 }
 
 impl GitStatusSnapshot {
     pub fn into_status(self, cwd: PathBuf, key: GitStatusKey) -> GitStatus {
-        let label = match self.repo_root.as_deref() {
-            Some(repo_root) => {
-                shepr_core::workspace_label::workspace_label_from_cwd(&cwd, Some(repo_root), None)
-            }
-            None => fallback_label_from_cwd(&cwd),
-        };
         GitStatus {
             cwd,
             key,
-            label,
             branch: self.branch,
             ahead_behind: self.ahead_behind,
         }

@@ -529,8 +529,14 @@ impl EndpointHub {
                     if input_endpoint(&shell.endpoints.choice, &self.registry) == Some(&endpoint_id)
                         && let Some(connection) = self.registry.connection(&endpoint_id)
                     {
-                        self.commands
-                            .enqueue(endpoint_id, connection.generation, boot_id, request);
+                        // A superseded split ratio leaves the queue unsent.
+                        let superseded = self.commands.enqueue(
+                            endpoint_id,
+                            connection.generation,
+                            boot_id,
+                            request,
+                        );
+                        repaint |= cancel_commands(shell, superseded);
                     } else {
                         // This action has not entered the endpoint send queue, so its outcome
                         // is known locally and must not be presented as an interrupted server

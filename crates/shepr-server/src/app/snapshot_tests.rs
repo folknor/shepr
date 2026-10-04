@@ -199,7 +199,7 @@ fn round_trip_full_workspace_snapshot() {
         host_theme: Default::default(),
         workspaces: vec![WorkspaceSnapshot {
             id: "w1".parse().expect("id"),
-            custom_name: Some("pi-mono".to_string()),
+            name: "pi-mono".to_string(),
             next_public_pane_number: number(3),
             layout: LayoutSnapshot::Split {
                 direction: DirectionSnapshot::Horizontal,
@@ -223,10 +223,7 @@ fn round_trip_full_workspace_snapshot() {
 
     assert_eq!(restored.workspaces.len(), 1);
     assert_eq!(restored.workspaces[0].id, "w1".parse().expect("id"));
-    assert_eq!(
-        restored.workspaces[0].custom_name.as_deref(),
-        Some("pi-mono")
-    );
+    assert_eq!(restored.workspaces[0].name, "pi-mono");
     assert_eq!(restored.workspaces[0].layout.panes().len(), 2);
     assert_eq!(
         pane_snapshot(&restored.workspaces[0], 1).cwd,
@@ -259,13 +256,11 @@ fn capture_contract_tracks_workspace_order_and_the_bookmark() {
 #[test]
 fn capture_contract_tracks_workspace_names() {
     let mut state = state_with_workspaces(&["one"]);
-    state
-        .ws_mut(0)
-        .set_custom_name(Some("renamed-workspace".into()));
+    state.ws_mut(0).set_name("renamed-workspace".into());
 
     let snapshot = capture_from_state(&state);
     let workspace = &snapshot.workspaces[0];
-    assert_eq!(workspace.custom_name.as_deref(), Some("renamed-workspace"));
+    assert_eq!(workspace.name, "renamed-workspace");
 }
 
 #[test]
@@ -278,7 +273,7 @@ fn capture_contract_tracks_workspace_closure() {
 
     let snapshot = capture_from_state(&state);
     assert_eq!(snapshot.workspaces.len(), 1);
-    assert_eq!(snapshot.workspaces[0].custom_name.as_deref(), Some("one"));
+    assert_eq!(snapshot.workspaces[0].name, "one");
     assert_eq!(
         snapshot.active,
         Some(0),
@@ -841,7 +836,7 @@ fn snapshot_parsing_preserves_missing_cwd() {
         host_theme: Default::default(),
         workspaces: vec![WorkspaceSnapshot {
             id: "w1".parse().expect("id"),
-            custom_name: Some("fallback test".to_string()),
+            name: "fallback test".to_string(),
             next_public_pane_number: number(3),
             layout: LayoutSnapshot::Split {
                 direction: DirectionSnapshot::Horizontal,
