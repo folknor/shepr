@@ -33,8 +33,8 @@ jsonc-parser = { version = "0.34.0", default-features = false, features = ["cst"
 # Also the PTY layer (crates/shepr-pty/src/backend.rs): openpty, session setup, pre-exec.
 libc = "0.2"
 memchr = "2"
-# `shepr man` renders the bundled docs to the terminal through the vendored
-# renderer in src/cli/man/render.rs. Neither needs a default feature:
+# `shepr man` renders the bundled docs to the terminal through the renderer
+# in src/cli/man/render.rs. Neither needs a default feature:
 # pulldown-cmark's are its HTML writer and command-line binary.
 owo-colors = { version = "4", default-features = false }
 pulldown-cmark = { version = "0.13", default-features = false }

@@ -1,10 +1,7 @@
-// Markdown -> ANSI terminal renderer for `shepr man` (bundled reference docs).
-// Copied from broadarrow's crates/ba/src/man/render.rs (itself a copy of
-// piners' crates/piners-cli/src/man/render.rs); re-sync by wholesale copy.
-//
-// A pulldown_cmark event emitter that styles headings, code, tables, lists,
-// block quotes / GitHub alerts, and footnotes for a terminal, and strips all
-// ANSI when colour is disabled.
+//! Markdown to ANSI terminal renderer for `shepr man`: a pulldown_cmark event
+//! emitter that styles headings, code, tables, lists, block quotes and GitHub
+//! alerts, and footnotes for a terminal, and strips all ANSI when colour is
+//! disabled.
 
 use owo_colors::{OwoColorize, Style};
 use pulldown_cmark::{
@@ -21,7 +18,7 @@ const STRIKE_OFF: &str = "\x1b[29m";
 /// (`--no-color` not a TTY / `NO_COLOR`), all ANSI escapes are stripped from
 /// the result - the emitter hardcodes some styling (alert labels, H1 inverse)
 /// that a "plain theme" can't suppress, so stripping is the reliable path.
-pub fn render(markdown: &str, no_color: bool) -> String {
+pub(super) fn render(markdown: &str, no_color: bool) -> String {
     let mut options = Options::empty();
     options.insert(Options::ENABLE_GFM);
     options.insert(Options::ENABLE_TASKLISTS);
@@ -357,7 +354,7 @@ where
             }
             Tag::List(Some(start)) => {
                 self.list_stack.push(ListState::Ordered {
-                    index: start as usize,
+                    index: usize::try_from(start).unwrap_or(usize::MAX),
                 });
             }
             Tag::List(None) => {

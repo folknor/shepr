@@ -6,21 +6,7 @@
 //! with a topic, it renders that manual, colour off when stdout is not a
 //! terminal or `NO_COLOR` is set. The manuals travel inside the binary, so an
 //! installed `shepr` reads them with no source tree.
-//!
-//! The design is broadarrow's `ba man` (its crates/ba/src/man.rs), and
-//! `render` is that project's renderer copied verbatim.
 
-// `render` is copied from broadarrow's crates/ba/src/man/render.rs (itself a
-// copy of piners' crates/piners-cli/src/man/render.rs), a generic
-// markdown-to-ANSI terminal renderer with no project-specific logic. It is
-// re-synced by wholesale copy, so its upstream `pub fn render` and its
-// ordered-list start cast are left as they are rather than edited to suit this
-// workspace's lints.
-#[expect(
-    unreachable_pub,
-    clippy::cast_possible_truncation,
-    reason = "render is vendored from broadarrow and re-synced by wholesale copy, so it stays verbatim"
-)]
 mod render;
 
 use std::io::IsTerminal as _;
