@@ -10,6 +10,11 @@ use shepr_protocol::{
 };
 
 /// Typed identity paired with one pane in a client's committed surface.
+///
+/// Holds the same two fields as `ShellFocusTarget` in `headless/client_views.rs`
+/// but is a separate type: this one names a pane in a committed surface, that
+/// one names where a client's focus sits. Merging them would only save a
+/// struct definition.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ClientPaneIdentity {
     pub(crate) workspace_id: WorkspaceId,

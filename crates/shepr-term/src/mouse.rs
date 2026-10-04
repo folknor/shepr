@@ -12,6 +12,12 @@ use crate::limits::UTF8_MOUSE_REPORT_INITIAL_CAPACITY;
 
 /// A pointer position delivered to a pane. A pixel position keeps the cell it
 /// lies in, so a pane that is not in mode 1016 gets that cell.
+///
+/// The wire's `ClientMousePosition` is the same shape before admission: its
+/// pixel form carries a `PixelReport` with the extent the client mapped
+/// against, which `admit_pixel_report` checks and the encoder has no use for.
+/// The server converts an admitted wire position into this one just before
+/// encoding, so the two stay separate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[expect(
     variant_size_differences,

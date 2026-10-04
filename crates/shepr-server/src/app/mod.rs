@@ -27,6 +27,10 @@ use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
 /// One sample supplied by the server at the start of an iteration.
+///
+/// The same pair as `HookClockSample`, which `shepr-detect` owns and orders
+/// hook reports by; the two convert freely and are kept apart so the server's
+/// clock does not take its field names from the detector.
 #[derive(Clone, Copy)]
 pub(crate) struct AppClock {
     pub(crate) now: Instant,
@@ -269,19 +273,15 @@ impl App {
         pane_id: shepr_core::layout::PaneId,
         public_id: shepr_protocol::PublicPaneId,
         geometry: shepr_core::geometry::PaneGeometry,
-        cwd: &std::path::Path,
+        cwd: &shepr_core::absolute_path::AbsolutePath,
         kind: shepr_mux::pane::LaunchKind,
     ) -> std::io::Result<shepr_mux::pane::PaneRuntime> {
-        // Live cwds (policy, a followed pane, a saved agent-resume path) are
-        // plain observations; the launch takes one only as an absolute path.
-        let cwd = shepr_core::absolute_path::AbsolutePath::new(cwd)
-            .map_err(|refused| std::io::Error::new(std::io::ErrorKind::InvalidInput, refused))?;
         self.pane_launcher
             .launch(shepr_mux::pane::PaneLaunchRequest {
                 pane_id,
                 public_id,
                 geometry,
-                cwd: &cwd,
+                cwd,
                 kind,
                 initial_history: None,
                 presentation: shepr_mux::pane::LaunchPresentation::Live {
@@ -683,7 +683,10 @@ mod tests {
             &shepr_config::NewTerminalCwd::Follow,
             None,
             None,
-            Some(std::path::PathBuf::from("/shepr-test/shepr-source")),
+            Some(
+                shepr_core::absolute_path::AbsolutePath::new("/shepr-test/shepr-source")
+                    .expect("absolute"),
+            ),
         );
 
         assert_eq!(cwd, std::path::PathBuf::from("/shepr-test/shepr-source"));
@@ -707,10 +710,16 @@ mod tests {
     #[test]
     fn new_terminal_cwd_path_uses_configured_path() {
         let cwd = creation::resolve_new_terminal_cwd(
-            &shepr_config::NewTerminalCwd::Path("/shepr-test/shepr-fixed".into()),
+            &shepr_config::NewTerminalCwd::Path(
+                shepr_core::absolute_path::AbsolutePath::new("/shepr-test/shepr-fixed")
+                    .expect("absolute"),
+            ),
             None,
             None,
-            Some(std::path::PathBuf::from("/shepr-test/shepr-source")),
+            Some(
+                shepr_core::absolute_path::AbsolutePath::new("/shepr-test/shepr-source")
+                    .expect("absolute"),
+            ),
         );
 
         assert_eq!(cwd, std::path::PathBuf::from("/shepr-test/shepr-fixed"));

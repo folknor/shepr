@@ -212,7 +212,11 @@ impl App {
         workspace_id: &shepr_protocol::WorkspaceId,
     ) -> Option<std::path::PathBuf> {
         let workspace = self.state.workspaces.get(workspace_id)?;
-        Some(workspace.resolved_identity_cwd(&self.terminal_runtimes))
+        Some(
+            workspace
+                .resolved_identity_cwd(&self.terminal_runtimes)
+                .into_path_buf(),
+        )
     }
 
     /// The server side of a Git refresh: completes the scheduled refresh,

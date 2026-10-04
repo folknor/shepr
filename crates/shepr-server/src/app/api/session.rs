@@ -69,7 +69,7 @@ impl App {
             label: terminal.manual_label().map(str::to_owned),
             cwd: ws
                 .cwd_for_pane(pane_id, &self.terminal_runtimes)
-                .map(shepr_protocol::RemotePath::from),
+                .map(|cwd| shepr_protocol::RemotePath::from(cwd.into_path_buf())),
             // Runs on the server main loop once per pane for every session
             // snapshot the client shells are projected from, so the runtime
             // accessor behind it must stay a few /proc reads and never wait on

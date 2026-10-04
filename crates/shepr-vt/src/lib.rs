@@ -773,10 +773,7 @@ impl Terminal {
 
     /// The absolute row id of screen row `y`.
     pub fn absolute_row_for_screen(&self, y: ScreenRow) -> AbsRow {
-        self.rows
-            .origin()
-            .saturating_add(u64::try_from(y.0).unwrap_or(u64::MAX))
-            .into()
+        self.history_origin().saturating_add(y.0)
     }
 
     /// Clears the screen and scrollback but keeps the cursor's (possibly

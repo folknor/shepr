@@ -1,5 +1,7 @@
 use std::path::{Path, PathBuf};
 
+use shepr_core::absolute_path::AbsolutePath;
+
 use crate::git::{AheadBehind, GitBranch, GitStatus, GitStatusKey};
 use crate::pane::{PaneRuntime, PaneRuntimeRegistry};
 use shepr_core::layout::{NavDirection, PaneId, RatioDelta, SplitPath, SplitRatio};
@@ -37,8 +39,8 @@ pub fn terminal_cwd(
     runtime: Option<&crate::pane::PaneRuntime>,
     terminal: Option<&crate::terminal::TerminalState>,
     purpose: CwdPurpose,
-) -> Option<PathBuf> {
-    let stored = terminal.map(|terminal| terminal.cwd().to_path_buf());
+) -> Option<AbsolutePath> {
+    let stored = terminal.map(|terminal| terminal.cwd().clone());
     let observed = match purpose {
         CwdPurpose::Identity => runtime.and_then(crate::pane::PaneRuntime::cwd),
         CwdPurpose::FollowForNewPane => runtime.and_then(crate::pane::PaneRuntime::follow_cwd),
@@ -46,8 +48,11 @@ pub fn terminal_cwd(
     };
     // Each source is filtered on its own, so an unusable observation falls
     // back to the stored report instead of hiding it.
-    let usable = |path: &PathBuf| path.is_absolute() && !process_cwd_is_deleted(path);
-    observed.filter(usable).or_else(|| stored.filter(usable))
+    let usable = |path: &AbsolutePath| !process_cwd_is_deleted(path);
+    observed
+        .and_then(|path| AbsolutePath::new(path).ok())
+        .filter(usable)
+        .or_else(|| stored.filter(usable))
 }
 
 pub(crate) fn process_cwd_is_deleted(path: &Path) -> bool {
@@ -111,7 +116,7 @@ pub struct Workspace {
     custom_name: Option<String>,
     /// Fallback workspace identity source for a missing runtime, fixed at
     /// construction.
-    identity_cwd: PathBuf,
+    identity_cwd: AbsolutePath,
     git: GitIdentity,
     /// The layout and the pane records, kept in agreement by the tree.
     tree: pane_tree::PaneTree,
@@ -132,7 +137,7 @@ impl Workspace {
     pub(crate) fn from_tree(
         id: WorkspaceId,
         custom_name: Option<String>,
-        identity_cwd: PathBuf,
+        identity_cwd: AbsolutePath,
         tree: pane_tree::PaneTree,
     ) -> Self {
         let git = GitIdentity::Undiscovered {
@@ -159,14 +164,14 @@ impl Workspace {
     pub fn test_from_pane(
         id: WorkspaceId,
         label: Option<String>,
-        identity_cwd: &Path,
+        identity_cwd: &AbsolutePath,
         pane: PaneId,
         terminal: crate::terminal::TerminalState,
     ) -> Self {
         Self::from_tree(
             id,
             label,
-            identity_cwd.to_path_buf(),
+            identity_cwd.clone(),
             pane_tree::PaneTree::single(pane, terminal),
         )
     }
@@ -187,7 +192,7 @@ impl Workspace {
         changed
     }
 
-    pub fn identity_cwd(&self) -> &Path {
+    pub fn identity_cwd(&self) -> &AbsolutePath {
         &self.identity_cwd
     }
 
@@ -321,7 +326,7 @@ impl Workspace {
     /// may read the root pane's process cwd through its runtime; state reducers
     /// should instead receive the observed cwd and call
     /// `resolved_identity_cwd_from_root_pane`.
-    pub fn resolved_identity_cwd(&self, runtimes: &PaneRuntimeRegistry) -> PathBuf {
+    pub fn resolved_identity_cwd(&self, runtimes: &PaneRuntimeRegistry) -> AbsolutePath {
         let root_cwd = self.cwd_for_pane(self.tree.root(), runtimes);
         self.resolved_identity_cwd_from_root_pane(root_cwd)
     }
@@ -329,15 +334,22 @@ impl Workspace {
     /// Resolves the workspace identity from a root pane cwd already observed
     /// by the App. This stays as data-only path selection so state reducers can
     /// compare cwd snapshots without probing a pane runtime.
-    pub fn resolved_identity_cwd_from_root_pane(&self, root_pane_cwd: Option<PathBuf>) -> PathBuf {
+    pub fn resolved_identity_cwd_from_root_pane(
+        &self,
+        root_pane_cwd: Option<AbsolutePath>,
+    ) -> AbsolutePath {
         root_pane_cwd
-            .filter(|cwd| cwd.is_absolute() && !process_cwd_is_deleted(cwd))
+            .filter(|cwd| !process_cwd_is_deleted(cwd))
             .unwrap_or_else(|| self.identity_cwd.clone())
     }
 
     /// The cwd of `pane`: its runtime's observation, else its stored report.
     /// `None` when the pane is not in this workspace.
-    pub fn cwd_for_pane(&self, pane: PaneId, runtimes: &PaneRuntimeRegistry) -> Option<PathBuf> {
+    pub fn cwd_for_pane(
+        &self,
+        pane: PaneId,
+        runtimes: &PaneRuntimeRegistry,
+    ) -> Option<AbsolutePath> {
         let terminal = self.tree.pane(pane)?.terminal();
         terminal_cwd(runtimes.get(&pane), Some(terminal), CwdPurpose::Identity)
     }
@@ -376,7 +388,9 @@ pub(crate) fn test_workspace_id() -> WorkspaceId {
 #[cfg(test)]
 impl Workspace {
     pub fn test_new(name: &str) -> Self {
-        let identity_cwd = TEST_WORKSPACE_CWD.with(|cwd| cwd.to_path_buf());
+        let identity_cwd = TEST_WORKSPACE_CWD
+            .with(|cwd| AbsolutePath::new(cwd.to_path_buf()))
+            .expect("the test workspace cwd is absolute");
         let terminal = crate::terminal::TerminalState::new(identity_cwd.clone());
         Self::from_tree(
             test_workspace_id(),
@@ -435,7 +449,7 @@ mod tests {
     use shepr_protocol::{PanePublicNumber, PublicPaneId};
 
     fn terminal_at(cwd: &str) -> TerminalState {
-        TerminalState::new(PathBuf::from(cwd))
+        TerminalState::new(AbsolutePath::new(cwd).expect("test cwd is absolute"))
     }
 
     /// A one-pane workspace with no custom name whose identity cwd is `cwd`
@@ -444,7 +458,7 @@ mod tests {
         Workspace::test_from_pane(
             test_workspace_id(),
             None,
-            identity_cwd,
+            &AbsolutePath::new(identity_cwd).expect("test cwd is absolute"),
             PaneId::alloc(),
             terminal_at(terminal_cwd),
         )
@@ -636,10 +650,8 @@ mod tests {
         let registry = PaneRuntimeRegistry::new();
         let identity = Path::new("/shepr-test/construction");
 
-        // A root pane that reports no usable directory.
-        let ws = workspace_at(identity, "relative");
-        assert_eq!(ws.resolved_identity_cwd(&registry), identity);
-
+        // A root pane that reports no usable directory. A relative stored
+        // cwd cannot occur: the terminal state holds an `AbsolutePath`.
         let ws = workspace_at(identity, "/gone (deleted)");
         assert_eq!(ws.resolved_identity_cwd(&registry), identity);
 
@@ -704,20 +716,18 @@ mod tests {
         ] {
             assert_eq!(
                 super::terminal_cwd(None, Some(&terminal), purpose),
-                Some(terminal.cwd().to_path_buf()),
+                Some(terminal.cwd().clone()),
             );
         }
     }
 
     #[test]
-    fn cwd_query_rejects_relative_and_deleted_state() {
-        for path in ["relative", "/gone (deleted)"] {
-            let terminal = terminal_at(path);
-            assert_eq!(
-                super::terminal_cwd(None, Some(&terminal), super::CwdPurpose::Save),
-                None,
-            );
-        }
+    fn cwd_query_rejects_deleted_state() {
+        let terminal = terminal_at("/gone (deleted)");
+        assert_eq!(
+            super::terminal_cwd(None, Some(&terminal), super::CwdPurpose::Save),
+            None,
+        );
     }
 
     #[test]
@@ -729,8 +739,9 @@ mod tests {
             PathBuf::from("/shepr-test/pion")
         );
         assert_eq!(
-            ws.cwd_for_pane(ws.tree().root(), &PaneRuntimeRegistry::new()),
-            Some(PathBuf::from("/shepr-test/pion"))
+            ws.cwd_for_pane(ws.tree().root(), &PaneRuntimeRegistry::new())
+                .as_deref(),
+            Some(Path::new("/shepr-test/pion"))
         );
         assert_eq!(
             ws.cwd_for_pane(PaneId::alloc(), &PaneRuntimeRegistry::new()),
@@ -743,7 +754,9 @@ mod tests {
         let ws = workspace_at(Path::new("/saved/workspace"), "/shepr-test/unused");
 
         assert_eq!(
-            ws.resolved_identity_cwd_from_root_pane(Some(PathBuf::from("/live/pane"))),
+            ws.resolved_identity_cwd_from_root_pane(Some(
+                AbsolutePath::new("/live/pane").expect("absolute")
+            )),
             PathBuf::from("/live/pane")
         );
         assert_eq!(
@@ -817,7 +830,7 @@ mod tests {
     fn workspace_built_from_an_existing_pane_does_not_discover_git_identity() {
         let pane = PaneId::alloc();
         // A path that cannot exist: discovery would have to stat it.
-        let cwd = PathBuf::from("/shepr-test-nonexistent/repo/sub");
+        let cwd = AbsolutePath::new("/shepr-test-nonexistent/repo/sub").expect("absolute");
 
         let ws = Workspace::test_from_pane(
             test_workspace_id(),

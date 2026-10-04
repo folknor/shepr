@@ -289,18 +289,8 @@ fn split_hits(surface: &PaneSurfaceFrame, area: Rect) -> Vec<PaneSplitHit> {
                     area.y.saturating_add(split.pos)
                 }
             },
-            area: Rect::new(
-                area.x.saturating_add(split.area.x),
-                area.y.saturating_add(split.area.y),
-                split.area.width,
-                split.area.height,
-            ),
-            hit_rect: Rect::new(
-                area.x.saturating_add(split.hit_rect.x),
-                area.y.saturating_add(split.hit_rect.y),
-                split.hit_rect.width,
-                split.hit_rect.height,
-            ),
+            area: super::surface_rect_on_screen((area.x, area.y), split.area),
+            hit_rect: super::surface_rect_on_screen((area.x, area.y), split.hit_rect),
             path: split.path.clone(),
             epoch: split.epoch,
         })
@@ -320,7 +310,7 @@ pub(in crate::shell) fn client_copy_surface_coherent(
     copy_mode
         .filter(|copy_mode| copy_mode.pane_id == hit.pane_id)
         .is_none_or(|copy_mode| {
-            copy_mode.geometry == (hit.inner_rect.width, hit.inner_rect.height)
+            copy_mode.geometry == hit.pane_size
                 && hit.scroll.is_some_and(|scroll| {
                     scroll.offset_from_bottom == copy_mode.scroll.offset_from_bottom
                         && scroll.max_offset_from_bottom == copy_mode.scroll.max_offset_from_bottom

@@ -10,7 +10,6 @@ use std::collections::BTreeMap;
 use std::ffi::{CString, OsStr, OsString};
 use std::io;
 use std::os::unix::ffi::OsStrExt;
-use std::path::Path;
 
 use crate::limits::{
     PASSWD_BUFFER_GROWTH_FACTOR, PASSWD_BUFFER_INITIAL_BYTES, PASSWD_BUFFER_MAX_BYTES,
@@ -24,7 +23,7 @@ pub struct PtyCommand {
     program: shepr_core::shell::ResolvedShell,
     login: bool,
     envs: BTreeMap<OsString, OsString>,
-    cwd: Option<OsString>,
+    cwd: Option<AbsolutePath>,
     cwd_required: bool,
 }
 
@@ -32,7 +31,7 @@ pub struct PtyCommand {
 /// names the directory the child actually entered.
 #[derive(Debug)]
 pub(crate) struct LaunchCandidate {
-    pub(crate) path: OsString,
+    pub(crate) path: AbsolutePath,
     pub(crate) dir: CString,
     pub(crate) envp: Vec<CString>,
 }
@@ -99,7 +98,7 @@ impl PtyCommand {
     /// child to resolve against the server's own working directory; whether it
     /// exists is still the child's chdir to say.
     pub fn cwd(&mut self, dir: &AbsolutePath) {
-        self.cwd = Some(AsRef::<OsStr>::as_ref(dir).to_owned());
+        self.cwd = Some(dir.clone());
     }
 
     /// Start only in the requested directory: if the child cannot enter it,
@@ -109,8 +108,10 @@ impl PtyCommand {
         self.cwd_required = true;
     }
 
-    /// The directories the child tries, in order, deduplicated.
-    fn cwd_candidates(&self, passwd_home: Option<&OsStr>) -> io::Result<Vec<OsString>> {
+    /// The directories the child tries, in order, deduplicated. Each is
+    /// absolute: a relative `HOME` or passwd home is skipped, so whichever the
+    /// child enters can be reported back as an `AbsolutePath`.
+    fn cwd_candidates(&self, passwd_home: Option<&OsStr>) -> io::Result<Vec<AbsolutePath>> {
         if self.cwd_required {
             let requested = self.cwd.clone().ok_or_else(|| {
                 io::Error::new(
@@ -120,20 +121,22 @@ impl PtyCommand {
             })?;
             return Ok(vec![requested]);
         }
-        let mut candidates: Vec<OsString> = Vec::new();
-        let home = shepr_core::pathutil::home_dir_from_env_value(self.get_env(EnvVar::Home)).ok();
-        let absolute = |path: &OsStr| Path::new(path).is_absolute();
+        let mut candidates: Vec<AbsolutePath> = Vec::new();
+        let home = shepr_core::pathutil::home_dir_from_env_value(self.get_env(EnvVar::Home))
+            .ok()
+            .and_then(|home| AbsolutePath::new(home).ok());
+        let passwd_home = passwd_home.and_then(|home| AbsolutePath::new(home).ok());
         for candidate in [
-            self.cwd.as_deref(),
-            home.as_deref().map(Path::as_os_str),
-            passwd_home.filter(|home| absolute(home)),
-            Some(OsStr::new("/")),
+            self.cwd.clone(),
+            home,
+            passwd_home,
+            Some(AbsolutePath::root()),
         ]
         .into_iter()
         .flatten()
         {
-            if !candidates.iter().any(|existing| existing == candidate) {
-                candidates.push(candidate.to_owned());
+            if !candidates.contains(&candidate) {
+                candidates.push(candidate);
             }
         }
         Ok(candidates)
@@ -166,13 +169,11 @@ impl PtyCommand {
             .into_iter()
             .map(|path| {
                 let mut env = base.clone();
-                // `PWD` belongs to the directory the child entered; a
-                // relative one is left for the shell to reconstruct.
-                if Path::new(&path).is_absolute() {
-                    env.insert(OsString::from(ChildEnv::Pwd.name()), path.clone());
-                } else {
-                    env.remove(ChildEnv::Pwd.as_ref());
-                }
+                // `PWD` belongs to the directory the child entered.
+                env.insert(
+                    OsString::from(ChildEnv::Pwd.name()),
+                    path.as_os_str().to_owned(),
+                );
                 let envp = env
                     .iter()
                     .map(|(key, value)| {
@@ -183,7 +184,7 @@ impl PtyCommand {
                     })
                     .collect::<io::Result<Vec<_>>>()?;
                 Ok(LaunchCandidate {
-                    dir: c_string(&path, "pane working directory")?,
+                    dir: c_string(path.as_os_str(), "pane working directory")?,
                     path,
                     envp,
                 })
@@ -264,6 +265,11 @@ mod tests {
     use shepr_test_support::fixture;
     use shepr_test_support::fixture::resolved_shell as test_shell;
     use std::os::unix::ffi::OsStrExt;
+    use std::path::Path;
+
+    fn candidate_paths(spec: &LaunchSpec) -> Vec<&Path> {
+        spec.candidates.iter().map(|c| c.path.as_path()).collect()
+    }
 
     fn env_of(candidate: &LaunchCandidate) -> BTreeMap<OsString, OsString> {
         candidate
@@ -296,7 +302,7 @@ mod tests {
             command.env(EnvVar::Home, home);
             assert_eq!(
                 command.cwd_candidates(None).expect("candidates"),
-                vec![OsString::from("/")]
+                vec![AbsolutePath::root()]
             );
         }
     }
@@ -339,10 +345,13 @@ mod tests {
         cmd.env(ChildEnv::Oldpwd, "/server/previous-directory");
 
         let spec = cmd.launch_spec(None).expect("build launch");
-        assert_eq!(spec.candidates[0].path, scratch.path().as_os_str());
+        assert_eq!(spec.candidates[0].path.as_path(), scratch.path());
         for candidate in &spec.candidates {
             let env = env_of(candidate);
-            assert_eq!(env.get(ChildEnv::Pwd.as_ref()), Some(&candidate.path));
+            assert_eq!(
+                env.get(ChildEnv::Pwd.as_ref()).map(OsString::as_os_str),
+                Some(candidate.path.as_os_str())
+            );
             assert!(!env.contains_key(ChildEnv::Oldpwd.as_ref()));
         }
     }
@@ -355,15 +364,27 @@ mod tests {
         let spec = cmd
             .launch_spec(Some(OsStr::new("/home/user")))
             .expect("build launch");
-        let paths: Vec<_> = spec.candidates.iter().map(|c| c.path.clone()).collect();
-        assert_eq!(paths, ["/requested", "/home/user", "/"]);
+        assert_eq!(
+            candidate_paths(&spec),
+            [
+                Path::new("/requested"),
+                Path::new("/home/user"),
+                Path::new("/")
+            ]
+        );
 
         cmd.env(EnvVar::Home, "relative/home");
         let spec = cmd
             .launch_spec(Some(OsStr::new("/passwd/home")))
             .expect("build launch");
-        let paths: Vec<_> = spec.candidates.iter().map(|c| c.path.clone()).collect();
-        assert_eq!(paths, ["/requested", "/passwd/home", "/"]);
+        assert_eq!(
+            candidate_paths(&spec),
+            [
+                Path::new("/requested"),
+                Path::new("/passwd/home"),
+                Path::new("/")
+            ]
+        );
     }
 
     #[test]
@@ -375,7 +396,7 @@ mod tests {
             .launch_spec(Some(OsStr::new("/home")))
             .expect("build launch");
         assert_eq!(spec.candidates.len(), 1);
-        assert_eq!(spec.candidates[0].path, "/requested");
+        assert_eq!(candidate_paths(&spec), [Path::new("/requested")]);
     }
 
     #[test]

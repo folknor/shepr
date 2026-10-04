@@ -585,10 +585,12 @@ fn establish(
     };
     let attached = crate::endpoint::connection_io::attach_endpoint_stream(
         stream,
-        options.geometry,
-        options.mouse_capture,
-        // A recovery connection stays hidden until a move requests its surface.
-        false,
+        shepr_protocol::endpoint::EndpointClientHello {
+            geometry: options.geometry,
+            mouse_capture: options.mouse_capture,
+            // A recovery connection stays hidden until a move requests its surface.
+            surface_active: false,
+        },
         endpoint_id.policy(),
         Some(deadline),
         mismatch_guidance,

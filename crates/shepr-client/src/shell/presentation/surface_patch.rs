@@ -76,7 +76,7 @@ fn fast_path_blocker(
             selection.is_visible()
                 && patch_updates_pane(
                     patch.panes.iter().map(|pane| &pane.pane_id),
-                    &selection.pane_id,
+                    selection.pane_id(),
                 )
         });
     // The cursor is sampled independently of the changed pane list, so a patch can move it

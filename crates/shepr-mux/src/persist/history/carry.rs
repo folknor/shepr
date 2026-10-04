@@ -35,6 +35,10 @@ fn next_restored_revision() -> HistoryRevision {
 /// content: two saves with equal stamps hold equal text.
 type PaneStamp = Option<HistoryRevision>;
 
+/// Every pane of a save by workspace, with its public number, pane id and
+/// stamp, sorted by public number within a workspace.
+type NamedPanes = Vec<Vec<(PanePublicNumber, PaneId, PaneStamp)>>;
+
 /// What one save's history was made of: the content of every pane, under the
 /// workspace position and pane number it is saved with, sorted by pane
 /// number. Two equal stamps serialize to the same bytes: the history file
@@ -48,8 +52,7 @@ struct HistoryStamp {
 /// What resolving a save's history produced.
 pub(in crate::persist) enum ResolvedHistory {
     /// The history file already holds exactly this history, whose digest is
-    /// given: nothing was assembled and nothing needs writing. Only ever
-    /// produced when the caller allowed it.
+    /// given: nothing was assembled and nothing needs writing.
     Unchanged(HistoryDigest),
     Changed(SessionHistory),
 }
@@ -209,28 +212,37 @@ impl PendingHistory {
     /// take as long as formatting what is new in every pane's scrollback
     /// does, in bounded chunks per hold of each pane's terminal lock.
     pub fn resolve(self, carry: &mut HistoryCarry) -> SessionHistorySnapshot {
-        match self.resolve_for_save(carry, false) {
-            ResolvedHistory::Changed(history) => history.into_snapshot(),
-            // Only produced when the caller allows it.
-            ResolvedHistory::Unchanged(_) => SessionHistorySnapshot {
-                version: SNAPSHOT_VERSION,
-                workspaces: Vec::new(),
-            },
-        }
+        self.resolve_changed(carry).into_snapshot()
     }
 
-    /// Like [`resolve`], for the persister: with `allow_unchanged` (the
-    /// history file is known to hold what the last save wrote) a history with
-    /// the same content as that save's is reported as `Unchanged` without
-    /// assembling any text. The caller reports how the save went through
-    /// `HistoryCarry::note_saved` or `forget_saved`.
+    /// Always assembles the history, for a persister whose history file is
+    /// not known to hold what the last save wrote. The caller reports how the
+    /// save went through `HistoryCarry::note_saved` or `forget_saved`.
+    pub(in crate::persist) fn resolve_changed(self, carry: &mut HistoryCarry) -> SessionHistory {
+        let (named, stamp) = self.name_panes(carry);
+        Self::assemble(named, stamp, carry)
+    }
+
+    /// Like [`resolve_changed`], for a persister whose history file is known
+    /// to hold what the last save wrote: a history with the same content as
+    /// that save's is reported as `Unchanged` without assembling any text.
     ///
-    /// [`resolve`]: Self::resolve
-    pub(in crate::persist) fn resolve_for_save(
-        self,
-        carry: &mut HistoryCarry,
-        allow_unchanged: bool,
-    ) -> ResolvedHistory {
+    /// [`resolve_changed`]: Self::resolve_changed
+    pub(in crate::persist) fn resolve_for_save(self, carry: &mut HistoryCarry) -> ResolvedHistory {
+        let (named, stamp) = self.name_panes(carry);
+        if let Some((saved, digest)) = &carry.saved
+            && *saved == stamp
+        {
+            let digest = *digest;
+            carry.resolved = Some(stamp);
+            return ResolvedHistory::Unchanged(digest);
+        }
+        ResolvedHistory::Changed(Self::assemble(named, stamp, carry))
+    }
+
+    /// Brings every pane's history in `carry` up to date and names what each
+    /// holds, as the stamp of the whole save.
+    fn name_panes(self, carry: &mut HistoryCarry) -> (NamedPanes, HistoryStamp) {
         carry.retain(
             &self
                 .workspaces
@@ -244,8 +256,7 @@ impl PendingHistory {
                 .collect(),
         );
         // Bring every pane up to date first, naming what each one holds.
-        let mut named: Vec<Vec<(PanePublicNumber, PaneId, PaneStamp)>> =
-            Vec::with_capacity(self.workspaces.len());
+        let mut named: NamedPanes = Vec::with_capacity(self.workspaces.len());
         for panes in self.workspaces {
             let mut named_panes: Vec<_> = panes
                 .into_iter()
@@ -277,15 +288,18 @@ impl PendingHistory {
                 .map(|panes| panes.iter().map(|(id, _, stamp)| (*id, *stamp)).collect())
                 .collect(),
         };
-        if allow_unchanged
-            && let Some((saved, digest)) = &carry.saved
-            && *saved == stamp
-        {
-            carry.resolved = Some(stamp);
-            return ResolvedHistory::Unchanged(*digest);
-        }
+        (named, stamp)
+    }
+
+    /// The text of every pane named in `named`, recording `stamp` as what
+    /// this save resolved to.
+    fn assemble(
+        named: NamedPanes,
+        stamp: HistoryStamp,
+        carry: &mut HistoryCarry,
+    ) -> SessionHistory {
         carry.resolved = Some(stamp);
-        ResolvedHistory::Changed(SessionHistory {
+        SessionHistory {
             version: SNAPSHOT_VERSION,
             workspaces: named
                 .into_iter()
@@ -299,7 +313,7 @@ impl PendingHistory {
                         .collect()
                 })
                 .collect(),
-        })
+        }
     }
 }
 
@@ -342,7 +356,12 @@ mod tests {
         let second = history_digest(b"second");
         let third = history_digest(b"third");
         let resolve = |carry: &mut HistoryCarry, allow: bool| {
-            capture_pending_history(&workspaces, &runtimes).resolve_for_save(carry, allow)
+            let pending = capture_pending_history(&workspaces, &runtimes);
+            if allow {
+                pending.resolve_for_save(carry)
+            } else {
+                ResolvedHistory::Changed(pending.resolve_changed(carry))
+            }
         };
 
         assert!(matches!(

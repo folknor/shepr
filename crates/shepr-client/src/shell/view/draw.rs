@@ -111,7 +111,7 @@ pub(in crate::shell) fn draw_frame(
                                 .mouse_selection
                                 .selection
                                 .as_ref()
-                                .is_some_and(|selection| selection.pane_id == hit.pane_id)
+                                .is_some_and(|selection| selection.belongs_to(&hit.pane_id))
                     });
                 if !selection_is_stale_copy_projection {
                     crate::shell::presentation::selection_render::render_selection_highlight(
@@ -281,7 +281,7 @@ fn render_client_copy_search_highlights(
         return;
     }
     let top = copy_mode.viewport_top();
-    let bottom = top.saturating_add(u64::from(hit.inner_rect.height.saturating_sub(1)));
+    let bottom = top.saturating_add(usize::from(hit.inner_rect.height.saturating_sub(1)));
     let patch = StylePatch::from_style(if current_only {
         Style::default()
             .fg(panel_contrast_fg(palette))
@@ -677,6 +677,7 @@ mod tests {
             pane_id: crate::tests::test_pane_id("w1:p1"),
             mouse_reporting: false,
             pixel_mouse: shepr_term::mouse::PanePixelMouse::OFF,
+            pane_size: (6, 4),
             presented: None,
         };
         let copy_mode = CopySession::start(CopyEntry {

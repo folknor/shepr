@@ -167,9 +167,7 @@ impl CopySession {
             .max_offset_from_bottom
             .saturating_add(usize::from(self.geometry.1.max(1)))
             .saturating_sub(1);
-        self.scroll
-            .history_origin
-            .saturating_add(u64::try_from(rows).unwrap_or(u64::MAX))
+        self.scroll.history_origin.saturating_add(rows)
     }
 
     /// `row` clamped to the rows the pane retains.
@@ -230,7 +228,7 @@ pub(in crate::shell) fn reconcile_snapshot(
     if selection
         .selection
         .as_ref()
-        .is_some_and(|selected| selected.pane_id == copy_pane_id)
+        .is_some_and(|selected| selected.belongs_to(&copy_pane_id))
     {
         selection.clear();
     }
@@ -310,7 +308,7 @@ pub(in crate::shell) fn surface_presented(
         && selection
             .selection
             .as_ref()
-            .is_some_and(|selected| selected.pane_id == session.pane_id)
+            .is_some_and(|selected| selected.belongs_to(&session.pane_id))
     {
         selection.clear();
     }
@@ -476,7 +474,7 @@ mod tests {
         let projected = selecting
             .projected_selection()
             .expect("a character selection projects");
-        assert_eq!(projected.pane_id, pane_id());
+        assert!(projected.belongs_to(&pane_id()));
         assert_eq!(projected.shape(), SelectionShape::Range);
         assert_eq!(
             projected.ordered_rows(),

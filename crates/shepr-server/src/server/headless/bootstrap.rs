@@ -127,8 +127,11 @@ pub fn run_server(
     let socket = paths.server_address().socket().to_path_buf();
 
     // AppPaths validated and retained the one-time startup handoff. Pane
-    // launches scrub it from their child environments.
-    let startup_cwd = paths.startup_cwd().map(std::path::Path::to_path_buf);
+    // launches scrub it from their child environments. AppPaths admits only an
+    // absolute one, so the conversion drops nothing.
+    let startup_cwd = paths
+        .startup_cwd()
+        .and_then(|cwd| shepr_core::absolute_path::AbsolutePath::new(cwd).ok());
 
     let data_dir = paths.data_dir();
 
@@ -283,7 +286,10 @@ fn integration_install_enabled(profile: shepr_paths::BuildProfile) -> bool {
     profile == shepr_paths::BuildProfile::Release
 }
 
-fn seed_startup_workspace_if_empty(app: &mut app::App, startup_cwd: Option<PathBuf>) {
+fn seed_startup_workspace_if_empty(
+    app: &mut app::App,
+    startup_cwd: Option<shepr_core::absolute_path::AbsolutePath>,
+) {
     let Some(cwd) = startup_cwd else {
         return;
     };

@@ -113,6 +113,12 @@ fn group_rows(groups: &mut Vec<KeybindHelpGroup>, group: HelpGroup) -> &mut Vec<
 
 /// Places an indexed row right after the row labelled `after`, or last when no
 /// such row exists.
+///
+/// The table's follow-after column stays a label literal: `macro_rules!` cannot
+/// resolve an action identifier to its help label across repetitions. A
+/// misspelled or renamed target is caught by the test
+/// `every_indexed_row_follows_a_row_of_its_group`, which reads the column from
+/// the table itself.
 fn insert_help_row_after(rows: &mut Vec<HelpRow>, after: &str, help_row: HelpRow) {
     match rows.iter().position(|existing| existing.label == after) {
         Some(index) => rows.insert(index + 1, help_row),
@@ -378,6 +384,44 @@ mod tests {
             position("next workspace") + 1
         );
         assert_eq!(position("focus agent 1-9"), position("next agent") + 1);
+    }
+
+    /// Every indexed row's follow-after label names a row of its own group,
+    /// and the row lands right after it, so a misspelled or renamed target
+    /// cannot silently move the row to the end of its group.
+    #[test]
+    fn every_indexed_row_follows_a_row_of_its_group() {
+        macro_rules! indexed_follow_after {
+            (
+                actions { $($actions:tt)* }
+                indexed { $(($indexed_field:ident, $indexed_variant:ident, $indexed_default:literal, $indexed_group:ident, $indexed_label:literal, $indexed_doc:literal, $indexed_help_after:literal),)* }
+                navigate { $($navigate:tt)* }
+                navigate_indexed { $($navigate_indexed:tt)* }
+            ) => {
+                vec![$((HelpGroup::$indexed_group, $indexed_label, $indexed_help_after),)*]
+            };
+        }
+        let follows: Vec<(HelpGroup, &str, &str)> =
+            shepr_config::keybinding_table!(indexed_follow_after);
+        assert!(!follows.is_empty());
+
+        let live = crate::test_config::validated("").live_keybinds().clone();
+        let groups = keybind_help_groups(&live.keybinds, live.prefix);
+        for (group, label, after) in follows {
+            let rows = &groups
+                .iter()
+                .find(|(shown, _)| *shown == group)
+                .unwrap_or_else(|| panic!("{group:?} group missing"))
+                .1;
+            let position = |wanted: &str| rows.iter().position(|row| row.label == wanted);
+            let target = position(after)
+                .unwrap_or_else(|| panic!("{label:?} follows {after:?}, not a row of {group:?}"));
+            assert_eq!(
+                position(label),
+                Some(target + 1),
+                "{label:?} after {after:?}"
+            );
+        }
     }
 
     #[test]

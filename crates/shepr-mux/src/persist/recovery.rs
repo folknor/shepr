@@ -339,6 +339,11 @@ fn recovery_history_path(layout_path: &Path) -> io::Result<PathBuf> {
 
 /// Decides which layout needs preserving before the caller replaces the file.
 /// The newest recovery copy controls both cadence and layout deduplication.
+///
+/// `replacement` is `Some` before the write; `None` after it, when the file on
+/// disk is the replacement and only `PreserveBeforeWrite` ("the layout on disk
+/// differs from the newest copy") is meaningful, whatever the write order. One
+/// function with an optional replacement keeps both decisions on the same rules.
 fn snapshot_history_decision(
     path: &Path,
     replacement: Option<&SessionSnapshot>,
@@ -501,6 +506,9 @@ pub(super) fn preserve_existing(path: &Path, now: SystemTime) -> io::Result<bool
     preserve_existing_in(path, RecoveryKind::Backup, now)
 }
 
+/// The bool is whether a session file existed to copy. The snapshot caller
+/// needs it to know whether to forget its newest-copy fingerprint, and the
+/// backup caller passes it on, so a named type would only rename it.
 fn preserve_existing_in(path: &Path, kind: RecoveryKind, now: SystemTime) -> io::Result<bool> {
     // Both sources are opened once, through their type check, and the copies
     // are read from these very descriptors: reopening the paths could meet

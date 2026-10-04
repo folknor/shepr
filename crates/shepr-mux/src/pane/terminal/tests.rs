@@ -4244,7 +4244,7 @@ fn absolute_rows_survive_eviction() {
         position.viewport_top_row(),
         position
             .history_origin
-            .saturating_add(u64::try_from(position.max_offset_from_bottom).expect("fits"),)
+            .saturating_add(position.max_offset_from_bottom)
     );
 
     // Line i was written on absolute row i.

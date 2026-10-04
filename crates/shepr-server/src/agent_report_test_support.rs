@@ -65,7 +65,9 @@ impl AgentReportHarness {
         );
 
         let pane = shepr_core::layout::PaneId::alloc();
-        let mut terminal = TerminalState::new(root.to_path_buf());
+        let root_path = shepr_core::absolute_path::AbsolutePath::new(root)
+            .map_err(|_| "test root is not absolute".to_owned())?;
+        let mut terminal = TerminalState::new(root_path.clone());
         terminal
             .ownership_mut()
             .set_detected_agent_process_at(agent, at.monotonic);
@@ -73,7 +75,7 @@ impl AgentReportHarness {
             .test_push_workspace(Workspace::test_from_pane(
                 crate::test_support::next_fixture_workspace_id(),
                 Some("agent-report-contract".to_owned()),
-                root,
+                &root_path,
                 pane,
                 terminal,
             ));

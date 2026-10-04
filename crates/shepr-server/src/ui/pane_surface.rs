@@ -52,6 +52,8 @@ fn ratatui_borders(borders: shepr_core::chrome::Borders) -> Borders {
 
 /// A pane with its content settled for its screen mode, in ratatui terms:
 /// what the surface draws and the retained-render path compares against.
+/// It stays ratatui-typed because the server draws into ratatui buffers;
+/// `from_content` is the one place the core chrome model is converted.
 #[derive(Clone)]
 pub(crate) struct PaneSurface {
     pub(crate) id: PaneId,

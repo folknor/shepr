@@ -1,21 +1,26 @@
-use std::path::PathBuf;
+use shepr_core::absolute_path::AbsolutePath;
 
 use super::{App, SpawnGeometry, api_helpers::presented_agent_status};
 use shepr_config::NewTerminalCwd;
 
+/// `home_dir` and `current_dir` are the launch's `AppPaths`, which resolves
+/// both as absolute paths; one that is not (only a test root can hold it) is
+/// skipped like an absent one.
 pub(crate) fn resolve_new_terminal_cwd(
     policy: &NewTerminalCwd,
     home_dir: Option<&std::path::Path>,
     current_dir: Option<&std::path::Path>,
-    follow_cwd: Option<PathBuf>,
-) -> PathBuf {
-    let fallback = current_dir.unwrap_or_else(|| std::path::Path::new("/"));
+    follow_cwd: Option<AbsolutePath>,
+) -> AbsolutePath {
+    let absolute = |path: &std::path::Path| AbsolutePath::new(path).ok();
+    let home = home_dir.and_then(absolute);
+    let fallback = current_dir
+        .and_then(absolute)
+        .unwrap_or_else(AbsolutePath::root);
     match policy {
-        NewTerminalCwd::Follow => follow_cwd
-            .or_else(|| home_dir.map(std::path::Path::to_path_buf))
-            .unwrap_or_else(|| fallback.to_path_buf()),
-        NewTerminalCwd::Home => home_dir.unwrap_or(fallback).to_path_buf(),
-        NewTerminalCwd::Current => fallback.to_path_buf(),
+        NewTerminalCwd::Follow => follow_cwd.or(home).unwrap_or(fallback),
+        NewTerminalCwd::Home => home.unwrap_or(fallback),
+        NewTerminalCwd::Current => fallback,
         // ServerConfig validation resolved it to an absolute directory at launch
         // (`~` expanded, relative paths joined to the launch directory).
         NewTerminalCwd::Path(path) => path.clone(),
@@ -26,7 +31,7 @@ impl App {
     pub(super) fn seed_cwd_from_workspace(
         &self,
         id: &shepr_protocol::WorkspaceId,
-    ) -> Option<PathBuf> {
+    ) -> Option<AbsolutePath> {
         let workspace = self.state.workspace(id)?;
         Some(workspace.resolved_identity_cwd(&self.terminal_runtimes))
     }
@@ -34,7 +39,7 @@ impl App {
     pub(super) fn launch_cwd_for_pane(
         &self,
         pane_id: shepr_core::layout::PaneId,
-    ) -> Option<PathBuf> {
+    ) -> Option<AbsolutePath> {
         let terminal = self.state.terminal(pane_id)?;
         shepr_mux::workspace::terminal_cwd(
             self.terminal_runtimes.get(&pane_id),
@@ -46,12 +51,15 @@ impl App {
     pub(super) fn focused_pane_cwd_in_workspace(
         &self,
         id: &shepr_protocol::WorkspaceId,
-    ) -> Option<PathBuf> {
+    ) -> Option<AbsolutePath> {
         let pane_id = self.state.workspace(id)?.tree().focused();
         self.launch_cwd_for_pane(pane_id)
     }
 
-    pub(super) fn resolve_new_terminal_cwd(&self, follow_cwd: Option<PathBuf>) -> PathBuf {
+    pub(super) fn resolve_new_terminal_cwd(
+        &self,
+        follow_cwd: Option<AbsolutePath>,
+    ) -> AbsolutePath {
         resolve_new_terminal_cwd(
             &self.state.settings.new_terminal_cwd,
             self.paths.home_dir(),
@@ -63,7 +71,10 @@ impl App {
     /// Where a new workspace starts when spawned from workspace `id`: the
     /// focused pane's launch cwd, else the workspace's identity cwd, resolved
     /// through the new-terminal cwd policy.
-    pub(crate) fn resolved_new_workspace_cwd(&self, id: &shepr_protocol::WorkspaceId) -> PathBuf {
+    pub(crate) fn resolved_new_workspace_cwd(
+        &self,
+        id: &shepr_protocol::WorkspaceId,
+    ) -> AbsolutePath {
         let follow_cwd = self
             .focused_pane_cwd_in_workspace(id)
             .or_else(|| self.seed_cwd_from_workspace(id));
@@ -87,7 +98,7 @@ impl App {
     /// is moved onto the workspace.
     pub(crate) fn create_workspace(
         &mut self,
-        initial_cwd: &std::path::Path,
+        initial_cwd: &AbsolutePath,
         geometry: SpawnGeometry,
     ) -> std::io::Result<shepr_protocol::WorkspaceId> {
         self.create_workspace_outcome(initial_cwd, geometry)
@@ -96,7 +107,7 @@ impl App {
 
     pub(crate) fn create_workspace_outcome(
         &mut self,
-        initial_cwd: &std::path::Path,
+        initial_cwd: &AbsolutePath,
         geometry: SpawnGeometry,
     ) -> std::io::Result<super::actions::WorkspaceCreationOutcome> {
         let chrome = self.state.chrome_in(geometry.area);

@@ -668,7 +668,10 @@ sidebar_max_width = 36
         let config = load_server_validated(&paths).expect("relative new_cwd validates");
         assert_eq!(
             config.terminal().new_cwd,
-            crate::NewTerminalCwd::Path(launch.join("project"))
+            crate::NewTerminalCwd::Path(
+                shepr_core::absolute_path::AbsolutePath::new(launch.join("project"))
+                    .expect("absolute")
+            )
         );
         std::fs::write(
             paths.server_config_file(),

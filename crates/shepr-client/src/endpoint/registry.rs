@@ -98,6 +98,10 @@ impl EndpointRegistry {
         self.connections.get(endpoint_id)
     }
 
+    /// `viewed` is what the connection's hello told its server (`surface_active`),
+    /// as `set_viewed` later records. A bool rather than an enum: it is the only
+    /// bool among these parameters, so a call site cannot swap it with another,
+    /// and it mirrors the wire field and the `viewed` query.
     pub fn insert(
         &mut self,
         endpoint_id: ClientEndpointId,

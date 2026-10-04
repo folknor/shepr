@@ -193,6 +193,8 @@ type ClientInputLeases =
 pub struct ClientShellState {
     /// The client loop's time for the event being handled, set on each event,
     /// so shell code that stamps deadlines never reads the clock itself.
+    /// A method that also takes a `now` is handed the same instant by its
+    /// caller; keep the two equal rather than reading a different clock.
     pub(crate) now: std::time::Instant,
     pub(in crate::shell) machine_diagnostics:
         crate::shell::notices::machine_diagnostics::MachineDiagnostics,

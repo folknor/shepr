@@ -50,7 +50,7 @@ pub(crate) struct EventQueue {
 /// The host's cell size as it reports it, and whether launch asked it to.
 pub(crate) struct HostCellReport {
     pub(crate) size: Arc<AtomicCellSize>,
-    pub(crate) queried: bool,
+    pub(crate) queried: crate::input::ProbeAvailability,
 }
 
 pub(crate) struct ClientLoop {
@@ -267,7 +267,7 @@ impl ClientLoop {
             state, hub, cell, ..
         } = self;
         let raw_events = inputs.iter().map(|input| &input.event);
-        if cell.queried
+        if cell.queried == crate::input::ProbeAvailability::Armed
             && let Some(reported) = reported_cell_size_from_events(raw_events)
         {
             store_reported_cell_size(&cell.size, reported);
@@ -428,7 +428,7 @@ mod client_timer_tests {
                 },
                 HostCellReport {
                     size: Arc::new(AtomicCellSize::new()),
-                    queried: false,
+                    queried: crate::input::ProbeAvailability::NotArmed,
                 },
             ),
             event_tx,

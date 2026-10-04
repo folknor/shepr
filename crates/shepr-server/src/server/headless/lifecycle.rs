@@ -83,6 +83,13 @@ pub(super) struct HostShutdownFreeze {
 pub(super) struct ShutdownLifecycle {
     phase: ShutdownPhase,
     monitor: Option<HostShutdownMonitor>,
+    /// Set on entering `Frozen` and taken when that freeze is cancelled or a
+    /// new warning restarts it. Stopping from `Frozen` does not take it, so it
+    /// is `Some` only in `Frozen` or `Stopping`, and readers check the phase
+    /// first. Only the
+    /// transition methods below write it. Folding it into the phase would make
+    /// `ShutdownPhase` carry data and lose the `Copy` that `UnexpectedPhase`
+    /// relies on.
     freeze: Option<HostShutdownFreeze>,
     stop_signal: Arc<shepr_api::ServerStopSignal>,
     host_shutdown_request: Arc<AtomicBool>,

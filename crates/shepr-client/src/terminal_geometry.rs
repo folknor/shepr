@@ -5,6 +5,7 @@ use std::sync::{Arc, RwLock};
 use tracing::{debug, warn};
 
 use crate::events::ClientLoopEvent;
+use crate::input::ProbeAvailability;
 use crate::state::{HostWriteAction, HostWritePurpose, host_write_failure_action};
 
 /// Fallback terminal cell width when the host does not report pixel geometry.
@@ -273,9 +274,11 @@ pub(super) fn write_host_terminal_appearance_query(mut writer: impl io::Write) -
 /// Asks the host terminal for its palette. Logged on failure for the same
 /// reason as [`query_host_terminal_appearance`]. Startup uses the result to
 /// arm reply tracking only after this large query was written successfully.
-pub(super) fn query_host_terminal_theme(writer: &mut impl io::Write) -> io::Result<bool> {
+pub(super) fn query_host_terminal_theme(
+    writer: &mut impl io::Write,
+) -> io::Result<ProbeAvailability> {
     match write_host_terminal_theme_query(writer) {
-        Ok(()) => Ok(true),
+        Ok(()) => Ok(ProbeAvailability::Armed),
         Err(error) => {
             if host_write_failure_action(HostWritePurpose::Probe, error.kind())
                 == HostWriteAction::Fatal
@@ -286,7 +289,7 @@ pub(super) fn query_host_terminal_theme(writer: &mut impl io::Write) -> io::Resu
                 error = %error,
                 "failed to send host terminal theme query; keeping default theme"
             );
-            Ok(false)
+            Ok(ProbeAvailability::NotArmed)
         }
     }
 }
@@ -302,9 +305,9 @@ pub(super) fn write_host_terminal_theme_query(mut writer: impl io::Write) -> io:
 /// pixel mouse and resize reporting to a guess, so a query that never went out
 /// is logged. Startup uses the result to arm reply tracking only after the
 /// query was written successfully.
-pub(super) fn query_host_cell_size(writer: &mut impl io::Write) -> io::Result<bool> {
+pub(super) fn query_host_cell_size(writer: &mut impl io::Write) -> io::Result<ProbeAvailability> {
     match write_host_cell_size_query(writer) {
-        Ok(()) => Ok(true),
+        Ok(()) => Ok(ProbeAvailability::Armed),
         Err(error) => {
             if host_write_failure_action(HostWritePurpose::Probe, error.kind())
                 == HostWriteAction::Fatal
@@ -317,7 +320,7 @@ pub(super) fn query_host_cell_size(writer: &mut impl io::Write) -> io::Result<bo
                 default_height_px = DEFAULT_CELL_HEIGHT_PX,
                 "failed to send host cell size query; pixel geometry falls back to a guessed cell size"
             );
-            Ok(false)
+            Ok(ProbeAvailability::NotArmed)
         }
     }
 }

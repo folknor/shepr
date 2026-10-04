@@ -96,7 +96,7 @@ use super::*;
 /// Rows a chunked history scan reads per hold of the terminal lock. Between
 /// chunks the lock is released so the PTY reader, rendering and detection
 /// are never stalled behind a scan of the whole scrollback.
-pub(super) const SCAN_CHUNK_ROWS: u64 = 2048;
+pub(super) const SCAN_CHUNK_ROWS: usize = 2048;
 /// The most rows a merged history chunk covers. Eviction drops a chunk whole
 /// and formats the rows of it that survive again under one lock hold, so this
 /// bounds that rework (a history at its limit evicts on nearly every save, and
@@ -901,10 +901,9 @@ mod tests {
             "the long line is cached in open pieces"
         );
         assert!(
-            cache
-                .chunks
-                .iter()
-                .all(|chunk| chunk.end.0 - chunk.start.0 <= SCAN_CHUNK_ROWS),
+            cache.chunks.iter().all(
+                |chunk| usize::try_from(chunk.rows()).is_ok_and(|rows| rows <= SCAN_CHUNK_ROWS)
+            ),
             "no chunk is longer than a window"
         );
         assert!(cache.chunks.len() > 2);
@@ -944,9 +943,8 @@ mod tests {
             );
         }
         assert!(
-            origins
-                .iter()
-                .any(|origin| *origin > 0 && *origin < SCAN_CHUNK_ROWS),
+            origins.iter().any(|origin| usize::try_from(*origin)
+                .is_ok_and(|origin| origin > 0 && origin < SCAN_CHUNK_ROWS)),
             "the origin passed through the first piece: {origins:?}"
         );
         assert!(origins.last().is_some_and(|origin| *origin > 2_500));
@@ -1051,7 +1049,7 @@ mod tests {
         // Fill exactly one window of rows with one line, then one character
         // more, erased: the row that continues the line is blank, and the
         // chunk boundary falls on the last soft-wrapped row.
-        let window = usize::try_from(SCAN_CHUNK_ROWS).expect("test precondition");
+        let window = SCAN_CHUNK_ROWS;
         write(&pane, "w".repeat(12 * window + 1).as_bytes());
         write(&pane, b"\x1b[2K\r\n");
         write_blank_lines(&pane, 60);

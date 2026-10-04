@@ -189,7 +189,7 @@ fn copy_io_error(error: &std::io::Error) -> std::io::Error {
 /// arbitration lives in `shepr_detect::ownership`; this type only holds the
 /// machine.
 pub struct TerminalState {
-    cwd: PathBuf,
+    cwd: shepr_core::absolute_path::AbsolutePath,
     terminal_title: Option<String>,
     manual_label: Option<Label>,
     ownership: AgentOwnership,

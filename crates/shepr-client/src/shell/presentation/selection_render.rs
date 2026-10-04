@@ -29,7 +29,7 @@ pub(in crate::shell) fn render_selection_highlight<P: PartialEq>(
     patch_cell: &mut impl FnMut(u16, u16, Style),
 ) {
     let Some(selection) =
-        selection.filter(|selection| selection.is_visible() && &selection.pane_id == pane_id)
+        selection.filter(|selection| selection.is_visible() && selection.belongs_to(pane_id))
     else {
         return;
     };

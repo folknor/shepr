@@ -2,7 +2,7 @@ use tracing::info;
 
 use shepr_platform::ipc::{LocalStream, LocalStreamDeadlineReader};
 use shepr_protocol::endpoint::{EndpointClientHello, EndpointServerWelcome};
-use shepr_protocol::{ClientMessage, ServerMessage, TerminalGeometry};
+use shepr_protocol::{ClientMessage, ServerMessage};
 
 use crate::deadline::Deadline;
 use crate::errors::HandshakeError;
@@ -41,9 +41,7 @@ fn preamble_error(error: shepr_protocol::preamble::PreambleError) -> HandshakeEr
 /// `deadline`, when given, caps the wait for the reply below the policy's read timeout.
 pub(crate) fn do_handshake_for_endpoint(
     stream: &mut LocalStream,
-    geometry: TerminalGeometry,
-    mouse_capture: bool,
-    surface_active: bool,
+    hello: EndpointClientHello,
     endpoint_policy: crate::endpoint::EndpointPolicy,
     deadline: Option<std::time::Instant>,
 ) -> Result<(), HandshakeError> {
@@ -51,11 +49,7 @@ pub(crate) fn do_handshake_for_endpoint(
         .set_nonblocking(false)
         .map_err(HandshakeError::EndpointSetup)?;
 
-    let hello = ClientMessage::EndpointHello(EndpointClientHello {
-        geometry,
-        mouse_capture,
-        surface_active,
-    });
+    let hello = ClientMessage::EndpointHello(hello);
     // Preamble and hello go out together; the server's preamble is read back
     // before its welcome, so a different build is named even if its welcome
     // would not decode.
@@ -230,16 +224,12 @@ fn local_build_mismatch(running: &str, guidance: &str) -> String {
 #[cfg(test)]
 pub(super) fn do_handshake(
     stream: &mut LocalStream,
-    geometry: TerminalGeometry,
-    mouse_capture: bool,
-    surface_active: bool,
+    hello: EndpointClientHello,
     deadline: Option<std::time::Instant>,
 ) -> Result<(), HandshakeError> {
     do_handshake_for_endpoint(
         stream,
-        geometry,
-        mouse_capture,
-        surface_active,
+        hello,
         crate::endpoint::EndpointPolicy::Local,
         deadline,
     )
@@ -251,11 +241,15 @@ mod tests {
     use std::io;
     use std::time::Duration;
 
-    fn test_geometry() -> TerminalGeometry {
-        TerminalGeometry::from_host(
-            shepr_core::geometry::GridSize::clamped(80, 24),
-            shepr_core::geometry::HostCell::from_host(8, 16, false),
-        )
+    fn test_hello(surface_active: bool) -> EndpointClientHello {
+        EndpointClientHello {
+            geometry: shepr_protocol::TerminalGeometry::from_host(
+                shepr_core::geometry::GridSize::clamped(80, 24),
+                shepr_core::geometry::HostCell::from_host(8, 16, false),
+            ),
+            mouse_capture: false,
+            surface_active,
+        }
     }
 
     fn socket_pair(name: &str) -> (LocalStream, LocalStream) {
@@ -286,7 +280,7 @@ mod tests {
             )
             .expect("test precondition");
         });
-        let error = do_handshake(&mut client, test_geometry(), false, true, None)
+        let error = do_handshake(&mut client, test_hello(true), None)
             .expect_err("a shutdown notice is not a welcome");
         peer.join().expect("test precondition");
         error
@@ -312,7 +306,7 @@ mod tests {
                 .write_all(&welcome_frames)
                 .expect("test precondition: the client reads the welcome");
         });
-        let result = do_handshake(&mut client, test_geometry(), false, true, None);
+        let result = do_handshake(&mut client, test_hello(true), None);
         assert!(
             peer.join().is_ok(),
             "test precondition: the peer thread finishes"
@@ -407,7 +401,7 @@ mod tests {
             // The client may reset rather than close cleanly; either ends the hold.
             drop(std::io::Read::read_to_end(&mut server, &mut rest));
         });
-        let error = do_handshake(&mut client, test_geometry(), false, true, None)
+        let error = do_handshake(&mut client, test_hello(true), None)
             .expect_err("the opening is not this build");
         // Hanging up is what releases the peer's hold.
         drop(client);
@@ -422,7 +416,7 @@ mod tests {
         // full remote read timeout for a peer that never answers.
         let started = std::time::Instant::now();
         let deadline = started + Duration::from_millis(200);
-        let error = do_handshake(&mut client, test_geometry(), false, false, Some(deadline))
+        let error = do_handshake(&mut client, test_hello(false), Some(deadline))
             .expect_err("a silent peer never welcomes");
         let elapsed = started.elapsed();
         drop(server);

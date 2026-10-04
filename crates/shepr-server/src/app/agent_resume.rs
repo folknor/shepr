@@ -13,7 +13,7 @@ pub(super) const PENDING_AGENT_RESUME_THEME_WAIT: std::time::Duration =
 
 struct PendingAgentResumeCandidate {
     pane_id: shepr_core::layout::PaneId,
-    cwd: std::path::PathBuf,
+    cwd: shepr_core::absolute_path::AbsolutePath,
     plan: shepr_agent::resume::AgentResumePlan,
     /// The PTY geometry the resumed shell starts at: its content grid and the
     /// pixel size of one cell of the geometry the workspace was last applied.
@@ -163,7 +163,7 @@ impl App {
     ) -> Option<(
         &'w shepr_mux::terminal::TerminalState,
         &'w shepr_agent::resume::AgentResumePlan,
-        &'w std::path::Path,
+        &'w shepr_core::absolute_path::AbsolutePath,
     )> {
         let terminal = workspace.tree().pane(pane_id)?.terminal();
         let plan = terminal
@@ -190,7 +190,7 @@ impl App {
                 };
                 pending.push(PendingAgentResumeCandidate {
                     pane_id: info.chrome.id,
-                    cwd: cwd.to_path_buf(),
+                    cwd: cwd.clone(),
                     plan: plan.clone(),
                     geometry: shepr_core::geometry::PaneGeometry::with_cell(
                         info.content.width,
@@ -219,7 +219,7 @@ impl App {
     fn start_pending_agent_resume(
         &mut self,
         pane_id: shepr_core::layout::PaneId,
-        cwd: &std::path::Path,
+        cwd: &shepr_core::absolute_path::AbsolutePath,
         plan: &shepr_agent::resume::AgentResumePlan,
         geometry: shepr_core::geometry::PaneGeometry,
         now: Instant,
@@ -381,7 +381,10 @@ mod tests {
             let terminal = record.terminal_mut();
             // Restore builds a terminal from its saved cwd, which may have
             // disappeared; a live pane never reports a missing one.
-            *terminal = shepr_mux::terminal::TerminalState::new(missing.clone());
+            *terminal = shepr_mux::terminal::TerminalState::new(
+                shepr_core::absolute_path::AbsolutePath::new(missing.clone())
+                    .expect("scratch cwd is absolute"),
+            );
             terminal.plan_agent_resume(crate::test_support::test_codex_plan(
                 &pane.to_string(),
                 vec!["codex".into()],
@@ -553,7 +556,10 @@ mod tests {
                 assert!(!missing.try_exists().expect("stat missing resume cwd"));
                 // Restore builds a terminal from its saved cwd, which may have
                 // disappeared; a live pane never reports a missing one.
-                *terminal = shepr_mux::terminal::TerminalState::new(missing);
+                *terminal = shepr_mux::terminal::TerminalState::new(
+                    shepr_core::absolute_path::AbsolutePath::new(missing)
+                        .expect("scratch cwd is absolute"),
+                );
             }
             let session = shepr_agent::resume::PersistedAgentSession::new(
                 shepr_agent::AgentSource::parse("shepr:codex").expect("bundled source"),
@@ -624,6 +630,8 @@ mod tests {
         app.state.test_set_workspaces(vec![workspace]);
         let plan =
             crate::test_support::test_codex_plan("resume-cwd-race", long_running_test_argv());
+        let cwd =
+            shepr_core::absolute_path::AbsolutePath::new(cwd).expect("scratch cwd is absolute");
         let terminal = app.state.terminal_mut(pane_id);
         *terminal = shepr_mux::terminal::TerminalState::new(cwd.clone());
         terminal.plan_agent_resume(plan.clone());

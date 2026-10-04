@@ -155,6 +155,71 @@ fn copy_cursor_is_never_left_under_the_mode_bar() {
 }
 
 #[test]
+fn copy_mode_in_a_clipped_pane_keeps_the_panes_full_geometry() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    // A surface produced for a pane area far larger than the one composed below, as after a
+    // resize before the resized surface arrives: its pane hit is clipped to the area.
+    let lines = (0..60).map(|_| "x".repeat(200)).collect::<Vec<_>>();
+    let mut oversized = surface();
+    oversized.frame = FrameData::from_ratatui_buffer_with_hyperlinks(
+        &Buffer::with_lines(lines.iter().map(String::as_str)),
+        None,
+        &[],
+    )
+    .expect("test buffer is a valid frame");
+    let full = SurfaceRect {
+        x: 0,
+        y: 0,
+        width: 200,
+        height: 60,
+    };
+    oversized.panes[0].rect = full;
+    oversized.panes[0].inner_rect = full;
+    oversized.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics::new(
+        0,
+        50,
+        60,
+        shepr_term::AbsRow(0),
+    ));
+    let generation = state
+        .endpoints
+        .active
+        .generation()
+        .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST);
+    state.receive_pane_surface_from(oversized.clone(), generation);
+    state.compose(106, 30).expect("clipped frame");
+    let area = state.layout(106, 30).pane_surface;
+    assert!(
+        state.pane_hits()[0].inner_rect.width < 200
+            && state.pane_hits()[0].inner_rect.width <= area.width,
+        "the hit is clipped to the pane area"
+    );
+
+    let mut outcome = ClientShellInput::default();
+    assert!(state.enter_copy_mode(&mut outcome));
+    assert_eq!(
+        state.copy.as_ref().map(|copy_mode| copy_mode.geometry),
+        Some((200, 60)),
+        "copy mode works on the pane's rows, not on the rows the client area shows"
+    );
+
+    // The next surface refreshes the session from the wire pane; the copy cursor must stay
+    // coherent with the clipped hit rather than read as a resize.
+    state.receive_pane_surface_from(oversized, generation);
+    state.compose(106, 30).expect("clipped frame");
+    let hit = state.pane_hits()[0].clone();
+    assert_eq!(
+        state.copy.as_ref().map(|copy_mode| copy_mode.geometry),
+        Some((200, 60))
+    );
+    assert!(crate::shell::view::resolve::client_copy_surface_coherent(
+        state.copy.as_ref(),
+        &hit
+    ));
+}
+
+#[test]
 fn client_selection_uses_host_background_and_repaints_when_it_changes() {
     use ratatui::style::Color;
     use shepr_term::host::RgbColor;
@@ -1400,7 +1465,7 @@ fn copy_mode_survives_mouse_motion_and_parks_across_focus_changes() {
             .mouse_selection
             .selection
             .as_ref()
-            .is_some_and(|selection| selection.pane_id == crate::tests::test_pane_id("w1:p2"))
+            .is_some_and(|selection| selection.belongs_to(&crate::tests::test_pane_id("w1:p2")))
     );
 
     let mut other_surface = surface();
@@ -1445,7 +1510,7 @@ fn copy_mode_survives_mouse_motion_and_parks_across_focus_changes() {
             .mouse_selection
             .selection
             .as_ref()
-            .is_some_and(|selection| selection.pane_id == crate::tests::test_pane_id("w1:p1"))
+            .is_some_and(|selection| selection.belongs_to(&crate::tests::test_pane_id("w1:p1")))
     );
     state.handle_raw_events(vec![RawInputEvent::Paste("ignored".into())]);
     assert!(
@@ -1453,7 +1518,7 @@ fn copy_mode_survives_mouse_motion_and_parks_across_focus_changes() {
             .mouse_selection
             .selection
             .as_ref()
-            .is_some_and(|selection| selection.pane_id == crate::tests::test_pane_id("w1:p1"))
+            .is_some_and(|selection| selection.belongs_to(&crate::tests::test_pane_id("w1:p1")))
     );
 
     state.mode.enter_navigate(None);
@@ -1467,7 +1532,7 @@ fn copy_mode_survives_mouse_motion_and_parks_across_focus_changes() {
             .mouse_selection
             .selection
             .as_ref()
-            .is_some_and(|selection| selection.pane_id == crate::tests::test_pane_id("w1:p1"))
+            .is_some_and(|selection| selection.belongs_to(&crate::tests::test_pane_id("w1:p1")))
     );
     state.mode.set(ClientShellMode::Resize);
     state.handle_raw_events(vec![RawInputEvent::Key(shepr_term::key::TerminalKey::new(
@@ -1480,7 +1545,7 @@ fn copy_mode_survives_mouse_motion_and_parks_across_focus_changes() {
             .mouse_selection
             .selection
             .as_ref()
-            .is_some_and(|selection| selection.pane_id == crate::tests::test_pane_id("w1:p1"))
+            .is_some_and(|selection| selection.belongs_to(&crate::tests::test_pane_id("w1:p1")))
     );
 }
 

@@ -50,7 +50,7 @@ pub struct SpawnedPty {
     pub child: PaneChild,
     /// The directories the child tries, in order; its chdir status record names
     /// a candidate by index.
-    pub cwd_candidates: Vec<std::path::PathBuf>,
+    pub cwd_candidates: Vec<shepr_core::absolute_path::AbsolutePath>,
     /// The launch's claim on the child's status channel.
     pub status: Registration,
 }
@@ -277,7 +277,7 @@ pub fn spawn_pty(
         cwd_candidates: spec
             .candidates
             .iter()
-            .map(|candidate| std::path::PathBuf::from(&candidate.path))
+            .map(|candidate| candidate.path.clone())
             .collect(),
         status,
     })

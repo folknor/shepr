@@ -199,7 +199,7 @@ impl Fixture {
             EventQueue { tx, rx },
             HostCellReport {
                 size: Arc::new(AtomicCellSize::new()),
-                queried: false,
+                queried: crate::input::ProbeAvailability::NotArmed,
             },
         );
         Self {

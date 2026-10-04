@@ -341,25 +341,40 @@ pub(in crate::shell) struct PaneHit {
     pub(in crate::shell) pane_id: shepr_protocol::PublicPaneId,
     pub(in crate::shell) mouse_reporting: bool,
     pub(in crate::shell) pixel_mouse: shepr_term::mouse::PanePixelMouse,
+    /// The pane's content size in cells as the server laid it out, width then
+    /// height, whether or not the clip cut it. `inner_rect` is only the visible part.
+    pub(in crate::shell) pane_size: (u16, u16),
     /// The pane's full content grid when it is shown unclipped, `None` when
     /// the clip cut it (pixels cannot be mapped then).
     pub(in crate::shell) presented: Option<shepr_core::geometry::GridSize>,
 }
 
+/// A surface-local wire rect placed on screen with the pane surface's top-left
+/// cell at `origin`. Every hit rect (panes and splits) is translated here.
+/// Surface-local rects stay the protocol's `SurfaceRect` and screen rects are
+/// ratatui `Rect`s, so the two cannot be mixed up without a conversion; a
+/// separate screen rect type would add churn without closing a gap.
+pub(in crate::shell) fn surface_rect_on_screen(
+    origin: (u16, u16),
+    rect: shepr_protocol::SurfaceRect,
+) -> Rect {
+    Rect::new(
+        origin.0.saturating_add(rect.x),
+        origin.1.saturating_add(rect.y),
+        rect.width,
+        rect.height,
+    )
+}
+
 impl PaneHit {
+    /// Builds a hit from a wire pane, whose rects are surface-local, by
+    /// translating them to screen cells and clipping them to `clip`.
     pub(in crate::shell) fn from_wire(
         pane: &shepr_protocol::PaneSurfacePane,
         origin: (u16, u16),
         clip: Rect,
     ) -> Option<Self> {
-        let offset = |rect: shepr_protocol::SurfaceRect| {
-            Rect::new(
-                origin.0.saturating_add(rect.x),
-                origin.1.saturating_add(rect.y),
-                rect.width,
-                rect.height,
-            )
-        };
+        let offset = |rect| surface_rect_on_screen(origin, rect);
         let inner_rect = offset(pane.inner_rect);
         let visible_inner = inner_rect.intersection(clip);
         if visible_inner.is_empty() {
@@ -378,6 +393,7 @@ impl PaneHit {
             pane_id: pane.pane_id,
             mouse_reporting: pane.mouse_reporting,
             pixel_mouse: pane.pixel_mouse,
+            pane_size: (pane.inner_rect.width, pane.inner_rect.height),
             presented: shepr_core::geometry::GridSize::new(
                 pane.inner_rect.width,
                 pane.inner_rect.height,

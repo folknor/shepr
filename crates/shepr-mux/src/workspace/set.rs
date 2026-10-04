@@ -2,11 +2,11 @@
 //! the bookmark.
 
 use std::collections::HashSet;
-use std::path::Path;
 
 use super::pane_tree::{PaneRecord, PaneTree};
 use super::{SpawnGeometry, Workspace};
 use crate::terminal::TerminalState;
+use shepr_core::absolute_path::AbsolutePath;
 use shepr_core::layout::PaneId;
 use shepr_protocol::{PanePublicNumber, PublicPaneId, WorkspaceId};
 
@@ -159,12 +159,12 @@ impl WorkspaceSet {
     /// this set's allocator, its pane and terminal state, and its public ID.
     /// Nothing joins the set until `commit_workspace`, so a launch that fails
     /// leaves the set as it was (the ID is simply not used).
-    pub fn prepare_workspace(&mut self, cwd: &Path) -> PreparedWorkspace {
+    pub fn prepare_workspace(&mut self, cwd: &AbsolutePath) -> PreparedWorkspace {
         let id = self.ids.allocate();
-        let terminal = TerminalState::new(cwd.to_path_buf());
+        let terminal = TerminalState::new(cwd.clone());
         let tree = PaneTree::single(PaneId::alloc(), terminal);
         PreparedWorkspace {
-            workspace: Workspace::from_tree(id, None, cwd.to_path_buf(), tree),
+            workspace: Workspace::from_tree(id, None, cwd.clone(), tree),
         }
     }
 
@@ -408,7 +408,7 @@ impl PreparedWorkspace {
     }
 
     /// Where the root pane's child starts.
-    pub fn cwd(&self) -> &Path {
+    pub fn cwd(&self) -> &AbsolutePath {
         self.workspace.identity_cwd()
     }
 }
@@ -486,7 +486,7 @@ mod tests {
     }
 
     fn test_terminal() -> TerminalState {
-        TerminalState::new(Path::new("/shepr-set-test").to_path_buf())
+        TerminalState::new(AbsolutePath::new("/shepr-set-test").expect("absolute"))
     }
 
     #[test]
@@ -575,7 +575,7 @@ mod tests {
         let sharing = Workspace::test_from_pane(
             super::super::test_workspace_id(),
             Some("sharing".into()),
-            Path::new("/shepr-set-test"),
+            &AbsolutePath::new("/shepr-set-test").expect("absolute"),
             shared,
             test_terminal(),
         );
@@ -595,7 +595,7 @@ mod tests {
             .unwrap_or_else(|_| panic!("a fresh id and panes"));
         assert_eq!(inserted.number(), 40);
 
-        let next = set.prepare_workspace(Path::new("/shepr-set-test"));
+        let next = set.prepare_workspace(&AbsolutePath::new("/shepr-set-test").expect("absolute"));
         assert_eq!(next.id().number(), 41);
     }
 
@@ -822,15 +822,15 @@ mod tests {
     #[test]
     fn a_prepared_workspace_commits_with_its_geometry() {
         let mut set = WorkspaceSet::new();
-        let cwd = Path::new("/shepr-set-test");
-        let prepared = set.prepare_workspace(cwd);
+        let cwd = AbsolutePath::new("/shepr-set-test").expect("absolute");
+        let prepared = set.prepare_workspace(&cwd);
         let id = prepared.id();
         let root = prepared.root_pane();
         assert_eq!(
             prepared.root_public_id(),
             PublicPaneId::new(&id, PanePublicNumber::FIRST)
         );
-        assert_eq!(prepared.cwd(), cwd);
+        assert_eq!(prepared.cwd(), &cwd);
         assert!(set.is_empty(), "nothing joins before the commit");
         let geometry = SpawnGeometry {
             area: shepr_core::geometry::Rect::new(0, 0, 61, 17),
@@ -843,7 +843,7 @@ mod tests {
         assert_eq!(workspace.spawn_geometry(), Some(geometry));
         assert_eq!(workspace.tree().root(), root);
         assert_eq!(workspace.tree().len(), 1);
-        assert_eq!(workspace.identity_cwd(), cwd);
+        assert_eq!(workspace.identity_cwd(), &cwd);
         assert_eq!(
             workspace.tree().pane(root).map(PaneRecord::number),
             Some(PanePublicNumber::FIRST)

@@ -1,11 +1,12 @@
 use super::*;
+use shepr_core::absolute_path::AbsolutePath;
 
 impl TerminalState {
     /// `cwd` is the directory the pane was launched in, or a restored pane's
-    /// saved absolute path. It is recorded as given: a saved directory that has
+    /// saved path. Absolute is all it promises: a saved directory that has
     /// disappeared is kept so a later restore can retry it, and the live cwd
     /// reported by the pane supersedes it through `set_cwd`.
-    pub fn new(cwd: PathBuf) -> Self {
+    pub fn new(cwd: AbsolutePath) -> Self {
         Self {
             cwd,
             terminal_title: None,
@@ -16,13 +17,13 @@ impl TerminalState {
         }
     }
 
-    pub fn cwd(&self) -> &std::path::Path {
+    pub fn cwd(&self) -> &AbsolutePath {
         &self.cwd
     }
 
-    /// Every later write goes through `UsableCwd`, so an unchecked path cannot
-    /// replace the launch cwd.
+    /// A reported cwd arrives as a `UsableCwd`, an observed existing
+    /// directory, and is kept as the absolute path it wraps.
     pub fn set_cwd(&mut self, cwd: crate::UsableCwd) {
-        self.cwd = cwd.into_path_buf();
+        self.cwd = cwd.into_absolute();
     }
 }

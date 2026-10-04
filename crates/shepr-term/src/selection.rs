@@ -29,8 +29,8 @@ enum Phase {
 /// A text selection within a terminal pane.
 #[derive(Debug, Clone)]
 pub struct Selection<P> {
-    /// Which pane the selection belongs to.
-    pub pane_id: P,
+    /// Which pane the selection belongs to; fixed for the selection's life.
+    pane_id: P,
     anchor: Point<AbsRow>,
     cursor: Point<AbsRow>,
     shape: SelectionShape,
@@ -69,6 +69,19 @@ impl<P> Selection<P> {
             shape: SelectionShape::Lines,
             phase: Phase::Dragging,
         }
+    }
+
+    /// The pane this selection belongs to.
+    pub fn pane_id(&self) -> &P {
+        &self.pane_id
+    }
+
+    /// Whether this selection belongs to `pane_id`.
+    pub fn belongs_to(&self, pane_id: &P) -> bool
+    where
+        P: PartialEq,
+    {
+        self.pane_id == *pane_id
     }
 
     /// The extent represented by this selection.

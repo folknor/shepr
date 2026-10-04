@@ -1,5 +1,4 @@
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
 
 use tracing::{error, warn};
 
@@ -117,7 +116,7 @@ impl SessionRestorePlan {
                     // pane has no launch here, so the resumed-session set
                     // needs no rollback.
                     let terminal = restored_terminal(
-                        launch.saved_cwd.as_path(),
+                        &launch.saved_cwd,
                         launch.saved_label.as_ref(),
                         launch.saved_agent_session.as_ref(),
                         RestoredPaneStart::Unavailable(PaneStartFailure::shell_start_failed(&err)),
@@ -224,7 +223,8 @@ impl RestoreLoss {
 enum RestoredPaneStart {
     /// A fresh shell is running for the pane. `duplicate_agent_session`: the
     /// pane's saved agent session is resumed by an earlier pane of this
-    /// restore, which owns it now.
+    /// restore, which owns it now. A named bool: the variant has no other
+    /// field to swap it with, and its consumers read it by name.
     Running { duplicate_agent_session: bool },
     /// The pane waits for the event loop to type its agent's resume command
     /// into a fresh shell.
@@ -362,13 +362,13 @@ fn restored_workspace_id(
 /// - agent session: always kept, except by a running duplicate whose session
 ///   an earlier pane of this restore resumes.
 fn restored_terminal(
-    cwd: &Path,
+    cwd: &AbsolutePath,
     label: Option<&Label>,
     agent_session: Option<&PaneAgentSessionSnapshot>,
     start: RestoredPaneStart,
     now: std::time::Instant,
 ) -> TerminalState {
-    let mut terminal = TerminalState::new(cwd.to_path_buf());
+    let mut terminal = TerminalState::new(cwd.clone());
     if let Some(label) = label {
         terminal.set_manual_label(label.as_str().to_owned());
     }
@@ -611,7 +611,7 @@ fn restore_workspace(
     let workspace = Workspace::from_tree(
         workspace_id,
         snapshot.custom_name.clone(),
-        identity_cwd.into_path_buf(),
+        identity_cwd,
         tree,
     );
     Some((workspace, launches))
@@ -1824,7 +1824,7 @@ mod tests {
         let terminal = record.terminal();
         assert!(terminal.restore_error().is_some());
         assert_eq!(terminal.manual_label(), Some("keep me"));
-        assert_eq!(terminal.cwd(), saved_cwd);
+        assert_eq!(terminal.cwd(), &saved_cwd);
         assert_eq!(
             terminal
                 .ownership()

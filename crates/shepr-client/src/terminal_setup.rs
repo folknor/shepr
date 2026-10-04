@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Instant;
 
 use crate::deadline::Deadline;
-use crate::input::HOST_INPUT_READ_CHUNK_BYTES;
+use crate::input::{EscapeDisambiguation, HOST_INPUT_READ_CHUNK_BYTES};
 use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
 use crossterm::execute;
 use shepr_core::geometry::HostCell;
@@ -39,7 +39,7 @@ pub(super) fn setup_terminal(
     // goes through crossterm; screen and mode writes use this writer directly rather than
     // `ratatui::init`, whose own panic hook would restore through `io::stdout()`.
     let mut terminal_guard = TerminalGuard {
-        host_escape_disambiguation_active: false,
+        escape_disambiguation: EscapeDisambiguation::Inactive,
         buffered_host_input: Vec::new(),
         host_modes: host_modes.clone(),
         output_writer: output_writer.clone(),
@@ -59,7 +59,7 @@ pub(super) fn setup_terminal(
         &mut output,
         shepr_termio::host_term::modes::ime_compatible_keyboard_enhancement_flags(),
     )?;
-    let (host_escape_disambiguation_active, buffered_host_input) =
+    let (escape_disambiguation, buffered_host_input) =
         query_host_escape_disambiguation(&mut output);
     host_modes.reassert_mouse(&mut output, HostCell::Unknown)?;
     host_modes.enable_bracketed_paste(&mut output)?;
@@ -72,7 +72,7 @@ pub(super) fn setup_terminal(
 
     host_modes.disable_line_wrap(&mut output)?;
 
-    terminal_guard.host_escape_disambiguation_active = host_escape_disambiguation_active;
+    terminal_guard.escape_disambiguation = escape_disambiguation;
     terminal_guard.buffered_host_input = buffered_host_input;
     Ok((terminal_guard, output_writer))
 }
@@ -106,7 +106,7 @@ impl io::Write for HostTerminalWriter {
 
 /// Guard that restores the terminal when dropped.
 pub(super) struct TerminalGuard {
-    host_escape_disambiguation_active: bool,
+    escape_disambiguation: EscapeDisambiguation,
     buffered_host_input: Vec<u8>,
     host_modes: HostModes,
     output_writer: HostTerminalWriter,
@@ -115,14 +115,16 @@ pub(super) struct TerminalGuard {
     restore_state: fn(&HostModes, &mut HostTerminalWriter) -> io::Result<()>,
 }
 
-fn query_host_escape_disambiguation(writer: &mut impl io::Write) -> (bool, Vec<u8>) {
+fn query_host_escape_disambiguation(
+    writer: &mut impl io::Write,
+) -> (EscapeDisambiguation, Vec<u8>) {
     let mut buffered_input = Vec::new();
     if let Err(err) = writer
         .write_all(shepr_termio::host_term::modes::HOST_KEYBOARD_QUERY_SEQUENCE)
         .and_then(|()| writer.flush())
     {
         tracing::debug!(error = %err, "host keyboard enhancement query unavailable");
-        return (false, buffered_input);
+        return (EscapeDisambiguation::Inactive, buffered_input);
     }
 
     // Bypass StdinLock's shared buffer so poll and read observe the same bytes.
@@ -166,10 +168,12 @@ fn query_host_escape_disambiguation(writer: &mut impl io::Write) -> (bool, Vec<u
         }
     }
 
-    (
-        host_escape_disambiguation_confirmed(&responses),
-        buffered_input,
-    )
+    let escape_disambiguation = if host_escape_disambiguation_confirmed(&responses) {
+        EscapeDisambiguation::Active
+    } else {
+        EscapeDisambiguation::Inactive
+    };
+    (escape_disambiguation, buffered_input)
 }
 
 fn host_escape_disambiguation_confirmed(
@@ -859,8 +863,8 @@ fn restore_terminal_state(
 }
 
 impl TerminalGuard {
-    pub(super) fn host_escape_disambiguation_active(&self) -> bool {
-        self.host_escape_disambiguation_active
+    pub(super) fn escape_disambiguation(&self) -> EscapeDisambiguation {
+        self.escape_disambiguation
     }
 
     pub(super) fn take_buffered_host_input(&mut self) -> Vec<u8> {
@@ -1048,7 +1052,7 @@ mod tests {
             .open("/dev/null")
             .expect("open /dev/null");
         TerminalGuard {
-            host_escape_disambiguation_active: false,
+            escape_disambiguation: EscapeDisambiguation::Inactive,
             buffered_host_input: Vec::new(),
             host_modes: HostModes::new(false),
             output_writer: HostTerminalWriter(Arc::new(sink)),

@@ -121,7 +121,8 @@ pub enum NewTerminalCwd {
     Follow,
     Home,
     Current,
-    Path(std::path::PathBuf),
+    /// Absolute and an existing directory when the config was validated.
+    Path(shepr_core::absolute_path::AbsolutePath),
 }
 
 #[derive(Debug, Clone)]
@@ -327,10 +328,12 @@ fn check_shell_whitespace(value: &OsStr, source: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn checked_new_cwd_directory(path: &Path) -> Result<PathBuf, String> {
-    if !path.is_absolute() {
+fn checked_new_cwd_directory(
+    path: &Path,
+) -> Result<shepr_core::absolute_path::AbsolutePath, String> {
+    let Ok(absolute) = shepr_core::absolute_path::AbsolutePath::new(path) else {
         return Err("must resolve to an absolute path".to_owned());
-    }
+    };
     let metadata = std::fs::metadata(path)
         .map_err(|error| format!("directory {} is unavailable: {error}", path.display()))?;
     if !metadata.is_dir() {
@@ -339,7 +342,7 @@ fn checked_new_cwd_directory(path: &Path) -> Result<PathBuf, String> {
             path.display()
         ));
     }
-    Ok(path.to_path_buf())
+    Ok(absolute)
 }
 
 impl ValidatedClientUiConfig {
@@ -844,7 +847,9 @@ mod tests {
         assert!(validated.ui().window_title.is_some());
         assert_eq!(
             validated.terminal().new_cwd,
-            NewTerminalCwd::Path(configured_cwd)
+            NewTerminalCwd::Path(
+                shepr_core::absolute_path::AbsolutePath::new(configured_cwd).expect("absolute")
+            )
         );
     }
 
@@ -887,7 +892,9 @@ mod tests {
 
         assert_eq!(
             validated.terminal().new_cwd,
-            NewTerminalCwd::Path(configured_cwd)
+            NewTerminalCwd::Path(
+                shepr_core::absolute_path::AbsolutePath::new(configured_cwd).expect("absolute")
+            )
         );
     }
 

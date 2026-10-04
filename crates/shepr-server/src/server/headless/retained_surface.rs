@@ -415,6 +415,10 @@ impl HeadlessServer {
                 boot_id: self.client_shell_boot_id.clone(),
                 projection_revision,
                 base_surface_revision,
+                // Placeholder: `prepare_pane_surface_patch` assigns the real
+                // revision before admitting the patch, and a patch it rejects
+                // is dropped unsent. The client would also refuse any revision
+                // that is not its baseline's exact successor.
                 surface_revision: shepr_protocol::SurfaceRevision::ZERO,
                 rows: patch_rows,
                 panes: changed_panes,

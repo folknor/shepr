@@ -102,7 +102,7 @@ impl LaunchWatch {
 pub(super) struct LaunchStatus {
     pub(super) channel: oneshot::Receiver<OwnedFd>,
     pub(super) registration: Registration,
-    pub(super) cwd_candidates: Vec<PathBuf>,
+    pub(super) cwd_candidates: Vec<shepr_core::absolute_path::AbsolutePath>,
     pub(super) program: PathBuf,
 }
 
@@ -235,7 +235,7 @@ async fn coordinate<Claim>(
 
 async fn settle(
     mut channel: oneshot::Receiver<OwnedFd>,
-    cwd_candidates: Vec<PathBuf>,
+    cwd_candidates: Vec<shepr_core::absolute_path::AbsolutePath>,
     program: &Path,
     child_liveness: &ChildLiveness,
 ) -> LaunchOutcome {
@@ -295,7 +295,7 @@ async fn settle(
             Ok(LaunchStatusEvent::WouldBlock) => ready.clear_ready(),
             Ok(LaunchStatusEvent::Entered(_)) => {}
             Ok(LaunchStatusEvent::DirectoryFailed { path, error }) => {
-                return LaunchOutcome::Failed(directory_failure(path, error));
+                return LaunchOutcome::Failed(directory_failure(path.into_path_buf(), error));
             }
             Ok(LaunchStatusEvent::ExecFailed(error)) => {
                 return LaunchOutcome::Failed(PaneStartFailure::ShellStartFailed {

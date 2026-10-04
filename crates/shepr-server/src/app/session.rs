@@ -75,7 +75,9 @@ enum SaveKind {
 /// request voids only the host half.
 struct CheckpointTicket {
     exit: Option<ExitTicket>,
-    /// Whether this save answers the host-shutdown request.
+    /// Whether this save answers the host-shutdown request. A bool, not an
+    /// enum: it is the only bool in this private type, so a call site cannot
+    /// swap it with another.
     host: bool,
 }
 
@@ -94,6 +96,7 @@ enum NextSave {
     Autosave,
     Checkpoint {
         exit_generation: Option<CheckpointGeneration>,
+        /// As `CheckpointTicket::host`.
         host: bool,
     },
 }

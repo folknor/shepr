@@ -1,5 +1,4 @@
-use std::path::PathBuf;
-
+use shepr_core::absolute_path::AbsolutePath;
 use shepr_protocol::command::EndpointError;
 
 use super::endpoint::invalid_argument;
@@ -14,15 +13,14 @@ use super::endpoint::invalid_argument;
 /// This is lexical launch input, not a UsableCwd observation: filesystem
 /// admission belongs to the child or worker, so a hung mount cannot stall
 /// this event-loop boundary.
-pub(super) fn launch_cwd(raw: &shepr_protocol::RemotePath) -> Result<PathBuf, EndpointError> {
-    let path = raw.as_path().to_path_buf();
-    if !path.is_absolute() {
-        return invalid_argument(format!(
+pub(super) fn launch_cwd(raw: &shepr_protocol::RemotePath) -> Result<AbsolutePath, EndpointError> {
+    match AbsolutePath::new(raw.as_path()) {
+        Ok(path) => Ok(path),
+        Err(_) => invalid_argument(format!(
             "cwd {:?} must be an absolute path",
             raw.display_text()
-        ));
+        )),
     }
-    Ok(path)
 }
 
 #[cfg(test)]
@@ -32,11 +30,14 @@ mod tests {
     use crate::test_support::*;
     use shepr_mux::workspace::Workspace;
     use shepr_protocol::command::{WorkspaceCreateParams, WorkspaceCreateSource};
+    use std::path::PathBuf;
 
     #[test]
     fn launch_cwd_accepts_absolute_and_names_a_refused_relative_path() {
         assert_eq!(
-            launch_cwd(&"/srv/project".into()).expect("absolute cwd"),
+            launch_cwd(&"/srv/project".into())
+                .expect("absolute cwd")
+                .into_path_buf(),
             PathBuf::from("/srv/project")
         );
         for raw in ["relative/dir", ".", ""] {

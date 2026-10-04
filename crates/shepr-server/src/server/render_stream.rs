@@ -77,6 +77,12 @@ pub(crate) enum PreparedSurface {
 /// Per-client render baseline: the last surface sent with its pane identities,
 /// and its revision. The delta planner skips unchanged surfaces after its cell
 /// comparison pass.
+///
+/// The baseline, `recompute_pending` and `debt` are not independent: a refusal
+/// sets a recompute without dropping the baseline, a repaint drops the baseline
+/// and the debt but not a pending recompute, and `surface_debt` and
+/// `takes_patches` read all three together. Merging them into one state would
+/// change which render each combination gets.
 pub(crate) struct ClientRenderState {
     committed: Option<Box<CommittedBaseline>>,
     surface_revision: SurfaceRevision,
@@ -328,6 +334,10 @@ pub(super) fn apply_pane_surface_patch(
 pub(crate) enum PreparedRender {
     Semantic {
         message: ServerMessage,
+        /// `None` exactly when `message` is the full `PaneSurface`, which then
+        /// is the baseline; `prepare_surface` is the only constructor, and
+        /// `commit_sent_frame` recovers the surface from the message. A compact
+        /// message needs its own complete grid, hence `Some`.
         committed_surface: Option<Box<PaneSurfaceFrame>>,
         /// The identities of the surface's panes, committed beside it.
         identities: Vec<ClientPaneIdentity>,

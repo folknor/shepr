@@ -21,7 +21,7 @@ mod tests {
 
     #[test]
     fn border_label_prefers_manual_label_over_agent_label() {
-        let mut terminal = TerminalState::new("/".into());
+        let mut terminal = TerminalState::new(shepr_core::absolute_path::AbsolutePath::root());
         terminal
             .ownership_mut()
             .set_detected_state_with_screen_signals_at(

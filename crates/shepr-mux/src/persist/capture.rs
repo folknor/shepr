@@ -185,7 +185,6 @@ fn capture_workspace(
             Some(terminal),
             crate::workspace::CwdPurpose::Save,
         )
-        .and_then(|cwd| AbsolutePath::new(cwd).ok())
         .unwrap_or_else(|| fallback_cwd.clone());
         if let Some(runtime) = runtime {
             cwds.probes.push((pane_ref, runtime.cwd_probe()));
@@ -354,7 +353,7 @@ mod tests {
         ] {
             let saved_ref = shepr_agent::resume::AgentSessionRef::id("saved-session")
                 .expect("test session ref");
-            let mut terminal = TerminalState::new(PathBuf::from("/"));
+            let mut terminal = TerminalState::new(AbsolutePath::root());
             terminal.seed_hook_authority_for_test(Some(crate::terminal::state::HookAuthority {
                 origin: shepr_agent::ReportOrigin::parse(source, label).expect("test origin"),
                 state: shepr_agent::AgentState::Working,
@@ -373,7 +372,7 @@ mod tests {
             let workspace = Workspace::test_from_pane(
                 crate::workspace::test_workspace_id(),
                 Some("snapshot-session-fallback".into()),
-                std::path::Path::new("/"),
+                &AbsolutePath::root(),
                 shepr_core::layout::PaneId::alloc(),
                 terminal,
             );

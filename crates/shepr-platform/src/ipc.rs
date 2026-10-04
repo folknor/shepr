@@ -11,6 +11,11 @@ use std::time::{Duration, Instant};
 use sha2::{Digest as _, Sha256};
 pub use shepr_core::socket_path::SocketPath;
 
+/// A plain alias on purpose. Trust is enforced where a connection is made
+/// (`TrustedServerStream`, a peer-uid check before any protocol write) and where
+/// one is accepted (the accept-side uid admission), not by this name. Accepted
+/// and test streams are legitimately plain `UnixStream`s, so a newtype here
+/// would only add wrappers across every transport.
 pub type LocalStream = std::os::unix::net::UnixStream;
 
 /// A connected server whose peer uid was checked before any protocol write.
@@ -19,6 +24,11 @@ pub struct TrustedServerStream(LocalStream);
 
 impl TrustedServerStream {
     /// Transfer the admitted connection into an existing stream transport.
+    ///
+    /// Trust is established once, at connect, by the peer-uid check, and the
+    /// wrapper deliberately ends here: the returned stream is the same checked
+    /// socket. Carrying the wrapper through the transport types would only
+    /// guard against a hypothetical future connect that skips the check.
     pub fn into_local_stream(self) -> LocalStream {
         self.0
     }

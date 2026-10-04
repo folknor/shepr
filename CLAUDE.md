@@ -7,6 +7,11 @@ freely, and do not hold back a change to keep upstream fixes portable. Now and
 then we run `scripts/upstream_watch.py` just to see what upstream changed, in
 case one of those fixes is worth taking; its docstring has the flags.
 
+## Notes
+
+Drop resolved findings from a notes document with `scripts/notes_drop.py <file> <ID>...`
+(or `--bullet <prefix>...` for single top-level bullets) instead of hand-editing it.
+
 ## More rules
 
 ### Memory rules

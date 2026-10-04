@@ -72,8 +72,7 @@ impl ScrollMetrics {
     }
 
     pub fn viewport_top_row(self) -> AbsRow {
-        self.history_origin
-            .saturating_add(u64::try_from(self.viewport_start().0).unwrap_or(u64::MAX))
+        self.history_origin.saturating_add(self.viewport_start().0)
     }
 
     pub fn absolute_row_at_viewport(self, row: ViewportRow) -> AbsRow {

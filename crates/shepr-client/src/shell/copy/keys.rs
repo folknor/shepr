@@ -233,20 +233,20 @@ impl ClientShellState {
                 let pane = surface.panes.iter().find(|pane| pane.pane_id == pane_id)?;
                 let cursor = surface.frame.cursor().filter(|cursor| cursor.visible)?;
                 let inner = pane.inner_rect;
-                (cursor.x >= inner.x
-                    && cursor.x < inner.x.saturating_add(inner.width)
-                    && cursor.y >= inner.y
-                    && cursor.y < inner.y.saturating_add(inner.height))
-                // Lazily: outside the pane the subtractions would underflow.
-                .then(|| shepr_protocol::command::PaneTextPoint {
-                    row: metrics
-                        .absolute_row_at_viewport(shepr_term::ViewportRow(cursor.y - inner.y)),
-                    col: cursor.x - inner.x,
+                let row = shepr_term::ViewportRow::on_screen(cursor.y, inner.y)
+                    .filter(|row| row.0 < inner.height)?;
+                let col = cursor
+                    .x
+                    .checked_sub(inner.x)
+                    .filter(|col| *col < inner.width)?;
+                Some(shepr_protocol::command::PaneTextPoint {
+                    row: metrics.absolute_row_at_viewport(row),
+                    col,
                 })
             })
             .unwrap_or(shepr_protocol::command::PaneTextPoint {
                 row: metrics.absolute_row_at_viewport(shepr_term::ViewportRow(
-                    hit.inner_rect.height.saturating_sub(1),
+                    hit.pane_size.1.saturating_sub(1),
                 )),
                 col: 0,
             });
@@ -258,7 +258,8 @@ impl ClientShellState {
         self.copy = Some(CopySession::start(CopyEntry {
             pane_id,
             scroll: metrics,
-            geometry: (hit.inner_rect.width, hit.inner_rect.height),
+            // The pane's own size, as `surface_presented` keeps it, not the visible part.
+            geometry: hit.pane_size,
             alternate_screen_active,
             cursor,
             rows: self.ledger.ticket(),
@@ -755,7 +756,7 @@ impl ClientShellState {
                 .saturating_add(col_delta.unsigned_abs())
                 .min(width.saturating_sub(1));
         }
-        let rows = u64::from(row_delta.unsigned_abs());
+        let rows = usize::from(row_delta.unsigned_abs());
         if row_delta < 0 {
             copy_mode.cursor.row =
                 copy_mode.retained_row(copy_mode.cursor.row.saturating_sub(rows));
@@ -777,18 +778,17 @@ impl ClientShellState {
         let Some(hit) = self.copy_hit() else {
             return;
         };
-        let lines = shepr_termio::copy_mode::copy_mode_page_lines(hit.inner_rect.height, page);
+        let lines = shepr_termio::copy_mode::copy_mode_page_lines(hit.pane_size.1, page);
         let Some((pane_id, next_offset)) = self.copy.as_mut().map(|copy_mode| {
-            let rows = u64::try_from(lines).unwrap_or(u64::MAX);
             if direction < 0 {
                 copy_mode.cursor.row =
-                    copy_mode.retained_row(copy_mode.cursor.row.saturating_sub(rows));
+                    copy_mode.retained_row(copy_mode.cursor.row.saturating_sub(lines));
                 copy_mode.scroll = copy_mode
                     .scroll
                     .with_offset(copy_mode.scroll.offset_from_bottom.saturating_add(lines));
             } else {
                 copy_mode.cursor.row =
-                    copy_mode.retained_row(copy_mode.cursor.row.saturating_add(rows));
+                    copy_mode.retained_row(copy_mode.cursor.row.saturating_add(lines));
                 copy_mode.scroll = copy_mode
                     .scroll
                     .with_offset(copy_mode.scroll.offset_from_bottom.saturating_sub(lines));
@@ -848,7 +848,7 @@ impl ClientShellState {
         let reserve_mode_bar_row = self.mode_bar_covers_copy_pane();
         let request = self.copy.as_mut().and_then(|copy_mode| {
             let current_top = copy_mode.viewport_top();
-            let max_cursor_row = u64::from(
+            let max_cursor_row = usize::from(
                 copy_mode
                     .geometry
                     .1

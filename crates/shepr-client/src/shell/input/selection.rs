@@ -107,7 +107,11 @@ impl MouseSelection {
         self.word_gesture
             .as_ref()
             .map(|gesture| &gesture.pane_id)
-            .or_else(|| self.selection.as_ref().map(|selection| &selection.pane_id))
+            .or_else(|| {
+                self.selection
+                    .as_ref()
+                    .map(shepr_term::selection::Selection::pane_id)
+            })
     }
 
     /// The selected or word-gesture pane as `previous` showed it.
@@ -148,19 +152,22 @@ impl MouseSelection {
                     && focused_pane.is_some_and(|pane_id| pane_id != &gesture.pane_id))
         } else if let Some(selection) = self.selection.as_ref() {
             let focused_pane = snapshot.focused_pane_id.as_ref();
-            let focused_here = focused_pane == Some(&selection.pane_id);
+            let focused_here = focused_pane.is_some_and(|pane_id| selection.belongs_to(pane_id));
             // Like the word-gesture guard above: a selection started in an
             // unfocused pane survives snapshots that predate its focus
             // request, and only a focus change after that ends it.
-            let awaiting_focus =
-                !focused_here && self.focus_pending.as_ref() == Some(&selection.pane_id);
+            let awaiting_focus = !focused_here
+                && self
+                    .focus_pending
+                    .as_ref()
+                    .is_some_and(|pane_id| selection.belongs_to(pane_id));
             if focused_here {
                 self.focus_pending = None;
             }
             !snapshot
                 .panes
                 .iter()
-                .any(|pane| pane.pane_id == selection.pane_id)
+                .any(|pane| selection.belongs_to(&pane.pane_id))
                 || (!focused_here && !awaiting_focus)
         } else {
             false

@@ -27,8 +27,7 @@ Three standings:
 | `check_tree_debris.py` | gate | the `tree-debris` check: every `crates/*/` root holds only `Cargo.toml`, `README.md`, `build.rs`, `src`, `tests`, `benches` and `examples`; an untracked file inside a crate's sources carries an extension those sources already use; and every workspace-root entry is tracked or gitignored |
 | `check_workspace_dependencies.py` | gate | the `workspace-dependencies` check: every name the root `[workspace.dependencies]` pins is taken with `workspace = true` and no restated version or path, and an external dependency two members share is pinned there |
 | `check_seal_paths.py` | gate | the `seal-paths` check: every `clippy.toml` seal is a path with a reason, the root `clippy.toml` is the only one, and both `disallowed_*` lints are denied (clippy itself refuses a path that no longer resolves) |
-| `notes_drop.py` | tool | removes whole findings entries by ID from a notes document |
-| `notes_drop_bullet.py` | tool | removes single top-level bullets from a notes document by the start of their first line; each prefix must match exactly one bullet |
+| `notes_drop.py` | tool | removes whole findings entries by ID from a notes document, or with `--bullet` single top-level bullets by the start of their first line (each prefix must match exactly one bullet) |
 | `upstream_watch.py` | tool | reports what upstream herdr changed in its watched paths since the recorded baseline, mapped to our files, to spot fixes worth taking; `--advance` moves the baseline, `--fork-point` checks it |
 | `upstream_baseline.txt` | tool | data for `upstream_watch.py`: the upstream herdr commit shepr has caught up to |
 | `fix_unwraps.py` | tool | one-off: replaced `.unwrap()` in test code for clippy's `unwrap_used` |

@@ -4,7 +4,7 @@
 //! The mux fixture traits stay here rather than moving there: mux
 //! dev-depends on `shepr-test-fixtures`, so that crate cannot depend on mux.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -187,12 +187,13 @@ impl WorkspaceFixture for Workspace {
     }
 
     fn test_at(label: Option<&str>, cwd: &Path) -> Self {
+        let cwd = shepr_core::absolute_path::AbsolutePath::new(cwd).expect("test cwd is absolute");
         Self::test_from_pane(
             next_fixture_workspace_id(),
             label.map(str::to_owned),
-            cwd,
+            &cwd,
             PaneId::alloc(),
-            TerminalState::new(cwd.to_path_buf()),
+            TerminalState::new(cwd.clone()),
         )
     }
 
@@ -210,7 +211,7 @@ impl WorkspaceFixture for Workspace {
                 direction,
                 &chrome,
                 None,
-                PathBuf::from("/"),
+                shepr_core::absolute_path::AbsolutePath::root(),
             )
             .expect("test split prepares");
         self.commit_split(prepared).expect("test split commits")

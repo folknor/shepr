@@ -2,11 +2,11 @@
 //! zoom and the public numbering, kept in agreement by construction.
 
 use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
 
 use super::shape::Shape;
 use super::{Workspace, WorkspaceChrome};
 use crate::terminal::TerminalState;
+use shepr_core::absolute_path::AbsolutePath;
 use shepr_core::layout::{
     Direction, InvalidSavedLayout, LayoutEpoch, NavDirection, Node, PaneId, RatioDelta, SplitPath,
     SplitRatio, TileLayout,
@@ -527,7 +527,7 @@ impl PreparedSplit {
     }
 
     /// Where the new pane's child starts.
-    pub fn cwd(&self) -> &Path {
+    pub fn cwd(&self) -> &AbsolutePath {
         self.terminal.cwd()
     }
 }
@@ -557,7 +557,7 @@ impl Workspace {
         direction: Direction,
         chrome: &WorkspaceChrome,
         cell: Option<shepr_core::geometry::CellPx>,
-        cwd: PathBuf,
+        cwd: AbsolutePath,
     ) -> Option<PreparedSplit> {
         let number = self.tree.next_number;
         let next_number = number.checked_next()?;
@@ -603,9 +603,14 @@ impl Workspace {
 mod tests {
     use super::*;
     use crate::workspace::test_workspace_id;
+    use std::path::{Path, PathBuf};
+
+    fn abs(path: impl Into<PathBuf>) -> AbsolutePath {
+        AbsolutePath::new(path).expect("test cwd is absolute")
+    }
 
     fn terminal() -> TerminalState {
-        TerminalState::new(PathBuf::from("/shepr-tree-test"))
+        TerminalState::new(abs("/shepr-tree-test"))
     }
 
     fn number(value: usize) -> PanePublicNumber {
@@ -626,9 +631,9 @@ mod tests {
         Workspace::test_from_pane(
             test_workspace_id(),
             None,
-            cwd,
+            &abs(cwd),
             PaneId::alloc(),
-            TerminalState::new(cwd.to_path_buf()),
+            TerminalState::new(abs(cwd)),
         )
     }
 
@@ -638,7 +643,7 @@ mod tests {
             Direction::Horizontal,
             &chrome(),
             None,
-            PathBuf::from("/shepr-tree-test"),
+            abs("/shepr-tree-test"),
         )
         .expect("split plan")
     }
@@ -668,7 +673,7 @@ mod tests {
     /// Terminals named by the leaf's number, so a built tree can be read
     /// back by number.
     fn built(plan: TreePlan<usize>) -> PaneTree {
-        plan.build(|_, leaf| TerminalState::new(PathBuf::from(format!("/shepr-tree-test/{leaf}"))))
+        plan.build(|_, leaf| TerminalState::new(abs(format!("/shepr-tree-test/{leaf}"))))
             .expect("a planned tree builds")
     }
 
@@ -777,13 +782,7 @@ mod tests {
         let id = ws.id();
 
         let prepared = ws
-            .prepare_split(
-                root,
-                Direction::Horizontal,
-                &chrome(),
-                None,
-                cwd.to_path_buf(),
-            )
+            .prepare_split(root, Direction::Horizontal, &chrome(), None, abs(cwd))
             .expect("split plan");
 
         assert_eq!(ws.tree().len(), 1);
@@ -800,7 +799,7 @@ mod tests {
                 Direction::Horizontal,
                 &chrome(),
                 None,
-                cwd.to_path_buf()
+                abs(cwd)
             )
             .is_none()
         );
@@ -829,7 +828,7 @@ mod tests {
                 Direction::Horizontal,
                 &chrome(),
                 None,
-                PathBuf::from("/shepr-tree-test")
+                abs("/shepr-tree-test")
             )
             .is_none()
         );

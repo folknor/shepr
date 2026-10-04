@@ -20,51 +20,30 @@ use crate::terminal_setup::HostMouseInputProbe;
 /// The chunk keeps blocking reads page-sized and bounds each temporary read buffer.
 pub(crate) const HOST_INPUT_READ_CHUNK_BYTES: usize = 4096;
 
+/// Whether a host query was written, so its reply is expected on stdin.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum ProbeAvailability {
+pub(crate) enum ProbeAvailability {
     NotArmed,
     Armed,
 }
 
+/// Whether the host confirmed it disambiguates Escape (sends the key as
+/// `CSI 27u`), so a stalled sequence prefix may still be waiting for its tail.
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum EscapeDisambiguation {
+pub(crate) enum EscapeDisambiguation {
     Inactive,
     Active,
 }
 
+/// What the stdin reader needs to know about the host terminal. Built with
+/// named fields: the two query flags have the same type. Each field comes from
+/// the producer that decided it (the query writers and the terminal guard),
+/// never from a bare bool.
 pub(crate) struct HostInputProbe {
-    color_scheme_query: ProbeAvailability,
-    cell_size_query: ProbeAvailability,
-    mouse: HostMouseInputProbe,
-    escape_disambiguation: EscapeDisambiguation,
-}
-
-impl HostInputProbe {
-    pub(crate) fn new(
-        color_scheme_query_sent: bool,
-        cell_size_query_sent: bool,
-        mouse: HostMouseInputProbe,
-        escape_disambiguation_active: bool,
-    ) -> Self {
-        Self {
-            color_scheme_query: if color_scheme_query_sent {
-                ProbeAvailability::Armed
-            } else {
-                ProbeAvailability::NotArmed
-            },
-            cell_size_query: if cell_size_query_sent {
-                ProbeAvailability::Armed
-            } else {
-                ProbeAvailability::NotArmed
-            },
-            mouse,
-            escape_disambiguation: if escape_disambiguation_active {
-                EscapeDisambiguation::Active
-            } else {
-                EscapeDisambiguation::Inactive
-            },
-        }
-    }
+    pub(crate) color_scheme_query: ProbeAvailability,
+    pub(crate) cell_size_query: ProbeAvailability,
+    pub(crate) mouse: HostMouseInputProbe,
+    pub(crate) escape_disambiguation: EscapeDisambiguation,
 }
 
 // ---------------------------------------------------------------------------
@@ -304,6 +283,13 @@ fn retain_geometry(
     observed.or(last)
 }
 
+/// Whether an SGR report is pixels or cells is known only from the host mouse
+/// mode last written; the byte stream has no marker for a switch. One report in
+/// flight across a mode change can therefore be misread. That is accepted: it
+/// is a single event, and a pixel report with no known extent is dropped. The
+/// framer parses every SGR report as zero-based cells, so a pixel report's
+/// one-based pixels arrive minus one and are restored here, beside the one
+/// place that knows the mode.
 fn classify_unix_input(
     input: shepr_termio::input::raw_input::FramedRawInputEvent,
     sgr_pixels: bool,

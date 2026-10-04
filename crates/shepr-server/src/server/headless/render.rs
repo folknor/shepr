@@ -705,6 +705,9 @@ impl HeadlessServer {
             shepr_protocol::PaneSurfaceFrame {
                 boot_id: self.client_shell_boot_id.clone(),
                 projection_revision: shell_projection_revision,
+                // Placeholder: `prepare_surface` assigns the real revision
+                // before any plan or message is built, and a surface it does
+                // not accept is dropped unsent.
                 surface_revision: shepr_protocol::SurfaceRevision::ZERO,
                 frame,
                 panes,
@@ -824,7 +827,9 @@ impl HeadlessServer {
                 let workspace_id = &workspace.workspace_id;
                 let state = app.state().workspace(workspace_id);
                 let new_workspace_cwd = state.map(|_| {
-                    shepr_protocol::RemotePath::from(app.resolved_new_workspace_cwd(workspace_id))
+                    shepr_protocol::RemotePath::from(
+                        app.resolved_new_workspace_cwd(workspace_id).into_path_buf(),
+                    )
                 });
                 shepr_protocol::ClientShellWorkspace {
                     workspace_id: *workspace_id,

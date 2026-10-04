@@ -99,7 +99,7 @@ fn pane_split_state_command_commits_prepared_geometry_and_terminal() {
             Direction::Horizontal,
             &chrome,
             None,
-            std::path::PathBuf::from("/shepr-test/cwd"),
+            shepr_core::absolute_path::AbsolutePath::new("/shepr-test/cwd").expect("absolute"),
         )
         .expect("test precondition");
     let new_pane = prepared.pane_id();
@@ -141,9 +141,9 @@ fn pane_split_state_command_commits_prepared_geometry_and_terminal() {
 #[test]
 fn workspace_creation_state_command_commits_spawned_values() {
     let mut state = AppState::test_new();
-    let prepared = state
-        .workspaces
-        .prepare_workspace(std::path::Path::new("/shepr-test/cwd"));
+    let prepared = state.workspaces.prepare_workspace(
+        &shepr_core::absolute_path::AbsolutePath::new("/shepr-test/cwd").expect("absolute"),
+    );
     let root_pane = prepared.root_pane();
 
     let geometry = shepr_mux::workspace::SpawnGeometry {
@@ -660,7 +660,7 @@ fn terminal_cwd_report_updates_terminal_cwd_and_marks_session_dirty() {
     assert_eq!(update, StateUpdate::Unchanged);
     assert_eq!(
         state.terminal(pane_id).expect("test precondition").cwd(),
-        cwd
+        &cwd
     );
     assert!(state.session_dirty);
 }
@@ -683,7 +683,7 @@ fn cwd_report_for_missing_pane_is_ignored() {
 
     assert_eq!(
         state.terminal(pane_id).expect("test precondition").cwd(),
-        before
+        &before
     );
     assert!(!state.session_dirty);
 }

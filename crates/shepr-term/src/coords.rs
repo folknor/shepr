@@ -8,6 +8,14 @@
 #[serde(transparent)]
 pub struct ViewportRow(pub u16);
 
+impl ViewportRow {
+    /// The viewport row that screen row `row` is, for a viewport whose top row
+    /// is on screen row `top`; `None` for a row above the viewport.
+    pub fn on_screen(row: u16, top: u16) -> Option<Self> {
+        row.checked_sub(top).map(Self)
+    }
+}
+
 /// The position of a stable row relative to a viewport's top row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ViewportPosition {
@@ -27,6 +35,11 @@ pub struct ScreenRow(pub usize);
 
 /// A stable row identity. Rows below the terminal's current history origin
 /// have been evicted and are no longer readable.
+///
+/// The field stays public and the arithmetic saturating on purpose: callers
+/// clamp to the retained rows, and viewport conversion already reports
+/// out-of-range rows through `checked_sub`. Making the field private would
+/// force a constructor on every test literal without removing a failure mode.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
 )]
@@ -50,12 +63,18 @@ impl<R> Point<R> {
 }
 
 impl AbsRow {
-    pub fn saturating_add(self, rows: u64) -> Self {
-        Self(self.0.saturating_add(rows))
+    pub fn saturating_add(self, rows: usize) -> Self {
+        Self(
+            self.0
+                .saturating_add(u64::try_from(rows).unwrap_or(u64::MAX)),
+        )
     }
 
-    pub fn saturating_sub(self, rows: u64) -> Self {
-        Self(self.0.saturating_sub(rows))
+    pub fn saturating_sub(self, rows: usize) -> Self {
+        Self(
+            self.0
+                .saturating_sub(u64::try_from(rows).unwrap_or(u64::MAX)),
+        )
     }
 
     /// Convert a viewport-relative offset to its stable row identity.
@@ -71,11 +90,5 @@ impl AbsRow {
         u16::try_from(offset).map_or(ViewportPosition::Below, |row| {
             ViewportPosition::At(ViewportRow(row))
         })
-    }
-}
-
-impl From<u64> for AbsRow {
-    fn from(row: u64) -> Self {
-        Self(row)
     }
 }

@@ -295,6 +295,13 @@ impl FrameData {
 
     /// The cells for in-place edits. The cell count cannot change through this
     /// borrow. A link set on a cell must index the table (`validate` checks).
+    ///
+    /// Not made link-safe by construction on purpose: `CellData.hyperlink` is a
+    /// plain wire field, so a guard type would wrap a rule that already holds.
+    /// Production writers that set a link intern it in the table first, the
+    /// others only clear links or restyle, and the decoder and `Canvas::new`
+    /// validate at the boundaries. A stray index is dropped by readers (they
+    /// use `.get`) and never panics.
     pub fn cells_mut(&mut self) -> &mut [CellData] {
         &mut self.cells
     }

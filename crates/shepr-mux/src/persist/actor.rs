@@ -213,8 +213,11 @@ impl PersistState {
                         // neither assembled, serialized nor hashed, and the
                         // layout names it by the digest the save that wrote
                         // it recorded.
-                        let resolved = history
-                            .resolve_for_save(&mut self.history, self.writer.history_is_current());
+                        let resolved = if self.writer.history_is_current() {
+                            history.resolve_for_save(&mut self.history)
+                        } else {
+                            ResolvedHistory::Changed(history.resolve_changed(&mut self.history))
+                        };
                         match resolved {
                             ResolvedHistory::Unchanged(digest) => {
                                 self.writer.save_keeping_history(&snapshot, &digest, now)

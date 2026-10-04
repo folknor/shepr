@@ -63,9 +63,13 @@ const MIN_SELECTION_EDGE_SCROLL_LINES: usize = 3;
 const MAX_SELECTION_EDGE_SCROLL_LINES: usize = 15;
 
 fn selection_cell(column: u16, row: u16, pane: Rect) -> (shepr_term::ViewportRow, u16) {
-    let column = column.clamp(pane.x, pane.x + pane.width.saturating_sub(1));
-    let row = row.clamp(pane.y, pane.y + pane.height.saturating_sub(1));
-    (shepr_term::ViewportRow(row - pane.y), column - pane.x)
+    let column = column.clamp(pane.x, pane.x.saturating_add(pane.width.saturating_sub(1)));
+    let row = row.clamp(pane.y, pane.y.saturating_add(pane.height.saturating_sub(1)));
+    // The clamps keep both inside the pane, so neither subtraction can fail.
+    (
+        shepr_term::ViewportRow::on_screen(row, pane.y).unwrap_or(shepr_term::ViewportRow(0)),
+        column.saturating_sub(pane.x),
+    )
 }
 
 impl ClientShellState {
@@ -261,12 +265,11 @@ impl ClientShellState {
             }
             &gesture.pane_id
         } else {
-            &self
-                .mouse_selection
+            self.mouse_selection
                 .selection
                 .as_ref()
                 .filter(|selection| selection.is_in_progress())?
-                .pane_id
+                .pane_id()
         };
         self.presentation
             .pane_hits()
@@ -320,7 +323,9 @@ impl ClientShellState {
                 let anchor = selection.anchor_position();
                 let anchor_col = hit.inner_rect.x.saturating_add(anchor.col).clamp(
                     hit.inner_rect.x,
-                    hit.inner_rect.x + hit.inner_rect.width.saturating_sub(1),
+                    hit.inner_rect
+                        .x
+                        .saturating_add(hit.inner_rect.width.saturating_sub(1)),
                 );
                 let row_moved = metrics.map_or_else(
                     || {
@@ -329,7 +334,7 @@ impl ClientShellState {
                                 .mouse_selection
                                 .last_pane_click
                                 .as_ref()
-                                .filter(|click| click.pane_id == selection.pane_id)
+                                .filter(|click| selection.belongs_to(&click.pane_id))
                                 .is_some_and(|click| {
                                     hit.inner_rect.y.saturating_add(click.viewport_row) != row
                                 })
@@ -369,7 +374,10 @@ impl ClientShellState {
             return;
         };
         let top = hit.inner_rect.y;
-        let bottom = hit.inner_rect.y + hit.inner_rect.height.saturating_sub(1);
+        let bottom = hit
+            .inner_rect
+            .y
+            .saturating_add(hit.inner_rect.height.saturating_sub(1));
         let (direction, immediate_lines) = if row < top {
             (
                 ClientSelectionAutoscrollDirection::Up,
@@ -507,7 +515,7 @@ impl ClientShellState {
                     .selection
                     .as_ref()
                     .is_some_and(|selection| {
-                        selection.pane_id == autoscroll.pane_id && selection.is_dragging()
+                        selection.belongs_to(&autoscroll.pane_id) && selection.is_dragging()
                     })
             },
             |gesture| gesture.pane_id == autoscroll.pane_id && gesture.dragged && !gesture.released,

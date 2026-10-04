@@ -204,7 +204,9 @@ impl App {
             .workspaces
             .iter()
             .map(|ws| {
-                let cwd = ws.resolved_identity_cwd(&self.terminal_runtimes);
+                let cwd = ws
+                    .resolved_identity_cwd(&self.terminal_runtimes)
+                    .into_path_buf();
                 let known_key = if refresh_repo_discovery {
                     None
                 } else {

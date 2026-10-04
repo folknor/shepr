@@ -25,6 +25,8 @@ use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Instant;
 
+use shepr_core::absolute_path::AbsolutePath;
+
 use crate::limits::{
     LAUNCH_ACCEPT_RETRY_DELAY, LAUNCH_HELLO_TIMEOUT, LAUNCH_PARKED_CONNECTION_TTL,
     LAUNCH_STATUS_RECORD_BYTES,
@@ -67,13 +69,13 @@ pub(crate) enum RecordRead {
 /// the caller must still establish that the child lives at that instant.
 #[derive(Debug)]
 pub enum LaunchStatusEvent {
-    Entered(std::path::PathBuf),
+    Entered(AbsolutePath),
     DirectoryFailed {
-        path: std::path::PathBuf,
+        path: AbsolutePath,
         error: io::Error,
     },
     ExecFailed(io::Error),
-    CommitCandidate(std::path::PathBuf),
+    CommitCandidate(AbsolutePath),
     Unconfirmed,
     WouldBlock,
 }
@@ -81,18 +83,18 @@ pub enum LaunchStatusEvent {
 /// Owns the status protocol's ordering and candidate validation. It performs
 /// nonblocking reads only; waiting and the lifetime policy belong to the mux.
 pub struct LaunchStatusReader {
-    candidates: Vec<std::path::PathBuf>,
+    candidates: Vec<AbsolutePath>,
     phase: StatusPhase,
 }
 
 enum StatusPhase {
     AwaitDirectory,
-    Entered(std::path::PathBuf),
+    Entered(AbsolutePath),
     Finished,
 }
 
 impl LaunchStatusReader {
-    pub fn new(candidates: Vec<std::path::PathBuf>) -> Self {
+    pub fn new(candidates: Vec<AbsolutePath>) -> Self {
         Self {
             candidates,
             phase: StatusPhase::AwaitDirectory,
@@ -612,9 +614,13 @@ fn set_receive_timeout(channel: &OwnedFd, timeout: &libc::timeval) -> io::Result
 mod tests {
     use super::*;
 
+    fn abs(path: &str) -> AbsolutePath {
+        AbsolutePath::new(path).expect("test path is absolute")
+    }
+
     #[test]
     fn directory_selection_and_commitment_are_validated_together() {
-        let mut reader = LaunchStatusReader::new(vec!["/requested".into(), "/fallback".into()]);
+        let mut reader = LaunchStatusReader::new(vec![abs("/requested"), abs("/fallback")]);
         assert!(
             matches!(reader.accept(RecordRead::Record(LaunchRecord::ChdirOk(1))),
             Ok(LaunchStatusEvent::Entered(path)) if path == std::path::Path::new("/fallback"))
@@ -634,7 +640,7 @@ mod tests {
             LaunchRecord::ChdirOk(1),
             LaunchRecord::ExecFailed(libc::ENOENT),
         ] {
-            let mut reader = LaunchStatusReader::new(vec!["/requested".into()]);
+            let mut reader = LaunchStatusReader::new(vec![abs("/requested")]);
             assert_eq!(
                 reader
                     .accept(RecordRead::Record(record))
@@ -647,7 +653,7 @@ mod tests {
             LaunchRecord::ChdirOk(0),
             LaunchRecord::ChdirFailed(libc::ENOENT),
         ] {
-            let mut reader = LaunchStatusReader::new(vec!["/requested".into()]);
+            let mut reader = LaunchStatusReader::new(vec![abs("/requested")]);
             reader
                 .accept(RecordRead::Record(LaunchRecord::ChdirOk(0)))
                 .expect("enter directory");
@@ -657,7 +663,7 @@ mod tests {
 
     #[test]
     fn failures_keep_the_requested_path_and_errno() {
-        let mut reader = LaunchStatusReader::new(vec!["/requested".into(), "/fallback".into()]);
+        let mut reader = LaunchStatusReader::new(vec![abs("/requested"), abs("/fallback")]);
         let LaunchStatusEvent::DirectoryFailed { path, error } = reader
             .accept(RecordRead::Record(LaunchRecord::ChdirFailed(libc::EACCES)))
             .expect("directory failure")
@@ -666,7 +672,7 @@ mod tests {
         };
         assert_eq!(path, std::path::Path::new("/requested"));
         assert_eq!(error.raw_os_error(), Some(libc::EACCES));
-        let mut reader = LaunchStatusReader::new(vec!["/requested".into()]);
+        let mut reader = LaunchStatusReader::new(vec![abs("/requested")]);
         reader
             .accept(RecordRead::Record(LaunchRecord::ChdirOk(0)))
             .expect("directory selected");
@@ -681,7 +687,7 @@ mod tests {
 
     #[test]
     fn eof_without_entering_is_unconfirmed() {
-        let mut reader = LaunchStatusReader::new(vec!["/requested".into()]);
+        let mut reader = LaunchStatusReader::new(vec![abs("/requested")]);
         assert!(matches!(
             reader.accept(RecordRead::Eof),
             Ok(LaunchStatusEvent::Unconfirmed)

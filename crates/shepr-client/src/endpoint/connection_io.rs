@@ -43,9 +43,7 @@ impl LocalAttachFailure {
 
 pub(crate) fn attach_local_endpoint(
     path: &std::path::Path,
-    geometry: shepr_protocol::TerminalGeometry,
-    mouse_capture: bool,
-    surface_active: bool,
+    hello: shepr_protocol::endpoint::EndpointClientHello,
     mismatch_guidance: &str,
 ) -> Result<AcceptedEndpoint, LocalAttachFailure> {
     let stream = shepr_platform::ipc::connect_trusted_local_stream(path)
@@ -53,9 +51,7 @@ pub(crate) fn attach_local_endpoint(
         .into_local_stream();
     attach_endpoint_stream(
         stream,
-        geometry,
-        mouse_capture,
-        surface_active,
+        hello,
         endpoint::EndpointPolicy::Local,
         None,
         Some(mismatch_guidance),
@@ -66,22 +62,15 @@ pub(crate) fn attach_local_endpoint(
 
 pub(crate) fn attach_endpoint_stream(
     mut stream: LocalStream,
-    geometry: shepr_protocol::TerminalGeometry,
-    mouse_capture: bool,
-    surface_active: bool,
+    hello: shepr_protocol::endpoint::EndpointClientHello,
     endpoint_policy: endpoint::EndpointPolicy,
     deadline: Option<std::time::Instant>,
     mismatch_guidance: Option<&str>,
     ssh_bridge: Option<shepr_remote::MachineSshBridge>,
 ) -> io::Result<AcceptedEndpoint> {
-    if let Err(error) = handshake::do_handshake_for_endpoint(
-        &mut stream,
-        geometry,
-        mouse_capture,
-        surface_active,
-        endpoint_policy,
-        deadline,
-    ) {
+    if let Err(error) =
+        handshake::do_handshake_for_endpoint(&mut stream, hello, endpoint_policy, deadline)
+    {
         return Err(handshake::classify_handshake_error(
             error,
             mismatch_guidance,

@@ -27,7 +27,7 @@ impl App {
         (std::path::PathBuf, Option<shepr_protocol::RemotePath>),
         shepr_protocol::command::EndpointError,
     > {
-        let cwd = super::cwd::launch_cwd(&params.cwd)?;
+        let cwd = super::cwd::launch_cwd(&params.cwd)?.into_path_buf();
         let home = self.paths.home_dir().map(shepr_protocol::RemotePath::from);
         Ok((cwd, home))
     }

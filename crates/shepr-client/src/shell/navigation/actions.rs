@@ -171,7 +171,7 @@ impl ClientShellState {
         let Some(selection) = self.mouse_selection.selection.as_ref() else {
             return;
         };
-        let pane_id = selection.pane_id;
+        let pane_id = *selection.pane_id();
         let (anchor, cursor) = match selection.shape() {
             shepr_term::selection::SelectionShape::Range => selection.ordered_rows(),
             shepr_term::selection::SelectionShape::Lines => {

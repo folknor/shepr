@@ -92,10 +92,12 @@ impl Launched {
         let local_generation = endpoint::EndpointSupervisors::initial_local_generation();
         let initial_attach = attach_local_endpoint(
             &socket_path,
-            view_geometry(geometry, shell_surface_size),
-            settings.mouse_capture_active(),
-            // Local is the first shown endpoint; it can render as soon as the handshake completes.
-            true,
+            shepr_protocol::endpoint::EndpointClientHello {
+                geometry: view_geometry(geometry, shell_surface_size),
+                mouse_capture: settings.mouse_capture_active(),
+                // Local is the first shown endpoint; it can render as soon as the handshake completes.
+                surface_active: true,
+            },
             &mismatch_guidance,
         )
         .and_then(|accepted| {
@@ -350,22 +352,22 @@ impl Launched {
         let stdin_tx = event_tx.clone();
 
         // Arm reply tracking only after the corresponding query was written successfully.
-        let host_color_query_sent =
+        let color_scheme_query =
             query_host_terminal_theme(&mut state.output_writer).map_err(LoopExit::HostTerminal)?;
         query_host_terminal_appearance(&mut state.output_writer).map_err(LoopExit::HostTerminal)?;
         // Terminals that report no pixel size through the ioctl are asked directly
         // instead of falling back to an assumed cell size.
-        let will_query_host_cell_size = if initial_geometry.cell().is_exact() {
-            false
+        let cell_size_query = if initial_geometry.cell().is_exact() {
+            input::ProbeAvailability::NotArmed
         } else {
             query_host_cell_size(&mut state.output_writer).map_err(LoopExit::HostTerminal)?
         };
-        let stdin_probe = input::HostInputProbe::new(
-            host_color_query_sent,
-            will_query_host_cell_size,
-            state.host_modes.mouse_input_probe(),
-            terminal_guard.host_escape_disambiguation_active(),
-        );
+        let stdin_probe = input::HostInputProbe {
+            color_scheme_query,
+            cell_size_query,
+            mouse: state.host_modes.mouse_input_probe(),
+            escape_disambiguation: terminal_guard.escape_disambiguation(),
+        };
 
         // Spawn the stdin reader after query writes so a failed write does not make
         // its parser wait for a host reply that cannot arrive.
@@ -470,7 +472,7 @@ impl Launched {
             },
             HostCellReport {
                 size: reported_cell_size,
-                queried: will_query_host_cell_size,
+                queried: cell_size_query,
             },
         );
         Ok(client_loop)
