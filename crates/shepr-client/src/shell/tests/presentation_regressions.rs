@@ -3,13 +3,14 @@ use crate::shell::config::ClientShellConfig;
 use crate::shell::navigation::location::{Location, LocationTarget};
 use crate::shell::notices::ClientEndpointNoticeKind;
 use crate::shell::overlays::Overlay;
-use crate::shell::overlays::help::HelpOverlay;
 use crate::shell::state::{ClientShellAction, ClientShellInput, ClientShellState};
-use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use shepr_config::{ClientConfig, SidebarCollapsedModeConfig};
 use shepr_termio::input::raw_input::RawInputEvent;
 
-use crate::shell::tests::{frame_rows, snapshot, surface};
+use crate::shell::tests::{
+    frame_rows, help_overlay, open_help, press_overlay_key, snapshot, surface,
+};
 
 use crate::tests::{test_pane_id, test_workspace_id};
 
@@ -50,8 +51,9 @@ fn client_presentation_regression_server_notice_titles_follow_the_notice_kind() 
 
 #[test]
 fn unavailable_view_respects_a_collapsed_single_endpoint_sidebar() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
-    state.config.sidebar_collapsed_mode = SidebarCollapsedModeConfig::Compact;
+    let mut config = ClientConfig::default();
+    config.ui.sidebar_collapsed_mode = SidebarCollapsedModeConfig::Compact;
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
     state.chrome.set_collapsed(true);
     state.set_snapshot(Box::new(snapshot()));
 
@@ -147,10 +149,9 @@ fn client_presentation_regression_help_scrolls_to_its_last_entry_in_a_narrow_ter
         .last()
         .expect("label text")
         .to_owned();
-    state.overlay = Some(Overlay::Help(HelpOverlay {
-        scroll: usize::MAX,
-        ..HelpOverlay::default()
-    }));
+    // End asks for the last row; with no Help drawn yet the request is stored unclamped.
+    open_help(&mut state);
+    press_overlay_key(&mut state, KeyCode::End);
 
     // Narrow enough that word wrapping produces more rows than character division predicts;
     // composition clamps the scroll to the computed maximum on the first frame.
@@ -193,15 +194,13 @@ fn help_scroll_survives_a_window_too_small_for_help() {
             .generation()
             .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
     );
-    state.overlay = Some(Overlay::Help(HelpOverlay {
-        scroll: usize::MAX,
-        ..HelpOverlay::default()
-    }));
+    open_help(&mut state);
+    press_overlay_key(&mut state, KeyCode::End);
     let help_scroll = |state: &ClientShellState| {
-        let Some(Overlay::Help(help)) = state.overlay.as_ref() else {
+        let Some(help) = help_overlay(state) else {
             panic!("help overlay");
         };
-        help.scroll
+        help.scroll()
     };
     // The first frame resolves the requested scroll to the end of the text.
     state.compose(106, 24).expect("help frame");
@@ -250,14 +249,21 @@ fn restore_cards_keep_the_source_boot_and_survive_projection_resets() {
     assert!(state.receive_restore_notice(&ClientEndpointId::Local, &first, &kind));
     assert!(state.receive_restore_notice(&remote, &second, &kind));
     assert!(!state.receive_restore_notice(&ClientEndpointId::Local, &first, &kind));
-    state.reset_endpoint_projection(crate::shell::endpoints::ProjectionReset::Rebooted);
+    // The presented server reboots, which resets the projection.
+    let mut rebooted = snapshot();
+    rebooted.boot_id = crate::tests::test_boot_id("rebooted");
+    state.set_snapshot(Box::new(rebooted));
     assert_eq!(
         state.notices.visible().expect("first card").key.boot_id,
         Some(first)
     );
     let now = std::time::Instant::now();
     state.notices.drawn(now);
-    assert!(state.tick_transient_banners(now + crate::limits::ENDPOINT_NOTICE_TIMEOUT));
+    assert!(
+        state
+            .tick_timers(now + crate::limits::ENDPOINT_NOTICE_TIMEOUT)
+            .repaint
+    );
     assert_eq!(
         state.notices.visible().expect("second card").key.boot_id,
         Some(second)
@@ -267,7 +273,11 @@ fn restore_cards_keep_the_source_boot_and_survive_projection_resets() {
         "Build: saved session not fully restored"
     );
     // A queued card receives a full lifetime only after it is actually drawn.
-    assert!(!state.tick_transient_banners(now + crate::limits::ENDPOINT_NOTICE_TIMEOUT));
+    assert!(
+        !state
+            .tick_timers(now + crate::limits::ENDPOINT_NOTICE_TIMEOUT)
+            .repaint
+    );
 }
 
 #[test]
@@ -285,7 +295,11 @@ fn a_saves_stopped_card_shows_once_per_boot_beside_the_restore_card() {
     assert!(!state.receive_session_saves_stopped(&ClientEndpointId::Local, &boot));
     let now = std::time::Instant::now();
     state.notices.drawn(now);
-    assert!(state.tick_transient_banners(now + crate::limits::ENDPOINT_NOTICE_TIMEOUT));
+    assert!(
+        state
+            .tick_timers(now + crate::limits::ENDPOINT_NOTICE_TIMEOUT)
+            .repaint
+    );
     let card = state.notices.visible().expect("saves stopped card");
     assert!(
         card.title.ends_with(": session saves stopped"),
@@ -311,7 +325,11 @@ fn transient_cards_do_not_discard_queued_restore_cards() {
     state.receive_paste_rejection("too large".into());
     let now = std::time::Instant::now();
     state.notices.drawn(now);
-    assert!(state.tick_transient_banners(now + crate::limits::ENDPOINT_NOTICE_TIMEOUT));
+    assert!(
+        state
+            .tick_timers(now + crate::limits::ENDPOINT_NOTICE_TIMEOUT)
+            .repaint
+    );
     assert_eq!(
         state.notices.visible().expect("restore card").key.boot_id,
         Some(boot)

@@ -115,11 +115,6 @@ impl Presentation {
         self.composed_at = Some(at);
     }
 
-    /// Records an empty frame of `size` as the last drawn one.
-    fn set_composed_size(&mut self, size: (u16, u16)) {
-        self.view = Some(ShellView::empty_at(size));
-    }
-
     pub(in crate::shell) fn set_view(&mut self, view: ShellView) {
         self.view = Some(view);
     }

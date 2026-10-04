@@ -9,7 +9,7 @@ use crate::shell::state::{
 };
 use crate::shell::tests::{
     agent, frame_cell, machine_named, remote_machine, snapshot, snapshot_with_agent,
-    state_with_machines, state_with_remote, surface,
+    state_with_machines, state_with_remote, state_with_remote_config, surface,
 };
 use crate::tests::{test_pane_id, test_workspace_id};
 use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
@@ -1140,13 +1140,14 @@ fn reconnect_snapshot_waits_for_coherent_activation_before_replacing_projection(
 fn disconnected_active_endpoint_freezes_surface_and_marks_cached_ui_stale() {
     use shepr_protocol::AgentStatus;
 
-    let (mut state, endpoint_id) = state_with_remote();
-    state.config.status_indicators = StatusIndicatorStyle::Symbols;
-    state.config.agents.rows = vec![vec![
+    let mut config = ClientConfig::default();
+    config.ui.status_indicators = StatusIndicatorStyle::Symbols;
+    config.ui.sidebar.agents.rows = vec![vec![
         AgentSidebarToken::StateIcon,
         AgentSidebarToken::Machine,
         AgentSidebarToken::Agent,
     ]];
+    let (mut state, endpoint_id) = state_with_remote_config(&config);
     state.edit_endpoint_snapshot(&endpoint_id, |snapshot| {
         snapshot.agents = vec![agent(AgentStatus::Blocked, 1)];
     });

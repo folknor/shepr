@@ -164,7 +164,7 @@ const SPECS: [AssetSpec; 15] = [
     AssetSpec {
         target: IntegrationTarget::Kilo,
         id: None,
-        version: 5,
+        version: 6,
         asset: "kilo/shepr-agent-state.js",
         decoder: "kilo.js",
         kind: Kind::Plugin,

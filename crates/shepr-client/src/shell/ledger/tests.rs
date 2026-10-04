@@ -321,7 +321,7 @@ fn a_dropped_request_runs_its_rollback_and_sends_nothing() {
                     panic!("overlay")
                 };
                 assert!(matches!(
-                    &rename.target,
+                    rename.target(),
                     RenameTarget::NewWorkspace {
                         label_lookup: None,
                         ..
@@ -461,7 +461,7 @@ fn a_workspace_label_answer_for_a_reopened_overlay_is_ignored() {
         panic!("overlay")
     };
     assert!(matches!(
-        &rename.target,
+        rename.target(),
         RenameTarget::NewWorkspace {
             label_lookup: Some(_),
             ..
@@ -479,7 +479,7 @@ fn a_workspace_label_answer_for_a_reopened_overlay_is_ignored() {
         panic!("overlay")
     };
     assert!(matches!(
-        &rename.target,
+        rename.target(),
         RenameTarget::NewWorkspace {
             label_lookup: None,
             ..
@@ -494,7 +494,10 @@ fn a_projection_reset_drops_every_request_with_its_feature_state() {
     start_word(&mut s);
     start_scroll(&mut s, 3);
     start_label(&mut s);
-    s.reset_endpoint_projection(crate::shell::endpoints::ProjectionReset::Rebooted);
+    // The presented server reboots, which resets the projection.
+    let mut rebooted = snapshot();
+    rebooted.boot_id = crate::tests::test_boot_id("rebooted");
+    s.set_snapshot(Box::new(rebooted));
     assert!(s.ledger.is_empty());
     assert!(s.scroll_lanes.is_idle());
     assert!(!s.copy_in_flight());

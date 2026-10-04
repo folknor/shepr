@@ -7,12 +7,24 @@ priority = 300
 region = "whole_recent"
 visible_blocker = true
 # The header alone can linger in the transcript; require it AND one of the
-# dialog's own reply controls.
+# dialog's own reply controls. "Reject" (every reject, to collect feedback) and
+# "Allow always" lead to follow-up screens of the same pending request, which
+# drop the "Permission required" header: the reject feedback prompt needs both
+# of its key hints, the always-allow confirmation its Confirm / Cancel buttons
+# on one line AND its confirm hint.
 any = [
   { contains = ["△ Permission required"], any = [
     { contains = ["allow once"] },
     { contains = ["allow always"] },
     { contains = ["reject"] },
+    { contains = ["enter confirm"] },
+  ] },
+  { contains = ["△ Reject permission"], all = [
+    { contains = ["enter confirm"] },
+    { contains = ["esc cancel"] },
+  ] },
+  { contains = ["△ Always allow"], all = [
+    { line_regex = ['(?i)confirm\s+cancel'] },
     { contains = ["enter confirm"] },
   ] },
   { contains = ["esc dismiss"], any = [{ contains = ["enter confirm"] }, { contains = ["enter submit"] }, { contains = ["enter toggle"] }], all = [{ any = [{ contains = ["↑↓ select"] }, { contains = ["⇆ tab"] }] }] },

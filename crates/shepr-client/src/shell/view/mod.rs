@@ -90,7 +90,7 @@ static EMPTY_VIEW: ShellView = ShellView::empty_at((0, 0));
 
 impl ShellView {
     /// A view that shows nothing and offers no targets.
-    pub(in crate::shell) const fn empty_at(size: (u16, u16)) -> Self {
+    const fn empty_at(size: (u16, u16)) -> Self {
         Self {
             size,
             layout: ClientShellLayout {
@@ -652,9 +652,9 @@ mod tests {
 
     #[test]
     fn placeholder_lifecycle_and_notice_leave_the_hidden_sidebar_header_clear() {
-        let mut state =
-            ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
-        state.config.sidebar_collapsed_mode = SidebarCollapsedModeConfig::Hidden;
+        let mut config = ClientConfig::default();
+        config.ui.sidebar_collapsed_mode = SidebarCollapsedModeConfig::Hidden;
+        let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
         state.chrome.set_collapsed(true);
         state.set_endpoint_status(
             &ClientEndpointId::Local,

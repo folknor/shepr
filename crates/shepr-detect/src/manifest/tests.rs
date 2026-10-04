@@ -310,6 +310,60 @@ fn opencode_permission_header_needs_live_dialog_controls() {
     }
 }
 
+/// "Reject" and "Allow always" lead to follow-up screens of the same pending
+/// request that drop the "Permission required" header; each blocks only with
+/// its own controls live.
+#[test]
+fn opencode_permission_follow_up_screens_need_their_own_controls() {
+    // Each agent's own wording of the dialog bodies, which the gates do not read.
+    for (agent, rule, name, always_until) in [
+        (
+            Agent::OpenCode,
+            "permission_required",
+            "OpenCode",
+            "until OpenCode is restarted",
+        ),
+        (Agent::Kilo, "opencode_permission", "Kilo", "permanently"),
+    ] {
+        let loaded = bundled_loaded(agent);
+        for live in [
+            format!(
+                "△ Reject permission\nTell {name} what to do differently\n\
+                 \n  enter confirm  esc cancel\n"
+            ),
+            format!(
+                "△ Always allow\nThis will allow bash {always_until}.\n\
+                 \n  Confirm   Cancel                    ⇆ select  enter confirm\n"
+            ),
+        ] {
+            let blocked = explain_loaded_manifest(agent, screen_input(&live), &loaded);
+            assert_eq!(
+                blocked.verdict.state(),
+                AgentState::Blocked,
+                "{agent:?} {live:?}"
+            );
+            assert_eq!(
+                blocked.matched_rule.map(|matched| matched.id).as_deref(),
+                Some(rule)
+            );
+        }
+        for stale in [
+            "△ Reject permission\nearlier text only\n",
+            "△ Reject permission\nlater output\n  enter confirm\n",
+            "△ Always allow\nearlier text only\n",
+            "△ Always allow\nConfirm\nCancel\n",
+            "△ Always allow\nlater output\n  enter confirm\n",
+        ] {
+            let explain = explain_loaded_manifest(agent, screen_input(stale), &loaded);
+            assert_ne!(
+                explain.verdict.state(),
+                AgentState::Blocked,
+                "{agent:?} {stale:?}"
+            );
+        }
+    }
+}
+
 #[test]
 fn codex_no_match_is_unknown_without_changing_other_agents() {
     let manifests = TestManifests::new(&local_manifest("working", "active-marker"));

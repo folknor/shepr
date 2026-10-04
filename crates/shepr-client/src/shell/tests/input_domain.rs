@@ -1,6 +1,5 @@
 use crate::shell::config::ClientShellConfig;
 use crate::shell::overlays::Overlay;
-use crate::shell::overlays::rename::{RenameOverlay, RenameTarget};
 use crate::shell::state::{
     ClientShellAction, ClientShellInput, ClientShellMode, ClientShellRequest,
 };
@@ -10,7 +9,6 @@ use shepr_config::{ClientConfig, SidebarCollapsedModeConfig};
 use shepr_protocol::command::{EndpointCommand, EndpointReply};
 use shepr_protocol::{ClientMessage, ClientMousePosition, ClientPaneInputEvent};
 use shepr_termio::input::raw_input::RawInputEvent;
-use shepr_termio::text_editor::TextEditor;
 
 use crate::shell::state::ClientShellState;
 use shepr_protocol::{ClientShellWorkspace, FrameData};
@@ -19,32 +17,9 @@ use shepr_surface::ratatui_conversion::FrameDataExt as _;
 use crossterm::event::MouseEvent;
 
 use crate::shell::tests::copy_search_result;
-use crate::shell::tests::{frame_cell, frame_rows, snapshot, surface};
+use crate::shell::tests::{frame_cell, frame_rows, open_help, snapshot, surface};
 
 use crate::tests::{test_pane_id, test_workspace_id};
-
-#[test]
-fn navigate_arrow_aliases_use_the_configured_alias_matcher() {
-    let left = shepr_term::key::TerminalKey::new(KeyCode::Left, KeyModifiers::empty());
-    let right = shepr_term::key::TerminalKey::new(KeyCode::Right, KeyModifiers::empty());
-    let modified_left = shepr_term::key::TerminalKey::new(KeyCode::Left, KeyModifiers::SHIFT);
-    let left_alias =
-        shepr_config::navigate_alias!(Left).expect("the navigate table defines its left alias");
-    let right_alias =
-        shepr_config::navigate_alias!(Right).expect("the navigate table defines its right alias");
-
-    assert!(crate::shell::input::navigate_alias_matches(
-        left_alias, &left
-    ));
-    assert!(crate::shell::input::navigate_alias_matches(
-        right_alias,
-        &right
-    ));
-    assert!(!crate::shell::input::navigate_alias_matches(
-        left_alias,
-        &modified_left
-    ));
-}
 
 #[test]
 fn cycle_pane_uses_snapshot_order_in_prefix_and_navigate_modes() {
@@ -244,52 +219,6 @@ fn full_host_palette_response_is_sent_as_one_theme_update() {
         colors.iter().map(|(index, _)| *index).collect::<Vec<_>>(),
         (0..=u8::MAX).collect::<Vec<_>>()
     );
-}
-
-#[test]
-fn modal_paste_shortcut_is_ctrl_v() {
-    let key = |code, modifiers| shepr_term::key::TerminalKey::new(code, modifiers);
-    assert!(!crate::shell::input::is_modal_paste_shortcut(&key(
-        KeyCode::Char('v'),
-        KeyModifiers::CONTROL | KeyModifiers::ALT
-    )));
-    assert!(crate::shell::input::is_modal_paste_shortcut(&key(
-        KeyCode::Char('v'),
-        KeyModifiers::CONTROL
-    )));
-    assert!(crate::shell::input::is_modal_paste_shortcut(&key(
-        KeyCode::Char('V'),
-        KeyModifiers::CONTROL | KeyModifiers::SHIFT
-    )));
-    assert!(!crate::shell::input::is_modal_paste_shortcut(&key(
-        KeyCode::Char('v'),
-        KeyModifiers::SUPER
-    )));
-}
-
-#[test]
-fn modal_paste_inserts_clipboard_text_through_overlay_text_path() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
-    state.overlay = Some(Overlay::Rename(RenameOverlay {
-        input: TextEditor::new("replace me", true),
-        target: RenameTarget::Pane {
-            pane_id: test_pane_id("w1:p1"),
-        },
-    }));
-    let mut outcome = ClientShellInput::default();
-    let key = shepr_term::key::TerminalKey::new(KeyCode::Char('v'), KeyModifiers::CONTROL);
-
-    assert!(
-        state.handle_modal_paste_shortcut_with(&key, &mut outcome, || {
-            Some("feature/pasted".into())
-        })
-    );
-    assert!(outcome.repaint);
-    assert!(matches!(
-        state.overlay,
-        Some(Overlay::Rename(RenameOverlay { ref input, .. }))
-            if input.as_str() == "feature/pasted"
-    ));
 }
 
 #[test]
@@ -693,8 +622,9 @@ fn collapsed_sidebar_scrolls_to_workspaces_past_its_height() {
         })
         .collect();
     many.focused_workspace_id = Some(test_workspace_id("w30"));
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
-    state.config.sidebar_collapsed_mode = SidebarCollapsedModeConfig::Compact;
+    let mut config = ClientConfig::default();
+    config.ui.sidebar_collapsed_mode = SidebarCollapsedModeConfig::Compact;
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
     state.chrome.set_collapsed(true);
     state.set_snapshot(Box::new(many));
     state.receive_pane_surface_from(
@@ -821,7 +751,10 @@ fn rename_pane_empty_value_is_sent_as_a_clear_request() {
 
 #[test]
 fn styled_client_composition_preserves_pane_hyperlinks() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
+    // Copy-on-select would copy and release the selection on mouse release.
+    let mut config = ClientConfig::default();
+    config.ui.copy_on_select = false;
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
     state.set_snapshot(Box::new(snapshot()));
     let mut pane_surface = surface();
     let linked = Buffer::with_lines(["LIVE", "PANE"]);
@@ -839,24 +772,34 @@ fn styled_client_composition_preserves_pane_hyperlinks() {
             .generation()
             .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
     );
-    let mut selection = shepr_term::selection::Selection::range(
-        test_pane_id("w1:p1"),
-        shepr_term::Point::new(shepr_term::AbsRow(0), 0),
-        shepr_term::Point::new(shepr_term::AbsRow(0), 1),
+    // Select the linked cell and the one after it with the mouse.
+    state.compose(106, 20).expect("unselected frame");
+    let pane = state.pane_hits()[0].inner_rect;
+    for (kind, column) in [
+        (MouseEventKind::Down(MouseButton::Left), pane.x),
+        (MouseEventKind::Drag(MouseButton::Left), pane.x + 1),
+        (MouseEventKind::Up(MouseButton::Left), pane.x + 1),
+    ] {
+        state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
+            kind,
+            column,
+            row: pane.y,
+            modifiers: KeyModifiers::empty(),
+        })]);
+    }
+    assert!(
+        state
+            .mouse_selection
+            .selection
+            .as_ref()
+            .is_some_and(shepr_term::selection::Selection::is_finalized)
     );
-    assert!(selection.finish());
-    state.mouse_selection.selection = Some(selection);
     let frame = state.compose(106, 20).expect("composed frame");
     let hit = &state.pane_hits()[0];
     let index =
         usize::from(hit.inner_rect.y) * usize::from(frame.width()) + usize::from(hit.inner_rect.x);
     let link = frame.cells()[index].hyperlink.expect("linked cell") as usize;
     assert_eq!(frame.hyperlinks()[link], "https://example.test");
-}
-
-fn open_help(state: &mut ClientShellState) {
-    let mut open = ClientShellInput::default();
-    state.record_binding(&shepr_termio::input::KeybindAction::Help, &mut open);
 }
 
 fn last_row_text(frame: &FrameData) -> String {

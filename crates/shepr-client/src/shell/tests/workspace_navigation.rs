@@ -1,6 +1,5 @@
 use crate::endpoint::EndpointFailureStatus;
 use crate::shell::config::ClientShellConfig;
-use crate::shell::copy::{ClientCopySearch, ClientCopySearchPrompt};
 use crate::shell::ledger::DropReason;
 use crate::shell::navigation::location::{Location, LocationTarget};
 use crate::shell::overlays::Overlay;
@@ -9,7 +8,6 @@ use crate::shell::state::{
 };
 use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEventKind};
 use shepr_config::ClientConfig;
-use shepr_config::theme::Palette;
 use shepr_protocol::AgentStatus;
 use shepr_protocol::command::{EndpointCommand, EndpointReply};
 use shepr_protocol::{ClientShellSnapshot, SurfaceRect};
@@ -21,11 +19,18 @@ use crate::endpoint::ClientEndpointId;
 
 use crossterm::event::MouseEvent;
 
-use crate::shell::tests::{agent, remote_machine, state_with_remote};
-use crate::shell::tests::{cell_bg, snapshot, surface};
+use crate::shell::tests::{agent, remote_machine, state_with_remote, state_with_remote_config};
+use crate::shell::tests::{cell_bg, enter_navigation, preview_key, snapshot, surface};
 use ratatui::layout::Rect;
 
 use crate::tests::test_workspace_id;
+
+/// A client config on the terminal 16-color theme.
+fn terminal_theme() -> ClientConfig {
+    let mut config = ClientConfig::default();
+    config.theme.name = Some("terminal".into());
+    config
+}
 
 fn workspaces(count: usize) -> ClientShellSnapshot {
     let mut projected = snapshot();
@@ -39,8 +44,11 @@ fn workspaces(count: usize) -> ClientShellSnapshot {
     projected
 }
 
-fn navigation_state(mut projected: ClientShellSnapshot) -> (ClientShellState, ClientEndpointId) {
-    let (mut state, remote) = state_with_remote();
+fn navigation_state(
+    mut projected: ClientShellSnapshot,
+    config: &ClientConfig,
+) -> (ClientShellState, ClientEndpointId) {
+    let (mut state, remote) = state_with_remote_config(config);
     state.set_snapshot(Box::new(projected.clone()));
     projected.boot_id = crate::tests::test_boot_id("remote-boot");
     state.set_endpoint_snapshot(&remote, Box::new(projected));
@@ -95,19 +103,6 @@ fn pane_scrollbar_click_clears_a_workspace_preview_when_leaving_navigation() {
     );
 }
 
-fn preview_key(state: &mut ClientShellState, bytes: &[u8]) {
-    let outcome = state.handle_input_bytes(bytes);
-    assert!(outcome.actions.is_empty(), "{bytes:?}");
-    assert!(outcome.requests.is_empty(), "{bytes:?}");
-    assert!(outcome.repaint, "{bytes:?}");
-}
-
-fn enter_navigation(state: &mut ClientShellState) {
-    preview_key(state, &[0x02]);
-    preview_key(state, b"w");
-    assert_eq!(state.mode.kind(), ClientShellMode::Navigate);
-}
-
 fn assert_selected(state: &ClientShellState, endpoint: &ClientEndpointId, workspace: &str) {
     assert_eq!(
         state.mode.preview().cloned(),
@@ -136,9 +131,14 @@ fn local_navigation_highlight_stays_visible_with_terminal_theme() {
 
     for compact in [false, true] {
         for selection_bg in [Color::Reset, Color::Rgb(70, 63, 93)] {
-            let mut config = ClientShellConfig::from_config(&ClientConfig::default());
-            config.palette = Palette::terminal();
-            config.palette.selection_bg = selection_bg;
+            let mut values = terminal_theme();
+            if let Color::Rgb(r, g, b) = selection_bg {
+                values.theme.custom = Some(shepr_config::CustomThemeColors {
+                    selection_bg: Some(format!("#{r:02x}{g:02x}{b:02x}")),
+                    ..Default::default()
+                });
+            }
+            let config = ClientShellConfig::from_config(&values);
             let expected_bg = if selection_bg == Color::Reset {
                 config.palette.active_row_bg
             } else {
@@ -217,11 +217,13 @@ fn local_navigation_highlight_stays_visible_with_terminal_theme() {
 fn navigation_highlights_only_the_preview_and_activates_on_enter() {
     for (compact, cols) in [(true, 100), (false, 100), (false, 44)] {
         for terminal_theme in [false, true] {
-            let (mut state, remote) = navigation_state(workspaces(2));
+            let config = if terminal_theme {
+                self::terminal_theme()
+            } else {
+                ClientConfig::default()
+            };
+            let (mut state, remote) = navigation_state(workspaces(2), &config);
             state.chrome.set_collapsed(compact);
-            if terminal_theme {
-                state.config.palette = Palette::terminal();
-            }
             state.compose(cols, 28).expect("test precondition");
             enter_navigation(&mut state);
             for (endpoint, collision, steps) in [
@@ -303,12 +305,14 @@ fn navigation_highlights_only_the_preview_and_activates_on_enter() {
 
 #[test]
 fn foreign_preview_blocks_keyboard_actions_but_keeps_active_action_context() {
-    let (mut state, remote) = state_with_remote();
-    state.compose(100, 28).expect("test precondition");
-    enter_navigation(&mut state);
-    preview_key(&mut state, b"\x1b[B");
     for confirm in [false, true] {
-        state.config.confirm_close = confirm;
+        let mut config = ClientConfig::default();
+        config.ui.confirm_close = confirm;
+        config.ui.prompt_new_workspace_name = false;
+        let (mut state, remote) = state_with_remote_config(&config);
+        state.compose(100, 28).expect("test precondition");
+        enter_navigation(&mut state);
+        preview_key(&mut state, b"\x1b[B");
         for key in [
             b"W".as_slice(),
             b"D",
@@ -323,39 +327,39 @@ fn foreign_preview_blocks_keyboard_actions_but_keeps_active_action_context() {
             assert!(state.overlay.is_none());
             assert_eq!(state.mode.kind(), ClientShellMode::Navigate);
         }
+        assert_selected(&state, &remote, "w1");
+        let mut remote_snapshot = workspaces(2);
+        remote_snapshot.boot_id = crate::tests::test_boot_id("remote-boot");
+        // A later snapshot over the same connection.
+        state.set_endpoint_snapshot_for_generation(
+            &remote,
+            crate::tests::test_generation(1),
+            Box::new(remote_snapshot),
+        );
+        preview_key(&mut state, b"\x1b[B");
+        assert_selected(&state, &remote, "w2");
+        assert_eq!(
+            state.workspace_action_id().as_ref(),
+            Some(&crate::tests::test_workspace_id("w1"))
+        );
+        // Without the name prompt, creation follows the active workspace at once.
+        let mut create = ClientShellInput::default();
+        state.record_binding(
+            &shepr_termio::input::KeybindAction::NewWorkspace,
+            &mut create,
+        );
+        assert!(
+            matches!(create.actions.as_slice(), [ClientShellAction::Endpoint { endpoint_id: ClientEndpointId::Local, request, .. }]
+            if matches!(&request.command, EndpointCommand::WorkspaceCreate(params) if matches!(&params.source, shepr_protocol::command::WorkspaceCreateSource::Follow(id) if id == &test_workspace_id("w1"))))
+        );
+        preview_key(&mut state, b"\x1b");
+        assert!(state.mode.preview().is_none());
+        assert_eq!(*state.active_endpoint_id(), ClientEndpointId::Local);
+        assert!(state.activate_endpoint_projection(&remote));
+        enter_navigation(&mut state);
+        preview_key(&mut state, b"W");
+        assert!(matches!(state.overlay, Some(Overlay::Rename(_))));
     }
-    assert_selected(&state, &remote, "w1");
-    let mut remote_snapshot = workspaces(2);
-    remote_snapshot.boot_id = crate::tests::test_boot_id("remote-boot");
-    // A later snapshot over the same connection.
-    state.set_endpoint_snapshot_for_generation(
-        &remote,
-        crate::tests::test_generation(1),
-        Box::new(remote_snapshot),
-    );
-    preview_key(&mut state, b"\x1b[B");
-    assert_selected(&state, &remote, "w2");
-    assert_eq!(
-        state.workspace_action_id().as_ref(),
-        Some(&crate::tests::test_workspace_id("w1"))
-    );
-    state.config.prompt_new_workspace_name = false;
-    let mut create = ClientShellInput::default();
-    state.record_binding(
-        &shepr_termio::input::KeybindAction::NewWorkspace,
-        &mut create,
-    );
-    assert!(
-        matches!(create.actions.as_slice(), [ClientShellAction::Endpoint { endpoint_id: ClientEndpointId::Local, request, .. }]
-        if matches!(&request.command, EndpointCommand::WorkspaceCreate(params) if matches!(&params.source, shepr_protocol::command::WorkspaceCreateSource::Follow(id) if id == &test_workspace_id("w1"))))
-    );
-    preview_key(&mut state, b"\x1b");
-    assert!(state.mode.preview().is_none());
-    assert_eq!(*state.active_endpoint_id(), ClientEndpointId::Local);
-    assert!(state.activate_endpoint_projection(&remote));
-    enter_navigation(&mut state);
-    preview_key(&mut state, b"W");
-    assert!(matches!(state.overlay, Some(Overlay::Rename(_))));
 }
 
 #[test]
@@ -402,62 +406,6 @@ fn empty_workspace_navigation_enter_exits_without_focusing() {
     let enter = state.handle_input_bytes(b"\r");
     assert!(enter.actions.is_empty() && enter.requests.is_empty() && enter.repaint);
     assert_eq!(state.mode.kind(), ClientShellMode::Terminal);
-}
-
-#[test]
-fn foreign_workspace_preview_blocks_paste_into_hidden_copy_search() {
-    let (mut state, _) = state_with_remote();
-    let mut pane_surface = surface();
-    pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics::new(
-        0,
-        20,
-        2,
-        shepr_term::AbsRow(0),
-    ));
-    state.receive_pane_surface_from(
-        pane_surface,
-        state
-            .endpoints
-            .active
-            .generation()
-            .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
-    );
-    state.compose(100, 28).expect("test precondition");
-    assert!(state.enter_copy_mode(&mut ClientShellInput::default()));
-    enter_navigation(&mut state);
-    // Seed the hidden prompt after navigation: text editing consumes the prefix key.
-    state
-        .copy
-        .as_mut()
-        .expect("test precondition")
-        .search
-        .get_or_insert_with(ClientCopySearch::default)
-        .prompt = Some(ClientCopySearchPrompt {
-        direction: shepr_protocol::command::PaneCopySearchDirection::Forward,
-        query: "original".into(),
-    });
-    preview_key(&mut state, b"\x1b[B");
-    assert!(state.workspace_preview_action_blocked());
-    assert!(!state.modal_paste_target_active());
-    let key = shepr_term::key::TerminalKey::new(KeyCode::Char('v'), KeyModifiers::CONTROL);
-    assert!(!state.handle_modal_paste_shortcut_with(
-        &key,
-        &mut ClientShellInput::default(),
-        || { panic!("hidden search must not read the clipboard") }
-    ));
-    let paste = state.handle_raw_events(vec![RawInputEvent::Paste("unexpected".into())]);
-    assert!(paste.actions.is_empty() && paste.requests.is_empty());
-    assert_eq!(
-        state
-            .copy
-            .expect("test precondition")
-            .search
-            .expect("test precondition")
-            .prompt
-            .expect("test precondition")
-            .query,
-        "original".into()
-    );
 }
 
 #[test]
@@ -562,57 +510,58 @@ fn foreign_preview_survives_local_updates_and_rejects_stale_enter() {
 #[test]
 fn active_preview_is_not_retargeted_by_deletion_or_reboot() {
     for invalidation in ["deleted", "boot", "generation"] {
-        let (mut state, _) = state_with_remote();
-        let mut local = workspaces(2);
-        state.set_endpoint_snapshot_for_generation(
-            &ClientEndpointId::Local,
-            crate::tests::test_generation(7),
-            Box::new(local.clone()),
-        );
-        state.receive_pane_surface_from(
-            surface(),
-            state
-                .endpoints
-                .active
-                .generation()
-                .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
-        );
-        state.compose(100, 28).expect("test precondition");
-        enter_navigation(&mut state);
-        preview_key(&mut state, b"\x1b[B");
-        assert_selected(&state, &ClientEndpointId::Local, "w2");
-        let selected = state.mode.preview().cloned();
-        match invalidation {
-            "boot" => local.boot_id = crate::tests::test_boot_id("new-local-boot"),
-            "deleted" => {
-                local.revision = local.revision.checked_next().expect("test precondition");
-                local.workspaces.pop();
-            }
-            _ => {}
-        }
-        let generation =
-            crate::tests::test_generation(if invalidation == "generation" { 8 } else { 7 });
-        state.set_endpoint_snapshot_for_generation(
-            &ClientEndpointId::Local,
-            generation,
-            Box::new(local),
-        );
-        assert_eq!(state.mode.preview().cloned(), selected);
-        preview_key(&mut state, b"\r");
-        assert_eq!(state.mode.kind(), ClientShellMode::Navigate);
-        assert!(state.notices.visible().is_some());
         for confirm in [false, true] {
-            state.config.confirm_close = confirm;
+            let mut config = ClientConfig::default();
+            config.ui.confirm_close = confirm;
+            let (mut state, _) = state_with_remote_config(&config);
+            let mut local = workspaces(2);
+            state.set_endpoint_snapshot_for_generation(
+                &ClientEndpointId::Local,
+                crate::tests::test_generation(7),
+                Box::new(local.clone()),
+            );
+            state.receive_pane_surface_from(
+                surface(),
+                state
+                    .endpoints
+                    .active
+                    .generation()
+                    .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
+            );
+            state.compose(100, 28).expect("test precondition");
+            enter_navigation(&mut state);
+            preview_key(&mut state, b"\x1b[B");
+            assert_selected(&state, &ClientEndpointId::Local, "w2");
+            let selected = state.mode.preview().cloned();
+            match invalidation {
+                "boot" => local.boot_id = crate::tests::test_boot_id("new-local-boot"),
+                "deleted" => {
+                    local.revision = local.revision.checked_next().expect("test precondition");
+                    local.workspaces.pop();
+                }
+                _ => {}
+            }
+            let generation =
+                crate::tests::test_generation(if invalidation == "generation" { 8 } else { 7 });
+            state.set_endpoint_snapshot_for_generation(
+                &ClientEndpointId::Local,
+                generation,
+                Box::new(local),
+            );
+            assert_eq!(state.mode.preview().cloned(), selected);
+            preview_key(&mut state, b"\r");
+            assert_eq!(state.mode.kind(), ClientShellMode::Navigate);
+            assert!(state.notices.visible().is_some());
             for key in [b"W", b"D"] {
                 preview_key(&mut state, key);
             }
             assert!(state.overlay.is_none());
             assert_eq!(state.mode.kind(), ClientShellMode::Navigate);
+            assert_eq!(
+                state.workspace_action_id().as_ref(),
+                Some(&crate::tests::test_workspace_id("w1"))
+            );
         }
-        assert_eq!(
-            state.workspace_action_id().as_ref(),
-            Some(&crate::tests::test_workspace_id("w1"))
-        );
     }
 }
 
@@ -709,8 +658,14 @@ fn workspace_numbers_and_switching_follow_list_position_not_the_id() {
 }
 
 fn local_navigation_state(compact: bool) -> ClientShellState {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
-    state.config.palette = Palette::terminal();
+    local_navigation_state_with(compact, ClientConfig::default())
+}
+
+/// A local shell on `config`, which also gets the terminal theme, with three workspaces
+/// drawn once.
+fn local_navigation_state_with(compact: bool, mut config: ClientConfig) -> ClientShellState {
+    config.theme = terminal_theme().theme;
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
     state.chrome.set_collapsed(compact);
     state.set_snapshot(Box::new(workspaces(3)));
     state.receive_pane_surface_from(
@@ -1053,8 +1008,7 @@ fn direct_agent_focus_repaints_when_releasing_a_workspace_highlight() {
     projected.agents.push(agent(AgentStatus::Idle, 1));
 
     for pending in [false, true] {
-        let mut state = local_navigation_state(false);
-        state.config.keybinds = ClientShellConfig::from_config(&config).keybinds;
+        let mut state = local_navigation_state_with(false, config.clone());
         state.set_snapshot(Box::new(projected.clone()));
         state.compose(100, 28).expect("test precondition");
         if pending {

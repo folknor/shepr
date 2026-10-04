@@ -9,7 +9,7 @@ use crate::shell::navigation::location::{Location, LocationTarget};
 use crate::shell::state::{ClientShellAction, ClientShellInput, ClientShellState};
 use crate::shell::tests::{
     agent, cell_bg, cell_fg, frame_cell, frame_rows, machine_named, remote_machine, snapshot,
-    state_with_machines, state_with_remote, surface,
+    state_with_machines, state_with_remote, state_with_remote_config, surface,
 };
 use crate::tests::test_workspace_id;
 use crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
@@ -132,7 +132,9 @@ fn multi_machine_drop_marker_above_a_first_workspace_keeps_the_machine_name() {
 
 #[test]
 fn collapsed_sidebar_workspace_rows_accept_drag_targets() {
-    let (mut state, _) = state_with_remote();
+    let mut config = ClientConfig::default();
+    config.ui.sidebar_collapsed_mode = SidebarCollapsedModeConfig::Compact;
+    let (mut state, _) = state_with_remote_config(&config);
     let mut local = state
         .endpoints
         .active
@@ -149,7 +151,6 @@ fn collapsed_sidebar_workspace_rows_accept_drag_targets() {
         .collect();
     local.focused_workspace_id = Some(test_workspace_id("w1"));
     state.set_snapshot(Box::new(local));
-    state.config.sidebar_collapsed_mode = SidebarCollapsedModeConfig::Compact;
     state.chrome.set_collapsed(true);
     state.compose(100, 28).expect("collapsed sidebar");
 

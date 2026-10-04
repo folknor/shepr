@@ -9,15 +9,13 @@ use crate::endpoint::{ClientEndpointId, EndpointFailureStatus};
 use crate::shell::config::ClientShellConfig;
 use crate::shell::input::events::PaneInputBatchAccounting;
 use crate::shell::ledger::{DropReason, Ticket};
-use crate::shell::overlays::Overlay;
-use crate::shell::overlays::help::HelpOverlay;
 use crate::shell::state::{
     ClientShellAction, ClientShellEndpointError, ClientShellInput, ClientShellMode,
     ClientShellRequest, ClientShellState,
 };
 use crate::shell::tests::{
-    answer, cell_bg, copy_search, copy_search_result, copy_shell, frame_rows, pane_scroll_result,
-    request_id, snapshot, surface,
+    answer, cell_bg, copy_search, copy_search_result, copy_shell, frame_rows, help_overlay,
+    open_help, pane_scroll_result, press_overlay_key, request_id, snapshot, surface,
 };
 use crate::tests::test_pane_id;
 use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
@@ -58,6 +56,7 @@ fn session() -> CopySession {
 #[test]
 fn ending_a_session_discards_its_queue() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
+    state.set_snapshot(Box::new(snapshot()));
     let mut first = session();
     first.pipeline_mut().begin(Ticket::fixture(2), None);
     first.pipeline_mut().push_op(ClientCopyOperation::Motion(
@@ -73,7 +72,10 @@ fn ending_a_session_discards_its_queue() {
         ));
     state.copy = Some(first);
 
-    state.reset_endpoint_projection(crate::shell::endpoints::ProjectionReset::Rebooted);
+    // The presented server reboots, which resets the projection.
+    let mut rebooted = snapshot();
+    rebooted.boot_id = crate::tests::test_boot_id("rebooted");
+    state.set_snapshot(Box::new(rebooted));
     assert!(state.copy.is_none());
 
     let next = session();
@@ -217,19 +219,18 @@ fn copy_escape_cancels_selection_started_by_prior_queued_key() {
 fn pasted_help_and_copy_queries_normalize_single_line_text() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
-    state.overlay = Some(Overlay::Help(HelpOverlay {
-        search_focused: true,
-        ..HelpOverlay::default()
-    }));
+    open_help(&mut state);
+    press_overlay_key(&mut state, KeyCode::Char('/'));
 
     assert!(state.insert_overlay_text("work\nspace"));
     assert!(matches!(
-        state.overlay,
-        Some(Overlay::Help(HelpOverlay { ref query, .. }))
-            if query.as_str() == "work space"
+        help_overlay(&state),
+        Some(help) if help.query().as_str() == "work space"
     ));
 
-    state.overlay = None;
+    // The first Escape leaves the search, the second closes Help.
+    press_overlay_key(&mut state, KeyCode::Esc);
+    press_overlay_key(&mut state, KeyCode::Esc);
     state.mode.set(ClientShellMode::Copy);
     state.copy = Some(
         CopySession::start(CopyEntry {

@@ -3,8 +3,7 @@ use crate::shell::overlays::Overlay;
 use crate::shell::overlays::context_menu::{
     ContextMenuAction, ContextMenuOverlay, ContextMenuTarget,
 };
-use crate::shell::overlays::global_menu::GlobalMenuOverlay;
-use crate::shell::overlays::rename::{RenameOverlay, RenameTarget};
+use crate::shell::overlays::rename::RenameTarget;
 use crate::shell::sidebar::preferences;
 use crate::shell::state::{ClientShellAction, ClientShellInput, ClientShellState};
 use crossterm::event::{KeyModifiers, MouseButton, MouseEventKind};
@@ -18,7 +17,7 @@ use shepr_termio::input::raw_input::RawInputEvent;
 use shepr_protocol::{ClientShellWorkspace, SurfaceRect};
 use shepr_surface::ratatui_conversion::FrameDataExt as _;
 
-use crate::shell::tests::{snapshot, surface};
+use crate::shell::tests::{rename_target, snapshot, surface};
 use crate::tests::{test_pane_id, test_workspace_id};
 
 #[test]
@@ -390,14 +389,13 @@ fn context_menus_capture_stable_targets_and_route_actions() {
         modifiers: KeyModifiers::empty(),
     })]);
     assert!(matches!(
-        state.overlay,
-        Some(Overlay::Rename(RenameOverlay {
-            target: RenameTarget::Workspace { ref workspace_id },
-            ..
-        })) if workspace_id == &crate::tests::test_workspace_id("w1")
+        rename_target(&state),
+        Some(RenameTarget::Workspace { workspace_id })
+            if workspace_id == &crate::tests::test_workspace_id("w1")
     ));
 
-    state.overlay = None;
+    state.handle_input_bytes(b"\x1b");
+    assert!(state.overlay.is_none());
     state.compose(106, 20).expect("composed frame");
     let pane = state.pane_hits()[0].rect;
     state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
@@ -481,10 +479,9 @@ fn global_menu_opens_from_sidebar_and_routes_client_actions() {
     assert!(help.actions.is_empty());
     assert!(matches!(state.overlay, Some(Overlay::Help(_))));
 
-    state.overlay = Some(Overlay::GlobalMenu(GlobalMenuOverlay {
-        highlighted: 1,
-        launcher,
-    }));
+    // The launcher's toggle reopens the menu over Help; Down highlights detach.
+    state.toggle_global_menu();
+    state.handle_input_bytes(b"\x1b[B");
     let detach = state.handle_input_bytes(b"\r");
     assert!(detach.detach);
     assert!(state.overlay.is_none());

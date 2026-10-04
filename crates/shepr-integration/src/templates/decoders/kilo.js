@@ -1,6 +1,17 @@
 
 // Kilo is a full-lifecycle authority for its pane, so subagent sessions follow
 // the child-session rules above.
+//
+// Whether this process speaks for its pane is read from its own arguments. In
+// the default TUI the plugin runs inside a Bun Web Worker whose `process.argv`
+// is only `[execPath, workerScript]`, so the gate sees no arguments and owns
+// the pane by design: that worker belongs to the TUI in this pane. Main-thread
+// launches (`serve`, `acp`, and `run` or `--mini` when not attached to a
+// daemon) see the real arguments, so the gate can tell them apart: `run` and
+// `--mini` own the pane unless `--attach` names a daemon, while shared servers,
+// attached clients and `remote` (a long-lived in-process instance relaying
+// Kilo Cloud sessions) serve sessions that are not this pane's and never
+// anchor to it.
 function ownsLocalLifecycle() {
   const args = process.argv.slice(2);
   const separator = args.indexOf("--");
@@ -15,7 +26,7 @@ function ownsLocalLifecycle() {
   ) {
     args.splice(0, args[0] === "--log-level" ? 2 : 1);
   }
-  return !["acp", "attach", "console", "daemon", "serve", "web"].includes(args[0]);
+  return !["acp", "attach", "console", "daemon", "remote", "serve", "web"].includes(args[0]);
 }
 
 // Kilo's session events carry no start source, so "startup" is the only
@@ -93,4 +104,15 @@ export const SheprAgentStatePlugin = async () => {
       }
     },
   };
+};
+
+// Kilo's server loader takes a default-exported descriptor first and calls only
+// its `server`; a local-file plugin must name its `id`. The named export stays
+// for loaders older than the descriptor (Kilo before its merge of OpenCode
+// v1.3.4), which call every export in name order: the named export registers
+// the hooks there, and the descriptor, which is not a function, is reported as
+// a load error after it.
+export default {
+  id: "shepr.kilo",
+  server: SheprAgentStatePlugin,
 };

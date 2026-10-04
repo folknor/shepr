@@ -365,7 +365,7 @@ impl ClientShellState {
         }
     }
 
-    pub(in crate::shell) fn tick_selection_highlight(&mut self, now: std::time::Instant) -> bool {
+    fn tick_selection_highlight(&mut self, now: std::time::Instant) -> bool {
         let mut repaint = false;
         if self
             .mouse_selection
@@ -386,7 +386,7 @@ impl ClientShellState {
         self.endpoint_error.set(message, now);
     }
 
-    pub(in crate::shell) fn tick_transient_banners(&mut self, now: std::time::Instant) -> bool {
+    fn tick_transient_banners(&mut self, now: std::time::Instant) -> bool {
         self.notices.tick(now)
     }
 

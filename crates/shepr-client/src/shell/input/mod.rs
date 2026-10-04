@@ -180,7 +180,7 @@ fn read_clipboard_text_bounded_with(
     }
 }
 
-pub(in crate::shell) fn navigate_alias_matches(
+fn navigate_alias_matches(
     combo: shepr_term::key::KeyChord,
     key: &shepr_term::key::TerminalKey,
 ) -> bool {
@@ -237,7 +237,7 @@ fn resolve_navigate_binding(
     None
 }
 
-pub(in crate::shell) fn is_modal_paste_shortcut(key: &shepr_term::key::TerminalKey) -> bool {
+fn is_modal_paste_shortcut(key: &shepr_term::key::TerminalKey) -> bool {
     key.generated_text.as_deref().is_none_or(str::is_empty)
         && matches!(key.code, KeyCode::Char('v' | 'V'))
         && key.modifiers.difference(KeyModifiers::SHIFT) == KeyModifiers::CONTROL
@@ -586,7 +586,7 @@ impl ClientShellState {
         }
     }
 
-    pub(in crate::shell) fn modal_paste_target_active(&self) -> bool {
+    fn modal_paste_target_active(&self) -> bool {
         if self.overlay.is_none()
             && self.mode.is(ClientShellMode::Navigate)
             && self.workspace_preview_action_blocked()
@@ -607,7 +607,9 @@ impl ClientShellState {
             .is_some_and(Overlay::accepts_modal_paste)
     }
 
-    pub(in crate::shell) fn handle_modal_paste_shortcut_with(
+    /// The clipboard-paste shortcut, with the clipboard read passed in so tests can stand
+    /// in for the host clipboard.
+    fn handle_modal_paste_shortcut_with(
         &mut self,
         key: &shepr_term::key::TerminalKey,
         outcome: &mut ClientShellInput,
@@ -1107,11 +1109,23 @@ mod tests {
     use shepr_config::ClientConfig;
     use shepr_protocol::ClientPaneInputEvent;
 
-    use super::{navigate_indexed_binding_index, read_clipboard_text_bounded_with};
-    use crate::shell::state::{ClientShellRequest, ClientShellState};
+    use super::{
+        is_modal_paste_shortcut, navigate_alias_matches, navigate_indexed_binding_index,
+        read_clipboard_text_bounded_with,
+    };
+    use crate::shell::copy::{ClientCopySearch, ClientCopySearchPrompt};
+    use crate::shell::overlays::Overlay;
+    use crate::shell::state::{
+        ClientShellInput, ClientShellMode, ClientShellRequest, ClientShellState,
+    };
+    use crate::shell::tests::{
+        enter_navigation, fill_prompt, press, preview_key, prompt_shell, prompt_text,
+        state_with_remote, surface,
+    };
     use crossterm::event::{KeyCode, KeyModifiers};
     use shepr_protocol::ClientMessage;
     use shepr_protocol::MAX_INPUT_PAYLOAD;
+    use shepr_term::key::TerminalKey;
     use shepr_termio::input::raw_input::RawInputEvent;
 
     fn shell() -> ClientShellState {
@@ -1128,6 +1142,176 @@ mod tests {
         let key = shepr_term::key::TerminalKey::new(KeyCode::Char('3'), KeyModifiers::empty());
 
         assert_eq!(navigate_indexed_binding_index(bindings, &key), Some(2));
+    }
+
+    #[test]
+    fn navigate_arrow_aliases_use_the_configured_alias_matcher() {
+        let left = shepr_term::key::TerminalKey::new(KeyCode::Left, KeyModifiers::empty());
+        let right = shepr_term::key::TerminalKey::new(KeyCode::Right, KeyModifiers::empty());
+        let modified_left = shepr_term::key::TerminalKey::new(KeyCode::Left, KeyModifiers::SHIFT);
+        let left_alias =
+            shepr_config::navigate_alias!(Left).expect("the navigate table defines its left alias");
+        let right_alias = shepr_config::navigate_alias!(Right)
+            .expect("the navigate table defines its right alias");
+
+        assert!(navigate_alias_matches(left_alias, &left));
+        assert!(navigate_alias_matches(right_alias, &right));
+        assert!(!navigate_alias_matches(left_alias, &modified_left));
+    }
+
+    #[test]
+    fn modal_paste_shortcut_is_ctrl_v() {
+        let key = |code, modifiers| shepr_term::key::TerminalKey::new(code, modifiers);
+        assert!(!is_modal_paste_shortcut(&key(
+            KeyCode::Char('v'),
+            KeyModifiers::CONTROL | KeyModifiers::ALT
+        )));
+        assert!(is_modal_paste_shortcut(&key(
+            KeyCode::Char('v'),
+            KeyModifiers::CONTROL
+        )));
+        assert!(is_modal_paste_shortcut(&key(
+            KeyCode::Char('V'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT
+        )));
+        assert!(!is_modal_paste_shortcut(&key(
+            KeyCode::Char('v'),
+            KeyModifiers::SUPER
+        )));
+    }
+
+    #[test]
+    fn modal_paste_inserts_clipboard_text_through_overlay_text_path() {
+        let mut state =
+            ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
+        // With no snapshot the new-workspace prompt opens on its default suggestion, which
+        // the first typed or pasted text replaces.
+        state.open_new_workspace_overlay(&mut ClientShellInput::default());
+        let mut outcome = ClientShellInput::default();
+        let key = shepr_term::key::TerminalKey::new(KeyCode::Char('v'), KeyModifiers::CONTROL);
+
+        assert!(
+            state.handle_modal_paste_shortcut_with(&key, &mut outcome, || {
+                Some("feature/pasted".into())
+            })
+        );
+        assert!(outcome.repaint);
+        assert!(matches!(
+            state.overlay.as_ref(),
+            Some(Overlay::Rename(rename)) if rename.input().as_str() == "feature/pasted"
+        ));
+    }
+
+    #[test]
+    fn text_delivery_paths_insert_at_the_cursor() {
+        for delivery in 0..3 {
+            let mut state = prompt_shell(0);
+            fill_prompt(&mut state, "ab");
+            press(&mut state, KeyCode::Left, KeyModifiers::NONE);
+            let result = match delivery {
+                0 => state.handle_raw_events(vec![RawInputEvent::Key(
+                    TerminalKey::new(KeyCode::Char('x'), KeyModifiers::NONE)
+                        .with_generated_text(Some("X".into())),
+                )]),
+                1 => state.handle_raw_events(vec![RawInputEvent::Paste("X".into())]),
+                _ => {
+                    let mut result = ClientShellInput::default();
+                    assert!(state.handle_modal_paste_shortcut_with(
+                        &TerminalKey::new(KeyCode::Char('v'), KeyModifiers::CONTROL),
+                        &mut result,
+                        || Some("X".into())
+                    ));
+                    result
+                }
+            };
+            assert!(result.repaint, "delivery {delivery}");
+            assert!(result.requests.is_empty() && result.actions.is_empty());
+            assert_eq!(prompt_text(&state).as_str(), "aXb");
+        }
+    }
+
+    #[test]
+    fn copy_search_owns_prefix_but_parked_prompt_does_not_steal_input() {
+        let mut state = prompt_shell(5);
+        fill_prompt(&mut state, "ab");
+        press(&mut state, KeyCode::Char('b'), KeyModifiers::CONTROL);
+        assert_eq!(state.mode.kind(), ClientShellMode::Copy);
+        state.handle_raw_events(vec![RawInputEvent::Paste("X".into())]);
+        assert_eq!(prompt_text(&state).as_str(), "aXb");
+        state.open_rename_pane_overlay();
+        assert!(state.modal_paste_target_active());
+        state.handle_raw_events(vec![RawInputEvent::Paste("name".into())]);
+        assert_eq!(prompt_text(&state).as_str(), "name");
+        // Escape closes the name prompt; the copy search parked behind it is untouched.
+        press(&mut state, KeyCode::Esc, KeyModifiers::NONE);
+        assert_eq!(prompt_text(&state).as_str(), "aXb");
+        state.mode.set(ClientShellMode::Terminal);
+        assert!(!state.modal_paste_target_active());
+        let input = state.handle_raw_events(vec![RawInputEvent::Paste("terminal".into())]);
+        assert!(
+            matches!(&input.requests[..], [ClientShellRequest::Shown(ClientMessage::ClientShellPaneInput { events, .. })] if matches!(&events[..], [ClientPaneInputEvent::Paste(text)] if text == "terminal"))
+        );
+        assert_eq!(prompt_text(&state).as_str(), "aXb");
+        state.mode.set(ClientShellMode::Copy);
+        press(&mut state, KeyCode::Esc, KeyModifiers::NONE);
+        press(&mut state, KeyCode::Char('b'), KeyModifiers::CONTROL);
+        assert_eq!(state.mode.kind(), ClientShellMode::Prefix);
+    }
+
+    #[test]
+    fn foreign_workspace_preview_blocks_paste_into_hidden_copy_search() {
+        let (mut state, _) = state_with_remote();
+        let mut pane_surface = surface();
+        pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics::new(
+            0,
+            20,
+            2,
+            shepr_term::AbsRow(0),
+        ));
+        state.receive_pane_surface_from(
+            pane_surface,
+            state
+                .endpoints
+                .active
+                .generation()
+                .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
+        );
+        state.compose(100, 28).expect("test precondition");
+        assert!(state.enter_copy_mode(&mut ClientShellInput::default()));
+        enter_navigation(&mut state);
+        // Seed the hidden prompt after navigation: text editing consumes the prefix key.
+        state
+            .copy
+            .as_mut()
+            .expect("test precondition")
+            .search
+            .get_or_insert_with(ClientCopySearch::default)
+            .prompt = Some(ClientCopySearchPrompt {
+            direction: shepr_protocol::command::PaneCopySearchDirection::Forward,
+            query: "original".into(),
+        });
+        preview_key(&mut state, b"\x1b[B");
+        assert!(state.workspace_preview_action_blocked());
+        assert!(!state.modal_paste_target_active());
+        let key = shepr_term::key::TerminalKey::new(KeyCode::Char('v'), KeyModifiers::CONTROL);
+        assert!(!state.handle_modal_paste_shortcut_with(
+            &key,
+            &mut ClientShellInput::default(),
+            || { panic!("hidden search must not read the clipboard") }
+        ));
+        let paste = state.handle_raw_events(vec![RawInputEvent::Paste("unexpected".into())]);
+        assert!(paste.actions.is_empty() && paste.requests.is_empty());
+        assert_eq!(
+            state
+                .copy
+                .expect("test precondition")
+                .search
+                .expect("test precondition")
+                .prompt
+                .expect("test precondition")
+                .query,
+            "original".into()
+        );
     }
 
     fn message_text_bytes(request: &ClientShellRequest) -> usize {

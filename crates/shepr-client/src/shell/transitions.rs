@@ -83,7 +83,7 @@ impl ClientShellState {
     /// while every feature's state still exists, then each feature in turn. A reboot also
     /// resets the aggregate agent list's scroll, which an endpoint switch keeps because
     /// that list belongs to the client.
-    pub(in crate::shell) fn reset_endpoint_projection(&mut self, reset: ProjectionReset) {
+    fn reset_endpoint_projection(&mut self, reset: ProjectionReset) {
         self.drop_all_requests(DropReason::Reset);
         self.presentation.reset_view();
         self.presentation.surfaces = PaneSurfaces::default();

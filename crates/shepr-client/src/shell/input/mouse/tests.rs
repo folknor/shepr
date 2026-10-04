@@ -468,9 +468,7 @@ fn client_double_click_selects_word_and_copies_only_after_release() {
                     .expect("test precondition")
                     .is_in_progress()
             );
-            state.tick_selection_highlight(
-                std::time::Instant::now() + std::time::Duration::from_secs(1),
-            );
+            state.tick_timers(std::time::Instant::now() + std::time::Duration::from_secs(1));
             assert!(
                 state
                     .mouse_selection
@@ -518,19 +516,19 @@ fn client_double_click_selects_word_and_copies_only_after_release() {
                 matches!(&copied[..], [ClientShellAction::ClipboardWrite(bytes)] if bytes == b"bravo")
             );
             assert!(
-                state.tick_selection_highlight(
-                    state
-                        .mouse_selection
-                        .highlight_clear_deadline
-                        .expect("test precondition")
-                )
+                state
+                    .tick_timers(
+                        state
+                            .mouse_selection
+                            .highlight_clear_deadline
+                            .expect("test precondition")
+                    )
+                    .repaint
             );
             assert!(state.mouse_selection.selection.is_none());
         } else {
             assert!(actions.is_empty(), "manual selection must not auto-copy");
-            state.tick_selection_highlight(
-                std::time::Instant::now() + std::time::Duration::from_secs(1),
-            );
+            state.tick_timers(std::time::Instant::now() + std::time::Duration::from_secs(1));
             assert!(
                 state.mouse_selection.selection.is_some(),
                 "manual selection must not expire"

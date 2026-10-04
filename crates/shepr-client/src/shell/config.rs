@@ -12,7 +12,7 @@ pub(crate) struct ClientShellConfig {
     pub(in crate::shell) sidebar_width: shepr_config::SidebarWidth,
     pub(in crate::shell) sidebar_bounds: shepr_config::SidebarBounds,
     pub(in crate::shell) sidebar_start_collapsed: bool,
-    pub(in crate::shell) sidebar_collapsed_mode: SidebarCollapsedModeConfig,
+    sidebar_collapsed_mode: SidebarCollapsedModeConfig,
     pub(in crate::shell) spaces: SpacesSidebarConfig,
     pub(in crate::shell) agents: shepr_config::AgentsSidebarConfig,
     /// The `ui.agent_panel_sort` setting (or its default) as launched. It only

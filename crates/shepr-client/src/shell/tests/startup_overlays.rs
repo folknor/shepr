@@ -1,11 +1,10 @@
 use crate::shell::config::ClientShellConfig;
 use crate::shell::notices::{ClientEndpointNoticeKind, NoticeCode};
 use crate::shell::overlays::Overlay;
-use crate::shell::overlays::help::HelpOverlay;
 use crate::shell::state::{ClientShellInput, ClientShellState};
 use shepr_config::ClientConfig;
 
-use crate::shell::tests::{frame_rows, snapshot};
+use crate::shell::tests::{frame_rows, open_help, snapshot};
 
 #[test]
 fn endpoint_notice_expires_without_a_click() {
@@ -19,11 +18,15 @@ fn endpoint_notice_expires_without_a_click() {
     ));
     // Not drawn yet: its lifetime has not started.
     let far = std::time::Instant::now() + std::time::Duration::from_secs(60);
-    assert!(!state.tick_transient_banners(far));
+    assert!(!state.tick_timers(far).repaint);
     state.compose(106, 20).expect("notice frame");
     let drawn = std::time::Instant::now();
-    assert!(!state.tick_transient_banners(drawn));
-    assert!(!state.tick_transient_banners(drawn + std::time::Duration::from_secs(5)));
+    assert!(!state.tick_timers(drawn).repaint);
+    assert!(
+        !state
+            .tick_timers(drawn + std::time::Duration::from_secs(5))
+            .repaint
+    );
 
     // A replacement does not inherit its predecessor's lifetime.
     assert!(state.push_endpoint_notice(
@@ -32,10 +35,10 @@ fn endpoint_notice_expires_without_a_click() {
         "title",
         "body",
     ));
-    assert!(!state.tick_transient_banners(far));
+    assert!(!state.tick_timers(far).repaint);
     state.compose(106, 20).expect("replacement frame");
     assert!(state.notices.visible().is_some());
-    assert!(state.tick_transient_banners(far));
+    assert!(state.tick_timers(far).repaint);
     assert!(state.notices.visible().is_none());
 }
 
@@ -78,7 +81,7 @@ fn overlays_render_without_a_pane_surface_or_snapshot() {
         assert!(!state.drawn().navigator_search().is_empty());
         assert!(state.pane_hits().is_empty());
 
-        state.overlay = Some(Overlay::Help(HelpOverlay::default()));
+        open_help(&mut state);
         state.compose(106, 30).expect("help frame");
         assert!(!state.drawn().help_popup().is_empty());
         assert!(state.drawn().navigator_popup().is_empty());

@@ -13,8 +13,12 @@ mod workspace_navigation;
 
 use crate::endpoint::ClientEndpointId;
 use crate::shell::config::ClientShellConfig;
+use crate::shell::overlays::Overlay;
+use crate::shell::overlays::help::HelpOverlay;
+use crate::shell::overlays::rename::RenameTarget;
 use crate::shell::state::{
-    ClientShellAction, ClientShellEndpointError, ClientShellInput, ClientShellState,
+    ClientShellAction, ClientShellEndpointError, ClientShellInput, ClientShellMode,
+    ClientShellState,
 };
 use crate::tests::{test_pane_id, test_workspace_id};
 use ratatui::buffer::Buffer;
@@ -26,6 +30,7 @@ use shepr_protocol::{
     FrameData, PaneSurfaceFrame, PaneSurfacePane, SurfaceRect,
 };
 use shepr_surface::ratatui_conversion::{FrameDataExt as _, WireColorExt as _};
+use shepr_termio::text_editor::TextEditor;
 
 pub(in crate::shell) fn snapshot() -> ClientShellSnapshot {
     ClientShellSnapshot {
@@ -185,6 +190,143 @@ pub(in crate::shell) fn press_overlay_enter(
         ),
         outcome,
     );
+}
+
+/// Presses `code` in the open overlay, the way the input path routes a key to it.
+pub(in crate::shell) fn press_overlay_key(
+    state: &mut ClientShellState,
+    code: crossterm::event::KeyCode,
+) -> ClientShellInput {
+    let mut outcome = ClientShellInput::default();
+    state.route_overlay_key(
+        &shepr_term::key::TerminalKey::new(code, crossterm::event::KeyModifiers::NONE),
+        &mut outcome,
+    );
+    outcome
+}
+
+/// Presses one key through the shell's whole input path.
+pub(in crate::shell) fn press(
+    state: &mut ClientShellState,
+    code: crossterm::event::KeyCode,
+    modifiers: crossterm::event::KeyModifiers,
+) -> ClientShellInput {
+    state.handle_raw_events(vec![shepr_termio::input::raw_input::RawInputEvent::Key(
+        shepr_term::key::TerminalKey::new(code, modifiers),
+    )])
+}
+
+/// Opens Help the way its key binding does.
+pub(in crate::shell) fn open_help(state: &mut ClientShellState) {
+    let mut open = ClientShellInput::default();
+    state.record_binding(&shepr_termio::input::KeybindAction::Help, &mut open);
+}
+
+/// The open Help overlay, if Help is open.
+pub(in crate::shell) fn help_overlay(state: &ClientShellState) -> Option<&HelpOverlay> {
+    match state.overlay.as_ref() {
+        Some(Overlay::Help(help)) => Some(help),
+        _ => None,
+    }
+}
+
+/// The target of the open name prompt, if one is open.
+pub(in crate::shell) fn rename_target(state: &ClientShellState) -> Option<&RenameTarget> {
+    match state.overlay.as_ref() {
+        Some(Overlay::Rename(rename)) => Some(rename.target()),
+        _ => None,
+    }
+}
+
+/// A presented shell with one of the six one-line text fields open: 0 the new-workspace
+/// prompt, 1 workspace rename, 2 pane rename, 3 the navigator search, 4 the Help search
+/// and 5 the copy-mode search prompt. Each is opened the way a user opens it.
+pub(in crate::shell) fn prompt_shell(field: usize) -> ClientShellState {
+    let mut state = presented_shell();
+    state.compose(106, 30).expect("initial shell");
+    match field {
+        0 => state.open_new_workspace_overlay(&mut ClientShellInput::default()),
+        1 => state.open_rename_workspace_overlay(),
+        2 => state.open_rename_pane_overlay(),
+        3 => {
+            state.open_navigator_overlay();
+            state.handle_input_bytes(b"/");
+        }
+        4 => {
+            open_help(&mut state);
+            state.handle_input_bytes(b"/");
+        }
+        5 => {
+            state.record_binding(
+                &shepr_termio::input::KeybindAction::CopyMode,
+                &mut ClientShellInput::default(),
+            );
+            state.handle_input_bytes(b"/");
+        }
+        _ => unreachable!(),
+    }
+    state
+}
+
+/// The editor of the text field that has input: the open overlay's, or else the copy-mode
+/// search prompt's.
+pub(in crate::shell) fn prompt_text(state: &ClientShellState) -> &TextEditor {
+    match state.overlay.as_ref() {
+        Some(Overlay::Rename(v)) => v.input(),
+        Some(Overlay::Navigator(v)) => &v.query,
+        Some(Overlay::Help(v)) => v.query(),
+        _ => {
+            &state
+                .copy
+                .as_ref()
+                .expect("copy mode")
+                .search
+                .as_ref()
+                .expect("search state")
+                .prompt
+                .as_ref()
+                .expect("prompt")
+                .query
+        }
+    }
+}
+
+/// Replaces the text of the field that has input the way a user does: kill everything
+/// before the end, then paste `text`, which leaves the cursor at its end.
+pub(in crate::shell) fn fill_prompt(state: &mut ClientShellState, text: &str) {
+    press(
+        state,
+        crossterm::event::KeyCode::End,
+        crossterm::event::KeyModifiers::NONE,
+    );
+    press(
+        state,
+        crossterm::event::KeyCode::Char('u'),
+        crossterm::event::KeyModifiers::CONTROL,
+    );
+    state.handle_raw_events(vec![shepr_termio::input::raw_input::RawInputEvent::Paste(
+        text.into(),
+    )]);
+    assert_eq!(
+        prompt_text(state).as_str(),
+        text,
+        "the field holds the filled text"
+    );
+}
+
+/// Feeds `bytes` in navigate mode, where each key only moves the preview.
+pub(in crate::shell) fn preview_key(state: &mut ClientShellState, bytes: &[u8]) {
+    let outcome = state.handle_input_bytes(bytes);
+    assert!(outcome.actions.is_empty(), "{bytes:?}");
+    assert!(outcome.requests.is_empty(), "{bytes:?}");
+    assert!(outcome.repaint, "{bytes:?}");
+}
+
+/// Enters navigate mode with the default prefix and `w`.
+pub(in crate::shell) fn enter_navigation(state: &mut ClientShellState) {
+    preview_key(state, &[0x02]);
+    preview_key(state, b"w");
+    assert_eq!(state.mode.kind(), ClientShellMode::Navigate);
 }
 
 pub(in crate::shell) fn pane_scroll_result(
@@ -347,14 +489,28 @@ pub(in crate::shell) fn snapshot_with_agent(
 }
 
 pub(in crate::shell) fn state_with_remote() -> (ClientShellState, ClientEndpointId) {
-    state_with_machines(&[remote_machine()])
+    state_with_remote_config(&ClientConfig::default())
+}
+
+/// As `state_with_remote`, with the shell launched on `config`.
+pub(in crate::shell) fn state_with_remote_config(
+    config: &ClientConfig,
+) -> (ClientShellState, ClientEndpointId) {
+    state_with_machines_config(&[remote_machine()], config)
 }
 
 /// Online state with a remote snapshot for the first machine; any others stay Connecting.
 pub(in crate::shell) fn state_with_machines(
     machines: &[shepr_config::MachineConfig],
 ) -> (ClientShellState, ClientEndpointId) {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
+    state_with_machines_config(machines, &ClientConfig::default())
+}
+
+fn state_with_machines_config(
+    machines: &[shepr_config::MachineConfig],
+    config: &ClientConfig,
+) -> (ClientShellState, ClientEndpointId) {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(config));
     let endpoint_id = ClientEndpointId::Ssh(machines[0].label.clone());
     state.set_machines(machines);
     state.set_snapshot(Box::new(snapshot()));

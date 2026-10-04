@@ -905,6 +905,28 @@ impl Drop for TerminalGuard {
 }
 
 #[cfg(test)]
+impl TerminalGuard {
+    /// A guard and writer over `/dev/null` with nothing to restore, standing in for
+    /// `setup_terminal` where a test drives the launch without a real terminal.
+    pub(super) fn detached() -> (Self, HostTerminalWriter) {
+        let sink = std::fs::OpenOptions::new()
+            .write(true)
+            .open("/dev/null")
+            .expect("open /dev/null");
+        let output_writer = HostTerminalWriter(Arc::new(sink));
+        let guard = Self {
+            escape_disambiguation: EscapeDisambiguation::Inactive,
+            buffered_host_input: Vec::new(),
+            host_modes: HostModes::new(false),
+            output_writer: output_writer.clone(),
+            restored: false,
+            restore_state: |_, _| Ok(()),
+        };
+        (guard, output_writer)
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

@@ -73,13 +73,13 @@ impl RenameTarget {
 
 #[derive(Debug)]
 pub(in crate::shell) struct RenameOverlay {
-    pub(in crate::shell) input: TextEditor,
-    pub(in crate::shell) target: RenameTarget,
+    input: TextEditor,
+    target: RenameTarget,
 }
 
 impl RenameOverlay {
     /// The new-workspace prompt, seeded with the path-based suggestion.
-    pub(in crate::shell) fn new_workspace(
+    pub(super) fn new_workspace(
         cwd: Option<shepr_protocol::RemotePath>,
         suggested_name: String,
         label_lookup: Option<Ticket>,
@@ -94,10 +94,7 @@ impl RenameOverlay {
         }
     }
 
-    pub(in crate::shell) fn workspace(
-        workspace_id: shepr_protocol::WorkspaceId,
-        label: &str,
-    ) -> Self {
+    pub(super) fn workspace(workspace_id: shepr_protocol::WorkspaceId, label: &str) -> Self {
         Self {
             input: TextEditor::new(label, false),
             target: RenameTarget::Workspace { workspace_id },
@@ -106,10 +103,7 @@ impl RenameOverlay {
 
     /// `label` is the pane's custom name; a pane without one starts empty and is replaced by
     /// the first typed character.
-    pub(in crate::shell) fn pane(
-        pane_id: shepr_protocol::PublicPaneId,
-        label: Option<&str>,
-    ) -> Self {
+    pub(super) fn pane(pane_id: shepr_protocol::PublicPaneId, label: Option<&str>) -> Self {
         Self {
             input: TextEditor::new(label.unwrap_or_default(), label.is_none()),
             target: RenameTarget::Pane { pane_id },
@@ -117,7 +111,7 @@ impl RenameOverlay {
     }
 
     /// The prompt's heading, which always follows its target.
-    pub(in crate::shell) fn title(&self) -> &'static str {
+    fn title(&self) -> &'static str {
         match self.target {
             RenameTarget::NewWorkspace { .. } => "new workspace",
             RenameTarget::Workspace { .. } => "rename workspace",
@@ -302,6 +296,17 @@ fn changed_if(changed: bool) -> OverlayEffect {
         OverlayEffect::Changed
     } else {
         OverlayEffect::Unchanged
+    }
+}
+
+#[cfg(test)]
+impl RenameOverlay {
+    pub(in crate::shell) fn input(&self) -> &TextEditor {
+        &self.input
+    }
+
+    pub(in crate::shell) fn target(&self) -> &RenameTarget {
+        &self.target
     }
 }
 

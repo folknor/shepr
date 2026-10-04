@@ -2,15 +2,6 @@
 
 Recurring chores and checks that wait for the situation to come up.
 
-## Confirm the opencode/Kilo permission-dialog labels
-
-Do this the next time opencode or Kilo is in use.
-
-- The `permission_required` rules in `crates/shepr-detect/src/manifests/opencode.toml` and `kilo.toml` match "△ Permission required" only when one of the dialog's control labels is also on screen: "allow once", "allow always", "reject" or "enter confirm". Those labels were written from memory of opencode's TUI, not captured.
-- If they are wrong, opencode/Kilo panes never show as blocked on a permission prompt; they read as working or idle while waiting on you.
-- To check: in a shepr pane, get the agent to ask for a permission, run `shepr detect capture <pane>`, and compare the dialog's labels with the gate. Fix the manifests if they differ.
-- At the same time, check the Kilo plugin's `ownsLocalLifecycle` gate (`crates/shepr-integration/src/assets/kilo/shepr-agent-state.js`): it assumes `process.argv.slice(2)` holds Kilo's own arguments and excludes the subcommands `acp`, `attach`, `console`, `daemon`, `serve` and `web`, names not verified against the Kilo CLI.
-
 ## Decide whether to keep `pane_history`
 
 `experimental.pane_history` (off by default) makes every session save also
@@ -29,8 +20,7 @@ the history file and its restore path.
 Not defects: paths with no test, and code that works but reads worse than it
 should.
 
-- The client launch's own check for a helper-thread panic (`fatal.is_latched()` in `run_client_loop`, after the host helpers start) has no test: reaching it needs a real terminal. The loop's own latch checks are tested.
-- The client shell's remaining feature-grouped tests in `shell/tests/` (`endpoints.rs`, `workspace_navigation.rs`, `input_domain.rs` and others) assign shell state and overlay fields directly (`state.overlay = Some(Overlay::Help(HelpOverlay {..}))`, rename and global-menu overlays, `state.config.*`, `state.mouse_selection.selection`), which keeps those fields and some helpers shell-wide (`ClientShellConfig::sidebar_collapsed_mode`, modal-paste and tick helpers, `reset_endpoint_projection`, `view::empty_at`). Driving them through the shell's API would let those narrow. `scripts/narrow_visibility.py shell --force` checks every declaration, including fields whose names other structs share, but takes about 20 seconds per declaration.
+- Client shell tests still seed copy-search prompts and copy sessions directly, and some component tests write `config.copy_on_select`, `config.spaces.row_gap`, navigator fields, `mode.set` and the palette, so `ClientCopySearchPrompt` and the copy session fields stay shell-wide. Driving those through copy-mode keys and the config constructor would let them narrow.
 - `terminal_collect_dirty_patch` builds one owned `String` per dirty cell for the wire's `CellData` symbol (plus padding). Not contention on glibc; worth checking if a many-pane, all-redrawing profile ever shows the allocator in the render path.
 
 # Possible capabilities

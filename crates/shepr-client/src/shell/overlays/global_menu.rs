@@ -32,9 +32,9 @@ fn global_menu_items() -> Vec<(&'static str, GlobalMenuAction)> {
 
 #[derive(Debug)]
 pub(in crate::shell) struct GlobalMenuOverlay {
-    pub(in crate::shell) highlighted: usize,
+    pub(super) highlighted: usize,
     /// The sidebar's launcher as drawn when the menu opened; the menu sits above it.
-    pub(in crate::shell) launcher: Rect,
+    pub(super) launcher: Rect,
 }
 
 impl GlobalMenuOverlay {

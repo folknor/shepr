@@ -7,6 +7,8 @@ const originalEnvironment = {
   SHEPR_SOCKET_PATH: process.env.SHEPR_SOCKET_PATH,
 };
 
+const originalArgv = process.argv;
+
 const requests: unknown[] = [];
 const clients: FakeClient[] = [];
 let importCounter = 0;
@@ -49,6 +51,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  process.argv = originalArgv;
   for (const [name, value] of Object.entries(originalEnvironment)) {
     if (value === undefined) {
       delete process.env[name];
@@ -109,6 +112,41 @@ test("routes child permission events to the root session with either ID shape", 
     "root-session",
   ]);
   expect(requests.map((request) => requestParam(request, "state"))).toEqual(["blocked"]);
+});
+
+test("the TUI worker and local launches own the pane, shared servers and remote do not", async () => {
+  // The default TUI runs the plugin in a Bun Web Worker whose argv carries no
+  // arguments, so the gate sees none and owns the pane.
+  process.argv = ["bun", "/$bunfs/root/src/cli/tui/worker.js"];
+  expect((await loadPlugin()).event).toBeFunction();
+  for (const args of [
+    [], ["run"], ["--mini"], ["--print-logs", "--log-level", "DEBUG", "run"], ["run", "--", "--attach"],
+  ]) {
+    process.argv = ["bun", "/$bunfs/root/src/index.js", ...args];
+    expect((await loadPlugin()).event).toBeFunction();
+  }
+  for (const args of [
+    ["remote"], ["--log-level=DEBUG", "remote"], ["serve"], ["acp"], ["attach", "http://localhost:4096"],
+    ["console"], ["daemon"], ["web"], ["run", "--attach", "http://localhost:4096"],
+    ["--mini", "--attach=http://localhost:4096"],
+  ]) {
+    process.argv = ["bun", "/$bunfs/root/src/index.js", ...args];
+    expect(await loadPlugin()).toEqual({});
+  }
+  expect(requests).toHaveLength(0);
+});
+
+test("default-exports a module descriptor whose server is the plugin", async () => {
+  importCounter += 1;
+  const module = await import(`./shepr-agent-state.js?test=${importCounter}`);
+  expect(module.default.id).toBe("shepr.kilo");
+  expect(module.default.server).toBe(module.SheprAgentStatePlugin);
+  expect(Object.keys(module.default).sort()).toEqual(["id", "server"]);
+  expect(requests).toHaveLength(0);
+  const hooks = await module.default.server();
+  await hooks["chat.message"]({ sessionID: "descriptor-root" });
+  expect(requests.map(requestMethod)).toEqual(["pane.report_agent"]);
+  expect(requestParam(requests[0], "state")).toBe("working");
 });
 
 function requestSeq(request: unknown): unknown {

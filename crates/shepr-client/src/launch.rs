@@ -196,7 +196,7 @@ pub(crate) fn run_launched_client(
             warn!(error = %err, "failed to install termination handler; terminal restore relies on TerminalGuard::Drop");
         }
 
-        let mut client_loop = match launched.into_loop(output_writer, terminal_guard, Arc::clone(&should_quit), Arc::clone(&fatal)) {
+        let mut client_loop = match launched.into_loop(output_writer, terminal_guard, Arc::clone(&should_quit), Arc::clone(&fatal), HostHelpers::spawn_threads) {
             Ok(client_loop) => client_loop,
             Err(exit) => return Ok(Err(exit)),
         };
@@ -227,27 +227,7 @@ pub(crate) fn run_launched_client(
     // Read once, after finalization: a panic later than this cannot change
     // the outcome. The diagnostic reaches the restored screen through the
     // binary's exit lines.
-    let result = match launched {
-        Some(Ok(result)) if !fatal.is_latched() => result,
-        Some(Err(error)) if !fatal.is_latched() => return Err(error),
-        _ => {
-            let message = fatal
-                .diagnostic()
-                .unwrap_or("internal error: the client panicked")
-                .to_owned();
-            return Err(ClientRunError::Session(ClientExit::panicked(message)));
-        }
-    };
-    let Err(err) = result else {
-        return Ok(ClientExit::default());
-    };
-    let graceful_shutdown = matches!(&err, LoopExit::ServerShutdown { .. });
-    let exit = ClientExit::from_loop(err);
-    if graceful_shutdown {
-        Ok(exit)
-    } else {
-        Err(ClientRunError::Session(exit))
-    }
+    launch_outcome(launched, &fatal)
 }
 
 impl Launched {
@@ -260,12 +240,16 @@ impl Launched {
     /// - endpoint reader threads -> read ServerMessages and send them to main loop
     /// - one event channel: host input, resize, endpoint readers, connection supervisors, and quit
     /// - main loop: coordinates input, output, and server communication
+    ///
+    /// `start_host_helpers` starts the stdin reader and the resize poller; launch passes
+    /// [`HostHelpers::spawn_threads`], and tests a stand-in that reads no real terminal.
     fn into_loop(
         self,
         output_writer: terminal_setup::HostTerminalWriter,
         terminal_guard: &mut TerminalGuard,
         should_quit: Arc<AtomicBool>,
         fatal: Arc<fatal_panic::FatalPanic>,
+        start_host_helpers: impl FnOnce(HostHelpers),
     ) -> Result<ClientLoop, LoopExit> {
         let Self {
             launch_now,
@@ -338,9 +322,6 @@ impl Launched {
         // Zero means the host has not reported one.
         let reported_cell_size = Arc::new(AtomicCellSize::new());
 
-        // Channel shared by the host helpers, endpoint readers, supervisors and the signal handler.
-        let stdin_tx = event_tx.clone();
-
         // Arm reply tracking only after the corresponding query was written successfully.
         let color_scheme_query =
             query_host_terminal_theme(&mut state.output_writer).map_err(LoopExit::HostTerminal)?;
@@ -352,41 +333,25 @@ impl Launched {
         } else {
             query_host_cell_size(&mut state.output_writer).map_err(LoopExit::HostTerminal)?
         };
-        let stdin_probe = input::HostInputProbe {
+        let probe = input::HostInputProbe {
             color_scheme_query,
             cell_size_query,
             mouse: state.host_modes.mouse_input_probe(),
             escape_disambiguation: terminal_guard.escape_disambiguation(),
         };
 
-        // Spawn the stdin reader after query writes so a failed write does not make
-        // its parser wait for a host reply that cannot arrive.
-        let stdin_quit = Arc::clone(&should_quit);
-        let stdin_initial_host_input = terminal_guard.take_buffered_host_input();
-        let stdin_host_geometry = host_geometry.clone();
-        std::thread::spawn(move || {
-            input::stdin_reader_loop(
-                &stdin_tx,
-                &stdin_quit,
-                &stdin_probe,
-                &stdin_host_geometry,
-                &stdin_initial_host_input,
-            );
-        });
-
-        // Spawn the resize poller thread.
-        let resize_quit = Arc::clone(&should_quit);
-        let resize_tx = event_tx.clone();
-        let resize_cell_size = Arc::clone(&reported_cell_size);
-        let resize_host_geometry = host_geometry.clone();
-        std::thread::spawn(move || {
-            resize_poll_loop(
-                &resize_tx,
-                initial_host_geometry,
-                &resize_cell_size,
-                &resize_host_geometry,
-                &resize_quit,
-            );
+        // Start the host helpers after query writes so a failed write does not make
+        // the stdin parser wait for a host reply that cannot arrive.
+        // They share the event channel with the endpoint readers, supervisors and the
+        // signal handler.
+        start_host_helpers(HostHelpers {
+            event_tx: event_tx.clone(),
+            should_quit: Arc::clone(&should_quit),
+            probe,
+            host_geometry,
+            initial_host_input: terminal_guard.take_buffered_host_input(),
+            initial_host_geometry,
+            reported_cell_size: Arc::clone(&reported_cell_size),
         });
 
         let write_stream = if let Some(attached) = initial {
@@ -491,12 +456,296 @@ enum LocalLaunchState {
     Failed(shepr_launch::EndpointFailure),
 }
 
+/// What the host helpers start with: the stdin reader and the resize poller, both reading
+/// the real host terminal and both sending on the loop's event queue.
+struct HostHelpers {
+    event_tx: tokio::sync::mpsc::Sender<ClientLoopEvent>,
+    should_quit: Arc<AtomicBool>,
+    probe: input::HostInputProbe,
+    host_geometry: SharedHostGeometry,
+    /// Host input the keyboard probe read during terminal setup, replayed first.
+    initial_host_input: Vec<u8>,
+    /// The geometry the handshake sent, the resize poller's baseline.
+    initial_host_geometry: HostGeometrySnapshot,
+    reported_cell_size: Arc<AtomicCellSize>,
+}
+
+impl HostHelpers {
+    /// Spawns the stdin reader and the resize poller threads. They run until `should_quit`
+    /// is set or their terminal or queue goes; a panic in either is latched by the process
+    /// panic hook (`fatal_panic`).
+    fn spawn_threads(self) {
+        let Self {
+            event_tx,
+            should_quit,
+            probe,
+            host_geometry,
+            initial_host_input,
+            initial_host_geometry,
+            reported_cell_size,
+        } = self;
+
+        let stdin_tx = event_tx.clone();
+        let stdin_quit = Arc::clone(&should_quit);
+        let stdin_host_geometry = host_geometry.clone();
+        std::thread::spawn(move || {
+            input::stdin_reader_loop(
+                &stdin_tx,
+                &stdin_quit,
+                &probe,
+                &stdin_host_geometry,
+                &initial_host_input,
+            );
+        });
+
+        std::thread::spawn(move || {
+            resize_poll_loop(
+                &event_tx,
+                initial_host_geometry,
+                &reported_cell_size,
+                &host_geometry,
+                &should_quit,
+            );
+        });
+    }
+}
+
+/// The run's result, read once after finalization. A latched panic outranks whatever the
+/// launch returned, a loop exit or a launch failure included, and a launch that unwound
+/// (`None`) is always one.
+fn launch_outcome(
+    launched: Option<Result<Result<(), LoopExit>, ClientRunError>>,
+    fatal: &fatal_panic::FatalPanic,
+) -> Result<ClientExit, ClientRunError> {
+    let result = match launched {
+        Some(Ok(result)) if !fatal.is_latched() => result,
+        Some(Err(error)) if !fatal.is_latched() => return Err(error),
+        _ => {
+            let message = fatal
+                .diagnostic()
+                .unwrap_or("internal error: the client panicked")
+                .to_owned();
+            return Err(ClientRunError::Session(ClientExit::panicked(message)));
+        }
+    };
+    let Err(err) = result else {
+        return Ok(ClientExit::default());
+    };
+    let graceful_shutdown = matches!(&err, LoopExit::ServerShutdown { .. });
+    let exit = ClientExit::from_loop(err);
+    if graceful_shutdown {
+        Ok(exit)
+    } else {
+        Err(ClientRunError::Session(exit))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use shepr_test_fixtures::{AppPathsFixture as _, ValidatedClientConfigFixture as _};
     use std::os::unix::ffi::OsStrExt as _;
     use std::os::unix::fs::PermissionsExt as _;
+
+    /// What `Launched::prepare` leaves when Local's socket could not be reached and a
+    /// machine is configured, the one launch state that reaches the loop without a Local
+    /// attach. Built directly: `prepare` reads the real terminal's size.
+    fn launched_with_local_unreached(paths: &shepr_paths::AppPaths) -> Launched {
+        let config = shepr_config::ValidatedClientConfig::test_from_config_with_paths(
+            shepr_config::ClientConfig {
+                machines: vec![shepr_config::MachineConfig {
+                    label: shepr_config::MachineLabel::parse("remote").expect("test label"),
+                    ssh: shepr_config::SshTarget::parse("remote").expect("test target"),
+                }],
+                ..Default::default()
+            },
+            None,
+            paths.clone(),
+        );
+        let launch_now = std::time::Instant::now();
+        // The SSH control socket's staging path does not fit under any directory in the
+        // build tree, so the connectors take a runtime directory as short as a real
+        // `/run/user/<uid>` that does not exist. These tests never connect: the missing
+        // directory makes the connector's runtime directory check fail as a transient
+        // `NotFound` before any path length is considered.
+        let short_paths = shepr_paths::AppPaths::rooted_at(
+            std::path::Path::new("/nonexistent/shepr-launch-tests"),
+            None,
+            None,
+        )
+        .expect("short test root");
+        let connectors =
+            endpoint::EndpointSupervisors::fresh_connectors(&short_paths, config.machines());
+        let supervisors =
+            endpoint::EndpointSupervisors::new(connectors, launch_now).expect("test supervisors");
+        let machines = config.machines().to_vec();
+        let initial_host_geometry = HostGeometrySnapshot {
+            geometry: terminal_geometry::TerminalGeometry::new(
+                shepr_core::geometry::GridSize::clamped(80, 24),
+                shepr_core::geometry::HostCell::Unknown,
+            ),
+            pixel_extent: None,
+        };
+        let (event_tx, event_rx) =
+            tokio::sync::mpsc::channel::<ClientLoopEvent>(CLIENT_EVENT_QUEUE_CAPACITY);
+        Launched {
+            launch_now,
+            initial: LocalAtLaunch::Failed {
+                failure: None,
+                generation: endpoint::EndpointSupervisors::initial_local_generation(),
+            },
+            supervisors,
+            local_failure_policy: endpoint::LocalFailurePolicy::for_machines(&machines),
+            machines,
+            initial_host_geometry,
+            initial_geometry: terminal_geometry::bounded_cell_geometry(
+                initial_host_geometry.geometry,
+            ),
+            event_tx,
+            event_rx,
+            settings: ClientSettings::resolve(&config).expect("test settings"),
+            shell_config: shell::ClientShellConfig::from_validated_config(&config),
+            paths: paths.clone(),
+            local_mismatch_guidance: "test guidance".into(),
+        }
+    }
+
+    /// A host helper that panics while the helpers start (here, the stand-in latching as
+    /// the process panic hook would) stops the launch before the loop is built, and the
+    /// run reports the panic, not a loop exit.
+    #[test]
+    fn a_helper_panic_latched_at_start_ends_the_launch_as_a_panic() {
+        let _env = shepr_test_support::IsolatedEnv::new();
+        let scratch = shepr_test_support::ScratchDir::new("launch-helper-panic");
+        let paths = shepr_paths::AppPaths::test_at(&scratch);
+        let fatal = Arc::new(fatal_panic::FatalPanic::default());
+        let should_quit = Arc::new(AtomicBool::new(false));
+        let (mut terminal_guard, output_writer) = TerminalGuard::detached();
+
+        let helper_fatal = Arc::clone(&fatal);
+        let built = launched_with_local_unreached(&paths).into_loop(
+            output_writer,
+            &mut terminal_guard,
+            Arc::clone(&should_quit),
+            Arc::clone(&fatal),
+            move |_helpers| helper_fatal.latch(),
+        );
+        let Err(exit) = built else {
+            panic!("a latched helper panic must stop the launch before the loop");
+        };
+        assert!(matches!(exit, LoopExit::Panicked));
+
+        // The run's closure hands a loop exit from `into_loop` on as `Ok(Err(exit))`.
+        let outcome = launch_outcome(Some(Ok(Err(exit))), &fatal);
+        let Err(ClientRunError::Session(exit)) = outcome else {
+            panic!("a latched panic is a failed session: {outcome:?}");
+        };
+        assert_eq!(
+            exit.lines().collect::<Vec<_>>(),
+            ["internal error: the client panicked"]
+        );
+    }
+
+    fn every_loop_exit() -> Vec<LoopExit> {
+        vec![
+            LoopExit::HostTerminal(io::Error::new(io::ErrorKind::BrokenPipe, "host gone")),
+            LoopExit::ServerShutdown {
+                reason: shepr_protocol::ShutdownReason::Stopping,
+            },
+            LoopExit::ConnectionLost(io::Error::new(io::ErrorKind::BrokenPipe, "peer reset")),
+            LoopExit::Panicked,
+        ]
+    }
+
+    fn session_lines(outcome: Result<ClientExit, ClientRunError>) -> Vec<String> {
+        let Err(ClientRunError::Session(exit)) = outcome else {
+            panic!("expected a failed session: {outcome:?}");
+        };
+        exit.lines().map(str::to_owned).collect()
+    }
+
+    /// Once a panic is latched, nothing the launch returned is reported: a clean loop
+    /// end, every loop exit, a launch failure and an unwound launch all end as the panic.
+    #[test]
+    fn a_latched_panic_outranks_every_launch_result() {
+        let fatal = fatal_panic::FatalPanic::default();
+        fatal.latch();
+        let panicked = ["internal error: the client panicked".to_owned()];
+
+        assert_eq!(session_lines(launch_outcome(None, &fatal)), panicked);
+        assert_eq!(
+            session_lines(launch_outcome(Some(Ok(Ok(()))), &fatal)),
+            panicked
+        );
+        for exit in every_loop_exit() {
+            assert_eq!(
+                session_lines(launch_outcome(Some(Ok(Err(exit))), &fatal)),
+                panicked
+            );
+        }
+        let launch_error = ClientRunError::Launch(io::Error::other("launch failed"));
+        assert_eq!(
+            session_lines(launch_outcome(Some(Err(launch_error)), &fatal)),
+            panicked
+        );
+    }
+
+    #[test]
+    fn an_unlatched_launch_reports_what_it_returned() {
+        let fatal = fatal_panic::FatalPanic::default();
+
+        let clean = launch_outcome(Some(Ok(Ok(()))), &fatal).expect("a clean end succeeds");
+        assert_eq!(clean.lines().count(), 0);
+
+        let launch_error = ClientRunError::Launch(io::Error::other("launch failed"));
+        let outcome = launch_outcome(Some(Err(launch_error)), &fatal);
+        let Err(ClientRunError::Launch(error)) = outcome else {
+            panic!("a launch failure stays one: {outcome:?}");
+        };
+        assert_eq!(error.to_string(), "launch failed");
+        assert!(!fatal.is_latched());
+    }
+
+    /// A server that shut down ends the session successfully, still saying why; every
+    /// other loop exit is a failed session whose line is that exit.
+    #[test]
+    fn loop_exits_map_to_their_reported_outcome() {
+        let fatal = fatal_panic::FatalPanic::default();
+        for exit in every_loop_exit() {
+            let expected = exit.to_string();
+            let graceful = matches!(&exit, LoopExit::ServerShutdown { .. });
+            let outcome = launch_outcome(Some(Ok(Err(exit))), &fatal);
+            if graceful {
+                let exit = outcome.expect("a server shutdown is a successful exit");
+                assert_eq!(exit.lines().collect::<Vec<_>>(), [expected.as_str()]);
+            } else {
+                assert_eq!(session_lines(outcome), [expected]);
+            }
+        }
+    }
+
+    /// The control: helpers that start cleanly leave a loop to run, so the latch is what
+    /// stopped the launch above.
+    #[test]
+    fn helpers_that_start_cleanly_leave_a_loop_to_run() {
+        let _env = shepr_test_support::IsolatedEnv::new();
+        let scratch = shepr_test_support::ScratchDir::new("launch-helper-start");
+        let paths = shepr_paths::AppPaths::test_at(&scratch);
+        let fatal = Arc::new(fatal_panic::FatalPanic::default());
+        let (mut terminal_guard, output_writer) = TerminalGuard::detached();
+
+        let mut started = 0;
+        let built = launched_with_local_unreached(&paths).into_loop(
+            output_writer,
+            &mut terminal_guard,
+            Arc::new(AtomicBool::new(false)),
+            Arc::clone(&fatal),
+            |_helpers| started += 1,
+        );
+        assert!(built.is_ok(), "an unlatched launch builds its loop");
+        assert_eq!(started, 1, "the helpers start once");
+        assert!(!fatal.is_latched());
+    }
 
     #[test]
     fn impossible_connector_paths_fail_in_the_preterminal_phase() {

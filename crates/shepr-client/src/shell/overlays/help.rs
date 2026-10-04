@@ -182,11 +182,12 @@ fn help_lines(keybinds: &LiveKeybindConfig, query: &str, palette: &Palette) -> V
 
 #[derive(Debug, Default)]
 pub(in crate::shell) struct HelpOverlay {
-    pub(in crate::shell) query: TextEditor,
-    pub(in crate::shell) search_focused: bool,
-    pub(in crate::shell) scroll: usize,
+    query: TextEditor,
+    search_focused: bool,
+    /// Written back by `Overlay::commit_scroll` with the scroll a frame resolved.
+    pub(super) scroll: usize,
     /// The grab offset of a scrollbar drag in progress, held until its release.
-    pub(in crate::shell) drag: Option<u16>,
+    drag: Option<u16>,
 }
 
 impl HelpOverlay {
@@ -496,6 +497,21 @@ fn changed_if(changed: bool) -> OverlayEffect {
         OverlayEffect::Changed
     } else {
         OverlayEffect::Unchanged
+    }
+}
+
+#[cfg(test)]
+impl HelpOverlay {
+    pub(in crate::shell) fn query(&self) -> &TextEditor {
+        &self.query
+    }
+
+    pub(in crate::shell) fn search_focused(&self) -> bool {
+        self.search_focused
+    }
+
+    pub(in crate::shell) fn scroll(&self) -> usize {
+        self.scroll
     }
 }
 
