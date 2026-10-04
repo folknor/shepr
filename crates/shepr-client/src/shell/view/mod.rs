@@ -365,6 +365,15 @@ fn surface_rect_on_screen(origin: (u16, u16), rect: shepr_protocol::SurfaceRect)
 }
 
 impl PaneHit {
+    /// The drawn part of the pane's content, columns then rows, counted from its top-left
+    /// cell. It is `pane_size` unless the clip cut the pane.
+    pub(in crate::shell) fn visible_size(&self) -> (u16, u16) {
+        (
+            self.inner_rect.width.min(self.pane_size.0),
+            self.inner_rect.height.min(self.pane_size.1),
+        )
+    }
+
     /// Builds a hit from a wire pane, whose rects are surface-local, by
     /// translating them to screen cells and clipping them to `clip`.
     pub(in crate::shell) fn from_wire(
@@ -569,6 +578,14 @@ impl ShellView {
             Some(OverlayView::ContextMenu(menu)) => &menu.rows,
             _ => &[],
         }
+    }
+}
+
+#[cfg(test)]
+impl ShellView {
+    /// The screen cell the copy cursor was drawn at, if it was drawn.
+    pub(in crate::shell) fn copy_cursor(&self) -> Option<(u16, u16)> {
+        self.copy_cursor
     }
 }
 

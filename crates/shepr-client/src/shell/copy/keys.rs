@@ -227,6 +227,9 @@ impl ClientShellState {
         let Some(metrics) = hit.scroll else {
             return false;
         };
+        // The cursor starts where it can be seen: on the terminal cursor when that is drawn,
+        // else on the last drawn row. Only a clipped pane draws less than its full size.
+        let (visible_cols, visible_rows) = hit.visible_size();
         let cursor = self
             .pane_surface()
             .and_then(|surface| {
@@ -234,11 +237,11 @@ impl ClientShellState {
                 let cursor = surface.frame.cursor().filter(|cursor| cursor.visible)?;
                 let inner = pane.inner_rect;
                 let row = shepr_term::ViewportRow::on_screen(cursor.y, inner.y)
-                    .filter(|row| row.0 < inner.height)?;
+                    .filter(|row| row.0 < visible_rows)?;
                 let col = cursor
                     .x
                     .checked_sub(inner.x)
-                    .filter(|col| *col < inner.width)?;
+                    .filter(|col| *col < visible_cols)?;
                 Some(shepr_protocol::command::PaneTextPoint {
                     row: metrics.absolute_row_at_viewport(row),
                     col,
@@ -246,7 +249,7 @@ impl ClientShellState {
             })
             .unwrap_or(shepr_protocol::command::PaneTextPoint {
                 row: metrics.absolute_row_at_viewport(shepr_term::ViewportRow(
-                    hit.pane_size.1.saturating_sub(1),
+                    visible_rows.saturating_sub(1),
                 )),
                 col: 0,
             });
@@ -778,7 +781,8 @@ impl ClientShellState {
         let Some(hit) = self.copy_hit() else {
             return;
         };
-        let lines = shepr_termio::copy_mode::copy_mode_page_lines(hit.pane_size.1, page);
+        // A page is what is drawn: all of the pane, or the part a clip leaves.
+        let lines = shepr_termio::copy_mode::copy_mode_page_lines(hit.visible_size().1, page);
         let Some((pane_id, next_offset)) = self.copy.as_mut().map(|copy_mode| {
             if direction < 0 {
                 copy_mode.cursor.row =
@@ -798,6 +802,7 @@ impl ClientShellState {
             return;
         };
         self.push_pane_scroll_offset(pane_id, next_offset, outcome);
+        self.keep_copy_cursor_drawn();
         self.sync_copy_selection();
         outcome.repaint = true;
     }
@@ -821,6 +826,7 @@ impl ClientShellState {
             return;
         };
         self.push_pane_scroll_offset(pane_id, offset_from_bottom, outcome);
+        self.keep_copy_cursor_drawn();
         self.sync_copy_selection();
         outcome.repaint = true;
     }
@@ -846,14 +852,12 @@ impl ClientShellState {
     /// history no scroll can lift it; `compose_frame` then moves the bar to the top row instead.
     fn reveal_copy_cursor(&mut self, outcome: &mut ClientShellInput) {
         let reserve_mode_bar_row = self.mode_bar_covers_copy_pane();
+        let visible = self.copy_visible_size();
         let request = self.copy.as_mut().and_then(|copy_mode| {
             let current_top = copy_mode.viewport_top();
-            let max_cursor_row = usize::from(
-                copy_mode
-                    .geometry
-                    .1
-                    .saturating_sub(if reserve_mode_bar_row { 2 } else { 1 }),
-            );
+            let visible_rows = visible.map_or(copy_mode.geometry.1, |(_, rows)| rows);
+            let max_cursor_row =
+                usize::from(visible_rows.saturating_sub(if reserve_mode_bar_row { 2 } else { 1 }));
             let bottom = current_top.saturating_add(max_cursor_row);
             let desired_top = if copy_mode.cursor.row < current_top {
                 copy_mode.cursor.row
@@ -871,6 +875,26 @@ impl ClientShellState {
         });
         if let Some((pane_id, offset)) = request {
             self.push_pane_scroll_offset(pane_id, offset, outcome);
+        }
+        self.keep_copy_cursor_drawn();
+    }
+
+    /// The copy pane's drawn size, `None` before it is drawn.
+    fn copy_visible_size(&self) -> Option<(u16, u16)> {
+        self.copy_hit().map(|hit| hit.visible_size())
+    }
+
+    /// Keeps the copy cursor on the drawn part of its pane. While a clipped pane waits for
+    /// its resized surface, the rows below the clip of the newest screen cannot be scrolled
+    /// into view and no column past the clip can be, so the cursor stops at the drawn edge
+    /// instead of moving where it cannot be seen. A server motion or search result that
+    /// lands there is held at the edge the same way.
+    fn keep_copy_cursor_drawn(&mut self) {
+        let Some(visible) = self.copy_visible_size() else {
+            return;
+        };
+        if let Some(copy_mode) = self.copy.as_mut() {
+            copy_mode.keep_cursor_within(visible);
         }
     }
 

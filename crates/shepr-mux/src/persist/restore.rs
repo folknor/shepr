@@ -1027,7 +1027,7 @@ mod tests {
         let snapshot = crate::persist::capture(
             &workspaces,
             &crate::pane::PaneRuntimeRegistry::new(),
-            Path::new("/"),
+            &shepr_core::absolute_path::AbsolutePath::root(),
             Default::default(),
         );
         let plan = plan_restore(
@@ -1156,7 +1156,7 @@ mod tests {
             let captured = crate::persist::capture(
                 &workspaces,
                 &runtimes,
-                std::path::Path::new("/"),
+                &shepr_core::absolute_path::AbsolutePath::root(),
                 Default::default(),
             );
             let pane = only_pane(&captured.workspaces[0]);
@@ -1726,7 +1726,7 @@ mod tests {
             let captured = crate::persist::capture(
                 &workspaces,
                 &runtimes,
-                std::path::Path::new("/"),
+                &shepr_core::absolute_path::AbsolutePath::root(),
                 Default::default(),
             );
             assert_eq!(

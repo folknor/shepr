@@ -29,21 +29,9 @@ the history file and its restore path.
 Not defects: paths with no test, and code that works but reads worse than it
 should.
 
-- A delivered `server.stop` cannot make a wedged server loop finish; forcing that would need its own mechanism and a decision about the final save.
-- The owned-runtime tests build fixture names with `DirectoryKind::directory_name` and `content_path`, the helpers under test, so nothing pins the literal directory prefixes and content names.
-- `bootstrap_opens_the_gate_after_restore` (`crates/shepr-server/src/server/headless/bootstrap.rs`) repeats `run_server`'s startup steps by hand instead of running them, so deleting `open_client_protocol()` from `run_server` would leave it green; only daemon-level tests would notice.
-- The client's `present_frame` relies on the presentation gate never passing a pane frame while no endpoint is shown; the test that covered that through a frozen-frames check went with the check, and nothing at the gate replaces it.
-- `cwd_purposes_preserve_missing_absolute_state_without_filesystem_checks` passes no pane runtime, so the per-purpose runtime branches of the mux terminal cwd resolution have no test.
-- Navigator tests that call `render::client_navigator_rows` build a fresh index, so the cached `navigator_index` that production reads is not exercised.
-- The client shell's `Notices`, `ChromeLayout` and `TransientError` components have no unit tests of their own; they are covered only through `ClientShellState` tests.
 - The client launch's own check for a helper-thread panic (`fatal.is_latched()` in `run_client_loop`, after the host helpers start) has no test: reaching it needs a real terminal. The loop's own latch checks are tested.
-- The `keybinding_table!` consumer patterns are copied verbatim into several files across shepr-config, shepr-termio and the client's `shell/input/mod.rs`, so any column change to the table touches every copy.
-- `AbsolutePath` derefs to `Path` and compares equal with `Path`, `PathBuf` and `&Path`, the collapse-back-to-primitive shape typed identities otherwise avoid. Arguably right for a path type; decide deliberately.
-- A hook report parked while ownership awaits a process, with no start suppressed, never expires and process evidence alone does not promote it (`observe_process` returns early without a pending start), so detect explain shows it as parked with an ever-growing age until a start or an applied report arrives. Possibly intended (it waits for a start), but it misleads the same way an expired parked start did; decide whether it should age out or read differently.
 - The client shell's remaining feature-grouped tests in `shell/tests/` (`endpoints.rs`, `workspace_navigation.rs`, `input_domain.rs` and others) assign shell state and overlay fields directly (`state.overlay = Some(Overlay::Help(HelpOverlay {..}))`, rename and global-menu overlays, `state.config.*`, `state.mouse_selection.selection`), which keeps those fields and some helpers shell-wide (`ClientShellConfig::sidebar_collapsed_mode`, modal-paste and tick helpers, `reset_endpoint_projection`, `view::empty_at`). Driving them through the shell's API would let those narrow. `scripts/narrow_visibility.py shell --force` checks every declaration, including fields whose names other structs share, but takes about 20 seconds per declaration.
-- Nothing in the gate flags a `cfg(test)` helper that no test calls (one sat unused unnoticed), so dead test helpers can accumulate.
 - `terminal_collect_dirty_patch` builds one owned `String` per dirty cell for the wire's `CellData` symbol (plus padding). Not contention on glibc; worth checking if a many-pane, all-redrawing profile ever shows the allocator in the render path.
-- While a pane is clipped (the client area smaller than the server surface, until the resized surface arrives), copy mode keeps the pane's full geometry, so its cursor can sit in the part of the pane that is not drawn.
 
 # Possible capabilities
 

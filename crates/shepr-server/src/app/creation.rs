@@ -3,24 +3,20 @@ use shepr_core::absolute_path::AbsolutePath;
 use super::{App, SpawnGeometry, api_helpers::presented_agent_status};
 use shepr_config::NewTerminalCwd;
 
-/// `home_dir` and `current_dir` are the launch's `AppPaths`, which resolves
-/// both as absolute paths; one that is not (only a test root can hold it) is
-/// skipped like an absent one.
+/// `home_dir` and `fallback_cwd` are the launch's `AppPaths`
+/// (`AppPaths::fallback_cwd` is the launch directory, else the root).
 pub(crate) fn resolve_new_terminal_cwd(
     policy: &NewTerminalCwd,
-    home_dir: Option<&std::path::Path>,
-    current_dir: Option<&std::path::Path>,
+    home_dir: Option<&AbsolutePath>,
+    fallback_cwd: &AbsolutePath,
     follow_cwd: Option<AbsolutePath>,
 ) -> AbsolutePath {
-    let absolute = |path: &std::path::Path| AbsolutePath::new(path).ok();
-    let home = home_dir.and_then(absolute);
-    let fallback = current_dir
-        .and_then(absolute)
-        .unwrap_or_else(AbsolutePath::root);
+    let home = home_dir.cloned();
+    let fallback = || fallback_cwd.clone();
     match policy {
-        NewTerminalCwd::Follow => follow_cwd.or(home).unwrap_or(fallback),
-        NewTerminalCwd::Home => home.unwrap_or(fallback),
-        NewTerminalCwd::Current => fallback,
+        NewTerminalCwd::Follow => follow_cwd.or(home).unwrap_or_else(fallback),
+        NewTerminalCwd::Home => home.unwrap_or_else(fallback),
+        NewTerminalCwd::Current => fallback(),
         // ServerConfig validation resolved it to an absolute directory at launch
         // (`~` expanded, relative paths joined to the launch directory).
         NewTerminalCwd::Path(path) => path.clone(),
@@ -63,7 +59,7 @@ impl App {
         resolve_new_terminal_cwd(
             &self.state.settings.new_terminal_cwd,
             self.paths.home_dir(),
-            Some(self.paths.fallback_cwd()),
+            self.paths.fallback_cwd(),
             follow_cwd,
         )
     }

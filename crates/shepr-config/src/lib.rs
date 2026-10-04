@@ -366,13 +366,13 @@ mod tests {
         };
     }
 
-    macro_rules! record_key_config_fields {
-        (
-            actions { $(($action_field:ident, $action_variant:ident, $action_default:literal, $action_group:ident, $action_label:literal, $action_doc:literal),)* }
-            indexed { $(($indexed_field:ident, $indexed_variant:ident, $indexed_default:literal, $indexed_group:ident, $indexed_label:literal, $indexed_doc:literal, $indexed_help_after:literal),)* }
-            navigate { $(($navigate_config_field:ident, $navigate_field:ident, $navigate_variant:ident, $navigate_default:literal, $navigate_group:ident, $navigate_label:literal, $navigate_doc:literal, $navigate_alias:ident),)* }
-            navigate_indexed { $(($navigate_indexed_config_field:ident, $navigate_indexed_field:ident, $navigate_indexed_variant:ident, $navigate_indexed_default:literal, $navigate_indexed_group:ident, $navigate_indexed_label:literal, $navigate_indexed_doc:literal, $navigate_indexed_alias:ident),)* }
-        ) => {
+    crate::keybinding_rows! {
+        $ define_record_key_config_fields;
+        actions(field = $action_field)
+        indexed(field = $indexed_field)
+        navigate(config_field = $navigate_config_field)
+        navigate_indexed(config_field = $navigate_indexed_config_field)
+        => {
             fn record_key_config_fields(fields: &mut BTreeSet<String>, keys: KeysConfig) {
                 let KeysConfig {
                     prefix: _,
@@ -387,9 +387,8 @@ mod tests {
                 $(fields.insert(format!("keys.{}", stringify!($navigate_config_field)));)*
                 $(fields.insert(format!("keys.{}", stringify!($navigate_indexed_config_field)));)*
             }
-        };
+        }
     }
-    crate::keybinding_table!(record_key_config_fields);
 
     fn config_field_paths(config: ClientConfig) -> BTreeSet<String> {
         let mut fields = BTreeSet::new();

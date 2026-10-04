@@ -187,3 +187,143 @@ impl ChromeLayout {
         self.collapsed.origin()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use shepr_config::ClientConfig;
+
+    const MIN: u16 = 20;
+    const MAX: u16 = 40;
+
+    /// A shell config whose sidebar width lies within `MIN..=MAX`, set in client.toml when
+    /// `configured_width` is given, with nothing remembered.
+    fn config(configured_width: Option<u16>) -> ClientShellConfig {
+        let mut values = ClientConfig::default();
+        values.ui.sidebar_min_width = MIN;
+        values.ui.sidebar_max_width = MAX;
+        values.ui.sidebar_width = configured_width;
+        ClientShellConfig::from_config(&values)
+    }
+
+    fn nothing_remembered(chrome: &ChromeLayout) -> bool {
+        let preferences = chrome.preferences();
+        preferences.sidebar_width.is_none()
+            && preferences.sidebar_collapsed.is_none()
+            && preferences.sidebar_section_split.is_none()
+            && preferences.agent_panel_sort.is_none()
+    }
+
+    #[test]
+    fn a_fresh_layout_takes_the_defaults_and_remembers_nothing() {
+        let config = config(None);
+        let chrome = ChromeLayout::new(&config);
+        assert_eq!(chrome.width(), config.sidebar_width.value());
+        assert_eq!(chrome.width_origin(), ChromeOrigin::Default);
+        assert_eq!(chrome.collapsed(), config.sidebar_start_collapsed);
+        assert_eq!(chrome.collapsed_origin(), ChromeOrigin::Default);
+        assert_eq!(chrome.split(), SectionSplit::DEFAULT);
+        assert!(nothing_remembered(&chrome));
+    }
+
+    #[test]
+    fn set_width_clamps_to_the_bounds_and_reports_only_a_change() {
+        let config = config(None);
+        let mut chrome = ChromeLayout::new(&config);
+        // The width already shown is no change and no choice.
+        assert!(!chrome.set_width(config.sidebar_width.value()));
+        assert_eq!(chrome.width_origin(), ChromeOrigin::Default);
+        assert!(nothing_remembered(&chrome));
+
+        assert!(chrome.set_width(u16::MAX));
+        assert_eq!(chrome.width(), MAX);
+        assert_eq!(chrome.width_origin(), ChromeOrigin::Manual);
+        // Past the bound again clamps to the same width.
+        assert!(!chrome.set_width(MAX + 1));
+        assert!(chrome.set_width(0));
+        assert_eq!(chrome.width(), MIN);
+        assert_eq!(chrome.preferences().sidebar_width, Some(MIN));
+    }
+
+    #[test]
+    fn a_remembered_width_is_clamped_kept_and_dropped_by_reset() {
+        let mut config = config(None);
+        config.preferences.sidebar_width = Some(MAX + 100);
+        let mut chrome = ChromeLayout::new(&config);
+        assert_eq!(chrome.width(), MAX);
+        assert_eq!(chrome.width_origin(), ChromeOrigin::Remembered);
+        assert_eq!(chrome.preferences().sidebar_width, Some(MAX));
+
+        chrome.reset_width();
+        assert_eq!(chrome.width(), config.sidebar_width.value());
+        assert_eq!(chrome.width_origin(), ChromeOrigin::Default);
+        assert_eq!(chrome.preferences().sidebar_width, None);
+    }
+
+    #[test]
+    fn reset_returns_a_dragged_width_to_the_configured_one() {
+        let configured = 30;
+        let mut chrome = ChromeLayout::new(&config(Some(configured)));
+        assert_eq!(chrome.width(), configured);
+        assert_eq!(chrome.width_origin(), ChromeOrigin::Configured);
+        assert!(nothing_remembered(&chrome));
+
+        assert!(chrome.set_width(configured + 5));
+        assert_eq!(chrome.width(), configured + 5);
+        chrome.reset_width();
+        assert_eq!(chrome.width(), configured);
+        assert_eq!(chrome.width_origin(), ChromeOrigin::Configured);
+        assert_eq!(chrome.preferences().sidebar_width, None);
+    }
+
+    #[test]
+    fn collapsing_by_hand_is_remembered_whichever_way_it_goes() {
+        let config = config(None);
+        let start = config.sidebar_start_collapsed;
+        let mut chrome = ChromeLayout::new(&config);
+        chrome.toggle_collapsed();
+        assert_eq!(chrome.collapsed(), !start);
+        assert_eq!(chrome.collapsed_origin(), ChromeOrigin::Manual);
+        assert_eq!(chrome.preferences().sidebar_collapsed, Some(!start));
+        // Back to the starting state is still the user's choice.
+        chrome.toggle_collapsed();
+        assert_eq!(chrome.collapsed(), start);
+        assert_eq!(chrome.preferences().sidebar_collapsed, Some(start));
+        chrome.set_collapsed(true);
+        assert!(chrome.collapsed());
+        assert_eq!(chrome.preferences().sidebar_collapsed, Some(true));
+    }
+
+    #[test]
+    fn a_remembered_collapse_and_split_start_the_layout_and_stay_remembered() {
+        let split = SectionSplit::from_drag(shepr_core::layout::MIN_SPLIT_RATIO);
+        let mut config = config(None);
+        config.preferences.sidebar_collapsed = Some(!config.sidebar_start_collapsed);
+        config.preferences.sidebar_section_split = Some(split);
+        let chrome = ChromeLayout::new(&config);
+        assert_eq!(chrome.collapsed(), !config.sidebar_start_collapsed);
+        assert_eq!(chrome.collapsed_origin(), ChromeOrigin::Remembered);
+        assert_eq!(chrome.split(), split);
+        let preferences = chrome.preferences();
+        assert_eq!(
+            preferences.sidebar_collapsed,
+            Some(!config.sidebar_start_collapsed)
+        );
+        assert_eq!(preferences.sidebar_section_split, Some(split));
+        assert_eq!(preferences.sidebar_width, None);
+    }
+
+    #[test]
+    fn set_split_reports_only_a_change_and_remembers_it() {
+        let mut chrome = ChromeLayout::new(&config(None));
+        assert!(!chrome.set_split(SectionSplit::DEFAULT));
+        assert!(nothing_remembered(&chrome));
+
+        let split = SectionSplit::from_drag(shepr_core::layout::MIN_SPLIT_RATIO);
+        assert_ne!(split, SectionSplit::DEFAULT);
+        assert!(chrome.set_split(split));
+        assert_eq!(chrome.split(), split);
+        assert_eq!(chrome.preferences().sidebar_section_split, Some(split));
+        assert!(!chrome.set_split(split));
+    }
+}

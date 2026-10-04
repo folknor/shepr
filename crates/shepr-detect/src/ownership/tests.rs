@@ -3674,7 +3674,7 @@ fn a_rejected_report_is_kept_until_a_later_one_from_its_source_applies() {
     );
     assert_eq!(
         terminal.last_unapplied_hook_report(t0),
-        Some(&UnappliedHookReport {
+        Some(UnappliedHookReport {
             origin: codex_origin(),
             kind: HookReportKind::State(AgentState::Working),
             seq: Some(3),
@@ -3772,7 +3772,12 @@ fn a_parked_start_is_recorded_until_process_evidence_promotes_it() {
         .last_unapplied_hook_report(t0)
         .expect("the parked start is recorded");
     assert_eq!(parked.kind, HookReportKind::SessionStart(start));
-    assert_eq!(parked.disposition, UnappliedHookDisposition::Parked);
+    assert_eq!(
+        parked.disposition,
+        UnappliedHookDisposition::Parked(ParkedHookAwaiting::Process {
+            expires_at: t0 + crate::limits::PARKED_START_LIFETIME,
+        })
+    );
     assert!(terminal.persisted_agent_session().is_none());
 
     terminal.set_detected_state_with_screen_signals_at(
@@ -3917,4 +3922,324 @@ fn a_rejection_is_not_aged_out_by_a_parked_start_lifetime() {
             )
             .is_some()
     );
+}
+
+fn kimi_origin() -> ReportOrigin {
+    ReportOrigin::parse("shepr:kimi", "kimi").expect("test origin")
+}
+
+fn kimi_root() -> Option<shepr_agent::resume::AgentSessionRef> {
+    shepr_agent::resume::AgentSessionRef::id("kimi-root")
+}
+
+fn parked_disposition(terminal: &AgentOwnership, now: Instant) -> Option<UnappliedHookDisposition> {
+    terminal
+        .last_unapplied_hook_report(now)
+        .map(|last| last.disposition)
+}
+
+#[test]
+fn a_parked_report_an_exit_consumed_is_no_longer_recorded_as_parked() {
+    let mut terminal = test_terminal();
+    let t0 = Instant::now();
+    terminal.set_detected_state_with_screen_signals_at(
+        Some(Agent::Kimi),
+        AgentState::Idle,
+        false,
+        false,
+        t0,
+    );
+    let reported_at = t0 + Duration::from_millis(1);
+    let outcome = terminal.report_hook_outcome_at(
+        kimi_origin(),
+        AgentState::Working,
+        kimi_root(),
+        Some(10),
+        HookClockSample::from(reported_at),
+    );
+    assert_eq!(outcome, HookOutcome::Parked);
+    // The process is present, but process evidence never promotes a report:
+    // it waits for a start of its session.
+    assert_eq!(
+        parked_disposition(&terminal, reported_at),
+        Some(UnappliedHookDisposition::Parked(
+            ParkedHookAwaiting::SessionStart
+        ))
+    );
+
+    let exited_at = t0 + Duration::from_millis(2);
+    terminal.set_detected_state_with_screen_signals_at(
+        Some(Agent::Kimi),
+        AgentState::Idle,
+        false,
+        true,
+        exited_at,
+    );
+    // The exit consumed the pending report; nothing can promote it now.
+    assert_eq!(terminal.last_unapplied_hook_report(exited_at), None);
+}
+
+#[test]
+fn a_report_riding_a_parked_start_awaits_process_evidence_until_the_start_expires() {
+    let mut terminal = test_terminal();
+    let t0 = Instant::now();
+    assert_eq!(
+        terminal.report_session_start_outcome_at(
+            &kimi_origin(),
+            kimi_root(),
+            Some(10),
+            ReportedSessionStart::Known(AgentSessionStartSource::Startup),
+            t0,
+        ),
+        HookOutcome::Parked
+    );
+    let reported_at = t0 + Duration::from_millis(1);
+    assert_eq!(
+        terminal.report_hook_outcome_at(
+            kimi_origin(),
+            AgentState::Working,
+            kimi_root(),
+            Some(11),
+            HookClockSample::from(reported_at),
+        ),
+        HookOutcome::Parked
+    );
+    let last = terminal
+        .last_unapplied_hook_report(reported_at)
+        .expect("the parked report is recorded");
+    assert_eq!(last.kind, HookReportKind::State(AgentState::Working));
+    assert_eq!(
+        last.disposition,
+        UnappliedHookDisposition::Parked(ParkedHookAwaiting::Process {
+            expires_at: t0 + crate::limits::PARKED_START_LIFETIME,
+        })
+    );
+    assert_eq!(
+        terminal.last_unapplied_hook_report(
+            t0 + crate::limits::PARKED_START_LIFETIME + Duration::from_nanos(1)
+        ),
+        None
+    );
+}
+
+#[test]
+fn a_report_then_an_older_start_with_the_process_present_promotes_both_at_once() {
+    let mut terminal = test_terminal();
+    let t0 = Instant::now();
+    terminal.set_detected_state_with_screen_signals_at(
+        Some(Agent::Kimi),
+        AgentState::Idle,
+        false,
+        false,
+        t0,
+    );
+    assert_eq!(
+        terminal.report_hook_outcome_at(
+            kimi_origin(),
+            AgentState::Working,
+            kimi_root(),
+            Some(10),
+            HookClockSample::from(t0 + Duration::from_millis(1)),
+        ),
+        HookOutcome::Parked
+    );
+    let started_at = t0 + Duration::from_millis(2);
+    let started = terminal.report_session_start_outcome_at(
+        &kimi_origin(),
+        kimi_root(),
+        Some(9),
+        ReportedSessionStart::Known(AgentSessionStartSource::Startup),
+        started_at,
+    );
+    assert!(matches!(started, HookOutcome::Applied(_)), "{started:?}");
+    assert_eq!(
+        terminal
+            .current_session_identity_for_persistence()
+            .map(|session| session.session_ref().clone()),
+        kimi_root()
+    );
+    let authority = terminal
+        .hook_authority()
+        .expect("the report rode the start");
+    assert_eq!(authority.state, AgentState::Working);
+    assert_eq!(authority.session_ref, kimi_root());
+    assert_eq!(terminal.last_unapplied_hook_report(started_at), None);
+}
+
+#[test]
+fn first_presence_sampled_before_a_report_still_promotes_the_start_after_it() {
+    // A fresh pane: the report arrives before its start, and both before the
+    // detector's first tick that sees the agent, which was stamped before
+    // either hook was applied.
+    let mut terminal = test_terminal();
+    let reported_at = Instant::now();
+    assert_eq!(
+        terminal.report_hook_outcome_at(
+            kimi_origin(),
+            AgentState::Working,
+            kimi_root(),
+            Some(10),
+            HookClockSample::from(reported_at),
+        ),
+        HookOutcome::Parked
+    );
+    assert_eq!(
+        terminal.report_session_start_outcome_at(
+            &kimi_origin(),
+            kimi_root(),
+            Some(11),
+            ReportedSessionStart::Known(AgentSessionStartSource::Startup),
+            reported_at + Duration::from_secs(1),
+        ),
+        HookOutcome::Parked
+    );
+    terminal.set_detected_agent_process_at(Agent::Kimi, reported_at - Duration::from_millis(1));
+    assert_eq!(
+        terminal
+            .current_session_identity_for_persistence()
+            .map(|session| session.session_ref().clone()),
+        kimi_root(),
+        "the first presence tick promotes the parked start"
+    );
+}
+
+#[test]
+fn a_parked_report_reanchors_its_order_after_a_backwards_clock_step() {
+    let mut terminal = test_terminal();
+    let first = HookClockSample::from(Instant::now());
+    assert_eq!(
+        terminal.report_hook_outcome_at(
+            kimi_origin(),
+            AgentState::Working,
+            kimi_root(),
+            Some(1_000),
+            first,
+        ),
+        HookOutcome::Parked
+    );
+    // The wall clock stepped back, so the reporter's next seq is smaller.
+    let stepped = HookClockSample {
+        monotonic: first.monotonic + Duration::from_millis(100),
+        wall: first.wall - Duration::from_millis(100),
+    };
+    assert_eq!(
+        terminal.report_hook_outcome_at(
+            kimi_origin(),
+            AgentState::Idle,
+            kimi_root(),
+            Some(999),
+            stepped,
+        ),
+        HookOutcome::Parked
+    );
+    let last = terminal
+        .last_unapplied_hook_report(stepped.monotonic)
+        .expect("the newer report is recorded");
+    assert_eq!(last.seq, Some(999));
+    assert_eq!(
+        last.disposition,
+        UnappliedHookDisposition::Parked(ParkedHookAwaiting::SessionStart)
+    );
+    // Without a step, a smaller seq after it is still a straggler.
+    assert_eq!(
+        terminal.report_hook_outcome_at(
+            kimi_origin(),
+            AgentState::Working,
+            kimi_root(),
+            Some(998),
+            HookClockSample {
+                monotonic: stepped.monotonic + Duration::from_millis(100),
+                wall: stepped.wall + Duration::from_millis(100),
+            },
+        ),
+        HookOutcome::Rejected(HookRejection::OutOfOrder)
+    );
+}
+
+/// Parks a recognized kimi start with seq 1000 while the process is absent and
+/// returns its sample.
+fn park_kimi_start_at_seq_1000(terminal: &mut AgentOwnership) -> HookClockSample {
+    let started = HookClockSample::from(Instant::now());
+    assert_eq!(
+        terminal.report_session_start_outcome_at(
+            &kimi_origin(),
+            kimi_root(),
+            Some(1_000),
+            ReportedSessionStart::Known(AgentSessionStartSource::Startup),
+            started,
+        ),
+        HookOutcome::Parked
+    );
+    started
+}
+
+#[test]
+fn a_report_no_newer_than_a_pending_start_is_refused_on_arrival() {
+    // Nothing a parked start's promotion would carry is parked: a report at or
+    // below the start's seq, with no clock step, is out of order on arrival.
+    let mut terminal = test_terminal();
+    let started = park_kimi_start_at_seq_1000(&mut terminal);
+    for (seq, after) in [(1_000, 1), (999, 2)] {
+        let at = Duration::from_millis(after);
+        assert_eq!(
+            terminal.report_hook_outcome_at(
+                kimi_origin(),
+                AgentState::Working,
+                kimi_root(),
+                Some(seq),
+                HookClockSample {
+                    monotonic: started.monotonic + at,
+                    wall: started.wall + at,
+                },
+            ),
+            HookOutcome::Rejected(HookRejection::OutOfOrder),
+            "seq {seq}"
+        );
+    }
+    let last = terminal
+        .last_unapplied_hook_report(started.monotonic)
+        .expect("the refusal is recorded");
+    assert_eq!(
+        last.disposition,
+        UnappliedHookDisposition::Rejected(HookRejection::OutOfOrder)
+    );
+}
+
+#[test]
+fn a_report_after_a_backwards_clock_step_rides_the_start_it_followed() {
+    // The wall clock stepped back between a parked start and the next report,
+    // so the reporter's seq went down. The source's ordering rule admitted the
+    // report as the newer one; promotion must carry it, not drop it as older.
+    let mut terminal = test_terminal();
+    let started = park_kimi_start_at_seq_1000(&mut terminal);
+    let stepped = HookClockSample {
+        monotonic: started.monotonic + Duration::from_millis(100),
+        wall: started.wall - Duration::from_millis(100),
+    };
+    assert_eq!(
+        terminal.report_hook_outcome_at(
+            kimi_origin(),
+            AgentState::Working,
+            kimi_root(),
+            Some(999),
+            stepped,
+        ),
+        HookOutcome::Parked
+    );
+    assert_eq!(
+        parked_disposition(&terminal, stepped.monotonic),
+        Some(UnappliedHookDisposition::Parked(
+            ParkedHookAwaiting::Process {
+                expires_at: started.monotonic + crate::limits::PARKED_START_LIFETIME,
+            }
+        ))
+    );
+
+    terminal.set_detected_agent_process_at(Agent::Kimi, stepped.monotonic);
+    let authority = terminal
+        .hook_authority()
+        .expect("the report rode the promoted start");
+    assert_eq!(authority.state, AgentState::Working);
+    assert_eq!(authority.session_ref, kimi_root());
+    assert_eq!(terminal.last_unapplied_hook_report(stepped.monotonic), None);
 }

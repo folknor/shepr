@@ -680,7 +680,13 @@ sidebar_max_width = 36
         .expect("write config fixture");
         let config = load_server_validated(&paths).expect("current new_cwd validates");
         assert_eq!(config.terminal().new_cwd, crate::NewTerminalCwd::Current);
-        assert_eq!(config.paths().current_dir(), Some(launch.as_path()));
+        assert_eq!(
+            config
+                .paths()
+                .current_dir()
+                .map(shepr_core::absolute_path::AbsolutePath::as_path),
+            Some(launch.as_path())
+        );
     }
 
     #[test]

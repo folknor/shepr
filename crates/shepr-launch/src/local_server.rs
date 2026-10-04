@@ -710,8 +710,14 @@ fn launch_daemon(
             // a user scope also ends with the user manager after the last login.
             // `setsid` separates the terminal session, but logind's cgroup
             // policy still applies.
-            let mut command =
-                build_server_daemon_command(server, &working_dir, paths.current_dir(), paths);
+            let mut command = build_server_daemon_command(
+                server,
+                &working_dir,
+                paths
+                    .current_dir()
+                    .map(shepr_core::absolute_path::AbsolutePath::as_path),
+                paths,
+            );
             command.stderr(stderr);
             command.spawn()
         },
@@ -984,7 +990,7 @@ fn sibling_build_mismatch(files: &LaunchFiles<'_>, status: &RuntimeStatus) -> La
 fn server_daemon_working_dir(paths: &shepr_paths::AppPaths) -> PathBuf {
     paths
         .home_dir()
-        .map_or_else(|| PathBuf::from("/"), Path::to_path_buf)
+        .map_or_else(|| PathBuf::from("/"), |home| home.as_path().to_path_buf())
 }
 
 /// The command that starts the server daemon, fully detached:

@@ -37,6 +37,10 @@ impl UsableCwd {
         self.0.as_path()
     }
 
+    pub fn as_absolute(&self) -> &AbsolutePath {
+        &self.0
+    }
+
     pub fn into_absolute(self) -> AbsolutePath {
         self.0
     }

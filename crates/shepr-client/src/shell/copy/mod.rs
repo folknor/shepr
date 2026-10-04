@@ -182,6 +182,17 @@ impl CopySession {
             .max_offset_from_bottom
             .saturating_sub(usize::try_from(from_origin).unwrap_or(usize::MAX))
     }
+
+    /// Clamps the cursor into the top-left `visible` (columns, rows) of the viewport, the
+    /// part of the pane that is drawn. Equal to `geometry` unless a surface laid out for a
+    /// larger area is clipped to the client area until the resized one arrives; `geometry`
+    /// stays the pane's full size either way, which coherence with the surfaces relies on.
+    fn keep_cursor_within(&mut self, visible: (u16, u16)) {
+        let top = self.viewport_top();
+        let bottom = top.saturating_add(usize::from(visible.1.max(1) - 1));
+        self.cursor.row = self.cursor.row.clamp(top, bottom);
+        self.cursor.col = self.cursor.col.min(visible.0.saturating_sub(1));
+    }
 }
 
 /// Makes the mouse selection show the session's own anchor and cursor projection, when

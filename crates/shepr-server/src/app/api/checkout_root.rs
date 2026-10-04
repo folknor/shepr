@@ -28,7 +28,10 @@ impl App {
         shepr_protocol::command::EndpointError,
     > {
         let cwd = super::cwd::launch_cwd(&params.cwd)?.into_path_buf();
-        let home = self.paths.home_dir().map(shepr_protocol::RemotePath::from);
+        let home = self
+            .paths
+            .home_dir()
+            .map(|home| shepr_protocol::RemotePath::from(home.as_path()));
         Ok((cwd, home))
     }
 

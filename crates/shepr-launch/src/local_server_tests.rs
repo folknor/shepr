@@ -1155,7 +1155,10 @@ fn server_daemon_runs_in_home_not_the_launch_directory() {
     let working_dir = server_daemon_working_dir(&paths);
     assert_eq!(
         Some(working_dir.as_path()),
-        paths.home_dir().or(Some(Path::new("/")))
+        paths
+            .home_dir()
+            .map(shepr_core::absolute_path::AbsolutePath::as_path)
+            .or(Some(Path::new("/")))
     );
 
     let launch_dir = scratch.join("launch");

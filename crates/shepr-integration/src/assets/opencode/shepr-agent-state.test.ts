@@ -177,6 +177,49 @@ test("anchors the local root from the chat hook across both session event shapes
   expectContractTrace("opencode", requests);
 });
 
+test("re-sends the local root's recognized start on its later session events", async () => {
+  const plugin = await loadPlugin();
+
+  await plugin["chat.message"]({ sessionID: "local-session" });
+  // Each report gets one attempt; a start lost here would leave the pane
+  // unanchored unless a later session event sends it again.
+  await plugin.event({
+    event: { type: "session.updated", properties: { sessionID: "local-session" } },
+  });
+  await plugin.event({
+    event: {
+      type: "session.status",
+      properties: { sessionID: "local-session", status: { type: "unrecognized" } },
+    },
+  });
+  // A server-global session that is not this run's root is never a start.
+  await plugin.event({
+    event: { type: "session.updated", properties: { sessionID: "attached-session" } },
+  });
+
+  expect(requests.map(requestMethod)).toEqual([
+    "pane.report_agent_session",
+    "pane.report_agent",
+    "pane.report_agent_session",
+    "pane.report_agent_session",
+    "pane.report_agent_session",
+  ]);
+  expect(requests.map(requestSessionID)).toEqual([
+    "local-session",
+    "local-session",
+    "local-session",
+    "local-session",
+    "attached-session",
+  ]);
+  expect(requests.map((request) => requestParam(request, "session_start_source"))).toEqual([
+    "startup",
+    undefined,
+    "startup",
+    "startup",
+    undefined,
+  ]);
+});
+
 test("OpenCode does not report state without a session reference", async () => {
   const plugin = await loadPlugin();
 

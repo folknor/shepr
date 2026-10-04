@@ -135,10 +135,30 @@ impl std::fmt::Display for ReportedStartSource {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum UnappliedHookOutcome {
-    /// Held until process evidence for its agent arrives.
-    Parked,
+    /// Held by its source until what it awaits arrives.
+    Parked {
+        awaiting: ParkedHookAwaiting,
+    },
     Rejected {
         reason: HookRejection,
+    },
+}
+
+/// What a parked hook report is held for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ParkedHookAwaiting {
+    /// Held until a session start of its agent arrives. A parked state report
+    /// with no parked start waits here with no lifetime; process evidence
+    /// alone never promotes it.
+    SessionStart,
+    /// Held until process evidence for its agent arrives, within the lifetime
+    /// of the parked start: a session start, or a state report riding one.
+    Process {
+        /// How long after the explain request the parked start it waits on
+        /// (its own, or the one it rides) expires, by the server's monotonic
+        /// clock; 0 once it has.
+        expires_in_ms: u64,
     },
 }
 
@@ -149,7 +169,9 @@ impl UnappliedHookReport {
         report: &shepr_detect::ownership::UnappliedHookReport,
         now: std::time::Instant,
     ) -> Self {
-        use shepr_detect::ownership::{HookReportKind, UnappliedHookDisposition};
+        use shepr_detect::ownership::{
+            HookReportKind, ParkedHookAwaiting as Awaiting, UnappliedHookDisposition,
+        };
         let millis =
             |duration: std::time::Duration| u64::try_from(duration.as_millis()).unwrap_or(u64::MAX);
         Self {
@@ -170,7 +192,18 @@ impl UnappliedHookReport {
                 .map_or(0, millis),
             age_ms: millis(now.saturating_duration_since(report.received.monotonic)),
             outcome: match report.disposition {
-                UnappliedHookDisposition::Parked => UnappliedHookOutcome::Parked,
+                UnappliedHookDisposition::Parked(Awaiting::SessionStart) => {
+                    UnappliedHookOutcome::Parked {
+                        awaiting: ParkedHookAwaiting::SessionStart,
+                    }
+                }
+                UnappliedHookDisposition::Parked(Awaiting::Process { expires_at }) => {
+                    UnappliedHookOutcome::Parked {
+                        awaiting: ParkedHookAwaiting::Process {
+                            expires_in_ms: millis(expires_at.saturating_duration_since(now)),
+                        },
+                    }
+                }
                 UnappliedHookDisposition::Rejected(reason) => {
                     UnappliedHookOutcome::Rejected { reason }
                 }
@@ -368,7 +401,11 @@ mod tests {
                         shepr_agent::resume::AgentSessionStartSource::Startup,
                     ),
                 ),
-                shepr_detect::ownership::UnappliedHookDisposition::Parked,
+                shepr_detect::ownership::UnappliedHookDisposition::Parked(
+                    shepr_detect::ownership::ParkedHookAwaiting::Process {
+                        expires_at: received + std::time::Duration::from_millis(45_000),
+                    },
+                ),
                 received,
             ),
             now,
@@ -378,14 +415,55 @@ mod tests {
             json["report"],
             serde_json::json!({ "kind": "session_start", "start_source": "startup" })
         );
-        assert_eq!(json["outcome"], serde_json::json!({ "kind": "parked" }));
+        assert_eq!(
+            json["outcome"],
+            serde_json::json!({
+                "kind": "parked",
+                "awaiting": { "kind": "process", "expires_in_ms": 43_500 },
+            })
+        );
+        assert_eq!(
+            serde_json::from_value::<UnappliedHookReport>(json).expect("decode report"),
+            parked
+        );
+
+        let awaiting_start = UnappliedHookReport::from_ownership(
+            &unapplied(
+                shepr_detect::ownership::HookReportKind::State(AgentState::Working),
+                shepr_detect::ownership::UnappliedHookDisposition::Parked(
+                    shepr_detect::ownership::ParkedHookAwaiting::SessionStart,
+                ),
+                received,
+            ),
+            now,
+        );
+        assert_eq!(
+            serde_json::to_value(&awaiting_start).expect("encode report")["outcome"],
+            serde_json::json!({
+                "kind": "parked",
+                "awaiting": { "kind": "session_start" },
+            })
+        );
+        // Only a process wait has a lifetime, and it cannot be read without one.
+        assert!(
+            serde_json::from_value::<UnappliedHookOutcome>(serde_json::json!({
+                "kind": "parked",
+                "awaiting": { "kind": "process" },
+            }))
+            .is_err(),
+            "a process wait needs its expiry"
+        );
 
         let omitted = UnappliedHookReport::from_ownership(
             &unapplied(
                 shepr_detect::ownership::HookReportKind::SessionStart(
                     shepr_agent::resume::ReportedSessionStart::Omitted,
                 ),
-                shepr_detect::ownership::UnappliedHookDisposition::Parked,
+                shepr_detect::ownership::UnappliedHookDisposition::Parked(
+                    shepr_detect::ownership::ParkedHookAwaiting::Process {
+                        expires_at: received,
+                    },
+                ),
                 received,
             ),
             now,
@@ -393,6 +471,13 @@ mod tests {
         assert_eq!(
             omitted.report,
             UnappliedHookReportKind::SessionStart { start_source: None }
+        );
+        // A start already past its expiry when read counts down no further.
+        assert_eq!(
+            omitted.outcome,
+            UnappliedHookOutcome::Parked {
+                awaiting: ParkedHookAwaiting::Process { expires_in_ms: 0 },
+            }
         );
 
         let explain = DetectionExplanation::hook_authority(

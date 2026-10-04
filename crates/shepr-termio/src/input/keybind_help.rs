@@ -53,13 +53,28 @@ pub fn keybind_help_groups(
     // every row exists, so they list last. No indexed row is inserted into the
     // navigation group, so the recorded indexes stay valid.
     let mut navigate_aliases: Vec<(HelpGroup, usize, String)> = Vec::new();
-    macro_rules! build_keybind_help {
-        (
-            actions { $(($action_field:ident, $action_variant:ident, $action_default:literal, $action_group:ident, $action_label:literal, $action_doc:literal),)* }
-            indexed { $(($indexed_field:ident, $indexed_variant:ident, $indexed_default:literal, $indexed_group:ident, $indexed_label:literal, $indexed_doc:literal, $indexed_help_after:literal),)* }
-            navigate { $(($navigate_config_field:ident, $navigate_field:ident, $navigate_variant:ident, $navigate_default:literal, $navigate_group:ident, $navigate_label:literal, $navigate_doc:literal, $navigate_alias:ident),)* }
-            navigate_indexed { $(($navigate_indexed_config_field:ident, $navigate_indexed_field:ident, $navigate_indexed_variant:ident, $navigate_indexed_default:literal, $navigate_indexed_group:ident, $navigate_indexed_label:literal, $navigate_indexed_doc:literal, $navigate_indexed_alias:ident),)* }
-        ) => {
+    shepr_config::keybinding_rows! {
+        $ build_keybind_help;
+        actions(field = $action_field, group = $action_group, label = $action_label)
+        indexed(
+            field = $indexed_field,
+            group = $indexed_group,
+            label = $indexed_label,
+            help_after = $indexed_help_after
+        )
+        navigate(
+            field = $navigate_field,
+            group = $navigate_group,
+            label = $navigate_label,
+            alias = $navigate_alias
+        )
+        navigate_indexed(
+            field = $navigate_indexed_field,
+            group = $navigate_indexed_group,
+            label = $navigate_indexed_label,
+            alias = $navigate_indexed_alias
+        )
+        => {
             $(group_rows(&mut groups, HelpGroup::$action_group)
                 .push(row(binding_label(&keybinds.$action_field), $action_label));)*
             $(insert_help_row_after(
@@ -87,10 +102,8 @@ pub fn keybind_help_groups(
                     navigate_aliases.push((HelpGroup::$navigate_indexed_group, index, label));
                 }
             )*
-        };
+        }
     }
-
-    shepr_config::keybinding_table!(build_keybind_help);
     for (group, index, alias) in navigate_aliases {
         if let Some(existing) = group_rows(&mut groups, group).get_mut(index) {
             existing.keys.push_str(" / ");
@@ -391,18 +404,16 @@ mod tests {
     /// cannot silently move the row to the end of its group.
     #[test]
     fn every_indexed_row_follows_a_row_of_its_group() {
-        macro_rules! indexed_follow_after {
-            (
-                actions { $($actions:tt)* }
-                indexed { $(($indexed_field:ident, $indexed_variant:ident, $indexed_default:literal, $indexed_group:ident, $indexed_label:literal, $indexed_doc:literal, $indexed_help_after:literal),)* }
-                navigate { $($navigate:tt)* }
-                navigate_indexed { $($navigate_indexed:tt)* }
-            ) => {
-                vec![$((HelpGroup::$indexed_group, $indexed_label, $indexed_help_after),)*]
-            };
+        shepr_config::keybinding_rows! {
+            $ indexed_follow_after;
+            indexed(group = $indexed_group, label = $indexed_label, help_after = $indexed_help_after)
+            => {
+                fn indexed_follows() -> Vec<(HelpGroup, &'static str, &'static str)> {
+                    vec![$((HelpGroup::$indexed_group, $indexed_label, $indexed_help_after),)*]
+                }
+            }
         }
-        let follows: Vec<(HelpGroup, &str, &str)> =
-            shepr_config::keybinding_table!(indexed_follow_after);
+        let follows = indexed_follows();
         assert!(!follows.is_empty());
 
         let live = crate::test_config::validated("").live_keybinds().clone();

@@ -5,7 +5,7 @@ use shepr_protocol::command::SplitDirection;
 use crate::endpoint::ClientEndpointId;
 use crate::shell::ledger::{Submitted, Work};
 use crate::shell::navigation::location::{Location, LocationTarget};
-use crate::shell::notices::{ClientEndpointNoticeKind, NoticeCode};
+use crate::shell::notices::{BootNoticeCode, ClientEndpointNoticeKind, NoticeCode};
 use crate::shell::overlays::Overlay;
 use crate::shell::overlays::help::HelpOverlay;
 use crate::shell::state::ClientShellMode;
@@ -264,7 +264,7 @@ impl ClientShellState {
         self.queue_boot_notice(
             endpoint_id,
             boot_id,
-            NoticeCode::SessionRestoreIncomplete,
+            BootNoticeCode::SessionRestoreIncomplete,
             "saved session not fully restored",
             notice.to_string(),
         )
@@ -280,7 +280,7 @@ impl ClientShellState {
         self.queue_boot_notice(
             endpoint_id,
             boot_id,
-            NoticeCode::SessionSavesStopped,
+            BootNoticeCode::SessionSavesStopped,
             "session saves stopped",
             "The server stopped saving its session after an internal failure (see the server log). \
              Layout changes from now on are not restored when the server next starts."
@@ -294,7 +294,7 @@ impl ClientShellState {
         &mut self,
         endpoint_id: &ClientEndpointId,
         boot_id: &shepr_protocol::BootId,
-        code: NoticeCode,
+        code: BootNoticeCode,
         title: &str,
         body: String,
     ) -> bool {

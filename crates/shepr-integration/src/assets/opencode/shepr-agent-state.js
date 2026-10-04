@@ -2,7 +2,7 @@
 // managed by shepr; reinstalling or updating the integration overwrites this file.
 // add custom hooks/plugins beside this file instead of editing it.
 // SHEPR_INTEGRATION_ID=opencode
-// SHEPR_INTEGRATION_VERSION=3
+// SHEPR_INTEGRATION_VERSION=4
 
 import net from "node:net";
 
@@ -172,12 +172,31 @@ function stateFromSessionStatus(status) {
 let reportedRootSessionID;
 let reportedLocalSessionID;
 
+// The local root's recognized start. Only the TUI integration reports
+// `select`, which can replace an existing OpenCode root.
+const LOCAL_START_SOURCE = "startup";
+
 // A state report also records which root session this process last spoke for.
 function reportRootState(state, sessionID) {
   if (sessionID) {
     reportedRootSessionID = sessionID;
   }
   return reportState(state, sessionID);
+}
+
+// A session report for the local root re-sends its recognized start, as Kilo
+// does on every session update. Each report gets one attempt, and shepr parks
+// state reports until a start anchors the session, so a start lost once (a
+// busy socket, a server restarting) would leave the pane unanchored for the
+// whole run. The plugin cannot see whether shepr accepted it; a repeat for the
+// session shepr already holds selects that same session again and changes
+// nothing. Any other session keeps its unrecognized report: server-global
+// events may belong to an attached client.
+function reportSessionOf(sessionID) {
+  return reportSession(
+    sessionID,
+    sessionID === reportedLocalSessionID ? LOCAL_START_SOURCE : undefined,
+  );
 }
 
 function ownsLocalLifecycle() {
@@ -208,10 +227,9 @@ export const SheprAgentStatePlugin = async () => {
       // first point that identifies this run's root session for the pane.
       if (sessionID && !reportedLocalSessionID) {
         reportedLocalSessionID = sessionID;
-        // This recognized start anchors the first local identity. Only the
-        // TUI integration reports `select`, which can replace an existing
-        // OpenCode root.
-        await reportSession(sessionID, "startup");
+        // This recognized start anchors the first local identity; later
+        // session events for it re-send it (`reportSessionOf`).
+        await reportSession(sessionID, LOCAL_START_SOURCE);
       }
       await reportRootState(STATE.working, sessionID);
     },
@@ -236,8 +254,11 @@ export const SheprAgentStatePlugin = async () => {
           reportedRootSessionID = sessionID;
           break;
         case "session.updated":
-          if (sessionID && sessionID !== reportedRootSessionID) {
-            await reportSession(sessionID);
+          if (
+            sessionID &&
+            (sessionID === reportedLocalSessionID || sessionID !== reportedRootSessionID)
+          ) {
+            await reportSessionOf(sessionID);
           }
           break;
         case "session.status": {
@@ -245,7 +266,7 @@ export const SheprAgentStatePlugin = async () => {
           if (state) {
             await reportRootState(state, sessionID);
           } else {
-            await reportSession(sessionID);
+            await reportSessionOf(sessionID);
           }
           break;
         }

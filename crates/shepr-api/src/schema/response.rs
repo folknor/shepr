@@ -83,7 +83,7 @@ pub enum ResponseResult {
         capture: DetectionCapture,
     },
     DetectExplain {
-        explain: DetectionExplanation,
+        explain: Box<DetectionExplanation>,
     },
     Ok {},
 }

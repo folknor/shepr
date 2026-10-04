@@ -60,7 +60,9 @@ pub(crate) struct RemoteSshConfigPaths {
     pub(crate) system_config: PathBuf,
 }
 
-pub(crate) fn remote_ssh_config_paths(home_dir: Option<&Path>) -> RemoteSshConfigPaths {
+pub(crate) fn remote_ssh_config_paths(
+    home_dir: Option<&shepr_core::absolute_path::AbsolutePath>,
+) -> RemoteSshConfigPaths {
     RemoteSshConfigPaths {
         user_config: home_dir.map(|home| home.join(".ssh").join("config")),
         system_config: PathBuf::from("/etc/ssh/ssh_config"),

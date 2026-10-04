@@ -55,11 +55,23 @@ impl AbsolutePath {
         &self.0
     }
 
+    /// `path` taken from this directory, as `Path::join` takes it: an
+    /// absolute `path` is itself, a relative one is joined below this one.
+    /// Either way the result starts at the root, so no check is repeated.
+    pub fn resolve(&self, path: impl AsRef<Path>) -> Self {
+        Self(self.0.join(path))
+    }
+
     pub fn into_path_buf(self) -> PathBuf {
         self.0
     }
 }
 
+/// An absolute path is a path: borrowing it as `Path` widens it and loses
+/// nothing. No `Path` method yields an `AbsolutePath`, so the deref cannot mint
+/// one from an unchecked path; it only spares `.as_path()` at sites that
+/// display or pass the path on. Unlike a numeric identity, a path has no second
+/// value space it could be confused with.
 impl Deref for AbsolutePath {
     type Target = Path;
 
@@ -86,7 +98,11 @@ impl From<AbsolutePath> for PathBuf {
     }
 }
 
-/// Comparisons with the plain path types read the same as comparing paths.
+/// Comparisons with the plain path types are path equality, the same
+/// component-wise comparison the derived `AbsolutePath` equality and hash use.
+/// They cannot give a false match: a relative path on the other side is simply
+/// unequal, since this type never resolves one against a working directory.
+/// They exist for comparing against runtime observations and test literals.
 macro_rules! path_equality {
     ($($other:ty),*) => {$(
         impl PartialEq<$other> for AbsolutePath {
@@ -117,6 +133,14 @@ mod tests {
             let refused = AbsolutePath::new(relative).expect_err("relative path");
             assert_eq!(refused.path(), Path::new(relative));
         }
+    }
+
+    #[test]
+    fn resolve_joins_a_relative_path_and_keeps_an_absolute_one() {
+        let base = AbsolutePath::new("/base").expect("absolute");
+        assert_eq!(base.resolve("child/dir"), Path::new("/base/child/dir"));
+        assert_eq!(base.resolve("/elsewhere"), Path::new("/elsewhere"));
+        assert_eq!(base.resolve(""), Path::new("/base/"));
     }
 
     #[test]

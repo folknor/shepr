@@ -86,26 +86,39 @@ impl AgentOwnership {
     /// source has applied, as it stands at `now` on the server's monotonic
     /// clock.
     ///
-    /// Expiry of a parked start is only applied when process evidence for its
-    /// agent arrives, and that is also when the parked record is cleared. A
-    /// pane whose detector sees nothing further would otherwise keep showing
-    /// a start that can no longer be promoted as parked, so a parked record
-    /// whose source's parked start has outlived its lifetime at `now` reads as
-    /// gone here, exactly as the next observation would leave it.
-    pub fn last_unapplied_hook_report(&self, now: Instant) -> Option<&UnappliedHookReport> {
-        self.last_unapplied_hook_report.as_ref().filter(|last| {
-            last.disposition != UnappliedHookDisposition::Parked
-                || self
-                    .hook_sources
-                    .get(last.origin.source())
-                    .is_none_or(|record| !record.parked_start_expired(now))
+    /// A parked record is judged here against what its source still holds
+    /// (`HookSourceState::parked_awaiting`), not against the outcome it was
+    /// admitted with. Several transitions drop a parked report or start
+    /// without touching the record: a process exit consumes both, a start for
+    /// another session discards a report for a different one, and a parked
+    /// start's expiry is only applied when process evidence for its agent
+    /// arrives. Each of those leaves the record reading as gone here, exactly
+    /// as the source now stands, so a report that can no longer be promoted
+    /// is never shown as parked.
+    pub fn last_unapplied_hook_report(&self, now: Instant) -> Option<UnappliedHookReport> {
+        let last = self.last_unapplied_hook_report.as_ref()?;
+        let disposition = match last.rejection {
+            Some(reason) => UnappliedHookDisposition::Rejected(reason),
+            None => UnappliedHookDisposition::Parked(
+                self.hook_sources
+                    .get(last.origin.source())?
+                    .parked_awaiting(last.kind, last.seq, last.session_ref.as_ref(), now)?,
+            ),
+        };
+        Some(UnappliedHookReport {
+            origin: last.origin,
+            kind: last.kind,
+            seq: last.seq,
+            session_ref: last.session_ref.clone(),
+            received: last.received,
+            disposition,
         })
     }
 
     /// An unapplied outcome replaces the record; an applied one clears a
     /// record of the same source, whose report the new one supersedes.
     fn record_hook_outcome(&mut self, report: UnappliedHookReportDraft, outcome: &HookOutcome) {
-        let disposition = match outcome {
+        let rejection = match outcome {
             HookOutcome::Applied(_) => {
                 if self
                     .last_unapplied_hook_report
@@ -116,16 +129,16 @@ impl AgentOwnership {
                 }
                 return;
             }
-            HookOutcome::Parked => UnappliedHookDisposition::Parked,
-            HookOutcome::Rejected(reason) => UnappliedHookDisposition::Rejected(*reason),
+            HookOutcome::Parked => None,
+            HookOutcome::Rejected(reason) => Some(*reason),
         };
-        self.last_unapplied_hook_report = Some(UnappliedHookReport {
+        self.last_unapplied_hook_report = Some(UnappliedHookRecord {
             origin: report.origin,
             kind: report.kind,
             seq: report.seq,
             session_ref: report.session_ref,
             received: report.received,
-            disposition,
+            rejection,
         });
     }
 
@@ -135,10 +148,7 @@ impl AgentOwnership {
         if self
             .last_unapplied_hook_report
             .as_ref()
-            .is_some_and(|last| {
-                last.disposition == UnappliedHookDisposition::Parked
-                    && last.origin.source() == source
-            })
+            .is_some_and(|last| last.rejection.is_none() && last.origin.source() == source)
         {
             self.last_unapplied_hook_report = None;
         }

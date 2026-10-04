@@ -54,8 +54,12 @@ impl DirectoryKind {
         let Some(token) = name.strip_prefix(self.name_prefix) else {
             return false;
         };
+        // Exactly what `directory_name` writes: lowercase hex of the token
+        // length, so a sweep never touches a name shepr could not have made.
         token.len() == crate::limits::RUNTIME_TOKEN_HEX_BYTES
-            && token.bytes().all(|byte| byte.is_ascii_hexdigit())
+            && token
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
     }
 
     /// The path of the content entry inside a directory of this kind.
@@ -432,9 +436,83 @@ mod tests {
         path
     }
 
+    /// A directory's on-disk name: the literal prefix and a 16 digit hex token.
+    /// Written out here rather than through `DirectoryKind::directory_name`, so
+    /// the fixtures pin the names leftovers of earlier processes carry.
+    fn literal_directory_name(prefix: &str, token: u64) -> String {
+        format!("{prefix}{token:016x}")
+    }
+
+    /// Asserts `path` is named `prefix` plus a 16 digit lowercase hex token.
+    fn assert_literal_name(path: &Path, prefix: &str) {
+        let name = path
+            .file_name()
+            .and_then(OsStr::to_str)
+            .expect("a UTF-8 file name");
+        let token = name
+            .strip_prefix(prefix)
+            .unwrap_or_else(|| panic!("{name:?} starts with {prefix:?}"));
+        assert_eq!(token.len(), 16, "{name:?}");
+        assert!(
+            token
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)),
+            "{name:?}"
+        );
+    }
+
+    #[test]
+    fn directory_kinds_name_their_entries_with_the_literal_on_disk_names() {
+        let directory = Path::new("/runtime/dir");
+        assert_eq!(
+            DirectoryKind::STAGING.directory_name(0x0123_4567_89ab_cdef),
+            ".s0123456789abcdef"
+        );
+        assert_eq!(
+            DirectoryKind::STAGING.directory_name(1),
+            ".s0000000000000001"
+        );
+        assert_eq!(
+            DirectoryKind::STAGING.content_path(directory),
+            Path::new("/runtime/dir/s")
+        );
+        assert_eq!(
+            TEST_FILES.directory_name(0xff),
+            "shepr-test-00000000000000ff"
+        );
+        assert_eq!(
+            TEST_FILES.content_path(directory),
+            Path::new("/runtime/dir/config")
+        );
+        assert_eq!(OWNER_MARKER, ".owner");
+    }
+
+    #[test]
+    fn valid_names_are_exactly_what_directory_name_writes() {
+        let kind = DirectoryKind::STAGING;
+        assert!(kind.has_valid_name(&kind.directory_name(0x0123_4567_89ab_cdef)));
+        assert!(kind.has_valid_name(".s0123456789abcdef"));
+        for rejected in [
+            ".s0123456789ABCDEF",
+            ".s0123456789abcdeF",
+            ".s0123456789abcde",
+            ".s0123456789abcdef0",
+            ".s0123456789abcdeg",
+            ".t0123456789abcdef",
+            "s0123456789abcdef",
+        ] {
+            assert!(!kind.has_valid_name(rejected), "{rejected:?}");
+        }
+    }
+
     #[test]
     fn directory_sweeps_share_dead_owner_content_and_lock_checks() {
-        for (kind, socket_content) in [(DirectoryKind::STAGING, true), (TEST_FILES, false)] {
+        // Each kind with its literal on-disk prefix and content name, so a
+        // change to either stops the sweep from finding these leftovers.
+        for (kind, prefix, content, socket_content) in [
+            (DirectoryKind::STAGING, ".s", "s", true),
+            (TEST_FILES, "shepr-test-", "config", false),
+        ] {
             let scratch = shepr_test_support::ScratchDir::new("owned-runtime-sweep");
             fs::set_permissions(
                 scratch.path(),
@@ -445,16 +523,36 @@ mod tests {
             let (_, rest) = live.split_once('-').expect("identity fields");
             let dead = format!("{:08x}-{rest}", i32::MAX);
             let fixture = |token, marker| {
-                private_fixture(scratch.path(), &kind.directory_name(token), marker)
+                private_fixture(
+                    scratch.path(),
+                    &literal_directory_name(prefix, token),
+                    marker,
+                )
             };
+            let content_path = |directory: &Path| directory.join(content);
             let abandoned = fixture(1, Some(dead.as_str()));
             if socket_content {
                 drop(
-                    std::os::unix::net::UnixListener::bind(kind.content_path(&abandoned))
+                    std::os::unix::net::UnixListener::bind(content_path(&abandoned))
                         .expect("fixture socket"),
                 );
             } else {
-                fs::write(kind.content_path(&abandoned), "Host *\n").expect("fixture config");
+                fs::write(content_path(&abandoned), "Host *\n").expect("fixture config");
+            }
+            // Dead-marked with owned content, but its token is uppercase hex,
+            // which `directory_name` never writes: not shepr's to sweep.
+            let uppercase = private_fixture(
+                scratch.path(),
+                &format!("{prefix}{:016X}", 0xabc_u64),
+                Some(dead.as_str()),
+            );
+            if socket_content {
+                drop(
+                    std::os::unix::net::UnixListener::bind(content_path(&uppercase))
+                        .expect("fixture socket"),
+                );
+            } else {
+                fs::write(content_path(&uppercase), "Host *\n").expect("fixture config");
             }
             let unmarked = fixture(2, None);
             let live_path = fixture(3, Some(live.as_str()));
@@ -471,10 +569,9 @@ mod tests {
             );
             let oversized = fixture(7, Some(oversized_owner.as_str()));
             let symlink = fixture(8, Some(dead.as_str()));
-            std::os::unix::fs::symlink("absent", kind.content_path(&symlink))
-                .expect("content symlink");
+            std::os::unix::fs::symlink("absent", content_path(&symlink)).expect("content symlink");
             let wrong_kind = fixture(9, Some(dead.as_str()));
-            fs::create_dir(kind.content_path(&wrong_kind)).expect("wrong content kind");
+            fs::create_dir(content_path(&wrong_kind)).expect("wrong content kind");
             let wrong_mode = fixture(10, Some(dead.as_str()));
             fs::set_permissions(
                 wrong_mode.join(OWNER_MARKER),
@@ -496,6 +593,7 @@ mod tests {
             OwnedRuntimeEntry::sweep_directory(scratch.path(), kind);
             assert!(!abandoned.try_exists().expect("stat abandoned entry"));
             for retained in [
+                uppercase,
                 unmarked,
                 live_path,
                 malformed,
@@ -523,19 +621,23 @@ mod tests {
         let entry = OwnedRuntimeEntry::create_directory(scratch.path(), TEST_FILES)
             .expect("create directory");
         let path = entry.path().to_path_buf();
+        assert_literal_name(&path, "shepr-test-");
         assert_eq!(
-            fs::read_to_string(path.join(OWNER_MARKER)).expect("read marker"),
+            fs::read_to_string(path.join(".owner")).expect("read marker"),
             ProcessIdentity::current().expect("current identity").tag()
         );
         assert!(
             crate::ipc::acquire_flock_lock(&path.join(OWNER_MARKER), LockWait::FailIfHeld).is_err()
         );
-        fs::write(TEST_FILES.content_path(&path), "Host *\n").expect("write config");
+        // The literal content name: release removes the directory only if it
+        // recognises this entry as its content.
+        fs::write(path.join("config"), "Host *\n").expect("write config");
         entry.release();
         assert!(!path.try_exists().expect("stat released directory"));
 
         let path = create_owned_directory(scratch.path(), TEST_FILES)
             .expect("create transferred directory");
+        assert_literal_name(&path, "shepr-test-");
         release_owned_directory(&path, TEST_FILES);
         release_owned_directory(&path, TEST_FILES);
         assert!(!path.try_exists().expect("stat transferred directory"));
@@ -547,6 +649,7 @@ mod tests {
         let entry = OwnedRuntimeEntry::create_directory(scratch.path(), DirectoryKind::STAGING)
             .expect("create staging directory");
         let path = entry.path().to_path_buf();
+        assert_literal_name(&path, ".s");
         fs::create_dir(path.join("unexpected")).expect("unexpected directory");
         entry.release();
         assert!(

@@ -172,7 +172,7 @@ const SPECS: [AssetSpec; 15] = [
     AssetSpec {
         target: IntegrationTarget::Opencode,
         id: None,
-        version: 3,
+        version: 4,
         asset: "opencode/shepr-agent-state.js",
         decoder: "opencode.js",
         kind: Kind::Plugin,

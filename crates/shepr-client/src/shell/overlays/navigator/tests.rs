@@ -1122,17 +1122,12 @@ fn navigator_uses_machine_parents_only_for_federated_clients() {
 
 #[test]
 fn navigator_keeps_saved_machine_visible_before_metadata_arrives() {
-    let (mut state, endpoint_id) = state_with_remote();
-    let endpoint = state
-        .endpoints
-        .iter_mut()
-        .find(|endpoint| endpoint.endpoint_id == endpoint_id)
-        .expect("saved remote endpoint");
-    endpoint.state = crate::shell::endpoints::EndpointState::Connecting {
-        last: None,
-        connected: false,
-        generation: None,
-    };
+    // The machine is configured and has never connected.
+    let machine = crate::shell::tests::remote_machine();
+    let endpoint_id = ClientEndpointId::Ssh(machine.label.clone());
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
+    state.set_machines(&[machine]);
+    state.set_snapshot(Box::new(snapshot()));
     state.open_navigator_overlay();
     let Overlay::Navigator(navigator) = state.overlay.as_ref().expect("navigator") else {
         panic!("expected navigator");
@@ -1280,4 +1275,140 @@ fn navigator_foreign_workspace_heading_keeps_the_workspace_target() {
             target: LocationTarget::Workspace(workspace_id),
         })] if activated == &endpoint_id && workspace_id == &crate::tests::test_workspace_id("w1")
     ));
+}
+
+/// One navigator row as (target, label, stale, current).
+type RowSummary = (Location, String, bool, bool);
+
+fn summarize(rows: &[ClientNavigatorRow]) -> Vec<RowSummary> {
+    rows.iter()
+        .map(|row| {
+            (
+                row.target.clone(),
+                row.label.clone(),
+                row.stale,
+                row.current,
+            )
+        })
+        .collect()
+}
+
+/// The open navigator's rows as production reads them: from the shell's cached index,
+/// through the overlay context that layout and drawing take. Each read is checked against
+/// an index built fresh from the same endpoints, and against the rows a composed frame
+/// actually drew.
+fn cached_navigator_rows(state: &mut ClientShellState) -> Vec<RowSummary> {
+    let (cached, fresh) = {
+        let Some(Overlay::Navigator(navigator)) = state.overlay.as_ref() else {
+            panic!("expected navigator");
+        };
+        let ctx = crate::shell::view::resolve::overlay_context(state);
+        (
+            summarize(&ctx.navigator_index.rows(ctx.active_endpoint_id, navigator)),
+            summarize(&navigator_rows(
+                &state.endpoints,
+                state.endpoints.presented(),
+                navigator,
+            )),
+        )
+    };
+    assert_eq!(cached, fresh, "the cached index serves stale rows");
+    state.compose(116, 60).expect("navigator frame");
+    let drawn = state
+        .drawn()
+        .navigator_rows()
+        .map(|(_, target)| target.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        drawn,
+        cached
+            .iter()
+            .map(|(target, ..)| target.clone())
+            .collect::<Vec<_>>(),
+        "the drawn navigator reads the cached index"
+    );
+    cached
+}
+
+#[test]
+fn the_navigator_reads_the_cached_index_and_it_follows_every_endpoint_change() {
+    let (mut state, remote) = state_with_remote();
+    let remote_generation = crate::tests::test_generation(1);
+    state.open_navigator_overlay();
+    let w1 = test_workspace_id("w1");
+    let w2 = test_workspace_id("w2");
+    let local_pane = Location::pane(ClientEndpointId::Local, test_pane_id("w1:p1"));
+    let row = |rows: &[RowSummary], target: &Location| {
+        rows.iter()
+            .find(|(row_target, ..)| row_target == target)
+            .cloned()
+    };
+
+    let rows = cached_navigator_rows(&mut state);
+    assert!(row(&rows, &Location::workspace(remote.clone(), w1)).is_some());
+    assert!(row(&rows, &Location::workspace(remote.clone(), w2)).is_none());
+    let (.., current) = row(&rows, &local_pane).expect("the local pane");
+    assert!(current);
+
+    // The remote gains a workspace.
+    let mut next = snapshot();
+    next.boot_id = crate::tests::test_boot_id("remote-boot");
+    next.revision = shepr_test_fixtures::counter_at(2);
+    next.workspaces[0].label = "remote-workspace".into();
+    let mut added = next.workspaces[0].clone();
+    added.workspace_id = w2;
+    added.label = "added".into();
+    let mut added_pane = next.panes[0].clone();
+    added_pane.pane_id = test_pane_id("w2:p1");
+    next.workspaces.push(added);
+    next.panes.push(added_pane);
+    state.set_endpoint_snapshot_for_generation(&remote, remote_generation, Box::new(next.clone()));
+    let rows = cached_navigator_rows(&mut state);
+    let (_, label, ..) =
+        row(&rows, &Location::workspace(remote.clone(), w2)).expect("the added workspace");
+    assert_eq!(label, "added");
+    assert!(
+        row(
+            &rows,
+            &Location::pane(remote.clone(), test_pane_id("w2:p1"))
+        )
+        .is_some()
+    );
+
+    // Then loses its first one and renames the pane of the other: no row of the removed
+    // workspace survives, and the kept pane shows its new name.
+    next.revision = shepr_test_fixtures::counter_at(3);
+    next.workspaces.remove(0);
+    next.panes.remove(0);
+    next.panes[0].label = Some("renamed".into());
+    state.set_endpoint_snapshot_for_generation(&remote, remote_generation, Box::new(next));
+    let rows = cached_navigator_rows(&mut state);
+    assert!(row(&rows, &Location::workspace(remote.clone(), w1)).is_none());
+    assert!(
+        row(
+            &rows,
+            &Location::pane(remote.clone(), test_pane_id("w1:p1"))
+        )
+        .is_none()
+    );
+    assert!(
+        rows.iter()
+            .all(|(_, label, ..)| label != "remote-workspace")
+    );
+    let (_, label, ..) = row(
+        &rows,
+        &Location::pane(remote.clone(), test_pane_id("w2:p1")),
+    )
+    .expect("the kept remote pane");
+    assert_eq!(label, "renamed");
+    // The presented endpoint's focused pane is still the current row.
+    let (.., current) = row(&rows, &local_pane).expect("the local pane");
+    assert!(current);
+
+    // Losing the remote's connection marks its rows stale and leaves Local's live.
+    state.endpoint_failed(&remote, EndpointFailureStatus::Reconnecting);
+    let rows = cached_navigator_rows(&mut state);
+    for (target, _, stale, _) in &rows {
+        assert_eq!(*stale, target.endpoint == remote, "{target:?}");
+    }
 }

@@ -187,22 +187,18 @@ pub(in crate::shell) fn navigate_alias_matches(
     combo.matches(key)
 }
 
-macro_rules! define_navigate_actions {
-    (
-        actions { $(($action_field:ident, $action_variant:ident, $action_default:literal, $action_group:ident, $action_label:literal, $action_doc:literal),)* }
-        indexed { $(($indexed_field:ident, $indexed_variant:ident, $indexed_default:literal, $indexed_group:ident, $indexed_label:literal, $indexed_doc:literal, $indexed_help_after:literal),)* }
-        navigate { $(($navigate_config_field:ident, $navigate_field:ident, $navigate_variant:ident, $navigate_default:literal, $navigate_group:ident, $navigate_label:literal, $navigate_doc:literal, $navigate_alias:ident),)* }
-        navigate_indexed { $(($navigate_indexed_config_field:ident, $navigate_indexed_field:ident, $navigate_indexed_variant:ident, $navigate_indexed_default:literal, $navigate_indexed_group:ident, $navigate_indexed_label:literal, $navigate_indexed_doc:literal, $navigate_indexed_alias:ident),)* }
-    ) => {
+shepr_config::keybinding_rows! {
+    $ define_navigate_actions;
+    navigate(variant = $navigate_variant)
+    navigate_indexed(variant = $navigate_indexed_variant)
+    => {
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
         enum NavigateAction {
             $($navigate_variant,)*
             $($navigate_indexed_variant(usize),)*
         }
-    };
+    }
 }
-
-shepr_config::keybinding_table!(define_navigate_actions);
 
 fn navigate_indexed_binding_index(
     bindings: &[shepr_config::IndexedKeybind],
@@ -215,13 +211,11 @@ fn resolve_navigate_binding(
     keybinds: &shepr_config::Keybinds,
     key: &shepr_term::key::TerminalKey,
 ) -> Option<NavigateAction> {
-    macro_rules! resolve_navigate {
-        (
-            actions { $(($action_field:ident, $action_variant:ident, $action_default:literal, $action_group:ident, $action_label:literal, $action_doc:literal),)* }
-            indexed { $(($indexed_field:ident, $indexed_variant:ident, $indexed_default:literal, $indexed_group:ident, $indexed_label:literal, $indexed_doc:literal, $indexed_help_after:literal),)* }
-            navigate { $(($navigate_config_field:ident, $navigate_field:ident, $navigate_variant:ident, $navigate_default:literal, $navigate_group:ident, $navigate_label:literal, $navigate_doc:literal, $navigate_alias:ident),)* }
-            navigate_indexed { $(($navigate_indexed_config_field:ident, $navigate_indexed_field:ident, $navigate_indexed_variant:ident, $navigate_indexed_default:literal, $navigate_indexed_group:ident, $navigate_indexed_label:literal, $navigate_indexed_doc:literal, $navigate_indexed_alias:ident),)* }
-        ) => {{
+    shepr_config::keybinding_rows! {
+        $ resolve_navigate;
+        navigate(field = $navigate_field, variant = $navigate_variant, alias = $navigate_alias)
+        navigate_indexed(field = $navigate_indexed_field, variant = $navigate_indexed_variant)
+        => {
             $(
                 if keybinds.navigate.$navigate_field.matches_direct_key(key)
                     || shepr_config::navigate_alias!($navigate_alias)
@@ -238,11 +232,9 @@ fn resolve_navigate_binding(
                     return Some(NavigateAction::$navigate_indexed_variant(index));
                 }
             )*
-            None
-        }};
+        }
     }
-
-    shepr_config::keybinding_table!(resolve_navigate)
+    None
 }
 
 pub(in crate::shell) fn is_modal_paste_shortcut(key: &shepr_term::key::TerminalKey) -> bool {

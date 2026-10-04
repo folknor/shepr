@@ -893,6 +893,145 @@ mod tests {
         assert_eq!(state.visible_notice_title(), Some("Action interrupted"));
     }
 
+    /// A full pane surface and a patch from Local, at the connection's own generation.
+    fn pane_messages() -> [DecodedClientServerMessage; 2] {
+        let surface = shepr_protocol::PaneSurfaceFrame {
+            boot_id: crate::tests::test_boot_id("boot-1"),
+            projection_revision: shepr_protocol::ProjectionRevision::FIRST,
+            surface_revision: shepr_protocol::SurfaceRevision::FIRST,
+            frame: shepr_protocol::FrameData::blank(80, 24).expect("test frame size is valid"),
+            panes: vec![],
+            splits: vec![],
+        };
+        let patch = shepr_protocol::PaneSurfacePatch {
+            boot_id: surface.boot_id.clone(),
+            projection_revision: shepr_protocol::ProjectionRevision::FIRST,
+            base_surface_revision: shepr_protocol::SurfaceRevision::FIRST,
+            surface_revision: shepr_test_fixtures::counter_at(2),
+            rows: vec![],
+            panes: vec![],
+            cursor: None,
+        };
+        [
+            DecodedClientServerMessage::Wire(DecodedWireServerMessage::PaneSurface(surface)),
+            DecodedClientServerMessage::PaneSurfacePatch(patch),
+        ]
+    }
+
+    fn local_lease() -> super::super::ViewLease {
+        super::super::ViewLease {
+            endpoint_id: ClientEndpointId::Local,
+            generation: test_generation(1),
+            boot_id: crate::tests::test_boot_id("boot-1"),
+            minimum_revision: shepr_protocol::ProjectionRevision::FIRST,
+        }
+    }
+
+    fn geometry() -> TerminalGeometry {
+        TerminalGeometry::from_host(
+            shepr_core::geometry::GridSize::clamped(80, 24),
+            shepr_core::geometry::HostCell::from_host(8, 16, false),
+        )
+    }
+
+    /// `present_frame` always writes, which is sound only because the gate never passes a
+    /// pane surface or patch to the loop while no endpoint is live: whatever the move's
+    /// stage, the cells on screen stay the last coherent ones until a commit installs the
+    /// target's pair.
+    #[test]
+    fn with_no_endpoint_shown_the_gate_passes_no_pane_frame() {
+        let remote = ClientEndpointId::Ssh(
+            shepr_config::MachineLabel::parse("build").expect("machine label"),
+        );
+        let nothing_shown = [
+            // Launch with Local unreachable: Local is waited for, not shown.
+            EndpointChoice::waiting_for(ClientEndpointId::Local),
+            // Local is the target being prepared, with nothing shown behind it.
+            {
+                let mut choice = EndpointChoice::waiting_for(ClientEndpointId::Local);
+                choice.begin_preparing(
+                    local_lease(),
+                    RequestId::allocate(),
+                    geometry(),
+                    Instant::now(),
+                );
+                choice
+            },
+            // Preparing Local failed on this generation.
+            {
+                let mut choice = EndpointChoice::waiting_for(ClientEndpointId::Local);
+                choice.begin_preparing(
+                    local_lease(),
+                    RequestId::allocate(),
+                    geometry(),
+                    Instant::now(),
+                );
+                choice.fail_move();
+                choice
+            },
+            // Local was shown, a move to another machine was preparing, and Local's
+            // connection was lost: Local's cells stay drawn as a stale presentation.
+            {
+                let mut choice = EndpointChoice::showing(ClientEndpointId::Local);
+                choice.select(Location::machine(remote.clone()));
+                choice.begin_preparing(
+                    super::super::ViewLease {
+                        endpoint_id: remote.clone(),
+                        generation: test_generation(7),
+                        boot_id: crate::tests::test_boot_id("remote-boot"),
+                        minimum_revision: shepr_protocol::ProjectionRevision::FIRST,
+                    },
+                    RequestId::allocate(),
+                    geometry(),
+                    Instant::now(),
+                );
+                assert_eq!(
+                    choice.connection_lost(&ClientEndpointId::Local),
+                    Lost::Shown
+                );
+                assert_eq!(choice.presented(), &ClientEndpointId::Local);
+                choice
+            },
+        ];
+        for (case, choice) in nothing_shown.into_iter().enumerate() {
+            assert!(choice.live().is_none(), "case {case}: nothing is shown");
+            let mut hub = local_hub(RecordingTransport::default());
+            let mut shell = shell_with(choice);
+            for message in pane_messages() {
+                let admission = hub.admit(
+                    &mut shell,
+                    &ClientEndpointId::Local,
+                    test_generation(1),
+                    Box::new(message),
+                );
+                assert!(
+                    matches!(admission, Admission::Consumed),
+                    "case {case}: a pane frame passed the gate with nothing shown"
+                );
+            }
+        }
+
+        // The same frames from the shown endpoint do pass, so the cases above are
+        // refused by the gate and not by the generation check.
+        let mut hub = local_hub(RecordingTransport::default());
+        let mut shell = shell_with(EndpointChoice::showing(ClientEndpointId::Local));
+        for message in pane_messages() {
+            let admission = hub.admit(
+                &mut shell,
+                &ClientEndpointId::Local,
+                test_generation(1),
+                Box::new(message),
+            );
+            assert!(matches!(
+                admission,
+                Admission::Present {
+                    role: ConnectionRole::Shown,
+                    ..
+                }
+            ));
+        }
+    }
+
     #[test]
     fn waiting_notice_names_the_endpoint_and_its_current_status() {
         let local = ClientEndpointId::Local;

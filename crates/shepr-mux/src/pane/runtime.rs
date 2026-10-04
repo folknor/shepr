@@ -389,6 +389,29 @@ impl PaneRuntime {
         self.output_writer().begin().write(bytes);
     }
 
+    /// Seed the cwd arbitration state a PTY reader and a save would leave:
+    /// `reported` is an accepted OSC 7 path with the shell's /proc cwd sampled
+    /// when it arrived, `remembered` a save's observation taken after that
+    /// report (so the report is not newer than it).
+    pub fn test_seed_cwd_state(
+        &self,
+        reported: Option<(std::path::PathBuf, Option<std::path::PathBuf>)>,
+        remembered: Option<std::path::PathBuf>,
+    ) {
+        let generation = 0;
+        *shepr_core::locks::lock_auxiliary(&self.cwd.reported) =
+            reported.map(|(path, shell_cwd_at_report)| ReportedCwd {
+                path,
+                shell_cwd_at_report,
+                generation,
+            });
+        *shepr_core::locks::lock_auxiliary(&self.cwd.remembered) =
+            remembered.map(|path| PersistedCwd {
+                path,
+                report_generation: Some(generation),
+            });
+    }
+
     pub fn test_with_scrollback_bytes(
         cols: u16,
         rows: u16,

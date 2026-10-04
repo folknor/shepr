@@ -325,14 +325,13 @@ define_navigate_aliases! {
     Right => Right,
 }
 
-/// Parsed keybinds for Shepr actions.
-macro_rules! define_resolved_keybinds {
-    (
-        actions { $(($action_field:ident, $action_variant:ident, $action_default:literal, $action_group:ident, $action_label:literal, $action_doc:literal),)* }
-        indexed { $(($indexed_field:ident, $indexed_variant:ident, $indexed_default:literal, $indexed_group:ident, $indexed_label:literal, $indexed_doc:literal, $indexed_help_after:literal),)* }
-        navigate { $(($navigate_config_field:ident, $navigate_field:ident, $navigate_variant:ident, $navigate_default:literal, $navigate_group:ident, $navigate_label:literal, $navigate_doc:literal, $navigate_alias:ident),)* }
-        navigate_indexed { $(($navigate_indexed_config_field:ident, $navigate_indexed_field:ident, $navigate_indexed_variant:ident, $navigate_indexed_default:literal, $navigate_indexed_group:ident, $navigate_indexed_label:literal, $navigate_indexed_doc:literal, $navigate_indexed_alias:ident),)* }
-    ) => {
+crate::keybinding_rows! {
+    $ define_resolved_keybinds;
+    actions(field = $action_field)
+    indexed(field = $indexed_field)
+    navigate(field = $navigate_field)
+    navigate_indexed(field = $navigate_indexed_field)
+    => {
         #[derive(Debug, Clone, Default)]
         pub struct NavigateKeybinds {
             $(pub $navigate_field: ActionKeybinds,)*
@@ -346,10 +345,8 @@ macro_rules! define_resolved_keybinds {
             $(pub $action_field: ActionKeybinds,)*
             $(pub $indexed_field: Vec<IndexedKeybind>,)*
         }
-    };
+    }
 }
-
-crate::keybinding_table!(define_resolved_keybinds);
 
 impl Keybinds {
     /// Resolve the key chord for one alias identifier from the central table.
@@ -544,23 +541,24 @@ impl ClientConfig {
                 }
             };
         }
-        macro_rules! apply_keybinding_table {
-            (
-                actions { $(($action_field:ident, $action_variant:ident, $action_default:literal, $action_group:ident, $action_label:literal, $action_doc:literal),)* }
-                indexed { $(($indexed_field:ident, $indexed_variant:ident, $indexed_default:literal, $indexed_group:ident, $indexed_label:literal, $indexed_doc:literal, $indexed_help_after:literal),)* }
-                navigate { $(($navigate_config_field:ident, $navigate_field:ident, $navigate_variant:ident, $navigate_default:literal, $navigate_group:ident, $navigate_label:literal, $navigate_doc:literal, $navigate_alias:ident),)* }
-                navigate_indexed { $(($navigate_indexed_config_field:ident, $navigate_indexed_field:ident, $navigate_indexed_variant:ident, $navigate_indexed_default:literal, $navigate_indexed_group:ident, $navigate_indexed_label:literal, $navigate_indexed_doc:literal, $navigate_indexed_alias:ident),)* }
-            ) => {
+        crate::keybinding_rows! {
+            $ apply_keybinding_table;
+            actions(field = $action_field)
+            indexed(field = $indexed_field)
+            navigate(config_field = $navigate_config_field, field = $navigate_field)
+            navigate_indexed(
+                config_field = $navigate_indexed_config_field,
+                field = $navigate_indexed_field
+            )
+            => {
                 for source in [BindingSource::User, BindingSource::Default] {
                     $(apply_action!(keybinds.$action_field, $action_field, source);)*
                     $(apply_indexed!(keybinds.$indexed_field, $indexed_field, source);)*
                     $(apply_navigate!(keybinds.navigate.$navigate_field, $navigate_config_field, source);)*
                     $(apply_navigate_indexed!(keybinds.navigate.$navigate_indexed_field, $navigate_indexed_config_field, source);)*
                 }
-            };
+            }
         }
-
-        crate::keybinding_table!(apply_keybinding_table);
 
         let live = match (diagnostics.is_empty(), prefix) {
             (true, Some(prefix)) => Some(LiveKeybindConfig { prefix, keybinds }),
@@ -571,13 +569,11 @@ impl ClientConfig {
 }
 
 fn reserve_navigate_runtime_keys(registry: &mut BindingRegistry) {
-    macro_rules! reserve_aliases {
-        (
-            actions { $(($action_field:ident, $action_variant:ident, $action_default:literal, $action_group:ident, $action_label:literal, $action_doc:literal),)* }
-            indexed { $(($indexed_field:ident, $indexed_variant:ident, $indexed_default:literal, $indexed_group:ident, $indexed_label:literal, $indexed_doc:literal, $indexed_help_after:literal),)* }
-            navigate { $(($navigate_config_field:ident, $navigate_field:ident, $navigate_variant:ident, $navigate_default:literal, $navigate_group:ident, $navigate_label:literal, $navigate_doc:literal, $navigate_alias:ident),)* }
-            navigate_indexed { $(($navigate_indexed_config_field:ident, $navigate_indexed_field:ident, $navigate_indexed_variant:ident, $navigate_indexed_default:literal, $navigate_indexed_group:ident, $navigate_indexed_label:literal, $navigate_indexed_doc:literal, $navigate_indexed_alias:ident),)* }
-        ) => {
+    crate::keybinding_rows! {
+        $ reserve_aliases;
+        navigate(alias = $navigate_alias)
+        navigate_indexed(alias = $navigate_indexed_alias)
+        => {
             $(
                 if let Some(chord) = crate::navigate_alias!($navigate_alias) {
                     registry.reserve_direct(
@@ -596,10 +592,8 @@ fn reserve_navigate_runtime_keys(registry: &mut BindingRegistry) {
                     );
                 }
             )*
-        };
+        }
     }
-
-    crate::keybinding_table!(reserve_aliases);
 }
 
 fn invalid_keybinding_diagnostic(field: &str, raw: &str) -> ConfigDiagnostic {

@@ -312,8 +312,8 @@ every agent integration reports through it.
   (each read as false when an older build omits it) and the
   `server.stop_if_boot` request; keep their literal JSON fixtures in the
   `shepr-api` tests in sync with intentional wire changes.
-- Startup and shutdown follow one order, written in `run_server` and in
-  `HeadlessServer::release_socket_after_save`. Startup takes the data-directory
+- Startup and shutdown follow one order, written in `start_server` (which
+  `run_server` calls) and in `HeadlessServer::release_socket_after_save`. Startup takes the data-directory
   lease, binds the server socket, restores panes, then opens the client
   protocol. The socket is live and answers `ping` from the moment it is bound,
   with `starting: true` until the client protocol opens; a TUI connection

@@ -105,18 +105,33 @@ pub enum HookReportKind {
 /// What became of a hook report that did not apply.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnappliedHookDisposition {
-    /// Held until process evidence for its agent arrives.
-    Parked,
+    /// Held by its source until what it awaits arrives.
+    Parked(ParkedHookAwaiting),
     Rejected(HookRejection),
+}
+
+/// What a parked hook report is held for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParkedHookAwaiting {
+    /// A session start of its agent. A parked state report with no parked
+    /// start has no lifetime, and process evidence alone never promotes it: a
+    /// late report from a process that already exited would otherwise reopen
+    /// its source.
+    SessionStart,
+    /// Process evidence for its agent, until `expires_at` on the server's
+    /// monotonic clock: a parked start, or a state report riding one.
+    Process { expires_at: Instant },
 }
 
 /// The pane's most recent hook report that was parked or rejected, kept so
 /// detect explain can say why a report changed nothing. A later applied
 /// report from the same source clears it, as does process evidence promoting
-/// a parked report of that source and the expiry of that source's parked
-/// start; a later unapplied report replaces it. Expiry is judged at read time
-/// too (`AgentOwnership::last_unapplied_hook_report`), so it does not wait for
-/// the next process observation.
+/// a parked report of that source; a later unapplied report replaces it.
+/// Whether a parked report is still parked, and what it awaits, is judged
+/// where it is read (`AgentOwnership::last_unapplied_hook_report`), against
+/// what its source still holds: an exit that consumed it, a start that
+/// replaced it, or the expiry of the start it rode leaves it gone without
+/// waiting for the next process observation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnappliedHookReport {
     pub origin: ReportOrigin,
@@ -126,6 +141,19 @@ pub struct UnappliedHookReport {
     /// The server's clock pair when the report was admitted.
     pub received: HookClockSample,
     pub disposition: UnappliedHookDisposition,
+}
+
+/// The stored form of `UnappliedHookReport`: a parked report keeps no
+/// disposition of its own, since what it awaits is read from its source.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct UnappliedHookRecord {
+    origin: ReportOrigin,
+    kind: HookReportKind,
+    seq: Option<u64>,
+    session_ref: Option<shepr_agent::resume::AgentSessionRef>,
+    received: HookClockSample,
+    /// `None` while parked.
+    rejection: Option<HookRejection>,
 }
 
 impl HookOutcome {
@@ -204,7 +232,7 @@ pub struct AgentOwnership {
     checkpoint_candidate: Option<CheckpointCandidate>,
     /// Diagnostic only: the last report that changed nothing and why. No
     /// arbitration reads it.
-    last_unapplied_hook_report: Option<UnappliedHookReport>,
+    last_unapplied_hook_report: Option<UnappliedHookRecord>,
     /// The pane's ending was applied (`transition_pane_exit`). Detector
     /// observations still queued for it change nothing after that: the
     /// child can outlive a failed reader, and a late release would clear the

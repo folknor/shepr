@@ -773,15 +773,10 @@ mod tests {
         state.connect_endpoint_with_snapshot(&remote, 1, Box::new(remote_snapshot));
         let local_endpoint = ClientEndpointId::Local;
         for (endpoint_id, total) in [(local_endpoint, count), (remote.clone(), remote_count)] {
-            let endpoint = state
-                .endpoints
-                .iter_mut()
-                .find(|endpoint| endpoint.endpoint_id == endpoint_id)
-                .expect("test precondition");
-            let snapshot =
-                std::sync::Arc::make_mut(endpoint.snapshot_mut().expect("test precondition"));
-            snapshot.workspaces = (1..=total).map(|i| workspace(&format!("w{i}"))).collect();
-            snapshot.focused_workspace_id = Some(test_workspace_id("w1"));
+            state.edit_endpoint_snapshot(&endpoint_id, |snapshot| {
+                snapshot.workspaces = (1..=total).map(|i| workspace(&format!("w{i}"))).collect();
+                snapshot.focused_workspace_id = Some(test_workspace_id("w1"));
+            });
         }
         (state, remote)
     }

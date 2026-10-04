@@ -641,15 +641,41 @@ impl HookSourceState {
         pending: PendingFullLifecycleHookReport,
     ) -> bool {
         if self.suppressed().is_none() {
+            // As in `park_start`: the report opens this suppression, so its
+            // floor must not be the report's own instant. A report can arrive
+            // before its start and before the detector's first tick that sees
+            // the agent; that tick, stamped before the report was applied, is
+            // what promotes the start that follows, and refusing it would
+            // leave the start parked until it expires. Process evidence alone
+            // never promotes the report itself (`observe_process` needs a
+            // pending start), so the lower floor admits no new promotion.
+            initial.observed_at = initial
+                .observed_at
+                .checked_sub(PARKED_START_LIFETIME)
+                .unwrap_or(initial.observed_at);
             initial.pending_replacement_report = Some(pending);
             self.release(FullLifecycleHookSuppressionReason::AwaitingProcess, initial);
             return true;
         }
+        // Ordered against the pending report with the source's own rule, so a
+        // backwards wall-clock step re-anchors here as it does for accepted
+        // reports instead of leaving every newer report out of order.
         if let Some(suppressed) = self.suppressed_mut()
             && suppressed
                 .pending_replacement_report
                 .as_ref()
-                .is_none_or(|previous| pending.seq > previous.seq)
+                .is_none_or(|previous| {
+                    !HookSequence {
+                        value: previous.seq,
+                        accepted_at: previous.sample.monotonic,
+                        accepted_wall_clock: previous.sample.wall,
+                    }
+                    .supersedes(
+                        pending.seq,
+                        pending.sample.monotonic,
+                        pending.sample.wall,
+                    )
+                })
         {
             suppressed.pending_replacement_report = Some(pending);
             return true;
@@ -715,6 +741,92 @@ impl HookSourceState {
         })
     }
 
+    /// What a report this source parked, recorded as `kind`, `seq` and
+    /// `session_ref`, still awaits at `now`, or `None` once nothing this
+    /// source holds at `now` would promote it.
+    ///
+    /// A start is held while it is the pending start for its session and its
+    /// lifetime has not run out at `now`. A state report is held while it is
+    /// the pending report (matched by seq): riding a live pending start of its
+    /// own session when that start would carry it (`start_carries`), which
+    /// gives it the start's expiry, and otherwise awaiting a start of its
+    /// session. A pending start past its lifetime takes its report with it at
+    /// the next process observation (`observe_process`), as does one older
+    /// than the start it rides (only a report that overtook its start can be);
+    /// both read as gone already. (Until that observation, a start
+    /// re-sent for the same session restarts the lingering start's lifetime
+    /// and the report rides it again, but the re-sent start is then the
+    /// recorded report.)
+    pub(super) fn parked_awaiting(
+        &self,
+        kind: HookReportKind,
+        seq: Option<u64>,
+        session_ref: Option<&shepr_agent::resume::AgentSessionRef>,
+        now: Instant,
+    ) -> Option<ParkedHookAwaiting> {
+        let released = self.suppressed()?;
+        let live_start = released
+            .pending_start
+            .as_ref()
+            .zip(self.pending_start_at)
+            .filter(|_| !self.parked_start_expired(now))
+            .map(|(start, started_at)| {
+                let expires_at = started_at
+                    .checked_add(PARKED_START_LIFETIME)
+                    .unwrap_or(started_at);
+                (start, ParkedHookAwaiting::Process { expires_at })
+            });
+        match kind {
+            HookReportKind::SessionStart(_) => {
+                let (start, awaiting) = live_start?;
+                (Some(start.session_ref()) == session_ref).then_some(awaiting)
+            }
+            HookReportKind::State(_) => {
+                let pending = released.pending_replacement_report.as_ref()?;
+                if Some(pending.seq) != seq {
+                    return None;
+                }
+                match (released.pending_start.as_ref(), live_start) {
+                    (None, _) => Some(ParkedHookAwaiting::SessionStart),
+                    (Some(_), None) => None,
+                    (Some(start), Some(_))
+                        if pending.authority.session_ref.as_ref() != Some(start.session_ref()) =>
+                    {
+                        Some(ParkedHookAwaiting::SessionStart)
+                    }
+                    (Some(start), Some((_, awaiting))) => Self::start_carries(
+                        start,
+                        pending,
+                        self.pending_start_at,
+                        self.sequence.map(|sequence| sequence.value),
+                    )
+                    .then_some(awaiting),
+                }
+            }
+        }
+    }
+
+    /// Whether promoting `start`, parked at `start_parked_at` with the source
+    /// sequence at `start_seq`, carries `pending`: a report of the start's
+    /// session that is newer than the start. A report that arrived after the
+    /// start was parked was ordered against that sequence on arrival by the
+    /// source's own rule (`HookSequence::supersedes`, which re-anchors after a
+    /// backwards wall-clock step), so it is newer whatever its seq; comparing
+    /// seqs again would drop a report that rule admitted. A report parked
+    /// before the start (one that overtook it) was never ordered against it,
+    /// so its seq decides. No seq at or below the start's arrives after it
+    /// otherwise: arrival refuses it as out of order.
+    fn start_carries(
+        start: &shepr_agent::resume::PersistedAgentSession,
+        pending: &PendingFullLifecycleHookReport,
+        start_parked_at: Option<Instant>,
+        start_seq: Option<u64>,
+    ) -> bool {
+        pending.authority.session_ref.as_ref() == Some(start.session_ref())
+            && (start_parked_at.is_some_and(|parked_at| pending.sample.monotonic > parked_at)
+                || start_seq.is_none_or(|seq| pending.seq > seq))
+    }
+
     /// Process evidence alone reopens a hook clear. After an exit it must also
     /// have a recognized pending session start; a parked report is insufficient.
     fn observe_process(
@@ -748,6 +860,7 @@ impl HookSourceState {
             self.sequence = None;
         }
         let start_seq = self.sequence.map(|sequence| sequence.value);
+        let start_parked_at = self.pending_start_at;
         match &mut self.generation {
             HookGeneration::Open => {
                 self.sequence = None;
@@ -785,8 +898,7 @@ impl HookSourceState {
                     .pending_replacement_report
                     .take()
                     .filter(|pending| {
-                        pending.authority.session_ref.as_ref() == Some(start.session_ref())
-                            && start_seq.is_none_or(|seq| pending.seq > seq)
+                        Self::start_carries(&start, pending, start_parked_at, start_seq)
                     });
                 self.generation = HookGeneration::Open;
                 if let Some(stale) = stale {
@@ -1103,8 +1215,11 @@ impl AgentOwnership {
         // report, a recognized start), and every integration seeds its seqs
         // from the wall clock, so a later report already exceeds it, as it
         // would with no sequence at all; a backwards clock step is handled by
-        // `HookSequence::supersedes`. The diagnostic record is judged against
-        // the clock where it is read (`last_unapplied_hook_report`).
+        // `HookSequence::supersedes`. The diagnostic record of a parked report
+        // is judged where it is read (`last_unapplied_hook_report`), against
+        // the clock and what the source record still holds
+        // (`HookSourceState::parked_awaiting`), so a lingering expired start
+        // or a report an exit consumed already reads as gone.
         if previous_detected_agent == Some(detected_agent) {
             return;
         }
@@ -1123,12 +1238,10 @@ impl AgentOwnership {
             .get_mut(origin.source())
             .map(|record| record.transition(HookSourceEvent::ProcessObserved(now)));
         if expired {
-            // Expiry discards the parked start and report, so a record that
-            // still calls one parked would be stale. Clearing it here is not
-            // redundant with the expiry check in `last_unapplied_hook_report`:
-            // the process observation transition above forgot the parked
-            // start's instant, after which that check can no longer see the
-            // expiry.
+            // Expiry discards the parked start and report. The read already
+            // judges such a record gone (`parked_awaiting` finds nothing
+            // pending); dropping it here keeps the stored record from
+            // outliving what it described.
             self.resolve_parked_hook_report(origin.source());
         }
         if let Some(effect) = effect {
@@ -2185,17 +2298,6 @@ impl AgentOwnership {
         self.hook_sources
             .get(&AgentSource::parse(source)?)?
             .suppressed()
-    }
-
-    pub fn set_hook_authority(
-        &mut self,
-        source: &str,
-        agent_label: &str,
-        state: AgentState,
-        seq: Option<u64>,
-    ) -> Option<EffectiveStateChange> {
-        self.set_hook_authority_at(source, agent_label, state, None, seq, Instant::now())
-            .and_then(|mutation| mutation.effective_state_change)
     }
 
     pub fn set_hook_authority_with_session_ref(

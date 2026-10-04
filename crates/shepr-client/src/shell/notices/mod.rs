@@ -24,13 +24,20 @@ pub(in crate::shell) enum NoticeCode {
     Server,
     Cancelled,
     Command(CommandKind),
-    SessionRestoreIncomplete,
-    SessionSavesStopped,
+    Boot(BootNoticeCode),
     PaneInputDropped,
     OversizedSurface,
     SizeLimit,
     MachineDiagnostic,
     EndpointUnavailable,
+}
+
+/// The cards an endpoint's snapshot carries for its whole server boot. Only these queue
+/// behind the visible card, once per endpoint, boot and code.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(in crate::shell) enum BootNoticeCode {
+    SessionRestoreIncomplete,
+    SessionSavesStopped,
 }
 
 #[derive(Clone, Copy)]
@@ -53,13 +60,6 @@ impl NoticeCode {
 
     fn automatic_body_row_limit(self) -> Option<usize> {
         (self != Self::MachineDiagnostic).then_some(MAX_AUTOMATIC_NOTICE_BODY_ROWS)
-    }
-
-    fn is_boot_queued(self) -> bool {
-        matches!(
-            self,
-            Self::SessionRestoreIncomplete | Self::SessionSavesStopped
-        )
     }
 }
 
@@ -183,7 +183,7 @@ impl Notices {
         &mut self,
         endpoint_id: &ClientEndpointId,
         boot_id: &shepr_protocol::BootId,
-        code: NoticeCode,
+        code: BootNoticeCode,
         title: &str,
         body: String,
     ) -> bool {
@@ -191,9 +191,8 @@ impl Notices {
             endpoint_id: Some(endpoint_id.clone()),
             boot_id: Some(boot_id.clone()),
             kind: ClientEndpointNoticeKind::Rejected,
-            code,
+            code: NoticeCode::Boot(code),
         };
-        assert!(code.is_boot_queued());
         if !self.boot_seen.insert(key.clone()) {
             return false;
         }
@@ -256,5 +255,195 @@ impl crate::shell::ClientShellState {
     /// The title of the notice card on screen, for tests outside the shell.
     pub(crate) fn visible_notice_title(&self) -> Option<&str> {
         self.notices.visible().map(|notice| notice.title.as_str())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    fn boot(name: &str) -> shepr_protocol::BootId {
+        crate::tests::test_boot_id(name)
+    }
+
+    fn visible_title(notices: &Notices) -> Option<&str> {
+        notices.visible().map(|notice| notice.title.as_str())
+    }
+
+    fn push_rejected(notices: &mut Notices, title: &str, body: &str) -> bool {
+        notices.push(
+            Some(boot("boot")),
+            ClientEndpointNoticeKind::Rejected,
+            NoticeCode::Server,
+            title,
+            body,
+        )
+    }
+
+    fn push_timeout(notices: &mut Notices, boot_id: &str, command: CommandKind) -> bool {
+        notices.push(
+            Some(boot(boot_id)),
+            ClientEndpointNoticeKind::Timeout,
+            NoticeCode::Command(command),
+            "Server timed out",
+            "no answer",
+        )
+    }
+
+    fn queue_restore(notices: &mut Notices, boot_id: &str, title: &str) -> bool {
+        notices.queue_boot(
+            &ClientEndpointId::Local,
+            &boot(boot_id),
+            BootNoticeCode::SessionRestoreIncomplete,
+            title,
+            "some panes were not restored".into(),
+        )
+    }
+
+    #[test]
+    fn a_repeated_visible_notice_is_dropped_but_a_new_body_replaces_it() {
+        let mut notices = Notices::default();
+        assert!(push_rejected(&mut notices, "Rejected", "first"));
+        assert!(!push_rejected(&mut notices, "Rejected", "first"));
+        assert!(push_rejected(&mut notices, "Rejected", "second"));
+        assert_eq!(
+            notices.visible().map(|notice| notice.body.as_str()),
+            Some("second")
+        );
+        // Once the card is gone, the same notice may show again.
+        notices.advance();
+        assert!(notices.visible().is_none());
+        assert!(push_rejected(&mut notices, "Rejected", "second"));
+    }
+
+    #[test]
+    fn a_notice_without_a_duplicate_policy_shows_every_time() {
+        let mut notices = Notices::default();
+        for _ in 0..2 {
+            assert!(notices.push(
+                None,
+                ClientEndpointNoticeKind::Timeout,
+                NoticeCode::Server,
+                "Server timed out",
+                "no answer",
+            ));
+        }
+    }
+
+    #[test]
+    fn a_command_timeout_is_suppressed_until_that_command_succeeds_on_that_boot() {
+        let mut notices = Notices::default();
+        let rename = CommandKind::WorkspaceRename;
+        assert!(push_timeout(&mut notices, "boot", rename));
+        notices.advance();
+        // Suppressed even with no card on screen.
+        assert!(!push_timeout(&mut notices, "boot", rename));
+        assert!(notices.timeout_suppressed(NoticeCode::Command(rename)));
+        // Another command, or the same one on another boot, is a different notice.
+        assert!(push_timeout(
+            &mut notices,
+            "boot",
+            CommandKind::PaneCopySearch
+        ));
+        assert!(push_timeout(&mut notices, "other-boot", rename));
+        // Success on another boot leaves this boot's suppression in place.
+        notices.command_succeeded(&boot("other-boot"), rename);
+        assert!(!push_timeout(&mut notices, "boot", rename));
+        notices.command_succeeded(&boot("boot"), rename);
+        assert!(push_timeout(&mut notices, "boot", rename));
+    }
+
+    #[test]
+    fn resetting_the_endpoint_clears_timeouts_and_retires_only_an_ordinary_card() {
+        let mut notices = Notices::default();
+        let rename = CommandKind::WorkspaceRename;
+        assert!(push_timeout(&mut notices, "boot", rename));
+        notices.reset_endpoint();
+        assert!(notices.visible().is_none());
+        assert!(!notices.timeout_suppressed(NoticeCode::Command(rename)));
+        assert!(push_timeout(&mut notices, "boot", rename));
+
+        // A boot card belongs to its server boot, not to the presentation: it stays.
+        notices.advance();
+        assert!(queue_restore(&mut notices, "boot", "Restore incomplete"));
+        notices.reset_endpoint();
+        assert_eq!(visible_title(&notices), Some("Local: Restore incomplete"));
+    }
+
+    #[test]
+    fn boot_cards_show_once_each_in_arrival_order() {
+        let mut notices = Notices::default();
+        assert!(queue_restore(&mut notices, "boot-1", "First"));
+        // With nothing on screen the first card shows at once, named for its endpoint.
+        assert_eq!(visible_title(&notices), Some("Local: First"));
+        assert_eq!(notices.queued(), 0);
+        assert!(queue_restore(&mut notices, "boot-2", "Second"));
+        assert_eq!(visible_title(&notices), Some("Local: First"));
+        assert_eq!(notices.queued(), 1);
+        // The same boot's card is never queued twice, even after it was seen.
+        assert!(!queue_restore(&mut notices, "boot-1", "First"));
+        notices.advance();
+        assert_eq!(visible_title(&notices), Some("Local: Second"));
+        notices.advance();
+        assert!(notices.visible().is_none());
+        assert!(!queue_restore(&mut notices, "boot-1", "First"));
+        assert!(notices.visible().is_none());
+    }
+
+    #[test]
+    fn a_notice_pushed_over_a_boot_card_puts_the_card_back_first_in_line() {
+        let mut notices = Notices::default();
+        assert!(queue_restore(&mut notices, "boot-1", "First"));
+        assert!(queue_restore(&mut notices, "boot-2", "Second"));
+        assert!(push_rejected(&mut notices, "Rejected", "body"));
+        assert_eq!(visible_title(&notices), Some("Rejected"));
+        assert_eq!(notices.queued(), 2);
+        notices.advance();
+        assert_eq!(visible_title(&notices), Some("Local: First"));
+        notices.advance();
+        assert_eq!(visible_title(&notices), Some("Local: Second"));
+    }
+
+    #[test]
+    fn a_card_lives_from_its_first_draw_and_a_replacement_starts_its_own_lifetime() {
+        let mut notices = Notices::default();
+        let start = Instant::now();
+        // Nothing on screen: drawing starts no lifetime.
+        notices.drawn(start);
+        assert!(notices.deadline().is_none());
+
+        assert!(push_rejected(&mut notices, "Rejected", "first"));
+        assert!(notices.deadline().is_none());
+        assert!(!notices.tick(start + ENDPOINT_NOTICE_TIMEOUT * 4));
+        notices.drawn(start);
+        assert_eq!(notices.deadline(), Some(start + ENDPOINT_NOTICE_TIMEOUT));
+        // A later draw does not extend it.
+        notices.drawn(start + Duration::from_secs(1));
+        assert_eq!(notices.deadline(), Some(start + ENDPOINT_NOTICE_TIMEOUT));
+
+        // A replacement waits for its own first draw.
+        let later = start + Duration::from_secs(1);
+        assert!(push_rejected(&mut notices, "Rejected", "second"));
+        assert!(notices.deadline().is_none());
+        notices.drawn(later);
+        assert_eq!(notices.deadline(), Some(later + ENDPOINT_NOTICE_TIMEOUT));
+        assert!(!notices.tick(start + ENDPOINT_NOTICE_TIMEOUT));
+        assert!(notices.tick(later + ENDPOINT_NOTICE_TIMEOUT));
+        assert!(notices.visible().is_none());
+        assert!(notices.deadline().is_none());
+        assert!(!notices.tick(later + ENDPOINT_NOTICE_TIMEOUT * 2));
+    }
+
+    #[test]
+    fn an_expired_card_gives_way_to_the_next_boot_card_with_a_fresh_lifetime() {
+        let mut notices = Notices::default();
+        let start = Instant::now();
+        assert!(queue_restore(&mut notices, "boot-1", "First"));
+        assert!(queue_restore(&mut notices, "boot-2", "Second"));
+        notices.drawn(start);
+        assert!(notices.tick(start + ENDPOINT_NOTICE_TIMEOUT));
+        assert_eq!(visible_title(&notices), Some("Local: Second"));
+        assert!(notices.deadline().is_none());
     }
 }

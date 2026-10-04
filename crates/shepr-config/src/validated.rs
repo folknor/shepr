@@ -1,6 +1,6 @@
 use std::ffi::OsStr;
 use std::os::unix::ffi::OsStrExt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use shepr_core::geometry::BoundedGridSize;
 use shepr_core::limits::{
@@ -185,14 +185,14 @@ impl ValidatedTerminalConfig {
                         shepr_core::pathutil::missing_home_error()
                     )
                 })?;
-                checked_new_cwd_directory(path)?;
+                require_new_cwd_directory(path)?;
                 Ok(NewTerminalCwd::Home)
             }
             NewTerminalCwdConfig::Current => {
                 let path = paths
                     .current_dir()
                     .ok_or_else(|| "current directory was unavailable at launch".to_owned())?;
-                checked_new_cwd_directory(path)?;
+                require_new_cwd_directory(path)?;
                 Ok(NewTerminalCwd::Current)
             }
             NewTerminalCwdConfig::Path(configured_path) => {
@@ -201,18 +201,22 @@ impl ValidatedTerminalConfig {
                 }
                 let path = shepr_core::pathutil::expand_tilde_path_with_home(
                     configured_path,
-                    paths.home_dir(),
+                    paths
+                        .home_dir()
+                        .map(shepr_core::absolute_path::AbsolutePath::as_path),
                 )
                 .map_err(|err| format!("cannot be resolved: {err}"))?;
-                let absolute = if path.is_absolute() {
-                    path
-                } else {
-                    let current_dir = paths.current_dir().ok_or_else(|| {
-                        "relative path requires a launch working directory".to_owned()
-                    })?;
-                    current_dir.join(path)
+                let absolute = match shepr_core::absolute_path::AbsolutePath::new(path) {
+                    Ok(absolute) => absolute,
+                    Err(relative) => paths
+                        .current_dir()
+                        .ok_or_else(|| {
+                            "relative path requires a launch working directory".to_owned()
+                        })?
+                        .resolve(relative.path()),
                 };
-                checked_new_cwd_directory(&absolute).map(NewTerminalCwd::Path)
+                require_new_cwd_directory(&absolute)?;
+                Ok(NewTerminalCwd::Path(absolute))
             }
         }
     }
@@ -240,18 +244,16 @@ fn resolve_default_shell(
 ) -> Result<ResolvedShell, String> {
     let path = shepr_core::env::read_os(shepr_core::env::EnvVar::Path)
         .map_err(|error| error.to_string())?;
-    let cwd = paths
-        .current_dir()
-        .map(Path::to_path_buf)
-        .or_else(|| std::env::current_dir().ok())
-        .unwrap_or_else(|| PathBuf::from("/"));
+    // A relative shell or PATH entry resolves against the launch directory
+    // the paths captured, never a fresh read of this process's.
+    let cwd = paths.fallback_cwd();
 
     if let Some(configured) = configured {
         return resolve_recognized_shell(
             OsStr::new(configured),
             "configured shell",
             path.as_deref(),
-            &cwd,
+            cwd,
         );
     }
 
@@ -259,7 +261,7 @@ fn resolve_default_shell(
         .map_err(|error| error.to_string())?
         .filter(|shell| !shell.is_empty());
     if let Some(inherited) = inherited {
-        return resolve_recognized_shell(&inherited, "SHELL", path.as_deref(), &cwd).map_err(
+        return resolve_recognized_shell(&inherited, "SHELL", path.as_deref(), cwd).map_err(
             |error| {
                 format!(
                     "{error}; no shell was configured, so panes use SHELL={}. \
@@ -274,7 +276,7 @@ fn resolve_default_shell(
         OsStr::new("/bin/sh"),
         "the default shell",
         path.as_deref(),
-        &cwd,
+        cwd,
     )
 }
 
@@ -328,12 +330,7 @@ fn check_shell_whitespace(value: &OsStr, source: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn checked_new_cwd_directory(
-    path: &Path,
-) -> Result<shepr_core::absolute_path::AbsolutePath, String> {
-    let Ok(absolute) = shepr_core::absolute_path::AbsolutePath::new(path) else {
-        return Err("must resolve to an absolute path".to_owned());
-    };
+fn require_new_cwd_directory(path: &shepr_core::absolute_path::AbsolutePath) -> Result<(), String> {
     let metadata = std::fs::metadata(path)
         .map_err(|error| format!("directory {} is unavailable: {error}", path.display()))?;
     if !metadata.is_dir() {
@@ -342,7 +339,7 @@ fn checked_new_cwd_directory(
             path.display()
         ));
     }
-    Ok(absolute)
+    Ok(())
 }
 
 impl ValidatedClientUiConfig {

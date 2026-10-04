@@ -707,6 +707,17 @@ expect = "seal paths ok"
 match = "last-line"
 stage = "pre-clippy"
 
+# rustc's dead-code pass counts a reachable `pub` item as exported API, so a
+# `pub` helper under a test cfg on a public path, a dev-only crate's API and
+# the private helpers only those call are never reported dead. This check
+# finds them by name.
+[[script_check]]
+name = "dead-test-helpers"
+command = "python3 scripts/check_dead_test_helpers.py"
+expect = "dead test helpers ok"
+match = "last-line"
+stage = "pre-clippy"
+
 # The agent plugins that load into a JavaScript agent (Pi, Oh My Pi, opencode,
 # Kilo) are tested with bun, a development dependency.
 [[script_check]]

@@ -38,26 +38,57 @@ impl StateEvent {
 
 /// Turns a hook admission outcome into the mutation the reducer applies. A
 /// parked report and a rejected one both leave the pane as it was, but they
-/// are different answers: a parked one waits for process evidence, a
-/// rejected one is dropped for the logged reason. The API still answers a
-/// hook with success either way, since hooks are fire-and-forget and an
-/// out-of-order or superseded report is routine, not a caller error. The
-/// terminal's ownership keeps the last such outcome itself, so `detect
-/// explain` shows it without this log.
+/// are different answers: a parked one is held by its source until what it
+/// awaits arrives (a session start of its agent, or process evidence for its
+/// agent before the parked start expires), a rejected one is dropped for the
+/// logged reason. The API still answers a hook with success either way, since
+/// hooks are fire-and-forget and an out-of-order or superseded report is
+/// routine, not a caller error. The terminal's ownership keeps the last such
+/// outcome itself, so `detect explain` shows it without this log; the log
+/// reads what a parked report awaits from that same record, as of `now`.
 fn admit_hook_outcome(
     pane_id: shepr_core::layout::PaneId,
     kind: shepr_detect::ownership::HookReportKind,
     source: &shepr_agent::AgentSource,
     outcome: shepr_detect::ownership::HookOutcome,
+    ownership: &shepr_detect::ownership::AgentOwnership,
+    now: std::time::Instant,
 ) -> Option<AgentOwnershipMutation> {
+    use shepr_detect::ownership::{ParkedHookAwaiting, UnappliedHookDisposition};
     match &outcome {
         shepr_detect::ownership::HookOutcome::Applied(_) => {}
-        shepr_detect::ownership::HookOutcome::Parked => tracing::debug!(
-            pane = %pane_id,
-            ?kind,
-            %source,
-            "hook report parked until process evidence"
-        ),
+        shepr_detect::ownership::HookOutcome::Parked => {
+            let awaiting =
+                ownership
+                    .last_unapplied_hook_report(now)
+                    .and_then(|report| match report.disposition {
+                        UnappliedHookDisposition::Parked(awaiting) => Some(awaiting),
+                        UnappliedHookDisposition::Rejected(_) => None,
+                    });
+            match awaiting {
+                Some(ParkedHookAwaiting::SessionStart) => tracing::debug!(
+                    pane = %pane_id,
+                    ?kind,
+                    %source,
+                    "hook report parked until a session start of its agent"
+                ),
+                Some(ParkedHookAwaiting::Process { expires_at }) => tracing::debug!(
+                    pane = %pane_id,
+                    ?kind,
+                    %source,
+                    expires_in = ?expires_at.saturating_duration_since(now),
+                    "hook report parked until process evidence for its agent"
+                ),
+                // A state report riding a start that cannot carry it: one past
+                // its lifetime, or one newer than the report.
+                None => tracing::debug!(
+                    pane = %pane_id,
+                    ?kind,
+                    %source,
+                    "hook report parked behind a start that cannot carry it"
+                ),
+            }
+        }
         shepr_detect::ownership::HookOutcome::Rejected(reason) => tracing::debug!(
             pane = %pane_id,
             ?kind,
@@ -143,6 +174,8 @@ impl AppState {
                     shepr_detect::ownership::HookReportKind::State(state),
                     &source,
                     outcome,
+                    terminal.ownership(),
+                    sample.monotonic,
                 )
             }),
             StateEvent::AgentSessionReported {
@@ -166,6 +199,8 @@ impl AppState {
                     shepr_detect::ownership::HookReportKind::SessionStart(session_start_source),
                     &source,
                     outcome,
+                    terminal.ownership(),
+                    sample.monotonic,
                 )
             }),
             StateEvent::TerminalCwdReported { pane_id, cwd } => {
@@ -173,7 +208,7 @@ impl AppState {
                     return StateUpdate::Unchanged;
                 };
                 let terminal = record.terminal_mut();
-                if terminal.cwd() != cwd.as_path() {
+                if terminal.cwd() != cwd.as_absolute() {
                     terminal.set_cwd(cwd);
                     self.mark_session_dirty();
                     self.mark_shell_projection_dirty();

@@ -725,6 +725,153 @@ mod tests {
         }
     }
 
+    /// A childless runtime: no /proc cwd and no foreground group, so each
+    /// purpose's observation is exactly its arbitration over the seeded state.
+    fn runtime_with_cwd_state(
+        reported: Option<(&str, Option<&str>)>,
+        remembered: Option<&str>,
+    ) -> PaneRuntime {
+        let (runtime, _rx) = PaneRuntime::test_with_channel(80, 24);
+        runtime.test_seed_cwd_state(
+            reported.map(|(path, shell)| (PathBuf::from(path), shell.map(PathBuf::from))),
+            remembered.map(PathBuf::from),
+        );
+        runtime
+    }
+
+    fn cwd_for(runtime: &PaneRuntime, terminal: &TerminalState, purpose: CwdPurpose) -> PathBuf {
+        terminal_cwd(Some(runtime), Some(terminal), purpose)
+            .expect("a usable cwd")
+            .to_path_buf()
+    }
+
+    #[test]
+    fn each_cwd_purpose_reads_its_own_runtime_observation_over_the_stored_report() {
+        // The OSC 7 report was taken with the shell in /shell, and the save
+        // remembered /saved since, so the save arbitration keeps its own
+        // observation while identity and follow take the report.
+        let runtime = runtime_with_cwd_state(Some(("/osc", Some("/shell"))), Some("/saved"));
+        let terminal = terminal_at("/stored");
+
+        assert_eq!(
+            cwd_for(&runtime, &terminal, CwdPurpose::Identity),
+            PathBuf::from("/osc")
+        );
+        assert_eq!(
+            cwd_for(&runtime, &terminal, CwdPurpose::FollowForNewPane),
+            PathBuf::from("/osc")
+        );
+        assert_eq!(
+            cwd_for(&runtime, &terminal, CwdPurpose::Save),
+            PathBuf::from("/saved")
+        );
+
+        // With no terminal state at all, the observation alone answers.
+        assert_eq!(
+            terminal_cwd(Some(&runtime), None, CwdPurpose::Save).as_deref(),
+            Some(Path::new("/saved"))
+        );
+    }
+
+    #[test]
+    fn save_purpose_takes_the_report_when_the_remembered_cwd_is_where_it_was_made() {
+        // The save remembered the very /proc cwd the report was sampled at:
+        // the shell has not moved since, so the logical OSC 7 path wins.
+        let runtime = runtime_with_cwd_state(Some(("/osc", Some("/shell"))), Some("/shell"));
+        let terminal = terminal_at("/stored");
+
+        assert_eq!(
+            cwd_for(&runtime, &terminal, CwdPurpose::Save),
+            PathBuf::from("/osc")
+        );
+    }
+
+    #[test]
+    fn save_purpose_uses_the_remembered_cwd_without_any_report() {
+        let runtime = runtime_with_cwd_state(None, Some("/saved"));
+        let terminal = terminal_at("/stored");
+
+        assert_eq!(
+            cwd_for(&runtime, &terminal, CwdPurpose::Save),
+            PathBuf::from("/saved")
+        );
+        // Identity and follow never read the save's memory.
+        assert_eq!(
+            cwd_for(&runtime, &terminal, CwdPurpose::Identity),
+            PathBuf::from("/stored")
+        );
+        assert_eq!(
+            cwd_for(&runtime, &terminal, CwdPurpose::FollowForNewPane),
+            PathBuf::from("/stored")
+        );
+    }
+
+    #[test]
+    fn every_purpose_falls_back_to_the_stored_report_when_the_runtime_has_none() {
+        let runtime = runtime_with_cwd_state(None, None);
+        let terminal = terminal_at("/stored");
+        for purpose in [
+            CwdPurpose::Identity,
+            CwdPurpose::FollowForNewPane,
+            CwdPurpose::Save,
+        ] {
+            assert_eq!(
+                cwd_for(&runtime, &terminal, purpose),
+                PathBuf::from("/stored")
+            );
+        }
+        assert_eq!(
+            terminal_cwd(Some(&runtime), None, CwdPurpose::Identity),
+            None
+        );
+    }
+
+    #[test]
+    fn every_purpose_filters_an_unusable_observation_and_keeps_the_stored_report() {
+        let terminal = terminal_at("/stored");
+        // A deleted directory and a relative path are both observations the
+        // stored report must outlive, for every purpose.
+        for observed in ["/gone (deleted)", "relative/cwd"] {
+            let runtime = runtime_with_cwd_state(Some((observed, None)), Some(observed));
+            for purpose in [
+                CwdPurpose::Identity,
+                CwdPurpose::FollowForNewPane,
+                CwdPurpose::Save,
+            ] {
+                assert_eq!(
+                    cwd_for(&runtime, &terminal, purpose),
+                    PathBuf::from("/stored"),
+                    "{observed:?}"
+                );
+            }
+        }
+
+        // With the stored report deleted too, nothing is usable.
+        let runtime = runtime_with_cwd_state(Some(("/gone (deleted)", None)), None);
+        let deleted = terminal_at("/old (deleted)");
+        assert_eq!(
+            terminal_cwd(Some(&runtime), Some(&deleted), CwdPurpose::Identity),
+            None
+        );
+    }
+
+    #[test]
+    fn cwd_for_pane_reads_the_registered_runtime_over_the_stored_report() {
+        let ws = workspace_at(Path::new("/shepr-test/identity"), "/stored");
+        let root = ws.tree().root();
+        let mut registry = PaneRuntimeRegistry::new();
+        registry.insert(
+            root,
+            runtime_with_cwd_state(Some(("/osc", None)), Some("/saved")),
+        );
+
+        assert_eq!(
+            ws.cwd_for_pane(root, &registry).as_deref(),
+            Some(Path::new("/osc"))
+        );
+        assert_eq!(ws.resolved_identity_cwd(&registry), PathBuf::from("/osc"));
+    }
+
     #[test]
     fn cwd_query_rejects_deleted_state() {
         let terminal = terminal_at("/gone (deleted)");

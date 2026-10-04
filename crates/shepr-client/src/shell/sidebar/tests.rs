@@ -997,13 +997,9 @@ fn collapsed_aggregate_workspace_status_uses_its_status_color() {
     use shepr_protocol::AgentStatus;
 
     let (mut state, endpoint_id) = state_with_remote();
-    let endpoint = state
-        .endpoints
-        .iter_mut()
-        .find(|endpoint| endpoint.endpoint_id == endpoint_id)
-        .expect("remote endpoint");
-    std::sync::Arc::make_mut(endpoint.snapshot_mut().expect("remote snapshot")).workspaces[0]
-        .agent_status = AgentStatus::Blocked;
+    state.edit_endpoint_snapshot(&endpoint_id, |snapshot| {
+        snapshot.workspaces[0].agent_status = AgentStatus::Blocked;
+    });
     state.chrome.set_collapsed(true);
 
     let frame = state.compose(100, 28).expect("collapsed aggregate sidebar");

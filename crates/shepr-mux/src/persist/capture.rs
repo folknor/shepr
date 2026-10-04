@@ -3,7 +3,6 @@
 //! loop and handed to whoever writes them.
 
 use std::collections::HashMap;
-use std::path::Path;
 
 use crate::pane::PaneRuntimeRegistry;
 use crate::workspace::{PaneRecord, Workspace, WorkspaceSet};
@@ -23,7 +22,7 @@ use super::schema::{
 pub fn capture_job(
     workspaces: &WorkspaceSet,
     terminal_runtimes: &PaneRuntimeRegistry,
-    fallback_cwd: &Path,
+    fallback_cwd: &AbsolutePath,
     host_theme: shepr_term::host::TerminalTheme,
     persist_pane_history: bool,
 ) -> SessionCapture {
@@ -176,7 +175,7 @@ impl PendingCwds {
 pub fn capture(
     workspaces: &WorkspaceSet,
     terminal_runtimes: &PaneRuntimeRegistry,
-    fallback_cwd: &std::path::Path,
+    fallback_cwd: &AbsolutePath,
     host_theme: shepr_term::host::TerminalTheme,
 ) -> SessionSnapshot {
     let (mut snapshot, cwds, _) =
@@ -191,7 +190,7 @@ pub fn capture(
 fn capture_deferred(
     workspaces: &WorkspaceSet,
     terminal_runtimes: &PaneRuntimeRegistry,
-    fallback_cwd: &std::path::Path,
+    fallback_cwd: &AbsolutePath,
     host_theme: shepr_term::host::TerminalTheme,
 ) -> (SessionSnapshot, PendingCwds, HashMap<SavedPaneRef, PaneId>) {
     let mut cwds = PendingCwds::default();
@@ -236,18 +235,10 @@ fn capture_workspace(
     workspace_index: usize,
     ws: &Workspace,
     terminal_runtimes: &PaneRuntimeRegistry,
-    fallback_cwd: &std::path::Path,
+    fallback_cwd: &AbsolutePath,
     cwds: &mut PendingCwds,
     pane_ids: &mut HashMap<SavedPaneRef, PaneId>,
 ) -> Option<WorkspaceSnapshot> {
-    let Ok(fallback_cwd) = AbsolutePath::new(fallback_cwd) else {
-        tracing::error!(
-            workspace = %ws.id(),
-            fallback = %fallback_cwd.display(),
-            "the fallback cwd is not absolute; workspace not saved"
-        );
-        return None;
-    };
     let tree = ws.tree();
     let number_of = |pane| tree.pane(pane).map(PaneRecord::number);
     let (Some(focused), Some(root_pane)) = (number_of(tree.focused()), number_of(tree.root()))
@@ -405,8 +396,6 @@ pub fn capture_history(
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
-
     use super::*;
     use crate::pane::PaneRuntimeRegistry;
     use crate::terminal::TerminalState;
@@ -428,7 +417,7 @@ mod tests {
         capture_job(
             workspaces,
             &PaneRuntimeRegistry::new(),
-            std::path::Path::new("/"),
+            &AbsolutePath::root(),
             Default::default(),
             persist_pane_history,
         )
@@ -527,7 +516,7 @@ mod tests {
             let snapshot = capture(
                 &set_of(workspace),
                 &PaneRuntimeRegistry::new(),
-                PathBuf::from("/").as_path(),
+                &AbsolutePath::root(),
                 Default::default(),
             );
 

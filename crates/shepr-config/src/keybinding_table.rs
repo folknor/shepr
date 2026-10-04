@@ -35,7 +35,7 @@ impl std::fmt::Display for HelpGroup {
 }
 
 /// The key chord of a navigate row's fixed arrow alias, by the alias column's
-/// identifier in `keybinding_table!` (`None` for a row without one).
+/// identifier in the keybinding table (`None` for a row without one).
 #[macro_export]
 macro_rules! navigate_alias {
     ($alias:ident) => {
@@ -51,20 +51,195 @@ macro_rules! navigate_alias_label {
     };
 }
 
-/// The one list of configurable keybindings. Each consumer is a macro that
-/// receives every row and generates its part: the `[keys]` config fields and
-/// defaults, the resolved keybinds, the apply step, the action enums,
-/// dispatch and the help screen.
+/// Generates code from every row of the keybinding table: the `[keys]` config
+/// fields and defaults, the resolved keybinds, the apply step, the action
+/// enums, dispatch and the help screen are each one invocation.
 ///
-/// Rows within a section are in help-screen order for their group.
-/// - `actions`: (field, action variant, default, help group, help label, doc)
-/// - `indexed`: as `actions`, plus the help label of the `actions` row the
-///   entry follows in its group (a test in `shepr-termio` checks the label
-///   names a row); the help group is a `HelpGroup` variant name
-/// - `navigate`: (config field, resolved field, variant, default, help group,
-///   help label, doc, fixed arrow alias). Rows sharing a help label share one
-///   help row, their keys joined and any aliases listed last.
+/// ```text
+/// shepr_config::keybinding_rows! {
+///     $ define_actions;
+///     actions(field = $action_field, variant = $action_variant)
+///     indexed(variant = $indexed_variant)
+///     => {
+///         pub enum Action { $($action_variant,)* $($indexed_variant(usize),)* }
+///     }
+/// }
+/// ```
+///
+/// The leading `$` is the dollar token the generated macro's pattern is
+/// spelled with; the identifier after it names that macro. Each section lists
+/// only the columns the body uses, by column name and in the section's column
+/// order below, each bound to a metavariable the body repeats over (`$(...)*`,
+/// one repetition per row). Sections the body does not use are left out.
+/// Metavariable names must differ across sections. The table rows and the
+/// column lists live only in this file, so a column change is made here and
+/// touches a consumer only where it binds that column.
+///
+/// The expansion defines the named macro with the body as its transcriber and
+/// invokes it, so it works in item and statement position, but not as an
+/// expression. The body can read and write the caller's locals and items, but
+/// a `let` in it is not visible after it (macro hygiene): a consumer that
+/// yields a value returns it from its body or defines a fn the caller calls.
+///
+/// Rows within a section are in help-screen order for their group. Columns,
+/// in order:
+/// - `actions`: `field` (config and resolved field), `variant` (action
+///   variant), `default`, `group` (a `HelpGroup` variant name), `label` (help
+///   label), `doc`
+/// - `indexed`: as `actions`, then `help_after`: the help label of the
+///   `actions` row the entry follows in its group (a test in `shepr-termio`
+///   checks the label names a row)
+/// - `navigate`: `config_field`, `field` (resolved field), `variant`,
+///   `default`, `group`, `label`, `doc`, `alias` (fixed arrow alias, `None`
+///   for none). Rows sharing a help label share one help row, their keys
+///   joined and any aliases listed last.
 /// - `navigate_indexed`: as `navigate`.
+#[macro_export]
+macro_rules! keybinding_rows {
+    (
+        $d:tt $name:ident;
+        $(actions($($actions:tt)*))?
+        $(indexed($($indexed:tt)*))?
+        $(navigate($($navigate:tt)*))?
+        $(navigate_indexed($($navigate_indexed:tt)*))?
+        => { $($body:tt)* }
+    ) => {
+        // Each column is (name, the metavariable an unbound column gets,
+        // fragment), in the order of `keybinding_table!`'s row tuples.
+        $crate::__keybinding_rows! {
+            @next [$d $name { $($body)* }] []
+            actions [$($($actions)*)?] [
+                (field actions_field ident)
+                (variant actions_variant ident)
+                (default actions_default literal)
+                (group actions_group ident)
+                (label actions_label literal)
+                (doc actions_doc literal)
+            ]
+            indexed [$($($indexed)*)?] [
+                (field indexed_field ident)
+                (variant indexed_variant ident)
+                (default indexed_default literal)
+                (group indexed_group ident)
+                (label indexed_label literal)
+                (doc indexed_doc literal)
+                (help_after indexed_help_after literal)
+            ]
+            navigate [$($($navigate)*)?] [
+                (config_field navigate_config_field ident)
+                (field navigate_field ident)
+                (variant navigate_variant ident)
+                (default navigate_default literal)
+                (group navigate_group ident)
+                (label navigate_label literal)
+                (doc navigate_doc literal)
+                (alias navigate_alias ident)
+            ]
+            navigate_indexed [$($($navigate_indexed)*)?] [
+                (config_field navigate_indexed_config_field ident)
+                (field navigate_indexed_field ident)
+                (variant navigate_indexed_variant ident)
+                (default navigate_indexed_default literal)
+                (group navigate_indexed_group ident)
+                (label navigate_indexed_label literal)
+                (doc navigate_indexed_doc literal)
+                (alias navigate_indexed_alias ident)
+            ]
+        }
+    };
+}
+
+/// Builds `keybinding_rows!`'s pattern one column at a time. A column takes
+/// the caller's metavariable when the next unclaimed binding names it, and its
+/// own unused one otherwise. The caller's names have to be the ones in the
+/// pattern: a metavariable spelled inside this crate's expansion is not the
+/// same name as one spelled in the caller's body.
+///
+/// Each step is one nested expansion, and a column costs at most two (the
+/// step and its name comparison), so a consumer's expansion is about twice the
+/// table's column count deep: a table with more columns than half of rustc's
+/// default limit of 128 would need a `recursion_limit` in every consuming
+/// crate.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __keybinding_rows {
+    // A column with no binding left to claim it.
+    (@col $ctx:tt [$($done:tt)*] $sec:ident [$($pat:tt)*] []
+        [($key:ident $hole:ident $frag:ident) $($schema:tt)*] $($rest:tt)*) => {
+        $crate::__keybinding_rows! {
+            @col $ctx [$($done)*] $sec [$($pat)* [$hole $frag]] [] [$($schema)*] $($rest)*
+        }
+    };
+    // A column and the next binding: the binding claims the column if it
+    // names it.
+    (@col $ctx:tt [$($done:tt)*] $sec:ident [$($pat:tt)*]
+        [$bkey:ident = $bd:tt $bname:ident $(, $($bind:tt)*)?]
+        [($key:ident $hole:ident $frag:ident) $($schema:tt)*] $($rest:tt)*) => {
+        $crate::__keybinding_column_is! {
+            $key $bkey
+            {
+                $crate::__keybinding_rows! {
+                    @col $ctx [$($done)*] $sec [$($pat)* [$bname $frag]]
+                    [$($($bind)*)?] [$($schema)*] $($rest)*
+                }
+            }
+            {
+                $crate::__keybinding_rows! {
+                    @col $ctx [$($done)*] $sec [$($pat)* [$hole $frag]]
+                    [$bkey = $bd $bname $(, $($bind)*)?] [$($schema)*] $($rest)*
+                }
+            }
+        }
+    };
+    // Every column placed and every binding claimed: the section is done.
+    (@col $ctx:tt [$($done:tt)*] $sec:ident [$($pat:tt)*] [] [] $($rest:tt)*) => {
+        $crate::__keybinding_rows! { @next $ctx [$($done)* $sec [$($pat)*]] $($rest)* }
+    };
+    (@col $ctx:tt $done:tt $sec:ident $pat:tt [$bkey:ident $($bind:tt)*] [] $($rest:tt)*) => {
+        compile_error!(concat!(
+            "keybinding_rows!: `",
+            stringify!($bkey),
+            "` is not a column of `",
+            stringify!($sec),
+            "`, or is out of the section's column order",
+        ));
+    };
+    (@next $ctx:tt [$($done:tt)*] $sec:ident [$($bind:tt)*] [$($schema:tt)*] $($rest:tt)*) => {
+        $crate::__keybinding_rows! {
+            @col $ctx [$($done)*] $sec [] [$($bind)*] [$($schema)*] $($rest)*
+        }
+    };
+    // Every section built: define the consumer and feed it the table.
+    (@next [$d:tt $name:ident { $($body:tt)* }]
+        [$($sec:ident [$([$pn:ident $pf:ident])*])*]) => {
+        macro_rules! $name {
+            ($($sec { $d(($($d $pn : $pf),*),)* })*) => { $($body)* };
+        }
+        $crate::keybinding_table!($name);
+    };
+}
+
+/// Expands to the first braced group when the two column names are the same
+/// and to the second otherwise. Every column name in `keybinding_rows!` needs
+/// its line; a name without one can never be bound.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __keybinding_column_is {
+    (field field { $($yes:tt)* } $no:tt) => { $($yes)* };
+    (config_field config_field { $($yes:tt)* } $no:tt) => { $($yes)* };
+    (variant variant { $($yes:tt)* } $no:tt) => { $($yes)* };
+    (default default { $($yes:tt)* } $no:tt) => { $($yes)* };
+    (group group { $($yes:tt)* } $no:tt) => { $($yes)* };
+    (label label { $($yes:tt)* } $no:tt) => { $($yes)* };
+    (doc doc { $($yes:tt)* } $no:tt) => { $($yes)* };
+    (help_after help_after { $($yes:tt)* } $no:tt) => { $($yes)* };
+    (alias alias { $($yes:tt)* } $no:tt) => { $($yes)* };
+    ($column:ident $binding:ident $yes:tt { $($no:tt)* }) => { $($no)* };
+}
+
+/// The one list of configurable keybindings, handed whole to `$consumer`.
+/// Consumers go through `keybinding_rows!`, which owns the row layout.
+#[doc(hidden)]
 #[macro_export]
 macro_rules! keybinding_table {
     ($consumer:ident) => {

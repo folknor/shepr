@@ -654,7 +654,7 @@ mod tests {
         let cwd = creation::resolve_new_terminal_cwd(
             &shepr_config::NewTerminalCwd::Follow,
             None,
-            None,
+            &shepr_core::absolute_path::AbsolutePath::root(),
             Some(
                 shepr_core::absolute_path::AbsolutePath::new("/shepr-test/shepr-source")
                     .expect("absolute"),
@@ -667,12 +667,12 @@ mod tests {
     #[test]
     fn new_terminal_cwd_follow_without_source_uses_home() {
         let env = IsolatedEnv::new();
-        let home = env.home();
+        let home = shepr_core::absolute_path::AbsolutePath::new(env.home()).expect("absolute home");
 
         let cwd = creation::resolve_new_terminal_cwd(
             &shepr_config::NewTerminalCwd::Follow,
-            Some(home.as_path()),
-            None,
+            Some(&home),
+            &shepr_core::absolute_path::AbsolutePath::root(),
             None,
         );
 
@@ -687,7 +687,7 @@ mod tests {
                     .expect("absolute"),
             ),
             None,
-            None,
+            &shepr_core::absolute_path::AbsolutePath::root(),
             Some(
                 shepr_core::absolute_path::AbsolutePath::new("/shepr-test/shepr-source")
                     .expect("absolute"),

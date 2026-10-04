@@ -338,12 +338,16 @@ fn copy_cursor_is_never_left_under_the_mode_bar() {
     assert_eq!(copy_mode.scroll.offset_from_bottom, 9);
 }
 
-#[test]
-fn copy_mode_in_a_clipped_pane_keeps_the_panes_full_geometry() {
+/// A shell showing a 200 by 60 pane with 50 rows of history in a 106 by 30 screen, as after
+/// a resize before the resized surface arrives: the pane is clipped to the client area.
+/// Returns the shell, composed once, the surface and its generation.
+fn clipped_pane_shell() -> (
+    ClientShellState,
+    shepr_protocol::PaneSurfaceFrame,
+    shepr_protocol::ConnectionGeneration,
+) {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
     state.set_snapshot(Box::new(snapshot()));
-    // A surface produced for a pane area far larger than the one composed below, as after a
-    // resize before the resized surface arrives: its pane hit is clipped to the area.
     let lines = (0..60).map(|_| "x".repeat(200)).collect::<Vec<_>>();
     let mut oversized = surface();
     oversized.frame = FrameData::from_ratatui_buffer_with_hyperlinks(
@@ -373,6 +377,73 @@ fn copy_mode_in_a_clipped_pane_keeps_the_panes_full_geometry() {
         .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST);
     state.receive_pane_surface_from(oversized.clone(), generation);
     state.compose(106, 30).expect("clipped frame");
+    (state, oversized, generation)
+}
+
+#[test]
+fn copy_mode_in_a_clipped_pane_keeps_its_cursor_on_the_drawn_rows() {
+    let (mut state, _, _) = clipped_pane_shell();
+    let hit = state.pane_hits()[0].clone();
+    assert!(
+        hit.inner_rect.height < 60 && hit.inner_rect.width < 200,
+        "the hit is clipped to the pane area"
+    );
+    let drawn_cursor = |state: &mut ClientShellState| {
+        state.compose(106, 30).expect("copy frame");
+        state.drawn().copy_cursor()
+    };
+
+    // With no terminal cursor to start from, copy mode starts on the last drawn row, not on
+    // the pane's last row below the clip.
+    let mut outcome = ClientShellInput::default();
+    assert!(state.enter_copy_mode(&mut outcome));
+    let (_, row) = drawn_cursor(&mut state).expect("the copy cursor starts on a drawn row");
+    assert_eq!(row, hit.inner_rect.bottom() - 1);
+
+    // At the newest rows no scroll can bring the rows below the clip into view, so a motion
+    // down stops on the last drawn row.
+    for _ in 0..5 {
+        state.handle_input_bytes(b"j");
+        let (_, row) = drawn_cursor(&mut state).expect("moving down stays on a drawn row");
+        assert_eq!(row, hit.inner_rect.bottom() - 1);
+    }
+
+    // Paging and the ends of history keep the cursor within the drawn rows of the viewport
+    // the session asks for (the surface for it has not arrived, so nothing is drawn yet).
+    let visible_rows = u64::from(hit.inner_rect.height);
+    for keys in [&b"\x1b[5~"[..], b"\x1b[6~", b"g", b"G"] {
+        state.handle_input_bytes(keys);
+        let copy_mode = state.copy.as_ref().expect("still in copy mode");
+        let from_top = copy_mode
+            .cursor
+            .row
+            .0
+            .checked_sub(copy_mode.viewport_top().0);
+        assert!(
+            from_top.is_some_and(|row| row < visible_rows),
+            "{keys:?} leaves the copy cursor on a drawn row"
+        );
+    }
+    // Back at the newest rows the viewport is the one on screen.
+    let (_, row) = drawn_cursor(&mut state).expect("the end of history is drawn");
+    assert_eq!(row, hit.inner_rect.bottom() - 1);
+
+    // Moving right stops at the last drawn column.
+    for _ in 0..hit.inner_rect.width {
+        state.handle_input_bytes(b"l");
+    }
+    let (col, _) = drawn_cursor(&mut state).expect("moving right stays on a drawn column");
+    assert_eq!(col, hit.inner_rect.right() - 1);
+    assert_eq!(
+        state.copy.as_ref().map(|copy_mode| copy_mode.geometry),
+        Some((200, 60)),
+        "the session keeps the pane's full geometry"
+    );
+}
+
+#[test]
+fn copy_mode_in_a_clipped_pane_keeps_the_panes_full_geometry() {
+    let (mut state, oversized, generation) = clipped_pane_shell();
     let area = state.layout(106, 30).pane_surface;
     assert!(
         state.pane_hits()[0].inner_rect.width < 200

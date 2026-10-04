@@ -3,7 +3,8 @@ use shepr_agent::ReportOrigin;
 
 impl TerminalState {
     /// A live hook state report. The outcome says whether it was applied,
-    /// parked until process evidence, or rejected and why.
+    /// parked (until a session start of its agent, or process evidence for it;
+    /// `ParkedHookAwaiting` says which), or rejected and why.
     pub fn report_hook_outcome_at(
         &mut self,
         origin: ReportOrigin,

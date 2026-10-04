@@ -193,16 +193,12 @@ impl ActiveProjection {
     }
 }
 
+/// Read-only: every change to an entry goes through `ClientShellState`'s endpoint methods,
+/// which rebuild the agent panel model and the navigator index derived from the entries.
 impl std::ops::Deref for Endpoints {
     type Target = Vec<ClientShellEndpoint>;
     fn deref(&self) -> &Self::Target {
         &self.entries
-    }
-}
-
-impl std::ops::DerefMut for Endpoints {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.entries
     }
 }
 
@@ -345,6 +341,7 @@ impl ClientShellState {
     ) {
         if let Some(endpoint) = self
             .endpoints
+            .entries
             .iter_mut()
             .find(|endpoint| &endpoint.endpoint_id == endpoint_id)
         {
@@ -397,6 +394,7 @@ impl ClientShellState {
         let mut changed = false;
         if let Some(endpoint) = self
             .endpoints
+            .entries
             .iter_mut()
             .find(|endpoint| &endpoint.endpoint_id == endpoint_id)
         {
@@ -591,7 +589,7 @@ impl ClientShellState {
             .map(|agent| &agent.pane_id)
             .collect::<std::collections::HashSet<_>>();
         recency.retain(|pane_id, _| live_agent_ids.contains(pane_id));
-        let endpoint = &mut self.endpoints[index];
+        let endpoint = &mut self.endpoints.entries[index];
         endpoint.agent_recency = recency;
         endpoint.state.cache(EndpointSnapshot {
             generation,
@@ -728,14 +726,29 @@ impl ClientShellState {
 }
 
 #[cfg(test)]
-impl ClientShellEndpoint {
-    pub(in crate::shell) fn snapshot_mut(&mut self) -> Option<&mut Arc<ClientShellSnapshot>> {
-        match &mut self.state {
-            EndpointState::Online(last) => Some(&mut last.snapshot),
-            EndpointState::Connecting { last, .. }
-            | EndpointState::Stale { last }
-            | EndpointState::Attention { last } => last.as_mut().map(|last| &mut last.snapshot),
-        }
+impl ClientShellState {
+    /// Re-caches `endpoint_id`'s snapshot with `edit` applied, at the generation that
+    /// delivered it, the way a connection delivers one: through the cache, which rebuilds
+    /// the models derived from the endpoints. The active projection is left as it was.
+    pub(in crate::shell) fn edit_endpoint_snapshot(
+        &mut self,
+        endpoint_id: &ClientEndpointId,
+        edit: impl FnOnce(&mut ClientShellSnapshot),
+    ) {
+        let endpoint = self
+            .endpoints
+            .iter()
+            .find(|endpoint| &endpoint.endpoint_id == endpoint_id)
+            .expect("test precondition: the endpoint is configured");
+        let generation = endpoint
+            .snapshot_generation()
+            .expect("test precondition: the endpoint has a snapshot");
+        let mut snapshot = endpoint
+            .snapshot()
+            .expect("test precondition: the endpoint has a snapshot")
+            .clone();
+        edit(&mut snapshot);
+        self.cache_endpoint_snapshot_for_generation(endpoint_id, generation, snapshot);
     }
 }
 

@@ -329,7 +329,7 @@ mod tests {
         let job = capture_job(
             &opened.workspaces,
             &PaneRuntimeRegistry::new(),
-            Path::new("/"),
+            &shepr_core::absolute_path::AbsolutePath::root(),
             opened.host_theme,
             false,
         )
@@ -673,7 +673,7 @@ mod tests {
             let job = capture_job(
                 &opened.workspaces,
                 &PaneRuntimeRegistry::new(),
-                Path::new("/"),
+                &shepr_core::absolute_path::AbsolutePath::root(),
                 opened.host_theme,
                 true,
             )

@@ -10,23 +10,18 @@ pub enum KeybindDispatch {
     Prefix,
 }
 
-macro_rules! define_keybinding_actions {
-    (
-        actions { $(($action_field:ident, $action_variant:ident, $action_default:literal, $action_group:ident, $action_label:literal, $action_doc:literal),)* }
-        indexed { $(($indexed_field:ident, $indexed_variant:ident, $indexed_default:literal, $indexed_group:ident, $indexed_label:literal, $indexed_doc:literal, $indexed_help_after:literal),)* }
-        navigate { $(($navigate_config_field:ident, $navigate_field:ident, $navigate_variant:ident, $navigate_default:literal, $navigate_group:ident, $navigate_label:literal, $navigate_doc:literal, $navigate_alias:ident),)* }
-        navigate_indexed { $(($navigate_indexed_config_field:ident, $navigate_indexed_field:ident, $navigate_indexed_variant:ident, $navigate_indexed_default:literal, $navigate_indexed_group:ident, $navigate_indexed_label:literal, $navigate_indexed_doc:literal, $navigate_indexed_alias:ident),)* }
-    ) => {
+shepr_config::keybinding_rows! {
+    $ define_keybinding_actions;
+    actions(variant = $action_variant)
+    indexed(variant = $indexed_variant)
+    => {
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
         pub enum KeybindAction {
             $($action_variant,)*
             $($indexed_variant(usize),)*
         }
-
-    };
+    }
 }
-
-shepr_config::keybinding_table!(define_keybinding_actions);
 
 pub fn resolve_direct_binding(keybinds: &Keybinds, key: &TerminalKey) -> Option<KeybindAction> {
     resolve_exact_binding(keybinds, key, KeybindDispatch::Direct)
@@ -45,13 +40,10 @@ pub fn resolve_non_indexed_action(
     key: &TerminalKey,
     dispatch: KeybindDispatch,
 ) -> Option<KeybindAction> {
-    macro_rules! resolve_actions {
-        (
-            actions { $(($action_field:ident, $action_variant:ident, $action_default:literal, $action_group:ident, $action_label:literal, $action_doc:literal),)* }
-            indexed { $(($indexed_field:ident, $indexed_variant:ident, $indexed_default:literal, $indexed_group:ident, $indexed_label:literal, $indexed_doc:literal, $indexed_help_after:literal),)* }
-            navigate { $(($navigate_config_field:ident, $navigate_field:ident, $navigate_variant:ident, $navigate_default:literal, $navigate_group:ident, $navigate_label:literal, $navigate_doc:literal, $navigate_alias:ident),)* }
-            navigate_indexed { $(($navigate_indexed_config_field:ident, $navigate_indexed_field:ident, $navigate_indexed_variant:ident, $navigate_indexed_default:literal, $navigate_indexed_group:ident, $navigate_indexed_label:literal, $navigate_indexed_doc:literal, $navigate_indexed_alias:ident),)* }
-        ) => {
+    shepr_config::keybinding_rows! {
+        $ resolve_actions;
+        actions(field = $action_field, variant = $action_variant)
+        => {
             $(
                 if action_matches(&keybinds.$action_field, key, dispatch) {
                     return Some(KeybindAction::$action_variant);
@@ -59,7 +51,6 @@ pub fn resolve_non_indexed_action(
             )*
         }
     }
-    shepr_config::keybinding_table!(resolve_actions);
     None
 }
 
@@ -71,13 +62,10 @@ pub fn resolve_indexed_action(
     // The second pass only reaches combos accepted by the config matcher's full
     // code-and-modifier check, including its legacy shifted-key forms.
     for exact_modifiers in [true, false] {
-        macro_rules! resolve_indexed {
-            (
-                actions { $(($action_field:ident, $action_variant:ident, $action_default:literal, $action_group:ident, $action_label:literal, $action_doc:literal),)* }
-                indexed { $(($indexed_field:ident, $indexed_variant:ident, $indexed_default:literal, $indexed_group:ident, $indexed_label:literal, $indexed_doc:literal, $indexed_help_after:literal),)* }
-                navigate { $(($navigate_config_field:ident, $navigate_field:ident, $navigate_variant:ident, $navigate_default:literal, $navigate_group:ident, $navigate_label:literal, $navigate_doc:literal, $navigate_alias:ident),)* }
-                navigate_indexed { $(($navigate_indexed_config_field:ident, $navigate_indexed_field:ident, $navigate_indexed_variant:ident, $navigate_indexed_default:literal, $navigate_indexed_group:ident, $navigate_indexed_label:literal, $navigate_indexed_doc:literal, $navigate_indexed_alias:ident),)* }
-            ) => {
+        shepr_config::keybinding_rows! {
+            $ resolve_indexed;
+            indexed(field = $indexed_field, variant = $indexed_variant)
+            => {
                 $(
                     for binding in &keybinds.$indexed_field {
                         let dispatch_matches = match dispatch {
@@ -92,9 +80,8 @@ pub fn resolve_indexed_action(
                         }
                     }
                 )*
-            };
+            }
         }
-        shepr_config::keybinding_table!(resolve_indexed);
     }
 
     None

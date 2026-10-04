@@ -96,7 +96,7 @@ fn capture_from_state_with_runtimes(
     capture(
         &state.workspaces,
         terminal_runtimes,
-        std::path::Path::new("/"),
+        &shepr_core::absolute_path::AbsolutePath::root(),
         state.host_terminal_theme,
     )
 }

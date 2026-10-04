@@ -1,6 +1,7 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
+use shepr_core::absolute_path::AbsolutePath;
 use shepr_core::env::{EnvVar, SHARED_APP_DIR_NAME};
 
 use crate::profile::{PaneMarker, PaneOwner};
@@ -21,9 +22,12 @@ pub struct AppPaths {
     data_dir: PathBuf,
     xdg_runtime_dir: PathBuf,
     runtime_dir: PathBuf,
-    home_dir: Option<PathBuf>,
-    current_dir: Option<PathBuf>,
-    startup_cwd: Option<PathBuf>,
+    home_dir: Option<AbsolutePath>,
+    current_dir: Option<AbsolutePath>,
+    /// `current_dir`, or the root when there is none: kept so
+    /// [`fallback_cwd`](Self::fallback_cwd) can lend it.
+    fallback_cwd: AbsolutePath,
+    startup_cwd: Option<AbsolutePath>,
     server_address: ServerAddress,
 }
 
@@ -84,23 +88,28 @@ impl AppPaths {
         self.config_dir.join("server.toml")
     }
 
-    pub fn home_dir(&self) -> Option<&Path> {
-        self.home_dir.as_deref()
+    /// `HOME`, absolute: a launch with a relative one fails where these paths
+    /// are resolved.
+    pub fn home_dir(&self) -> Option<&AbsolutePath> {
+        self.home_dir.as_ref()
     }
 
-    pub fn current_dir(&self) -> Option<&Path> {
-        self.current_dir.as_deref()
+    /// The launch working directory, absolute, or `None` when it could not be
+    /// read at launch.
+    pub fn current_dir(&self) -> Option<&AbsolutePath> {
+        self.current_dir.as_ref()
     }
 
-    /// Last-resort server cwd, captured at launch without later filesystem IO.
-    pub fn fallback_cwd(&self) -> &Path {
-        self.current_dir().unwrap_or_else(|| Path::new("/"))
+    /// Last-resort server cwd, captured at launch without later filesystem IO:
+    /// [`current_dir`](Self::current_dir), else the root.
+    pub fn fallback_cwd(&self) -> &AbsolutePath {
+        &self.fallback_cwd
     }
 
     /// The absolute `SHEPR_STARTUP_CWD` handed to the server, when present.
     /// The server's own working directory is not a startup handoff.
-    pub fn startup_cwd(&self) -> Option<&Path> {
-        self.startup_cwd.as_deref()
+    pub fn startup_cwd(&self) -> Option<&AbsolutePath> {
+        self.startup_cwd.as_ref()
     }
 
     pub fn server_address(&self) -> &ServerAddress {
@@ -146,28 +155,40 @@ impl AppPaths {
     /// below `root`, with `root` as the XDG runtime directory, the saved
     /// layout in the state directory (the release profile's layout, whatever
     /// profile built the caller) and every value's source the default. The
-    /// environment is not read and no directory is checked or created, so the
+    /// environment is not read and no directory is touched on disk, so the
     /// caller passes absolute paths; this is how a caller that is not a
     /// launch, which resolves from the environment, places a config somewhere
-    /// it chose. The one check is the server socket: a root too long for
-    /// `runtime/shepr.sock` to name a Unix socket is refused.
+    /// it chose. The checks are lexical: a root too long for
+    /// `runtime/shepr.sock` to name a Unix socket is refused, and so is a home
+    /// or current directory that is not absolute, each as `InvalidInput`.
     pub fn rooted_at(
         root: &Path,
         home_dir: Option<&Path>,
         current_dir: Option<&Path>,
     ) -> io::Result<Self> {
+        let absolute = |path: &Path| {
+            AbsolutePath::new(path)
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))
+        };
+        let home_dir = home_dir.map(absolute).transpose()?;
+        let current_dir = current_dir.map(absolute).transpose()?;
         Ok(Self {
             config_dir: root.join("config"),
             state_dir: root.join("state"),
             data_dir: root.join("state"),
             xdg_runtime_dir: root.to_path_buf(),
             runtime_dir: root.join("runtime"),
-            home_dir: home_dir.map(Path::to_path_buf),
-            current_dir: current_dir.map(Path::to_path_buf),
+            home_dir,
+            fallback_cwd: fallback_cwd(current_dir.as_ref()),
+            current_dir,
             startup_cwd: None,
             server_address: ServerAddress::for_runtime_dir(&root.join("runtime"), None)?,
         })
     }
+}
+
+fn fallback_cwd(current_dir: Option<&AbsolutePath>) -> AbsolutePath {
+    current_dir.cloned().unwrap_or_else(AbsolutePath::root)
 }
 
 fn socket_path_override(variable: EnvVar, problems: &mut Vec<String>) -> Option<PathBuf> {
@@ -188,21 +209,31 @@ enum CurrentDirOrigin {
     StartupHandoff,
 }
 
+/// The resolved current directory and, for a server, the startup handoff it
+/// came from. A process directory that cannot be read is `None`; one that is
+/// read but not absolute fails the launch, like a relative handoff.
 fn resolve_current_dir(
     origin: CurrentDirOrigin,
-) -> Result<(Option<PathBuf>, Option<PathBuf>), String> {
-    let process = || std::env::current_dir().ok();
+) -> Result<(Option<AbsolutePath>, Option<AbsolutePath>), String> {
+    let process = || match std::env::current_dir() {
+        Ok(path) => AbsolutePath::new(path)
+            .map(Some)
+            .map_err(|error| format!("the current directory is not absolute: {error}")),
+        Err(_) => Ok(None),
+    };
     match origin {
-        CurrentDirOrigin::Process => Ok((process(), None)),
+        CurrentDirOrigin::Process => Ok((process()?, None)),
         CurrentDirOrigin::StartupHandoff => {
             match shepr_core::env::read_path(EnvVar::SheprStartupCwd) {
-                Ok(Some(path)) if path.is_absolute() => Ok((Some(path.clone()), Some(path))),
-                Ok(Some(path)) => Err(format!(
-                    "{} must be an absolute path, got {}",
-                    EnvVar::SheprStartupCwd,
-                    path.display()
-                )),
-                Ok(None) => Ok((process(), None)),
+                Ok(Some(path)) => match AbsolutePath::new(path) {
+                    Ok(path) => Ok((Some(path.clone()), Some(path))),
+                    Err(error) => Err(format!(
+                        "{} must be an absolute path, got {}",
+                        EnvVar::SheprStartupCwd,
+                        error.path().display()
+                    )),
+                },
+                Ok(None) => Ok((process()?, None)),
                 Err(error) => Err(error.to_string()),
             }
         }
@@ -250,11 +281,13 @@ fn resolve_paths_from_env_with_marker(
 
     let home_dir =
         shepr_core::pathutil::home_dir().map_err(|error| PathsError::one(error.to_string()))?;
+    let home_dir = AbsolutePath::new(home_dir)
+        .map_err(|error| PathsError::one(format!("HOME is not absolute: {error}")))?;
     let (current_dir, startup_cwd) =
         resolve_current_dir(current_dir_origin).map_err(PathsError::one)?;
     let read_base = |variable| {
         if variable == EnvVar::Home {
-            Ok(Some(home_dir.clone()))
+            Ok(Some(home_dir.as_path().to_path_buf()))
         } else {
             shepr_core::env::read_path(variable).map_err(io::Error::from)
         }
@@ -320,6 +353,7 @@ fn resolve_paths_from_env_with_marker(
                 xdg_runtime_dir,
                 runtime_dir,
                 home_dir: Some(home_dir),
+                fallback_cwd: fallback_cwd(current_dir.as_ref()),
                 current_dir,
                 startup_cwd,
                 server_address,
@@ -358,6 +392,23 @@ mod tests {
             Path::new("/r/runtime/shepr.sock")
         );
         assert!(paths.server_address().is_runtime_address());
+        assert_eq!(paths.fallback_cwd(), Path::new("/"));
+    }
+
+    #[test]
+    fn a_rooted_layout_refuses_a_relative_home_or_current_directory() {
+        let root = Path::new("/r");
+        for (home, current) in [
+            (Some(Path::new("home")), None),
+            (None, Some(Path::new("launch"))),
+        ] {
+            let error = AppPaths::rooted_at(root, home, current)
+                .expect_err("a relative directory is refused");
+            assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        }
+        let paths = AppPaths::rooted_at(root, Some(Path::new("/h")), Some(Path::new("/c")))
+            .expect("absolute directories are accepted");
+        assert_eq!(paths.fallback_cwd(), Path::new("/c"));
     }
 
     #[test]
@@ -370,16 +421,29 @@ mod tests {
 
         // Without the handoff the server uses its own working directory.
         let paths = AppPaths::resolve_for_server().expect("server paths resolve");
-        assert_eq!(paths.current_dir(), process_dir.as_deref());
+        assert_eq!(
+            paths.current_dir().map(AbsolutePath::as_path),
+            process_dir.as_deref()
+        );
         assert_eq!(paths.startup_cwd(), None);
 
         env.set(EnvVar::SheprStartupCwd, &launch);
         let paths = AppPaths::resolve_for_server().expect("server paths resolve");
-        assert_eq!(paths.current_dir(), Some(launch.as_path()));
-        assert_eq!(paths.startup_cwd(), Some(launch.as_path()));
+        assert_eq!(
+            paths.current_dir().map(AbsolutePath::as_path),
+            Some(launch.as_path())
+        );
+        assert_eq!(
+            paths.startup_cwd().map(AbsolutePath::as_path),
+            Some(launch.as_path())
+        );
+        assert_eq!(paths.fallback_cwd(), launch.as_path());
         // Only the server reads the handoff; any other process keeps its own.
         let cli = AppPaths::resolve().expect("CLI paths resolve");
-        assert_eq!(cli.current_dir(), process_dir.as_deref());
+        assert_eq!(
+            cli.current_dir().map(AbsolutePath::as_path),
+            process_dir.as_deref()
+        );
         assert_eq!(cli.startup_cwd(), None);
 
         env.set(EnvVar::SheprStartupCwd, "relative/launch");

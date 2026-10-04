@@ -30,3 +30,58 @@ impl TransientError {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn nothing_shown_has_no_deadline_and_nothing_to_hide() {
+        let mut error = TransientError::default();
+        assert!(error.message().is_none());
+        assert!(error.deadline().is_none());
+        assert!(!error.tick(Instant::now()));
+        assert!(!error.dismiss());
+    }
+
+    #[test]
+    fn a_shown_error_expires_at_its_deadline_and_only_once() {
+        let mut error = TransientError::default();
+        let now = Instant::now();
+        error.set("Copy failed", now);
+        assert_eq!(error.message(), Some("Copy failed"));
+        assert_eq!(error.deadline(), Some(now + ENDPOINT_ERROR_TIMEOUT));
+        assert!(!error.tick(now));
+        assert!(!error.tick(now + ENDPOINT_ERROR_TIMEOUT - Duration::from_millis(1)));
+        assert_eq!(error.message(), Some("Copy failed"));
+        assert!(error.tick(now + ENDPOINT_ERROR_TIMEOUT));
+        assert!(error.message().is_none());
+        assert!(error.deadline().is_none());
+        assert!(!error.tick(now + ENDPOINT_ERROR_TIMEOUT));
+    }
+
+    #[test]
+    fn setting_again_restarts_the_lifetime_even_for_the_same_message() {
+        let mut error = TransientError::default();
+        let first = Instant::now();
+        let second = first + Duration::from_secs(1);
+        error.set("Copy failed", first);
+        error.set("Copy failed", second);
+        assert_eq!(error.deadline(), Some(second + ENDPOINT_ERROR_TIMEOUT));
+        assert!(!error.tick(first + ENDPOINT_ERROR_TIMEOUT));
+        error.set("Paste failed", second);
+        assert_eq!(error.message(), Some("Paste failed"));
+    }
+
+    #[test]
+    fn dismiss_hides_the_error_before_its_deadline() {
+        let mut error = TransientError::default();
+        let now = Instant::now();
+        error.set("Copy failed", now);
+        assert!(error.dismiss());
+        assert!(error.message().is_none());
+        assert!(!error.dismiss());
+        assert!(!error.tick(now + ENDPOINT_ERROR_TIMEOUT));
+    }
+}

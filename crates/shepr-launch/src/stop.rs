@@ -158,7 +158,10 @@ impl std::fmt::Display for ServerStopError {
                 socket,
             } => write!(
                 f,
-                "{label} did not stop within {}ms; the socket at {} is still reachable",
+                "{label} did not stop within {}ms; the socket at {} is still reachable. \
+                 If it stays wedged, kill the shepr-server process with SIGKILL: the data \
+                 directory lease and the socket recover on their own, and the next start \
+                 restores the last autosaved layout",
                 timeout.as_millis(),
                 socket.display()
             ),
@@ -725,7 +728,10 @@ mod tests {
         };
         assert_eq!(
             error.to_string(),
-            "test server did not stop within 75ms; the socket at /run/test.sock is still reachable"
+            "test server did not stop within 75ms; the socket at /run/test.sock is still \
+             reachable. If it stays wedged, kill the shepr-server process with SIGKILL: the \
+             data directory lease and the socket recover on their own, and the next start \
+             restores the last autosaved layout"
         );
     }
 

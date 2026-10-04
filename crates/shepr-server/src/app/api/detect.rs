@@ -57,7 +57,7 @@ impl App {
         let last_unapplied_hook_report = terminal
             .ownership()
             .last_unapplied_hook_report(now)
-            .map(|report| UnappliedHookReport::from_ownership(report, now));
+            .map(|report| UnappliedHookReport::from_ownership(&report, now));
         let owner = terminal.ownership().state_owner();
         if let Some(authority) = terminal.ownership().hook_authority().filter(|_| {
             matches!(
@@ -79,7 +79,9 @@ impl App {
                 skip_reason,
             )
             .with_last_unapplied_hook_report(last_unapplied_hook_report);
-            return success(ResponseResult::DetectExplain { explain });
+            return success(ResponseResult::DetectExplain {
+                explain: Box::new(explain),
+            });
         }
         let Some(agent) = terminal
             .ownership()
@@ -105,8 +107,10 @@ impl App {
             },
         );
         success(ResponseResult::DetectExplain {
-            explain: DetectionExplanation::from(explain)
-                .with_last_unapplied_hook_report(last_unapplied_hook_report),
+            explain: Box::new(
+                DetectionExplanation::from(explain)
+                    .with_last_unapplied_hook_report(last_unapplied_hook_report),
+            ),
         })
     }
 
@@ -413,6 +417,55 @@ mod tests {
         );
         assert!(
             response["result"]["explain"]["last_unapplied_hook_report"].is_null(),
+            "{response}"
+        );
+    }
+
+    #[tokio::test]
+    async fn explain_says_what_a_parked_hook_report_awaits() {
+        let (mut app, pane_id) = app_with_pane("detect-explain-parked");
+        app.state
+            .terminal_mut(pane_id)
+            .set_detected_state(Some(Agent::Kimi), AgentState::Idle);
+        app.terminal_runtimes.insert(
+            pane_id,
+            shepr_mux::pane::PaneRuntime::test_with_screen_bytes(80, 24, b""),
+        );
+        let pane = app
+            .state
+            .pane(pane_id)
+            .expect("test precondition")
+            .public_id()
+            .to_string();
+
+        // A state report with no start yet: the process is present, but only a
+        // session start can promote the report.
+        app.state
+            .handle_state_event(crate::app::events::StateEvent::HookStateReported {
+                pane_id,
+                sample: shepr_detect::ownership::HookClockSample {
+                    monotonic: std::time::Instant::now(),
+                    wall: std::time::SystemTime::now(),
+                },
+                origin: shepr_agent::ReportOrigin::parse("shepr:kimi", "kimi")
+                    .expect("test origin"),
+                state: AgentState::Working,
+                seq: Some(10),
+                session_ref: shepr_agent::resume::AgentSessionRef::id("kimi-root"),
+            });
+        let response = request(
+            &mut app,
+            "explain_parked",
+            AppMethod::DetectExplain(PaneTarget { pane_id: pane }),
+        );
+        let report = &response["result"]["explain"]["last_unapplied_hook_report"];
+        assert_eq!(report["hook_source"], "shepr:kimi", "{response}");
+        assert_eq!(
+            report["outcome"],
+            serde_json::json!({
+                "kind": "parked",
+                "awaiting": { "kind": "session_start" },
+            }),
             "{response}"
         );
     }

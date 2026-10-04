@@ -613,6 +613,23 @@ impl HeadlessServer {
             }
         }
 
+        // There is deliberately no forced stop. `server.stop` is answered on
+        // the API connection thread, so it is accepted even when this loop is
+        // stuck, but only this loop acts on it. The final save and
+        // `retire_session_writer` wait for the persister without a deadline.
+        // Only two things can wedge here: a loop bug (deadlock or spin) and a
+        // data directory on a hung filesystem. Against either, a watchdog that
+        // exits after a deadline does no more than SIGKILL. A thread blocked in
+        // uninterruptible IO holds the flock lease until the IO returns
+        // whoever ends the process, and a killable wait dies to SIGKILL just
+        // the same. Recovery from a SIGKILL needs nothing extra: the kernel
+        // drops the flock lease, the socket file left behind probes as stale
+        // and the next bind reclaims it, and saves publish atomically, so the
+        // last autosave survives whole and is what the next start restores. A
+        // deadline would only add the risk of cutting short a slow but healthy
+        // final save. SIGINT, SIGTERM and SIGHUP only latch the stop (see
+        // `ctrlc_handler`); SIGKILL is the escape hatch.
+        //
         // Save session on exit. During a host shutdown saving is frozen, so
         // this writes nothing and the checkpoint taken on the warning stands;
         // the writer is still retired.

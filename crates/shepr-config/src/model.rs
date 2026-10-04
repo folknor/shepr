@@ -262,13 +262,17 @@ pub struct ServerConfig {
     pub experimental: ExperimentalConfig,
 }
 
-macro_rules! define_keys_config {
-    (
-        actions { $(($action_field:ident, $action_variant:ident, $action_default:literal, $action_group:ident, $action_label:literal, $action_doc:literal),)* }
-        indexed { $(($indexed_field:ident, $indexed_variant:ident, $indexed_default:literal, $indexed_group:ident, $indexed_label:literal, $indexed_doc:literal, $indexed_help_after:literal),)* }
-        navigate { $(($navigate_config_field:ident, $navigate_field:ident, $navigate_variant:ident, $navigate_default:literal, $navigate_group:ident, $navigate_label:literal, $navigate_doc:literal, $navigate_alias:ident),)* }
-        navigate_indexed { $(($navigate_indexed_config_field:ident, $navigate_indexed_field:ident, $navigate_indexed_variant:ident, $navigate_indexed_default:literal, $navigate_indexed_group:ident, $navigate_indexed_label:literal, $navigate_indexed_doc:literal, $navigate_indexed_alias:ident),)* }
-    ) => {
+crate::keybinding_rows! {
+    $ define_keys_config;
+    actions(field = $action_field, default = $action_default, doc = $action_doc)
+    indexed(field = $indexed_field, default = $indexed_default, doc = $indexed_doc)
+    navigate(config_field = $navigate_config_field, default = $navigate_default, doc = $navigate_doc)
+    navigate_indexed(
+        config_field = $navigate_indexed_config_field,
+        default = $navigate_indexed_default,
+        doc = $navigate_indexed_doc
+    )
+    => {
         #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
         #[serde(default)]
         pub struct KeysConfig {
@@ -291,10 +295,8 @@ macro_rules! define_keys_config {
                 }
             }
         }
-    };
+    }
 }
-
-crate::keybinding_table!(define_keys_config);
 
 /// The setting is the core chrome math's own mode, so the config value is what
 /// the pane chrome computation takes.

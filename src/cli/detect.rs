@@ -8,8 +8,8 @@ use clap::ArgMatches;
 
 use shepr_api::schema::{
     DetectionCapture, DetectionExplanation, DetectionStateSource, ErrorBody, ErrorResponse, Method,
-    PaneTarget, Request, ResponseResult, UnappliedHookOutcome, UnappliedHookReport,
-    UnappliedHookReportKind,
+    PaneTarget, ParkedHookAwaiting, Request, ResponseResult, UnappliedHookOutcome,
+    UnappliedHookReport, UnappliedHookReportKind,
 };
 
 use super::matches::{try_flag, try_string};
@@ -189,8 +189,17 @@ pub(super) fn explain_file(
 /// One line saying what became of the report, which report it was and how
 /// long ago the server admitted it.
 fn unapplied_hook_report_text(report: &UnappliedHookReport) -> String {
+    let seconds = |millis: u64| std::time::Duration::from_millis(millis).as_secs_f64();
     let outcome = match report.outcome {
-        UnappliedHookOutcome::Parked => "parked until process evidence".to_owned(),
+        UnappliedHookOutcome::Parked {
+            awaiting: ParkedHookAwaiting::SessionStart,
+        } => "parked awaiting a session start".to_owned(),
+        UnappliedHookOutcome::Parked {
+            awaiting: ParkedHookAwaiting::Process { expires_in_ms },
+        } => format!(
+            "parked awaiting process evidence (expires in {:.1}s)",
+            seconds(expires_in_ms)
+        ),
         UnappliedHookOutcome::Rejected { reason } => format!("rejected ({reason})"),
     };
     let kind = match report.report {
@@ -209,7 +218,7 @@ fn unapplied_hook_report_text(report: &UnappliedHookReport) -> String {
         .map_or_else(String::new, |session_ref| {
             format!(" session={}", session_ref.value_str())
         });
-    let age = std::time::Duration::from_millis(report.age_ms).as_secs_f64();
+    let age = seconds(report.age_ms);
     format!(
         "{outcome}: {kind} from {}{seq}{session}, {age:.1}s ago",
         report.hook_source
@@ -428,7 +437,9 @@ mod tests {
         .into();
         let mut response = serde_json::to_value(SuccessResponse {
             id: "test".into(),
-            result: ResponseResult::DetectExplain { explain },
+            result: ResponseResult::DetectExplain {
+                explain: Box::new(explain),
+            },
         })
         .expect("encode explanation response");
         assert!(shepr_api::client::parse_response_value(response.clone()).is_ok());
@@ -459,15 +470,37 @@ mod tests {
              session=codex-session, 3.2s ago"
         );
 
+        let parked: UnappliedHookReport = serde_json::from_value(serde_json::json!({
+            "hook_source": "shepr:kimi",
+            "agent": "kimi",
+            "report": { "kind": "state", "state": "working" },
+            "seq": 1_700_000_000_000_u64,
+            "session_ref": { "kind": "id", "value": "kimi-root" },
+            "received_unix_ms": 1_700_000_000_000_u64,
+            "age_ms": 312_400,
+            "outcome": { "kind": "parked", "awaiting": { "kind": "session_start" } },
+        }))
+        .expect("decode parked report");
+        assert_eq!(
+            unapplied_hook_report_text(&parked),
+            "parked awaiting a session start: state report (working) from shepr:kimi \
+             seq=1700000000000 session=kimi-root, 312.4s ago"
+        );
+
         report.report = UnappliedHookReportKind::SessionStart {
             start_source: Some(shepr_api::schema::ReportedStartSource::Startup),
         };
         report.seq = None;
         report.session_ref = None;
-        report.outcome = UnappliedHookOutcome::Parked;
+        report.outcome = UnappliedHookOutcome::Parked {
+            awaiting: ParkedHookAwaiting::Process {
+                expires_in_ms: 41_000,
+            },
+        };
         assert_eq!(
             unapplied_hook_report_text(&report),
-            "parked until process evidence: session start (startup) from shepr:codex, 3.2s ago"
+            "parked awaiting process evidence (expires in 41.0s): session start (startup) \
+             from shepr:codex, 3.2s ago"
         );
     }
 
