@@ -1371,7 +1371,7 @@ fn copy_mode_survives_mouse_motion_and_parks_across_focus_changes() {
             .is_some_and(|selection| selection.belongs_to(&crate::tests::test_pane_id("w1:p1")))
     );
 
-    state.mode.enter_navigate(None);
+    crate::shell::tests::enter_navigation(&mut state);
     state.handle_raw_events(vec![RawInputEvent::Key(shepr_term::key::TerminalKey::new(
         KeyCode::Esc,
         KeyModifiers::empty(),

@@ -246,7 +246,7 @@ fn a_rebooted_servers_surface_before_its_snapshot_survives_the_reset() {
 #[test]
 fn a_slow_path_patch_applies_in_place_and_composes() {
     let mut s = state();
-    s.mode.enter_navigate(None);
+    crate::shell::tests::enter_navigation(&mut s);
     let ptr = s
         .presentation
         .surfaces

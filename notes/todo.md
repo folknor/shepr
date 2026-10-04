@@ -20,7 +20,6 @@ the history file and its restore path.
 Not defects: paths with no test, and code that works but reads worse than it
 should.
 
-- Two client shell tests still enter Navigate mode with `mode.enter_navigate(None)` instead of the `enter_navigation` helper (prefix then `w`): in `shell/presentation/tests.rs` and `shell/copy/tests.rs`.
 - `terminal_collect_dirty_patch` builds one owned `String` per dirty cell for the wire's `CellData` symbol (plus padding). Not contention on glibc; worth checking if a many-pane, all-redrawing profile ever shows the allocator in the render path.
 
 # Possible capabilities
