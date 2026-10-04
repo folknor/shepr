@@ -582,11 +582,6 @@ paths = ["crates/*/src/**/*.rs", "src/**/*.rs"]
 exclude = [
     "crates/*/src/limits.rs",
     "src/limits.rs",
-    # Pending a decision: these three crates keep their constants beside the
-    # policy each one parameterises rather than in a limits module.
-    "crates/shepr-mux/src/**",
-    "crates/shepr-server/src/**",
-    "crates/shepr-client/src/**",
     "crates/shepr-test-support/**",
     "crates/shepr-test-fixtures/**",
     "**/test_support.rs",
@@ -608,11 +603,6 @@ paths = ["crates/*/src/**/*.rs", "src/**/*.rs"]
 exclude = [
     "crates/*/src/limits.rs",
     "src/limits.rs",
-    # Pending a decision: these three crates keep their constants beside the
-    # policy each one parameterises rather than in a limits module.
-    "crates/shepr-mux/src/**",
-    "crates/shepr-server/src/**",
-    "crates/shepr-client/src/**",
     "crates/shepr-test-support/**",
     "crates/shepr-test-fixtures/**",
     "**/test_support.rs",

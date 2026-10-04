@@ -1,4 +1,5 @@
 use super::*;
+use crate::limits::{MAX_PARAGRAPH_MOTION_ROWS, WORD_MOTION_INITIAL_WINDOW_ROWS};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TextClass {
@@ -607,7 +608,7 @@ pub(super) fn word_motion_in(
         motion,
         TerminalWordMotion::NextEnd | TerminalWordMotion::NextBigEnd
     );
-    let mut window_rows = 64usize;
+    let mut window_rows = WORD_MOTION_INITIAL_WINDOW_ROWS;
     loop {
         let (start_row, end_row) = if backward {
             (row.saturating_sub(window_rows.saturating_sub(1)), row + 1)
@@ -642,7 +643,7 @@ pub(super) fn word_motion_in(
 }
 
 /// The next blank row above or below the cursor, preserving its column and
-/// looking at most 1000 rows away.
+/// looking at most `MAX_PARAGRAPH_MOTION_ROWS` rows away.
 pub(super) fn paragraph_motion_in(
     terminal: &shepr_vt::Terminal,
     cursor: TerminalTextPoint,
@@ -651,7 +652,7 @@ pub(super) fn paragraph_motion_in(
     let total_rows = terminal.total_rows();
     let current = terminal.screen_row_for_absolute(cursor.row)?.0;
     let mut scratch = String::new();
-    for distance in 1..total_rows.min(1000) {
+    for distance in 1..total_rows.min(MAX_PARAGRAPH_MOTION_ROWS) {
         let candidate = match motion {
             TerminalParagraphMotion::Previous => current.checked_sub(distance)?,
             TerminalParagraphMotion::Next => {

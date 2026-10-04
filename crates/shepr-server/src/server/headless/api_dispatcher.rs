@@ -1,5 +1,4 @@
-/// Limit API requests per loop pass so client and scheduled work still get service.
-pub(super) const API_REQUEST_DRAIN_LIMIT: usize = 64;
+use crate::limits::API_REQUEST_DRAIN_LIMIT;
 
 impl super::HeadlessServer {
     pub(super) fn handle_api_request_with_shutdown_check(

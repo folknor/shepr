@@ -302,7 +302,7 @@ async fn cwd_report_and_slow_probe_refresh_shell_projection() {
 
     let age_cache = |server: &mut HeadlessServer| {
         if let Some(cache) = server.shell_session_cache.as_mut() {
-            cache.built_at -= super::render::SHELL_CWD_REFRESH_INTERVAL * 2;
+            cache.built_at -= crate::limits::SHELL_CWD_REFRESH_INTERVAL * 2;
         }
     };
 

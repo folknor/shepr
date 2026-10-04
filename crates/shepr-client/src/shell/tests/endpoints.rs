@@ -239,6 +239,30 @@ fn multi_machine_sidebar_draws_the_workspace_drop_marker() {
     );
 }
 
+/// A drop before the first workspace marks the row above it, the last row of the
+/// workspace section header.
+#[test]
+fn single_machine_sidebar_draws_the_drop_marker_above_the_first_workspace() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    state.receive_pane_surface_from(surface(), shepr_protocol::ConnectionGeneration::FIRST);
+    state.compose(120, 40).expect("test precondition");
+    let first = state
+        .drawn()
+        .workspaces()
+        .next()
+        .expect("first workspace row")
+        .rect;
+    let row = first.y - 1;
+    state.pointer.chrome_drag = Some(ClientChromeDrag::Workspace {
+        source_workspace_id: test_workspace_id("w1"),
+        target: Some((Some(test_workspace_id("w1")), row)),
+    });
+    let frame = state.compose(120, 40).expect("dragging frame");
+    let cell = &frame.cells()[usize::from(row) * 120 + usize::from(first.x)];
+    assert_eq!(cell.symbol, "─");
+}
+
 #[test]
 fn collapsed_sidebar_workspace_rows_accept_drag_targets() {
     let (mut state, _) = state_with_remote();

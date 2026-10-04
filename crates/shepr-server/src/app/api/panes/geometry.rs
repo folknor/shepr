@@ -1,8 +1,5 @@
 use super::*;
-
-/// The fraction of a split one resize step moves its edge by.
-const DEFAULT_PANE_RESIZE_AMOUNT: shepr_core::layout::RatioDelta =
-    shepr_core::layout::RatioDelta::new(0.05);
+use crate::limits::DEFAULT_PANE_RESIZE_AMOUNT;
 
 impl App {
     /// Focuses the neighbour of the pane in the given direction and moves the

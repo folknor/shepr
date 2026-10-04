@@ -6,12 +6,7 @@ use std::io::Write;
 use serde_json::ser::{Formatter, PrettyFormatter};
 
 use super::{HistoryText, SessionHistory};
-
-/// This is the session-history writer's file budget and restore uses the same
-/// bound. `serialize_history` trims pane text to it; if the workspace shape
-/// alone is larger, it writes a compact history with no pane entries. The
-/// fingerprint in that compact form is a fixed SHA-256 digest.
-pub(in crate::persist) const MAX_SESSION_HISTORY_FILE_BYTES: usize = 256 * 1024 * 1024;
+use crate::limits::MAX_SESSION_HISTORY_FILE_BYTES;
 
 pub(in crate::persist) fn ensure_history_size(size: usize) -> std::io::Result<()> {
     if size > MAX_SESSION_HISTORY_FILE_BYTES {

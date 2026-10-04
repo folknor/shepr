@@ -1,14 +1,7 @@
 use shepr_protocol::command::{EndpointError, EndpointReply};
 use shepr_protocol::{BootId, RequestId, ServerMessage};
 
-use super::outbox::CLIENT_CONTROL_QUEUE_MAX_BYTES;
-
-/// Frames needed to carry a full control queue of endpoint response bytes.
-const MAX_ENDPOINT_RESPONSE_FRAME_COUNT: usize =
-    CLIENT_CONTROL_QUEUE_MAX_BYTES.div_ceil(shepr_protocol::MAX_FRAME_SIZE);
-/// Encoded size cap of one endpoint response, leaving room for frame prefixes.
-const MAX_ENDPOINT_RESPONSE_ENCODED_BYTES: usize =
-    CLIENT_CONTROL_QUEUE_MAX_BYTES - std::mem::size_of::<u32>() * MAX_ENDPOINT_RESPONSE_FRAME_COUNT;
+use crate::limits::MAX_ENDPOINT_RESPONSE_ENCODED_BYTES;
 
 /// The one response to an endpoint command. A large result (a selection of a
 /// long scrollback) crosses in as many frames as it needs, up to the control

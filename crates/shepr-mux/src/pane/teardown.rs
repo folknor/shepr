@@ -4,25 +4,7 @@ use tracing::{info, warn};
 
 use shepr_core::layout::PaneId;
 
-/// Grace per pane teardown signal before escalating to the next signal.
-const PANE_TEARDOWN_STEP: Duration = Duration::from_millis(250);
-/// Escalation sequence for a pane session, using a grace interval after each
-/// signal before the next round.
-const PANE_TEARDOWN_STEPS: [(shepr_platform::Signal, Duration); 3] = [
-    (shepr_platform::Signal::Hangup, PANE_TEARDOWN_STEP),
-    (shepr_platform::Signal::Terminate, PANE_TEARDOWN_STEP),
-    (shepr_platform::Signal::Kill, PANE_TEARDOWN_STEP),
-];
-/// Total teardown wait: the sum of the grace intervals in `PANE_TEARDOWN_STEPS`.
-const PANE_TEARDOWN_BUDGET: Duration = {
-    let mut budget = Duration::ZERO;
-    let mut index = 0;
-    while index < PANE_TEARDOWN_STEPS.len() {
-        budget = budget.saturating_add(PANE_TEARDOWN_STEPS[index].1);
-        index += 1;
-    }
-    budget
-};
+use crate::limits::{PANE_TEARDOWN_BUDGET, PANE_TEARDOWN_STEPS};
 
 /// The stable child identity and its coordinated lifecycle. A pending runtime
 /// has no child; an owned child always has its pidfd-backed identity.

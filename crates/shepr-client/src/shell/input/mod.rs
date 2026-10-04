@@ -26,19 +26,9 @@ use shepr_protocol::ClientPaneInputEvent;
 use shepr_termio::input::fixed_keys::{self, FixedKey, KeyBinding, ModifierMatch};
 use shepr_termio::input::raw_input::RawInputEvent;
 
-/// Maximum time Ctrl+V waits for the clipboard helper in a modal input.
-///
-/// The timeout keeps a stalled clipboard owner from freezing modal input.
-const MODAL_PASTE_CLIPBOARD_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(500);
-/// Keys held for copy mode while one of its requests is in flight.
-///
-/// Copy-mode keys wait for the request ahead of them so motions stay in order; past this many,
-/// later keys are dropped with a notice instead of growing the queue without bound.
-pub(in crate::shell) const MAX_COPY_INPUT_QUEUE: usize = 256;
-/// Channel capacity for the asynchronous clipboard helper.
-///
-/// The channel suffices because every read has its receiver and completes once.
-const CLIPBOARD_RESULT_QUEUE_CAPACITY: usize = 1;
+use crate::limits::{
+    CLIPBOARD_RESULT_QUEUE_CAPACITY, MAX_COPY_INPUT_QUEUE, MODAL_PASTE_CLIPBOARD_TIMEOUT,
+};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ResizeCommand {

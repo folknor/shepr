@@ -20,6 +20,7 @@ use std::time::{Duration, Instant};
 
 use super::App;
 use crate::backoff::Backoff;
+use crate::limits::{CHECKPOINT_MAX_FAILURES, CHECKPOINT_RETRY_MAX_DELAY, SESSION_SAVE_RETRY_MIN};
 
 mod autosave;
 mod exit_checkpoint;
@@ -29,18 +30,6 @@ use exit_checkpoint::PaneExitCheckpoint;
 pub(crate) use host_checkpoint::HostCheckpointOutcome;
 use host_checkpoint::HostShutdownCheckpoint;
 use shepr_mux::persist::CapturedLayout;
-
-/// Coalesce ordinary session writes to avoid saving on every event.
-pub(in crate::app) const SESSION_SAVE_DEBOUNCE: Duration = Duration::from_secs(5);
-/// First session-save retry: prompt recovery without a busy loop.
-const SESSION_SAVE_RETRY_MIN: Duration = Duration::from_millis(250);
-/// Longest session-save retry, limiting failing-disk pressure.
-const SESSION_SAVE_RETRY_MAX: Duration = Duration::from_secs(30);
-/// Longest retry delay of a failed pane-exit or host-shutdown checkpoint.
-const CHECKPOINT_RETRY_MAX_DELAY: Duration = Duration::from_secs(1);
-/// Repeated failed critical checkpoints release shutdown delay or exited panes;
-/// persistence must not stall either indefinitely.
-pub(crate) const CHECKPOINT_MAX_FAILURES: u8 = 3;
 
 /// Identity of a pane-exit checkpoint request, minted by `PaneExitCheckpoint`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -1592,9 +1581,9 @@ mod tests {
     /// Autosave scheduling and checkpoints, run on the app fixture
     /// `app::tests` shares (it sets the test shell).
     mod autosave_and_checkpoints {
-        use super::super::SESSION_SAVE_DEBOUNCE;
         use crate::app::tests::test_app;
         use crate::app::*;
+        use crate::limits::SESSION_SAVE_DEBOUNCE;
         use crate::test_support::*;
         use shepr_agent::{Agent, AgentState};
         use shepr_mux::workspace::Workspace;

@@ -1,14 +1,9 @@
 //! The mouse selection lifecycle and how snapshots and presented surfaces react to it.
 
+use crate::limits::DOUBLE_CLICK_WINDOW;
 use crate::shell::input::word_selection::ClientWordSelection;
 use ratatui::layout::Rect;
 use shepr_protocol::{ClientShellSnapshot, PaneSurfaceFrame};
-
-/// Repeated clicks on the same spot within the gesture interval are a double click.
-///
-/// This keeps the gesture in the usual short desktop double-click window.
-pub(in crate::shell) const DOUBLE_CLICK_WINDOW: std::time::Duration =
-    std::time::Duration::from_millis(350);
 
 #[derive(Clone, Debug)]
 pub(in crate::shell) struct ClientPaneClick {

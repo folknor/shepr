@@ -4,28 +4,13 @@
 use std::time::Instant;
 
 use super::state::TickContext;
+use crate::limits::{
+    PROCESS_ACQUISITION_FAST_RECHECK, PROCESS_ACQUISITION_FAST_WINDOW,
+    PROCESS_ACQUISITION_IDLE_RESET, PROCESS_ACQUISITION_SLOW_RECHECK, PROCESS_ACQUISITION_WINDOW,
+    PROCESS_RECHECK_IDENTIFIED, PROCESS_RECHECK_MISSING_FOREGROUND_GROUP,
+};
 use shepr_agent::Agent;
 use shepr_platform::Pgid;
-
-/// Recheck cadence for an already identified process, limiting probe work.
-pub(super) const PROCESS_RECHECK_IDENTIFIED: std::time::Duration =
-    std::time::Duration::from_secs(5);
-/// Recheck cadence when no foreground group is available; this condition is
-/// unlikely to resolve quickly and should not spin.
-const PROCESS_RECHECK_MISSING_FOREGROUND_GROUP: std::time::Duration =
-    std::time::Duration::from_secs(30);
-/// Total fast-to-slow acquisition window after a pane starts.
-const PROCESS_ACQUISITION_WINDOW: std::time::Duration = std::time::Duration::from_secs(8);
-/// Initial fast portion of the acquisition window, when agents are most likely
-/// to appear after a shell launch.
-const PROCESS_ACQUISITION_FAST_WINDOW: std::time::Duration = std::time::Duration::from_millis(1500);
-/// Poll cadence within the fast acquisition window.
-const PROCESS_ACQUISITION_FAST_RECHECK: std::time::Duration = std::time::Duration::from_millis(500);
-/// Poll cadence after fast acquisition; the window still gets several attempts
-/// without continuous /proc work.
-const PROCESS_ACQUISITION_SLOW_RECHECK: std::time::Duration = std::time::Duration::from_secs(2);
-/// Idle time before restarting acquisition after process activity subsides.
-const PROCESS_ACQUISITION_IDLE_RESET: std::time::Duration = std::time::Duration::from_secs(2);
 
 pub(super) fn foreground_group_changed(
     foreground_pgid: Option<Pgid>,

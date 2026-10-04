@@ -13,6 +13,10 @@
 //! `OutboxQueue::close_connection`, which shuts the socket and wakes the
 //! server loop; the loop's reap then removes the client.
 
+use crate::limits::{
+    CLIENT_CONTROL_QUEUE_MAX_BYTES, CLIENT_CONTROL_QUEUE_MAX_ITEMS, MAX_HELD_ENDPOINT_REPLIES,
+    MAX_HELD_ENDPOINT_REPLY_BYTES,
+};
 use crate::server::ClientId;
 use shepr_platform::ipc::LocalStream;
 use shepr_protocol::ServerMessage;
@@ -24,25 +28,6 @@ use std::sync::mpsc::{SendError, TrySendError};
 use std::sync::{Arc, Condvar, Mutex};
 use tokio::sync::Notify;
 use tracing::{debug, warn};
-
-/// Bound each client's outstanding control messages, including the message
-/// currently being written to its socket. Control messages do not coalesce, and
-/// a healthy client can see bursts of them (a snapshot per changed projection
-/// while a pane animates its title, a run of clipboard writes, mode updates on
-/// reconnect), so the count sits well above a burst; the byte bound below is
-/// what holds memory.
-pub(crate) const CLIENT_CONTROL_QUEUE_MAX_ITEMS: usize = 1024;
-/// Bound control memory per client even when a peer reads slowly but continues
-/// to make enough progress to stay inside the socket stall timeout.
-pub(crate) const CLIENT_CONTROL_QUEUE_MAX_BYTES: usize = 16 * 1024 * 1024;
-/// Most endpoint replies held for one client, ready or waiting on a worker. A
-/// same-build client has one command in flight per endpoint, so a legitimate
-/// backlog is one or two entries; a client past this is dropped, not
-/// buffered for.
-const MAX_HELD_ENDPOINT_REPLIES: usize = 64;
-/// Most framed reply and refusal bytes held for one client. A held reply
-/// drains into the control lane, whose own byte budget is this size.
-const MAX_HELD_ENDPOINT_REPLY_BYTES: usize = CLIENT_CONTROL_QUEUE_MAX_BYTES;
 
 fn encode_message_or_close<M: serde::Serialize>(
     queue: &OutboxQueue,

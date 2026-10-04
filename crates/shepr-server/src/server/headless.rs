@@ -25,6 +25,10 @@ use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
 use crate::app;
+use crate::limits::{
+    APP_EVENT_CHANNEL_CAPACITY, PANE_TEARDOWN_WAIT, SERVER_EVENT_CHANNEL_CAPACITY,
+    SERVER_EVENT_DRAIN_LIMIT,
+};
 use crate::server::client_transport::ServerEvent;
 use crate::server::clients::{
     ClientConnection, ClientDeparture, ClientRegistry, ClientShellLocationGeneration,
@@ -53,23 +57,6 @@ pub use bootstrap::{RunServerError, ServerReady, run_server};
 use lifecycle::UnexpectedPhase;
 use lifecycle::{ShutdownLifecycle, ShutdownPhase};
 use schedule::WakeInputs;
-
-/// Bounded queue capacity for events forwarded from client threads.
-const SERVER_EVENT_CHANNEL_CAPACITY: usize = 64;
-/// Limit server events per loop pass so API and scheduled work still get service.
-pub(crate) const SERVER_EVENT_DRAIN_LIMIT: usize = 64;
-/// How long server exit waits for pane teardowns: their signal budget, plus
-/// three more of it for the /proc session scans between signal rounds, which
-/// the signal budget does not count.
-const PANE_TEARDOWN_WAIT: std::time::Duration =
-    shepr_mux::pane::PaneTeardownTracker::BUDGET.saturating_mul(4);
-/// Bound queued API requests to the number of app-bound API requests in
-/// flight. Each has at most one request in the queue at a time. Requests whose
-/// connection gave up waiting stay queued, so a stalled loop can fill the
-/// queue; producers then refuse new requests with `server_unavailable` at
-/// once instead of growing it. A refused agent hook report is dropped, as it
-/// is when the server is down.
-pub(crate) const API_REQUEST_CHANNEL_CAPACITY: usize = shepr_api::MAX_APP_REQUESTS_IN_FLIGHT;
 
 /// Samples the clock app state reads. App code never reads the clock itself
 /// (the `app-state-reads-the-clock-seam` textlint); the server samples it
@@ -438,9 +425,7 @@ impl HeadlessServer {
             // after a signal it leaves pane deaths out (see
             // `signal_quit_requested`).
             if self.lifecycle.stop_requested() {
-                self.drain_internal_events_with_forwarding_up_to(
-                    crate::app::APP_EVENT_CHANNEL_CAPACITY,
-                );
+                self.drain_internal_events_with_forwarding_up_to(APP_EVENT_CHANNEL_CAPACITY);
                 self.initiate_shutdown();
                 continue;
             }

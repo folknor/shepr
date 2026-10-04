@@ -11,28 +11,17 @@ use std::time::{Duration, Instant};
 use super::probe::{AgentDetectionPresence, AgentExitPhase, AgentProcessChange};
 use super::publish::{ScreenDetectionCacheEntry, ScreenStep, StateChangedUpdate};
 use super::schedule::{ProbeScheduleDecision, ProcessProbeScheduler};
-use crate::pane::agent_detection::{
-    AGENT_ABSENCE_STARTUP_HOLD, AGENT_PENDING_IDLE_RECHECK, PendingIdleConfirmation,
+use crate::limits::{
+    AGENT_ABSENCE_STARTUP_HOLD, AGENT_PENDING_IDLE_RECHECK, PROCESS_RECHECK_ACTIVE_AGENT,
+    PROCESS_RECHECK_NO_AGENT, PROCESS_RECHECK_TRANSIENT, TRANSIENT_COLOR_RECHECK_WINDOW,
 };
+use crate::pane::agent_detection::PendingIdleConfirmation;
 use crate::pane::launch::LaunchKind;
 use crate::pane::process_probe::ProcessProbeResult;
 use crate::pane::terminal::AgentDetectionInputs;
 use shepr_agent::Agent;
 use shepr_detect::Detection;
 use shepr_platform::Pgid;
-
-/// Probe cadence during a transient color override, when a visible state
-/// change is expected immediately.
-const PROCESS_RECHECK_TRANSIENT: Duration = Duration::from_millis(50);
-/// How long after a foreground change the transient cadence runs. A
-/// color-setting program that stays in the foreground or on the alternate
-/// screen falls back to the ordinary cadence after this.
-const TRANSIENT_COLOR_RECHECK_WINDOW: Duration = Duration::from_secs(2);
-/// Probe cadence when no agent is identified, also used for the initial
-/// scheduled poll, balancing acquisition latency against repeated scans.
-pub(in crate::pane) const PROCESS_RECHECK_NO_AGENT: Duration = Duration::from_millis(500);
-/// Probe cadence while tracking an agent whose visible state can change.
-const PROCESS_RECHECK_ACTIVE_AGENT: Duration = Duration::from_millis(300);
 
 /// One tick's observations. The runtime passes one set (time, group, content
 /// sequence) through a tick; the detector adds what the tick itself decides,
@@ -279,9 +268,9 @@ impl DetectorState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pane::agent_detection::AGENT_STARTUP_GRACE_WINDOW;
-    use crate::pane::detect::probe::AGENT_MISS_CONFIRMATION_ATTEMPTS;
-    use crate::pane::detect::schedule::PROCESS_RECHECK_IDENTIFIED;
+    use crate::limits::{
+        AGENT_MISS_CONFIRMATION_ATTEMPTS, AGENT_STARTUP_GRACE_WINDOW, PROCESS_RECHECK_IDENTIFIED,
+    };
     use crate::pane::process_probe::ProcessProbeIdentity;
     use shepr_agent::AgentState;
 

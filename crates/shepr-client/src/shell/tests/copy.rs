@@ -1836,13 +1836,10 @@ fn an_interrupt_key_leaves_copy_mode_behind_a_full_queue_and_the_late_reply_is_i
             ClientShellAction::Endpoint { request, .. } => request.id.clone(),
             _ => unreachable!(),
         };
-        for _ in 0..crate::shell::input::MAX_COPY_INPUT_QUEUE {
+        for _ in 0..crate::limits::MAX_COPY_INPUT_QUEUE {
             state.handle_input_bytes(b"j");
         }
-        assert_eq!(
-            state.copy_keys_len(),
-            crate::shell::input::MAX_COPY_INPUT_QUEUE
-        );
+        assert_eq!(state.copy_keys_len(), crate::limits::MAX_COPY_INPUT_QUEUE);
 
         let key = if exit_with_escape {
             shepr_term::key::TerminalKey::new(KeyCode::Esc, KeyModifiers::empty())
@@ -1954,14 +1951,11 @@ fn deferred_copy_input_is_bounded() {
     assert!(state.enter_copy_mode(&mut enter));
     state.handle_input_bytes(b"w");
 
-    for _ in 0..crate::shell::input::MAX_COPY_INPUT_QUEUE + 8 {
+    for _ in 0..crate::limits::MAX_COPY_INPUT_QUEUE + 8 {
         state.handle_input_bytes(b"j");
     }
 
-    assert_eq!(
-        state.copy_keys_len(),
-        crate::shell::input::MAX_COPY_INPUT_QUEUE
-    );
+    assert_eq!(state.copy_keys_len(), crate::limits::MAX_COPY_INPUT_QUEUE);
     assert!(state.endpoint_error.message().is_some());
 }
 
@@ -2116,7 +2110,7 @@ fn cancelling_an_old_copy_request_does_not_reset_a_new_session() {
     let old_id = request.id.clone();
     // An exit key only acts ahead of the old request once the queue behind it
     // is full; that abandons the old session with its request still pending.
-    for _ in 0..crate::shell::input::MAX_COPY_INPUT_QUEUE {
+    for _ in 0..crate::limits::MAX_COPY_INPUT_QUEUE {
         state.handle_input_bytes(b"j");
     }
     state.handle_input_bytes(b"q");

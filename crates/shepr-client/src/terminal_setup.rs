@@ -7,20 +7,14 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Instant;
 
 use crate::deadline::Deadline;
-use crate::input::{EscapeDisambiguation, HOST_INPUT_READ_CHUNK_BYTES};
+use crate::input::EscapeDisambiguation;
+use crate::limits::{
+    HOST_INPUT_READ_CHUNK_BYTES, HOST_KEYBOARD_QUERY_TIMEOUT, MAX_BUFFERED_HOST_INPUT,
+};
 use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
 use crossterm::execute;
 use shepr_core::geometry::HostCell;
 use shepr_term::mouse::HostMouseCapture;
-
-/// Bound the keyboard-capability query's wait for a host terminal response.
-///
-/// A short wait covers normal terminal replies while keeping startup interactive.
-const HOST_KEYBOARD_QUERY_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(250);
-/// Maximum host input buffered while the keyboard-capability query is pending.
-///
-/// The capacity holds terminal replies while bounding input from an unresponsive host.
-const MAX_BUFFERED_HOST_INPUT: usize = 64 * 1024;
 
 // ---------------------------------------------------------------------------
 // Terminal setup / restore

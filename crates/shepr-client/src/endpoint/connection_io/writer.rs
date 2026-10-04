@@ -5,30 +5,12 @@ use std::time::{Duration, Instant};
 
 use crate::deadline::Deadline;
 use crate::endpoint::EndpointTransport;
+use crate::limits::{
+    ENDPOINT_IO_POLL_INTERVAL, ENDPOINT_WRITE_TIMEOUT, MAX_BATCH_BYTES, MAX_QUEUED_BATCHES,
+    MAX_QUEUED_BYTES,
+};
 use shepr_platform::ipc::LocalStream;
 use shepr_protocol::ClientMessage;
-
-/// How long one endpoint frame write, or an input flush, may block.
-///
-/// The timeout absorbs short socket stalls and fails a wedged endpoint promptly.
-const ENDPOINT_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
-/// Poll spacing while an endpoint writer waits for socket progress.
-///
-/// The interval keeps stalled writes responsive without a tight polling loop.
-const ENDPOINT_IO_POLL_INTERVAL: Duration = Duration::from_millis(2);
-/// Maximum queued frame batches waiting for the endpoint writer.
-///
-/// The queue absorbs short input bursts while limiting queued command objects.
-const MAX_QUEUED_BATCHES: usize = 256;
-/// Maximum bytes coalesced into one endpoint writer batch.
-///
-/// The cap bounds each write batch so a large burst does not monopolize the writer.
-const MAX_BATCH_BYTES: usize = 64 * 1024;
-/// Maximum endpoint writer backlog, leaving room for frames already in flight
-/// while bounding queued memory.
-const MAX_QUEUED_BYTES: usize = 2 * shepr_protocol::MAX_FRAME_SIZE;
-
-const _: () = assert!(ENDPOINT_IO_POLL_INTERVAL.as_millis() < ENDPOINT_WRITE_TIMEOUT.as_millis());
 
 /// When the reader thread last took a complete frame off one connection, and whether one of
 /// them was an endpoint snapshot. Endpoint health reads this instead of the time the client

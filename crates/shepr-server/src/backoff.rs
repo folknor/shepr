@@ -1,5 +1,7 @@
 use std::time::Duration;
 
+use crate::limits::BACKOFF_MULTIPLIER;
+
 /// Exponential retry spacing shared by session writes, checkpoints, empty
 /// workspace creation, and logind reconnection.
 #[derive(Clone, Copy)]
@@ -7,11 +9,6 @@ pub(crate) struct Backoff {
     min: Duration,
     max: Duration,
 }
-
-/// Growth factor of every retry backoff: session writes, checkpoints, default
-/// workspace creation and logind reconnects. Doubling grows quickly after
-/// failure while each schedule's own cap bounds it.
-const BACKOFF_MULTIPLIER: u32 = 2;
 
 impl Backoff {
     pub(crate) const fn new(min: Duration, max: Duration) -> Self {

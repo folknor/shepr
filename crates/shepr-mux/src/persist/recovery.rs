@@ -11,30 +11,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use super::files;
 use super::history::sha256_bytes;
 use super::schema::{DirectionSnapshot, LayoutSnapshot, SessionSnapshot};
-
-/// Interval between layout snapshots; this gives recovery points without
-/// writing a new file for every save.
-const SNAPSHOT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(15 * 60);
-/// Recovery span retained at the snapshot cadence; this covers an overnight
-/// failure while keeping the snapshot directory bounded.
-const SNAPSHOT_RECOVERY_WINDOW: std::time::Duration = std::time::Duration::from_secs(12 * 60 * 60);
-/// Number of recovery points retained across the bounded recovery span.
-#[expect(
-    clippy::cast_possible_truncation,
-    reason = "the snapshot count is a few dozen, which fits any usize"
-)]
-const SNAPSHOT_LIMIT: usize =
-    (SNAPSHOT_RECOVERY_WINDOW.as_secs() / SNAPSHOT_INTERVAL.as_secs()) as usize;
-/// Copies retained in the separate backup directory; this is a short
-/// fallback trail beside the longer snapshot history.
-const BACKUP_LIMIT: usize = 3;
-/// Name attempts per recovery timestamp. The data directory lease admits one
-/// writer, so a name that is already taken is a leftover, not a concurrent
-/// writer: for example a history copy whose layout copy was never published,
-/// which pruning keeps when it is not older than the newest layout copy. The
-/// loop skips such names. The publish is not exclusive against a second
-/// writer and does not need to be.
-const RECOVERY_SEQUENCE_LIMIT: usize = 128;
+use crate::limits::{BACKUP_LIMIT, RECOVERY_SEQUENCE_LIMIT, SNAPSHOT_INTERVAL, SNAPSHOT_LIMIT};
 
 /// Whether the source file must be copied before the writer replaces it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -785,14 +762,6 @@ fn recovery_timestamp(name: &str) -> Option<u128> {
     let name = RecoveryName::parse(name)?;
     (name.kind == RecoveryFileKind::Layout).then_some(name.key.timestamp)
 }
-
-/// The snapshot cadence interval, for tests that save at a supplied clock.
-#[cfg(test)]
-pub(super) const SNAPSHOT_INTERVAL_FOR_TEST: std::time::Duration = SNAPSHOT_INTERVAL;
-
-/// The number of snapshots kept, for tests.
-#[cfg(test)]
-pub(super) const SNAPSHOT_LIMIT_FOR_TEST: usize = SNAPSHOT_LIMIT;
 
 #[cfg(test)]
 mod tests {

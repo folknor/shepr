@@ -1,15 +1,11 @@
 use crate::endpoint::ClientEndpointId;
+use crate::limits::WORKSPACE_HIGHLIGHT_TIMEOUT;
 use crate::shell::endpoints::ClientShellEndpoint;
 use crate::shell::ledger::Ticket;
 use crate::shell::navigation::location::{Location, LocationTarget, PinnedLocation};
 use crate::shell::state::ClientShellMode;
 use crate::shell::state::{ClientShellInput, ClientShellState, Repaint};
 use crate::shell::{EndpointNotice, EndpointNoticeKind};
-
-/// Keep workspace navigation feedback visible while its focus request is pending.
-///
-/// The timeout covers the normal focus round trip without leaving stale feedback on screen.
-const WORKSPACE_HIGHLIGHT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// Display-only continuity while a direct focus request awaits its authoritative snapshot.
 pub(in crate::shell) struct PendingWorkspaceHighlight {

@@ -7,20 +7,6 @@ use shepr_protocol::{ClientMessage, ServerMessage};
 use crate::deadline::Deadline;
 use crate::errors::HandshakeError;
 
-/// Time to wait for the server's complete Welcome reply during the handshake.
-/// This is an overall deadline for the frame, not a per-read idle timeout.
-///
-/// A local client talks to an already-connected server, so this deadline only
-/// needs room for the welcome response. A configured machine's endpoint shell that is
-/// not the active surface also waits on a fresh SSH connection, including key
-/// exchange and authentication, which needs more room on high-latency links.
-pub(crate) const LOCAL_HANDSHAKE_READ_TIMEOUT: std::time::Duration =
-    std::time::Duration::from_secs(5);
-/// Allows a fresh remote SSH connection and its welcome reply to finish on
-/// high-latency links.
-pub(crate) const REMOTE_HANDSHAKE_READ_TIMEOUT: std::time::Duration =
-    std::time::Duration::from_secs(60);
-
 /// Retains the preamble cause; the handshake failure classifier decides the
 /// endpoint disposition.
 fn preamble_error(error: shepr_protocol::preamble::PreambleError) -> HandshakeError {
@@ -238,6 +224,7 @@ pub(super) fn do_handshake(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::limits::{LOCAL_HANDSHAKE_READ_TIMEOUT, REMOTE_HANDSHAKE_READ_TIMEOUT};
     use std::io;
     use std::time::Duration;
 

@@ -168,7 +168,7 @@ async fn a_released_exit_is_replayed_by_the_pass_after_the_autosave_that_followe
         .checkpoint_generation;
     autosave.complete(Ok(()));
     assert!(server.app.reap_finished_session_save());
-    for _ in 0..crate::app::CHECKPOINT_MAX_FAILURES {
+    for _ in 0..crate::limits::CHECKPOINT_MAX_FAILURES {
         let completion = server
             .app
             .test_saver()

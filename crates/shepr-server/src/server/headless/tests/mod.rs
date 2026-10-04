@@ -140,9 +140,8 @@ pub(crate) fn test_headless_server() -> HeadlessServer {
     let mut app = crate::app::App::new(&config);
     app.set_test_shell(crate::app::exiting_test_command());
     let (app, outputs) = app.into_parts();
-    let server_events = mpsc::channel(64);
-    let (api_tx, api_request_rx) =
-        mpsc::channel(crate::server::headless::API_REQUEST_CHANNEL_CAPACITY);
+    let server_events = mpsc::channel(crate::limits::SERVER_EVENT_CHANNEL_CAPACITY);
+    let (api_tx, api_request_rx) = mpsc::channel(crate::limits::API_REQUEST_CHANNEL_CAPACITY);
     // Production's listener holds the sender for the server's whole life; a
     // fixture that dropped it would start every test loop with a closed API
     // channel. Tests that need to send swap in a channel of their own.

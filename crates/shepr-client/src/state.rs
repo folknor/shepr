@@ -1,4 +1,7 @@
 use crate::errors::LoopExit;
+use crate::limits::{
+    REFUSED_OUTPUT_RETRY_GROWTH, REFUSED_OUTPUT_RETRY_MAX, REFUSED_OUTPUT_RETRY_MIN,
+};
 use crate::loop_config::ClientSettings;
 use crate::{endpoint, shell, terminal_setup};
 use shepr_termio::blit as render_ansi;
@@ -64,11 +67,6 @@ pub(super) struct ClientState {
     pub(super) refused_output_retry: RefusedOutputRetry,
 }
 
-/// The first wait before repainting after the host refused a frame or patch.
-const REFUSED_OUTPUT_RETRY_MIN: std::time::Duration = std::time::Duration::from_millis(50);
-/// The longest wait between repaints while the host keeps refusing them.
-const REFUSED_OUTPUT_RETRY_MAX: std::time::Duration = std::time::Duration::from_secs(2);
-
 /// The repaint a refused frame or patch owes. A refused write leaves the
 /// presentation clean (its change was taken and not shown), so without a
 /// deadline of its own nothing would draw it until an unrelated event
@@ -93,7 +91,7 @@ impl Default for RefusedOutputRetry {
 impl RefusedOutputRetry {
     fn arm(&mut self, now: std::time::Instant) {
         self.due = Some(now + self.delay);
-        self.delay = (self.delay * 2).min(REFUSED_OUTPUT_RETRY_MAX);
+        self.delay = (self.delay * REFUSED_OUTPUT_RETRY_GROWTH).min(REFUSED_OUTPUT_RETRY_MAX);
     }
 
     fn clear(&mut self) {

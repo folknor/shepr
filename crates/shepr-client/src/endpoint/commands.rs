@@ -5,12 +5,8 @@ use shepr_protocol::command::{EndpointError, EndpointReply};
 use shepr_protocol::{BootId, ClientMessage, ConnectionGeneration, RequestId};
 
 use super::{ClientEndpointId, EndpointRegistry, EndpointSendOutcome};
+use crate::limits::ENDPOINT_COMMAND_TIMEOUT;
 use crate::shell::{ClientShellEndpointError, ClientShellEndpointRequest};
-
-/// Timeout for a client request sent to an endpoint.
-///
-/// The deadline allows slow remote reads while preventing a request from waiting forever.
-pub(crate) const ENDPOINT_COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
 struct QueuedCommand {
     generation: ConnectionGeneration,

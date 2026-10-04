@@ -2,7 +2,8 @@ use std::time::Instant;
 
 use shepr_mux::persist::CapturedLayout;
 
-use super::{CHECKPOINT_MAX_FAILURES, CheckpointGeneration, checkpoint_retry_delay};
+use super::{CheckpointGeneration, checkpoint_retry_delay};
+use crate::limits::CHECKPOINT_MAX_FAILURES;
 
 /// Generations are issued 1, 2, 3, ... per held exit. `through` is the newest
 /// generation released: a held exit with generation <= `through` may be
@@ -261,8 +262,8 @@ impl PaneExitCheckpoint {
 
 #[cfg(test)]
 mod tests {
-    use super::super::SESSION_SAVE_RETRY_MIN;
     use super::*;
+    use crate::limits::SESSION_SAVE_RETRY_MIN;
 
     fn layout() -> Box<CapturedLayout> {
         Box::new(CapturedLayout::new(

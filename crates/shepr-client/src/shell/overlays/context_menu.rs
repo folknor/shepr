@@ -13,12 +13,10 @@ use shepr_term::key::TerminalKey;
 use super::rename::RenameOverlay;
 use super::{MenuView, Overlay, OverlayCommand, OverlayContext, OverlayEffect, OverlayPaint};
 use super::{draw_menu, menu_view};
+use crate::limits::MIN_CONTEXT_MENU_WIDTH;
 use crate::shell::input::hit_test::contains;
 use crate::shell::presentation::text::display_width;
 use crate::shell::state::{ClientShellInput, ClientShellState};
-
-/// Minimum context-menu width, before the screen width is applied.
-const MIN_CONTEXT_MENU_WIDTH: u16 = 14;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(in crate::shell) enum ContextMenuAction {

@@ -8,12 +8,7 @@ use std::fmt;
 
 use shepr_core::layout::PaneId;
 
-/// Largest OSC body the OSC debug log reports; a longer one is skipped, which
-/// bounds the log entries built from untrusted terminal output.
-const MAX_OSC_BODY_BYTES: usize = 4096;
-/// Maximum debug payload characters logged from an OSC body; enough context
-/// for diagnosis without allowing a large log entry.
-const MAX_OSC_DEBUG_CHARS: usize = 512;
+use crate::limits::{MAX_OSC_BODY_BYTES, MAX_OSC_DEBUG_CHARS};
 
 /// The OSC commands the debug log reports.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

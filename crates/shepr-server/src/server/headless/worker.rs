@@ -6,10 +6,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 use tokio::sync::mpsc;
 
-/// Refuse new checkout-root work when this combined count of worker threads
-/// and queued completions reaches the limit. Resume checks add at most one
-/// completion per restored agent pane in a finite restore batch.
-pub(super) const MAX_WORKER_COMPLETION_BACKLOG: usize = 8;
+use crate::limits::MAX_WORKER_COMPLETION_BACKLOG;
 
 pub(super) type CheckoutRootRunner = Arc<
     dyn Fn(PathBuf) -> Result<Option<shepr_protocol::RemotePath>, shepr_git::GitReadError>

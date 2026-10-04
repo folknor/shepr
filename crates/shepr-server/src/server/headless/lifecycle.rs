@@ -1,13 +1,11 @@
 use super::HeadlessServer;
 use crate::app;
+use crate::limits::SHUTDOWN_FLUSH_TIMEOUT;
 use crate::server::outbox::ReleaseMode;
 use shepr_protocol::ServerMessage;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tracing::{debug, info, warn};
-
-/// Upper bound on the wait for client writers to flush their shutdown frames.
-const SHUTDOWN_FLUSH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
 
 mod host_shutdown;
 use host_shutdown::HostShutdownMonitor;
@@ -539,7 +537,7 @@ mod phase_tests {
             .server_address()
             .socket()
             .to_path_buf();
-        let (tx, _rx) = mpsc::channel(crate::server::headless::API_REQUEST_CHANNEL_CAPACITY);
+        let (tx, _rx) = mpsc::channel(crate::limits::API_REQUEST_CHANNEL_CAPACITY);
         server.api_server = Some(
             shepr_api::start_server(
                 tx,

@@ -257,7 +257,7 @@ fn restore_cards_keep_the_source_boot_and_survive_projection_resets() {
     );
     let now = std::time::Instant::now();
     state.notices.drawn(now);
-    assert!(state.tick_transient_banners(now + crate::shell::notices::ENDPOINT_NOTICE_TIMEOUT));
+    assert!(state.tick_transient_banners(now + crate::limits::ENDPOINT_NOTICE_TIMEOUT));
     assert_eq!(
         state.notices.visible().expect("second card").key.boot_id,
         Some(second)
@@ -267,7 +267,7 @@ fn restore_cards_keep_the_source_boot_and_survive_projection_resets() {
         "Build: saved session not fully restored"
     );
     // A queued card receives a full lifetime only after it is actually drawn.
-    assert!(!state.tick_transient_banners(now + crate::shell::notices::ENDPOINT_NOTICE_TIMEOUT));
+    assert!(!state.tick_transient_banners(now + crate::limits::ENDPOINT_NOTICE_TIMEOUT));
 }
 
 #[test]
@@ -285,7 +285,7 @@ fn a_saves_stopped_card_shows_once_per_boot_beside_the_restore_card() {
     assert!(!state.receive_session_saves_stopped(&ClientEndpointId::Local, &boot));
     let now = std::time::Instant::now();
     state.notices.drawn(now);
-    assert!(state.tick_transient_banners(now + crate::shell::notices::ENDPOINT_NOTICE_TIMEOUT));
+    assert!(state.tick_transient_banners(now + crate::limits::ENDPOINT_NOTICE_TIMEOUT));
     let card = state.notices.visible().expect("saves stopped card");
     assert!(
         card.title.ends_with(": session saves stopped"),
@@ -311,7 +311,7 @@ fn transient_cards_do_not_discard_queued_restore_cards() {
     state.receive_paste_rejection("too large".into());
     let now = std::time::Instant::now();
     state.notices.drawn(now);
-    assert!(state.tick_transient_banners(now + crate::shell::notices::ENDPOINT_NOTICE_TIMEOUT));
+    assert!(state.tick_transient_banners(now + crate::limits::ENDPOINT_NOTICE_TIMEOUT));
     assert_eq!(
         state.notices.visible().expect("restore card").key.boot_id,
         Some(boot)

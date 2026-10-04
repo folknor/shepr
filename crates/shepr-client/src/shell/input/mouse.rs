@@ -24,8 +24,12 @@ use shepr_protocol::ClientMousePosition;
 use crate::shell::input::events::{PaneInputBatchAccounting, push_target_event};
 use ratatui::layout::Rect;
 
+use crate::limits::{
+    MAX_SELECTION_EDGE_SCROLL_LINES, MIN_SELECTION_EDGE_SCROLL_LINES, MOUSE_DRAG_SEND_INTERVAL,
+    SELECTION_AUTOSCROLL_INTERVAL, SELECTION_EDGE_SCROLL_LINES_PER_ROW, SELECTION_REPAINT_INTERVAL,
+};
 use crossterm::event::MouseEvent;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 /// Whether the surface still publishes the split `hit` was read from: the same
 /// path at the same layout epoch. A topology change advances the epoch, so a
@@ -36,31 +40,6 @@ fn surface_has_split_of(surface: &shepr_protocol::PaneSurfaceFrame, hit: &PaneSp
         .iter()
         .any(|split| split.epoch == hit.epoch && split.path == hit.path)
 }
-
-/// Minimum spacing between requests sent by scrollbar and split drags.
-///
-/// This caps updates near the usual desktop frame cadence.
-const MOUSE_DRAG_SEND_INTERVAL: Duration = Duration::from_millis(33);
-/// Tick spacing for scrolling a selection while the pointer is outside the pane.
-///
-/// This keeps edge scrolling responsive without scheduling at every input event.
-const SELECTION_AUTOSCROLL_INTERVAL: Duration = Duration::from_millis(30);
-/// Minimum spacing of the frames a selection drag rebuilds.
-///
-/// This bounds redraw work to a practical frame cadence.
-const SELECTION_REPAINT_INTERVAL: Duration = Duration::from_millis(16);
-/// Maximum lines scrolled for each pointer row beyond a selection edge.
-///
-/// Scaling lines with pointer distance makes edge scrolling accelerate smoothly.
-const SELECTION_EDGE_SCROLL_LINES_PER_ROW: usize = 3;
-/// Minimum lines moved on an edge-scroll tick.
-///
-/// This keeps the first edge-scroll step visible.
-const MIN_SELECTION_EDGE_SCROLL_LINES: usize = 3;
-/// Maximum lines moved on an edge-scroll tick.
-///
-/// The cap prevents a small pointer movement from skipping too far.
-const MAX_SELECTION_EDGE_SCROLL_LINES: usize = 15;
 
 fn selection_cell(column: u16, row: u16, pane: Rect) -> (shepr_term::ViewportRow, u16) {
     let column = column.clamp(pane.x, pane.x.saturating_add(pane.width.saturating_sub(1)));
@@ -1252,8 +1231,7 @@ impl ClientShellState {
                 ) {
                     let double_click =
                         self.pointer.last_sidebar_divider_click.is_some_and(|last| {
-                            now.duration_since(last)
-                                <= crate::shell::input::selection::DOUBLE_CLICK_WINDOW
+                            now.duration_since(last) <= crate::limits::DOUBLE_CLICK_WINDOW
                         });
                     self.pointer.last_sidebar_divider_click = Some(now);
                     if double_click {

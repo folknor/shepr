@@ -23,14 +23,7 @@ use tokio::sync::watch;
 
 use super::WarningGeneration;
 use crate::backoff::Backoff;
-
-/// Initial delay after the logind shutdown signal stream is lost. The delay
-/// retries promptly while avoiding a reconnect spin.
-const SHUTDOWN_RECONNECT_INITIAL_DELAY: std::time::Duration = std::time::Duration::from_secs(1);
-/// Maximum delay while reconnecting after the logind shutdown signal stream is
-/// lost. The cap bounds recovery latency while keeping repeated failures
-/// inexpensive.
-const SHUTDOWN_RECONNECT_MAX_DELAY: std::time::Duration = std::time::Duration::from_secs(60);
+use crate::limits::{SHUTDOWN_RECONNECT_INITIAL_DELAY, SHUTDOWN_RECONNECT_MAX_DELAY};
 
 /// Watches logind for host shutdown warnings and cancellations. Dropping it
 /// stops the watch and releases any delay inhibitor it holds.

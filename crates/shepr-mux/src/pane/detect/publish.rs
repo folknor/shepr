@@ -275,7 +275,7 @@ impl DetectorState {
 mod tests {
     use super::*;
     use crate::events::AppEvent;
-    use crate::pane::agent_detection::AGENT_STARTUP_GRACE_WINDOW;
+    use crate::limits::AGENT_STARTUP_GRACE_WINDOW;
     use crate::pane::launch::LaunchKind;
     use std::time::{Duration, Instant};
     use tokio::sync::mpsc;

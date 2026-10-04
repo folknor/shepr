@@ -1,16 +1,6 @@
 use std::time::Instant;
 
-/// Endpoint heartbeat interval, the connection-health cadence the remote
-/// host's SSH bridge expiry is checked against.
-pub(super) const HEARTBEAT_INTERVAL: std::time::Duration =
-    shepr_launch::connection_health::HEARTBEAT_INTERVAL;
-/// Expire an endpoint after this much transport silence, measured when the reader receives a
-/// complete frame rather than when the client loop processes it.
-///
-/// The timeout allows ordinary network delay before marking a machine endpoint offline.
-pub(super) const HEARTBEAT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
-
-const _: () = assert!(HEARTBEAT_INTERVAL.as_millis() < HEARTBEAT_TIMEOUT.as_millis());
+use crate::limits::{HEARTBEAT_INTERVAL, HEARTBEAT_TIMEOUT};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum HealthAction {

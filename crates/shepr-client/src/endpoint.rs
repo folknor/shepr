@@ -95,8 +95,8 @@ impl EndpointPolicy {
 
     pub(crate) fn handshake_read_timeout(self) -> std::time::Duration {
         match self {
-            Self::Local => crate::handshake::LOCAL_HANDSHAKE_READ_TIMEOUT,
-            Self::Machine => crate::handshake::REMOTE_HANDSHAKE_READ_TIMEOUT,
+            Self::Local => crate::limits::LOCAL_HANDSHAKE_READ_TIMEOUT,
+            Self::Machine => crate::limits::REMOTE_HANDSHAKE_READ_TIMEOUT,
         }
     }
 

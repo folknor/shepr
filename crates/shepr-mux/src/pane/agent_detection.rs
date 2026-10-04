@@ -2,25 +2,9 @@ use shepr_agent::{Agent, AgentState, PresentedAgentState};
 use shepr_detect::Detection;
 use shepr_detect::manifest::screen_unknown_is_stable;
 
-/// Recheck cadence while visible output suggests a pending idle transition.
-pub(super) const AGENT_PENDING_IDLE_RECHECK: std::time::Duration =
-    std::time::Duration::from_millis(100);
-/// Matching idle observations needed before publishing idle, filtering a
-/// single transient frame.
-const AGENT_PENDING_IDLE_CONFIRMATIONS: u8 = 3;
-/// Longest time to hold a pending idle transition before publishing it.
-const AGENT_PENDING_IDLE_CAP: std::time::Duration = std::time::Duration::from_millis(700);
-/// Refresh cadence for a stable visible signal, avoiding a stale detection
-/// result without polling every frame.
-const STABLE_VISIBLE_SIGNAL_REFRESH: std::time::Duration = std::time::Duration::from_millis(800);
-/// Startup grace for the first agent signal while a launched shell settles.
-pub(super) const AGENT_STARTUP_GRACE_WINDOW: std::time::Duration =
-    std::time::Duration::from_secs(3);
-/// Time allowed for a restored agent to appear after its resume launch.
-const AGENT_RESUME_DETECTION_HOLD: std::time::Duration = std::time::Duration::from_secs(30);
-/// A restored pane holds absence for the same interval as agent resume, so
-/// detection cannot clear the agent before its process has time to appear.
-pub(super) const AGENT_ABSENCE_STARTUP_HOLD: std::time::Duration = AGENT_RESUME_DETECTION_HOLD;
+use crate::limits::{
+    AGENT_PENDING_IDLE_CAP, AGENT_PENDING_IDLE_CONFIRMATIONS, STABLE_VISIBLE_SIGNAL_REFRESH,
+};
 
 #[derive(Debug, Default)]
 pub(super) struct PendingIdleConfirmation {
@@ -267,6 +251,7 @@ pub(super) fn detection_update_for_publish_with_osc(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::limits::{AGENT_ABSENCE_STARTUP_HOLD, AGENT_PENDING_IDLE_RECHECK};
 
     fn publish_state(state: AgentState) -> Detection {
         Detection::new(state, false)

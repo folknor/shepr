@@ -17,6 +17,10 @@ use shepr_termio::text_editor::TextEditor;
 
 use super::widgets::{button, panel, panel_inner, popup};
 use super::{HelpView, OverlayContext, OverlayEffect, OverlayPaint, OverlayScroll, text_editor};
+use crate::limits::{
+    MAX_HELP_OVERLAY_HEIGHT, MAX_HELP_OVERLAY_WIDTH, MIN_HELP_OVERLAY_INNER_HEIGHT,
+    MIN_HELP_OVERLAY_INNER_WIDTH, OVERLAY_WHEEL_SCROLL_ROWS,
+};
 use crate::shell::input::hit_test::contains;
 use crate::shell::presentation::status::panel_contrast_fg;
 use crate::shell::presentation::text::put_text;
@@ -192,9 +196,9 @@ impl HelpOverlay {
         screen: Rect,
         ctx: &OverlayContext<'_>,
     ) -> Option<(HelpView, OverlayScroll)> {
-        let q = popup(screen, 76, 22)?;
+        let q = popup(screen, MAX_HELP_OVERLAY_WIDTH, MAX_HELP_OVERLAY_HEIGHT)?;
         let i = panel_inner(q)?;
-        if i.width < 20 || i.height < 6 {
+        if i.width < MIN_HELP_OVERLAY_INNER_WIDTH || i.height < MIN_HELP_OVERLAY_INNER_HEIGHT {
             return None;
         }
         let close = Rect::new(i.right() - 13, i.y, 13, 1);
@@ -398,12 +402,14 @@ impl HelpOverlay {
         match mouse.kind {
             MouseEventKind::ScrollUp => {
                 let before = self.scroll;
-                self.scroll = self.scroll.saturating_sub(3);
+                self.scroll = self
+                    .scroll
+                    .saturating_sub(OVERLAY_WHEEL_SCROLL_ROWS.unsigned_abs());
                 changed_if(self.scroll != before)
             }
             MouseEventKind::ScrollDown => {
                 let before = self.scroll;
-                self.scroll_by(3, view);
+                self.scroll_by(OVERLAY_WHEEL_SCROLL_ROWS, view);
                 changed_if(self.scroll != before)
             }
             MouseEventKind::Down(MouseButton::Left) => {

@@ -86,9 +86,9 @@ fn server_event_drain_is_bounded_and_keeps_remaining_events_in_order() {
         ),
     );
 
-    let event_count = crate::server::headless::SERVER_EVENT_DRAIN_LIMIT + 2;
+    let event_count = crate::limits::SERVER_EVENT_DRAIN_LIMIT + 2;
     let (server_event_tx, server_event_rx) =
-        tokio::sync::mpsc::channel(crate::server::headless::SERVER_EVENT_DRAIN_LIMIT + 2);
+        tokio::sync::mpsc::channel(crate::limits::SERVER_EVENT_DRAIN_LIMIT + 2);
     server.server_event_tx = server_event_tx;
     server.server_event_rx = server_event_rx;
     for index in 0..event_count {
@@ -103,7 +103,7 @@ fn server_event_drain_is_bounded_and_keeps_remaining_events_in_order() {
 
     assert!(!server.test_drain_server_events());
     assert_eq!(server.server_event_rx.len(), 2);
-    for expected_size in 1..=crate::server::headless::SERVER_EVENT_DRAIN_LIMIT {
+    for expected_size in 1..=crate::limits::SERVER_EVENT_DRAIN_LIMIT {
         let ServerMessage::ClientShellError {
             kind: shepr_protocol::NoticeKind::LimitExceeded(error),
         } = read_server_message(
@@ -119,7 +119,7 @@ fn server_event_drain_is_bounded_and_keeps_remaining_events_in_order() {
     }
 
     assert!(!server.test_drain_server_events());
-    for expected_size in (crate::server::headless::SERVER_EVENT_DRAIN_LIMIT + 1)..=event_count {
+    for expected_size in (crate::limits::SERVER_EVENT_DRAIN_LIMIT + 1)..=event_count {
         let ServerMessage::ClientShellError {
             kind: shepr_protocol::NoticeKind::LimitExceeded(error),
         } = read_server_message(
@@ -140,7 +140,7 @@ fn server_event_drain_is_bounded_and_keeps_remaining_events_in_order() {
 #[test]
 fn headless_api_request_drains_all_pending_internal_events_before_reading_state() {
     let mut server = test_headless_server();
-    for _ in 0..=crate::app::APP_EVENT_DRAIN_LIMIT {
+    for _ in 0..=crate::limits::APP_EVENT_DRAIN_LIMIT {
         server
             .outputs
             .event_sender()
@@ -179,7 +179,7 @@ fn api_request_drain_is_bounded_and_keeps_remaining_requests_in_order() {
     server.app.test_state_mut().test_set_workspaces(vec![
         shepr_mux::workspace::Workspace::test_new("bounded-api"),
     ]);
-    let request_count = crate::server::headless::api_dispatcher::API_REQUEST_DRAIN_LIMIT + 2;
+    let request_count = crate::limits::API_REQUEST_DRAIN_LIMIT + 2;
     let (api_tx, api_rx) = tokio::sync::mpsc::channel(request_count);
     server.api_request_rx = api_rx;
     let mut responses = Vec::with_capacity(request_count);
@@ -206,11 +206,11 @@ fn api_request_drain_is_bounded_and_keeps_remaining_requests_in_order() {
     server.drain_api_requests_with_shutdown_check();
     assert_eq!(
         server.api_request_rx.len(),
-        request_count - crate::server::headless::api_dispatcher::API_REQUEST_DRAIN_LIMIT
+        request_count - crate::limits::API_REQUEST_DRAIN_LIMIT
     );
     for (index, response_rx) in responses
         .iter()
-        .take(crate::server::headless::api_dispatcher::API_REQUEST_DRAIN_LIMIT)
+        .take(crate::limits::API_REQUEST_DRAIN_LIMIT)
         .enumerate()
     {
         let error = response_rx
@@ -224,7 +224,7 @@ fn api_request_drain_is_bounded_and_keeps_remaining_requests_in_order() {
     }
     for response_rx in responses
         .iter()
-        .skip(crate::server::headless::api_dispatcher::API_REQUEST_DRAIN_LIMIT)
+        .skip(crate::limits::API_REQUEST_DRAIN_LIMIT)
     {
         assert!(response_rx.try_recv().is_err());
     }
@@ -233,7 +233,7 @@ fn api_request_drain_is_bounded_and_keeps_remaining_requests_in_order() {
     for (index, response_rx) in responses
         .iter()
         .enumerate()
-        .skip(crate::server::headless::api_dispatcher::API_REQUEST_DRAIN_LIMIT)
+        .skip(crate::limits::API_REQUEST_DRAIN_LIMIT)
     {
         let error = response_rx
             .try_recv()

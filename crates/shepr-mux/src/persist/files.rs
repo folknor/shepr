@@ -7,21 +7,17 @@ use std::path::{Path, PathBuf};
 use tracing::warn;
 
 use super::history::{
-    CappedBuf, HistoryDigest, MAX_SESSION_HISTORY_FILE_BYTES, SessionHistory, ensure_history_size,
-    history_digest, serialize_history,
+    CappedBuf, HistoryDigest, SessionHistory, ensure_history_size, history_digest,
+    serialize_history,
 };
 use super::lock::DataDirLease;
 use super::schema::{
     SessionFile, SessionHistorySnapshot, SessionSnapshot, parse_history_snapshot,
     parse_session_file,
 };
-
-/// The session layout file's size bound, for saves and for the reads restore
-/// and snapshot recovery make, so a damaged file cannot allocate without limit.
-const MAX_SESSION_FILE_BYTES: usize = 64 * 1024 * 1024;
-/// Maximum symlink hops when finding a writable session path; bounds cycles
-/// while allowing an ordinary chain of user-managed links.
-const MAX_SESSION_PATH_SYMLINK_HOPS: usize = 16;
+use crate::limits::{
+    MAX_SESSION_FILE_BYTES, MAX_SESSION_HISTORY_FILE_BYTES, MAX_SESSION_PATH_SYMLINK_HOPS,
+};
 
 pub(super) const SESSION_FILE_NAME: &str = "session.json";
 const SESSION_HISTORY_FILE_NAME: &str = "session-history.json";

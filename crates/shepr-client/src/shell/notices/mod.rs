@@ -1,21 +1,13 @@
 //! Notice suppression, boot-card queueing and drawn lifetimes have one owner.
 
 use crate::endpoint::ClientEndpointId;
+use crate::limits::{ENDPOINT_NOTICE_TIMEOUT, MAX_AUTOMATIC_NOTICE_BODY_ROWS};
 use shepr_protocol::command::CommandKind;
 use std::collections::{HashSet, VecDeque};
 
 pub(in crate::shell) mod cards;
 pub(in crate::shell) mod machine_diagnostics;
 pub(in crate::shell) mod transient_error;
-
-/// How long an endpoint notice card stays up before it hides itself. A click on the card hides
-/// it sooner; the timeout is what dismisses it when `ui.mouse_capture` is off.
-/// The timeout keeps a notice available through a short recovery without leaving stale cards up.
-pub(in crate::shell) const ENDPOINT_NOTICE_TIMEOUT: std::time::Duration =
-    std::time::Duration::from_secs(10);
-/// Body rows an automatic notice card shows. A multi-line ssh error must not
-/// cover the UI unasked; the machine badge opens the full diagnostic.
-const MAX_AUTOMATIC_NOTICE_BODY_ROWS: usize = 3;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(in crate::shell) enum ClientEndpointNoticeKind {

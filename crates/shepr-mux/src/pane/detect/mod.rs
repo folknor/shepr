@@ -14,6 +14,4 @@ mod schedule;
 mod state;
 
 pub(super) use publish::{publish_agent_process_detected_event, publish_state_changed_event};
-pub(super) use state::{
-    DetectorState, PROCESS_RECHECK_NO_AGENT, Step, Tick, TickContext, TickOutput,
-};
+pub(super) use state::{DetectorState, Step, Tick, TickContext, TickOutput};

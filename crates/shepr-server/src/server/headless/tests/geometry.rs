@@ -16,7 +16,7 @@ async fn a_workspace_appearing_resets_the_creation_retry() {
     server.schedule.creation.failed(now);
     assert_eq!(
         server.schedule.creation.deadline(now),
-        Some(now + crate::server::headless::schedule::DEFAULT_WORKSPACE_RETRY_MIN)
+        Some(now + crate::limits::DEFAULT_WORKSPACE_RETRY_MIN)
     );
     shutdown_test_runtimes(&mut server);
 }

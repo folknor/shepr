@@ -10,11 +10,9 @@ pub(in crate::shell::sidebar) use super::token_definitions::{
 };
 use unicode_segmentation::UnicodeSegmentation;
 
+use crate::limits::MIN_EXPANDED_SIDEBAR_SECTION_ROWS;
 use crate::shell::presentation::text::rendered_text_width;
 use shepr_config::theme::Palette;
-
-/// Minimum height retained by each section of the expanded sidebar.
-const MIN_EXPANDED_SIDEBAR_SECTION_ROWS: u16 = 3;
 
 /// Workspace share of the expanded sidebar, constrained before rendering.
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -33,8 +31,10 @@ impl SectionSplit {
     }
 }
 
+/// Whether both sections can keep their minimum height, which the split clamp in
+/// `sidebar_section_heights` needs: below it the clamp's bounds would cross.
 fn sidebar_sections_can_split(height: u16) -> bool {
-    height >= 6
+    height >= MIN_EXPANDED_SIDEBAR_SECTION_ROWS * 2
 }
 
 fn truncate_end(text: &str, max_width: usize) -> String {

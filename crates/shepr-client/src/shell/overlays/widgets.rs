@@ -5,6 +5,10 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 
+use crate::limits::{
+    MIN_OVERLAY_POPUP_HEIGHT, MIN_OVERLAY_POPUP_WIDTH, OVERLAY_POPUP_HORIZONTAL_MARGIN,
+    OVERLAY_POPUP_VERTICAL_MARGIN,
+};
 use crate::shell::presentation::text::{display_width, put_text};
 
 /// The area inside a panel's border, or `None` when the panel is too small to have one.
@@ -63,10 +67,12 @@ pub(super) fn set_cell(b: &mut Buffer, x: u16, y: u16, symbol: &str, style: Styl
     }
 }
 
+/// A popup of at most `w` by `h` centred in `a`, shrunk to leave the overlay margins free, or
+/// `None` when what is left is below the smallest popup drawn.
 pub(super) fn popup(a: Rect, w: u16, h: u16) -> Option<Rect> {
-    let w = w.min(a.width.saturating_sub(4));
-    let h = h.min(a.height.saturating_sub(2));
-    if w < 4 || h < 4 {
+    let w = w.min(a.width.saturating_sub(OVERLAY_POPUP_HORIZONTAL_MARGIN));
+    let h = h.min(a.height.saturating_sub(OVERLAY_POPUP_VERTICAL_MARGIN));
+    if w < MIN_OVERLAY_POPUP_WIDTH || h < MIN_OVERLAY_POPUP_HEIGHT {
         return None;
     }
     Some(Rect::new(

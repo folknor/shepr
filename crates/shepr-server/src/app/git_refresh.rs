@@ -6,16 +6,9 @@
 use std::time::Instant;
 
 use super::App;
+use crate::limits::{GIT_REMOTE_STATUS_REFRESH_INTERVAL, GIT_REPO_DISCOVERY_REFRESH_INTERVAL};
 use shepr_mux::events::AppEvent;
 use shepr_protocol::WorkspaceId;
-
-/// Refresh Git ahead/behind status periodically while clients are connected,
-/// keeping it fresh without probing on every render.
-const GIT_REMOTE_STATUS_REFRESH_INTERVAL: std::time::Duration =
-    std::time::Duration::from_millis(1500);
-/// Rediscover repository roots periodically so external cwd changes settle.
-const GIT_REPO_DISCOVERY_REFRESH_INTERVAL: std::time::Duration =
-    std::time::Duration::from_secs(5 * 60);
 
 /// Whether a Git status refresh is running, and whether another is already
 /// owed once it ends.

@@ -1,8 +1,5 @@
 use super::*;
-
-/// Give Tokio tasks a short time to stop after a failed startup; teardown continues
-/// even if a task is stuck.
-const TOKIO_RUNTIME_SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(100);
+use crate::limits::{API_REQUEST_CHANNEL_CAPACITY, TOKIO_RUNTIME_SHUTDOWN_TIMEOUT};
 
 /// Why [`run_server`] refused to start or stopped with an error. The server
 /// prints nothing itself: the binary renders this and picks the exit status.

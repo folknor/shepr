@@ -1,6 +1,10 @@
 use std::collections::HashMap;
 
 use super::*;
+use crate::limits::{
+    DEFAULT_DETECTION_ROWS, RESIZE_RECOVERY_PROBE_SCREENS, SCAN_CHUNK_ROWS,
+    SYNCHRONIZED_OUTPUT_FLUSH_MARGIN,
+};
 use crate::workspace::SurfaceChange;
 use shepr_protocol::MAX_SURFACE_HYPERLINKS;
 
@@ -374,7 +378,7 @@ impl PaneTerminal {
         let synchronized_output_before = core.terminal.sync_update_buffering();
         let offset_from_bottom = core.terminal.scrollbar().offset_from_bottom;
         let resize_recovery_probe_lines = usize::from(rows)
-            .saturating_mul(8)
+            .saturating_mul(RESIZE_RECOVERY_PROBE_SCREENS)
             .max(DEFAULT_DETECTION_ROWS);
 
         // Alacritty resizes and reflows the grid directly. Replaying history
@@ -533,7 +537,7 @@ impl PaneTerminal {
                 builder.discard_line();
                 row = origin;
             }
-            let chunk_end = end.min(row.saturating_add(super::history::SCAN_CHUNK_ROWS));
+            let chunk_end = end.min(row.saturating_add(SCAN_CHUNK_ROWS));
             while row < chunk_end {
                 let Some(y) = terminal.screen_row_for_absolute(row) else {
                     break;

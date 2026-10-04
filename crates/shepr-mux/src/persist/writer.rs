@@ -381,11 +381,9 @@ impl SessionWriter {
 
 #[cfg(test)]
 mod tests {
-    use super::recovery::{
-        SNAPSHOT_INTERVAL_FOR_TEST, SNAPSHOT_LIMIT_FOR_TEST, recovery_history_path_for_test,
-        recovery_layouts_for_test,
-    };
+    use super::recovery::{recovery_history_path_for_test, recovery_layouts_for_test};
     use super::*;
+    use crate::limits::{SNAPSHOT_INTERVAL, SNAPSHOT_LIMIT};
     use crate::persist::history::HistoryText;
     use shepr_protocol::PanePublicNumber;
     use std::fs::File;
@@ -587,7 +585,7 @@ mod tests {
         std::fs::create_dir(&directory).expect("test precondition");
         let manual = directory.join("my-layout.json");
         std::fs::write(&manual, b"manual").expect("test precondition");
-        for i in 0..SNAPSHOT_LIMIT_FOR_TEST {
+        for i in 0..SNAPSHOT_LIMIT {
             std::fs::write(
                 directory.join(format!("session-{i:039}-000.json")),
                 b"old snapshot",
@@ -603,7 +601,7 @@ mod tests {
                 .expect("test precondition");
         }
         writer.save_for_test(&snapshot(), None).expect("save");
-        assert_eq!(snapshots(&writer).len(), SNAPSHOT_LIMIT_FOR_TEST);
+        assert_eq!(snapshots(&writer).len(), SNAPSHOT_LIMIT);
         assert!(
             !directory
                 .join(format!("session-{:039}-000.json", 0))
@@ -683,12 +681,12 @@ mod tests {
             .save(
                 &changed,
                 None,
-                modified + SNAPSHOT_INTERVAL_FOR_TEST - std::time::Duration::from_nanos(1),
+                modified + SNAPSHOT_INTERVAL - std::time::Duration::from_nanos(1),
             )
             .expect("save inside interval");
         assert_eq!(snapshots(&writer).len(), 1);
         writer
-            .save(&changed, None, modified + SNAPSHOT_INTERVAL_FOR_TEST)
+            .save(&changed, None, modified + SNAPSHOT_INTERVAL)
             .expect("save at interval");
         assert_eq!(snapshots(&writer).len(), 2);
         std::fs::remove_dir_all(writer.path.parent().expect("test precondition"))

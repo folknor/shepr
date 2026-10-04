@@ -6,20 +6,8 @@ use tracing::{debug, warn};
 
 use crate::events::ClientLoopEvent;
 use crate::input::ProbeAvailability;
+use crate::limits::{DEFAULT_CELL_HEIGHT_PX, DEFAULT_CELL_WIDTH_PX, TERMINAL_RESIZE_POLL_INTERVAL};
 use crate::state::{HostWriteAction, HostWritePurpose, host_write_failure_action};
-
-/// Fallback terminal cell width when the host does not report pixel geometry.
-///
-/// The conventional fallback width maps cell coordinates when the host omits pixel geometry.
-const DEFAULT_CELL_WIDTH_PX: u32 = 8;
-/// Fallback terminal cell height when the host does not report pixel geometry.
-///
-/// The conventional fallback height maps cell coordinates when the host omits pixel geometry.
-const DEFAULT_CELL_HEIGHT_PX: u32 = 16;
-/// Poll spacing for terminal size changes that do not arrive through a signal.
-///
-/// The interval keeps polling responsive while avoiding a busy loop.
-const TERMINAL_RESIZE_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
 
 /// Average cell size derived from a terminal ioctl pixel extent.
 ///

@@ -7,12 +7,8 @@ use super::ClientEndpointId;
 use super::connection_io::{EndpointReadActivity, NativeEndpointTransport};
 use super::health::{EndpointHealth, HealthAction};
 use crate::deadline::Deadline;
+use crate::limits::ENDPOINT_DETACH_FLUSH_TIMEOUT;
 use shepr_protocol::{ClientMessage, ConnectionGeneration};
-
-/// Deadline for the best-effort Detach flush while the endpoint registry is dropping.
-///
-/// A brief flush gives the courtesy message a chance to leave before shutdown disconnects.
-const ENDPOINT_DETACH_FLUSH_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(250);
 
 pub trait EndpointTransport: Send {
     fn send(&mut self, message: &ClientMessage) -> io::Result<()>;
@@ -707,8 +703,8 @@ mod tests {
 
         // Taken after the insert, so the connection's health clock started earlier.
         let now = Instant::now();
-        let ping_at = now + crate::endpoint::health::HEARTBEAT_INTERVAL;
-        let expire_at = ping_at + crate::endpoint::health::HEARTBEAT_TIMEOUT;
+        let ping_at = now + crate::limits::HEARTBEAT_INTERVAL;
+        let expire_at = ping_at + crate::limits::HEARTBEAT_TIMEOUT;
 
         socket.tick_health(ping_at);
         socket.tick_health(expire_at);
@@ -739,15 +735,14 @@ mod tests {
             Instant::now(),
         );
         let now = Instant::now();
-        registry.tick_health(now + crate::endpoint::health::HEARTBEAT_INTERVAL);
+        registry.tick_health(now + crate::limits::HEARTBEAT_INTERVAL);
         assert!(matches!(
             sent.lock().expect("test precondition").as_slice(),
             [ClientMessage::HealthPing]
         ));
 
         registry.tick_health(
-            now + crate::endpoint::health::HEARTBEAT_INTERVAL
-                + crate::endpoint::health::HEARTBEAT_TIMEOUT,
+            now + crate::limits::HEARTBEAT_INTERVAL + crate::limits::HEARTBEAT_TIMEOUT,
         );
         assert!(registry.connection(&ssh_id).is_none());
         assert_eq!(registry.take_failures()[0].kind, io::ErrorKind::TimedOut);
@@ -778,9 +773,9 @@ mod tests {
         registry.received(
             &ssh_id,
             generation(2),
-            now + crate::endpoint::health::HEARTBEAT_INTERVAL,
+            now + crate::limits::HEARTBEAT_INTERVAL,
         );
-        registry.tick_health(now + crate::endpoint::health::HEARTBEAT_TIMEOUT);
+        registry.tick_health(now + crate::limits::HEARTBEAT_TIMEOUT);
         assert!(registry.connection(&ssh_id).is_some());
     }
 
@@ -811,7 +806,7 @@ mod tests {
         let now = Instant::now();
         let activity = insert_with_reader(&mut registry, &sent, now);
         let ssh_id = ClientEndpointId::Ssh(profile());
-        let ping_at = now + crate::endpoint::health::HEARTBEAT_INTERVAL;
+        let ping_at = now + crate::limits::HEARTBEAT_INTERVAL;
         registry.tick_health(ping_at);
         assert!(matches!(
             sent.lock().expect("test precondition").as_slice(),
@@ -822,7 +817,7 @@ mod tests {
         // the loop never processes them, and the next timer wake comes long after.
         activity.record(now + Duration::from_millis(1), true);
         activity.record(ping_at + Duration::from_millis(1), false);
-        registry.tick_health(ping_at + crate::endpoint::health::HEARTBEAT_TIMEOUT);
+        registry.tick_health(ping_at + crate::limits::HEARTBEAT_TIMEOUT);
         assert!(registry.connection(&ssh_id).is_some());
         assert!(registry.take_failures().is_empty());
     }
@@ -836,7 +831,7 @@ mod tests {
         let mut registry = EndpointRegistry::empty();
         let sent = Arc::new(Mutex::new(Vec::new()));
         insert_with_reader(&mut registry, &sent, now);
-        registry.tick_health(now + crate::endpoint::health::HEARTBEAT_TIMEOUT);
+        registry.tick_health(now + crate::limits::HEARTBEAT_TIMEOUT);
         assert!(registry.connection(&ssh_id).is_none());
         assert_eq!(registry.take_failures()[0].kind, io::ErrorKind::TimedOut);
 
@@ -846,7 +841,7 @@ mod tests {
         let activity = insert_with_reader(&mut registry, &sent, now);
         let snapshot_at = now + Duration::from_millis(1);
         activity.record(snapshot_at, true);
-        let ping_at = snapshot_at + crate::endpoint::health::HEARTBEAT_INTERVAL;
+        let ping_at = snapshot_at + crate::limits::HEARTBEAT_INTERVAL;
         sent.lock().expect("test precondition").clear();
         registry.tick_health(ping_at);
         assert!(matches!(
@@ -854,7 +849,7 @@ mod tests {
             [ClientMessage::HealthPing]
         ));
         registry.received(&ssh_id, generation(2), ping_at + Duration::from_secs(1));
-        registry.tick_health(ping_at + crate::endpoint::health::HEARTBEAT_TIMEOUT);
+        registry.tick_health(ping_at + crate::limits::HEARTBEAT_TIMEOUT);
         assert!(registry.connection(&ssh_id).is_none());
         assert_eq!(registry.take_failures()[0].kind, io::ErrorKind::TimedOut);
     }
@@ -867,14 +862,14 @@ mod tests {
         let activity = insert_with_reader(&mut registry, &sent, now);
         assert_eq!(
             registry.next_service_deadline(now),
-            Some(now + crate::endpoint::health::HEARTBEAT_INTERVAL)
+            Some(now + crate::limits::HEARTBEAT_INTERVAL)
         );
 
         let received_at = now + Duration::from_millis(1);
         activity.record(received_at, true);
         assert_eq!(
             registry.next_service_deadline(now),
-            Some(received_at + crate::endpoint::health::HEARTBEAT_INTERVAL)
+            Some(received_at + crate::limits::HEARTBEAT_INTERVAL)
         );
     }
 

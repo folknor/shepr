@@ -215,11 +215,13 @@ impl ResumeSchedule {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    const THEME_WAIT: Duration = Duration::from_millis(750);
+    use crate::limits::PENDING_AGENT_RESUME_THEME_WAIT;
 
     fn schedule(spacing_ms: u64) -> ResumeSchedule {
-        ResumeSchedule::new(THEME_WAIT, Duration::from_millis(spacing_ms))
+        ResumeSchedule::new(
+            PENDING_AGENT_RESUME_THEME_WAIT,
+            Duration::from_millis(spacing_ms),
+        )
     }
 
     /// Runs one pass over candidates whose outcomes are `outcomes` (the first
@@ -245,7 +247,7 @@ mod tests {
         schedule.observe(now, ResumePlans::Eligible);
         let attempted = run(
             &mut schedule,
-            now + THEME_WAIT,
+            now + PENDING_AGENT_RESUME_THEME_WAIT,
             &[
                 AttemptOutcome::Abandoned,
                 AttemptOutcome::Launched,
@@ -255,7 +257,7 @@ mod tests {
         assert_eq!(attempted, 2);
         assert_eq!(
             schedule.not_before(),
-            Some(now + THEME_WAIT + Duration::from_millis(100))
+            Some(now + PENDING_AGENT_RESUME_THEME_WAIT + Duration::from_millis(100))
         );
     }
 
@@ -265,7 +267,7 @@ mod tests {
         let start = Instant::now();
         schedule.observe(start, ResumePlans::Eligible);
         schedule.note_live_theme();
-        let now = start + THEME_WAIT;
+        let now = start + PENDING_AGENT_RESUME_THEME_WAIT;
         let attempted = run(&mut schedule, now, &[AttemptOutcome::Launched; 3]);
         assert_eq!(attempted, 1, "the walk stops after a launch");
         let barrier = now + Duration::from_millis(250);
@@ -291,7 +293,7 @@ mod tests {
         let mut schedule = schedule(250);
         let start = Instant::now();
         schedule.observe(start, ResumePlans::Eligible);
-        let now = start + THEME_WAIT;
+        let now = start + PENDING_AGENT_RESUME_THEME_WAIT;
         let attempted = run(&mut schedule, now, &[AttemptOutcome::Abandoned; 3]);
         assert_eq!(attempted, 3);
         assert_eq!(schedule.not_before(), None);
@@ -308,7 +310,7 @@ mod tests {
         let mut schedule = schedule(100);
         let start = Instant::now();
         schedule.observe(start, ResumePlans::Eligible);
-        let deadline = start + THEME_WAIT;
+        let deadline = start + PENDING_AGENT_RESUME_THEME_WAIT;
         assert_eq!(schedule.wakeup(start, true), Some(deadline));
         // A loop that keeps running (any pane printing) observes on every
         // iteration; none of them moves the wait.
@@ -365,7 +367,10 @@ mod tests {
         assert_eq!(schedule.wakeup(start, true), None);
         let later = start + Duration::from_secs(5);
         schedule.observe(later, ResumePlans::Eligible);
-        assert_eq!(schedule.wakeup(later, true), Some(later + THEME_WAIT));
+        assert_eq!(
+            schedule.wakeup(later, true),
+            Some(later + PENDING_AGENT_RESUME_THEME_WAIT)
+        );
         // Never restarted, even across a stretch with nothing eligible.
         schedule.observe(later + Duration::from_secs(1), ResumePlans::Waiting);
         schedule.observe(later + Duration::from_secs(2), ResumePlans::Eligible);

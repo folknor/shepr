@@ -6,11 +6,6 @@ use super::App;
 use super::resume_schedule::{AttemptOutcome, ResumePlans};
 use shepr_mux::workspace::Workspace;
 
-/// Wait briefly for live host colors; afterward the saved theme, if any, stays
-/// the fallback for resumed agents.
-pub(super) const PENDING_AGENT_RESUME_THEME_WAIT: std::time::Duration =
-    std::time::Duration::from_millis(750);
-
 struct PendingAgentResumeCandidate {
     pane_id: shepr_core::layout::PaneId,
     cwd: shepr_core::absolute_path::AbsolutePath,
@@ -302,6 +297,7 @@ fn derived_pending_agent_resume_pane_infos(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::limits::PENDING_AGENT_RESUME_THEME_WAIT;
     use crate::test_support::*;
     use ratatui::layout::Rect;
 

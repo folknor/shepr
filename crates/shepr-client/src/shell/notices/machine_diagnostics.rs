@@ -15,11 +15,8 @@ use ratatui::style::Style;
 use shepr_config::theme::Palette;
 use std::collections::HashMap;
 
+use crate::limits::MAX_MACHINE_DIAGNOSTIC_CHARS;
 use shepr_termio::input::raw_input::RawInputEvent;
-
-/// Maximum sanitized machine diagnostic text shown in the sidebar, in
-/// characters.
-const MAX_MACHINE_DIAGNOSTIC_CHARS: usize = 4096;
 
 #[derive(Default)]
 pub(in crate::shell) struct MachineDiagnostics {

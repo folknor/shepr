@@ -138,7 +138,7 @@ impl HeadlessServer {
     /// The server has no host terminal, so we forward `ClipboardWrite` as
     /// `ServerMessage::Clipboard` to the clients viewing the writing pane.
     pub(super) fn drain_internal_events_with_forwarding(&mut self) -> bool {
-        self.drain_internal_events_with_forwarding_up_to(crate::app::APP_EVENT_DRAIN_LIMIT)
+        self.drain_internal_events_with_forwarding_up_to(crate::limits::APP_EVENT_DRAIN_LIMIT)
     }
 
     pub(super) fn drain_all_internal_events_with_forwarding(&mut self) -> bool {

@@ -19,17 +19,6 @@ behaviour acting on it, and test layouts.
 
 ## Workspace and persistence
 
-## STR-029 - Constants beside their policy, against the limits lints (decision open)
-
-The constants of shepr-mux, shepr-server and shepr-client now sit beside the
-policy each parameterises, and those crates' `limits.rs` files are gone. This
-contradicts the repo-wide textlints `numeric-consts-live-in-limits` and
-`duration-and-capacity-literals-live-in-limits`, which want every bound in a
-crate's limits module. As an interim, `brokkr.toml` excludes those three
-crates from both lints. Decide: keep the placement and reshape or drop the
-lints for every crate, or move the constants back into limits modules and
-remove the exclusion. (owner decision)
-
 ## Tests
 
 ## STR-049 - Test layouts mirror accretion

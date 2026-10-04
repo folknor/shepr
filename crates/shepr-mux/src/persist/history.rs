@@ -17,8 +17,7 @@ use crate::pane::HistoryPiece;
 pub use self::carry::{HistoryCarry, PendingHistory};
 pub(super) use self::carry::{PendingPaneHistory, ResolvedHistory};
 pub(super) use self::serialize::{
-    CappedBuf, HistoryTrim, MAX_SESSION_HISTORY_FILE_BYTES, SerializedHistory, ensure_history_size,
-    serialize_history,
+    CappedBuf, HistoryTrim, SerializedHistory, ensure_history_size, serialize_history,
 };
 
 /// SHA-256 of a history file's bytes: how a layout names the history it pairs

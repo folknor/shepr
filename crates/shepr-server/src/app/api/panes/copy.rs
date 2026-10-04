@@ -1,10 +1,6 @@
 use super::*;
+use crate::limits::{MAX_QUERY_BYTES, MAX_RETURNED_MATCHES};
 use shepr_protocol::command::EndpointError;
-
-/// Refuse oversized copy-mode queries to bound search work per request.
-const MAX_QUERY_BYTES: usize = 4096;
-/// Limit copy-mode matches to bound each response.
-const MAX_RETURNED_MATCHES: usize = 1024;
 
 impl App {
     pub(crate) fn handle_pane_clear(&mut self, target: &PaneTarget) -> HandlerResult {

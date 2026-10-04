@@ -12,6 +12,7 @@ mod token_definitions;
 use ratatui::buffer::Buffer;
 use shepr_protocol::ClientShellWorkspace;
 
+use crate::limits::MIN_COLLAPSED_SIDEBAR_SPLIT_ROWS;
 use crate::shell::presentation::text::{display_width, put_text};
 use crate::shell::sidebar::sidebar_tokens::{
     ResolvedToken, SpaceTokenContext, TokenStyles, resolved_token_spans, sidebar_space_rows,
@@ -47,7 +48,7 @@ pub(in crate::shell) fn collapsed_sidebar_sections(area: Rect) -> (Rect, Option<
     if content.is_empty() {
         return (Rect::default(), None, Rect::default());
     }
-    if content.height < 7 {
+    if content.height < MIN_COLLAPSED_SIDEBAR_SPLIT_ROWS {
         return (content, None, Rect::default());
     }
     let workspace_height = content.height.div_ceil(2);

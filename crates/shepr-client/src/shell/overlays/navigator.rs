@@ -11,12 +11,16 @@ use shepr_term::scroll::ListScroll;
 use shepr_termio::input::fixed_keys::{FixedKey, KeyBinding, ModifierMatch, command_for};
 use shepr_termio::text_editor::TextEditor;
 
-use super::widgets::{panel, panel_inner};
+use super::widgets::{panel, panel_inner, popup};
 use super::{
     NavigatorSlot, NavigatorView, OverlayCommand, OverlayContext, OverlayEffect, OverlayPaint,
     OverlayScroll, text_editor,
 };
 use crate::endpoint::ClientEndpointStatus;
+use crate::limits::{
+    MAX_NAVIGATOR_OVERLAY_HEIGHT, MAX_NAVIGATOR_OVERLAY_WIDTH, MIN_NAVIGATOR_OVERLAY_HEIGHT,
+    OVERLAY_WHEEL_SCROLL_ROWS,
+};
 use crate::shell::endpoints::endpoint_status_presentation;
 use crate::shell::input::hit_test::contains;
 use crate::shell::navigation::aggregate_navigation::{
@@ -26,16 +30,6 @@ use crate::shell::navigation::location::{Location, LocationTarget};
 use crate::shell::presentation::status::{panel_contrast_fg, status_glyph, status_text};
 use crate::shell::presentation::text::{display_width, put_right_text, put_text};
 use crate::shell::view::list::ListView;
-
-/// Maximum width of the client navigator overlay, so it leaves terminal
-/// context visible on a wide screen.
-const MAX_NAVIGATOR_OVERLAY_WIDTH: u16 = 116;
-/// Maximum height of the client navigator overlay.
-const MAX_NAVIGATOR_OVERLAY_HEIGHT: u16 = 42;
-/// Below this width the navigator overlay is not drawn at all.
-const MIN_NAVIGATOR_OVERLAY_WIDTH: u16 = 4;
-/// Below this height the navigator overlay is not drawn at all.
-const MIN_NAVIGATOR_OVERLAY_HEIGHT: u16 = 9;
 
 // The navigator footers are written out instead of derived from these tables, unlike the
 // copy-mode and resize mode bars. They group keys more compactly than one label per binding
@@ -260,19 +254,14 @@ impl NavigatorOverlay {
         screen: Rect,
         ctx: &OverlayContext<'_>,
     ) -> Option<(NavigatorView, OverlayScroll)> {
-        let a = screen;
-        let width = a.width.saturating_sub(4).min(MAX_NAVIGATOR_OVERLAY_WIDTH);
-        let height = a.height.saturating_sub(2).min(MAX_NAVIGATOR_OVERLAY_HEIGHT);
-        if width < MIN_NAVIGATOR_OVERLAY_WIDTH || height < MIN_NAVIGATOR_OVERLAY_HEIGHT {
+        let q = popup(
+            screen,
+            MAX_NAVIGATOR_OVERLAY_WIDTH,
+            MAX_NAVIGATOR_OVERLAY_HEIGHT,
+        )?;
+        if q.height < MIN_NAVIGATOR_OVERLAY_HEIGHT {
             return None;
         }
-        let q = Rect::new(
-            a.x + (a.width - width) / 2,
-            a.y + (a.height - height) / 2,
-            width,
-            height,
-        )
-        .intersection(a);
         let i = panel_inner(q)?;
         let rows = ctx.navigator_index.rows(ctx.active_endpoint_id, self);
         let body = Rect::new(i.x, i.y + 2, i.width, i.height.saturating_sub(5));
@@ -819,12 +808,12 @@ impl NavigatorOverlay {
             }
             MouseEventKind::ScrollUp => {
                 let rows = ctx.navigator_index.rows(ctx.active_endpoint_id, self);
-                self.move_selection(&rows, -3);
+                self.move_selection(&rows, -OVERLAY_WHEEL_SCROLL_ROWS);
                 OverlayEffect::Changed
             }
             MouseEventKind::ScrollDown => {
                 let rows = ctx.navigator_index.rows(ctx.active_endpoint_id, self);
-                self.move_selection(&rows, 3);
+                self.move_selection(&rows, OVERLAY_WHEEL_SCROLL_ROWS);
                 OverlayEffect::Changed
             }
             _ => OverlayEffect::Unchanged,

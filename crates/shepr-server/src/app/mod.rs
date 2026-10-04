@@ -61,7 +61,7 @@ pub(crate) struct Outcome {
     pub(crate) view_changed: bool,
 }
 
-use agent_resume::PENDING_AGENT_RESUME_THEME_WAIT;
+use crate::limits::{APP_EVENT_CHANNEL_CAPACITY, PENDING_AGENT_RESUME_THEME_WAIT};
 
 use tokio::sync::{Notify, mpsc};
 use tracing::info;
@@ -116,7 +116,7 @@ pub(crate) struct RenderView<'a> {
     pub(crate) runtimes: &'a shepr_mux::pane::PaneRuntimeRegistry,
 }
 
-pub(crate) use outputs::{APP_EVENT_CHANNEL_CAPACITY, APP_EVENT_DRAIN_LIMIT, AppOutputs, AppWake};
+pub(crate) use outputs::{AppOutputs, AppWake};
 
 impl App {
     /// Opens the session and returns the app with the outputs the loop owns:
@@ -447,8 +447,6 @@ impl App {
 
 #[cfg(test)]
 mod test_app;
-#[cfg(test)]
-pub(crate) use session::CHECKPOINT_MAX_FAILURES;
 #[cfg(test)]
 pub(crate) use test_app::TestApp;
 #[cfg(test)]

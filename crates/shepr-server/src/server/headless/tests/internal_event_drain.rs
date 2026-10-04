@@ -5,7 +5,7 @@ use shepr_mux::events::AppEvent;
 #[test]
 fn headless_internal_event_drain_is_bounded_per_tick() {
     let mut server = test_headless_server();
-    for _ in 0..=crate::app::APP_EVENT_DRAIN_LIMIT {
+    for _ in 0..=crate::limits::APP_EVENT_DRAIN_LIMIT {
         server
             .outputs
             .event_sender()
@@ -74,7 +74,7 @@ async fn full_internal_event_queue_eventually_applies_working_to_idle_transition
         AgentState::Working
     );
 
-    for _ in 0..crate::app::APP_EVENT_CHANNEL_CAPACITY {
+    for _ in 0..crate::limits::APP_EVENT_CHANNEL_CAPACITY {
         server
             .outputs
             .event_sender()
@@ -112,7 +112,7 @@ async fn full_internal_event_queue_eventually_applies_working_to_idle_transition
         .expect("app event receiver should still be alive");
 
     let max_drains =
-        (crate::app::APP_EVENT_CHANNEL_CAPACITY / crate::app::APP_EVENT_DRAIN_LIMIT) + 2;
+        (crate::limits::APP_EVENT_CHANNEL_CAPACITY / crate::limits::APP_EVENT_DRAIN_LIMIT) + 2;
     for _ in 0..max_drains {
         if server
             .app
@@ -168,7 +168,7 @@ async fn checkout_root_requests_are_limited_by_running_workers() {
         Ok(Some("/checkout".into()))
     }));
 
-    for _ in 0..crate::server::headless::worker::MAX_WORKER_COMPLETION_BACKLOG {
+    for _ in 0..crate::limits::MAX_WORKER_COMPLETION_BACKLOG {
         server.test_handle_server_event(ServerEvent::ShellEndpointRequest {
             client_id,
             boot_id: boot_id.clone(),
@@ -194,7 +194,7 @@ async fn checkout_root_requests_are_limited_by_running_workers() {
     let replies = &server.clients[&client_id].outbox;
     assert_eq!(
         replies.held_reply_count(),
-        crate::server::headless::worker::MAX_WORKER_COMPLETION_BACKLOG + 1
+        crate::limits::MAX_WORKER_COMPLETION_BACKLOG + 1
     );
     assert!(matches!(
         replies.held_reply_message(replies.held_reply_count() - 1),
@@ -205,12 +205,12 @@ async fn checkout_root_requests_are_limited_by_running_workers() {
         }) if request_id == over_limit && message.contains("limit")
     ));
 
-    for _ in 0..crate::server::headless::worker::MAX_WORKER_COMPLETION_BACKLOG {
+    for _ in 0..crate::limits::MAX_WORKER_COMPLETION_BACKLOG {
         release_tx
             .send(())
             .expect("checkout workers should be waiting");
     }
-    for _ in 0..crate::server::headless::worker::MAX_WORKER_COMPLETION_BACKLOG {
+    for _ in 0..crate::limits::MAX_WORKER_COMPLETION_BACKLOG {
         let completion = tokio::time::timeout(Duration::from_secs(1), server.workers.recv())
             .await
             .expect("checkout worker should complete after release")
@@ -237,7 +237,7 @@ fn checkout_root_requests_count_completions_waiting_in_the_worker_channel() {
     let client_id = ClientId::test_new(812);
     let boot_id = server.client_shell_boot_id.clone();
 
-    for index in 0..crate::server::headless::worker::MAX_WORKER_COMPLETION_BACKLOG {
+    for index in 0..crate::limits::MAX_WORKER_COMPLETION_BACKLOG {
         server
             .workers
             .enqueue(worker::WorkerCompletion::CheckoutRoot {

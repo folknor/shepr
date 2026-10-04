@@ -9,6 +9,10 @@ use shepr_config::theme::Palette;
 use shepr_protocol::ClientShellSnapshot;
 
 use crate::endpoint::{ClientEndpointId, ClientEndpointStatus};
+use crate::limits::{
+    AGENT_PANEL_HEADER_ROWS, GLOBAL_LAUNCHER_HIT_WIDTH, WORKSPACE_FOOTER_ROWS,
+    WORKSPACE_HEADER_ROWS,
+};
 use crate::shell::config::ClientShellConfig;
 use crate::shell::endpoints::{ClientShellEndpoint, endpoint_status_presentation};
 use crate::shell::navigation::aggregate_navigation::AgentPanelModel;
@@ -21,9 +25,6 @@ use crate::shell::sidebar::sidebar_tokens::{
 };
 use crate::shell::view::list::{ListView, resolve_list};
 use crate::shell::view::{AgentHit, MachineHit, WorkspaceHit};
-
-/// Rows the workspace section header occupies above the workspace entries.
-const WORKSPACE_HEADER_ROWS: u16 = 2;
 
 /// Which sidebar the caller decided to lay out.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -452,7 +453,7 @@ fn resolve_expanded(
         workspace_area.width,
         workspace_area
             .height
-            .saturating_sub(WORKSPACE_HEADER_ROWS + 1),
+            .saturating_sub(WORKSPACE_HEADER_ROWS + WORKSPACE_FOOTER_ROWS),
     );
     let rows = flattened_rows(inputs);
     let heights = rows
@@ -571,19 +572,28 @@ fn resolve_expanded(
         }
     }
 
-    // The same drop marker the single-machine sidebar draws while a workspace is dragged.
+    // The same drop marker the single-machine sidebar draws while a workspace is dragged. A
+    // drop target marks the row above the workspace it precedes, so the topmost marker row is
+    // the header's last row; none may reach the footer.
     let drop_indicator = inputs.drop_indicator_row.filter(|row| {
-        *row >= workspace_area.y.saturating_add(1)
-            && *row < workspace_area.bottom().saturating_sub(1)
+        *row >= workspace_area
+            .y
+            .saturating_add(WORKSPACE_HEADER_ROWS.saturating_sub(1))
+            && *row
+                < workspace_area
+                    .bottom()
+                    .saturating_sub(WORKSPACE_FOOTER_ROWS)
     });
     let footer = config.mouse_capture.then(|| {
-        let footer_y = workspace_area.bottom().saturating_sub(1);
+        let footer_y = workspace_area
+            .bottom()
+            .saturating_sub(WORKSPACE_FOOTER_ROWS);
         let label = if single_endpoint {
             " new".to_owned()
         } else {
             format!(" new · {}", inputs.presented_label())
         };
-        let launcher_width = 6.min(workspace_area.width);
+        let launcher_width = GLOBAL_LAUNCHER_HIT_WIDTH.min(workspace_area.width);
         SidebarFooter {
             new_workspace: Rect::new(
                 workspace_area.x,
@@ -670,9 +680,9 @@ fn resolve_agent_panel(
     let rows = &inputs.model.rows;
     let body = Rect::new(
         area.x,
-        area.y.saturating_add(3),
+        area.y.saturating_add(AGENT_PANEL_HEADER_ROWS),
         area.width,
-        area.height.saturating_sub(3),
+        area.height.saturating_sub(AGENT_PANEL_HEADER_ROWS),
     );
     let heights = rows
         .iter()

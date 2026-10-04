@@ -11,12 +11,6 @@ use shepr_mux::events::AppEvent;
 use shepr_mux::render_signal::RenderSignal;
 use tokio::sync::{Notify, mpsc};
 
-/// Buffer app events while rendering, enough for bursts without an
-/// unbounded queue of stale state transitions.
-pub(crate) const APP_EVENT_CHANNEL_CAPACITY: usize = 256;
-/// Limit app events per loop pass so clients still get service.
-pub(crate) const APP_EVENT_DRAIN_LIMIT: usize = 64;
-
 /// Why the loop was woken by the app's outputs.
 pub(crate) enum AppWake {
     Event(AppEvent),

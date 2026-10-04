@@ -523,7 +523,7 @@ mod tests {
         assert!(!app.state.session_dirty);
         assert_eq!(
             app.session_saver.autosave_deadline(),
-            Some(sample.now + crate::app::session::SESSION_SAVE_DEBOUNCE)
+            Some(sample.now + crate::limits::SESSION_SAVE_DEBOUNCE)
         );
     }
 }

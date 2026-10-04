@@ -1,13 +1,11 @@
 use super::{ClientEndpointId, LocationTarget, focus_lane::FocusLane};
+use crate::limits::ENDPOINT_MOVE_TIMEOUT;
 use shepr_protocol::{
     BootId, ClientMessage, ClientShellSnapshot, ClientSurfaceSize, ConnectionGeneration,
     PaneSurfaceFrame, PaneSurfacePatch, RequestId, TerminalGeometry,
     command::{EndpointError, EndpointReply},
 };
 use std::time::Instant;
-
-/// How long a move may stay Preparing before it fails and the shown endpoint stays.
-pub(crate) const ENDPOINT_MOVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Why a prepared move cannot commit. Rendered only at the notice boundary.
 #[derive(Clone, Debug, PartialEq, Eq)]

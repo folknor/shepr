@@ -7,65 +7,10 @@ use std::time::{Duration, Instant};
 
 use super::{ClientEndpointId, ClientEndpointStatus, EndpointFailureStatus};
 use crate::events::ClientLoopEvent;
-
-/// Initial reconnect delay before exponential backoff.
-///
-/// The delay retries quickly after a transient local or SSH failure.
-const INITIAL_RETRY_DELAY: Duration = Duration::from_millis(500);
-/// Every endpoint, Local or configured machine, retries at least this often, so an open
-/// client picks a machine up promptly once it is reachable again; a longer backoff would
-/// leave it offline long after it came back.
-///
-/// An attempt's own failure schedules the next one from when that attempt started, not
-/// from when it gave up, and no attempt runs longer than `ATTEMPT_BUDGET`. Together they
-/// keep the promise with an attempt already in flight: from any moment, the next attempt
-/// starts once the current one ends or its retry delay (counted from its start) is up,
-/// whichever is later, within the retry bound.
-pub(crate) const MAX_RETRY_DELAY: Duration = Duration::from_secs(30);
-/// A connection stable for this interval resets its accumulated retry state.
-///
-/// The interval distinguishes a durable connection from a brief success between failures.
-const STABLE_CONNECTION_PERIOD: Duration = Duration::from_secs(60);
-/// Same bound as `MAX_RETRY_DELAY`, for the same prompt-retry guarantee.
-const ATTENTION_RETRY_DELAY: Duration = MAX_RETRY_DELAY;
-/// The longest one connection attempt may run: the SSH discovery commands, the bridge and
-/// the endpoint handshake all stop at this deadline. Without it an attempt against a host
-/// that stalls could hold the endpoint indefinitely (each discovery command may
-/// take one SSH command timeout, the handshake
-/// `REMOTE_HANDSHAKE_READ_TIMEOUT`), and the next attempt waited for it, which broke the
-/// retry bound. `do_handshake_for_endpoint` takes this deadline and stops at whichever
-/// of it and the handshake timeout comes first.
-///
-/// A healthy attempt needs far less: every discovery command already had
-/// to fit a cold SSH connect into one SSH command timeout. It stays below
-/// `MAX_RETRY_DELAY` to leave room for tearing a timed-out bridge down.
-///
-/// The budget is the same for every attempt, including one that has to run full
-/// discovery of the remote executable. With a valid disk hint, the first connection
-/// uses two SSH round trips: one to verify the installed client and sibling server,
-/// then one to start the bridge and carry the handshake. The handshake checks the
-/// running server's identity, so the connector does not issue a separate server-status
-/// query. Once the executable is verified, an ordinary reconnect uses only the bridge
-/// round trip and handshake.
-/// The case that can overrun is a cache miss or a stale remembered path on a slow link
-/// without connection sharing, where each of discovery's several round trips and the
-/// bridge each need their own cold connect.
-/// That case is handled by resuming, not by a larger budget: the machine connector
-/// keeps completed discovery steps when an attempt ends on a transient network failure
-/// or a full-round-trip timeout that may be waiting for authentication. SSH process
-/// failures and remote command errors clear that progress. It also keeps a freshly
-/// discovered executable when only the bridge ran out of time. No discovery round trip
-/// may take longer than one SSH command timeout, and the budget, which
-/// `shepr_remote` defines as that timeout plus a fixed slack, exceeds it, so every
-/// attempt that starts with discovery completes at least one, and discovery
-/// finishes after a bounded number of attempts;
-/// after that the bridge and the handshake need to fit one attempt, as on every
-/// ordinary reconnect. A larger discovery budget would stretch the retry bound exactly where
-/// the link is slowest, and would still fail on an even slower link.
-const ATTEMPT_BUDGET: Duration = shepr_remote::SSH_CONNECTION_ATTEMPT_BUDGET;
-
-// An attempt, and so the retry that follows it, must fit the retry bound.
-const _: () = assert!(ATTEMPT_BUDGET.as_millis() < MAX_RETRY_DELAY.as_millis());
+use crate::limits::{
+    ATTEMPT_BUDGET, ATTENTION_RETRY_DELAY, INITIAL_RETRY_DELAY, MAX_RETRY_DELAY,
+    STABLE_CONNECTION_PERIOD,
+};
 
 #[derive(Clone, Copy)]
 pub(crate) struct EndpointConnectOptions {

@@ -39,22 +39,11 @@ use tokio::sync::{oneshot, watch};
 use super::exit_arbiter::{PaneExitArbiter, RecordedEnding};
 use super::teardown::ChildLiveness;
 use crate::events::EventSender;
+use crate::limits::{
+    LAUNCH_EXIT_POLL_INTERVAL, LAUNCH_SETTLE_AFTER_PANE_END, LAUNCH_STATUS_AFTER_EXIT,
+};
 use crate::terminal::PaneStartFailure;
 use shepr_core::layout::PaneId;
-
-/// How long a pane launch whose child has exited still waits for that child's
-/// status channel. A child that connected before exiting is already in the
-/// listener's queue and is routed at once; this only bounds the wait for one
-/// that never connected (a failure before its first report).
-const LAUNCH_STATUS_AFTER_EXIT: std::time::Duration = std::time::Duration::from_secs(1);
-/// How long a launch still unsettled when its pane ended with the child
-/// possibly alive (a failed PTY reader, a failed wait) may take to settle
-/// before it is settled as unconfirmed. Lets a failure report already sent
-/// arrive, without letting a child stuck in its chdir keep the pane open.
-const LAUNCH_SETTLE_AFTER_PANE_END: std::time::Duration = std::time::Duration::from_secs(1);
-/// How often a pane launch checks whether its child exited when it cannot
-/// watch the child's pidfd (the dup failed). Only that fallback polls.
-const LAUNCH_EXIT_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
 
 /// How a pane launch ended, as the app is told.
 #[derive(Debug)]

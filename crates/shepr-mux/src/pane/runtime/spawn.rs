@@ -1,10 +1,5 @@
 use super::*;
-
-/// How long a pane whose terminal closed waits for its child watcher to
-/// report the exit before ending the pane on its own. A child that exits
-/// closes its terminal moments before it is reaped, so this normally runs out
-/// only for a child that closed its terminal and kept running.
-const TERMINAL_CLOSED_EXIT_GRACE: std::time::Duration = std::time::Duration::from_secs(2);
+use crate::limits::TERMINAL_CLOSED_EXIT_GRACE;
 
 // Every pane ending is recorded with the pane's exit arbiter, and the launch
 // coordinator publishes the first one. Reader failure can leave a live child

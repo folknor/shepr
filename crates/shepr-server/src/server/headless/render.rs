@@ -1,12 +1,9 @@
 use super::client_views::ViewedWorkspace;
 use super::*;
+use crate::limits::SHELL_CWD_REFRESH_INTERVAL;
 use crate::server::ClientId;
 use crate::server::render_stream::{PreparedSurface, ViewEpoch};
 use shepr_term::mouse::HostMouseCapture;
-
-/// Refresh shell cwd projections periodically when no OSC 7 report arrives.
-pub(super) const SHELL_CWD_REFRESH_INTERVAL: std::time::Duration =
-    std::time::Duration::from_secs(1);
 
 /// The layout-free session snapshot every shell projection is built from,
 /// shared by all shell clients.

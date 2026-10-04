@@ -1,6 +1,7 @@
 //! Double-click word selection. Cached rows hold pane text read back from the
 //! endpoint; that content must stay out of logs and error messages here.
 
+use crate::limits::WORD_SELECTION_HIGHLIGHT_TIMEOUT;
 use crate::shell::ledger::{Submitted, Ticket, Work};
 
 use crate::shell::input::selection::MouseSelection;
@@ -8,11 +9,6 @@ use crate::shell::state::{ClientShellEndpointError, ClientShellInput, ClientShel
 use crate::shell::view::PaneHit;
 
 use super::word_bounds::word_bounds_at_column;
-
-/// Keep a completed word-selection highlight visible for this interval.
-///
-/// The timeout leaves brief visual feedback after the selection copy completes.
-const WORD_SELECTION_HIGHLIGHT_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(500);
 
 /// Held second press. Keep only one row read in flight and use the latest
 /// pointer position when it returns, so remote latency cannot queue up motion.

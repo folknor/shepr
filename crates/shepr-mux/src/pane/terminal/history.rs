@@ -92,25 +92,7 @@ use std::sync::{Arc, Weak};
 use shepr_vt::AnsiCarry;
 
 use super::*;
-
-/// Rows a chunked history scan reads per hold of the terminal lock. Between
-/// chunks the lock is released so the PTY reader, rendering and detection
-/// are never stalled behind a scan of the whole scrollback.
-pub(super) const SCAN_CHUNK_ROWS: usize = 2048;
-/// The most rows a merged history chunk covers. Eviction drops a chunk whole
-/// and formats the rows of it that survive again under one lock hold, so this
-/// bounds that rework (a history at its limit evicts on nearly every save, and
-/// each would redo the whole oldest chunk). With `MERGE_MAX_BYTES` it also sets
-/// the chunk count: two neighbours that could still merge do not exist, so a
-/// cache of `n` rows holds about `2 n / MERGE_MAX_ROWS` chunks at most, however
-/// often it was saved.
-const MERGE_MAX_ROWS: u64 = 256;
-/// The most text a merged history chunk holds. Merging copies both texts, and
-/// a save that adds a few rows to a small last chunk copies that chunk again;
-/// this caps the copy at a size that costs far less than the formatting of the
-/// rows that caused it, which happens under the terminal lock and the copy does
-/// not.
-const MERGE_MAX_BYTES: usize = 64 * 1024;
+use crate::limits::{MERGE_MAX_BYTES, MERGE_MAX_ROWS, SCAN_CHUNK_ROWS};
 
 /// Chunks of formatted history a reader keeps between reads of one pane,
 /// oldest first and contiguous. Only a reader of the same terminal may use

@@ -6,6 +6,10 @@
 //! It converts socket I/O into [`ServerEvent`] values consumed by
 //! `HeadlessServer`.
 
+use crate::limits::{
+    CLIENT_WRITE_STALL_TIMEOUT, HANDSHAKE_TIMEOUT, UNREGISTERED_SHUTDOWN_FLUSH_POLL_INTERVAL,
+    UNREGISTERED_SHUTDOWN_FLUSH_TIMEOUT,
+};
 use crate::server::ClientId;
 use crate::server::outbox::{ClientOutbox, ClientWriteItem, ControlSender, Delivery, OutboxQueue};
 use std::io::{self, Write};
@@ -20,22 +24,6 @@ use shepr_protocol::endpoint::EndpointServerWelcome;
 use shepr_protocol::{
     self, ClientMessage, ClientPaneInputEvent, InputBatchCharge, MAX_INPUT_PAYLOAD, ServerMessage,
 };
-
-/// Total time a client gets to deliver its complete handshake frame.
-///
-/// This is a single deadline across every read of the hello, not a per-read idle
-/// timeout: `shepr_platform::ipc::LocalStreamDeadlineReader` polls for readiness with only
-/// the time left before each read, so a peer trickling bytes cannot
-/// hold the handshake thread open. The deadline leaves room for OS timer slack,
-/// thread scheduling, and cleanup overhead.
-const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(4);
-/// Maximum time a client stream writer may make no progress before disconnecting it.
-const CLIENT_WRITE_STALL_TIMEOUT: Duration = Duration::from_secs(5);
-/// How long a transport thread waits for a client it could not register to
-/// receive its shutdown frame.
-const UNREGISTERED_SHUTDOWN_FLUSH_TIMEOUT: Duration = Duration::from_secs(1);
-/// Poll spacing while that transport thread waits for the flush.
-const UNREGISTERED_SHUTDOWN_FLUSH_POLL_INTERVAL: Duration = Duration::from_millis(5);
 
 /// The server's client protocol, installed into the listener's gate once
 /// panes are restored. Each TUI connection gets a fresh client id and runs
@@ -574,7 +562,7 @@ fn client_read_loop_with_endpoint_controls(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::server::outbox::{CLIENT_CONTROL_QUEUE_MAX_BYTES, CLIENT_CONTROL_QUEUE_MAX_ITEMS};
+    use crate::limits::{CLIENT_CONTROL_QUEUE_MAX_BYTES, CLIENT_CONTROL_QUEUE_MAX_ITEMS};
     use shepr_protocol::MAX_INPUT_EVENT_BATCH;
     use std::path::PathBuf;
     use std::sync::mpsc::{SendError, TrySendError};
@@ -896,7 +884,7 @@ mod tests {
         use std::io::Read;
         let scratch = shepr_test_support::ScratchDir::new("foreign-gate");
         let paths = shepr_paths::AppPaths::test_at(&scratch);
-        let (tx, _rx) = mpsc::channel(crate::server::headless::API_REQUEST_CHANNEL_CAPACITY);
+        let (tx, _rx) = mpsc::channel(crate::limits::API_REQUEST_CHANNEL_CAPACITY);
         let stop = Arc::new(shepr_api::ServerStopSignal::default());
         let api = shepr_api::start_server(
             tx,
@@ -1345,18 +1333,6 @@ mod tests {
         assert_eq!(
             pane_input_event_limit(&[paste]),
             InputEventLimit::WithinLimits
-        );
-    }
-
-    #[test]
-    fn handshake_timeout_is_within_five_second_deadline() {
-        // The handshake timeout must be short enough that
-        // the connection is guaranteed to close within 5 seconds even with
-        // OS overhead (thread scheduling, timer slack, cleanup).
-        assert!(
-            HANDSHAKE_TIMEOUT < Duration::from_secs(5),
-            "HANDSHAKE_TIMEOUT ({HANDSHAKE_TIMEOUT:?}) must be less than 5 seconds to guarantee \
-             connection close within the 5-second deadline"
         );
     }
 }

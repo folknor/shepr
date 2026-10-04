@@ -21,13 +21,6 @@ use super::cursor::decscusr_cursor_shape;
 use super::osc_debug::{self, OscDebugEvent};
 use super::osc7::parse_reported_cwd;
 
-/// Default screen depth sampled for agent detection when no caller supplies
-/// one; it covers a conventional terminal viewport.
-const DEFAULT_DETECTION_ROWS: usize = 24;
-/// Slack after synchronized output's deadline before a follow-up render, so
-/// the terminal can finish its batch.
-const SYNCHRONIZED_OUTPUT_FLUSH_MARGIN: Duration = Duration::from_millis(5);
-
 /// A cell position in terminal text, on a stable absolute row: output and
 /// history eviction never make it name another line.
 pub type TerminalTextPoint = Point<AbsRow>;
@@ -598,8 +591,9 @@ impl PaneTerminal {
         word_motion_in(&core.terminal, cursor, motion)
     }
 
-    /// The next blank row above or below the cursor, looking at most 1000 rows
-    /// away. `None` when its row is no longer retained.
+    /// The next blank row above or below the cursor, looking at most
+    /// `MAX_PARAGRAPH_MOTION_ROWS` rows away. `None` when its row is no longer
+    /// retained.
     pub(crate) fn paragraph_motion_target(
         &self,
         cursor: TerminalTextPoint,

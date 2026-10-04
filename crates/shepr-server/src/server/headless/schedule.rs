@@ -5,18 +5,9 @@
 use std::time::Instant;
 
 use crate::backoff::Backoff;
-
-/// Minimum spacing between renders, matching a typical display refresh
-/// cadence: rendering faster only produces frames no screen can show, while
-/// output bursts coalesce into the next frame.
-const MIN_RENDER_INTERVAL: std::time::Duration = std::time::Duration::from_millis(16);
-/// First retry after automatic workspace creation fails, such as when the
-/// configured shell stops resolving after server launch.
-pub(super) const DEFAULT_WORKSPACE_RETRY_MIN: std::time::Duration =
-    std::time::Duration::from_millis(250);
-/// Cap on the doubling retry delay of automatic workspace creation, so it
-/// still recovers soon after the shell or working directory becomes usable.
-const DEFAULT_WORKSPACE_RETRY_MAX: std::time::Duration = std::time::Duration::from_secs(30);
+use crate::limits::{
+    DEFAULT_WORKSPACE_RETRY_MAX, DEFAULT_WORKSPACE_RETRY_MIN, MIN_RENDER_INTERVAL,
+};
 
 /// When the loop may render, and when a held render is due.
 #[derive(Default)]

@@ -3,9 +3,7 @@
 
 use shepr_vt::Progress;
 
-/// Maximum agent OSC title characters retained from untrusted output.
-/// What counts as a displayable character is `shepr_term::title`'s rule.
-const AGENT_OSC_MAX_CHARS: usize = 256;
+use crate::limits::AGENT_OSC_MAX_CHARS;
 
 /// Retains the latest window title and OSC 9;4 progress report emitted by the
 /// child process, for agent detection, `detect.explain` and the pane title.

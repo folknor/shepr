@@ -1,6 +1,7 @@
 use std::time::Instant;
 
-use super::{CHECKPOINT_MAX_FAILURES, checkpoint_retry_delay};
+use super::checkpoint_retry_delay;
+use crate::limits::CHECKPOINT_MAX_FAILURES;
 
 /// How a finished host-shutdown checkpoint ended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -117,8 +118,8 @@ impl HostShutdownCheckpoint {
 
 #[cfg(test)]
 mod tests {
-    use super::super::SESSION_SAVE_RETRY_MIN;
     use super::*;
+    use crate::limits::SESSION_SAVE_RETRY_MIN;
     #[test]
     fn a_request_is_ignored_while_requested_or_unclaimed() {
         let mut host = HostShutdownCheckpoint::new();

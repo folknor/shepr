@@ -12,13 +12,9 @@ use shepr_termio::input::raw_input::RawInputFramer;
 use tokio::sync::mpsc;
 
 use crate::events::{ClientLoopEvent, ParsedHostInput};
+use crate::limits::HOST_INPUT_READ_CHUNK_BYTES;
 use crate::terminal_geometry::SharedHostGeometry;
 use crate::terminal_setup::HostMouseInputProbe;
-
-/// Scratch buffer size for each read from the outer terminal.
-///
-/// The chunk keeps blocking reads page-sized and bounds each temporary read buffer.
-pub(crate) const HOST_INPUT_READ_CHUNK_BYTES: usize = 4096;
 
 /// Whether a host query was written, so its reply is expected on stdin.
 #[derive(Clone, Copy, PartialEq, Eq)]

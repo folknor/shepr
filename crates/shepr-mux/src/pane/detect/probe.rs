@@ -4,15 +4,11 @@
 
 use super::schedule::{ProbeFinding, ProbeScheduleDecision};
 use super::state::{DetectorState, TickContext};
-use crate::pane::agent_detection::AGENT_STARTUP_GRACE_WINDOW;
+use crate::limits::{AGENT_MISS_CONFIRMATION_ATTEMPTS, AGENT_STARTUP_GRACE_WINDOW};
 use crate::pane::process_probe::ProcessProbeResult;
 use shepr_agent::Agent;
 use shepr_detect::Detection;
 use shepr_platform::Pgid;
-
-/// Consecutive process misses required before dropping an identified agent;
-/// transient /proc gaps must not erase its state.
-pub(super) const AGENT_MISS_CONFIRMATION_ATTEMPTS: u8 = 6;
 
 #[derive(Debug, Clone, Copy)]
 pub(super) struct AgentDetectionPresence {

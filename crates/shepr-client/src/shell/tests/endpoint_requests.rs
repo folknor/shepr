@@ -401,7 +401,7 @@ fn an_expired_command_is_settled_even_when_its_connection_was_lost_first() {
 
         let outcome = hub.settle_expired(
             &mut state,
-            sent_at + crate::endpoint::commands::ENDPOINT_COMMAND_TIMEOUT,
+            sent_at + crate::limits::ENDPOINT_COMMAND_TIMEOUT,
         );
 
         assert!(outcome.repaint);

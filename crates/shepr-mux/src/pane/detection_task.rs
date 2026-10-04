@@ -76,7 +76,7 @@ impl DetectionTask {
                 pane_id,
                 handles,
                 detector: DetectorState::new(Instant::now(), launch_purpose),
-                next_wake: super::detect::PROCESS_RECHECK_NO_AGENT,
+                next_wake: crate::limits::PROCESS_RECHECK_NO_AGENT,
                 cancelled: Arc::new(AtomicBool::new(false)),
             };
             task.run().await;

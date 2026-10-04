@@ -471,7 +471,7 @@ fn a_failed_move_releases_the_target() {
             f.start();
         }
         if cause == "timeout" {
-            f.now += endpoint::ENDPOINT_MOVE_TIMEOUT;
+            f.now += crate::limits::ENDPOINT_MOVE_TIMEOUT;
         } else {
             let request_id = if cause == "ack" {
                 f.on_request()
@@ -514,7 +514,7 @@ fn a_failed_move_releases_the_target() {
 fn a_move_timeout_returns_to_the_source_and_reports_it() {
     let mut f = Fixture::new();
     f.start();
-    f.now += endpoint::ENDPOINT_MOVE_TIMEOUT;
+    f.now += crate::limits::ENDPOINT_MOVE_TIMEOUT;
     f.reconcile();
     assert_eq!(
         f.client.state().shell.endpoints.choice.live(),
@@ -526,7 +526,7 @@ fn a_move_timeout_returns_to_the_source_and_reports_it() {
 fn a_failure_queued_at_the_deadline_reports_the_interruption() {
     let mut f = Fixture::new();
     f.start();
-    f.now += endpoint::ENDPOINT_MOVE_TIMEOUT;
+    f.now += crate::limits::ENDPOINT_MOVE_TIMEOUT;
     f.client
         .handle_event(
             ClientLoopEvent::ServerDisconnected {
@@ -1048,7 +1048,7 @@ fn a_failed_local_proof_waits_for_another_generation() {
         ServerMessage::EndpointSnapshot(snapshot(&ClientEndpointId::Local, 1)),
     );
     f.reconcile();
-    f.now += endpoint::ENDPOINT_MOVE_TIMEOUT;
+    f.now += crate::limits::ENDPOINT_MOVE_TIMEOUT;
     f.reconcile();
     f.local.take();
     f.reconcile();

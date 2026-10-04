@@ -1,9 +1,6 @@
 //! A transient action error and its expiry are one value.
 
-/// Time an endpoint error stays visible without another input event.
-///
-/// The timeout leaves time to read a transient error before it clears.
-const ENDPOINT_ERROR_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+use crate::limits::ENDPOINT_ERROR_TIMEOUT;
 
 #[derive(Default)]
 pub(in crate::shell) struct TransientError {

@@ -4,6 +4,9 @@ use crate::endpoint::connection_io::{
 };
 use crate::errors::{ClientExit, ClientRunError, LoopExit, endpoint_setup_launch_error};
 use crate::events::ClientLoopEvent;
+use crate::limits::{
+    CLIENT_EVENT_QUEUE_CAPACITY, CLIENT_RUNTIME_SHUTDOWN_TIMEOUT, SSH_RESOURCE_RELEASE_TIMEOUT,
+};
 use crate::loop_config::ClientSettings;
 use crate::shell_runtime::view_geometry;
 use crate::state::{ClientState, HostWriteFailure};
@@ -19,21 +22,7 @@ use shepr_termio::blit as render_ansi;
 use std::io;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
 use tracing::{info, warn};
-
-/// Event queue capacity shared by host input, resize, endpoint readers, supervisors and quit.
-///
-/// The capacity absorbs short bursts without allowing unlimited event accumulation.
-const CLIENT_EVENT_QUEUE_CAPACITY: usize = 256;
-/// Bound runtime shutdown so terminal restoration and process exit are not held by idle tasks.
-///
-/// A brief drain window gives cooperative tasks time to finish without stalling exit.
-const CLIENT_RUNTIME_SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(100);
-/// Bound SSH helper cleanup while the client is exiting.
-///
-/// The timeout allows ordinary helper teardown but keeps exit bounded.
-const SSH_RESOURCE_RELEASE_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// What launch prepares before taking the terminal: settings, supervisors, the event channel
 /// and the first Local attachment. Every launch-fatal configuration and endpoint check runs

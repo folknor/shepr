@@ -418,7 +418,7 @@ async fn signal_quit_drain_keeps_dying_panes_in_the_layout() {
     server.lifecycle.stop_signal().request();
 
     // The quit-path drain still consumes the queue ...
-    server.drain_internal_events_with_forwarding_up_to(crate::app::APP_EVENT_CHANNEL_CAPACITY);
+    server.drain_internal_events_with_forwarding_up_to(crate::limits::APP_EVENT_CHANNEL_CAPACITY);
     assert!(server.outputs.no_queued_events());
     // ... but the pane stays in the layout the final save captures.
     assert!(server.app.state().pane(pane_id).is_some());
