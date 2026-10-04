@@ -384,6 +384,9 @@ impl ClientLoop {
 }
 
 #[cfg(test)]
+mod tests;
+
+#[cfg(test)]
 mod client_timer_tests {
     use super::*;
     use shepr_protocol::ClientMessage;

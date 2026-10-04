@@ -4,7 +4,7 @@
 //! composition writes shell state. The first two read the shell by shared reference; the
 //! commit runs only after the host terminal took the frame.
 
-pub(in crate::shell) mod draw;
+mod draw;
 pub(in crate::shell) mod list;
 pub(in crate::shell) mod resolve;
 
@@ -29,61 +29,61 @@ pub(in crate::shell) struct ShellView {
     /// The layout this frame was drawn with (`ClientShellState::layout` at `size`).
     pub(in crate::shell) layout: ClientShellLayout,
     /// The pane cells were drawn (a snapshot and a paired surface existed).
-    pub(in crate::shell) has_surface: bool,
-    pub(in crate::shell) placeholder: Option<Placeholder>,
-    pub(in crate::shell) sidebar: SidebarView,
+    has_surface: bool,
+    placeholder: Option<Placeholder>,
+    sidebar: SidebarView,
     /// The workspace the sidebar highlights as selected: the Navigate preview, or the pending
     /// focus highlight outside Navigate.
-    pub(in crate::shell) selected: Option<PinnedLocation>,
+    selected: Option<PinnedLocation>,
     /// The panes the surface drew, clipped to the pane area. Input aims at them only while
     /// `hits_live`; highlights and the copy cursor follow them either way.
-    pub(in crate::shell) panes: Vec<PaneHit>,
+    panes: Vec<PaneHit>,
     /// Empty when the mouse is not captured, the surface overflows its area, or the endpoint
     /// is unusable.
-    pub(in crate::shell) splits: Vec<PaneSplitHit>,
+    splits: Vec<PaneSplitHit>,
     /// The presented endpoint is usable, so pane input has a target.
-    pub(in crate::shell) hits_live: bool,
+    hits_live: bool,
     /// The screen cell of the copy cursor, when its pane is drawn, coherent with the copy
     /// state, and the cursor row is inside the pane's viewport.
-    pub(in crate::shell) copy_cursor: Option<(u16, u16)>,
-    pub(in crate::shell) lifecycle: Option<LifecycleBanner>,
-    pub(in crate::shell) notice: Option<NoticeCard>,
-    pub(in crate::shell) mode_bar_area: Rect,
+    copy_cursor: Option<(u16, u16)>,
+    lifecycle: Option<LifecycleBanner>,
+    notice: Option<NoticeCard>,
+    mode_bar_area: Rect,
     /// The open overlay as laid out; `None` when no overlay is open or it does not fit.
     pub(in crate::shell) overlay: Option<OverlayView>,
     /// `ui.mouse_capture`: when false, the sidebar chrome hits are inert.
     chrome_armed: bool,
 }
 
-pub(in crate::shell) struct Placeholder {
-    pub(in crate::shell) area: Rect,
-    pub(in crate::shell) message: String,
+struct Placeholder {
+    area: Rect,
+    message: String,
 }
 
-pub(in crate::shell) struct LifecycleBanner {
-    pub(in crate::shell) rect: Rect,
-    pub(in crate::shell) label: String,
-    pub(in crate::shell) status: ClientEndpointStatus,
+struct LifecycleBanner {
+    rect: Rect,
+    label: String,
+    status: ClientEndpointStatus,
 }
 
-pub(in crate::shell) struct NoticeCard {
-    pub(in crate::shell) rect: Rect,
+struct NoticeCard {
+    rect: Rect,
 }
 
 /// A frame resolved but not yet drawn or stored.
-pub(in crate::shell) struct ResolvedFrame {
-    pub(in crate::shell) view: ShellView,
-    pub(in crate::shell) sidebar: SidebarScrollResolution,
+struct ResolvedFrame {
+    view: ShellView,
+    sidebar: SidebarScrollResolution,
     /// A size change while navigating asked for the selected workspace to be revealed, and the
     /// sidebar had no body to reveal it in: the request stays pending.
-    pub(in crate::shell) carry_selected_reveal: bool,
-    pub(in crate::shell) overlay_scroll: Option<OverlayScroll>,
+    carry_selected_reveal: bool,
+    overlay_scroll: Option<OverlayScroll>,
 }
 
 /// A frame drawn from a view: the cells and what the drawing did to pane output.
-pub(in crate::shell) struct DrawnFrame {
-    pub(in crate::shell) frame: FrameData,
-    pub(in crate::shell) effects: LastComposition,
+struct DrawnFrame {
+    frame: FrameData,
+    effects: LastComposition,
 }
 
 static EMPTY_VIEW: ShellView = ShellView::empty_at((0, 0));
@@ -355,10 +355,7 @@ pub(in crate::shell) struct PaneHit {
 /// Surface-local rects stay the protocol's `SurfaceRect` and screen rects are
 /// ratatui `Rect`s, so the two cannot be mixed up without a conversion; a
 /// separate screen rect type would add churn without closing a gap.
-pub(in crate::shell) fn surface_rect_on_screen(
-    origin: (u16, u16),
-    rect: shepr_protocol::SurfaceRect,
-) -> Rect {
+fn surface_rect_on_screen(origin: (u16, u16), rect: shepr_protocol::SurfaceRect) -> Rect {
     Rect::new(
         origin.0.saturating_add(rect.x),
         origin.1.saturating_add(rect.y),

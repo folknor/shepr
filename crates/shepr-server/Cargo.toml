@@ -35,9 +35,6 @@ unicode-width = { workspace = true }
 zbus = { workspace = true }
 
 [dev-dependencies]
-# The endpoint choice test drives a real client shell state machine against
-# two in-process servers, whose internals only this crate's own tests reach.
-shepr-client = { path = "../shepr-client" }
 shepr-test-fixtures = { path = "../shepr-test-fixtures" }
 shepr-test-support = { path = "../shepr-test-support" }
 toml = { workspace = true }

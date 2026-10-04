@@ -7,7 +7,7 @@ use shepr_term::scroll::{
     ListScroll, ScrollTrack, ScrollbarMetrics, ScrollbarPart, scrollbar_rows,
 };
 
-pub(in crate::shell) fn list_scroll_metrics(
+fn list_scroll_metrics(
     row_heights: &[u16],
     gaps_after: &[u16],
     body_height: u16,
@@ -50,7 +50,7 @@ pub(in crate::shell) fn list_scroll_metrics(
     ListScroll::new(start, max_start, viewport_rows)
 }
 
-pub(in crate::shell) fn list_scroll_start_to_reveal(
+fn list_scroll_start_to_reveal(
     row_heights: &[u16],
     gaps_after: &[u16],
     body_height: u16,

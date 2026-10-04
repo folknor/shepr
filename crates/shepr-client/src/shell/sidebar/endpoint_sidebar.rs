@@ -195,18 +195,7 @@ pub(in crate::shell) fn draw_expanded(
     for slot in &view.workspaces.slots {
         match slot {
             ExpandedSlot::Machine { hit, endpoint } => {
-                let endpoint = &inputs.endpoints[*endpoint];
-                let collapsed = inputs.collapsed.contains(&endpoint.endpoint_id);
-                let marker = if collapsed { "▸" } else { "▾" };
-                draw_endpoint_row(
-                    buffer,
-                    hit.rect,
-                    marker,
-                    endpoint,
-                    collapsed && &endpoint.endpoint_id == inputs.presented,
-                    inputs.machine_diagnostics,
-                    palette,
-                );
+                draw_machine_slot(buffer, hit.rect, *endpoint, inputs);
             }
             ExpandedSlot::Workspace {
                 hit,
@@ -276,6 +265,17 @@ pub(in crate::shell) fn draw_expanded(
             &"─".repeat(body.width as usize),
             Style::default().fg(palette.accent),
         );
+        // A drop target marks the row above the workspace it precedes. Above a machine's
+        // first workspace, and below the active machine's last one when another machine
+        // follows, that row is a machine row: the machine is drawn again over the marker,
+        // so its name and status stay readable and the marker fills the rest of the row.
+        for slot in &view.workspaces.slots {
+            if let ExpandedSlot::Machine { hit, endpoint } = slot
+                && hit.rect.y == row
+            {
+                draw_machine_slot(buffer, hit.rect, *endpoint, inputs);
+            }
+        }
     }
 
     if let Some(footer) = &view.footer {
@@ -306,6 +306,22 @@ pub(in crate::shell) fn draw_expanded(
         view.toggle.width,
         "«",
         Style::default().fg(palette.overlay0),
+    );
+}
+
+/// Draws the expanded sidebar's row for the machine at `endpoint` in `inputs.endpoints`.
+fn draw_machine_slot(buffer: &mut Buffer, rect: Rect, endpoint: usize, inputs: &SidebarInputs<'_>) {
+    let endpoint = &inputs.endpoints[endpoint];
+    let collapsed = inputs.collapsed.contains(&endpoint.endpoint_id);
+    let marker = if collapsed { "▸" } else { "▾" };
+    draw_endpoint_row(
+        buffer,
+        rect,
+        marker,
+        endpoint,
+        collapsed && &endpoint.endpoint_id == inputs.presented,
+        inputs.machine_diagnostics,
+        &inputs.config.palette,
     );
 }
 

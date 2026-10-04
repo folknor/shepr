@@ -54,7 +54,7 @@ impl Presentation {
         self.shown().pane_hits()
     }
 
-    pub(in crate::shell) fn composition(&self) -> &LastComposition {
+    fn composition(&self) -> &LastComposition {
         &self.composition
     }
 
@@ -86,11 +86,7 @@ impl Presentation {
     /// Returns whether the frame on screen has that pane. It runs when the patch is
     /// received, before its rows are written; the caller in `surface_patch` says why
     /// that is sound.
-    pub(in crate::shell) fn patch_pane_hit(
-        &mut self,
-        updated: &shepr_protocol::PaneSurfacePane,
-        area: Rect,
-    ) -> bool {
+    fn patch_pane_hit(&mut self, updated: &shepr_protocol::PaneSurfacePane, area: Rect) -> bool {
         let Some(hit) = self
             .view
             .as_mut()
@@ -111,7 +107,7 @@ impl Presentation {
         self.view.as_mut()
     }
 
-    pub(in crate::shell) fn composition_mut(&mut self) -> &mut LastComposition {
+    fn composition_mut(&mut self) -> &mut LastComposition {
         &mut self.composition
     }
 
@@ -120,7 +116,7 @@ impl Presentation {
     }
 
     /// Records an empty frame of `size` as the last drawn one.
-    pub(in crate::shell) fn set_composed_size(&mut self, size: (u16, u16)) {
+    fn set_composed_size(&mut self, size: (u16, u16)) {
         self.view = Some(ShellView::empty_at(size));
     }
 
@@ -128,3 +124,6 @@ impl Presentation {
         self.view = Some(view);
     }
 }
+
+#[cfg(test)]
+mod tests;

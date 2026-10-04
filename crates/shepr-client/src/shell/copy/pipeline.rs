@@ -28,7 +28,7 @@ impl CopyPipeline {
     pub(super) fn holds(&self, flight: Ticket) -> bool {
         self.flight.is_some_and(|held| held.ticket == flight)
     }
-    pub(in crate::shell) fn begin(&mut self, flight: Ticket, search_rows: Option<Ticket>) {
+    pub(super) fn begin(&mut self, flight: Ticket, search_rows: Option<Ticket>) {
         self.flight = Some(CopyFlight {
             ticket: flight,
             search_rows,
@@ -41,12 +41,12 @@ impl CopyPipeline {
     pub(super) fn finish(&mut self) {
         self.flight = None;
     }
-    pub(in crate::shell) fn reset(&mut self) {
+    pub(super) fn reset(&mut self) {
         self.flight = None;
         self.ops.clear();
         self.keys.clear();
     }
-    pub(in crate::shell) fn push_op(&mut self, op: ClientCopyOperation) {
+    pub(super) fn push_op(&mut self, op: ClientCopyOperation) {
         self.ops.push_back(op);
     }
     pub(super) fn pop_op(&mut self) -> Option<ClientCopyOperation> {

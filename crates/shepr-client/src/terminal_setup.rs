@@ -1235,4 +1235,49 @@ mod tests {
         mode.clear_endpoint_request();
         assert_eq!(mode.desired(), HostMouseCapture::Cells);
     }
+
+    #[test]
+    fn host_cursor_policy_native_and_drawn_ignore_the_terminal() {
+        let env = shepr_test_support::IsolatedEnv::new();
+        env.set("TERM_PROGRAM", "WezTerm");
+
+        assert!(!should_draw_host_cursor(
+            shepr_config::HostCursorModeConfig::Native
+        ));
+        assert!(should_draw_host_cursor(
+            shepr_config::HostCursorModeConfig::Drawn
+        ));
+    }
+
+    #[test]
+    fn write_host_color_scheme_report_mode_emits_mode_sequences() {
+        let mut output = Vec::new();
+        write_host_color_scheme_report_mode(&mut output, true).expect("test precondition");
+        write_host_color_scheme_report_mode(&mut output, false).expect("test precondition");
+
+        let mut expected = Vec::new();
+        expected.extend_from_slice(
+            shepr_termio::host_term::theme::HOST_COLOR_SCHEME_REPORT_ENABLE_SEQUENCE.as_bytes(),
+        );
+        expected.extend_from_slice(
+            shepr_termio::host_term::theme::HOST_COLOR_SCHEME_REPORT_DISABLE_SEQUENCE.as_bytes(),
+        );
+        assert_eq!(output, expected);
+    }
+
+    #[test]
+    fn host_modes_restore_color_scheme_reports_when_enabled() {
+        let mut output = Vec::new();
+        let host_modes = HostModes::new(false);
+        host_modes
+            .enable_color_scheme_reports(&mut output)
+            .expect("test precondition");
+        output.clear();
+        host_modes.restore(&mut output).expect("test precondition");
+
+        assert_eq!(
+            output,
+            shepr_termio::host_term::theme::HOST_COLOR_SCHEME_REPORT_DISABLE_SEQUENCE.as_bytes()
+        );
+    }
 }

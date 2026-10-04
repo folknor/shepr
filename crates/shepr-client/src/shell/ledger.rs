@@ -97,7 +97,7 @@ impl Ledger {
     pub(in crate::shell) fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
-    pub(in crate::shell) fn ids(&self) -> Vec<RequestId> {
+    fn ids(&self) -> Vec<RequestId> {
         self.entries.keys().cloned().collect()
     }
     fn take(&mut self, id: &RequestId) -> Option<Entry> {
@@ -145,7 +145,7 @@ pub(in crate::shell) enum Work {
 /// Everything a request's drop may restore, as disjoint borrows of the shell's feature
 /// state. It holds no path to the ledger or to `ClientShellState`, so a drop cannot open
 /// a request.
-pub(in crate::shell) struct Rollback<'a> {
+struct Rollback<'a> {
     copy: &'a mut Option<CopySession>,
     mouse_selection: &'a mut MouseSelection,
     scroll_lanes: &'a mut ScrollLanes,
@@ -527,41 +527,16 @@ impl Ledger {
 }
 #[cfg(test)]
 impl ClientShellState {
-    /// Whether the ledger holds `id`. For `crate::tests`, which cannot see the
-    /// `pub(in crate::shell)` `ledger` field.
+    /// Whether the ledger holds `id`. For tests outside the shell, which cannot see the
+    /// `ledger` field.
     pub(crate) fn has_request(&self, id: &RequestId) -> bool {
         self.ledger.contains(id)
     }
+
+    /// Whether any request is open, for tests outside the shell.
+    pub(crate) fn has_open_requests(&self) -> bool {
+        !self.ledger.is_empty()
+    }
 }
 #[cfg(test)]
-mod tests {
-    use crate::shell::ledger::{Ledger, Work};
-    use shepr_protocol::command::CommandKind;
-
-    #[test]
-    fn ids_are_unique_and_never_reused() {
-        let mut l = Ledger::default();
-        let boot = crate::tests::test_boot_id("boot");
-        let a = l.open(boot.clone(), CommandKind::WorkspaceRename, Work::Plain);
-        l.take(&a);
-        let b = l.open(boot, CommandKind::WorkspaceRename, Work::Plain);
-        assert_ne!(a, b);
-    }
-    #[test]
-    fn tickets_are_never_reissued() {
-        let mut l = Ledger::default();
-        let tickets: Vec<_> = (0..1000).map(|_| l.ticket()).collect();
-        assert!(tickets.windows(2).all(|pair| pair[0].0 < pair[1].0));
-    }
-    #[test]
-    fn an_entry_is_taken_once() {
-        let mut l = Ledger::default();
-        let id = l.open(
-            crate::tests::test_boot_id("boot"),
-            CommandKind::WorkspaceRename,
-            Work::Plain,
-        );
-        assert!(l.take(&id).is_some());
-        assert!(l.take(&id).is_none());
-    }
-}
+mod tests;

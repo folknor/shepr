@@ -17,18 +17,18 @@ struct ScrollFlight {
     /// Queued work exists only inside the flight it waits behind.
     queued: Option<usize>,
 }
-pub(in crate::shell) enum ScrollWant {
+pub(super) enum ScrollWant {
     Send,
     Queued,
 }
 #[derive(Debug, PartialEq, Eq)]
-pub(in crate::shell) enum ScrollAnswer {
+pub(super) enum ScrollAnswer {
     Stale,
     Next(Option<usize>),
 }
 impl ScrollLanes {
     /// Records `offset` as the target; queues it (latest wins) behind a flight.
-    pub(in crate::shell) fn want(&mut self, pane: &PublicPaneId, offset: usize) -> ScrollWant {
+    pub(super) fn want(&mut self, pane: &PublicPaneId, offset: usize) -> ScrollWant {
         let lane = self.0.entry(*pane).or_default();
         lane.target = Some(offset);
         if let Some(flight) = lane.flight.as_mut() {
@@ -40,7 +40,7 @@ impl ScrollLanes {
     }
     /// Every dispatch, a queued one included, records its offset as the target, so a
     /// surface still showing the confirmed in-between offset does not clear it.
-    pub(in crate::shell) fn sent(&mut self, pane: PublicPaneId, flight: Ticket, offset: usize) {
+    pub(super) fn sent(&mut self, pane: PublicPaneId, flight: Ticket, offset: usize) {
         self.0.insert(
             pane,
             ScrollLane {
@@ -52,12 +52,12 @@ impl ScrollLanes {
             },
         );
     }
-    pub(in crate::shell) fn send_failed(&mut self, pane: &PublicPaneId) {
+    pub(super) fn send_failed(&mut self, pane: &PublicPaneId) {
         self.0.remove(pane);
     }
     /// Do not resurrect a target a surface already showed, or replace a queued target
     /// with the intermediate offset confirmed by this answer.
-    pub(in crate::shell) fn answered(
+    pub(super) fn answered(
         &mut self,
         pane: &PublicPaneId,
         flight: Ticket,

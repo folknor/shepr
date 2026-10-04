@@ -36,7 +36,7 @@ impl PinnedLocation {
     }
 }
 
-pub(in crate::shell) fn workspace_navigation_targets(
+pub(super) fn workspace_navigation_targets(
     endpoints: &[ClientShellEndpoint],
 ) -> Vec<PinnedLocation> {
     let mut targets = Vec::new();
@@ -62,7 +62,7 @@ pub(in crate::shell) fn workspace_navigation_targets(
 }
 
 impl ClientShellState {
-    pub(in crate::shell) fn keep_workspace_highlight_until_snapshot(
+    pub(super) fn keep_workspace_highlight_until_snapshot(
         &mut self,
         target: PinnedLocation,
         ticket: Ticket,

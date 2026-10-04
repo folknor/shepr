@@ -17,7 +17,7 @@ impl PaneInputBatchAccounting {
     }
 }
 
-pub(in crate::shell) fn target_event_message(
+fn target_event_message(
     target: shepr_protocol::PublicPaneId,
     event: ClientPaneInputEvent,
 ) -> ClientMessage {
@@ -29,7 +29,7 @@ pub(in crate::shell) fn target_event_message(
 
 /// Adds an event to the pending target message while its grown
 /// `InputBatchCharge` still fits, the rule the server refuses a batch by.
-pub(in crate::shell) fn push_target_event(
+pub(super) fn push_target_event(
     target: shepr_protocol::PublicPaneId,
     event: ClientPaneInputEvent,
     outcome: &mut ClientShellInput,

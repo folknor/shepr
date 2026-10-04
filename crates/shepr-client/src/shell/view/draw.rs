@@ -25,10 +25,7 @@ use crate::shell::view::{DrawnFrame, PaneHit, ShellView};
 
 /// Draws `view`. `None` only when the canvas refuses the drawn buffer, which keeps the last
 /// frame on screen.
-pub(in crate::shell) fn draw_frame(
-    state: &ClientShellState,
-    view: &ShellView,
-) -> Option<DrawnFrame> {
+pub(super) fn draw_frame(state: &ClientShellState, view: &ShellView) -> Option<DrawnFrame> {
     let (cols, rows) = view.size;
     let screen = Rect::new(0, 0, cols, rows);
     let palette = &state.config.palette;
@@ -345,7 +342,7 @@ fn configured_key_labels(bindings: &[&shepr_config::ActionKeybinds]) -> String {
     }
 }
 
-pub(in crate::shell) fn render_mode_bar(
+fn render_mode_bar(
     buffer: &mut Buffer,
     pane_area: Rect,
     mode: ClientShellMode,
@@ -680,7 +677,7 @@ mod tests {
             pane_size: (6, 4),
             presented: None,
         };
-        let copy_mode = CopySession::start(CopyEntry {
+        let mut copy_mode = CopySession::start(CopyEntry {
             pane_id: crate::tests::test_pane_id("w1:p1"),
             scroll: shepr_term::ScrollMetrics::new(0, 0, 4, shepr_term::AbsRow(0)),
             geometry: (6, 4),
@@ -690,19 +687,19 @@ mod tests {
                 col: 0,
             },
             rows: crate::shell::ledger::Ticket::fixture(1),
-        })
-        .with_search(ClientCopySearch {
-            query: "x".into(),
-            results: ClientCopySearchResult {
-                matches: vec![text_range(2, 0, 1), text_range(3, 0, 5)],
-                total: 2,
-                current: Some(shepr_protocol::command::PaneCopySearchPosition {
-                    window_index: 1,
-                    global_index: 1,
-                }),
-            },
-            ..Default::default()
         });
+        let search = copy_mode
+            .search
+            .get_or_insert_with(ClientCopySearch::default);
+        search.query = "x".into();
+        search.results = ClientCopySearchResult {
+            matches: vec![text_range(2, 0, 1), text_range(3, 0, 5)],
+            total: 2,
+            current: Some(shepr_protocol::command::PaneCopySearchPosition {
+                window_index: 1,
+                global_index: 1,
+            }),
+        };
         let palette = Palette::catppuccin();
         let mut frame =
             shepr_surface::compose::Canvas::from_buffer(&Buffer::empty(Rect::new(0, 0, 6, 3)))

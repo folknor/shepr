@@ -22,16 +22,16 @@
 mod client_loop;
 mod clipboard_forwarding;
 mod deadline;
-pub mod endpoint;
+mod endpoint;
 mod errors;
 mod events;
 mod fatal_panic;
 mod handshake;
 mod input;
-pub(crate) mod input_wire;
+mod input_wire;
 mod launch;
 mod limits;
-pub(crate) mod logging;
+mod logging;
 mod loop_config;
 mod shell;
 mod shell_runtime;
@@ -41,33 +41,7 @@ mod terminal_geometry;
 mod terminal_setup;
 
 pub use errors::{ClientExit, ClientRunError};
-pub use shell::{ClientShellConfig, ClientShellState, Location, LocationTarget};
 pub use startup::{run_client, run_client_with_connectors};
 
-#[cfg(test)]
-use client_loop::{ClientLoop, EventQueue, HostCellReport, LoopSignals};
-#[cfg(test)]
-use errors::LoopExit;
-#[cfg(test)]
-use shell_runtime::*;
-#[cfg(test)]
-use shepr_protocol::ClientMessage;
-#[cfg(test)]
-use state::ClientState;
-#[cfg(test)]
-use std::io;
-#[cfg(test)]
-use std::sync::Arc;
-#[cfg(test)]
-use terminal_geometry::{
-    AtomicCellSize, cell_size_fallback, current_terminal_geometry_with, ioctl_cell_size,
-    pack_cell_size, resize_report_required, write_host_cell_size_query,
-    write_host_terminal_appearance_query, write_host_terminal_theme_query,
-};
-#[cfg(test)]
-use terminal_setup::{
-    HostModes, should_draw_host_cursor, write_host_color_scheme_report_mode,
-    write_terminal_restore_postlude,
-};
 #[cfg(test)]
 mod tests;

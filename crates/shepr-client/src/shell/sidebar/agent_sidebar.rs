@@ -25,7 +25,7 @@ pub(in crate::shell) struct AgentRow {
 }
 
 /// Draws the agent section's divider and, when it fits, its header and sort label.
-pub(in crate::shell) fn draw_agent_panel_header(
+pub(super) fn draw_agent_panel_header(
     buffer: &mut Buffer,
     panel: &AgentPanelView,
     config: &ClientShellConfig,
@@ -157,7 +157,7 @@ impl<'a> AgentRowIndex<'a> {
     }
 }
 
-pub(in crate::shell) fn render_agent_row(
+pub(super) fn render_agent_row(
     buffer: &mut Buffer,
     rect: Rect,
     row: &AgentRow,

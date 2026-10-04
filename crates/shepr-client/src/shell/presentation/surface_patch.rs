@@ -1,8 +1,5 @@
-use crate::shell::state::ClientShellState;
-
 use crate::shell::presentation::surfaces::PatchRejection;
-
-use crate::shell::presentation::surfaces;
+use crate::shell::state::ClientShellState;
 
 pub(crate) struct ClientComposedSurfacePatch {
     pub(crate) rows: Vec<shepr_protocol::PaneSurfacePatchRow>,
@@ -107,14 +104,6 @@ impl ClientShellState {
         &mut self,
         patch: &shepr_protocol::PaneSurfacePatch,
         generation: shepr_protocol::ConnectionGeneration,
-    ) -> ClientPaneSurfacePatchOutcome {
-        self.apply_tagged_pane_surface_patch(patch, generation)
-    }
-
-    pub(in crate::shell) fn apply_tagged_pane_surface_patch(
-        &mut self,
-        patch: &shepr_protocol::PaneSurfacePatch,
-        generation: surfaces::SurfaceGeneration,
     ) -> ClientPaneSurfacePatchOutcome {
         if let Err(reason) = self.presentation.surfaces.validate(patch, generation) {
             return ClientPaneSurfacePatchOutcome::Rejected(reason);

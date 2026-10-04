@@ -10,7 +10,7 @@ use crate::deadline::Deadline;
 use crate::limits::ENDPOINT_DETACH_FLUSH_TIMEOUT;
 use shepr_protocol::{ClientMessage, ConnectionGeneration};
 
-pub trait EndpointTransport: Send {
+pub(crate) trait EndpointTransport: Send {
     fn send(&mut self, message: &ClientMessage) -> io::Result<()>;
 
     fn disconnect(&mut self);
@@ -58,7 +58,7 @@ pub(crate) enum EndpointSendOutcome {
     NotSent,
 }
 
-pub struct EndpointRegistry {
+pub(crate) struct EndpointRegistry {
     connections: HashMap<ClientEndpointId, EndpointConnection>,
     failures: Vec<EndpointTransportFailure>,
 }
@@ -72,7 +72,7 @@ impl EndpointRegistry {
     }
 
     /// A registry whose Local slot is a server socket on this host, connected at `now`.
-    pub fn new_at(
+    pub(crate) fn new_at(
         local: impl EndpointTransport + 'static,
         generation: ConnectionGeneration,
         now: Instant,
@@ -84,7 +84,7 @@ impl EndpointRegistry {
 
     /// Whether this endpoint's connection has been told it is viewed. False without a
     /// connection.
-    pub fn viewed(&self, id: &ClientEndpointId) -> bool {
+    pub(crate) fn viewed(&self, id: &ClientEndpointId) -> bool {
         self.connections
             .get(id)
             .is_some_and(|connection| connection.viewed)
@@ -98,7 +98,7 @@ impl EndpointRegistry {
     /// as `set_viewed` later records. A bool rather than an enum: it is the only
     /// bool among these parameters, so a call site cannot swap it with another,
     /// and it mirrors the wire field and the `viewed` query.
-    pub fn insert(
+    pub(crate) fn insert(
         &mut self,
         endpoint_id: ClientEndpointId,
         transport: impl EndpointTransport + 'static,
@@ -443,7 +443,10 @@ impl EndpointRegistry {
         }
     }
 
-    pub fn new(local: impl EndpointTransport + 'static, generation: ConnectionGeneration) -> Self {
+    pub(crate) fn new(
+        local: impl EndpointTransport + 'static,
+        generation: ConnectionGeneration,
+    ) -> Self {
         // clock-io-ok: this test-only constructor stands in for the client launch.
         Self::new_at(local, generation, Instant::now())
     }
@@ -973,8 +976,8 @@ mod tests {
     }
     #[test]
     fn send_viewed_reaches_only_viewed_connections() {
-        let local = crate::tests::endpoint_choice::RecordingTransport::default();
-        let other = crate::tests::endpoint_choice::RecordingTransport::default();
+        let local = crate::tests::endpoints::RecordingTransport::default();
+        let other = crate::tests::endpoints::RecordingTransport::default();
         let id = ClientEndpointId::Ssh(profile());
         let mut registry = EndpointRegistry::new(local.clone(), generation(1));
         registry.insert(
@@ -995,8 +998,8 @@ mod tests {
     }
     #[test]
     fn send_viewed_records_a_failed_connection_and_still_reaches_the_rest() {
-        let local = crate::tests::endpoint_choice::RecordingTransport::default();
-        let other = crate::tests::endpoint_choice::RecordingTransport::default();
+        let local = crate::tests::endpoints::RecordingTransport::default();
+        let other = crate::tests::endpoints::RecordingTransport::default();
         let id = ClientEndpointId::Ssh(profile());
         let mut registry = EndpointRegistry::new(local.clone(), generation(1));
         registry.insert(
@@ -1017,7 +1020,7 @@ mod tests {
         let mut registry = EndpointRegistry::empty();
         let boot = crate::tests::test_boot_id("boot");
         let transports: Vec<_> = (0..4)
-            .map(|_| crate::tests::endpoint_choice::RecordingTransport::default())
+            .map(|_| crate::tests::endpoints::RecordingTransport::default())
             .collect();
         let ids: Vec<_> = (0..4)
             .map(|n| {

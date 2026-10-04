@@ -34,8 +34,8 @@ use crate::shell::view::list::ListView;
 // The navigator footers are written out instead of derived from these tables, unlike the
 // copy-mode and resize mode bars. They group keys more compactly than one label per binding
 // can (`↑↓`, `ctrl+n/p`) and list only the keys worth naming, so the trailing close hint still
-// fits a narrow overlay. The tests below check that every key a footer names routes to its
-// command.
+// fits a narrow overlay. The navigator's tests check that every key a footer names routes to
+// its command.
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum NavigatorCommand {
@@ -184,12 +184,12 @@ pub(in crate::shell) struct NavigatorOverlay {
     pub(in crate::shell) scroll: usize,
     pub(in crate::shell) filter: Option<ClientNavigatorFilter>,
     /// The grab offset of a scrollbar drag in progress, held until its release.
-    pub(in crate::shell) drag: Option<u16>,
+    drag: Option<u16>,
 }
 
 impl NavigatorOverlay {
     /// Moves the selection by `delta` rows, clamped to the list.
-    pub(in crate::shell) fn move_selection(&mut self, rows: &[ClientNavigatorRow], delta: isize) {
+    pub(super) fn move_selection(&mut self, rows: &[ClientNavigatorRow], delta: isize) {
         if rows.is_empty() {
             self.selected = None;
             return;
@@ -205,12 +205,7 @@ impl NavigatorOverlay {
 
     /// Scrolls the list to `start`, clamped to the drawn list's range, and keeps the selection
     /// inside the new viewport so the next frame does not snap back to it.
-    pub(in crate::shell) fn scroll_to(
-        &mut self,
-        start: usize,
-        drawn: ListScroll,
-        rows: &[ClientNavigatorRow],
-    ) {
+    fn scroll_to(&mut self, start: usize, drawn: ListScroll, rows: &[ClientNavigatorRow]) {
         let start = start.min(drawn.max_start());
         self.scroll = start;
         let last_visible = start + drawn.viewport_rows().saturating_sub(1);
@@ -837,98 +832,4 @@ impl NavigatorOverlay {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::endpoint::ClientEndpointId;
-    use crate::tests::test_pane_id;
-
-    fn key(code: KeyCode) -> TerminalKey {
-        TerminalKey::new(code, KeyModifiers::NONE)
-    }
-
-    fn ctrl(character: char) -> TerminalKey {
-        TerminalKey::new(KeyCode::Char(character), KeyModifiers::CONTROL)
-    }
-
-    fn char_key(character: char) -> TerminalKey {
-        key(KeyCode::Char(character))
-    }
-
-    fn pane_rows(count: usize) -> Vec<ClientNavigatorRow> {
-        (1..=count)
-            .map(|number| ClientNavigatorRow {
-                depth: 1,
-                label: format!("agent {number}"),
-                meta: String::new(),
-                detail: String::new(),
-                agent: None,
-                status: None,
-                stale: false,
-                current: false,
-                target: Location::pane(
-                    ClientEndpointId::Local,
-                    test_pane_id(&format!("w1:p{number}")),
-                ),
-            })
-            .collect()
-    }
-
-    #[test]
-    fn every_key_the_navigator_footers_name_routes_to_its_command() {
-        use NavigatorCommand as C;
-        let main = [
-            (key(KeyCode::Up), C::MoveUp),
-            (key(KeyCode::Down), C::MoveDown),
-            (char_key('k'), C::MoveUp),
-            (char_key('j'), C::MoveDown),
-            (key(KeyCode::Left), C::MoveWorkspaceLeft),
-            (key(KeyCode::Right), C::MoveWorkspaceRight),
-            (char_key('/'), C::Search),
-            (char_key('a'), C::FilterAll),
-            (char_key('b'), C::FilterBlocked),
-            (char_key('w'), C::FilterWorking),
-            (char_key('i'), C::FilterIdle),
-            (ctrl('d'), C::PageDown),
-            (key(KeyCode::Enter), C::Open),
-            (key(KeyCode::Esc), C::BackOrClose),
-        ];
-        for (pressed, command) in main {
-            assert_eq!(navigator_command_for_main(&pressed), Some(command));
-        }
-        let search = [
-            (key(KeyCode::Up), C::MoveUp),
-            (key(KeyCode::Down), C::MoveDown),
-            (ctrl('p'), C::MoveUp),
-            (ctrl('n'), C::MoveDown),
-            (key(KeyCode::Enter), C::Open),
-            (key(KeyCode::Esc), C::BackOrClose),
-        ];
-        for (pressed, command) in search {
-            assert_eq!(navigator_command_for_search(&pressed), Some(command));
-        }
-    }
-
-    #[test]
-    fn up_after_scrolling_moves_the_selection_not_the_view() {
-        // The stored scroll is the effective one the last frame drew, so a selection inside the
-        // viewport moves without the view following it.
-        let rows = pane_rows(60);
-        let mut navigator = NavigatorOverlay {
-            scroll: 20,
-            selected: Some(rows[25].target.clone()),
-            ..NavigatorOverlay::default()
-        };
-        navigator.move_selection(&rows, -1);
-        assert_eq!(navigator.selected.as_ref(), Some(&rows[24].target));
-        assert_eq!(navigator.scroll, 20);
-
-        // A scrollbar scroll moves the view and drags the selection into it.
-        let drawn = ListScroll::new(20, 40, 12);
-        navigator.scroll_to(30, drawn, &rows);
-        assert_eq!(navigator.scroll, 30);
-        assert_eq!(navigator.selected.as_ref(), Some(&rows[30].target));
-        navigator.scroll_to(500, drawn, &rows);
-        assert_eq!(navigator.scroll, 40);
-        assert_eq!(navigator.selected.as_ref(), Some(&rows[40].target));
-    }
-}
+mod tests;

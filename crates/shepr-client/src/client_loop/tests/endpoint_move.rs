@@ -1,369 +1,19 @@
-use super::*;
-use endpoint::{ClientEndpointId, EndpointChoice, EndpointRegistry, EndpointTransport};
+//! A machine move driven through the loop: what each connection is sent, what is shown and
+//! viewed at each turn, and how a move ends when a step fails.
+
+use super::Fixture;
+use crate::endpoint::{self, ClientEndpointId};
+use crate::events::{ClientLoopEvent, ParsedHostInput};
+use crate::shell;
+use crate::shell_runtime::{ShellInputDisposition, finish_client_shell_input, resize_views};
+use crate::tests::endpoints::{boot, remote, snapshot, surface};
+use crate::tests::{test_generation, test_pane_id, test_workspace_id};
 use shepr_protocol::{
-    ClientShellSnapshot, ClientSurfaceSize, PaneSurfaceFrame, ServerMessage,
+    ClientMessage, ServerMessage,
     command::{EndpointCommand, EndpointReply},
 };
-use shepr_surface::ratatui_conversion::FrameDataExt as _;
-use std::sync::Mutex;
-use std::time::Instant;
+use std::io;
 
-#[derive(Clone, Default)]
-pub(crate) struct RecordingTransport {
-    pub(crate) sent: Arc<Mutex<Vec<ClientMessage>>>,
-    pub(crate) fail: Arc<AtomicBool>,
-}
-impl RecordingTransport {
-    pub(crate) fn take(&self) -> Vec<ClientMessage> {
-        std::mem::take(&mut *self.sent.lock().expect("messages"))
-    }
-    pub(crate) fn fail_next(&self) {
-        self.fail.store(true, Ordering::Release);
-    }
-}
-impl EndpointTransport for RecordingTransport {
-    fn send(&mut self, message: &ClientMessage) -> io::Result<()> {
-        if self.fail.swap(false, Ordering::AcqRel) {
-            return Err(io::Error::new(
-                io::ErrorKind::BrokenPipe,
-                "recording send failed",
-            ));
-        }
-        self.sent
-            .lock()
-            .map_err(|_| io::Error::other("messages lock"))?
-            .push(message.clone());
-        Ok(())
-    }
-    fn disconnect(&mut self) {}
-    fn flush(&mut self, _deadline: Instant) -> io::Result<()> {
-        Ok(())
-    }
-    fn take_error(&mut self) -> Option<io::Error> {
-        None
-    }
-}
-#[derive(Clone, Default)]
-struct Output(Arc<Mutex<Vec<u8>>>);
-impl io::Write for Output {
-    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        self.0
-            .lock()
-            .map_err(|_| io::Error::other("output lock"))?
-            .extend_from_slice(bytes);
-        Ok(bytes.len())
-    }
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
-}
-pub(crate) fn remote() -> ClientEndpointId {
-    ClientEndpointId::Ssh(shepr_config::MachineLabel::parse("build").expect("machine"))
-}
-pub(crate) fn boot(id: &ClientEndpointId) -> shepr_protocol::BootId {
-    test_boot_id(if id.is_local() {
-        "local-boot"
-    } else {
-        "remote-boot"
-    })
-}
-pub(crate) fn snapshot(id: &ClientEndpointId, revision: u64) -> Box<ClientShellSnapshot> {
-    Box::new(ClientShellSnapshot {
-        boot_id: boot(id),
-        revision: counter_at(revision),
-        restore_notice: None,
-        session_saves_stopped: false,
-        focused_workspace_id: Some(test_workspace_id("w1")),
-        focused_pane_id: Some(test_pane_id("w1:p1")),
-        workspaces: vec![shepr_protocol::ClientShellWorkspace {
-            workspace_id: test_workspace_id("w1"),
-            new_workspace_cwd: Some("/repo".into()),
-            label: id.display_label().into(),
-            branch: None,
-            git_ahead_behind: None,
-            agent_status: shepr_protocol::AgentStatus::Idle,
-        }],
-        panes: vec![shepr_protocol::ClientShellPane {
-            pane_id: test_pane_id("w1:p1"),
-            label: None,
-            cwd: Some("/repo".into()),
-            foreground_cwd: None,
-            right_click_passthrough: false,
-        }],
-        agents: vec![],
-    })
-}
-pub(crate) fn surface(
-    id: &ClientEndpointId,
-    revision: u64,
-    size: ClientSurfaceSize,
-    marker: &str,
-) -> PaneSurfaceFrame {
-    let area = ratatui::layout::Rect::new(0, 0, size.cols, size.rows);
-    let mut buffer = ratatui::buffer::Buffer::empty(area);
-    buffer.set_string(0, 0, marker, ratatui::style::Style::default());
-    PaneSurfaceFrame {
-        boot_id: boot(id),
-        projection_revision: counter_at(revision),
-        surface_revision: counter_at(revision),
-        frame: shepr_protocol::FrameData::from_ratatui_buffer_with_hyperlinks(&buffer, None, &[])
-            .expect("test surface size is valid"),
-        panes: vec![shepr_protocol::PaneSurfacePane {
-            pane_id: test_pane_id("w1:p1"),
-            content_revision: counter_at(revision),
-            rect: shepr_protocol::SurfaceRect {
-                x: 0,
-                y: 0,
-                width: size.cols,
-                height: size.rows,
-            },
-            inner_rect: shepr_protocol::SurfaceRect {
-                x: 0,
-                y: 0,
-                width: size.cols,
-                height: size.rows,
-            },
-            scrollbar_rect: None,
-            scroll: None,
-            focused: true,
-            mouse_reporting: false,
-            pixel_mouse: shepr_term::mouse::PanePixelMouse::OFF,
-            alternate_screen_active: false,
-        }],
-        splits: vec![],
-    }
-}
-pub(crate) struct Fixture {
-    pub(crate) client: ClientLoop,
-    pub(crate) local: RecordingTransport,
-    pub(crate) target: RecordingTransport,
-    pub(crate) now: Instant,
-    output: Output,
-}
-impl Fixture {
-    pub(crate) fn new() -> Self {
-        let now = Instant::now();
-        let config = shepr_config::ValidatedClientConfig::test_default();
-        let machines = vec![shepr_config::MachineConfig {
-            label: shepr_config::MachineLabel::parse("build").expect("machine"),
-            ssh: shepr_config::SshTarget::parse("host").expect("SSH"),
-        }];
-        // `test_new` reports a 100x30 host, the size `surface_size` is asked for below.
-        let mut state = ClientState::test_new();
-        state.shell.set_machines(&machines);
-        let output = Output::default();
-        state.output_writer = Box::new(output.clone());
-        state
-            .shell
-            .endpoint_connected(&ClientEndpointId::Local, test_generation(1));
-        state.shell.set_endpoint_snapshot_for_generation(
-            &ClientEndpointId::Local,
-            test_generation(1),
-            snapshot(&ClientEndpointId::Local, 1),
-        );
-        state
-            .shell
-            .endpoint_connected(&remote(), test_generation(7));
-        state.shell.cache_endpoint_snapshot_for_generation(
-            &remote(),
-            test_generation(7),
-            snapshot(&remote(), 1),
-        );
-        let size = state.shell.surface_size(100, 30);
-        state.shell.receive_pane_surface_from(
-            surface(&ClientEndpointId::Local, 1, size, "SOURCE"),
-            test_generation(1),
-        );
-        let local = RecordingTransport::default();
-        let target = RecordingTransport::default();
-        let mut registry = EndpointRegistry::new_at(local.clone(), test_generation(1), now);
-        registry.insert(remote(), target.clone(), test_generation(7), false, now);
-        let supervisors = endpoint::EndpointSupervisors::new(
-            endpoint::EndpointSupervisors::fresh_connectors(config.paths(), &machines),
-            now,
-        )
-        .expect("supervisors");
-        let (tx, rx) = tokio::sync::mpsc::channel(1);
-        let hub = endpoint::EndpointHub::new(
-            registry,
-            supervisors,
-            endpoint::LocalFailurePolicy::Reconnect,
-        );
-        let client = ClientLoop::new(
-            state,
-            hub,
-            LoopSignals {
-                should_quit: Arc::new(AtomicBool::new(false)),
-                fatal: Arc::default(),
-            },
-            EventQueue { tx, rx },
-            HostCellReport {
-                size: Arc::new(AtomicCellSize::new()),
-                queried: crate::input::ProbeAvailability::NotArmed,
-            },
-        );
-        Self {
-            client,
-            local,
-            target,
-            now,
-            output,
-        }
-    }
-    pub(crate) fn size(&self) -> ClientSurfaceSize {
-        self.client.state().shell.surface_size(
-            self.client.state().reported_geometry.cols(),
-            self.client.state().reported_geometry.rows(),
-        )
-    }
-    pub(crate) fn pick(&mut self, id: ClientEndpointId) {
-        self.client
-            .state_mut()
-            .shell
-            .endpoints
-            .choice
-            .select(shell::Location::machine(id));
-    }
-    pub(crate) fn reconcile(&mut self) {
-        self.client.reconcile(self.now).expect("reconcile");
-    }
-    pub(crate) fn start(&mut self) {
-        self.pick(remote());
-        self.reconcile();
-    }
-    pub(crate) fn inbound(&mut self, id: &ClientEndpointId, message: ServerMessage) {
-        let message = shepr_surface::decode::Decoder::default()
-            .decode_client(message)
-            .expect("test message is valid");
-        let generation = self
-            .client
-            .hub()
-            .registry()
-            .connection(id)
-            .expect("connection")
-            .generation;
-        self.client
-            .handle_event(
-                ClientLoopEvent::ServerMessage {
-                    endpoint_id: id.clone(),
-                    generation,
-                    message: Box::new(message),
-                },
-                self.now,
-            )
-            .expect("message");
-    }
-    pub(crate) fn inbound_patch(
-        &mut self,
-        id: &ClientEndpointId,
-        patch: shepr_protocol::PaneSurfacePatch,
-    ) {
-        let generation = self
-            .client
-            .hub()
-            .registry()
-            .connection(id)
-            .expect("connection")
-            .generation;
-        self.client
-            .handle_event(
-                ClientLoopEvent::ServerMessage {
-                    endpoint_id: id.clone(),
-                    generation,
-                    message: Box::new(DecodedClientServerMessage::PaneSurfacePatch(patch)),
-                },
-                self.now,
-            )
-            .expect("patch");
-    }
-    pub(crate) fn on_request(&self) -> shepr_protocol::RequestId {
-        self.target
-            .sent
-            .lock()
-            .expect("messages")
-            .iter()
-            .rev()
-            .find_map(|m| match m {
-                ClientMessage::ClientShellEndpointRequest {
-                    request_id,
-                    command: EndpointCommand::ClientShellSurfaceSet(p),
-                    ..
-                } if p.active => Some(request_id.clone()),
-                _ => None,
-            })
-            .expect("on request")
-    }
-    pub(crate) fn evidence(&mut self) {
-        self.evidence_for(self.on_request());
-    }
-    fn evidence_for(&mut self, request_id: shepr_protocol::RequestId) {
-        self.inbound(
-            &remote(),
-            ServerMessage::ClientShellEndpointResponse {
-                boot_id: boot(&remote()),
-                request_id,
-                result: Ok(EndpointReply::ClientShellSurfaceSet {
-                    active: true,
-                    projection_revision: counter_at(2),
-                }),
-            },
-        );
-        self.inbound(
-            &remote(),
-            ServerMessage::EndpointSnapshot(snapshot(&remote(), 2)),
-        );
-        self.inbound(
-            &remote(),
-            ServerMessage::PaneSurface(surface(&remote(), 2, self.size(), "TARGET")),
-        );
-    }
-    pub(crate) fn commit(&mut self) {
-        self.evidence();
-        self.reconcile();
-    }
-    fn output(&self) -> String {
-        String::from_utf8_lossy(&self.output.0.lock().expect("output")).into_owned()
-    }
-    fn clear_output(&self) {
-        self.output.0.lock().expect("output").clear();
-    }
-    fn input(&mut self, message: ClientMessage) {
-        // The shell routes host theme updates to every viewed endpoint and
-        // everything else to the shown one; the fixture keeps that routing.
-        let request = match message {
-            ClientMessage::ClientShellHostTheme { update } => {
-                shell::ClientShellRequest::HostTheme(update)
-            }
-            message => shell::ClientShellRequest::Shown(message),
-        };
-        let (state, hub) = self.client.parts_mut();
-        finish_client_shell_input(
-            state,
-            shell::ClientShellInput {
-                requests: vec![request],
-                ..Default::default()
-            },
-            hub,
-            self.now,
-        )
-        .expect("input");
-    }
-    fn assert_views(&self) {
-        if let Some(shown) = self.client.state().shell.endpoints.choice.live()
-            && self.client.hub().registry().connection(shown).is_some()
-        {
-            assert!(self.client.hub().registry().viewed(shown));
-        }
-        for id in [ClientEndpointId::Local, remote()] {
-            if !self.client.state().shell.endpoints.choice.wants_view(&id) {
-                assert!(!self.client.hub().registry().viewed(&id));
-            }
-        }
-        if let Some(shown) = self.client.state().shell.endpoints.choice.live() {
-            assert!(self.client.state().shell.endpoint_is_active(shown));
-        }
-    }
-}
 fn off(messages: &[ClientMessage]) -> bool {
     messages.iter().any(|m| matches!(m, ClientMessage::ClientShellEndpointRequest { command: EndpointCommand::ClientShellSurfaceSet(p), .. } if !p.active))
 }
@@ -457,15 +107,10 @@ fn a_failed_move_releases_the_target() {
     for cause in ["ack", "timeout", "focus"] {
         let mut f = Fixture::new();
         if cause == "focus" {
-            f.client
-                .state_mut()
-                .shell
-                .endpoints
-                .choice
-                .select(shell::Location::workspace(
-                    remote(),
-                    test_workspace_id("w1"),
-                ));
+            f.select(shell::Location::workspace(
+                remote(),
+                test_workspace_id("w1"),
+            ));
             f.reconcile();
         } else {
             f.start();
@@ -544,7 +189,8 @@ fn a_failure_queued_at_the_deadline_reports_the_interruption() {
 #[test]
 fn a_send_failure_while_preparing_with_nothing_shown_waits_for_a_new_connection() {
     let mut f = Fixture::new();
-    f.client.state_mut().shell.endpoints.choice = EndpointChoice::waiting_for(remote());
+    f.lose_local();
+    f.pick(remote());
     f.target.fail_next();
     f.reconcile();
     assert!(
@@ -639,14 +285,7 @@ fn local_selection_waits_for_metadata_while_the_shown_endpoint_stays_live() {
         false,
         f.now,
     );
-    let (state, hub) = f.client.parts_mut();
-    hub.dispatch(
-        &mut state.shell,
-        vec![shell::ClientShellAction::ActivateEndpoint(
-            shell::Location::machine(ClientEndpointId::Local),
-        )],
-        f.now,
-    );
+    f.pick(ClientEndpointId::Local);
     f.reconcile();
     assert_eq!(
         f.client.state().shell.endpoints.choice.live(),
@@ -717,14 +356,7 @@ fn a_remote_pick_without_metadata_waits_with_a_notice() {
 fn a_remote_pick_without_a_connection_is_abandoned_with_one_notice() {
     let mut f = Fixture::new();
     f.client.hub_mut().registry_mut().disconnect(&remote());
-    let (state, hub) = f.client.parts_mut();
-    hub.dispatch(
-        &mut state.shell,
-        vec![shell::ClientShellAction::ActivateEndpoint(
-            shell::Location::machine(remote()),
-        )],
-        f.now,
-    );
+    f.pick(remote());
     let frame = f
         .client
         .state()
@@ -755,8 +387,19 @@ fn a_remote_pick_without_a_connection_is_abandoned_with_one_notice() {
 #[test]
 fn a_newer_selection_replaces_a_waiting_one() {
     let mut f = Fixture::new();
-    f.client.state_mut().shell.endpoints.choice =
-        EndpointChoice::waiting_for(ClientEndpointId::Local);
+    // Nothing is shown and the choice waits for Local's next connection.
+    f.lose_local();
+    assert_eq!(
+        f.client
+            .state()
+            .shell
+            .endpoints
+            .choice
+            .pending_start()
+            .expect("waiting")
+            .to,
+        &ClientEndpointId::Local
+    );
     f.pick(remote());
     f.reconcile();
     assert_eq!(
@@ -917,11 +560,7 @@ fn every_viewed_connection_gets_the_one_surface_geometry() {
 #[test]
 fn a_reconnected_local_is_prepared_once_per_connection() {
     let mut f = Fixture::new();
-    f.client.hub_mut().registry_mut().fail(
-        &ClientEndpointId::Local,
-        &io::Error::new(io::ErrorKind::BrokenPipe, "lost"),
-    );
-    f.reconcile();
+    f.lose_local();
     f.client.hub_mut().registry_mut().insert(
         ClientEndpointId::Local,
         f.local.clone(),
@@ -1031,11 +670,7 @@ fn local_selection_never_waits_for_a_remote() {
 #[test]
 fn a_failed_local_proof_waits_for_another_generation() {
     let mut f = Fixture::new();
-    f.client.hub_mut().registry_mut().fail(
-        &ClientEndpointId::Local,
-        &io::Error::new(io::ErrorKind::BrokenPipe, "lost"),
-    );
-    f.reconcile();
+    f.lose_local();
     f.client.hub_mut().registry_mut().insert(
         ClientEndpointId::Local,
         f.local.clone(),
@@ -1139,15 +774,10 @@ fn host_theme_changes_reach_both_viewed_endpoints_during_a_move() {
 #[test]
 fn navigation_is_acknowledged_and_in_the_first_committed_projection() {
     let mut f = Fixture::new();
-    f.client
-        .state_mut()
-        .shell
-        .endpoints
-        .choice
-        .select(shell::Location::workspace(
-            remote(),
-            test_workspace_id("w1"),
-        ));
+    f.select(shell::Location::workspace(
+        remote(),
+        test_workspace_id("w1"),
+    ));
     f.reconcile();
     let request_id = f
         .target

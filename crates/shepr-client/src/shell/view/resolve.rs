@@ -20,7 +20,7 @@ use crate::shell::view::{
 
 /// What sidebar layout and drawing read, borrowed from the shell. `selected` is the workspace
 /// the sidebar highlights as selected, which resolution decides.
-pub(in crate::shell) fn sidebar_inputs<'a>(
+pub(super) fn sidebar_inputs<'a>(
     state: &'a ClientShellState,
     selected: Option<&'a PinnedLocation>,
 ) -> SidebarInputs<'a> {
@@ -64,11 +64,7 @@ pub(in crate::shell) fn overlay_context(state: &ClientShellState) -> OverlayCont
 
 /// Lays out the frame for a `cols` by `rows` screen. Only the exact snapshot pair is drawn,
 /// so the caller has checked `Presentation::can_draw`.
-pub(in crate::shell) fn resolve_frame(
-    state: &ClientShellState,
-    cols: u16,
-    rows: u16,
-) -> ResolvedFrame {
+pub(super) fn resolve_frame(state: &ClientShellState, cols: u16, rows: u16) -> ResolvedFrame {
     let size = (cols, rows);
     let screen = Rect::new(0, 0, cols, rows);
     let palette = &state.config.palette;

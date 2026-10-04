@@ -1,18 +1,119 @@
-use crate::endpoint::ClientEndpointId;
+//! The navigator: its key tables and selection on their own, and through the whole
+//! shell its rows, search, filters, scrolling, mouse and the targets it opens, on one
+//! machine and across several.
+
+use super::{
+    ClientNavigatorFilter, ClientNavigatorRow, NavigatorCommand, NavigatorOverlay,
+    navigator_command_for_main, navigator_command_for_search,
+};
+use crate::endpoint::{ClientEndpointId, EndpointFailureStatus};
 use crate::shell::config::ClientShellConfig;
+use crate::shell::navigation::aggregate_navigation::navigator_rows;
 use crate::shell::navigation::location::{Location, LocationTarget};
-use crate::shell::overlays::navigator::ClientNavigatorFilter;
-use crate::shell::overlays::{Overlay, navigator::NavigatorOverlay};
-use crate::shell::presentation::text;
+use crate::shell::overlays::Overlay;
 use crate::shell::state::{ClientShellAction, ClientShellInput, ClientShellState};
-use crate::shell::tests::{cell_fg, cell_is_bold, cell_symbol_position, snapshot, surface};
+use crate::shell::tests::{
+    cell_fg, cell_is_bold, cell_symbol_position, snapshot, state_with_remote, surface,
+};
 use crate::tests::{test_pane_id, test_workspace_id};
 use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use shepr_config::ClientConfig;
 use shepr_config::theme::Palette;
 use shepr_protocol::command::EndpointCommand;
 use shepr_protocol::{AgentStatus, ClientShellAgent, ClientShellSnapshot};
+use shepr_term::key::TerminalKey;
+use shepr_term::scroll::ListScroll;
 use shepr_termio::input::raw_input::RawInputEvent;
+
+fn key(code: KeyCode) -> TerminalKey {
+    TerminalKey::new(code, KeyModifiers::NONE)
+}
+
+fn ctrl(character: char) -> TerminalKey {
+    TerminalKey::new(KeyCode::Char(character), KeyModifiers::CONTROL)
+}
+
+fn char_key(character: char) -> TerminalKey {
+    key(KeyCode::Char(character))
+}
+
+fn pane_rows(count: usize) -> Vec<ClientNavigatorRow> {
+    (1..=count)
+        .map(|number| ClientNavigatorRow {
+            depth: 1,
+            label: format!("agent {number}"),
+            meta: String::new(),
+            detail: String::new(),
+            agent: None,
+            status: None,
+            stale: false,
+            current: false,
+            target: Location::pane(
+                ClientEndpointId::Local,
+                test_pane_id(&format!("w1:p{number}")),
+            ),
+        })
+        .collect()
+}
+
+#[test]
+fn every_key_the_navigator_footers_name_routes_to_its_command() {
+    use NavigatorCommand as C;
+    let main = [
+        (key(KeyCode::Up), C::MoveUp),
+        (key(KeyCode::Down), C::MoveDown),
+        (char_key('k'), C::MoveUp),
+        (char_key('j'), C::MoveDown),
+        (key(KeyCode::Left), C::MoveWorkspaceLeft),
+        (key(KeyCode::Right), C::MoveWorkspaceRight),
+        (char_key('/'), C::Search),
+        (char_key('a'), C::FilterAll),
+        (char_key('b'), C::FilterBlocked),
+        (char_key('w'), C::FilterWorking),
+        (char_key('i'), C::FilterIdle),
+        (ctrl('d'), C::PageDown),
+        (key(KeyCode::Enter), C::Open),
+        (key(KeyCode::Esc), C::BackOrClose),
+    ];
+    for (pressed, command) in main {
+        assert_eq!(navigator_command_for_main(&pressed), Some(command));
+    }
+    let search = [
+        (key(KeyCode::Up), C::MoveUp),
+        (key(KeyCode::Down), C::MoveDown),
+        (ctrl('p'), C::MoveUp),
+        (ctrl('n'), C::MoveDown),
+        (key(KeyCode::Enter), C::Open),
+        (key(KeyCode::Esc), C::BackOrClose),
+    ];
+    for (pressed, command) in search {
+        assert_eq!(navigator_command_for_search(&pressed), Some(command));
+    }
+}
+
+#[test]
+fn up_after_scrolling_moves_the_selection_not_the_view() {
+    // The stored scroll is the effective one the last frame drew, so a selection inside the
+    // viewport moves without the view following it.
+    let rows = pane_rows(60);
+    let mut navigator = NavigatorOverlay {
+        scroll: 20,
+        selected: Some(rows[25].target.clone()),
+        ..NavigatorOverlay::default()
+    };
+    navigator.move_selection(&rows, -1);
+    assert_eq!(navigator.selected.as_ref(), Some(&rows[24].target));
+    assert_eq!(navigator.scroll, 20);
+
+    // A scrollbar scroll moves the view and drags the selection into it.
+    let drawn = ListScroll::new(20, 40, 12);
+    navigator.scroll_to(30, drawn, &rows);
+    assert_eq!(navigator.scroll, 30);
+    assert_eq!(navigator.selected.as_ref(), Some(&rows[30].target));
+    navigator.scroll_to(500, drawn, &rows);
+    assert_eq!(navigator.scroll, 40);
+    assert_eq!(navigator.selected.as_ref(), Some(&rows[40].target));
+}
 
 #[test]
 fn navigator_workspace_headings_use_the_active_themes_primary_text() {
@@ -176,8 +277,7 @@ fn navigator_search_matches_non_adjacent_words_without_losing_the_pane_target() 
     ] {
         navigator.query = query.into();
         navigator.selected = None;
-        let rows =
-            text::client_navigator_rows(&state.endpoints, state.endpoints.presented(), navigator);
+        let rows = navigator_rows(&state.endpoints, state.endpoints.presented(), navigator);
         let target = crate::shell::navigation::aggregate_navigation::selected_navigator_target(
             &rows, navigator,
         );
@@ -246,8 +346,7 @@ fn navigator_searches_ancestor_context_and_keeps_split_agents_individually_actio
         navigator.query = query.into();
         navigator.filter = filter;
         navigator.selected = None;
-        let rows =
-            text::client_navigator_rows(&state.endpoints, state.endpoints.presented(), navigator);
+        let rows = navigator_rows(&state.endpoints, state.endpoints.presented(), navigator);
         let pane_ids = rows
             .iter()
             .filter_map(|row| row.target.pane_id().map(|pane_id| pane_id.to_string()))
@@ -325,8 +424,7 @@ fn navigator_distinguishes_unnamed_terminals_in_one_workspace() {
     let Some(Overlay::Navigator(navigator)) = &state.overlay else {
         panic!("navigator");
     };
-    let rows =
-        text::client_navigator_rows(&state.endpoints, state.endpoints.presented(), navigator);
+    let rows = navigator_rows(&state.endpoints, state.endpoints.presented(), navigator);
     let labels = rows
         .iter()
         .filter(|row| row.target.pane_id().is_some())
@@ -355,8 +453,7 @@ fn navigator_keeps_empty_workspaces_searchable_without_status_filters() {
         };
         navigator.query = query.into();
         navigator.filter = filter;
-        let rows =
-            text::client_navigator_rows(&state.endpoints, state.endpoints.presented(), navigator);
+        let rows = navigator_rows(&state.endpoints, state.endpoints.presented(), navigator);
         assert_eq!(
             rows.len(),
             usize::from(expected),
@@ -785,8 +882,7 @@ fn navigator_grouping_keeps_snapshot_order_with_interleaved_panes() {
     let Some(Overlay::Navigator(navigator)) = state.overlay.as_ref() else {
         panic!("navigator")
     };
-    let rows =
-        text::client_navigator_rows(&state.endpoints, state.endpoints.presented(), navigator);
+    let rows = navigator_rows(&state.endpoints, state.endpoints.presented(), navigator);
     let actual = rows
         .iter()
         .filter_map(|row| {
@@ -870,7 +966,7 @@ fn navigator_owns_search_mouse_selection_and_stable_target_focus() {
         let Overlay::Navigator(navigator) = state.overlay.as_ref().expect("navigator") else {
             panic!("expected navigator");
         };
-        text::client_navigator_rows(&state.endpoints, state.endpoints.presented(), navigator)
+        navigator_rows(&state.endpoints, state.endpoints.presented(), navigator)
             .iter()
             .find(|row| row.target.pane_id().is_some())
             .map(|row| row.target.clone())
@@ -917,4 +1013,271 @@ fn navigator_owns_search_mouse_selection_and_stable_target_focus() {
         EndpointCommand::PaneFocus(target) if target.pane_id == crate::tests::test_pane_id("w1:p1")
     ));
     assert!(state.overlay.is_none());
+}
+
+#[test]
+fn selecting_an_offline_active_machine_in_the_navigator_is_silent() {
+    let (mut state, endpoint_id) = state_with_remote();
+    assert!(state.activate_endpoint_projection(&endpoint_id));
+    state.set_endpoint_status(&endpoint_id, EndpointFailureStatus::Reconnecting);
+    state.open_navigator_overlay();
+    let Some(Overlay::Navigator(navigator)) = state.overlay.as_mut() else {
+        panic!("expected navigator");
+    };
+    navigator.selected = Some(Location::machine(endpoint_id.clone()));
+
+    let mut outcome = ClientShellInput::default();
+    crate::shell::tests::press_overlay_enter(&mut state, &mut outcome);
+
+    assert!(outcome.actions.is_empty());
+    assert!(state.notices.visible().is_none());
+    assert!(matches!(state.overlay, Some(Overlay::Navigator(_))));
+}
+
+#[test]
+fn navigator_uses_machine_parents_only_for_federated_clients() {
+    let (mut state, _) = state_with_remote();
+    state.open_navigator_overlay();
+    let Overlay::Navigator(navigator) = state.overlay.as_ref().expect("navigator") else {
+        panic!("expected navigator");
+    };
+    let rows = navigator_rows(&state.endpoints, state.active_endpoint_id(), navigator);
+    let machines = rows
+        .iter()
+        .filter(|row| matches!(row.target.target, LocationTarget::Machine))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        machines
+            .iter()
+            .map(|row| row.label.as_str())
+            .collect::<Vec<_>>(),
+        vec!["Local", "Build"]
+    );
+    assert!(rows.iter().all(|row| {
+        matches!(row.target.target, LocationTarget::Machine)
+            || (!row.label.contains("Local ·") && !row.label.contains("Build ·"))
+    }));
+    assert!(rows.iter().all(|row| match row.target.target {
+        LocationTarget::Machine => row.depth == 0 && row.status.is_none(),
+        LocationTarget::Workspace(_) => row.depth == 1 && row.status.is_none(),
+        LocationTarget::Pane(_) => row.depth == 2 && row.status.is_some(),
+    }));
+    assert_eq!(rows.iter().filter(|row| row.current).count(), 1);
+
+    let frame = state.compose(106, 30).expect("federated navigator");
+    for (rect, target) in state.drawn().navigator_rows() {
+        let expected = match target.target {
+            LocationTarget::Machine => " ",
+            LocationTarget::Workspace(_) => "   ",
+            LocationTarget::Pane(_) => "   └─ ",
+        };
+        let prefix = frame.cells()[rect.y as usize * frame.width() as usize + rect.x as usize..]
+            .iter()
+            .take(expected.chars().count())
+            .map(|cell| cell.symbol.as_str())
+            .collect::<String>();
+        assert_eq!(prefix, expected, "{target:?}");
+    }
+
+    let mut local = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
+    local.set_snapshot(Box::new(snapshot()));
+    local.receive_pane_surface_from(
+        surface(),
+        local
+            .endpoints
+            .active
+            .generation()
+            .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
+    );
+    let frame = local.compose(100, 28).expect("local-only sidebar");
+    assert!(local.drawn().machines().next().is_none());
+    assert!(
+        !frame
+            .cells()
+            .chunks(frame.width() as usize)
+            .map(|row| {
+                row.iter()
+                    .map(|cell| cell.symbol.as_str())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+            .contains(" machines")
+    );
+    local.open_navigator_overlay();
+    let Overlay::Navigator(navigator) = local.overlay.as_ref().expect("navigator") else {
+        panic!("expected navigator");
+    };
+    let rows = navigator_rows(&local.endpoints, local.active_endpoint_id(), navigator);
+    assert!(
+        rows.iter()
+            .all(|row| !matches!(row.target.target, LocationTarget::Machine))
+    );
+    assert!(rows.iter().all(|row| match row.target.target {
+        LocationTarget::Workspace(_) => row.depth == 0,
+        LocationTarget::Pane(_) => row.depth == 1,
+        LocationTarget::Machine => false,
+    }));
+}
+
+#[test]
+fn navigator_keeps_saved_machine_visible_before_metadata_arrives() {
+    let (mut state, endpoint_id) = state_with_remote();
+    let endpoint = state
+        .endpoints
+        .iter_mut()
+        .find(|endpoint| endpoint.endpoint_id == endpoint_id)
+        .expect("saved remote endpoint");
+    endpoint.state = crate::shell::endpoints::EndpointState::Connecting {
+        last: None,
+        connected: false,
+        generation: None,
+    };
+    state.open_navigator_overlay();
+    let Overlay::Navigator(navigator) = state.overlay.as_ref().expect("navigator") else {
+        panic!("expected navigator");
+    };
+
+    let rows = navigator_rows(&state.endpoints, state.active_endpoint_id(), navigator);
+
+    assert!(rows.iter().any(|row| {
+        matches!(row.target.target, LocationTarget::Machine)
+            && row.target.endpoint == endpoint_id
+            && row.label == "Build"
+            && row.stale
+    }));
+    assert!(!rows.iter().any(|row| match row.target.target {
+        LocationTarget::Machine => false,
+        LocationTarget::Workspace(_) | LocationTarget::Pane(_) => {
+            row.target.endpoint == endpoint_id
+        }
+    }));
+}
+
+#[test]
+fn navigator_machine_selection_opens_its_remembered_view() {
+    let (mut state, endpoint_id) = state_with_remote();
+    state.open_navigator_overlay();
+    let selected = {
+        let Overlay::Navigator(navigator) = state.overlay.as_ref().expect("navigator") else {
+            panic!("expected navigator");
+        };
+        navigator_rows(&state.endpoints, state.active_endpoint_id(), navigator)
+            .into_iter()
+            .find(|row| {
+                matches!(row.target.target, LocationTarget::Machine)
+                    && row.target.endpoint == endpoint_id
+            })
+            .map(|row| row.target)
+            .expect("remote machine row")
+    };
+    if let Some(Overlay::Navigator(navigator)) = state.overlay.as_mut() {
+        navigator.selected = Some(selected);
+    }
+
+    let mut outcome = ClientShellInput::default();
+    crate::shell::tests::press_overlay_enter(&mut state, &mut outcome);
+
+    assert!(matches!(
+        outcome.actions.as_slice(),
+        [ClientShellAction::ActivateEndpoint(Location {
+            endpoint: activated,
+            target: LocationTarget::Machine,
+        })] if activated == &endpoint_id
+    ));
+    assert!(state.overlay.is_none());
+}
+
+#[test]
+fn navigator_foreign_pane_selection_activates_its_endpoint() {
+    let (mut state, endpoint_id) = state_with_remote();
+    state.open_navigator_overlay();
+    let selected = {
+        let Overlay::Navigator(navigator) = state.overlay.as_ref().expect("navigator") else {
+            panic!("expected navigator");
+        };
+        navigator_rows(&state.endpoints, state.active_endpoint_id(), navigator)
+            .iter()
+            .find(|row| {
+                row.target.endpoint == endpoint_id
+                    && row.target.pane_id() == Some(crate::tests::test_pane_id("w1:p1"))
+            })
+            .map(|row| row.target.clone())
+            .expect("remote pane row")
+    };
+    if let Some(Overlay::Navigator(navigator)) = state.overlay.as_mut() {
+        navigator.selected = Some(selected);
+    }
+    let mut local = snapshot();
+    let mut inserted = local.workspaces[0].clone();
+    inserted.workspace_id = test_workspace_id("w2");
+    local.workspaces.push(inserted);
+    state.set_snapshot(Box::new(local));
+
+    let mut outcome = ClientShellInput::default();
+    crate::shell::tests::press_overlay_enter(&mut state, &mut outcome);
+
+    assert!(matches!(
+        outcome.actions.as_slice(),
+        [ClientShellAction::ActivateEndpoint(Location {
+            endpoint: activated,
+            target: LocationTarget::Pane(pane_id),
+        })] if activated == &endpoint_id && pane_id == &crate::tests::test_pane_id("w1:p1")
+    ));
+    assert!(state.overlay.is_none());
+}
+
+#[test]
+fn navigator_workspace_arrows_cross_machine_headings_without_activating_them() {
+    let (mut state, endpoint_id) = state_with_remote();
+    state.open_navigator_overlay();
+    for (key, expected_endpoint) in [
+        (KeyCode::Right, endpoint_id),
+        (KeyCode::Left, ClientEndpointId::Local),
+    ] {
+        let outcome = state.handle_raw_events(vec![RawInputEvent::Key(
+            shepr_term::key::TerminalKey::new(key, KeyModifiers::empty()),
+        )]);
+        assert!(outcome.actions.is_empty());
+        let Some(Overlay::Navigator(navigator)) = &state.overlay else {
+            panic!("navigator");
+        };
+        assert_eq!(
+            navigator.selected,
+            Some(Location::pane(expected_endpoint, test_pane_id("w1:p1")))
+        );
+    }
+}
+
+#[test]
+fn navigator_foreign_workspace_heading_keeps_the_workspace_target() {
+    let (mut state, endpoint_id) = state_with_remote();
+    state.open_navigator_overlay();
+    let selected = {
+        let Overlay::Navigator(navigator) = state.overlay.as_ref().expect("navigator") else {
+            panic!("expected navigator");
+        };
+        navigator_rows(&state.endpoints, state.active_endpoint_id(), navigator)
+            .iter()
+            .find(|row| {
+                row.target.endpoint == endpoint_id
+                    && row.target.workspace_id() == Some(crate::tests::test_workspace_id("w1"))
+            })
+            .map(|row| row.target.clone())
+            .expect("remote workspace heading")
+    };
+    if let Some(Overlay::Navigator(navigator)) = state.overlay.as_mut() {
+        navigator.selected = Some(selected);
+    }
+
+    let mut outcome = ClientShellInput::default();
+    crate::shell::tests::press_overlay_enter(&mut state, &mut outcome);
+
+    assert!(matches!(
+        outcome.actions.as_slice(),
+        [ClientShellAction::ActivateEndpoint(Location {
+            endpoint: activated,
+            target: LocationTarget::Workspace(workspace_id),
+        })] if activated == &endpoint_id && workspace_id == &crate::tests::test_workspace_id("w1")
+    ));
 }

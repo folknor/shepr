@@ -91,7 +91,7 @@ pub(in crate::shell) struct CollapsedSidebarView {
     pub(in crate::shell) area: Rect,
     /// No scrollbar, as the collapsed sidebar never draws one.
     pub(in crate::shell) workspaces: ListView<CollapsedSlot>,
-    pub(in crate::shell) divider_y: Option<u16>,
+    pub(super) divider_y: Option<u16>,
     pub(in crate::shell) agents: Vec<AgentSlot>,
     pub(in crate::shell) toggle: Rect,
 }
@@ -127,7 +127,7 @@ pub(in crate::shell) struct SidebarInputs<'a> {
 }
 
 impl SidebarInputs<'_> {
-    pub(in crate::shell) fn single_endpoint(&self) -> bool {
+    pub(super) fn single_endpoint(&self) -> bool {
         self.endpoints.len() == 1
     }
 
@@ -149,7 +149,7 @@ enum Row {
     Workspace { endpoint: usize, entry: usize },
 }
 
-pub(in crate::shell) fn agent_sort_label(sort: shepr_config::AgentPanelSortConfig) -> &'static str {
+pub(super) fn agent_sort_label(sort: shepr_config::AgentPanelSortConfig) -> &'static str {
     match sort {
         shepr_config::AgentPanelSortConfig::Spaces => "grouped",
         shepr_config::AgentPanelSortConfig::Priority => "priority",
@@ -157,7 +157,7 @@ pub(in crate::shell) fn agent_sort_label(sort: shepr_config::AgentPanelSortConfi
 }
 
 /// The text and color of an expanded machine row's status signal.
-pub(in crate::shell) fn endpoint_signal(
+pub(super) fn endpoint_signal(
     endpoint: &ClientShellEndpoint,
     diagnostics: &MachineDiagnostics,
     palette: &Palette,

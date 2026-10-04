@@ -290,4 +290,76 @@ mod tests {
         let exit = ClientExit::default();
         assert_eq!(exit.lines().count(), 0);
     }
+
+    #[test]
+    fn client_error_display_connection_failed() {
+        let err = HandshakeError::ConnectionFailed(io::Error::new(
+            io::ErrorKind::ConnectionRefused,
+            "connection refused",
+        ));
+        let msg = err.to_string();
+        assert!(
+            msg.contains("connection") && msg.contains("connection refused"),
+            "should mention the connection failure and its cause: {msg}"
+        );
+        // The variant also wraps setup failures after a connect succeeded (a
+        // stream clone, a thread spawn), so it must not claim no server runs.
+        assert!(
+            !msg.contains("starts one") && !msg.contains("server running"),
+            "should not guess at a missing server: {msg}"
+        );
+    }
+
+    #[test]
+    fn client_error_display_host_terminal_does_not_claim_server_connection_failed() {
+        let err = LoopExit::HostTerminal(io::Error::new(
+            io::ErrorKind::BrokenPipe,
+            "terminal output was closed",
+        ));
+        let msg = err.to_string();
+
+        assert!(
+            msg.contains("host terminal error"),
+            "should identify the host terminal: {msg}"
+        );
+        assert!(msg.contains("terminal output was closed"));
+        assert!(!msg.contains("Is the shepr server running?"));
+    }
+
+    #[test]
+    fn client_error_display_handshake_rejected() {
+        let err = HandshakeError::HandshakeRejected {
+            error: shepr_protocol::HandshakeRefusal::InvalidSurface(
+                shepr_protocol::SurfaceRefusal::TooManyCells,
+            ),
+        };
+        let msg = err.to_string();
+        assert!(
+            msg.contains("rejected handshake"),
+            "should mention rejection: {msg}"
+        );
+        assert!(
+            msg.contains("surface size limit"),
+            "should include error: {msg}"
+        );
+    }
+
+    #[test]
+    fn client_error_display_server_shutdown() {
+        let err = LoopExit::ServerShutdown {
+            reason: shepr_protocol::ShutdownReason::Stopping,
+        };
+        assert_eq!(err.to_string(), "server is shutting down");
+    }
+
+    #[test]
+    fn client_error_display_connection_lost() {
+        let err =
+            LoopExit::ConnectionLost(io::Error::new(io::ErrorKind::BrokenPipe, "broken pipe"));
+        let msg = err.to_string();
+        assert!(
+            msg.contains("lost connection to server"),
+            "should mention lost connection: {msg}"
+        );
+    }
 }

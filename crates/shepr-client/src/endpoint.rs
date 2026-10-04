@@ -7,20 +7,19 @@ mod local_failure;
 mod message_policy;
 mod registry;
 mod supervisor;
-pub mod view;
+mod view;
 
-pub use choice::*;
+pub(crate) use choice::*;
 pub(crate) use hub::{Admission, EndpointHub, HubEffect, SnapshotDirty};
 pub(crate) use local_failure::*;
 pub(crate) use message_policy::*;
 pub(crate) use registry::*;
-pub use registry::{EndpointRegistry, EndpointTransport};
-pub use shepr_config::MachineLabel;
+pub(crate) use shepr_config::MachineLabel;
 pub(crate) use supervisor::*;
-pub use view::{HostBaseline, StartOutcome};
+pub(crate) use view::HostBaseline;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum ClientEndpointId {
+pub(crate) enum ClientEndpointId {
     Local,
     Ssh(MachineLabel),
 }
@@ -110,7 +109,7 @@ impl EndpointPolicy {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ClientEndpointStatus {
+pub(crate) enum ClientEndpointStatus {
     Connecting,
     Online,
     Reconnecting,
@@ -122,7 +121,7 @@ pub enum ClientEndpointStatus {
 /// connection's handshake opens a generation and that generation's snapshot arrives, and
 /// starts Connecting only at launch, so neither is a status a caller can assign.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum EndpointFailureStatus {
+pub(crate) enum EndpointFailureStatus {
     Reconnecting,
     Attention,
 }

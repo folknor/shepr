@@ -580,8 +580,9 @@ impl PaneTerminal {
         self.negotiated_keyboard_protocol().unwrap_or(fallback)
     }
 
-    /// Where a copy-mode word motion from the cursor lands. `None` when its
-    /// row is no longer retained.
+    /// Where a copy-mode word motion from the cursor lands, looking at most
+    /// `MAX_WORD_MOTION_ROWS` rows away. `None` when its row is no longer
+    /// retained or no target lies within reach.
     pub(crate) fn word_motion_target(
         &self,
         cursor: TerminalTextPoint,

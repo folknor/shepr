@@ -9,7 +9,7 @@ use std::time::Instant;
 
 /// Why a prepared move cannot commit. Rendered only at the notice boundary.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum MoveFailure {
+pub(crate) enum MoveFailure {
     Rejected(EndpointError),
     BadSurfaceAcknowledgement,
     UnexpectedFocusResponse,
@@ -47,18 +47,18 @@ impl std::error::Error for MoveFailure {
 /// The connection a move prepares: a target is only prepared when it is connected and has a
 /// snapshot for this generation, so every field is known.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ViewLease {
-    pub endpoint_id: ClientEndpointId,
-    pub generation: ConnectionGeneration,
-    pub boot_id: BootId,
+pub(crate) struct ViewLease {
+    pub(crate) endpoint_id: ClientEndpointId,
+    pub(crate) generation: ConnectionGeneration,
+    pub(crate) boot_id: BootId,
     /// The revision of the snapshot the move started from; older snapshots are stale.
-    pub minimum_revision: shepr_protocol::ProjectionRevision,
+    pub(crate) minimum_revision: shepr_protocol::ProjectionRevision,
 }
 
 /// What one inbound message did to a `Preparing`. Never "ready": the reconcile asks
 /// `Preparing::ready` once per turn.
 #[derive(Debug, PartialEq, Eq)]
-pub enum PrepareProgress {
+pub(crate) enum PrepareProgress {
     Pending,
     /// The rejection is now set; the reconcile fails the move.
     Rejected,
@@ -139,7 +139,7 @@ impl ViewEvidence {
 /// A target turned on and collecting a coherent snapshot and surface pair. Pure: every
 /// method only updates or reads this value.
 #[derive(Debug)]
-pub struct Preparing {
+pub(crate) struct Preparing {
     lease: ViewLease,
     view_request: RequestId,
     floor: Option<shepr_protocol::ProjectionRevision>,
@@ -168,13 +168,13 @@ impl Preparing {
             deadline: now + ENDPOINT_MOVE_TIMEOUT,
         }
     }
-    pub fn lease(&self) -> &ViewLease {
+    pub(crate) fn lease(&self) -> &ViewLease {
         &self.lease
     }
-    pub fn deadline(&self) -> Instant {
+    pub(crate) fn deadline(&self) -> Instant {
         self.deadline
     }
-    pub fn rejection(&self) -> Option<&MoveFailure> {
+    pub(crate) fn rejection(&self) -> Option<&MoveFailure> {
         self.rejection.as_ref()
     }
     fn matches(
@@ -191,7 +191,7 @@ impl Preparing {
     /// rejected, the focus lane is settled and the evidence holds a coherent pair at or above
     /// the floor that shows the requested navigation. The current size comes from the geometry
     /// recorded with the preparation and updated on each host resize.
-    pub fn ready(&self) -> Option<&PaneSurfaceFrame> {
+    pub(crate) fn ready(&self) -> Option<&PaneSurfaceFrame> {
         if self.rejection.is_some() || !self.focus_lane.settled() {
             return None;
         }
@@ -216,7 +216,7 @@ impl Preparing {
 
     /// Whether a response answers this move: the lease matches and the request is the on
     /// request or the focus lane's in-flight one.
-    pub fn accepts_response(
+    pub(crate) fn accepts_response(
         &self,
         endpoint: &ClientEndpointId,
         generation: ConnectionGeneration,
@@ -229,7 +229,7 @@ impl Preparing {
 
     /// The on acknowledgement sets the floor; a focus response settles the lane. Anything
     /// invalid, and any error, is kept as the rejection for the reconcile to fail the move.
-    pub fn receive_response(
+    pub(crate) fn receive_response(
         &mut self,
         endpoint: &ClientEndpointId,
         generation: ConnectionGeneration,
@@ -263,7 +263,7 @@ impl Preparing {
             PrepareProgress::Pending
         }
     }
-    pub fn receive_snapshot(
+    pub(crate) fn receive_snapshot(
         &mut self,
         endpoint: &ClientEndpointId,
         generation: ConnectionGeneration,
@@ -277,7 +277,7 @@ impl Preparing {
         self.evidence.record_snapshot(snapshot);
         PrepareProgress::Pending
     }
-    pub fn receive_surface(
+    pub(crate) fn receive_surface(
         &mut self,
         endpoint: &ClientEndpointId,
         generation: ConnectionGeneration,
@@ -291,7 +291,7 @@ impl Preparing {
         self.evidence.record_surface(surface);
         PrepareProgress::Pending
     }
-    pub fn receive_patch(
+    pub(crate) fn receive_patch(
         &mut self,
         endpoint: &ClientEndpointId,
         generation: ConnectionGeneration,
@@ -307,7 +307,7 @@ impl Preparing {
     /// Records a host resize. An unchanged geometry changes nothing (the server sends no new
     /// surface for it, so dropping the evidence would stall the move); a changed one drops
     /// the recorded surface. Returns whether it changed.
-    pub fn update_geometry(&mut self, geometry: TerminalGeometry) -> bool {
+    pub(crate) fn update_geometry(&mut self, geometry: TerminalGeometry) -> bool {
         if self.geometry == geometry {
             return false;
         }
@@ -317,13 +317,13 @@ impl Preparing {
     }
 
     /// Replaces the navigation the move should show; an in-flight request is not joined.
-    pub fn retarget_focus(&mut self, focus: LocationTarget) {
+    pub(crate) fn retarget_focus(&mut self, focus: LocationTarget) {
         self.focus_lane.desired = focus;
     }
 
     /// The next navigation request for the target, marked in flight, when the lane wants one
     /// and has none in flight.
-    pub fn focus_request(&mut self) -> Option<ClientMessage> {
+    pub(crate) fn focus_request(&mut self) -> Option<ClientMessage> {
         self.focus_lane.request(&self.lease.boot_id)
     }
 }

@@ -6,15 +6,15 @@ use ratatui::layout::Rect;
 use shepr_protocol::{ClientShellSnapshot, PaneSurfaceFrame};
 
 #[derive(Clone, Debug)]
-pub(in crate::shell) struct ClientPaneClick {
-    pub(in crate::shell) pane_id: shepr_protocol::PublicPaneId,
-    pub(in crate::shell) viewport_row: u16,
-    pub(in crate::shell) col: u16,
-    pub(in crate::shell) at: std::time::Instant,
+pub(super) struct ClientPaneClick {
+    pub(super) pane_id: shepr_protocol::PublicPaneId,
+    pub(super) viewport_row: u16,
+    pub(super) col: u16,
+    pub(super) at: std::time::Instant,
 }
 
 impl ClientPaneClick {
-    pub(in crate::shell) fn is_double_click_for(&self, next: &Self) -> bool {
+    pub(super) fn is_double_click_for(&self, next: &Self) -> bool {
         self.pane_id == next.pane_id
             && next.at.duration_since(self.at) <= DOUBLE_CLICK_WINDOW
             && self.viewport_row.abs_diff(next.viewport_row) <= 1
@@ -23,20 +23,20 @@ impl ClientPaneClick {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(in crate::shell) enum ClientSelectionAutoscrollDirection {
+pub(super) enum ClientSelectionAutoscrollDirection {
     Up,
     Down,
 }
 
 #[derive(Clone, Debug)]
-pub(in crate::shell) struct ClientSelectionAutoscroll {
-    pub(in crate::shell) pane_id: shepr_protocol::PublicPaneId,
-    pub(in crate::shell) direction: ClientSelectionAutoscrollDirection,
-    pub(in crate::shell) last_mouse_column: u16,
-    pub(in crate::shell) last_mouse_row: u16,
-    pub(in crate::shell) inner_rect: Rect,
-    pub(in crate::shell) offset_from_bottom: usize,
-    pub(in crate::shell) max_offset_from_bottom: usize,
+pub(super) struct ClientSelectionAutoscroll {
+    pub(super) pane_id: shepr_protocol::PublicPaneId,
+    pub(super) direction: ClientSelectionAutoscrollDirection,
+    pub(super) last_mouse_column: u16,
+    pub(super) last_mouse_row: u16,
+    pub(super) inner_rect: Rect,
+    pub(super) offset_from_bottom: usize,
+    pub(super) max_offset_from_bottom: usize,
 }
 
 /// The selected pane as the previously presented surface showed it. The selection
@@ -66,9 +66,9 @@ pub(in crate::shell) struct PaneFacts {
 pub(in crate::shell) struct MouseSelection {
     pub(in crate::shell) selection:
         Option<shepr_term::selection::Selection<shepr_protocol::PublicPaneId>>,
-    pub(in crate::shell) focus_pending: Option<shepr_protocol::PublicPaneId>,
-    pub(in crate::shell) last_pane_click: Option<ClientPaneClick>,
-    pub(in crate::shell) autoscroll: Option<ClientSelectionAutoscroll>,
+    pub(super) focus_pending: Option<shepr_protocol::PublicPaneId>,
+    pub(super) last_pane_click: Option<ClientPaneClick>,
+    pub(super) autoscroll: Option<ClientSelectionAutoscroll>,
     pub(in crate::shell) autoscroll_deadline: Option<std::time::Instant>,
     pub(in crate::shell) highlight_clear_deadline: Option<std::time::Instant>,
     pub(in crate::shell) repaint_deadline: Option<std::time::Instant>,
@@ -92,7 +92,7 @@ impl MouseSelection {
         self.last_pane_click = None;
     }
 
-    pub(in crate::shell) fn stop_autoscroll(&mut self) {
+    pub(super) fn stop_autoscroll(&mut self) {
         self.autoscroll = None;
         self.autoscroll_deadline = None;
     }

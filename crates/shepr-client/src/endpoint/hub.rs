@@ -689,6 +689,209 @@ impl EndpointHub {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::shell::tests::{pending_request, read_then_command};
+    use crate::shell::{ClientShellConfig, Location, LocationTarget};
+    use crate::tests::endpoints::RecordingTransport;
+    use crate::tests::test_generation;
+    use shepr_test_fixtures::ValidatedClientConfigFixture as _;
+
+    /// A hub whose only connection is Local, at generation 1.
+    fn local_hub(local: RecordingTransport) -> EndpointHub {
+        EndpointHub::for_registry(EndpointRegistry::new(local, test_generation(1)))
+    }
+
+    fn shell_with(choice: EndpointChoice) -> ClientShellState {
+        let mut shell = ClientShellState::new(ClientShellConfig::from_validated_config(
+            &shepr_config::ValidatedClientConfig::test_default(),
+        ));
+        shell.endpoints.choice = choice;
+        shell
+    }
+
+    #[test]
+    fn a_pick_is_applied_at_once_without_an_event_round_trip() {
+        let mut hub = local_hub(RecordingTransport::default());
+        let mut shell = shell_with(EndpointChoice::waiting_for(ClientEndpointId::Local));
+        hub.dispatch(
+            &mut shell,
+            vec![shell::ClientShellAction::ActivateEndpoint(Location {
+                endpoint: ClientEndpointId::Local,
+                target: LocationTarget::Workspace(shepr_test_fixtures::id("w1")),
+            })],
+            Instant::now(),
+        );
+        assert_eq!(
+            shell
+                .endpoints
+                .choice
+                .pending_start()
+                .expect("waiting pick")
+                .to,
+            &ClientEndpointId::Local
+        );
+        assert!(shell.endpoints.choice.live().is_none());
+    }
+
+    #[test]
+    fn selecting_the_shown_endpoint_is_a_noop_but_with_nothing_shown_it_reproves() {
+        for shown in [false, true] {
+            let mut hub = local_hub(RecordingTransport::default());
+            let choice = if shown {
+                EndpointChoice::showing(ClientEndpointId::Local)
+            } else {
+                // Nothing shown, and a proof of Local already failed on this generation: only an
+                // explicit pick may retry it there.
+                let mut choice = EndpointChoice::waiting_for(ClientEndpointId::Local);
+                choice.begin_preparing(
+                    super::super::ViewLease {
+                        endpoint_id: ClientEndpointId::Local,
+                        generation: test_generation(1),
+                        boot_id: crate::tests::test_boot_id("boot-1"),
+                        minimum_revision: shepr_protocol::ProjectionRevision::FIRST,
+                    },
+                    RequestId::allocate(),
+                    TerminalGeometry::from_host(
+                        shepr_core::geometry::GridSize::clamped(80, 24),
+                        shepr_core::geometry::HostCell::from_host(8, 16, false),
+                    ),
+                    Instant::now(),
+                );
+                choice.fail_move();
+                assert_eq!(
+                    choice
+                        .pending_start()
+                        .expect("failed proof")
+                        .failed_generation,
+                    Some(test_generation(1))
+                );
+                choice
+            };
+            let mut shell = shell_with(choice);
+            hub.dispatch(
+                &mut shell,
+                vec![shell::ClientShellAction::ActivateEndpoint(
+                    Location::machine(ClientEndpointId::Local),
+                )],
+                Instant::now(),
+            );
+            if shown {
+                assert!(shell.endpoints.choice.pending_start().is_none());
+                assert_eq!(
+                    shell.endpoints.choice.live(),
+                    Some(&ClientEndpointId::Local)
+                );
+            } else {
+                assert_eq!(
+                    shell
+                        .endpoints
+                        .choice
+                        .pending_start()
+                        .expect("rearmed proof")
+                        .failed_generation,
+                    None
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn dispatcher_cancels_pending_requests_on_an_unviewed_endpoint_or_failed_send() {
+        for fail_send in [false, true] {
+            let (mut state, actions) = pending_request();
+            let local = RecordingTransport::default();
+            if fail_send {
+                local.fail_next();
+            }
+            let mut endpoints = EndpointRegistry::new(local, test_generation(1));
+            endpoints.set_viewed(&ClientEndpointId::Local, fail_send);
+            let mut hub = EndpointHub::for_registry(endpoints);
+            let dispatched = hub.dispatch(&mut state, actions, Instant::now());
+            assert!(dispatched.repaint.is_needed());
+            assert!(!state.has_open_requests());
+            // A request refused before it entered the send queue has a known
+            // outcome and is not reported as interrupted; one whose send failed
+            // may have reached the server.
+            assert_eq!(
+                state.visible_notice_title() == Some("Action interrupted"),
+                fail_send
+            );
+            assert_eq!(
+                hub.commands_mut().disconnect(&ClientEndpointId::Local),
+                EndpointCommandCancellation::default()
+            );
+        }
+    }
+
+    #[test]
+    fn an_expired_command_is_settled_even_when_its_connection_was_lost_first() {
+        for connection_lost in [false, true] {
+            let (mut state, actions) = pending_request();
+            let mut hub = local_hub(RecordingTransport::default());
+            // The dispatch enqueues the request in the shown endpoint's lane and sends it.
+            let sent_at = Instant::now();
+            let dispatched = hub.dispatch(&mut state, actions, sent_at);
+            assert!(!dispatched.repaint.is_needed());
+            assert!(state.has_open_requests());
+            if connection_lost {
+                // A failed health check on the same timer tick removes the connection before the
+                // command expires; the lane disconnect comes only with the next reconcile.
+                hub.registry_mut().fail(
+                    &ClientEndpointId::Local,
+                    &io::Error::new(io::ErrorKind::TimedOut, "health check timed out"),
+                );
+            }
+
+            let outcome = hub.settle_expired(
+                &mut state,
+                sent_at + crate::limits::ENDPOINT_COMMAND_TIMEOUT,
+            );
+
+            assert!(outcome.repaint);
+            assert!(!state.has_open_requests());
+            let expected = if connection_lost {
+                "Action interrupted"
+            } else {
+                "Server timed out"
+            };
+            assert_eq!(state.visible_notice_title(), Some(expected));
+            assert_eq!(
+                hub.commands_mut().disconnect(&ClientEndpointId::Local),
+                EndpointCommandCancellation::default()
+            );
+        }
+    }
+
+    #[test]
+    fn a_lost_endpoint_drops_its_queued_commands_as_unsent() {
+        // A command queued behind the in-flight one was never sent: losing the endpoint drops it
+        // as unsent, so no interrupted-action notice appears.
+        let (mut s, actions) = read_then_command();
+        let mut hub = local_hub(RecordingTransport::default());
+        // The first request is sent and the second waits behind it.
+        let dispatched = hub.dispatch(&mut s, actions, Instant::now());
+        assert!(!dispatched.repaint.is_needed());
+        assert!(s.has_open_requests());
+
+        hub.requests_lost(
+            &mut s,
+            &ClientEndpointId::Local,
+            EndpointFailureStatus::Reconnecting,
+        );
+        assert!(!s.has_open_requests());
+        assert_eq!(s.visible_notice_title(), None);
+
+        // A lone command that was sent may have reached the server: it is interrupted.
+        let (mut state, actions) = pending_request();
+        let mut hub = local_hub(RecordingTransport::default());
+        hub.dispatch(&mut state, actions, Instant::now());
+        hub.requests_lost(
+            &mut state,
+            &ClientEndpointId::Local,
+            EndpointFailureStatus::Reconnecting,
+        );
+        assert!(!state.has_open_requests());
+        assert_eq!(state.visible_notice_title(), Some("Action interrupted"));
+    }
 
     #[test]
     fn waiting_notice_names_the_endpoint_and_its_current_status() {

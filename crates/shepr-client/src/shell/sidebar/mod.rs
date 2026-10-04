@@ -1,7 +1,7 @@
 pub(in crate::shell) mod chrome;
 use ratatui::style::{Modifier, Style};
 pub(in crate::shell) mod agent_sidebar;
-pub(in crate::shell) mod endpoint_agents;
+mod endpoint_agents;
 pub(in crate::shell) mod endpoint_sidebar;
 pub(in crate::shell) mod layout;
 pub(in crate::shell) mod preferences;
@@ -23,7 +23,7 @@ use shepr_config::theme::Palette;
 
 use crate::shell::presentation::status::{status_glyph, status_text};
 
-pub(in crate::shell) fn workspace_selection_background(palette: &Palette) -> ratatui::style::Color {
+fn workspace_selection_background(palette: &Palette) -> ratatui::style::Color {
     if palette.selection_bg == ratatui::style::Color::Reset {
         palette.active_row_bg
     } else {
@@ -31,10 +31,7 @@ pub(in crate::shell) fn workspace_selection_background(palette: &Palette) -> rat
     }
 }
 
-pub(in crate::shell) fn workspace_active_background(
-    palette: &Palette,
-    navigating: bool,
-) -> ratatui::style::Color {
+fn workspace_active_background(palette: &Palette, navigating: bool) -> ratatui::style::Color {
     // The fallback cursor shares the active-row color; only fill the cursor while navigating.
     if navigating && palette.selection_bg == ratatui::style::Color::Reset {
         palette.sidebar_bg
@@ -43,7 +40,7 @@ pub(in crate::shell) fn workspace_active_background(
     }
 }
 
-pub(in crate::shell) fn collapsed_sidebar_sections(area: Rect) -> (Rect, Option<u16>, Rect) {
+fn collapsed_sidebar_sections(area: Rect) -> (Rect, Option<u16>, Rect) {
     let content = Rect::new(area.x, area.y, area.width.saturating_sub(1), area.height);
     if content.is_empty() {
         return (Rect::default(), None, Rect::default());
@@ -170,3 +167,6 @@ pub(in crate::shell::sidebar) fn render_workspace_rows(
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

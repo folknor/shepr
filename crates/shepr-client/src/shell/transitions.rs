@@ -6,7 +6,7 @@ use crate::shell::endpoints::{ProjectionReset, ProjectionStep};
 use crate::shell::input::scroll_lanes::ScrollLanes;
 use crate::shell::input::selection::{MouseSelection, PreviousPane};
 use crate::shell::ledger::{DropReason, Ledger};
-use crate::shell::presentation::surfaces::{Pairing, PaneSurfaces, SurfaceGeneration};
+use crate::shell::presentation::surfaces::{Pairing, PaneSurfaces};
 use crate::shell::state::{ClientShellMode, ClientShellState};
 use shepr_protocol::{ClientShellSnapshot, PaneSurfaceFrame};
 use std::sync::Arc;
@@ -107,14 +107,17 @@ impl ClientShellState {
         self.copy = None;
     }
 
-    /// A surface from connection `generation`. Routing admits only the shown connection,
-    /// and generations only grow. This is the guard behind it: a surface from an older
-    /// connection than the snapshot or the baseline must not replace a newer connection's
-    /// baseline.
-    pub(in crate::shell) fn receive_tagged_pane_surface(
+    /// A full surface from the shown connection `generation`. It becomes the baseline
+    /// (the reader enforces order and the shell mirrors it) and is presented once it
+    /// pairs with that connection's snapshot, which may arrive after it.
+    ///
+    /// Routing admits only the shown connection, and generations only grow. This is the
+    /// guard behind it: a surface from an older connection than the snapshot or the
+    /// baseline must not replace a newer connection's baseline.
+    pub(crate) fn receive_pane_surface_from(
         &mut self,
         surface: PaneSurfaceFrame,
-        generation: SurfaceGeneration,
+        generation: shepr_protocol::ConnectionGeneration,
     ) {
         let newest = self
             .endpoints

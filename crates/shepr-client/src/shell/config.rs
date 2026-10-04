@@ -8,7 +8,7 @@ use shepr_protocol::ClientSurfaceSize;
 
 use crate::shell::sidebar::preferences;
 
-pub struct ClientShellConfig {
+pub(crate) struct ClientShellConfig {
     pub(in crate::shell) sidebar_width: shepr_config::SidebarWidth,
     pub(in crate::shell) sidebar_bounds: shepr_config::SidebarBounds,
     pub(in crate::shell) sidebar_start_collapsed: bool,
@@ -36,12 +36,12 @@ pub struct ClientShellConfig {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::shell) struct ClientShellLayout {
-    pub sidebar: Rect,
-    pub pane_surface: Rect,
+    pub(in crate::shell) sidebar: Rect,
+    pub(in crate::shell) pane_surface: Rect,
 }
 
 impl ClientShellConfig {
-    pub fn from_validated_config(config: &shepr_config::ValidatedClientConfig) -> Self {
+    pub(crate) fn from_validated_config(config: &shepr_config::ValidatedClientConfig) -> Self {
         Self::from_config_with_configured(
             config.ui(),
             preferences::ConfiguredChrome::from_validated_config(config),
@@ -149,7 +149,7 @@ use shepr_config::ClientConfig;
 
 #[cfg(test)]
 impl ClientShellConfig {
-    pub fn from_config(config: &ClientConfig) -> Self {
+    pub(in crate::shell) fn from_config(config: &ClientConfig) -> Self {
         use shepr_test_fixtures::ValidatedClientConfigFixture as _;
         let validated = shepr_config::ValidatedClientConfig::test_from_config(config.clone(), None);
         Self::from_config_with_configured(

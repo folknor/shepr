@@ -2,6 +2,8 @@
 
 use std::time::Duration;
 
+// Pointer gestures: clicks, drags and selection edge scrolling.
+
 /// Repeated clicks on the same spot within the gesture interval are a double click.
 ///
 /// This keeps the gesture in the usual short desktop double-click window.
@@ -18,18 +20,21 @@ pub(crate) const SELECTION_AUTOSCROLL_INTERVAL: Duration = Duration::from_millis
 ///
 /// This bounds redraw work to a practical frame cadence.
 pub(crate) const SELECTION_REPAINT_INTERVAL: Duration = Duration::from_millis(16);
-/// Poll spacing for terminal size changes that do not arrive through a signal.
+/// Maximum lines scrolled for each pointer row beyond a selection edge.
 ///
-/// The interval keeps polling responsive while avoiding a busy loop.
-pub(crate) const TERMINAL_RESIZE_POLL_INTERVAL: Duration = Duration::from_millis(100);
-/// Bound runtime shutdown so terminal restoration and process exit are not held by idle tasks.
+/// Scaling lines with pointer distance makes edge scrolling accelerate smoothly.
+pub(crate) const SELECTION_EDGE_SCROLL_LINES_PER_ROW: usize = 3;
+/// Minimum lines moved on an edge-scroll tick.
 ///
-/// A brief drain window gives cooperative tasks time to finish without stalling exit.
-pub(crate) const CLIENT_RUNTIME_SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(100);
-/// Bound SSH helper cleanup while the client is exiting.
+/// This keeps the first edge-scroll step visible.
+pub(crate) const MIN_SELECTION_EDGE_SCROLL_LINES: usize = 3;
+/// Maximum lines moved on an edge-scroll tick.
 ///
-/// The timeout allows ordinary helper teardown but keeps exit bounded.
-pub(crate) const SSH_RESOURCE_RELEASE_TIMEOUT: Duration = Duration::from_secs(1);
+/// The cap prevents a small pointer movement from skipping too far.
+pub(crate) const MAX_SELECTION_EDGE_SCROLL_LINES: usize = 15;
+
+// How long transient feedback stays on screen.
+
 /// Time an endpoint error stays visible without another input event.
 ///
 /// The timeout leaves time to read a transient error before it clears.
@@ -39,6 +44,41 @@ pub(crate) const ENDPOINT_ERROR_TIMEOUT: Duration = Duration::from_secs(5);
 ///
 /// The timeout keeps a notice available through a short recovery without leaving stale cards up.
 pub(crate) const ENDPOINT_NOTICE_TIMEOUT: Duration = Duration::from_secs(10);
+/// Keep a completed word-selection highlight visible for this interval.
+///
+/// The timeout leaves brief visual feedback after the selection copy completes.
+pub(crate) const WORD_SELECTION_HIGHLIGHT_TIMEOUT: Duration = Duration::from_millis(500);
+/// Keep workspace navigation feedback visible while its focus request is pending.
+///
+/// The timeout covers the normal focus round trip without leaving stale feedback on screen.
+pub(crate) const WORKSPACE_HIGHLIGHT_TIMEOUT: Duration = Duration::from_secs(1);
+
+// The host terminal: its input, its size, and repainting after it refused output.
+
+/// Bound the keyboard-capability query's wait for a host terminal response.
+///
+/// A short wait covers normal terminal replies while keeping startup interactive.
+pub(crate) const HOST_KEYBOARD_QUERY_TIMEOUT: Duration = Duration::from_millis(250);
+/// Maximum host input buffered while the keyboard-capability query is pending.
+///
+/// The capacity holds terminal replies while bounding input from an unresponsive host.
+pub(crate) const MAX_BUFFERED_HOST_INPUT: usize = 64 * 1024;
+/// Scratch buffer size for each read from the outer terminal.
+///
+/// The chunk keeps blocking reads page-sized and bounds each temporary read buffer.
+pub(crate) const HOST_INPUT_READ_CHUNK_BYTES: usize = 4096;
+/// Poll spacing for terminal size changes that do not arrive through a signal.
+///
+/// The interval keeps polling responsive while avoiding a busy loop.
+pub(crate) const TERMINAL_RESIZE_POLL_INTERVAL: Duration = Duration::from_millis(100);
+/// Fallback terminal cell width when the host does not report pixel geometry.
+///
+/// The conventional fallback width maps cell coordinates when the host omits pixel geometry.
+pub(crate) const DEFAULT_CELL_WIDTH_PX: u32 = 8;
+/// Fallback terminal cell height when the host does not report pixel geometry.
+///
+/// The conventional fallback height maps cell coordinates when the host omits pixel geometry.
+pub(crate) const DEFAULT_CELL_HEIGHT_PX: u32 = 16;
 /// The first wait before repainting after the host refused a frame or patch.
 ///
 /// A short first wait redraws promptly after a transient refusal; the wait doubles from here
@@ -56,6 +96,34 @@ pub(crate) const REFUSED_OUTPUT_RETRY_GROWTH: u32 = 2;
 /// still showing the presentation soon after it recovers.
 pub(crate) const REFUSED_OUTPUT_RETRY_MAX: Duration = Duration::from_secs(2);
 
+// The clipboard helper.
+
+/// Maximum time Ctrl+V waits for the clipboard helper in a modal input.
+///
+/// The timeout keeps a stalled clipboard owner from freezing modal input.
+pub(crate) const MODAL_PASTE_CLIPBOARD_TIMEOUT: Duration = Duration::from_millis(500);
+/// Channel capacity for the asynchronous clipboard helper.
+///
+/// The channel suffices because every read has its receiver and completes once.
+pub(crate) const CLIPBOARD_RESULT_QUEUE_CAPACITY: usize = 1;
+
+// The client loop and shutdown.
+
+/// Event queue capacity shared by host input, resize, endpoint readers, supervisors and quit.
+///
+/// The capacity absorbs short bursts without allowing unlimited event accumulation.
+pub(crate) const CLIENT_EVENT_QUEUE_CAPACITY: usize = 256;
+/// Bound runtime shutdown so terminal restoration and process exit are not held by idle tasks.
+///
+/// A brief drain window gives cooperative tasks time to finish without stalling exit.
+pub(crate) const CLIENT_RUNTIME_SHUTDOWN_TIMEOUT: Duration = Duration::from_millis(100);
+/// Bound SSH helper cleanup while the client is exiting.
+///
+/// The timeout allows ordinary helper teardown but keeps exit bounded.
+pub(crate) const SSH_RESOURCE_RELEASE_TIMEOUT: Duration = Duration::from_secs(1);
+
+// Endpoint writes: frame and flush deadlines and the writer's queue.
+
 /// How long one endpoint frame write, or an input flush, may block.
 ///
 /// The timeout absorbs short socket stalls and fails a wedged endpoint promptly.
@@ -71,18 +139,19 @@ pub(crate) const ENDPOINT_DETACH_FLUSH_TIMEOUT: Duration = Duration::from_millis
 
 const _: () = assert!(ENDPOINT_IO_POLL_INTERVAL.as_millis() < ENDPOINT_WRITE_TIMEOUT.as_millis());
 
-/// Bound the keyboard-capability query's wait for a host terminal response.
+/// Maximum queued frame batches waiting for the endpoint writer.
 ///
-/// A short wait covers normal terminal replies while keeping startup interactive.
-pub(crate) const HOST_KEYBOARD_QUERY_TIMEOUT: Duration = Duration::from_millis(250);
-/// Maximum host input buffered while the keyboard-capability query is pending.
+/// The queue absorbs short input bursts while limiting queued command objects.
+pub(crate) const MAX_QUEUED_BATCHES: usize = 256;
+/// Maximum bytes coalesced into one endpoint writer batch.
 ///
-/// The capacity holds terminal replies while bounding input from an unresponsive host.
-pub(crate) const MAX_BUFFERED_HOST_INPUT: usize = 64 * 1024;
-/// Scratch buffer size for each read from the outer terminal.
-///
-/// The chunk keeps blocking reads page-sized and bounds each temporary read buffer.
-pub(crate) const HOST_INPUT_READ_CHUNK_BYTES: usize = 4096;
+/// The cap bounds each write batch so a large burst does not monopolize the writer.
+pub(crate) const MAX_BATCH_BYTES: usize = 64 * 1024;
+/// Maximum endpoint writer backlog, leaving room for frames already in flight
+/// while bounding queued memory.
+pub(crate) const MAX_QUEUED_BYTES: usize = 2 * shepr_protocol::MAX_FRAME_SIZE;
+
+// The endpoint handshake, requests and machine moves.
 
 /// Time to wait for the server's complete Welcome reply during the handshake.
 /// This is an overall deadline for the frame, not a per-read idle timeout.
@@ -108,6 +177,9 @@ pub(crate) const ENDPOINT_COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
 /// target that has not answered by then has stalled, and the move gives up on it instead of
 /// staying pending.
 pub(crate) const ENDPOINT_MOVE_TIMEOUT: Duration = Duration::from_secs(5);
+
+// Connection health and reconnect backoff.
+
 /// Endpoint heartbeat interval, the connection-health cadence the remote
 /// host's SSH bridge expiry is checked against.
 pub(crate) const HEARTBEAT_INTERVAL: Duration = shepr_launch::connection_health::HEARTBEAT_INTERVAL;
@@ -178,39 +250,8 @@ pub(crate) const ATTEMPT_BUDGET: Duration = shepr_remote::SSH_CONNECTION_ATTEMPT
 // An attempt, and so the retry that follows it, must fit the retry bound.
 const _: () = assert!(ATTEMPT_BUDGET.as_millis() < MAX_RETRY_DELAY.as_millis());
 
-/// Maximum queued frame batches waiting for the endpoint writer.
-///
-/// The queue absorbs short input bursts while limiting queued command objects.
-pub(crate) const MAX_QUEUED_BATCHES: usize = 256;
-/// Maximum bytes coalesced into one endpoint writer batch.
-///
-/// The cap bounds each write batch so a large burst does not monopolize the writer.
-pub(crate) const MAX_BATCH_BYTES: usize = 64 * 1024;
-/// Maximum endpoint writer backlog, leaving room for frames already in flight
-/// while bounding queued memory.
-pub(crate) const MAX_QUEUED_BYTES: usize = 2 * shepr_protocol::MAX_FRAME_SIZE;
+// Sidebar geometry.
 
-/// Maximum time Ctrl+V waits for the clipboard helper in a modal input.
-///
-/// The timeout keeps a stalled clipboard owner from freezing modal input.
-pub(crate) const MODAL_PASTE_CLIPBOARD_TIMEOUT: Duration = Duration::from_millis(500);
-/// Keep a completed word-selection highlight visible for this interval.
-///
-/// The timeout leaves brief visual feedback after the selection copy completes.
-pub(crate) const WORD_SELECTION_HIGHLIGHT_TIMEOUT: Duration = Duration::from_millis(500);
-/// Keep workspace navigation feedback visible while its focus request is pending.
-///
-/// The timeout covers the normal focus round trip without leaving stale feedback on screen.
-pub(crate) const WORKSPACE_HIGHLIGHT_TIMEOUT: Duration = Duration::from_secs(1);
-
-/// Fallback terminal cell width when the host does not report pixel geometry.
-///
-/// The conventional fallback width maps cell coordinates when the host omits pixel geometry.
-pub(crate) const DEFAULT_CELL_WIDTH_PX: u32 = 8;
-/// Fallback terminal cell height when the host does not report pixel geometry.
-///
-/// The conventional fallback height maps cell coordinates when the host omits pixel geometry.
-pub(crate) const DEFAULT_CELL_HEIGHT_PX: u32 = 16;
 /// Rows the workspace section header occupies above the workspace entries: the title and a
 /// blank row. A workspace drop marker may sit on the blank row, above the first workspace.
 pub(crate) const WORKSPACE_HEADER_ROWS: u16 = 2;
@@ -224,7 +265,6 @@ pub(crate) const GLOBAL_LAUNCHER_HIT_WIDTH: u16 = 6;
 /// Rows the expanded sidebar's agent section header occupies above the agent entries: the
 /// section divider, the title and sort toggle, and a blank row.
 pub(crate) const AGENT_PANEL_HEADER_ROWS: u16 = 3;
-
 /// Minimum height retained by each section of the expanded sidebar. The sections split only
 /// when the sidebar is tall enough for both minimums.
 pub(crate) const MIN_EXPANDED_SIDEBAR_SECTION_ROWS: u16 = 3;
@@ -232,9 +272,11 @@ pub(crate) const MIN_EXPANDED_SIDEBAR_SECTION_ROWS: u16 = 3;
 /// rows. At it, half the height (rounded up) holds workspaces and the divider still leaves two
 /// agent rows.
 pub(crate) const MIN_COLLAPSED_SIDEBAR_SPLIT_ROWS: u16 = 7;
+
+// Overlay popups and menus.
+
 /// Minimum context-menu width, before the screen width is applied.
 pub(crate) const MIN_CONTEXT_MENU_WIDTH: u16 = 14;
-
 /// Screen columns a centred overlay popup leaves free, split evenly either side, so the
 /// terminal it covers stays visible at its edges.
 pub(crate) const OVERLAY_POPUP_HORIZONTAL_MARGIN: u16 = 4;
@@ -264,36 +306,19 @@ pub(crate) const MIN_HELP_OVERLAY_INNER_WIDTH: u16 = 20;
 /// and two footer rows leave one row of bindings.
 pub(crate) const MIN_HELP_OVERLAY_INNER_HEIGHT: u16 = 6;
 
+// Notice and machine diagnostic text.
+
 /// Maximum sanitized machine diagnostic text shown in the sidebar, in
 /// characters.
 pub(crate) const MAX_MACHINE_DIAGNOSTIC_CHARS: usize = 4096;
 /// Body rows an automatic notice card shows. A multi-line ssh error must not
 /// cover the UI unasked; the machine badge opens the full diagnostic.
 pub(crate) const MAX_AUTOMATIC_NOTICE_BODY_ROWS: usize = 3;
-/// Maximum lines scrolled for each pointer row beyond a selection edge.
-///
-/// Scaling lines with pointer distance makes edge scrolling accelerate smoothly.
-pub(crate) const SELECTION_EDGE_SCROLL_LINES_PER_ROW: usize = 3;
-/// Minimum lines moved on an edge-scroll tick.
-///
-/// This keeps the first edge-scroll step visible.
-pub(crate) const MIN_SELECTION_EDGE_SCROLL_LINES: usize = 3;
-/// Maximum lines moved on an edge-scroll tick.
-///
-/// The cap prevents a small pointer movement from skipping too far.
-pub(crate) const MAX_SELECTION_EDGE_SCROLL_LINES: usize = 15;
+
+// Copy mode.
 
 /// Keys held for copy mode while one of its requests is in flight.
 ///
 /// Copy-mode keys wait for the request ahead of them so motions stay in order; past this many,
 /// later keys are dropped with a notice instead of growing the queue without bound.
 pub(crate) const MAX_COPY_INPUT_QUEUE: usize = 256;
-
-/// Event queue capacity shared by host input, resize, endpoint readers, supervisors and quit.
-///
-/// The capacity absorbs short bursts without allowing unlimited event accumulation.
-pub(crate) const CLIENT_EVENT_QUEUE_CAPACITY: usize = 256;
-/// Channel capacity for the asynchronous clipboard helper.
-///
-/// The channel suffices because every read has its receiver and completes once.
-pub(crate) const CLIPBOARD_RESULT_QUEUE_CAPACITY: usize = 1;

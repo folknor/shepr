@@ -26,11 +26,11 @@ pub(in crate::shell) struct WorkspaceReveal {
 }
 
 impl WorkspaceReveal {
-    pub(in crate::shell) fn selected_pending(&self) -> bool {
+    pub(super) fn selected_pending(&self) -> bool {
         self.selected
     }
 
-    pub(in crate::shell) fn explicit(&self) -> Option<&Location> {
+    pub(super) fn explicit(&self) -> Option<&Location> {
         self.explicit.as_ref()
     }
 
@@ -44,7 +44,7 @@ pub(in crate::shell) struct SidebarScrollResolution {
     pub(in crate::shell) workspaces: Option<usize>,
     pub(in crate::shell) agents: Option<usize>,
     pub(in crate::shell) workspace_reveal_consumed: bool,
-    pub(in crate::shell) agent_reveal_consumed: bool,
+    pub(super) agent_reveal_consumed: bool,
 }
 
 impl SidebarScroll {
@@ -74,7 +74,7 @@ impl SidebarScroll {
         &self.workspace_reveal
     }
 
-    pub(in crate::shell) fn agent_reveal(&self) -> Option<&Location> {
+    pub(super) fn agent_reveal(&self) -> Option<&Location> {
         self.agent_reveal.as_ref()
     }
 
@@ -158,7 +158,7 @@ impl SidebarScroll {
 
     /// Drops every pending workspace reveal.
     #[cfg(test)]
-    pub(in crate::shell) fn clear_reveals(&mut self) {
+    pub(super) fn clear_reveals(&mut self) {
         self.workspace_reveal = WorkspaceReveal::default();
     }
 }

@@ -10,16 +10,16 @@ use shepr_protocol::{
 use std::time::Instant;
 
 /// What a newly viewed connection is told about the host before its on request.
-pub struct HostBaseline<'a> {
+pub(crate) struct HostBaseline<'a> {
     /// The one surface geometry every endpoint renders.
-    pub geometry: TerminalGeometry,
+    pub(crate) geometry: TerminalGeometry,
     /// Every recorded host theme update, replayed in order.
-    pub theme: &'a [ClientHostThemeUpdate],
+    pub(crate) theme: &'a [ClientHostThemeUpdate],
 }
 
 /// What `start_move` did.
 #[derive(Debug, PartialEq, Eq)]
-pub enum StartOutcome {
+pub(crate) enum StartOutcome {
     /// No move may start (Showing, Preparing, or Failed without a new generation).
     Idle,
     /// The move stays Waiting: `to` has no connection and is Local or nothing is shown, or
@@ -109,7 +109,7 @@ pub(crate) fn surface_interest_request(
 /// generation) once `to` has a connection with metadata for its generation. The lease comes
 /// from that metadata; `begin_preparing` runs before `turn_on`, so every send happens with the
 /// `Preparing` installed.
-pub fn start_move<'a>(
+pub(crate) fn start_move<'a>(
     endpoints: &mut EndpointRegistry,
     shell: &mut ClientShellState,
     baseline: impl FnOnce(&ClientShellState) -> HostBaseline<'a>,
@@ -189,7 +189,7 @@ pub(crate) fn turn_on(
 }
 
 /// Reconcile step 3. Sends the target's next navigation request, if its focus lane has one.
-pub fn send_focus(choice: &mut EndpointChoice, endpoints: &mut EndpointRegistry) {
+pub(crate) fn send_focus(choice: &mut EndpointChoice, endpoints: &mut EndpointRegistry) {
     if let Some(preparing) = choice.preparing_mut()
         && let Some(request) = preparing.focus_request()
     {
@@ -202,7 +202,7 @@ pub fn send_focus(choice: &mut EndpointChoice, endpoints: &mut EndpointRegistry)
 /// choice shows the target, the shell projects it, and the target is sent the host focus
 /// baseline and `ReplayHostEffects`; a failed send there does not undo the switch, it is a
 /// connection failure handled next turn. This is the one place that commits the choice.
-pub fn commit_move(
+pub(crate) fn commit_move(
     endpoints: &mut EndpointRegistry,
     shell: &mut ClientShellState,
     host_focused: bool,
@@ -254,7 +254,7 @@ pub fn commit_move(
 
 /// Reconcile step 5. Turns off every viewed connection that is neither shown nor the target
 /// being prepared; see `EndpointRegistry::release_unwanted_views`.
-pub fn release_unwanted(
+pub(crate) fn release_unwanted(
     choice: &EndpointChoice,
     endpoints: &mut EndpointRegistry,
     shell: &ClientShellState,
@@ -265,32 +265,179 @@ pub fn release_unwanted(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tests::endpoint_choice::{Fixture, RecordingTransport, boot, remote, snapshot};
-    fn start(f: &mut Fixture) -> StartOutcome {
-        let host_geometry = f.client.state().reported_geometry;
-        let (state, hub) = f.client.parts_mut();
-        let shell = &mut state.shell;
-        let theme = &state.host_theme_updates;
-        let baseline = |shell: &ClientShellState| HostBaseline {
-            geometry: crate::shell_runtime::view_geometry(
-                host_geometry,
-                shell.surface_size(host_geometry.cols(), host_geometry.rows()),
-            ),
-            theme,
-        };
-        start_move(hub.registry_mut(), shell, baseline, f.now)
+    use crate::endpoint::{EndpointFailureStatus, MoveFailure, PrepareProgress};
+    use crate::shell::{ClientShellConfig, Location};
+    use crate::tests::endpoints::{RecordingTransport, boot, remote, snapshot, surface};
+    use crate::tests::test_generation;
+    use shepr_core::geometry::{GridSize, HostCell, HostGeometry};
+    use shepr_protocol::ClientSurfaceSize;
+    use shepr_protocol::command::EndpointReply;
+    use shepr_test_fixtures::ValidatedClientConfigFixture as _;
+
+    /// The shell and the connections a move's steps act on, on a 100x30 host: Local shown,
+    /// connected at generation 1 and viewed, and the machine `build` connected at generation
+    /// 7 and not viewed, each with a snapshot at revision 1.
+    struct Views {
+        shell: ClientShellState,
+        registry: EndpointRegistry,
+        local: RecordingTransport,
+        target: RecordingTransport,
+        host: HostGeometry,
+        theme: Vec<ClientHostThemeUpdate>,
+        now: Instant,
     }
+
+    impl Views {
+        fn new() -> Self {
+            let now = Instant::now();
+            let config = shepr_config::ValidatedClientConfig::test_default();
+            let host = HostGeometry::new(GridSize::clamped(100, 30), HostCell::Unknown);
+            let mut shell =
+                ClientShellState::new(ClientShellConfig::from_validated_config(&config));
+            shell.set_machines(&[shepr_config::MachineConfig {
+                label: shepr_config::MachineLabel::parse("build").expect("machine"),
+                ssh: shepr_config::SshTarget::parse("host").expect("SSH"),
+            }]);
+            shell.endpoint_connected(&ClientEndpointId::Local, test_generation(1));
+            shell.set_endpoint_snapshot_for_generation(
+                &ClientEndpointId::Local,
+                test_generation(1),
+                snapshot(&ClientEndpointId::Local, 1),
+            );
+            shell.endpoint_connected(&remote(), test_generation(7));
+            shell.cache_endpoint_snapshot_for_generation(
+                &remote(),
+                test_generation(7),
+                snapshot(&remote(), 1),
+            );
+            let size = shell.surface_size(host.cols(), host.rows());
+            shell.receive_pane_surface_from(
+                surface(&ClientEndpointId::Local, 1, size, "SOURCE"),
+                test_generation(1),
+            );
+            let local = RecordingTransport::default();
+            let target = RecordingTransport::default();
+            let mut registry = EndpointRegistry::new_at(local.clone(), test_generation(1), now);
+            registry.insert(remote(), target.clone(), test_generation(7), false, now);
+            Self {
+                shell,
+                registry,
+                local,
+                target,
+                host,
+                theme: Vec::new(),
+                now,
+            }
+        }
+
+        fn size(&self) -> ClientSurfaceSize {
+            self.shell.surface_size(self.host.cols(), self.host.rows())
+        }
+
+        fn pick(&mut self, id: ClientEndpointId) {
+            self.shell.endpoints.choice.select(Location::machine(id));
+        }
+
+        /// Step 2 with the host baseline the loop derives.
+        fn start(&mut self) -> StartOutcome {
+            let host = self.host;
+            let theme = &self.theme;
+            start_move(
+                &mut self.registry,
+                &mut self.shell,
+                |shell: &ClientShellState| HostBaseline {
+                    geometry: crate::shell_runtime::view_geometry(
+                        host,
+                        shell.surface_size(host.cols(), host.rows()),
+                    ),
+                    theme,
+                },
+                self.now,
+            )
+        }
+
+        /// Picks the machine and starts the move to it.
+        fn start_remote(&mut self) {
+            self.pick(remote());
+            assert_eq!(self.start(), StartOutcome::Started);
+        }
+
+        /// The evidence `id` answers its last on request with, kept the way the hub admits
+        /// it: the acknowledgement at projection revision `revision`, then the snapshot of
+        /// that revision (also cached for the commit), then its surface.
+        fn evidence(&mut self, id: &ClientEndpointId, revision: u64) {
+            let request = on_request(if id.is_local() {
+                &self.local
+            } else {
+                &self.target
+            });
+            self.evidence_for(id, &request, revision);
+        }
+
+        /// As `evidence`, answering the on request `request`.
+        fn evidence_for(&mut self, id: &ClientEndpointId, request: &RequestId, revision: u64) {
+            let generation = self.registry.connection(id).expect("connection").generation;
+            let size = self.size();
+            let snapshot = snapshot(id, revision);
+            let preparing = self
+                .shell
+                .endpoints
+                .choice
+                .preparing_mut()
+                .expect("preparing");
+            assert_eq!(
+                preparing.receive_response(
+                    id,
+                    generation,
+                    &boot(id),
+                    request,
+                    Ok(EndpointReply::ClientShellSurfaceSet {
+                        active: true,
+                        projection_revision: shepr_test_fixtures::counter_at(revision),
+                    }),
+                ),
+                PrepareProgress::Pending
+            );
+            assert_eq!(
+                preparing.receive_snapshot(id, generation, &snapshot),
+                PrepareProgress::Pending
+            );
+            assert_eq!(
+                preparing.receive_surface(id, generation, surface(id, revision, size, "TARGET")),
+                PrepareProgress::Pending
+            );
+            self.shell
+                .cache_endpoint_snapshot_for_generation(id, generation, snapshot);
+        }
+    }
+
+    /// The last view-on request `transport` carried.
+    fn on_request(transport: &RecordingTransport) -> RequestId {
+        transport
+            .sent
+            .lock()
+            .expect("messages")
+            .iter()
+            .rev()
+            .find_map(|m| match m {
+                ClientMessage::ClientShellEndpointRequest {
+                    request_id,
+                    command: EndpointCommand::ClientShellSurfaceSet(p),
+                    ..
+                } if p.active => Some(request_id.clone()),
+                _ => None,
+            })
+            .expect("on request")
+    }
+
     #[test]
     fn turn_on_sends_geometry_then_theme_then_the_request_and_no_focus() {
-        let mut f = Fixture::new();
-        f.client
-            .state_mut()
-            .host_theme_updates
-            .push(ClientHostThemeUpdate::Appearance(
-                shepr_protocol::ClientHostAppearance::Dark,
-            ));
+        let mut f = Views::new();
+        f.theme.push(ClientHostThemeUpdate::Appearance(
+            shepr_protocol::ClientHostAppearance::Dark,
+        ));
         f.pick(remote());
-        assert_eq!(start(&mut f), StartOutcome::Started);
+        assert_eq!(f.start(), StartOutcome::Started);
         assert!(matches!(
             f.target.take().as_slice(),
             [
@@ -307,127 +454,100 @@ mod tests {
     }
     #[test]
     fn turn_on_to_an_already_viewed_connection_still_sends_a_fresh_request() {
-        let mut f = Fixture::new();
+        let mut f = Views::new();
         f.pick(remote());
-        f.client
-            .hub_mut()
-            .registry_mut()
-            .set_viewed(&remote(), true);
-        assert_eq!(start(&mut f), StartOutcome::Started);
-        let first = f.on_request();
-        f.client.state_mut().shell.endpoints.choice.fail_move();
+        f.registry.set_viewed(&remote(), true);
+        assert_eq!(f.start(), StartOutcome::Started);
+        let first = on_request(&f.target);
+        f.shell.endpoints.choice.fail_move();
         f.pick(remote());
-        assert_eq!(start(&mut f), StartOutcome::Started);
-        assert_ne!(first, f.on_request());
+        assert_eq!(f.start(), StartOutcome::Started);
+        assert_ne!(first, on_request(&f.target));
     }
     #[test]
     fn start_move_installs_preparing_before_it_sends() {
-        let mut f = Fixture::new();
+        let mut f = Views::new();
         f.pick(remote());
         f.target.fail_next();
-        assert_eq!(start(&mut f), StartOutcome::Started);
-        assert!(
-            f.client
-                .state()
-                .shell
-                .endpoints
-                .choice
-                .preparing()
-                .is_some()
-        );
-        assert!(f.client.hub().registry().connection(&remote()).is_none());
-        assert_eq!(f.client.hub_mut().registry_mut().take_failures().len(), 1);
+        assert_eq!(f.start(), StartOutcome::Started);
+        assert!(f.shell.endpoints.choice.preparing().is_some());
+        assert!(f.registry.connection(&remote()).is_none());
+        assert_eq!(f.registry.take_failures().len(), 1);
     }
     #[test]
     fn start_move_abandons_a_machine_without_a_connection_while_something_is_shown() {
-        let mut f = Fixture::new();
-        f.client.hub_mut().registry_mut().disconnect(&remote());
+        let mut f = Views::new();
+        f.registry.disconnect(&remote());
         f.pick(remote());
-        assert_eq!(start(&mut f), StartOutcome::Abandoned(remote()));
+        assert_eq!(f.start(), StartOutcome::Abandoned(remote()));
         assert_eq!(
-            f.client.state().shell.endpoints.choice.live(),
+            f.shell.endpoints.choice.live(),
             Some(&ClientEndpointId::Local)
         );
     }
     #[test]
     fn start_move_waits_for_metadata_of_the_current_generation() {
-        let mut f = Fixture::new();
-        f.client.hub_mut().registry_mut().insert(
-            remote(),
-            f.target.clone(),
-            crate::tests::test_generation(8),
-            false,
-            f.now,
-        );
+        let mut f = Views::new();
+        f.registry
+            .insert(remote(), f.target.clone(), test_generation(8), false, f.now);
         f.pick(remote());
-        assert_eq!(start(&mut f), StartOutcome::Waiting);
+        assert_eq!(f.start(), StartOutcome::Waiting);
         assert!(f.target.take().is_empty());
     }
     #[test]
     fn start_move_restarts_a_failed_move_only_on_another_generation() {
-        let mut f = Fixture::new();
-        f.client.state_mut().shell.endpoints.choice = EndpointChoice::waiting_for(remote());
-        assert_eq!(start(&mut f), StartOutcome::Started);
-        f.client.state_mut().shell.endpoints.choice.fail_move();
+        let mut f = Views::new();
+        // Nothing shown, waiting for the machine: a failed move then waits for a new
+        // generation instead of returning to a shown endpoint.
+        f.shell.endpoints.choice = EndpointChoice::waiting_for(remote());
+        assert_eq!(f.start(), StartOutcome::Started);
+        f.shell.endpoints.choice.fail_move();
         f.target.take();
-        assert_eq!(start(&mut f), StartOutcome::Idle);
+        assert_eq!(f.start(), StartOutcome::Idle);
         assert!(f.target.take().is_empty());
-        f.client.hub_mut().registry_mut().insert(
+        f.registry.insert(
             remote(),
             RecordingTransport::default(),
-            crate::tests::test_generation(8),
+            test_generation(8),
             false,
             f.now,
         );
-        assert_eq!(start(&mut f), StartOutcome::Waiting);
-        f.client
-            .state_mut()
-            .shell
-            .cache_endpoint_snapshot_for_generation(
-                &remote(),
-                crate::tests::test_generation(8),
-                snapshot(&remote(), 1),
-            );
-        assert_eq!(start(&mut f), StartOutcome::Started);
+        assert_eq!(f.start(), StartOutcome::Waiting);
+        f.shell.cache_endpoint_snapshot_for_generation(
+            &remote(),
+            test_generation(8),
+            snapshot(&remote(), 1),
+        );
+        assert_eq!(f.start(), StartOutcome::Started);
     }
     #[test]
     fn commit_move_changes_nothing_when_a_check_fails() {
-        let mut f = Fixture::new();
-        f.start();
-        f.evidence();
-        f.client
-            .state_mut()
-            .shell
-            .cache_endpoint_snapshot_for_generation(
-                &remote(),
-                crate::tests::test_generation(7),
-                snapshot(&remote(), 3),
-            );
+        let mut f = Views::new();
+        f.start_remote();
+        f.evidence(&remote(), 2);
+        f.shell.cache_endpoint_snapshot_for_generation(
+            &remote(),
+            test_generation(7),
+            snapshot(&remote(), 3),
+        );
         let messages = f.target.take();
         assert!(!messages.is_empty());
-        let (state, hub) = f.client.parts_mut();
-        assert!(commit_move(hub.registry_mut(), &mut state.shell, true).is_err());
+        assert!(commit_move(&mut f.registry, &mut f.shell, true).is_err());
         assert_eq!(
-            f.client.state().shell.endpoints.choice.live(),
+            f.shell.endpoints.choice.live(),
             Some(&ClientEndpointId::Local)
         );
-        assert!(
-            f.client
-                .state()
-                .shell
-                .endpoint_is_active(&ClientEndpointId::Local)
-        );
+        assert!(f.shell.endpoint_is_active(&ClientEndpointId::Local));
         assert!(f.target.take().is_empty());
     }
     #[test]
     fn commit_move_sends_the_focus_baseline_then_replay() {
-        let mut f = Fixture::new();
-        f.start();
-        f.evidence();
+        let mut f = Views::new();
+        f.start_remote();
+        f.evidence(&remote(), 2);
         f.target.take();
-        let (state, hub) = f.client.parts_mut();
         assert!(
-            commit_move(hub.registry_mut(), &mut state.shell, false)
+            commit_move(&mut f.registry, &mut f.shell, false)
                 .expect("commit")
                 .is_some()
         );
@@ -441,68 +561,144 @@ mod tests {
     }
     #[test]
     fn a_failed_commit_send_still_completes_the_switch() {
-        let mut f = Fixture::new();
-        f.start();
-        f.evidence();
+        let mut f = Views::new();
+        f.start_remote();
+        f.evidence(&remote(), 2);
         f.target.fail_next();
-        let (state, hub) = f.client.parts_mut();
         assert!(
-            commit_move(hub.registry_mut(), &mut state.shell, true)
+            commit_move(&mut f.registry, &mut f.shell, true)
                 .expect("commit")
                 .is_some()
         );
-        assert_eq!(
-            f.client.state().shell.endpoints.choice.live(),
-            Some(&remote())
-        );
-        assert_eq!(f.client.hub_mut().registry_mut().take_failures().len(), 1);
+        assert_eq!(f.shell.endpoints.choice.live(), Some(&remote()));
+        assert_eq!(f.registry.take_failures().len(), 1);
     }
     #[test]
     fn a_commit_whose_projection_is_unavailable_leaves_the_move_preparing() {
-        let mut f = Fixture::new();
-        f.start();
-        f.evidence();
+        let mut f = Views::new();
+        f.start_remote();
+        f.evidence(&remote(), 2);
         // The target fails after its evidence arrived: its projection is no longer usable.
-        f.client.state_mut().shell.set_endpoint_status(
-            &remote(),
-            crate::endpoint::EndpointFailureStatus::Reconnecting,
-        );
-        let (state, hub) = f.client.parts_mut();
+        f.shell
+            .set_endpoint_status(&remote(), EndpointFailureStatus::Reconnecting);
         assert!(matches!(
-            commit_move(hub.registry_mut(), &mut state.shell, true),
-            Err(super::super::MoveFailure::ProjectionUnavailable)
+            commit_move(&mut f.registry, &mut f.shell, true),
+            Err(MoveFailure::ProjectionUnavailable)
         ));
-        assert!(
-            f.client
-                .state()
-                .shell
-                .endpoints
-                .choice
-                .preparing()
-                .is_some()
-        );
+        assert!(f.shell.endpoints.choice.preparing().is_some());
         assert_eq!(
-            f.client.state().shell.endpoints.choice.live(),
+            f.shell.endpoints.choice.live(),
             Some(&ClientEndpointId::Local)
         );
     }
     #[test]
     fn release_unwanted_sends_focus_loss_then_the_release() {
-        let mut f = Fixture::new();
-        f.start();
+        let mut f = Views::new();
+        f.start_remote();
         f.pick(ClientEndpointId::Local);
-        let (state, hub) = f.client.parts_mut();
         assert_eq!(
-            release_unwanted(
-                &state.shell.endpoints.choice,
-                hub.registry_mut(),
-                &state.shell,
-            ),
+            release_unwanted(&f.shell.endpoints.choice, &mut f.registry, &f.shell),
             1
         );
         let sent = f.target.take();
         assert!(
             matches!(&sent[sent.len()-2..], [ClientMessage::ClientShellFocus { focused: false }, ClientMessage::ClientShellEndpointRequest { boot_id, command: EndpointCommand::ClientShellSurfaceSet(ClientShellSurfaceSetParams { active: false }), .. }] if boot_id == &boot(&remote()))
         );
+    }
+    /// The steps in reconcile order, a move to the machine and back: start, the target's
+    /// evidence, focus, commit, release, with what each sends and what is shown and viewed
+    /// after it.
+    #[test]
+    fn each_step_of_a_move_there_and_back_acts_on_the_right_connection() {
+        let mut f = Views::new();
+        for returning in [false, true] {
+            let (to, from) = if returning {
+                (ClientEndpointId::Local, remote())
+            } else {
+                (remote(), ClientEndpointId::Local)
+            };
+            let (to_sent, from_sent) = if returning {
+                (f.local.clone(), f.target.clone())
+            } else {
+                (f.target.clone(), f.local.clone())
+            };
+            to_sent.take();
+            from_sent.take();
+            assert!(f.registry.viewed(&from));
+            f.pick(to.clone());
+            assert_eq!(f.start(), StartOutcome::Started);
+            assert!(from_sent.take().is_empty());
+            let messages = to_sent.take();
+            assert!(matches!(
+                messages.first(),
+                Some(ClientMessage::ClientShellResize { .. })
+            ));
+            let Some(ClientMessage::ClientShellEndpointRequest {
+                boot_id,
+                request_id,
+                command:
+                    EndpointCommand::ClientShellSurfaceSet(ClientShellSurfaceSetParams { active: true }),
+            }) = messages.last()
+            else {
+                panic!("expected the view request last: {messages:?}");
+            };
+            assert_eq!(boot_id, &boot(&to));
+            assert!(
+                !messages
+                    .iter()
+                    .any(|m| matches!(m, ClientMessage::ClientShellFocus { .. }))
+            );
+            assert!(f.registry.viewed(&to));
+            f.evidence_for(&to, request_id, if returning { 3 } else { 2 });
+            assert!(to_sent.take().is_empty());
+            assert!(
+                f.shell
+                    .endpoints
+                    .choice
+                    .preparing()
+                    .expect("preparing")
+                    .ready()
+                    .is_some()
+            );
+            send_focus(&mut f.shell.endpoints.choice, &mut f.registry);
+            assert!(
+                commit_move(&mut f.registry, &mut f.shell, true)
+                    .expect("commit")
+                    .is_some()
+            );
+            assert_eq!(f.shell.endpoints.choice.presented(), &to);
+            assert!(f.shell.endpoint_is_active(&to));
+            assert!(f.registry.viewed(&to));
+            assert!(matches!(
+                to_sent.take().as_slice(),
+                [
+                    ClientMessage::ClientShellFocus { focused: true },
+                    ClientMessage::ReplayHostEffects
+                ]
+            ));
+            assert_eq!(
+                release_unwanted(&f.shell.endpoints.choice, &mut f.registry, &f.shell),
+                1
+            );
+            let released = from_sent.take();
+            assert!(
+                matches!(
+                    released.as_slice(),
+                    [
+                        ClientMessage::ClientShellFocus { focused: false },
+                        ClientMessage::ClientShellEndpointRequest {
+                            boot_id,
+                            command: EndpointCommand::ClientShellSurfaceSet(
+                                ClientShellSurfaceSetParams { active: false }
+                            ),
+                            ..
+                        }
+                    ] if boot_id == &boot(&from)
+                ),
+                "{released:?}"
+            );
+            assert!(!f.registry.viewed(&from));
+            assert!(f.registry.viewed(&to));
+        }
     }
 }

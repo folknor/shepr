@@ -20,7 +20,7 @@ use shepr_config::theme::Palette;
 pub(in crate::shell) struct SectionSplit(shepr_core::layout::SplitRatio);
 
 impl SectionSplit {
-    pub(in crate::shell) const DEFAULT: Self = Self(shepr_core::layout::SplitRatio::EVEN);
+    pub(super) const DEFAULT: Self = Self(shepr_core::layout::SplitRatio::EVEN);
 
     pub(in crate::shell) fn from_drag(value: f32) -> Self {
         Self(shepr_core::layout::SplitRatio::clamped(value))
@@ -89,10 +89,7 @@ fn sidebar_section_heights(total_height: u16, split_ratio: SectionSplit) -> (u16
     )
 }
 
-pub(in crate::shell) fn expanded_sidebar_sections(
-    area: Rect,
-    split_ratio: SectionSplit,
-) -> (Rect, Rect) {
+pub(super) fn expanded_sidebar_sections(area: Rect, split_ratio: SectionSplit) -> (Rect, Rect) {
     let content = Rect::new(area.x, area.y, area.width.saturating_sub(1), area.height);
     if content.is_empty() {
         return (Rect::default(), Rect::default());
@@ -110,10 +107,7 @@ pub(in crate::shell) fn expanded_sidebar_sections(
     )
 }
 
-pub(in crate::shell) fn sidebar_section_divider_rect(
-    area: Rect,
-    split_ratio: SectionSplit,
-) -> Rect {
+pub(super) fn sidebar_section_divider_rect(area: Rect, split_ratio: SectionSplit) -> Rect {
     let content = Rect::new(area.x, area.y, area.width.saturating_sub(1), area.height);
     if content.width == 0 || !sidebar_sections_can_split(content.height) {
         return Rect::default();

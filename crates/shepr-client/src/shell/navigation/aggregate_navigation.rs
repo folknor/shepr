@@ -79,11 +79,7 @@ impl AgentPanelModel {
     }
 }
 
-pub(in crate::shell) fn cycle_index(
-    length: usize,
-    current: Option<usize>,
-    delta: isize,
-) -> Option<usize> {
+pub(super) fn cycle_index(length: usize, current: Option<usize>, delta: isize) -> Option<usize> {
     let length = isize::try_from(length).ok().filter(|length| *length > 0)?;
     let length_usize = usize::try_from(length).ok()?;
     let next = match current.filter(|index| *index < length_usize) {
@@ -103,7 +99,7 @@ pub(in crate::shell) fn cycle_index(
     usize::try_from(next).ok()
 }
 
-pub(in crate::shell) fn agent_target_index(
+pub(super) fn agent_target_index(
     targets: &[Location],
     active_endpoint_id: &ClientEndpointId,
     focused_pane_id: Option<&shepr_protocol::PublicPaneId>,

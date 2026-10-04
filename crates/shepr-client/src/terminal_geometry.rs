@@ -113,8 +113,9 @@ pub(super) fn bounded_cell_geometry(geometry: TerminalGeometry) -> TerminalGeome
     geometry.with_grid(grid.grid())
 }
 
-fn ioctl_host_geometry() -> Option<HostGeometrySnapshot> {
-    let size = crossterm::terminal::window_size().ok()?;
+/// The exact geometry one window-size ioctl reading gives, when it carries a pixel extent and
+/// a non-empty grid.
+fn ioctl_host_geometry(size: &crossterm::terminal::WindowSize) -> Option<HostGeometrySnapshot> {
     let width_px = u32::from(size.width);
     let height_px = u32::from(size.height);
     let report = ioctl_cell_size(size.columns, size.rows, width_px, height_px)?;
@@ -136,10 +137,27 @@ fn current_host_geometry(
     reported_cell_size: &AtomicCellSize,
     last_cell_size: Option<CellReport>,
 ) -> io::Result<HostGeometrySnapshot> {
-    if let Some(snapshot) = ioctl_host_geometry() {
+    current_host_geometry_with(
+        reported_cell_size,
+        last_cell_size,
+        || crossterm::terminal::window_size().ok(),
+        shepr_platform::terminal_grid_size,
+    )
+}
+
+/// `current_host_geometry` over its two host probes: the window-size ioctl, and the grid
+/// query used when the ioctl gives no exact geometry. Without an exact geometry the cell is
+/// the host's reported cell size, else `last_cell_size`, else the default, never exact.
+fn current_host_geometry_with(
+    reported_cell_size: &AtomicCellSize,
+    last_cell_size: Option<CellReport>,
+    window_size: impl FnOnce() -> Option<crossterm::terminal::WindowSize>,
+    terminal_grid_size: impl FnOnce() -> io::Result<GridSize>,
+) -> io::Result<HostGeometrySnapshot> {
+    if let Some(snapshot) = window_size().and_then(|size| ioctl_host_geometry(&size)) {
         return Ok(snapshot);
     }
-    let grid = shepr_platform::terminal_grid_size()?;
+    let grid = terminal_grid_size()?;
     let cell = reported_cell_size.load().or(last_cell_size);
     let host_cell = cell.map_or_else(
         || HostCell::from_host(DEFAULT_CELL_WIDTH_PX, DEFAULT_CELL_HEIGHT_PX, false),
@@ -329,34 +347,247 @@ pub(super) fn reported_cell_size_from_events<'a>(
 }
 
 #[cfg(test)]
-pub(super) fn current_terminal_geometry_with(
-    reported_cell_size: &AtomicCellSize,
-    last_cell_size: Option<(u32, u32)>,
-    exact_geometry: Option<(u16, u16, u32, u32)>,
-    terminal_grid_size: impl FnOnce() -> io::Result<(u16, u16)>,
-) -> io::Result<TerminalGeometry> {
-    if let Some((cols, rows, cell_width_px, cell_height_px)) = exact_geometry {
-        return Ok(TerminalGeometry::new(
-            GridSize::clamped(cols, rows),
-            HostCell::from_host(cell_width_px, cell_height_px, true),
+mod tests {
+    use super::*;
+    use shepr_core::geometry::{CellPx, HostGeometry};
+
+    fn window(columns: u16, rows: u16, width: u16, height: u16) -> crossterm::terminal::WindowSize {
+        crossterm::terminal::WindowSize {
+            rows,
+            columns,
+            width,
+            height,
+        }
+    }
+
+    fn grid_80x24() -> io::Result<GridSize> {
+        Ok(GridSize::clamped(80, 24))
+    }
+
+    /// The geometry `current_host_geometry` derives when the ioctl gives no exact geometry
+    /// and the grid query reports 80x24.
+    fn fallback_geometry(
+        reported_cell_size: &AtomicCellSize,
+        last_cell_size: Option<CellReport>,
+    ) -> TerminalGeometry {
+        current_host_geometry_with(reported_cell_size, last_cell_size, || None, grid_80x24)
+            .expect("the grid query answered")
+            .geometry
+    }
+
+    #[test]
+    fn atomic_cell_size_keeps_width_and_height_in_one_snapshot() {
+        let size = AtomicCellSize::new();
+        assert_eq!(size.load(), None);
+        assert_eq!(size.store(CellReport::new(9, 18)), CellSizeUpdate::Changed);
+        assert_eq!(size.load(), CellReport::new(9, 18));
+        assert_eq!(
+            size.store(CellReport::new(9, 18)),
+            CellSizeUpdate::Unchanged
+        );
+        assert_eq!(size.store(None), CellSizeUpdate::Changed);
+        assert_eq!(size.load(), None);
+    }
+
+    #[test]
+    fn resize_signal_reports_even_when_polled_size_is_unchanged() {
+        let size = HostGeometry::new(GridSize::clamped(120, 40), HostCell::from_host(8, 16, true));
+        assert!(resize_report_required(true, size, size));
+        assert!(!resize_report_required(false, size, size));
+        assert!(resize_report_required(
+            false,
+            HostGeometry::new(GridSize::clamped(120, 41), HostCell::from_host(8, 16, true)),
+            size
+        ));
+        assert!(resize_report_required(
+            false,
+            HostGeometry::new(GridSize::clamped(120, 40), HostCell::from_host(9, 18, true)),
+            size
+        ));
+        assert!(resize_report_required(
+            false,
+            HostGeometry::new(
+                GridSize::clamped(120, 40),
+                HostCell::from_host(8, 16, false)
+            ),
+            size
         ));
     }
-    let (cols, rows) = terminal_grid_size()?;
-    let (cell_width_px, cell_height_px) = reported_cell_size
-        .load()
-        .map(|cell| (cell.width.get(), cell.height.get()))
-        .or(last_cell_size.filter(|(width, height)| CellReport::new(*width, *height).is_some()))
-        .unwrap_or((DEFAULT_CELL_WIDTH_PX, DEFAULT_CELL_HEIGHT_PX));
-    Ok(TerminalGeometry::new(
-        GridSize::clamped(cols, rows),
-        HostCell::from_host(cell_width_px, cell_height_px, false),
-    ))
-}
 
-#[cfg(test)]
-pub(super) fn cell_size_fallback(reported: u64, last: Option<(u32, u32)>) -> (u32, u32) {
-    unpack_cell_size(reported)
-        .map(|cell| (cell.width.get(), cell.height.get()))
-        .or(last.filter(|(width, height)| CellReport::new(*width, *height).is_some()))
-        .unwrap_or((DEFAULT_CELL_WIDTH_PX, DEFAULT_CELL_HEIGHT_PX))
+    #[test]
+    fn unavailable_terminal_grid_is_not_fabricated() {
+        let reported_cell_size = AtomicCellSize::new();
+        let err = current_host_geometry_with(
+            &reported_cell_size,
+            None,
+            || None,
+            || {
+                Err(io::Error::new(
+                    io::ErrorKind::NotConnected,
+                    "terminal is gone",
+                ))
+            },
+        )
+        .err()
+        .expect("an unavailable terminal must not produce fallback geometry");
+
+        assert_eq!(err.kind(), io::ErrorKind::NotConnected);
+    }
+
+    #[test]
+    fn missing_pixel_geometry_keeps_a_valid_terminal_grid() {
+        let reported_cell_size = AtomicCellSize::new();
+        // The ioctl answers with a grid but no pixel extent, as many terminals do.
+        let snapshot = current_host_geometry_with(
+            &reported_cell_size,
+            CellReport::new(9, 18),
+            || Some(window(80, 24, 0, 0)),
+            grid_80x24,
+        )
+        .expect("grid geometry remains valid without pixel dimensions");
+
+        assert_eq!(
+            snapshot.geometry,
+            HostGeometry::new(GridSize::clamped(80, 24), HostCell::from_host(9, 18, false))
+        );
+        assert!(snapshot.pixel_extent.is_none());
+    }
+
+    #[test]
+    fn an_exact_ioctl_geometry_wins_over_reported_and_previous_cell_sizes() {
+        let reported_cell_size = AtomicCellSize::new();
+        reported_cell_size.store(CellReport::new(11, 22));
+        let snapshot = current_host_geometry_with(
+            &reported_cell_size,
+            CellReport::new(12, 24),
+            || Some(window(80, 24, 800, 480)),
+            || panic!("an exact ioctl geometry needs no grid query"),
+        )
+        .expect("exact geometry");
+
+        assert_eq!(
+            snapshot.geometry,
+            HostGeometry::new(GridSize::clamped(80, 24), HostCell::from_host(10, 20, true))
+        );
+        assert!(snapshot.pixel_extent.is_some());
+    }
+
+    #[test]
+    fn bounded_host_geometry_fits_the_grid_into_one_surface() {
+        let shell = bounded_cell_geometry(HostGeometry::new(
+            GridSize::clamped(1, u16::MAX),
+            HostCell::Unknown,
+        ));
+        assert_eq!(shell.cols(), 1);
+        assert!((1..=shepr_protocol::MAX_SURFACE_DIMENSION).contains(&shell.rows()));
+        assert!(
+            usize::from(shell.cols()) * usize::from(shell.rows())
+                <= shepr_protocol::MAX_SURFACE_CELLS
+        );
+    }
+
+    #[test]
+    fn cell_geometry_is_bounded_before_wire_use_and_disables_inexact_pixel_mouse() {
+        let geometry = bounded_cell_geometry(HostGeometry::new(
+            GridSize::clamped(80, 24),
+            HostCell::from_host(
+                shepr_protocol::MAX_CELL_SIZE_PX + 1,
+                shepr_protocol::MAX_CELL_SIZE_PX + 2,
+                true,
+            ),
+        ));
+        assert_eq!(
+            geometry.cell(),
+            HostCell::Estimated(
+                CellPx::new(
+                    shepr_protocol::MAX_CELL_SIZE_PX,
+                    shepr_protocol::MAX_CELL_SIZE_PX,
+                )
+                .expect("the bound is a usable cell")
+            )
+        );
+        assert!(!geometry.cell().is_exact());
+    }
+
+    #[test]
+    fn write_host_terminal_appearance_query_emits_mode_2031_query() {
+        let mut output = Vec::new();
+        write_host_terminal_appearance_query(&mut output).expect("test precondition");
+        assert_eq!(output, b"\x1b[?996n");
+    }
+
+    #[test]
+    fn write_host_terminal_theme_query_emits_osc_queries() {
+        let mut output = Vec::new();
+        write_host_terminal_theme_query(&mut output).expect("test precondition");
+        assert_eq!(
+            output,
+            shepr_termio::host_term::theme::host_terminal_theme_query_sequence().as_bytes()
+        );
+        assert!(
+            !output
+                .windows(shepr_termio::host_term::theme::HOST_COLOR_SCHEME_QUERY_SEQUENCE.len())
+                .any(|window| window
+                    == shepr_termio::host_term::theme::HOST_COLOR_SCHEME_QUERY_SEQUENCE.as_bytes())
+        );
+    }
+
+    #[test]
+    fn write_host_cell_size_query_emits_xtwinops_request() {
+        let mut output = Vec::new();
+        write_host_cell_size_query(&mut output).expect("test precondition");
+
+        assert_eq!(output, b"\x1b[16t");
+    }
+
+    #[test]
+    fn cell_size_fallback_prefers_reported_then_previous_size() {
+        let estimated = |width, height| HostCell::from_host(width, height, false);
+        let unreported = AtomicCellSize::new();
+        assert_eq!(
+            fallback_geometry(&unreported, None).cell(),
+            estimated(8, 16)
+        );
+        assert_eq!(
+            fallback_geometry(&unreported, CellReport::new(11, 22)).cell(),
+            estimated(11, 22)
+        );
+        let reported = AtomicCellSize::new();
+        reported.store(CellReport::new(10, 21));
+        assert_eq!(
+            fallback_geometry(&reported, CellReport::new(11, 22)).cell(),
+            estimated(10, 21)
+        );
+        // A stored value with a zero axis unpacks to no report.
+        let half_reported = AtomicCellSize(AtomicU64::new(pack_cell_size(10, 0)));
+        assert_eq!(
+            fallback_geometry(&half_reported, None).cell(),
+            estimated(8, 16)
+        );
+        let half_reported = AtomicCellSize(AtomicU64::new(pack_cell_size(0, 21)));
+        assert_eq!(
+            fallback_geometry(&half_reported, None).cell(),
+            estimated(8, 16)
+        );
+    }
+
+    #[test]
+    fn reported_cell_size_is_taken_from_host_cell_size_events() {
+        let events = shepr_test_fixtures::parse_raw_input_bytes_sync(b"\x1b[?997;1n");
+        assert_eq!(reported_cell_size_from_events(&events), None);
+
+        let events = shepr_test_fixtures::parse_raw_input_bytes_sync(b"\x1b[6;21;10t\x1b[6;18;9t");
+        assert_eq!(
+            reported_cell_size_from_events(&events),
+            CellReport::new(9, 18)
+        );
+    }
+
+    #[test]
+    fn ioctl_cell_size_accepts_fractional_terminal_geometry() {
+        assert_eq!(ioctl_cell_size(80, 24, 800, 480), CellReport::new(10, 20));
+        assert_eq!(ioctl_cell_size(80, 24, 805, 480), CellReport::new(10, 20));
+        assert_eq!(ioctl_cell_size(80, 24, 800, 485), CellReport::new(10, 20));
+        assert_eq!(ioctl_cell_size(80, 24, 0, 485), None);
+    }
 }

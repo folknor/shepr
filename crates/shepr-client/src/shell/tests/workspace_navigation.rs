@@ -21,7 +21,7 @@ use crate::endpoint::ClientEndpointId;
 
 use crossterm::event::MouseEvent;
 
-use crate::shell::tests::endpoints::{agent, remote_machine, state_with_remote};
+use crate::shell::tests::{agent, remote_machine, state_with_remote};
 use crate::shell::tests::{cell_bg, snapshot, surface};
 use ratatui::layout::Rect;
 

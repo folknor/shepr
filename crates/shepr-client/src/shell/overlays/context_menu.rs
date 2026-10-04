@@ -260,7 +260,7 @@ impl ClientShellState {
     }
 
     /// Does what a chosen menu item says. The menu is already closed.
-    pub(in crate::shell) fn activate_context_menu_action(
+    pub(super) fn activate_context_menu_action(
         &mut self,
         target: &ContextMenuTarget,
         action: ContextMenuAction,

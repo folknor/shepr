@@ -99,9 +99,18 @@ pub(crate) const RESIZE_RECOVERY_PROBE_SCREENS: usize = 8;
 pub(crate) const MAX_PARAGRAPH_MOTION_ROWS: usize = 1000;
 /// Rows a copy-mode word motion first reads from its start, so an ordinary
 /// motion formats only a small window under the terminal lock. The window
-/// doubles, up to the whole history, while the answer may lie past its edge:
-/// no target inside it yet, or a word continuing across a soft wrap there.
+/// doubles, up to `MAX_WORD_MOTION_ROWS`, while the answer may lie past its
+/// edge: no target inside it yet, or a word continuing across a soft wrap
+/// there.
 pub(crate) const WORD_MOTION_INITIAL_WINDOW_ROWS: usize = 64;
+/// The most rows a copy-mode word motion reads, counting its start row. The
+/// read holds the terminal lock, so it is bounded however deep the history is
+/// (with the doublings, under twice this many rows are formatted in all). A
+/// motion treats the window's far edge at this size as the end of the history:
+/// with no target inside it the motion does not move, and a word that runs on
+/// past it ends (or, backward, starts) at that edge. A power-of-two multiple
+/// of `WORD_MOTION_INITIAL_WINDOW_ROWS`, so the last doubling lands on it.
+pub(crate) const MAX_WORD_MOTION_ROWS: usize = 1024;
 
 // OSC evidence retained or logged from untrusted terminal output.
 

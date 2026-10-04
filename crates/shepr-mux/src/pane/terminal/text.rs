@@ -1,5 +1,7 @@
 use super::*;
-use crate::limits::{MAX_PARAGRAPH_MOTION_ROWS, WORD_MOTION_INITIAL_WINDOW_ROWS};
+use crate::limits::{
+    MAX_PARAGRAPH_MOTION_ROWS, MAX_WORD_MOTION_ROWS, WORD_MOTION_INITIAL_WINDOW_ROWS,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TextClass {
@@ -592,7 +594,10 @@ impl MatchWindow {
 
 /// Word motion on the live terminal, with absolute rows. Reads a window of
 /// rows around the start and widens it while the answer may lie past its
-/// edge (a word continuing across a soft wrap at the window's edge).
+/// edge (no target yet, or a word continuing across a soft wrap at the
+/// window's edge). The caller holds the terminal lock, so the window stops
+/// at `MAX_WORD_MOTION_ROWS`, whose far edge then counts as the end of the
+/// history.
 pub(super) fn word_motion_in(
     terminal: &shepr_vt::Terminal,
     point: TerminalTextPoint,
@@ -608,7 +613,7 @@ pub(super) fn word_motion_in(
         motion,
         TerminalWordMotion::NextEnd | TerminalWordMotion::NextBigEnd
     );
-    let mut window_rows = WORD_MOTION_INITIAL_WINDOW_ROWS;
+    let mut window_rows = WORD_MOTION_INITIAL_WINDOW_ROWS.min(MAX_WORD_MOTION_ROWS);
     loop {
         let (start_row, end_row) = if backward {
             (row.saturating_sub(window_rows.saturating_sub(1)), row + 1)
@@ -635,10 +640,13 @@ pub(super) fn word_motion_in(
         } else {
             end_row == total_rows
         };
-        if reached_edge {
+        if reached_edge || window_rows >= MAX_WORD_MOTION_ROWS {
             return target;
         }
-        window_rows = window_rows.saturating_mul(2).min(total_rows);
+        window_rows = window_rows
+            .saturating_mul(2)
+            .min(total_rows)
+            .min(MAX_WORD_MOTION_ROWS);
     }
 }
 
@@ -652,7 +660,9 @@ pub(super) fn paragraph_motion_in(
     let total_rows = terminal.total_rows();
     let current = terminal.screen_row_for_absolute(cursor.row)?.0;
     let mut scratch = String::new();
-    for distance in 1..total_rows.min(MAX_PARAGRAPH_MOTION_ROWS) {
+    // The history's edges end the walk inside the loop (no row before 0, or
+    // past the last), so the range bounds only the distance.
+    for distance in 1..=MAX_PARAGRAPH_MOTION_ROWS {
         let candidate = match motion {
             TerminalParagraphMotion::Previous => current.checked_sub(distance)?,
             TerminalParagraphMotion::Next => {

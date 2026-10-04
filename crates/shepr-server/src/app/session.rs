@@ -1834,20 +1834,22 @@ mod tests {
         }
 
         /// A pane with a live agent session, ready to have its agent released by
-        /// the detector while its shell still runs.
-        async fn app_with_agent_session() -> (
+        /// the detector while its shell still runs. The pane's runtime has no
+        /// child process, so its shell never exits on its own: a spawned child
+        /// that exits before the release is delivered would make the app ignore
+        /// the release as detector evidence from an ended pane.
+        fn app_with_agent_session() -> (
             TestApp,
             shepr_core::layout::PaneId,
             shepr_agent::resume::PersistedAgentSession,
         ) {
             use shepr_agent::resume::{AgentSessionRef, PersistedAgentSession};
             let mut app = test_app();
-            let geometry = app.headless_spawn_geometry();
-            assert_eq!(
-                app.create_default_workspace(geometry),
-                crate::app::DefaultWorkspace::Created
-            );
-            let pane_id = app.state.ws(0).tree().root();
+            let workspace = Workspace::test_new("agent");
+            let pane_id = workspace.tree().root();
+            app.state.test_set_workspaces(vec![workspace]);
+            app.state.seed_bookmark_index(Some(0));
+            app.insert_idle_test_runtime(pane_id);
             let session = PersistedAgentSession::from_report(
                 "shepr:claude",
                 "claude",
@@ -1883,7 +1885,7 @@ mod tests {
         #[tokio::test]
         async fn a_signal_death_just_after_the_agents_exit_checkpoints_its_identity() {
             let _env = crate::test_support::IsolatedEnv::new();
-            let (app, pane_id, session) = app_with_agent_session().await;
+            let (app, pane_id, session) = app_with_agent_session();
             let mut server = crate::server::headless::tests::test_headless_server();
             server.install_test_app(app);
             release_agent(&mut server.app, pane_id);
@@ -1924,8 +1926,18 @@ mod tests {
         #[tokio::test]
         async fn a_signal_shutdown_just_after_the_agents_exit_saves_its_identity() {
             let _env = crate::test_support::IsolatedEnv::new();
-            let (mut app, pane_id, session) = app_with_agent_session().await;
+            let (mut app, pane_id, session) = app_with_agent_session();
             release_agent(&mut app, pane_id);
+            // The release took effect: only the shutdown adoption below brings the
+            // identity back.
+            assert_eq!(
+                app.state
+                    .terminal(pane_id)
+                    .expect("terminal")
+                    .ownership()
+                    .current_session_identity_for_persistence(),
+                None
+            );
             app.persist();
             // The final save after a signal: the pane's death is never processed.
             let quit_at = app.clock.now + Duration::from_millis(100);

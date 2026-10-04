@@ -139,9 +139,6 @@ pub(in crate::shell) fn put_spans(
 }
 
 #[cfg(test)]
-pub(in crate::shell) use crate::shell::navigation::aggregate_navigation::navigator_rows as client_navigator_rows;
-
-#[cfg(test)]
 mod tests {
     use ratatui::buffer::Buffer;
 

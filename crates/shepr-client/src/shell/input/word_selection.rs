@@ -14,16 +14,16 @@ use super::word_bounds::word_bounds_at_column;
 /// pointer position when it returns, so remote latency cannot queue up motion.
 #[derive(Debug)]
 pub(in crate::shell) struct ClientWordSelection {
-    pub(in crate::shell) pane_id: shepr_protocol::PublicPaneId,
-    pub(in crate::shell) focus_confirmed: bool,
+    pub(super) pane_id: shepr_protocol::PublicPaneId,
+    pub(super) focus_confirmed: bool,
     anchor: shepr_term::Point<shepr_term::AbsRow>,
     anchor_bounds: Option<(u16, u16)>,
     cursor: shepr_term::Point<shepr_term::AbsRow>,
     end_col: u16,
     cached_row: Option<(shepr_term::AbsRow, String)>,
     pending: Option<Ticket>,
-    pub(in crate::shell) dragged: bool,
-    pub(in crate::shell) released: bool,
+    pub(super) dragged: bool,
+    pub(super) released: bool,
 }
 
 impl MouseSelection {
@@ -112,7 +112,7 @@ impl ClientShellState {
         }
     }
 
-    pub(in crate::shell) fn drag_word_selection(
+    pub(super) fn drag_word_selection(
         &mut self,
         cursor: shepr_term::Point<shepr_term::AbsRow>,
         outcome: &mut ClientShellInput,
@@ -129,7 +129,7 @@ impl ClientShellState {
         self.update_word_selection(outcome, now);
     }
 
-    pub(in crate::shell) fn finish_word_selection(
+    pub(super) fn finish_word_selection(
         &mut self,
         outcome: &mut ClientShellInput,
         now: std::time::Instant,

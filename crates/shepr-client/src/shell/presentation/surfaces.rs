@@ -2,7 +2,7 @@ use shepr_protocol::{FrameData, PaneSurfaceFrame};
 
 use shepr_protocol::{BootId, PaneSurfacePatch, ProjectionRevision};
 /// The connection generation a baseline came from.
-pub(in crate::shell) type SurfaceGeneration = shepr_protocol::ConnectionGeneration;
+type SurfaceGeneration = shepr_protocol::ConnectionGeneration;
 
 /// The reader baseline and the last exact snapshot/surface pair have separate roles.
 /// Moving a snapshot past its surface copies nothing; only the first patch in that
@@ -77,7 +77,7 @@ impl PaneSurfaces {
             None
         }
     }
-    pub(in crate::shell) fn is_paired(&self) -> bool {
+    pub(super) fn is_paired(&self) -> bool {
         matches!(self, Self::Paired { .. })
     }
     /// The shown connection's reader baseline, which every patch must follow, with
@@ -224,7 +224,7 @@ impl PaneSurfaces {
     /// The one validation per patch from connection `generation`, against
     /// `baseline()`. Changes nothing. A patch from another connection than the
     /// baseline's has no baseline to follow.
-    pub(in crate::shell) fn validate(
+    pub(super) fn validate(
         &self,
         patch: &PaneSurfacePatch,
         generation: SurfaceGeneration,
@@ -289,7 +289,7 @@ impl PaneSurfaces {
     /// Applies a patch `validate` accepted against this unchanged baseline, without
     /// repeating the row and pane checks. `Passed` makes the one grid copy here: the
     /// patched copy becomes the baseline and the passed pair stays held.
-    pub(in crate::shell) fn apply_validated(
+    pub(super) fn apply_validated(
         &mut self,
         patch: &PaneSurfacePatch,
     ) -> Result<(), PatchRejection> {
@@ -356,7 +356,7 @@ fn pane_geometry_matches(
 #[cfg(test)]
 impl PaneSurfaces {
     /// The shown connection's reader baseline, which every patch must follow.
-    pub(in crate::shell) fn baseline(&self) -> Option<&PaneSurfaceFrame> {
+    pub(super) fn baseline(&self) -> Option<&PaneSurfaceFrame> {
         self.tagged_baseline().map(|(surface, _)| surface)
     }
 }
@@ -380,7 +380,7 @@ mod tests {
         shepr_test_fixtures::counter_at(position)
     }
     fn surface(revision: u64) -> PaneSurfaceFrame {
-        crate::tests::endpoint_choice::surface(
+        crate::tests::endpoints::surface(
             &ClientEndpointId::Local,
             revision,
             ClientSurfaceSize { cols: 20, rows: 10 },

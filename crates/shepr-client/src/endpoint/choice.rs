@@ -4,14 +4,14 @@ use shepr_protocol::{RequestId, TerminalGeometry};
 use std::time::Instant;
 mod focus_lane;
 mod preparing;
-pub use preparing::*;
+pub(crate) use preparing::*;
 
 /// The live or stale endpoint presentation, and the move toward the one the client wants.
 /// The shell and transport routing both derive their endpoint identity from this owner. Plain data: no method takes the registry or
 /// sends anything; the I/O lives in `endpoint::view`, sequenced by the endpoint hub, the
 /// only production code that transitions it.
 #[derive(Debug)]
-pub enum EndpointChoice {
+pub(crate) enum EndpointChoice {
     /// The endpoint is selected and on screen.
     Showing(ClientEndpointId),
     /// `to` is selected and not on screen yet.
@@ -20,7 +20,7 @@ pub enum EndpointChoice {
 
 /// A move from the endpoint on screen (if any) to the selected one.
 #[derive(Debug)]
-pub struct Move {
+pub(crate) struct Move {
     /// The one presentation retained until the move commits, including after a loss.
     from: Presentation,
     to: ClientEndpointId,
@@ -49,7 +49,7 @@ impl Presentation {
 }
 
 #[derive(Debug)]
-pub enum MoveStage {
+pub(crate) enum MoveStage {
     /// Nothing sent yet: `to` has no connection with metadata for its current generation.
     /// `focus` is the navigation the user asked for (`Machine`: none), handed to the focus
     /// lane when preparing starts.
@@ -68,7 +68,7 @@ pub enum MoveStage {
 /// move to that endpoint is `Preparing`: a `Waiting` or `Failed` target has nothing to collect
 /// evidence into, so it is `Other`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ConnectionRole {
+pub(crate) enum ConnectionRole {
     Shown,
     Target,
     Other,
@@ -76,7 +76,7 @@ pub enum ConnectionRole {
 
 /// What a shell pick did to the choice.
 #[derive(Debug, PartialEq, Eq)]
-pub enum Selection {
+pub(crate) enum Selection {
     /// Already shown, nothing to move, nothing to navigate.
     Unchanged,
     /// Already shown, and the pick carried navigation: the caller applies it through the
@@ -88,7 +88,7 @@ pub enum Selection {
 
 /// What losing a connection did to the choice.
 #[derive(Debug, PartialEq, Eq)]
-pub enum Lost {
+pub(crate) enum Lost {
     Shown,
     Target,
     Unrelated,
@@ -96,30 +96,30 @@ pub enum Lost {
 
 /// A move that may start: `Waiting`, or `Failed` (then `failed_generation` is set and a start
 /// needs a connection of another generation).
-pub struct PendingStart<'a> {
-    pub to: &'a ClientEndpointId,
-    pub from: Option<&'a ClientEndpointId>,
-    pub failed_generation: Option<shepr_protocol::ConnectionGeneration>,
+pub(crate) struct PendingStart<'a> {
+    pub(crate) to: &'a ClientEndpointId,
+    pub(crate) from: Option<&'a ClientEndpointId>,
+    pub(crate) failed_generation: Option<shepr_protocol::ConnectionGeneration>,
 }
 
-pub struct FailedMove {
-    pub to: ClientEndpointId,
-    pub returned_to: Option<ClientEndpointId>,
+/// A move `fail_move` ended: the endpoint it was preparing.
+pub(crate) struct FailedMove {
+    pub(crate) to: ClientEndpointId,
 }
 
-pub struct Committed {
-    pub previous: Option<ClientEndpointId>,
-    pub shown: ClientEndpointId,
+pub(crate) struct Committed {
+    pub(crate) previous: Option<ClientEndpointId>,
+    pub(crate) shown: ClientEndpointId,
 }
 
 impl EndpointChoice {
     /// Launch with Local connected.
-    pub fn showing(endpoint: ClientEndpointId) -> Self {
+    pub(crate) fn showing(endpoint: ClientEndpointId) -> Self {
         Self::Showing(endpoint)
     }
 
     /// Launch with Local unreachable: nothing shown, waiting for `to`.
-    pub fn waiting_for(to: ClientEndpointId) -> Self {
+    pub(crate) fn waiting_for(to: ClientEndpointId) -> Self {
         Self::Moving(Move {
             from: Presentation::Stale(to.clone()),
             to,
@@ -129,7 +129,7 @@ impl EndpointChoice {
         })
     }
     /// The endpoint whose live or stale presentation the client draws.
-    pub fn presented(&self) -> &ClientEndpointId {
+    pub(crate) fn presented(&self) -> &ClientEndpointId {
         match self {
             Self::Showing(endpoint) => endpoint,
             Self::Moving(movement) => movement.from.endpoint(),
@@ -137,14 +137,14 @@ impl EndpointChoice {
     }
 
     /// The live endpoint eligible for input and inbound host effects.
-    pub fn live(&self) -> Option<&ClientEndpointId> {
+    pub(crate) fn live(&self) -> Option<&ClientEndpointId> {
         match self {
             Self::Showing(e) => Some(e),
             Self::Moving(m) => m.from.live(),
         }
     }
 
-    pub fn role(&self, endpoint: &ClientEndpointId) -> ConnectionRole {
+    pub(crate) fn role(&self, endpoint: &ClientEndpointId) -> ConnectionRole {
         if self.live() == Some(endpoint) {
             ConnectionRole::Shown
         } else if self
@@ -158,7 +158,7 @@ impl EndpointChoice {
     }
     /// The shown endpoint and the target being prepared; every other viewed connection is
     /// turned off by the reconcile.
-    pub fn wants_view(&self, endpoint: &ClientEndpointId) -> bool {
+    pub(crate) fn wants_view(&self, endpoint: &ClientEndpointId) -> bool {
         self.role(endpoint) != ConnectionRole::Other
     }
 
@@ -166,7 +166,7 @@ impl EndpointChoice {
     /// target again only replaces its navigation (and rearms a failed move); anything else
     /// starts a new move from the shown endpoint. The pick's navigation is its location's
     /// target.
-    pub fn select(&mut self, destination: Location) -> Selection {
+    pub(crate) fn select(&mut self, destination: Location) -> Selection {
         let Location {
             endpoint,
             target: focus,
@@ -202,7 +202,7 @@ impl EndpointChoice {
     /// Losing the shown connection leaves nothing shown and keeps the selection (a target
     /// being prepared keeps preparing). Losing the target returns to the shown endpoint, or
     /// waits for the target's next connection when nothing is shown.
-    pub fn connection_lost(&mut self, endpoint: &ClientEndpointId) -> Lost {
+    pub(crate) fn connection_lost(&mut self, endpoint: &ClientEndpointId) -> Lost {
         if self.live() == Some(endpoint) {
             match self {
                 Self::Showing(e) => *self = Self::waiting_for(e.clone()),
@@ -225,7 +225,7 @@ impl EndpointChoice {
         }
     }
 
-    pub fn pending_start(&self) -> Option<PendingStart<'_>> {
+    pub(crate) fn pending_start(&self) -> Option<PendingStart<'_>> {
         let Self::Moving(m) = self else {
             return None;
         };
@@ -243,7 +243,7 @@ impl EndpointChoice {
 
     /// `Waiting` with a shown `from`: back to `Showing(from)`; returns `to`. Any other state:
     /// unchanged, `None`.
-    pub fn abandon(&mut self) -> Option<ClientEndpointId> {
+    pub(crate) fn abandon(&mut self) -> Option<ClientEndpointId> {
         if let Self::Moving(m) = self
             && matches!(m.stage, MoveStage::Waiting { .. })
             && let Some(from) = m.from.live().cloned()
@@ -258,7 +258,7 @@ impl EndpointChoice {
 
     /// `Waiting` or `Failed`: becomes `Preparing`, taking the `Waiting` focus. Any other
     /// state: unchanged.
-    pub fn begin_preparing(
+    pub(crate) fn begin_preparing(
         &mut self,
         lease: ViewLease,
         view_request: RequestId,
@@ -281,7 +281,7 @@ impl EndpointChoice {
             )));
         }
     }
-    pub fn preparing(&self) -> Option<&Preparing> {
+    pub(crate) fn preparing(&self) -> Option<&Preparing> {
         match self {
             Self::Moving(Move {
                 stage: MoveStage::Preparing(p),
@@ -290,7 +290,7 @@ impl EndpointChoice {
             _ => None,
         }
     }
-    pub fn preparing_mut(&mut self) -> Option<&mut Preparing> {
+    pub(crate) fn preparing_mut(&mut self) -> Option<&mut Preparing> {
         match self {
             Self::Moving(Move {
                 stage: MoveStage::Preparing(p),
@@ -299,23 +299,20 @@ impl EndpointChoice {
             _ => None,
         }
     }
-    pub fn deadline(&self) -> Option<Instant> {
+    pub(crate) fn deadline(&self) -> Option<Instant> {
         self.preparing().map(Preparing::deadline)
     }
 
     /// `Preparing` only: back to `Showing(from)` when `from` exists, else `Failed` on the
     /// lease's generation. Any other state: unchanged, `None`.
-    pub fn fail_move(&mut self) -> Option<FailedMove> {
+    pub(crate) fn fail_move(&mut self) -> Option<FailedMove> {
         let Self::Moving(m) = self else {
             return None;
         };
         let MoveStage::Preparing(p) = &m.stage else {
             return None;
         };
-        let failed = FailedMove {
-            to: m.to.clone(),
-            returned_to: m.from.live().cloned(),
-        };
+        let failed = FailedMove { to: m.to.clone() };
         if let Some(from) = m.from.live() {
             *self = Self::Showing(from.clone());
         } else {
@@ -327,7 +324,7 @@ impl EndpointChoice {
     }
 
     /// `Preparing` only: becomes `Showing(to)`. Any other state: unchanged, `None`.
-    pub fn commit(&mut self) -> Option<Committed> {
+    pub(crate) fn commit(&mut self) -> Option<Committed> {
         let Self::Moving(m) = self else {
             return None;
         };
@@ -469,7 +466,7 @@ mod tests {
     fn a_failed_move_with_a_shown_source_returns_to_showing_it() {
         let mut c = preparing();
         let failed = c.fail_move().expect("failed");
-        assert_eq!(failed.returned_to, Some(ClientEndpointId::Local));
+        assert_eq!(failed.to, remote());
         assert_eq!(c.live(), Some(&ClientEndpointId::Local));
         assert!(c.pending_start().is_none());
     }

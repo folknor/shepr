@@ -66,10 +66,7 @@ impl ModeState {
 
     /// Fills an empty Navigate preview; no-op outside Navigate or with a preview.
     #[cfg(test)]
-    pub(in crate::shell) fn fill_preview(
-        &mut self,
-        preview: impl FnOnce() -> Option<PinnedLocation>,
-    ) {
+    fn fill_preview(&mut self, preview: impl FnOnce() -> Option<PinnedLocation>) {
         if self.kind == ClientShellMode::Navigate && self.preview.is_none() {
             self.preview = preview();
         }

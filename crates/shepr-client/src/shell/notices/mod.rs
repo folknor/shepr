@@ -51,7 +51,7 @@ impl NoticeCode {
         }
     }
 
-    pub(in crate::shell) fn automatic_body_row_limit(self) -> Option<usize> {
+    fn automatic_body_row_limit(self) -> Option<usize> {
         (self != Self::MachineDiagnostic).then_some(MAX_AUTOMATIC_NOTICE_BODY_ROWS)
     }
 
@@ -67,7 +67,7 @@ impl NoticeCode {
 pub(in crate::shell) struct ClientEndpointNoticeKey {
     /// Machine notices can share a boot id and code across hosts, so endpoint
     /// identity is kept as a typed part of the key.
-    pub(in crate::shell) endpoint_id: Option<ClientEndpointId>,
+    endpoint_id: Option<ClientEndpointId>,
     /// The server boot the notice is about; `None` for a notice no server
     /// boot raised (no snapshot yet, or a configured machine's diagnostic).
     pub(in crate::shell) boot_id: Option<shepr_protocol::BootId>,
@@ -116,10 +116,7 @@ impl Notices {
             self.advance();
         }
     }
-    pub(in crate::shell) fn open_diagnostic(
-        &mut self,
-        notice: ClientVisibleEndpointNotice,
-    ) -> bool {
+    fn open_diagnostic(&mut self, notice: ClientVisibleEndpointNotice) -> bool {
         if self.visible.as_ref().is_none_or(|current| {
             current.key.endpoint_id == notice.key.endpoint_id && current.key.code == notice.key.code
         }) {
@@ -251,5 +248,13 @@ impl Notices {
     #[cfg(test)]
     pub(in crate::shell) fn queued(&self) -> usize {
         self.boot_queue.len()
+    }
+}
+
+#[cfg(test)]
+impl crate::shell::ClientShellState {
+    /// The title of the notice card on screen, for tests outside the shell.
+    pub(crate) fn visible_notice_title(&self) -> Option<&str> {
+        self.notices.visible().map(|notice| notice.title.as_str())
     }
 }

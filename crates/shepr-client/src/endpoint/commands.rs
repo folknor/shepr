@@ -578,4 +578,62 @@ mod tests {
         );
         assert!(has_in_flight(&commands));
     }
+
+    #[test]
+    fn stale_queued_request_is_cancelled_without_blocking_the_current_generation() {
+        use crate::shell::tests::{pending_request, request_id};
+        use crate::shell::{ClientShellAction, DropReason, LocationTarget};
+
+        let (mut state, actions) = pending_request();
+        let stale_id = request_id(&actions).to_owned();
+        let current =
+            state.focus_endpoint_target(LocationTarget::Workspace(shepr_test_fixtures::id("w1")));
+        let current_id = request_id(&current).to_owned();
+        let mut commands = EndpointCommands::default();
+        for (generation, actions) in [(generation(1), actions), (generation(2), current)] {
+            for action in actions {
+                let ClientShellAction::Endpoint {
+                    endpoint_id,
+                    boot_id,
+                    request,
+                } = action
+                else {
+                    panic!("expected endpoint request");
+                };
+                commands.enqueue(endpoint_id, generation, boot_id, request);
+            }
+        }
+        let mut endpoints = EndpointRegistry::new(
+            crate::tests::endpoints::RecordingTransport::default(),
+            generation(2),
+        );
+        let cancelled = commands.send_next(&endpoint(), &mut endpoints, Instant::now());
+        assert_eq!(cancelled.unsent, vec![stale_id.clone()]);
+        assert!(cancelled.possibly_sent.is_empty());
+        state.drop_request(&stale_id, DropReason::Unsent);
+        assert_eq!(state.visible_notice_title(), None);
+        assert!(
+            commands
+                .receive_response(
+                    &endpoint(),
+                    generation(1),
+                    &crate::tests::test_boot_id("boot-1"),
+                    &stale_id,
+                    Ok(EndpointReply::Done)
+                )
+                .is_none()
+        );
+        assert!(
+            commands
+                .receive_response(
+                    &endpoint(),
+                    generation(2),
+                    &crate::tests::test_boot_id("boot-1"),
+                    &current_id,
+                    Ok(EndpointReply::Done)
+                )
+                .is_some()
+        );
+        assert!(state.has_request(&current_id));
+    }
 }

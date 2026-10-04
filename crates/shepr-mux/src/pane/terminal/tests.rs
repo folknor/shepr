@@ -604,6 +604,243 @@ fn live_terminal_word_end_expands_through_a_long_wide_soft_wrap() {
     );
 }
 
+/// Room for a few times `MAX_WORD_MOTION_ROWS` history lines at ten columns
+/// (more at fewer).
+fn word_motion_history_budget() -> shepr_core::scrollback::ScrollbackBudget {
+    shepr_core::scrollback::ScrollbackBudget::new(
+        10 * 4 * crate::limits::MAX_WORD_MOTION_ROWS * shepr_core::scrollback::ESTIMATED_CELL_BYTES,
+    )
+}
+
+/// A terminal holding `a`, `blank_lines` empty lines, then `b`, with history
+/// deep enough to retain all of it. Returns the pane and where `a` and `b`
+/// sit.
+fn word_motion_blank_gap(
+    blank_lines: usize,
+) -> (PaneTerminal, TerminalTextPoint, TerminalTextPoint) {
+    let mut terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(10, 3),
+        word_motion_history_budget(),
+    );
+    terminal.write(b"a\r\n");
+    for _ in 0..blank_lines {
+        terminal.write(b"\r\n");
+    }
+    terminal.write(b"b");
+    let a = TerminalTextPoint {
+        row: terminal.absolute_row_for_screen(ScreenRow(0)),
+        col: 0,
+    };
+    let b = TerminalTextPoint {
+        row: terminal.absolute_row_for_screen(ScreenRow(blank_lines + 1)),
+        col: 0,
+    };
+    (PaneTerminal::new(terminal), a, b)
+}
+
+#[test]
+fn live_terminal_word_motion_reaches_a_word_on_the_last_row_of_its_cap() {
+    // `b` is on the last row a motion from `a` may read, counting its own.
+    let (pane, a, b) = word_motion_blank_gap(crate::limits::MAX_WORD_MOTION_ROWS - 2);
+    assert_eq!(
+        pane.word_motion_target(a, TerminalWordMotion::NextStart),
+        Some(b)
+    );
+    assert_eq!(
+        pane.word_motion_target(b, TerminalWordMotion::PreviousStart),
+        Some(a)
+    );
+}
+
+#[test]
+fn live_terminal_word_motion_stops_at_its_row_cap() {
+    // One row further: the motion treats its cap as the end of the history
+    // and does not move, rather than formatting the rest under the lock.
+    let (pane, a, b) = word_motion_blank_gap(crate::limits::MAX_WORD_MOTION_ROWS - 1);
+    assert_eq!(
+        pane.word_motion_target(a, TerminalWordMotion::NextStart),
+        None
+    );
+    assert_eq!(
+        pane.word_motion_target(b, TerminalWordMotion::PreviousStart),
+        None
+    );
+}
+
+/// Columns of the terminal `word_motion_wrapped_word` builds: the narrowest a
+/// pane geometry allows.
+const WRAPPED_WORD_COLS: u16 = 4;
+
+/// A terminal `WRAPPED_WORD_COLS` columns wide holding one word of `chars`
+/// characters, soft-wrapped over `chars / WRAPPED_WORD_COLS` rows (rounded up),
+/// with history deep enough to retain all of it. Returns the pane and the
+/// screen-row-to-absolute-row mapping of its rows.
+fn word_motion_wrapped_word(chars: usize) -> (PaneTerminal, Vec<AbsRow>) {
+    let mut terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(WRAPPED_WORD_COLS, 3),
+        word_motion_history_budget(),
+    );
+    terminal.write("a".repeat(chars).as_bytes());
+    let rows = (0..chars.div_ceil(usize::from(WRAPPED_WORD_COLS)))
+        .map(|row| terminal.absolute_row_for_screen(ScreenRow(row)))
+        .collect();
+    (PaneTerminal::new(terminal), rows)
+}
+
+#[test]
+fn live_terminal_word_end_inside_the_cap_is_exact() {
+    // A word whose last character is on the last row the motion may read.
+    let cap = crate::limits::MAX_WORD_MOTION_ROWS;
+    let (pane, rows) = word_motion_wrapped_word(cap * usize::from(WRAPPED_WORD_COLS) - 1);
+    assert_eq!(
+        pane.word_motion_target(
+            TerminalTextPoint {
+                row: rows[0],
+                col: 0,
+            },
+            TerminalWordMotion::NextEnd,
+        ),
+        Some(TerminalTextPoint {
+            row: rows[cap - 1],
+            col: WRAPPED_WORD_COLS - 2,
+        })
+    );
+    assert_eq!(
+        pane.word_motion_target(
+            TerminalTextPoint {
+                row: rows[cap - 1],
+                col: 0,
+            },
+            TerminalWordMotion::PreviousBigStart,
+        ),
+        Some(TerminalTextPoint {
+            row: rows[0],
+            col: 0,
+        })
+    );
+}
+
+#[test]
+fn live_terminal_word_motion_through_a_wrapped_word_stops_at_its_row_cap() {
+    // The word runs on well past the cap in both directions from where the
+    // motions start, so each lands on the cap's boundary row.
+    let cap = crate::limits::MAX_WORD_MOTION_ROWS;
+    let (pane, rows) = word_motion_wrapped_word((cap + 100) * usize::from(WRAPPED_WORD_COLS));
+    let last = rows.len() - 1;
+    assert_eq!(
+        pane.word_motion_target(
+            TerminalTextPoint {
+                row: rows[0],
+                col: 0,
+            },
+            TerminalWordMotion::NextEnd,
+        ),
+        Some(TerminalTextPoint {
+            row: rows[cap - 1],
+            col: WRAPPED_WORD_COLS - 1,
+        })
+    );
+    assert_eq!(
+        pane.word_motion_target(
+            TerminalTextPoint {
+                row: rows[last],
+                col: WRAPPED_WORD_COLS - 1,
+            },
+            TerminalWordMotion::PreviousStart,
+        ),
+        Some(TerminalTextPoint {
+            row: rows[last - (cap - 1)],
+            col: 0,
+        })
+    );
+}
+
+/// A terminal of `rows` rows reading `x`, except the blank row `blank`.
+/// Returns the pane and the absolute row of each row.
+fn paragraph_motion_rows(rows: usize, blank: usize) -> (PaneTerminal, Vec<AbsRow>) {
+    let mut terminal = shepr_vt::Terminal::new(
+        shepr_core::geometry::PaneGeometry::cells_only(10, 3),
+        word_motion_history_budget(),
+    );
+    for row in 0..rows {
+        if row != blank {
+            terminal.write(b"x");
+        }
+        if row + 1 < rows {
+            terminal.write(b"\r\n");
+        }
+    }
+    assert_eq!(terminal.total_rows(), rows, "test precondition");
+    let abs = (0..rows)
+        .map(|row| terminal.absolute_row_for_screen(ScreenRow(row)))
+        .collect();
+    (PaneTerminal::new(terminal), abs)
+}
+
+fn paragraph_point(row: AbsRow) -> TerminalTextPoint {
+    TerminalTextPoint { row, col: 0 }
+}
+
+#[test]
+fn paragraph_motion_reaches_a_blank_row_exactly_at_its_bound() {
+    let max = crate::limits::MAX_PARAGRAPH_MOTION_ROWS;
+    let (pane, rows) = paragraph_motion_rows(max + 2, max);
+    assert_eq!(
+        pane.paragraph_motion_target(paragraph_point(rows[0]), TerminalParagraphMotion::Next),
+        Some(paragraph_point(rows[max]))
+    );
+    let (pane, rows) = paragraph_motion_rows(max + 2, 1);
+    assert_eq!(
+        pane.paragraph_motion_target(
+            paragraph_point(rows[max + 1]),
+            TerminalParagraphMotion::Previous
+        ),
+        Some(paragraph_point(rows[1]))
+    );
+}
+
+#[test]
+fn paragraph_motion_does_not_look_past_its_bound() {
+    let max = crate::limits::MAX_PARAGRAPH_MOTION_ROWS;
+    let (pane, rows) = paragraph_motion_rows(max + 3, max + 1);
+    assert_eq!(
+        pane.paragraph_motion_target(paragraph_point(rows[0]), TerminalParagraphMotion::Next),
+        None
+    );
+    let (pane, rows) = paragraph_motion_rows(max + 2, 0);
+    assert_eq!(
+        pane.paragraph_motion_target(
+            paragraph_point(rows[max + 1]),
+            TerminalParagraphMotion::Previous
+        ),
+        None
+    );
+}
+
+#[test]
+fn paragraph_motion_reaches_a_blank_row_at_either_end_of_the_history() {
+    let (pane, rows) = paragraph_motion_rows(5, 4);
+    assert_eq!(
+        pane.paragraph_motion_target(paragraph_point(rows[0]), TerminalParagraphMotion::Next),
+        Some(paragraph_point(rows[4]))
+    );
+    let (pane, rows) = paragraph_motion_rows(5, 0);
+    assert_eq!(
+        pane.paragraph_motion_target(paragraph_point(rows[4]), TerminalParagraphMotion::Previous),
+        Some(paragraph_point(rows[0]))
+    );
+    // With no blank row before the edge, neither direction moves.
+    let (pane, rows) = paragraph_motion_rows(5, usize::MAX);
+    assert_eq!(
+        pane.paragraph_motion_target(paragraph_point(rows[0]), TerminalParagraphMotion::Next),
+        None
+    );
+    assert_eq!(
+        pane.paragraph_motion_target(paragraph_point(rows[4]), TerminalParagraphMotion::Previous),
+        None
+    );
+}
+
 fn current_palette_color(pane: &PaneTerminal, index: u8) -> shepr_vt::RgbColor {
     let mut core = pane.core.lock().expect("test precondition");
     let PaneTerminalCore {

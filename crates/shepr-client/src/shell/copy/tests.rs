@@ -1,33 +1,217 @@
-use crate::endpoint::{ClientEndpointId, EndpointFailureStatus};
-use crate::shell::config::ClientShellConfig;
-use crate::shell::copy::{
+//! Copy mode: the session on its own, and through the whole shell its cursor,
+//! selections, search, queued input and requests.
+
+use super::{
     ClientCopyOperation, ClientCopySearch, ClientCopySearchPrompt, ClientCopySelection, CopyEntry,
     CopySession,
 };
-use crate::shell::ledger::DropReason;
+use crate::endpoint::{ClientEndpointId, EndpointFailureStatus};
+use crate::shell::config::ClientShellConfig;
+use crate::shell::input::events::PaneInputBatchAccounting;
+use crate::shell::ledger::{DropReason, Ticket};
 use crate::shell::overlays::Overlay;
 use crate::shell::overlays::help::HelpOverlay;
 use crate::shell::state::{
     ClientShellAction, ClientShellEndpointError, ClientShellInput, ClientShellMode,
     ClientShellRequest, ClientShellState,
 };
-use crossterm::event::MouseEvent;
-use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEventKind};
+use crate::shell::tests::{
+    answer, cell_bg, copy_search, copy_search_result, copy_shell, frame_rows, pane_scroll_result,
+    request_id, snapshot, surface,
+};
+use crate::tests::test_pane_id;
+use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::buffer::Buffer;
 use shepr_config::ClientConfig;
-use shepr_config::theme::Palette;
 use shepr_protocol::command::{EndpointCommand, EndpointReply};
-use shepr_protocol::{ClientMessage, ClientPaneInputEvent, FrameData};
-use shepr_protocol::{ClientShellPane, SurfaceRect};
+use shepr_protocol::{
+    ClientMessage, ClientPaneInputEvent, ClientShellPane, FrameData, SurfaceRect,
+};
 use shepr_surface::ratatui_conversion::{FrameDataExt as _, WireColorExt as _};
-use shepr_term::host::DefaultColorKind;
-use shepr_term::host::HostAppearance;
+use shepr_term::selection::SelectionShape;
 use shepr_termio::input::raw_input::RawInputEvent;
 use shepr_termio::text_editor::TextEditor;
 
-use crate::shell::tests::{cell_bg, frame_rows, snapshot, surface};
-use crate::shell::tests::{copy_search_result, pane_scroll_result};
-use crate::tests::test_pane_id;
+fn pane_id() -> shepr_protocol::PublicPaneId {
+    let workspace =
+        shepr_protocol::WorkspaceId::from_number(1).expect("one-based workspace number");
+    shepr_protocol::PublicPaneId::new(
+        &workspace,
+        shepr_protocol::PanePublicNumber::new(1).expect("nonzero literal"),
+    )
+}
+
+fn session() -> CopySession {
+    CopySession::start(CopyEntry {
+        pane_id: pane_id(),
+        scroll: shepr_term::ScrollMetrics::new(0, 0, 2, shepr_term::AbsRow(0)),
+        geometry: (10, 2),
+        alternate_screen_active: false,
+        cursor: shepr_protocol::command::PaneTextPoint {
+            row: shepr_term::AbsRow(0),
+            col: 0,
+        },
+        rows: Ticket::fixture(1),
+    })
+}
+
+#[test]
+fn ending_a_session_discards_its_queue() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
+    let mut first = session();
+    first.pipeline_mut().begin(Ticket::fixture(2), None);
+    first.pipeline_mut().push_op(ClientCopyOperation::Motion(
+        shepr_protocol::command::PaneCopyMotion::Word(
+            shepr_protocol::command::PaneWordMotion::NextStart,
+        ),
+    ));
+    first
+        .pipeline_mut()
+        .push_key(shepr_term::key::TerminalKey::new(
+            KeyCode::Char('j'),
+            KeyModifiers::empty(),
+        ));
+    state.copy = Some(first);
+
+    state.reset_endpoint_projection(crate::shell::endpoints::ProjectionReset::Rebooted);
+    assert!(state.copy.is_none());
+
+    let next = session();
+    assert!(!next.pipeline().in_flight());
+    assert!(next.pipeline().keys_is_empty());
+    assert!(next.pipeline().ops_is_empty());
+}
+
+#[test]
+fn projected_selection_follows_anchor_and_cursor() {
+    let plain = session();
+    assert!(plain.projected_selection().is_none());
+
+    let anchor = shepr_term::Point::new(shepr_term::AbsRow(0), 1);
+    let mut selecting = session().with_selection(ClientCopySelection::Character { anchor });
+    selecting.cursor = shepr_protocol::command::PaneTextPoint {
+        row: shepr_term::AbsRow(1),
+        col: 3,
+    };
+    let projected = selecting
+        .projected_selection()
+        .expect("a character selection projects");
+    assert!(projected.belongs_to(&pane_id()));
+    assert_eq!(projected.shape(), SelectionShape::Range);
+    assert_eq!(
+        projected.ordered_rows(),
+        (
+            shepr_term::Point::new(shepr_term::AbsRow(0), 1),
+            shepr_term::Point::new(shepr_term::AbsRow(1), 3)
+        )
+    );
+
+    let linewise = session()
+        .with_selection(ClientCopySelection::Linewise {
+            anchor_row: shepr_term::AbsRow(1),
+        })
+        .with_cursor(shepr_protocol::command::PaneTextPoint {
+            row: shepr_term::AbsRow(0),
+            col: 4,
+        });
+    let projected = linewise
+        .projected_selection()
+        .expect("a linewise selection projects");
+    assert_eq!(projected.shape(), SelectionShape::Lines);
+    assert_eq!(
+        projected.ordered_rows(),
+        (
+            shepr_term::Point::new(shepr_term::AbsRow(0), 0),
+            shepr_term::Point::new(shepr_term::AbsRow(1), 0)
+        )
+    );
+}
+
+/// A shell on the default snapshot, in copy mode on `session` with an operation in flight.
+fn shell_awaiting_copy_operation(session: CopySession) -> ClientShellState {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    state.mode.set(ClientShellMode::Copy);
+    state.copy = Some(session);
+    state
+        .copy
+        .as_mut()
+        .expect("a live copy session")
+        .pipeline_mut()
+        .begin(Ticket::fixture(2), None);
+    state
+}
+
+#[test]
+fn copy_prefix_replays_after_keys_queued_behind_an_operation() {
+    let mut state = shell_awaiting_copy_operation(session());
+    let mut outcome = ClientShellInput::default();
+    let mut accounting = PaneInputBatchAccounting::default();
+    let prefix = state.config.keybinds.prefix;
+
+    state.handle_key(
+        shepr_term::key::TerminalKey::new(KeyCode::Char('v'), KeyModifiers::empty()),
+        &mut outcome,
+        &mut accounting,
+    );
+    state.handle_key(
+        shepr_term::key::TerminalKey::new(prefix.code, prefix.modifiers),
+        &mut outcome,
+        &mut accounting,
+    );
+
+    assert_eq!(state.mode.kind(), ClientShellMode::Copy);
+    assert_eq!(state.copy_keys_len(), 2);
+
+    state.finish_copy_operation(true, &mut outcome);
+
+    assert_eq!(state.mode.kind(), ClientShellMode::Prefix);
+    assert!(
+        state
+            .copy
+            .as_ref()
+            .is_some_and(|copy_mode| copy_mode.selection.is_some())
+    );
+    assert!(state.copy_keys_empty());
+}
+
+#[test]
+fn copy_escape_cancels_selection_started_by_prior_queued_key() {
+    let mut state =
+        shell_awaiting_copy_operation(session().with_selection(ClientCopySelection::Character {
+            anchor: shepr_term::Point::new(shepr_term::AbsRow(0), 0),
+        }));
+    state.mouse_selection.selection = Some(shepr_term::selection::Selection::anchor(
+        pane_id(),
+        shepr_term::Point::new(shepr_term::AbsRow(0), 0),
+    ));
+    let mut outcome = ClientShellInput::default();
+    let mut accounting = PaneInputBatchAccounting::default();
+
+    state.handle_key(
+        shepr_term::key::TerminalKey::new(KeyCode::Char('v'), KeyModifiers::empty()),
+        &mut outcome,
+        &mut accounting,
+    );
+    state.handle_key(
+        shepr_term::key::TerminalKey::new(KeyCode::Esc, KeyModifiers::empty()),
+        &mut outcome,
+        &mut accounting,
+    );
+
+    assert_eq!(state.copy_keys_len(), 2);
+    state.finish_copy_operation(true, &mut outcome);
+
+    assert_eq!(state.mode.kind(), ClientShellMode::Copy);
+    assert!(
+        state
+            .copy
+            .as_ref()
+            .is_some_and(|copy_mode| copy_mode.selection.is_none())
+    );
+    assert!(state.mouse_selection.selection.is_none());
+    assert!(state.copy_keys_empty());
+}
 
 #[test]
 fn pasted_help_and_copy_queries_normalize_single_line_text() {
@@ -216,405 +400,6 @@ fn copy_mode_in_a_clipped_pane_keeps_the_panes_full_geometry() {
     assert!(crate::shell::view::resolve::client_copy_surface_coherent(
         state.copy.as_ref(),
         &hit
-    ));
-}
-
-#[test]
-fn client_selection_uses_host_background_and_repaints_when_it_changes() {
-    use ratatui::style::Color;
-    use shepr_term::host::RgbColor;
-
-    for explicit_appearance in [false, true] {
-        let mut config = ClientShellConfig::from_config(&ClientConfig::default());
-        config.palette = Palette::terminal();
-        let mut state = ClientShellState::new(config);
-        state.set_snapshot(Box::new(snapshot()));
-        state.receive_pane_surface_from(
-            surface(),
-            state
-                .endpoints
-                .active
-                .generation()
-                .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
-        );
-        state.compose(106, 20).expect("composed frame");
-        let pane = state.pane_hits()[0].clone();
-        for (kind, column) in [
-            (MouseEventKind::Down(MouseButton::Left), pane.inner_rect.x),
-            (
-                MouseEventKind::Drag(MouseButton::Left),
-                pane.inner_rect.x + 2,
-            ),
-        ] {
-            state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
-                kind,
-                column,
-                row: pane.inner_rect.y,
-                modifiers: KeyModifiers::empty(),
-            })]);
-        }
-        let cell_index = usize::from(pane.inner_rect.y) * 106 + usize::from(pane.inner_rect.x);
-        let fallback = state.compose(106, 20).expect("fallback frame");
-        assert_eq!(
-            fallback.cells()[cell_index].bg,
-            shepr_protocol::WireColor::from_ratatui(Color::DarkGray)
-        );
-        if explicit_appearance {
-            state.handle_raw_events(vec![RawInputEvent::HostColorSchemeChanged(
-                HostAppearance::Light,
-            )]);
-        }
-        for (background, selected_bg, selected_fg) in [
-            ((237, 237, 234), (171, 171, 168), (0, 0, 0)),
-            ((26, 27, 38), (90, 91, 99), (255, 255, 255)),
-        ] {
-            let (r, g, b) = background;
-            let outcome = state.handle_raw_events(vec![RawInputEvent::HostDefaultColor {
-                kind: DefaultColorKind::Background,
-                color: RgbColor { r, g, b },
-            }]);
-            assert!(
-                outcome
-                    .requests
-                    .iter()
-                    .any(|request| matches!(request, ClientShellRequest::HostTheme(_)))
-            );
-            let frame = state.compose(106, 20).expect("host-colored selection");
-            let cell = &frame.cells()[cell_index];
-            assert_eq!(
-                cell.bg,
-                shepr_protocol::WireColor::from_ratatui(Color::Rgb(
-                    selected_bg.0,
-                    selected_bg.1,
-                    selected_bg.2
-                ))
-            );
-            assert_eq!(
-                cell.fg,
-                shepr_protocol::WireColor::from_ratatui(Color::Rgb(
-                    selected_fg.0,
-                    selected_fg.1,
-                    selected_fg.2
-                ))
-            );
-            assert!(
-                outcome.repaint,
-                "host background changes must repaint selection"
-            );
-        }
-    }
-}
-
-#[test]
-fn client_mouse_selection_highlights_and_copies_through_endpoint_extraction() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
-    state.set_snapshot(Box::new(snapshot()));
-    state.receive_pane_surface_from(
-        surface(),
-        state
-            .endpoints
-            .active
-            .generation()
-            .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
-    );
-    state.compose(106, 20).expect("composed frame");
-    let pane = state.pane_hits()[0].clone();
-
-    let down = state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
-        kind: MouseEventKind::Down(MouseButton::Left),
-        column: pane.inner_rect.x,
-        row: pane.inner_rect.y,
-        modifiers: KeyModifiers::empty(),
-    })]);
-    assert!(matches!(
-        &down.actions[..],
-        [ClientShellAction::Endpoint { request, .. }]
-            if matches!(
-                &request.command,
-                EndpointCommand::PaneFocus(target) if target.pane_id == crate::tests::test_pane_id("w1:p1")
-            )
-    ));
-    assert!(
-        state
-            .mouse_selection
-            .selection
-            .as_ref()
-            .is_some_and(|selection| !selection.is_visible())
-    );
-
-    let drag = state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
-        kind: MouseEventKind::Drag(MouseButton::Left),
-        column: pane.inner_rect.x + 2,
-        row: pane.inner_rect.y,
-        modifiers: KeyModifiers::empty(),
-    })]);
-    assert!(drag.repaint || state.mouse_selection.repaint_deadline.is_some());
-    assert!(
-        state
-            .mouse_selection
-            .selection
-            .as_ref()
-            .is_some_and(shepr_term::selection::Selection::is_visible)
-    );
-    let selected = state.compose(106, 20).expect("selected frame");
-    let selected_cell =
-        &selected.cells()[usize::from(pane.inner_rect.y) * 106 + usize::from(pane.inner_rect.x)];
-    assert_ne!(
-        selected_cell.bg,
-        shepr_protocol::WireColor::from_ratatui(ratatui::style::Color::Reset)
-    );
-
-    let release =
-        state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
-            kind: MouseEventKind::Up(MouseButton::Left),
-            column: pane.inner_rect.x + 2,
-            row: pane.inner_rect.y,
-            modifiers: KeyModifiers::empty(),
-        })]);
-    assert!(state.mouse_selection.selection.is_none());
-    let [ClientShellAction::Endpoint { request, .. }] = &release.actions[..] else {
-        panic!("selection release should request endpoint extraction");
-    };
-    let request_id = request.id.clone();
-    assert!(matches!(
-        &request.command,
-        EndpointCommand::PaneSelectionRead(params)
-            if params.pane_id == crate::tests::test_pane_id("w1:p1")
-                && params.anchor == shepr_protocol::command::PaneTextPoint {
-                    row: shepr_term::AbsRow(0),
-                    col: 0,
-                }
-                && params.cursor == shepr_protocol::command::PaneTextPoint {
-                    row: shepr_term::AbsRow(0),
-                    col: 2,
-                }
-    ));
-
-    let (_repaint, actions) = state
-        .handle_endpoint_result(
-            &crate::tests::test_boot_id("boot-1"),
-            &request_id,
-            Ok(EndpointReply::PaneSelection {
-                pane_id: shepr_test_fixtures::id("w1:p1"),
-                text: "LIV".into(),
-            }),
-        )
-        .into_parts();
-    assert!(matches!(
-        &actions[..],
-        [ClientShellAction::ClipboardWrite(bytes)] if bytes == b"LIV"
-    ));
-}
-
-#[test]
-fn retained_mouse_selection_survives_output_and_copies_without_terminal_input() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
-    state.config.copy_on_select = false;
-    state.set_snapshot(Box::new(snapshot()));
-    state.receive_pane_surface_from(
-        surface(),
-        state
-            .endpoints
-            .active
-            .generation()
-            .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
-    );
-    state.compose(106, 20).expect("composed frame");
-    let pane = state.pane_hits()[0].clone();
-    for event in [
-        crossterm::event::MouseEvent {
-            kind: MouseEventKind::Down(MouseButton::Left),
-            column: pane.inner_rect.x,
-            row: pane.inner_rect.y,
-            modifiers: KeyModifiers::empty(),
-        },
-        crossterm::event::MouseEvent {
-            kind: MouseEventKind::Drag(MouseButton::Left),
-            column: pane.inner_rect.x + 2,
-            row: pane.inner_rect.y,
-            modifiers: KeyModifiers::empty(),
-        },
-        crossterm::event::MouseEvent {
-            kind: MouseEventKind::Up(MouseButton::Left),
-            column: pane.inner_rect.x + 2,
-            row: pane.inner_rect.y,
-            modifiers: KeyModifiers::empty(),
-        },
-    ] {
-        state.handle_raw_events(vec![RawInputEvent::Mouse(event)]);
-        // Output can arrive between drag and release, including an in-flight revision.
-        let mut updated = state.pane_surface().cloned().expect("pane surface");
-        updated.panes[0].content_revision = shepr_test_fixtures::counter_at(1);
-        updated.frame.cells_mut()[0].symbol = "x".into();
-        state.receive_pane_surface_from(
-            updated,
-            state
-                .endpoints
-                .active
-                .generation()
-                .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
-        );
-    }
-    assert!(
-        state
-            .mouse_selection
-            .selection
-            .as_ref()
-            .is_some_and(shepr_term::selection::Selection::is_finalized)
-    );
-
-    // A patch that redraws selected text must retain the same live terminal range.
-    let mut updated = state.pane_surface().cloned().expect("pane surface");
-    updated.panes[0].content_revision = shepr_test_fixtures::counter_at(1);
-    let mut cell = updated.frame.cells()[0].clone();
-    cell.symbol = "y".into();
-    assert!(matches!(
-        state.apply_pane_surface_patch_from(
-            &shepr_protocol::PaneSurfacePatch {
-                boot_id: updated.boot_id,
-                projection_revision: updated.projection_revision,
-                base_surface_revision: updated.surface_revision,
-                surface_revision: updated
-                    .surface_revision
-                    .checked_next()
-                    .expect("test precondition"),
-                panes: updated.panes,
-                rows: vec![shepr_protocol::PaneSurfacePatchRow {
-                    x: 0,
-                    y: 0,
-                    cells: vec![cell]
-                }],
-                cursor: updated.frame.cursor().cloned(),
-            },
-            state
-                .endpoints
-                .active
-                .generation()
-                .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST)
-        ),
-        crate::shell::presentation::surface_patch::ClientPaneSurfacePatchOutcome::Applied(_)
-    ));
-    assert!(
-        state
-            .mouse_selection
-            .selection
-            .as_ref()
-            .is_some_and(shepr_term::selection::Selection::is_finalized)
-    );
-
-    let highlighted = state.compose(106, 20).expect("highlighted frame");
-    let cell_index = usize::from(pane.inner_rect.y) * 106 + usize::from(pane.inner_rect.x);
-    let selected_cell = highlighted.cells()[cell_index].clone();
-    let selection = state.mouse_selection.selection.take();
-    let unselected = state.compose(106, 20).expect("unselected frame");
-    assert_ne!(selected_cell.bg, unselected.cells()[cell_index].bg);
-    state.mouse_selection.selection = selection;
-
-    let copy = state.handle_raw_events(vec![RawInputEvent::Key(
-        shepr_term::key::TerminalKey::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
-    )]);
-    assert!(state.mouse_selection.selection.is_none());
-    assert!(matches!(
-        &copy.actions[..],
-        [ClientShellAction::Endpoint { request, .. }]
-            if matches!(request.command, EndpointCommand::PaneSelectionRead(
-                shepr_protocol::command::PaneSelectionReadParams { .. }
-            ))
-    ));
-    assert!(copy.requests.is_empty());
-    let request_id = match &copy.actions[0] {
-        ClientShellAction::Endpoint { request, .. } => request.id.clone(),
-        _ => unreachable!(),
-    };
-    let (_, actions) = state
-        .handle_endpoint_result(
-            &crate::tests::test_boot_id("boot-1"),
-            &request_id,
-            Ok(EndpointReply::PaneSelection {
-                pane_id: shepr_test_fixtures::id("w1:p1"),
-                text: "yIV".into(),
-            }),
-        )
-        .into_parts();
-    assert!(matches!(&actions[..], [ClientShellAction::ClipboardWrite(bytes)] if bytes == b"yIV"));
-}
-
-#[test]
-fn selection_edge_drag_requests_scroll_and_timer_continues_it() {
-    let mut state = ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
-    state.set_snapshot(Box::new(snapshot()));
-    let mut pane_surface = surface();
-    // The pane starts one row down, as the lower pane of a split does, so the
-    // drag has a row above it to leave through.
-    pane_surface.frame = FrameData::from_ratatui_buffer_with_hyperlinks(
-        &Buffer::with_lines(["    ", "LIVE", "PANE"]),
-        None,
-        &[],
-    )
-    .expect("test buffer is a valid frame");
-    pane_surface.panes[0].rect.y = 1;
-    pane_surface.panes[0].inner_rect.y = 1;
-    pane_surface.panes[0].scroll = Some(shepr_protocol::PaneSurfaceScrollMetrics::new(
-        0,
-        20,
-        2,
-        shepr_term::AbsRow(0),
-    ));
-    state.receive_pane_surface_from(
-        pane_surface,
-        state
-            .endpoints
-            .active
-            .generation()
-            .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
-    );
-    state.compose(106, 20).expect("composed frame");
-    let pane = state.pane_hits()[0].clone();
-    assert_eq!(pane.inner_rect.y, 1);
-    state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
-        kind: MouseEventKind::Down(MouseButton::Left),
-        column: pane.inner_rect.x,
-        row: pane.inner_rect.y + 1,
-        modifiers: KeyModifiers::empty(),
-    })]);
-    let drag = state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
-        kind: MouseEventKind::Drag(MouseButton::Left),
-        column: pane.inner_rect.x,
-        row: pane.inner_rect.y.saturating_sub(1),
-        modifiers: KeyModifiers::empty(),
-    })]);
-    assert!(matches!(
-        &drag.actions[..],
-        [ClientShellAction::Endpoint { request, .. }]
-            if matches!(
-                &request.command,
-                EndpointCommand::PaneScroll(params)
-                    if params.offset_from_bottom == 3
-            )
-    ));
-    let drag_request_id = match &drag.actions[0] {
-        ClientShellAction::Endpoint { request, .. } => request.id.clone(),
-        _ => unreachable!(),
-    };
-    let now = std::time::Instant::now();
-    state.mouse_selection.autoscroll_deadline = Some(now);
-    let tick = state.tick_selection_autoscroll(now);
-    assert!(tick.actions.is_empty());
-    let (_, next_scroll) = state
-        .handle_endpoint_result(
-            &crate::tests::test_boot_id("boot-1"),
-            &drag_request_id,
-            Ok(pane_scroll_result(3, 20, 3)),
-        )
-        .into_parts();
-    assert!(matches!(
-        &next_scroll[..],
-        [ClientShellAction::Endpoint { request, .. }]
-            if matches!(
-                &request.command,
-                EndpointCommand::PaneScroll(params)
-                    if params.offset_from_bottom == 4
-            )
     ));
 }
 
@@ -2684,4 +2469,179 @@ fn a_search_that_exits_copy_mode_does_not_replay_or_dispatch() {
             EndpointCommand::PaneCopyMotion(_) | EndpointCommand::PaneCopySearch(_)
         )
     )));
+}
+
+#[test]
+fn an_ignored_answer_still_reports_its_server_error() {
+    let mut s = copy_shell();
+    let old = copy_search(&mut s);
+    s.copy
+        .as_mut()
+        .expect("a live copy session")
+        .pipeline_mut()
+        .reset();
+    let current = s.handle_input_bytes(b"w");
+    let current = request_id(&current.actions).to_owned();
+    let out = answer(&mut s, &old, Err(ClientShellEndpointError::Timeout));
+    assert!(out.repaint);
+    assert!(out.actions.is_empty());
+    assert!(s.copy_in_flight());
+    assert!(s.ledger.contains(&current));
+    assert!(
+        s.notices
+            .timeout_suppressed(crate::shell::notices::NoticeCode::Command(
+                shepr_protocol::command::CommandKind::PaneCopySearch
+            ))
+    );
+    s.copy
+        .as_mut()
+        .expect("a live copy session")
+        .pipeline_mut()
+        .reset();
+    let another = copy_search(&mut s);
+    s.copy
+        .as_mut()
+        .expect("a live copy session")
+        .pipeline_mut()
+        .reset();
+    let current = s.handle_input_bytes(b"w");
+    let current = request_id(&current.actions).to_owned();
+    answer(&mut s, &another, Ok(copy_search_result(Vec::new(), None)));
+    assert!(
+        !s.notices
+            .timeout_suppressed(crate::shell::notices::NoticeCode::Command(
+                shepr_protocol::command::CommandKind::PaneCopySearch
+            ))
+    );
+    assert!(s.copy_in_flight());
+    assert!(s.ledger.contains(&current));
+}
+#[test]
+fn a_copy_answer_after_the_pipeline_was_reset_is_ignored() {
+    let mut s = copy_shell();
+    let out = s.handle_input_bytes(b"w");
+    let id = request_id(&out.actions).to_owned();
+    let before = s.copy.as_ref().expect("copy").cursor;
+    s.copy
+        .as_mut()
+        .expect("a live copy session")
+        .pipeline_mut()
+        .reset();
+    let out = answer(
+        &mut s,
+        &id,
+        Ok(EndpointReply::PaneCopyMotion {
+            pane_id: test_pane_id("w1:p1"),
+            cursor: shepr_protocol::command::PaneTextPoint {
+                row: shepr_term::AbsRow(0),
+                col: 3,
+            },
+        }),
+    );
+    assert!(out.actions.is_empty());
+    assert_eq!(s.copy.as_ref().expect("copy").cursor, before);
+}
+#[test]
+fn an_abandoned_copy_search_does_not_defer_a_later_copy() {
+    let mut s = copy_shell();
+    let id = copy_search(&mut s);
+    s.abandon_copy_operation();
+    let out = s.handle_input_bytes(b"y");
+    assert!(s.copy.is_none());
+    assert!(s.ledger.contains(&id));
+    assert!(!out.actions.is_empty());
+}
+#[test]
+fn an_in_flight_search_answered_after_a_resize_finishes_without_applying() {
+    let mut s = copy_shell();
+    let id = copy_search(&mut s);
+    s.handle_input_bytes(b"l");
+    assert!(s.copy_in_flight());
+    assert!(!s.copy_keys_empty());
+
+    let mut resized = surface();
+    resized.surface_revision = resized
+        .surface_revision
+        .checked_next()
+        .expect("test precondition");
+    resized.panes[0].content_revision.advance();
+    resized.panes[0].inner_rect.width -= 1;
+    s.receive_pane_surface_from(
+        resized,
+        s.endpoints
+            .active
+            .generation()
+            .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
+    );
+    let found = shepr_protocol::command::PaneTextRange {
+        start: shepr_protocol::command::PaneTextPoint {
+            row: shepr_term::AbsRow(0),
+            col: 5,
+        },
+        end: shepr_protocol::command::PaneTextPoint {
+            row: shepr_term::AbsRow(0),
+            col: 8,
+        },
+    };
+    assert_ne!(s.copy.as_ref().expect("copy").cursor, found.start);
+
+    answer(&mut s, &id, Ok(copy_search_result(vec![found], Some(0))));
+
+    let session = s.copy.as_ref().expect("copy");
+    assert!(
+        session
+            .search
+            .as_ref()
+            .is_none_or(|search| search.results.matches.is_empty())
+    );
+    assert_ne!(session.cursor, found.start);
+    assert!(!s.copy_in_flight());
+    assert!(s.copy_keys_empty());
+}
+
+/// A dropped copy motion or search runs the copy rollback: the keys and operations
+/// queued behind it and its deferred copy are discarded, and nothing is sent.
+#[test]
+fn a_dropped_copy_request_discards_its_queue_and_deferred_copy() {
+    for search in [false, true] {
+        let mut s = copy_shell();
+        let id = if search {
+            copy_search(&mut s)
+        } else {
+            let out = s.handle_input_bytes(b"w");
+            request_id(&out.actions).to_owned()
+        };
+        let session = s.copy.as_mut().expect("a live copy session");
+        session
+            .pipeline_mut()
+            .push_key(shepr_term::key::TerminalKey::new(
+                KeyCode::Char('j'),
+                KeyModifiers::empty(),
+            ));
+        session.pipeline_mut().push_op(ClientCopyOperation::Motion(
+            shepr_protocol::command::PaneCopyMotion::Word(
+                shepr_protocol::command::PaneWordMotion::NextStart,
+            ),
+        ));
+        session
+            .search
+            .get_or_insert_with(ClientCopySearch::default)
+            .copy_after_result = true;
+        let count = s.ledger.len();
+        assert!(count > 0);
+        s.drop_request(&id, DropReason::Unsent);
+        // Nothing removes an orphan: a rollback that opened a request would leave it here.
+        assert_eq!(s.ledger.len(), count - 1);
+        assert!(!s.copy_in_flight());
+        assert!(s.copy_ops_empty());
+        assert!(s.copy_keys_empty());
+        assert!(
+            !s.copy
+                .as_ref()
+                .expect("copy")
+                .search
+                .as_ref()
+                .is_some_and(|search| search.copy_after_result)
+        );
+    }
 }

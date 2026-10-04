@@ -17,10 +17,10 @@ use shepr_protocol::command::EndpointCommand;
 /// A command for the presented endpoint and the sidebar reveal it implies.
 pub(in crate::shell) struct ActionCommand {
     pub(in crate::shell) command: EndpointCommand,
-    pub(in crate::shell) reveal: Option<ActionReveal>,
+    reveal: Option<ActionReveal>,
 }
 
-pub(in crate::shell) enum ActionReveal {
+enum ActionReveal {
     Workspace(shepr_protocol::WorkspaceId),
     Agent(Location),
 }
@@ -244,7 +244,7 @@ impl ClientShellState {
         self.notices.push(boot_id, kind, code, title, body)
     }
 
-    pub(crate) fn receive_paste_rejection(&mut self, message: String) -> bool {
+    pub(in crate::shell) fn receive_paste_rejection(&mut self, message: String) -> bool {
         self.push_endpoint_notice(
             ClientEndpointNoticeKind::Rejected,
             NoticeCode::PasteRejected,

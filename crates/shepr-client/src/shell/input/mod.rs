@@ -6,12 +6,12 @@ use crate::shell::overlays::Overlay;
 use crossterm::event::KeyEventKind;
 pub(in crate::shell) mod events;
 pub(in crate::shell) mod hit_test;
-pub(in crate::shell) mod mouse;
+mod mouse;
 pub(in crate::shell) mod pointer;
 pub(in crate::shell) mod scroll_lanes;
 pub(in crate::shell) mod selection;
-pub(in crate::shell) mod word_bounds;
-pub(in crate::shell) mod word_selection;
+mod word_bounds;
+mod word_selection;
 
 use crate::shell::state::{
     ClientInputContext, ClientShellInput, ClientShellMode, ClientShellRequest, ClientShellState,
@@ -1045,11 +1045,11 @@ fn paste_rejected_notice(size: usize, max: usize) -> String {
 
 #[cfg(test)]
 impl ClientShellState {
-    pub(crate) fn handle_input_bytes(&mut self, data: &[u8]) -> ClientShellInput {
+    pub(super) fn handle_input_bytes(&mut self, data: &[u8]) -> ClientShellInput {
         self.handle_raw_events(shepr_test_fixtures::parse_raw_input_bytes_sync(data))
     }
 
-    pub(crate) fn handle_pixel_mouse(
+    fn handle_pixel_mouse(
         &mut self,
         mut mouse: crossterm::event::MouseEvent,
         pixels: shepr_termio::input::mouse::HostPixels,
@@ -1075,7 +1075,7 @@ impl ClientShellState {
         outcome
     }
 
-    pub(crate) fn handle_pixel_mouse_bytes(
+    pub(super) fn handle_pixel_mouse_bytes(
         &mut self,
         data: &[u8],
         geometry: shepr_termio::input::mouse::HostPixelExtent,
@@ -1096,7 +1096,7 @@ impl ClientShellState {
         )
     }
 
-    pub(crate) fn handle_raw_events(&mut self, events: Vec<RawInputEvent>) -> ClientShellInput {
+    pub(super) fn handle_raw_events(&mut self, events: Vec<RawInputEvent>) -> ClientShellInput {
         // clock-io-ok: this test-only entry stands in for the client loop.
         let now = std::time::Instant::now();
         self.now = now;
@@ -1112,15 +1112,11 @@ impl ClientShellState {
 #[cfg(test)]
 mod tests {
     use crate::shell::config::ClientShellConfig;
-    use crate::shell::copy::{ClientCopySelection, CopyEntry, CopySession};
     use shepr_config::ClientConfig;
     use shepr_protocol::ClientPaneInputEvent;
 
     use super::{navigate_indexed_binding_index, read_clipboard_text_bounded_with};
-    use crate::shell::input::events::PaneInputBatchAccounting;
-    use crate::shell::state::{
-        ClientShellInput, ClientShellMode, ClientShellRequest, ClientShellState,
-    };
+    use crate::shell::state::{ClientShellRequest, ClientShellState};
     use crossterm::event::{KeyCode, KeyModifiers};
     use shepr_protocol::ClientMessage;
     use shepr_protocol::MAX_INPUT_PAYLOAD;
@@ -1140,29 +1136,6 @@ mod tests {
         let key = shepr_term::key::TerminalKey::new(KeyCode::Char('3'), KeyModifiers::empty());
 
         assert_eq!(navigate_indexed_binding_index(bindings, &key), Some(2));
-    }
-
-    fn test_pane_id() -> shepr_protocol::PublicPaneId {
-        let workspace =
-            shepr_protocol::WorkspaceId::from_number(1).expect("one-based workspace number");
-        shepr_protocol::PublicPaneId::new(
-            &workspace,
-            shepr_protocol::PanePublicNumber::new(1).expect("nonzero literal"),
-        )
-    }
-
-    fn copy_mode_state() -> CopySession {
-        CopySession::start(CopyEntry {
-            pane_id: test_pane_id(),
-            scroll: shepr_term::ScrollMetrics::new(0, 0, 2, shepr_term::AbsRow(0)),
-            geometry: (10, 2),
-            alternate_screen_active: false,
-            cursor: shepr_protocol::command::PaneTextPoint {
-                row: shepr_term::AbsRow(0),
-                col: 0,
-            },
-            rows: crate::shell::ledger::Ticket::fixture(1),
-        })
     }
 
     fn message_text_bytes(request: &ClientShellRequest) -> usize {
@@ -1260,93 +1233,5 @@ mod tests {
                 Some("clip".to_owned())
             });
         assert_eq!(third.as_deref(), Some("clip"));
-    }
-
-    #[test]
-    fn copy_prefix_replays_after_keys_queued_behind_an_operation() {
-        let mut state = shell();
-        state.mode.set(ClientShellMode::Copy);
-        state.copy = Some(copy_mode_state());
-        state
-            .copy
-            .as_mut()
-            .expect("a live copy session")
-            .pipeline_mut()
-            .begin(crate::shell::ledger::Ticket::fixture(2), None);
-        let mut outcome = ClientShellInput::default();
-        let mut accounting = PaneInputBatchAccounting::default();
-        let prefix = state.config.keybinds.prefix;
-
-        state.handle_key(
-            shepr_term::key::TerminalKey::new(KeyCode::Char('v'), KeyModifiers::empty()),
-            &mut outcome,
-            &mut accounting,
-        );
-        state.handle_key(
-            shepr_term::key::TerminalKey::new(prefix.code, prefix.modifiers),
-            &mut outcome,
-            &mut accounting,
-        );
-
-        assert_eq!(state.mode.kind(), ClientShellMode::Copy);
-        assert_eq!(state.copy_keys_len(), 2);
-
-        state.finish_copy_operation(true, &mut outcome);
-
-        assert_eq!(state.mode.kind(), ClientShellMode::Prefix);
-        assert!(
-            state
-                .copy
-                .as_ref()
-                .is_some_and(|copy_mode| copy_mode.selection.is_some())
-        );
-        assert!(state.copy_keys_empty());
-    }
-
-    #[test]
-    fn copy_escape_cancels_selection_started_by_prior_queued_key() {
-        let mut state = shell();
-        state.mode.set(ClientShellMode::Copy);
-        state.copy = Some(
-            copy_mode_state().with_selection(ClientCopySelection::Character {
-                anchor: shepr_term::Point::new(shepr_term::AbsRow(0), 0),
-            }),
-        );
-        state.mouse_selection.selection = Some(shepr_term::selection::Selection::anchor(
-            test_pane_id(),
-            shepr_term::Point::new(shepr_term::AbsRow(0), 0),
-        ));
-        state
-            .copy
-            .as_mut()
-            .expect("a live copy session")
-            .pipeline_mut()
-            .begin(crate::shell::ledger::Ticket::fixture(2), None);
-        let mut outcome = ClientShellInput::default();
-        let mut accounting = PaneInputBatchAccounting::default();
-
-        state.handle_key(
-            shepr_term::key::TerminalKey::new(KeyCode::Char('v'), KeyModifiers::empty()),
-            &mut outcome,
-            &mut accounting,
-        );
-        state.handle_key(
-            shepr_term::key::TerminalKey::new(KeyCode::Esc, KeyModifiers::empty()),
-            &mut outcome,
-            &mut accounting,
-        );
-
-        assert_eq!(state.copy_keys_len(), 2);
-        state.finish_copy_operation(true, &mut outcome);
-
-        assert_eq!(state.mode.kind(), ClientShellMode::Copy);
-        assert!(
-            state
-                .copy
-                .as_ref()
-                .is_some_and(|copy_mode| copy_mode.selection.is_none())
-        );
-        assert!(state.mouse_selection.selection.is_none());
-        assert!(state.copy_keys_empty());
     }
 }

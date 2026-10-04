@@ -32,7 +32,7 @@ impl<T: Copy> Chrome<T> {
         self.origin = ChromeOrigin::Manual;
     }
 
-    pub(in crate::shell) fn remembered_value(self) -> Option<T> {
+    pub(super) fn remembered_value(self) -> Option<T> {
         matches!(self.origin, ChromeOrigin::Remembered | ChromeOrigin::Manual).then_some(self.value)
     }
 }

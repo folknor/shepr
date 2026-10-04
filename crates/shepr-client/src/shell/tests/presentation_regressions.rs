@@ -93,7 +93,7 @@ fn client_presentation_regression_removed_navigator_target_accepts_visible_fallb
     let Some(Overlay::Navigator(navigator)) = state.overlay.as_ref() else {
         panic!("expected navigator");
     };
-    let rows = crate::shell::presentation::text::client_navigator_rows(
+    let rows = crate::shell::navigation::aggregate_navigation::navigator_rows(
         &state.endpoints,
         state.active_endpoint_id(),
         navigator,

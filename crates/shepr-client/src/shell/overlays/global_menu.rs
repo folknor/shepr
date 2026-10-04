@@ -17,7 +17,7 @@ pub(in crate::shell) enum GlobalMenuAction {
     Binding(shepr_termio::input::KeybindAction),
 }
 
-pub(in crate::shell) fn global_menu_items() -> Vec<(&'static str, GlobalMenuAction)> {
+fn global_menu_items() -> Vec<(&'static str, GlobalMenuAction)> {
     vec![
         (
             "keybinds",
@@ -159,7 +159,7 @@ impl ClientShellState {
     }
 
     /// Does what a chosen menu item says. The menu is already closed.
-    pub(in crate::shell) fn activate_global_menu_action(
+    pub(super) fn activate_global_menu_action(
         &mut self,
         action: GlobalMenuAction,
         outcome: &mut ClientShellInput,

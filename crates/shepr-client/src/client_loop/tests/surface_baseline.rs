@@ -1,6 +1,11 @@
-use super::endpoint_choice::{Fixture, snapshot, surface};
-use super::*;
-use endpoint::ClientEndpointId;
+//! Surface patches reaching the loop: which ones keep a connection, which fail it, and the
+//! baseline a committed move leaves for the next patch.
+
+use super::Fixture;
+use crate::endpoint::ClientEndpointId;
+use crate::shell;
+use crate::tests::endpoints::{remote, snapshot, surface};
+use crate::tests::test_generation;
 use shepr_protocol::ServerMessage;
 
 fn patch(s: &shepr_protocol::PaneSurfaceFrame) -> shepr_protocol::PaneSurfacePatch {
@@ -69,7 +74,7 @@ fn the_commit_baseline_is_the_evidence_surface_and_the_next_patch_applies() {
     f.start();
     f.evidence();
     f.reconcile();
-    let id = super::endpoint_choice::remote();
+    let id = remote();
     assert!(
         f.client.state().shell.endpoint_is_active(&id),
         "the move committed"
@@ -86,7 +91,7 @@ fn the_commit_baseline_is_the_evidence_surface_and_the_next_patch_applies() {
         f.client
             .state_mut()
             .shell
-            .apply_pane_surface_patch_from(&patch(&s), crate::tests::test_generation(7)),
+            .apply_pane_surface_patch_from(&patch(&s), test_generation(7)),
         shell::ClientPaneSurfacePatchOutcome::Applied(_)
     ));
 }

@@ -35,7 +35,7 @@ pub(in crate::shell) enum RenameTarget {
 impl RenameTarget {
     /// The command that applies a name to this target. An empty name clears a custom name, so
     /// the automatic label returns; a new workspace keeps the suggestion unnamed.
-    pub(in crate::shell) fn into_command(
+    pub(super) fn into_command(
         self,
         label: Option<String>,
     ) -> shepr_protocol::command::EndpointCommand {
@@ -128,7 +128,7 @@ impl RenameOverlay {
     /// Applies the answer to a `workspace.checkout_root` request. An answer for a lookup that
     /// is not this prompt's, or for a prompt that was reopened since, is ignored, and a failed
     /// lookup keeps the path-based suggestion.
-    pub(in crate::shell) fn apply_checkout_root(
+    pub(super) fn apply_checkout_root(
         &mut self,
         lookup: Ticket,
         result: Option<shepr_protocol::command::WorkspaceCheckoutRootReply>,

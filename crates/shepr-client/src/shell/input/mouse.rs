@@ -71,11 +71,7 @@ impl ClientShellState {
     /// Finishes a sidebar drag as its release would: a width drag owes the endpoint its
     /// resize and both sidebar drags owe the preferences file the dragged value. Used for a
     /// real release and for a drag whose release was lost. Other drag kinds owe nothing here.
-    pub(in crate::shell) fn settle_chrome_drag(
-        &mut self,
-        drag: &ClientChromeDrag,
-        outcome: &mut ClientShellInput,
-    ) {
+    fn settle_chrome_drag(&mut self, drag: &ClientChromeDrag, outcome: &mut ClientShellInput) {
         match drag {
             ClientChromeDrag::SidebarWidth { resize_pending } => {
                 outcome.resize |= *resize_pending;
@@ -93,10 +89,7 @@ impl ClientShellState {
     /// not still arrive. Other drag kinds are left alone: they finish on
     /// their release, or are abandoned at their last sent value by the next
     /// press.
-    pub(in crate::shell) fn settle_sidebar_drag_in_place(
-        &mut self,
-        outcome: &mut ClientShellInput,
-    ) {
+    pub(super) fn settle_sidebar_drag_in_place(&mut self, outcome: &mut ClientShellInput) {
         let resize_owed = match self.pointer.chrome_drag.as_mut() {
             Some(ClientChromeDrag::SidebarWidth { resize_pending }) => {
                 std::mem::take(resize_pending)
@@ -206,7 +199,7 @@ impl ClientShellState {
         }
     }
 
-    pub(in crate::shell) fn stop_selection_autoscroll(&mut self) {
+    pub(super) fn stop_selection_autoscroll(&mut self) {
         self.mouse_selection.stop_autoscroll();
     }
 
@@ -453,7 +446,7 @@ impl ClientShellState {
         true
     }
 
-    pub(in crate::shell) fn request_selection_drag_repaint(&mut self, now: Instant) -> bool {
+    fn request_selection_drag_repaint(&mut self, now: Instant) -> bool {
         // This gate follows the last composed frame so a suppressed drag repaints at the next
         // eligible frame deadline; it is not an input-send throttle.
         let deadline = self
@@ -720,7 +713,7 @@ impl ClientShellState {
         ))
     }
 
-    pub(in crate::shell) fn handle_mouse_with_accounting(
+    pub(super) fn handle_mouse_with_accounting(
         &mut self,
         mouse: MouseEvent,
         now: Instant,
@@ -1626,7 +1619,7 @@ impl ClientShellState {
             })
     }
 
-    pub(in crate::shell) fn push_pane_mouse_event(
+    fn push_pane_mouse_event(
         &self,
         hit: &PaneHit,
         mouse: MouseEvent,
@@ -1666,153 +1659,4 @@ impl ClientShellState {
 }
 
 #[cfg(test)]
-mod tests {
-    use crate::shell::config::ClientShellConfig;
-    use crate::shell::state::ClientShellAction;
-    use crossterm::event::MouseButton;
-    use crossterm::event::MouseEventKind;
-    use shepr_config::ClientConfig;
-    use shepr_protocol::FrameData;
-    use shepr_surface::ratatui_conversion::FrameDataExt as _;
-
-    use crate::shell::input::pointer::ClientChromeDrag;
-    use crate::shell::state::{ClientShellInput, ClientShellState};
-    use crate::shell::view::PaneSplitHit;
-
-    use super::{Instant, MOUSE_DRAG_SEND_INTERVAL};
-    use crate::shell::input::pointer::Throttle;
-    use crossterm::event::MouseEvent;
-    use ratatui::buffer::Buffer;
-    use ratatui::layout::Rect;
-    use shepr_core::layout::SplitBranch;
-    use shepr_protocol::{PaneSurfaceFrame, PaneSurfaceSplit, SurfaceRect};
-
-    fn split_surface(
-        boot_id: shepr_protocol::BootId,
-        revision: u64,
-        epoch: shepr_core::layout::LayoutEpoch,
-    ) -> PaneSurfaceFrame {
-        let buffer = Buffer::with_lines(["x"]);
-        PaneSurfaceFrame {
-            boot_id,
-            projection_revision: shepr_test_fixtures::counter_at::<
-                shepr_protocol::ProjectionRevision,
-            >(revision),
-            surface_revision: shepr_test_fixtures::counter_at::<shepr_protocol::SurfaceRevision>(1),
-            frame: FrameData::from_ratatui_buffer_with_hyperlinks(&buffer, None, &[])
-                .expect("test buffer is a valid frame"),
-            panes: Vec::new(),
-            splits: vec![PaneSurfaceSplit {
-                direction: shepr_protocol::PaneSurfaceSplitDirection::Horizontal,
-                pos: 40,
-                area: SurfaceRect {
-                    x: 0,
-                    y: 0,
-                    width: 80,
-                    height: 19,
-                },
-                hit_rect: SurfaceRect {
-                    x: 40,
-                    y: 0,
-                    width: 1,
-                    height: 19,
-                },
-                path: vec![SplitBranch::First],
-                epoch,
-            }],
-        }
-    }
-
-    fn split_drag_state(with_changed_pending_topology: bool) -> ClientShellState {
-        let mut snapshot = crate::shell::tests::snapshot();
-        snapshot.revision =
-            shepr_test_fixtures::counter_at::<shepr_protocol::ProjectionRevision>(1);
-        let boot_id = snapshot.boot_id.clone();
-        let mut state =
-            ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
-        state.set_snapshot(Box::new(snapshot));
-
-        let epoch = shepr_core::layout::LayoutEpoch::default();
-        let surface = split_surface(boot_id.clone(), 1, epoch);
-        state.receive_pane_surface_from(
-            surface,
-            state
-                .endpoints
-                .active
-                .generation()
-                .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
-        );
-        let mut next = crate::shell::tests::snapshot();
-        next.revision = shepr_test_fixtures::counter_at::<shepr_protocol::ProjectionRevision>(2);
-        state.set_snapshot(Box::new(next));
-        if with_changed_pending_topology {
-            state.receive_pane_surface_from(
-                split_surface(boot_id, 3, epoch.next()),
-                state
-                    .endpoints
-                    .active
-                    .generation()
-                    .unwrap_or(shepr_protocol::ConnectionGeneration::FIRST),
-            );
-        }
-        state.pointer.chrome_drag = Some(ClientChromeDrag::PaneSplit {
-            hit: PaneSplitHit {
-                direction: shepr_protocol::PaneSurfaceSplitDirection::Horizontal,
-                pos: 40,
-                area: Rect::new(0, 0, 80, 19),
-                hit_rect: Rect::new(40, 0, 1, 19),
-                path: vec![SplitBranch::First],
-                epoch,
-            },
-            workspace_id: shepr_protocol::WorkspaceId::from_number(1)
-                .expect("one-based workspace number"),
-            grab_offset: 0,
-            last_sent_ratio: Some(shepr_core::layout::SplitRatio::clamped(0.5)),
-            throttle: Throttle::new(MOUSE_DRAG_SEND_INTERVAL),
-        });
-        state
-    }
-
-    fn release_split_drag(state: &mut ClientShellState) -> ClientShellInput {
-        let mut outcome = ClientShellInput::default();
-        state.handle_mouse(
-            MouseEvent {
-                kind: MouseEventKind::Up(MouseButton::Left),
-                column: 60,
-                row: 5,
-                modifiers: crossterm::event::KeyModifiers::empty(),
-            },
-            Instant::now(),
-            &mut outcome,
-        );
-        outcome
-    }
-
-    #[test]
-    fn split_release_sends_final_ratio_during_projection_gap() {
-        let mut state = split_drag_state(false);
-
-        let outcome = release_split_drag(&mut state);
-
-        assert!(matches!(
-            outcome.actions.as_slice(),
-            [ClientShellAction::Endpoint { request, .. }]
-                if matches!(
-                    &request.command,
-                    shepr_protocol::command::EndpointCommand::LayoutSetSplitRatio(params)
-                        if (params.ratio.get() - 0.75).abs() < f32::EPSILON
-                            && params.path == vec![SplitBranch::First]
-                            && params.epoch == shepr_core::layout::LayoutEpoch::default()
-                )
-        ));
-    }
-
-    #[test]
-    fn split_release_is_rejected_when_a_received_future_surface_changed_topology() {
-        let mut state = split_drag_state(true);
-
-        let outcome = release_split_drag(&mut state);
-
-        assert!(outcome.actions.is_empty());
-    }
-}
+mod tests;

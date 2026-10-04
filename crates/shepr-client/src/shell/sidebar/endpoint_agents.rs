@@ -62,7 +62,7 @@ pub(in crate::shell) fn draw_collapsed(
 }
 
 /// Draws the expanded sidebar's agent section: its divider, header and rows.
-pub(in crate::shell) fn draw_agent_panel(
+pub(super) fn draw_agent_panel(
     buffer: &mut Buffer,
     panel: &AgentPanelView,
     inputs: &SidebarInputs<'_>,

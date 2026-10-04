@@ -100,14 +100,14 @@ pub(in crate::shell) struct DialogView {
     pub(in crate::shell) primary: Rect,
     /// Rename only.
     pub(in crate::shell) clear: Option<Rect>,
-    pub(in crate::shell) cancel: Rect,
+    cancel: Rect,
 }
 
 pub(in crate::shell) struct HelpView {
     pub(in crate::shell) popup: Rect,
     pub(in crate::shell) inner: Rect,
     pub(in crate::shell) close: Rect,
-    pub(in crate::shell) text_area: Rect,
+    text_area: Rect,
     pub(in crate::shell) scroll: ListScroll,
     pub(in crate::shell) scrollbar: Option<Rect>,
 }
@@ -344,7 +344,7 @@ impl Overlay {
     }
 
     /// Pasted text; whether the overlay took it.
-    pub(in crate::shell) fn on_text(&mut self, text: &str) -> bool {
+    fn on_text(&mut self, text: &str) -> bool {
         match self {
             Self::Rename(rename) => rename.on_text(text),
             Self::Help(help) => help.on_text(text),

@@ -606,7 +606,7 @@ impl ClientShellState {
         self.dispatch_next_copy_operation(outcome);
     }
 
-    pub(in crate::shell) fn apply_copy_search_result(
+    fn apply_copy_search_result(
         &mut self,
         pane_id: &shepr_protocol::PublicPaneId,
         origin: shepr_protocol::command::PaneTextPoint,
@@ -654,7 +654,7 @@ impl ClientShellState {
         true
     }
 
-    pub(in crate::shell) fn finish_copy_operation(
+    pub(super) fn finish_copy_operation(
         &mut self,
         continue_queue: bool,
         outcome: &mut ClientShellInput,
@@ -719,7 +719,7 @@ impl ClientShellState {
         }
     }
 
-    pub(in crate::shell) fn cancel_deferred_copy_after_search(&mut self, rows: Ticket) {
+    fn cancel_deferred_copy_after_search(&mut self, rows: Ticket) {
         if let Some(search) = self
             .copy
             .as_mut()
@@ -730,7 +730,7 @@ impl ClientShellState {
         }
     }
 
-    pub(in crate::shell) fn copy_hit(&self) -> Option<PaneHit> {
+    pub(super) fn copy_hit(&self) -> Option<PaneHit> {
         let pane_id = &self.copy.as_ref()?.pane_id;
         self.presentation
             .pane_hits()
@@ -899,7 +899,7 @@ impl ClientShellState {
 
     /// Project the copy selection's anchor and shape onto its current cursor range.
     /// The VT selection is the visible range; the copy state retains the anchor.
-    pub(in crate::shell) fn sync_copy_selection(&mut self) {
+    fn sync_copy_selection(&mut self) {
         if let Some(session) = self.copy.as_ref() {
             crate::shell::copy::project_selection(session, &mut self.mouse_selection);
         }
@@ -919,10 +919,7 @@ impl ClientShellState {
         self.dispatch_next_copy_operation(outcome);
     }
 
-    pub(in crate::shell) fn dispatch_next_copy_operation(
-        &mut self,
-        outcome: &mut ClientShellInput,
-    ) {
+    fn dispatch_next_copy_operation(&mut self, outcome: &mut ClientShellInput) {
         if self
             .copy
             .as_ref()
@@ -1018,7 +1015,7 @@ impl ClientShellState {
         }
     }
 
-    pub(in crate::shell) fn apply_copy_motion_target(
+    fn apply_copy_motion_target(
         &mut self,
         pane_id: &shepr_protocol::PublicPaneId,
         origin: shepr_protocol::command::PaneTextPoint,
@@ -1038,7 +1035,7 @@ impl ClientShellState {
         true
     }
 
-    pub(in crate::shell) fn exit_copy_mode(&mut self, copy: bool, outcome: &mut ClientShellInput) {
+    fn exit_copy_mode(&mut self, copy: bool, outcome: &mut ClientShellInput) {
         let live_selection = self
             .mouse_selection
             .selection

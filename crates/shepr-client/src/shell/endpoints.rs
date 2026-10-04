@@ -105,7 +105,7 @@ pub(in crate::shell) enum ProjectionReset {
 
 /// The one older-revision rule, for the active projection and the per-endpoint cache:
 /// within one connection generation and boot, a lower revision is older.
-pub(in crate::shell) fn revision_is_older(
+fn revision_is_older(
     current: &ClientShellSnapshot,
     current_generation: ConnectionGeneration,
     next: &ClientShellSnapshot,
@@ -312,7 +312,7 @@ impl ClientShellState {
     /// Sets the configured machines, once at launch: Local first, then one endpoint per
     /// `[[machines]]` entry, each Connecting with no snapshot. The set never changes
     /// while the client runs.
-    pub fn set_machines(&mut self, machines: &[shepr_config::MachineConfig]) {
+    pub(crate) fn set_machines(&mut self, machines: &[shepr_config::MachineConfig]) {
         let mut next = Vec::with_capacity(machines.len().saturating_add(1));
         let local = self
             .endpoints
@@ -338,7 +338,7 @@ impl ClientShellState {
 
     /// A handshake starts a new presentation generation. Until its own snapshot arrives,
     /// the previous generation is retained only as stale display data.
-    pub fn endpoint_connected(
+    pub(crate) fn endpoint_connected(
         &mut self,
         endpoint_id: &ClientEndpointId,
         generation: ConnectionGeneration,
@@ -363,7 +363,7 @@ impl ClientShellState {
     /// connection (a failed or pending attempt). The selection is untouched: a
     /// move waiting for Local's reconnect keeps waiting through its failed
     /// attempts.
-    pub fn set_endpoint_status(
+    pub(crate) fn set_endpoint_status(
         &mut self,
         endpoint_id: &ClientEndpointId,
         status: EndpointFailureStatus,
@@ -407,26 +407,6 @@ impl ClientShellState {
         if changed {
             self.rebuild_endpoint_models();
         }
-    }
-
-    // These two accessors have no caller in this crate, which reaches
-    // `endpoints.choice` directly. They are public as a test seam: shepr-server's
-    // endpoint choice test (a dev-dependency on this crate) drives a real
-    // machine move step by step against two in-process headless servers,
-    // feeding the choice's preparation the servers' responses, snapshots and
-    // surfaces, and only that crate's tests can reach the server internals it
-    // asserts on. `cfg(test)` does not reach across crates and no production
-    // crate has a test feature, so the seam stays public. Narrowing it means
-    // moving that test's choice-driving half into this crate first.
-
-    /// The endpoint selection, for a caller that drives a move end to end.
-    pub fn endpoint_choice(&self) -> &crate::endpoint::EndpointChoice {
-        &self.endpoints.choice
-    }
-
-    /// The endpoint selection, mutably, for a caller that drives a move end to end.
-    pub fn endpoint_choice_mut(&mut self) -> &mut crate::endpoint::EndpointChoice {
-        &mut self.endpoints.choice
     }
 
     pub(in crate::shell) fn endpoint_usable(&self, endpoint_id: &ClientEndpointId) -> bool {
@@ -543,7 +523,7 @@ impl ClientShellState {
         self.endpoints.presented().display_label()
     }
 
-    pub fn endpoint_is_active(&self, endpoint_id: &ClientEndpointId) -> bool {
+    pub(crate) fn endpoint_is_active(&self, endpoint_id: &ClientEndpointId) -> bool {
         self.endpoints.presented() == endpoint_id
     }
 
@@ -620,7 +600,7 @@ impl ClientShellState {
         self.rebuild_endpoint_models();
     }
 
-    pub fn set_endpoint_snapshot_for_generation(
+    pub(crate) fn set_endpoint_snapshot_for_generation(
         &mut self,
         endpoint_id: &ClientEndpointId,
         generation: ConnectionGeneration,
@@ -700,7 +680,7 @@ pub(in crate::shell) fn local_endpoint() -> ClientShellEndpoint {
 
 #[cfg(test)]
 impl ClientShellState {
-    pub fn set_snapshot(&mut self, snapshot: Box<ClientShellSnapshot>) {
+    pub(in crate::shell) fn set_snapshot(&mut self, snapshot: Box<ClientShellSnapshot>) {
         let endpoint_id = self.endpoints.presented().clone();
         self.set_endpoint_snapshot(&endpoint_id, snapshot);
     }
@@ -737,7 +717,7 @@ impl ClientShellState {
         self.cache_endpoint_snapshot_at_generation(endpoint_id, generation, snapshot.into());
     }
 
-    pub fn set_endpoint_snapshot(
+    pub(in crate::shell) fn set_endpoint_snapshot(
         &mut self,
         endpoint_id: &ClientEndpointId,
         snapshot: Box<ClientShellSnapshot>,

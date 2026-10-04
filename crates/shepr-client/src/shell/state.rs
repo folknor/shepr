@@ -102,16 +102,16 @@ pub(crate) enum ClientShellAction {
 pub(crate) struct ClientShellInput {
     // These are independent one-shot effects accumulated with OR semantics, rather than
     // phases of a state machine. Requests carry their routing in `ClientShellRequest` below.
-    pub detach: bool,
-    pub repaint: bool,
+    pub(crate) detach: bool,
+    pub(crate) repaint: bool,
     /// Present the next frame in full rather than diffed against what the
     /// host terminal is assumed to show (`ui.redraw_on_focus_gained`).
-    pub full_redraw: bool,
-    pub resize: bool,
-    pub query_host_appearance: bool,
-    pub query_host_theme: bool,
-    pub requests: Vec<ClientShellRequest>,
-    pub actions: Vec<ClientShellAction>,
+    pub(crate) full_redraw: bool,
+    pub(crate) resize: bool,
+    pub(crate) query_host_appearance: bool,
+    pub(crate) query_host_theme: bool,
+    pub(crate) requests: Vec<ClientShellRequest>,
+    pub(crate) actions: Vec<ClientShellAction>,
 }
 
 #[derive(Debug)]
@@ -190,7 +190,7 @@ pub(in crate::shell) struct ClientInputContext {
 type ClientInputLeases =
     shepr_termio::input::InputLeaseTable<u8, ClientInputContext, shepr_protocol::PublicPaneId>;
 
-pub struct ClientShellState {
+pub(crate) struct ClientShellState {
     /// The client loop's time for the event being handled, set on each event,
     /// so shell code that stamps deadlines never reads the clock itself.
     /// A method that also takes a `now` is handed the same instant by its
@@ -233,7 +233,7 @@ impl ClientShellState {
         self.host_cell = cell;
     }
 
-    pub fn new_at(config: ClientShellConfig, now: std::time::Instant) -> Self {
+    pub(crate) fn new_at(config: ClientShellConfig, now: std::time::Instant) -> Self {
         let preferences = config.preferences.clone();
         let overlay = None;
         let chrome = crate::shell::sidebar::chrome::ChromeLayout::new(&config);
@@ -347,17 +347,6 @@ impl ClientShellState {
     /// reads this.
     pub(in crate::shell) fn pane_surface(&self) -> Option<&PaneSurfaceFrame> {
         self.presentation.surfaces.presented()
-    }
-
-    /// A full surface from the shown connection `generation`. It becomes the baseline
-    /// (the reader enforces order and the shell mirrors it) and is presented once it
-    /// pairs with that connection's snapshot, which may arrive after it.
-    pub(crate) fn receive_pane_surface_from(
-        &mut self,
-        surface: PaneSurfaceFrame,
-        generation: shepr_protocol::ConnectionGeneration,
-    ) {
-        self.receive_tagged_pane_surface(surface, generation);
     }
 
     /// A presented surface or patch shows `scroll` for `pane`: a scroll target it shows
@@ -520,7 +509,7 @@ impl ClientShellInput {
 
 #[cfg(test)]
 impl ClientShellState {
-    pub fn new(config: ClientShellConfig) -> Self {
+    pub(crate) fn new(config: ClientShellConfig) -> Self {
         // clock-io-ok: this test-only constructor stands in for the client launch.
         Self::new_at(config, std::time::Instant::now())
     }

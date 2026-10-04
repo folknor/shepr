@@ -30,4 +30,6 @@ Three standings:
 | `notes_drop.py` | tool | removes whole findings entries by ID from a notes document, or with `--bullet` single top-level bullets by the start of their first line (each prefix must match exactly one bullet) |
 | `upstream_watch.py` | tool | reports what upstream herdr changed in its watched paths since the recorded baseline, mapped to our files, to spot fixes worth taking; `--advance` moves the baseline, `--fork-point` checks it |
 | `upstream_baseline.txt` | tool | data for `upstream_watch.py`: the upstream herdr commit shepr has caught up to |
+| `compare_tests.py` | diagnostic | test functions under the given paths in HEAD against the working tree: tests gone or new by name, and tests whose count of assertion-like calls or whose body changed, to check that moved tests kept their strength |
+| `narrow_visibility.py` | diagnostic | narrows `pub(crate)` and `pub(in crate::shell)` items of shepr-client one at a time, keeping each change only if `brokkr clippy -p shepr-client` stays clean; `--force` tries every declaration, not just those whose name no other module mentions (slow: one lint run per try) |
 | `fix_unwraps.py` | tool | one-off: replaced `.unwrap()` in test code for clippy's `unwrap_used` |

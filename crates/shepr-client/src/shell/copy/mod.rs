@@ -3,7 +3,7 @@
 //! everything queued against it.
 
 pub(in crate::shell) mod keys;
-pub(in crate::shell) mod pipeline;
+mod pipeline;
 
 use crate::shell::input::scroll_lanes::ScrollLanes;
 use crate::shell::input::selection::MouseSelection;
@@ -31,7 +31,7 @@ pub(in crate::shell) struct ClientCopySearchPrompt {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(in crate::shell) enum ClientCopyOperation {
+enum ClientCopyOperation {
     Motion(shepr_protocol::command::PaneCopyMotion),
     Search {
         query: TypedText,
@@ -53,9 +53,9 @@ pub(in crate::shell) struct ClientCopySearchResult {
 pub(in crate::shell) struct ClientCopySearch {
     pub(in crate::shell) prompt: Option<ClientCopySearchPrompt>,
     pub(in crate::shell) query: TypedText,
-    pub(in crate::shell) direction: Option<shepr_protocol::command::PaneCopySearchDirection>,
+    direction: Option<shepr_protocol::command::PaneCopySearchDirection>,
     pub(in crate::shell) results: ClientCopySearchResult,
-    pub(in crate::shell) copy_after_result: bool,
+    copy_after_result: bool,
 }
 
 impl ClientCopySearch {
@@ -76,7 +76,7 @@ pub(in crate::shell) struct CopySession {
     pub(in crate::shell) geometry: (u16, u16),
     alternate_screen_active: bool,
     pub(in crate::shell) cursor: shepr_protocol::command::PaneTextPoint,
-    pub(in crate::shell) entry_offset_from_bottom: usize,
+    entry_offset_from_bottom: usize,
     /// The anchor and selection shape drive the projected VT range in `MouseSelection`.
     /// They are not a duplicate range: the projection changes as the copy cursor moves.
     pub(in crate::shell) selection: Option<ClientCopySelection>,
@@ -358,12 +358,12 @@ fn prune_evicted_search_matches(session: &mut CopySession) {
 
 #[cfg(test)]
 impl CopySession {
-    pub(in crate::shell) fn with_search(mut self, search: ClientCopySearch) -> Self {
+    fn with_search(mut self, search: ClientCopySearch) -> Self {
         self.search = Some(search);
         self
     }
 
-    pub(in crate::shell) fn with_selection(mut self, selection: ClientCopySelection) -> Self {
+    fn with_selection(mut self, selection: ClientCopySelection) -> Self {
         self.selection = Some(selection);
         self
     }
@@ -383,7 +383,7 @@ impl crate::shell::state::ClientShellState {
             .is_some_and(|session| session.pipeline().in_flight())
     }
 
-    pub(in crate::shell) fn copy_keys_len(&self) -> usize {
+    fn copy_keys_len(&self) -> usize {
         self.copy
             .as_ref()
             .map_or(0, |session| session.pipeline().keys_len())
@@ -401,107 +401,4 @@ impl crate::shell::state::ClientShellState {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{ClientCopyOperation, ClientCopySelection, CopyEntry, CopySession, Ticket};
-    use crate::shell::config::ClientShellConfig;
-    use crate::shell::state::ClientShellState;
-    use crossterm::event::{KeyCode, KeyModifiers};
-    use shepr_config::ClientConfig;
-    use shepr_term::selection::SelectionShape;
-
-    fn pane_id() -> shepr_protocol::PublicPaneId {
-        let workspace =
-            shepr_protocol::WorkspaceId::from_number(1).expect("one-based workspace number");
-        shepr_protocol::PublicPaneId::new(
-            &workspace,
-            shepr_protocol::PanePublicNumber::new(1).expect("nonzero literal"),
-        )
-    }
-
-    fn session() -> CopySession {
-        CopySession::start(CopyEntry {
-            pane_id: pane_id(),
-            scroll: shepr_term::ScrollMetrics::new(0, 0, 2, shepr_term::AbsRow(0)),
-            geometry: (10, 2),
-            alternate_screen_active: false,
-            cursor: shepr_protocol::command::PaneTextPoint {
-                row: shepr_term::AbsRow(0),
-                col: 0,
-            },
-            rows: Ticket::fixture(1),
-        })
-    }
-
-    #[test]
-    fn ending_a_session_discards_its_queue() {
-        let mut state =
-            ClientShellState::new(ClientShellConfig::from_config(&ClientConfig::default()));
-        let mut first = session();
-        first.pipeline_mut().begin(Ticket::fixture(2), None);
-        first.pipeline_mut().push_op(ClientCopyOperation::Motion(
-            shepr_protocol::command::PaneCopyMotion::Word(
-                shepr_protocol::command::PaneWordMotion::NextStart,
-            ),
-        ));
-        first
-            .pipeline_mut()
-            .push_key(shepr_term::key::TerminalKey::new(
-                KeyCode::Char('j'),
-                KeyModifiers::empty(),
-            ));
-        state.copy = Some(first);
-
-        state.reset_endpoint_projection(crate::shell::endpoints::ProjectionReset::Rebooted);
-        assert!(state.copy.is_none());
-
-        let next = session();
-        assert!(!next.pipeline().in_flight());
-        assert!(next.pipeline().keys_is_empty());
-        assert!(next.pipeline().ops_is_empty());
-    }
-
-    #[test]
-    fn projected_selection_follows_anchor_and_cursor() {
-        let plain = session();
-        assert!(plain.projected_selection().is_none());
-
-        let anchor = shepr_term::Point::new(shepr_term::AbsRow(0), 1);
-        let mut selecting = session().with_selection(ClientCopySelection::Character { anchor });
-        selecting.cursor = shepr_protocol::command::PaneTextPoint {
-            row: shepr_term::AbsRow(1),
-            col: 3,
-        };
-        let projected = selecting
-            .projected_selection()
-            .expect("a character selection projects");
-        assert!(projected.belongs_to(&pane_id()));
-        assert_eq!(projected.shape(), SelectionShape::Range);
-        assert_eq!(
-            projected.ordered_rows(),
-            (
-                shepr_term::Point::new(shepr_term::AbsRow(0), 1),
-                shepr_term::Point::new(shepr_term::AbsRow(1), 3)
-            )
-        );
-
-        let linewise = session()
-            .with_selection(ClientCopySelection::Linewise {
-                anchor_row: shepr_term::AbsRow(1),
-            })
-            .with_cursor(shepr_protocol::command::PaneTextPoint {
-                row: shepr_term::AbsRow(0),
-                col: 4,
-            });
-        let projected = linewise
-            .projected_selection()
-            .expect("a linewise selection projects");
-        assert_eq!(projected.shape(), SelectionShape::Lines);
-        assert_eq!(
-            projected.ordered_rows(),
-            (
-                shepr_term::Point::new(shepr_term::AbsRow(0), 0),
-                shepr_term::Point::new(shepr_term::AbsRow(1), 0)
-            )
-        );
-    }
-}
+mod tests;
