@@ -169,7 +169,8 @@ env_vocabulary! {
         XdgConfigHome => "XDG_CONFIG_HOME", PaneEnvPolicy::Allowed,
         /// `XDG_STATE_HOME`: the state tree's parent.
         XdgStateHome => "XDG_STATE_HOME", PaneEnvPolicy::Allowed,
-        /// `XDG_RUNTIME_DIR`: the runtime tree's parent; it has no default.
+        /// `XDG_RUNTIME_DIR`: the runtime tree's parent; unset, `shepr-paths`
+        /// falls back to the user's private logind directory.
         XdgRuntimeDir => "XDG_RUNTIME_DIR", PaneEnvPolicy::Allowed,
         /// `SHELL`: the inherited shell used when `terminal.default_shell` is
         /// unset. An unusable or unrecognized value, or one with surrounding

@@ -296,19 +296,18 @@ fn resolve_paths_from_env_with_marker(
         shepr_core::env::xdg_config_home_with(read_base).map(|path| path.join(SHARED_APP_DIR_NAME));
     let state_dir =
         shepr_core::env::xdg_state_home_with(read_base).map(|path| path.join(SHARED_APP_DIR_NAME));
-    // XDG_RUNTIME_DIR has no base-directory fallback in the XDG spec. Unset
-    // and empty are an error for shepr because its runtime sockets need a
-    // user-private runtime directory; a relative value is refused by the
-    // environment policy.
-    let xdg_runtime_dir = shepr_core::env::read_path(EnvVar::XdgRuntimeDir);
-    let runtime_dir = match &xdg_runtime_dir {
-        Ok(Some(path)) => Ok(path.join(profile.app_dir_name())),
-        Ok(None) => Err(io::Error::other(
-            "XDG_RUNTIME_DIR must be set to an absolute path",
-        )),
+    // A relative XDG_RUNTIME_DIR is refused by the environment policy. Unset
+    // or empty falls back to the directory logind makes for the user.
+    let xdg_runtime_dir = match shepr_core::env::read_path(EnvVar::XdgRuntimeDir) {
+        Ok(Some(path)) => Ok(path),
+        Ok(None) => logind_runtime_dir(Path::new(LOGIND_RUNTIME_ROOT)),
         Err(error) => Err(io::Error::other(error.to_string())),
     };
-    let xdg_runtime_dir = xdg_runtime_dir.ok().flatten();
+    let runtime_dir = xdg_runtime_dir
+        .as_ref()
+        .map(|path| path.join(profile.app_dir_name()))
+        .map_err(|error| io::Error::other(error.to_string()));
+    let xdg_runtime_dir = xdg_runtime_dir.ok();
 
     let mut problems = Vec::new();
     let config_dir = match config_dir {
@@ -363,6 +362,31 @@ fn resolve_paths_from_env_with_marker(
             "paths could not be resolved; no path-specific error was reported",
         )),
         _ => Err(PathsError::new(problems)),
+    }
+}
+
+/// Where logind creates each user's runtime directory, named by uid.
+const LOGIND_RUNTIME_ROOT: &str = "/run/user";
+
+/// The runtime directory logind made for this user under `root`, for a
+/// session that never exported XDG_RUNTIME_DIR: one that skipped
+/// `pam_systemd`, such as Tailscale SSH. It is used only when it is a private
+/// directory owned by this user, as logind makes it, since shepr's sockets go
+/// below it.
+fn logind_runtime_dir(root: &Path) -> io::Result<PathBuf> {
+    let path = root.join(shepr_platform::effective_uid().to_string());
+    let refusal = |reason: &dyn std::fmt::Display| {
+        io::Error::other(format!(
+            "XDG_RUNTIME_DIR is not set and {} is not usable instead: {reason}",
+            path.display()
+        ))
+    };
+    match shepr_platform::require_private_directory(&path) {
+        Ok(()) => Ok(path),
+        Err(shepr_platform::PrivateDirError::Io(error)) => Err(refusal(&error)),
+        Err(shepr_platform::PrivateDirError::Policy) => Err(refusal(
+            &"it is not a directory private to this user (owned by it, mode 0700, not a symlink)",
+        )),
     }
 }
 
@@ -627,27 +651,57 @@ mod tests {
             env.remove(key);
         }
 
-        for (invalid, expected) in [
-            ("", "XDG_RUNTIME_DIR must be set"),
-            ("relative/path", "relative path"),
-        ] {
-            env.set("XDG_RUNTIME_DIR", invalid);
-            let errors = AppPaths::resolve().expect_err("runtime dir has no XDG default");
-            assert!(
-                errors
-                    .messages()
-                    .iter()
-                    .any(|error| error.contains("XDG_RUNTIME_DIR") && error.contains(expected)),
-                "XDG_RUNTIME_DIR={invalid:?}: {errors:?}"
-            );
-        }
+        env.set("XDG_RUNTIME_DIR", "relative/path");
+        let errors = AppPaths::resolve().expect_err("a relative runtime dir is refused");
+        assert!(
+            errors
+                .messages()
+                .iter()
+                .any(|error| error.contains("XDG_RUNTIME_DIR") && error.contains("relative path")),
+            "{errors:?}"
+        );
         env.remove("XDG_RUNTIME_DIR");
-        assert!(AppPaths::resolve().is_err());
         for invalid in ["", "relative/home"] {
             env.set("HOME", invalid);
             assert!(AppPaths::resolve().is_err());
         }
         env.remove("HOME");
         assert!(AppPaths::resolve().is_err());
+    }
+
+    #[test]
+    fn an_unset_runtime_dir_falls_back_only_to_a_private_logind_directory() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = shepr_test_support::ScratchDir::new("logind-runtime");
+        let user_dir = root.join(shepr_platform::effective_uid().to_string());
+        let error = logind_runtime_dir(&root).expect_err("a missing directory is refused");
+        assert!(
+            error.to_string().contains("XDG_RUNTIME_DIR is not set"),
+            "{error}"
+        );
+
+        std::fs::create_dir(&user_dir).expect("create user dir");
+        std::fs::set_permissions(&user_dir, std::fs::Permissions::from_mode(0o755))
+            .expect("open mode");
+        let error = logind_runtime_dir(&root).expect_err("a shared mode is refused");
+        assert!(error.to_string().contains("mode 0700"), "{error}");
+
+        std::fs::set_permissions(&user_dir, std::fs::Permissions::from_mode(0o700))
+            .expect("private mode");
+        assert_eq!(
+            logind_runtime_dir(&root).expect("a private directory is used"),
+            user_dir
+        );
+
+        std::fs::remove_dir(&user_dir).expect("remove user dir");
+        std::os::unix::fs::symlink(root.join("elsewhere"), &user_dir).expect("symlink");
+        std::fs::create_dir(root.join("elsewhere")).expect("create target");
+        std::fs::set_permissions(
+            root.join("elsewhere"),
+            std::fs::Permissions::from_mode(0o700),
+        )
+        .expect("private target");
+        logind_runtime_dir(&root).expect_err("a symlink is refused");
     }
 }

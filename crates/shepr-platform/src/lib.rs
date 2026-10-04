@@ -42,8 +42,8 @@ pub use executable::{
 };
 pub use file_stamp::FileStamp;
 pub use host::{
-    HostNames, begin_cli_output, child_command, detach_server_daemon_command, host_names,
-    launch_executable, take_terminal_resize_signal, terminal_grid_size,
+    HostNames, begin_cli_output, child_command, detach_server_daemon_command, effective_uid,
+    host_names, launch_executable, take_terminal_resize_signal, terminal_grid_size,
     watch_terminal_resize_signal,
 };
 pub use owned_runtime::{
@@ -82,7 +82,6 @@ fn env_present(var: shepr_core::env::EnvVar) -> bool {
 
 // Shared helpers for sibling platform modules.
 use child_io::{LimitedRead, poll_fd, read_limited_reader};
-use host::effective_uid;
 
 #[cfg(test)]
 use clipboard::{

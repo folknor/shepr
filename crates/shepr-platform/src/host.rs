@@ -187,7 +187,7 @@ fn short_hostname(name: &str) -> &str {
     name.split_once('.').map_or(name, |(short, _)| short)
 }
 
-pub(super) fn effective_uid() -> libc::uid_t {
+pub fn effective_uid() -> libc::uid_t {
     // SAFETY: geteuid(2) takes no arguments, cannot fail and touches no memory.
     unsafe { libc::geteuid() }
 }
